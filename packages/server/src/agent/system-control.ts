@@ -208,7 +208,7 @@ export function keyboardType(
 // route an image through a vision-capable model. The old in-file
 // findVisionModel() that lived here did its own auto-pick of the
 // "cheapest vision-ish enabled model" when the calling agent couldn't
-// see — that decision is now an explicit, user-controlled config
+// see, that decision is now an explicit, user-controlled config
 // (Settings → Dojo → Fallback vision model).
 
 export async function screenRead(
@@ -238,7 +238,7 @@ export async function screenRead(
     execSync(cmd, { timeout: 10000, encoding: 'utf-8' });
 
     if (!fs.existsSync(screenshotPath)) {
-      return 'Error: Screenshot capture failed — file was not created. Ensure screen recording permission is granted in System Settings > Privacy & Security > Screen Recording.';
+      return 'Error: Screenshot capture failed, file was not created. Ensure screen recording permission is granted in System Settings > Privacy & Security > Screen Recording.';
     }
 
     // Read image as base64
@@ -256,7 +256,7 @@ export async function screenRead(
     if (!visionModel) {
       return `Screenshot saved to: ${screenshotPath}\nNo vision-capable model is configured. Either set a fallback vision model in Settings → Dojo → Fallback vision model, or switch the calling agent to a vision-capable model in Settings → Models.`;
     }
-    logger.info('screen_read: model selected', {
+    logger.info('screen_screenshot: model selected', {
       modelId: visionModel.modelId,
       apiModelId: visionModel.apiModelId,
       source: visionModel.source,
@@ -296,7 +296,7 @@ export async function screenRead(
     });
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(
-        () => reject(new Error(`screen_read timed out after ${SCREEN_READ_MODEL_TIMEOUT_MS / 1000}s waiting for ${visionModel.apiModelId} (provider ${visionModel.providerId}). The screenshot was captured fine; the model call hung. Try again, or pick a different vision model in Settings > Models.`)),
+        () => reject(new Error(`screen_screenshot timed out after ${SCREEN_READ_MODEL_TIMEOUT_MS / 1000}s waiting for ${visionModel.apiModelId} (provider ${visionModel.providerId}). The screenshot was captured fine; the model call hung. Try again, or pick a different vision model in Settings > Models.`)),
         SCREEN_READ_MODEL_TIMEOUT_MS,
       ),
     );

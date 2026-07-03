@@ -4,13 +4,13 @@
 
 import { Hono } from 'hono';
 import { createLogger } from '../../logger.js';
-import { getCostSummary, getCostRecords } from '../../costs/tracker.js';
+import { getCostSummary, getCostRecords, getCacheStats } from '../../costs/tracker.js';
 import { getBudgets, setGlobalBudget, setAgentBudget } from '../../costs/budget.js';
 
 const logger = createLogger('costs-routes');
 const costsRouter = new Hono();
 
-// GET /summary — cost summary by period
+// GET /summary, cost summary by period
 costsRouter.get('/summary', (c) => {
   const period = (c.req.query('period') ?? '24h') as '24h' | '7d' | '30d' | 'all';
   const validPeriods = ['24h', '7d', '30d', 'all'];
@@ -29,7 +29,7 @@ costsRouter.get('/summary', (c) => {
   }
 });
 
-// GET /records — paginated cost records
+// GET /records, paginated cost records
 costsRouter.get('/records', (c) => {
   const agentId = c.req.query('agentId') ?? undefined;
   const modelId = c.req.query('modelId') ?? undefined;
@@ -46,7 +46,21 @@ costsRouter.get('/records', (c) => {
   }
 });
 
-// GET /budget — get budgets
+// GET /cache, per-provider prompt-cache hit stats over the last N calls (C28 Part 2)
+costsRouter.get('/cache', (c) => {
+  const limit = parseInt(c.req.query('limit') ?? '200', 10);
+
+  try {
+    const stats = getCacheStats(Number.isFinite(limit) ? limit : 200);
+    return c.json({ ok: true, data: stats });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error('Failed to get cache stats', { error: msg });
+    return c.json({ ok: false, error: msg }, 500);
+  }
+});
+
+// GET /budget, get budgets
 costsRouter.get('/budget', (c) => {
   try {
     const budgets = getBudgets();
@@ -58,7 +72,7 @@ costsRouter.get('/budget', (c) => {
   }
 });
 
-// PUT /budget/global — set global budget
+// PUT /budget/global, set global budget
 costsRouter.put('/budget/global', async (c) => {
   const body = await c.req.json().catch(() => null);
 
@@ -76,7 +90,7 @@ costsRouter.put('/budget/global', async (c) => {
   }
 });
 
-// PUT /budget/agent/:agentId — set agent budget
+// PUT /budget/agent/:agentId, set agent budget
 costsRouter.put('/budget/agent/:agentId', async (c) => {
   const agentId = c.req.param('agentId');
   const body = await c.req.json().catch(() => null);

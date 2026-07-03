@@ -1,22 +1,22 @@
 // ════════════════════════════════════════
-// recall_recent_thread — agent-callable transcript recall
+// recall_recent_thread, agent-callable transcript recall
 // ════════════════════════════════════════
 //
 // Returns a clean transcript of the agent's recent user/assistant
-// exchanges, read directly from the messages table — same data the
+// exchanges, read directly from the messages table, same data the
 // dashboard renders. Respects session_started_at so a recent reset
 // doesn't leak pre-reset content into the recall.
 //
-// v2.5.11 — Expanded for memory-recovery use cases:
+// v2.5.11, Expanded for memory-recovery use cases:
 //   - include_tool_results=true ("wordy mode") includes tool RESULTS,
-//     truncated per result with a memory_describe pointer for the full
+//     truncated per result with a history_get pointer for the full
 //     body. Used when the agent needs to recover actual content
 //     (file_read output, web_fetch body, etc.) after compaction or
 //     a model switch.
 //   - before_id paginates: "give me the N turns BEFORE message X."
 //   - since filters by ISO timestamp.
 //   - Footer always tells the agent how to get older slices or full
-//     bodies — impossible to misread as "you have all the data."
+//     bodies, impossible to misread as "you have all the data."
 //
 // Use case: post-compaction reorientation, post-sanitizer recovery,
 // or any time the agent has lost the thread.
@@ -35,7 +35,7 @@ interface MessageRow {
 }
 
 // SQLite stores timestamps as "YYYY-MM-DD HH:MM:SS" (no T, no Z). Agents
-// will reasonably pass ISO-8601 ("2026-05-12T00:33:00Z" or with offset) —
+// will reasonably pass ISO-8601 ("2026-05-12T00:33:00Z" or with offset), 
 // normalize to the SQLite shape so string comparison works correctly.
 function normalizeTimestampForSqlite(input: string): string {
   let s = input.trim();
@@ -77,7 +77,7 @@ export interface RecallOptions {
   beforeId?: string;
   since?: string;
   /**
-   * Conversation scoping (OPEN-15). Default 'conversation' — recall is limited
+   * Conversation scoping (OPEN-15). Default 'conversation', recall is limited
    * to the CURRENT conversation (rows tagged with this turn's conv_key, plus
    * untagged current-turn / legacy rows). This stops an unrelated task's output
    * (e.g. an `apt autoremove` exec from a different conversation) bleeding into
@@ -108,7 +108,7 @@ function clip(text: string, maxChars: number): { text: string; truncated: number
 }
 
 function formatTimestamp(iso: string): string {
-  // Stored as "YYYY-MM-DD HH:MM:SS" — keep it compact.
+  // Stored as "YYYY-MM-DD HH:MM:SS", keep it compact.
   return iso.slice(11, 16); // "HH:MM"
 }
 
@@ -195,7 +195,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
     const includeToolResults = opts.includeToolResults === true;
     const truncateChars = Math.min(4000, Math.max(200, opts.truncateToolResultChars ?? 1500));
     // User/assistant message cap. Default 1500 (parity with tool result cap)
-    // — before this it was hardcoded to 600 with no escape hatch and no
+    //, before this it was hardcoded to 600 with no escape hatch and no
     // truncation marker, so messages got silently cut and the agent had no
     // way to know or fetch the rest. Max 8000.
     const messageChars = Math.min(8000, Math.max(200, opts.truncateMessageChars ?? 1500));
@@ -237,11 +237,11 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
     // stamped conv_key in this session identifies the conversation we're in.
     // Limit recall to that conversation plus untagged rows (current-turn,
     // not-yet-stamped work and legacy rows), which keeps the live thread while
-    // dropping OTHER conversations' tagged output — the cross-task bleed that
+    // dropping OTHER conversations' tagged output, the cross-task bleed that
     // surfaced unrelated `apt`/package output during a flight-info question.
     if (opts.scope !== 'all') {
       // E-C1: prefer the LIVE turn's conv_key over re-deriving "most recently
-      // stamped" — which on an engine/A2A turn latched the last HUMAN conversation
+      // stamped", which on an engine/A2A turn latched the last HUMAN conversation
       // and bled it into the recall. A string = that conversation; explicit null =
       // engine/A2A turn (untagged rows only, no human-conv bleed); undefined =
       // called outside a turn, use the legacy heuristic.
@@ -260,7 +260,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
       }
       if (scopeKey) {
         // C17: keep the current conversation's stamped rows, but restrict the NULL part to
-        // the agent's OWN activity (assistant/tool) or A2A rows — NEVER a bare `conv_key IS
+        // the agent's OWN activity (assistant/tool) or A2A rows, NEVER a bare `conv_key IS
         // NULL`, which also matches ANOTHER human's not-yet-claimed waiting inbound and
         // legacy rows, bleeding a different human's conversation into this recall (inv 4).
         // The current conversation's own user rows get stamped conv_key at pickup/turn-end
@@ -299,7 +299,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
         return `No messages found since ${opts.since} in this session.`;
       }
       return sessionBoundary
-        ? 'No conversation in the current session yet — the session was just reset.'
+        ? 'No conversation in the current session yet, the session was just reset.'
         : 'No conversation history found.';
     }
 
@@ -340,7 +340,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
       opts.since ? `since ${opts.since}` : null,
       includeToolResults ? `wordy mode (tool results up to ${truncateChars} chars each)` : null,
     ].filter(Boolean);
-    lines.push(`[Recent thread — ${headerParts.join(', ')}. Raw from messages table.]`);
+    lines.push(`[Recent thread, ${headerParts.join(', ')}. Raw from messages table.]`);
     lines.push('');
 
     let truncatedResultCount = 0;
@@ -364,7 +364,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
         lines.push(`[${role} ${t}] ${userClip.text || '(no text)'}`);
         if (userClip.truncated > 0) {
           lines.push(
-            `  [truncated, ${userClip.truncated} more chars — call memory_describe(id="${msg.id}") for full body]`,
+            `  [truncated, ${userClip.truncated} more chars, call history_get(id="${msg.id}") for full body]`,
           );
         }
         continue;
@@ -383,7 +383,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
         if (clipped.truncated > 0) {
           truncatedResultCount += 1;
           lines.push(
-            `  [truncated, ${clipped.truncated} more chars — call memory_describe(id="${msg.id}") for full body]`,
+            `  [truncated, ${clipped.truncated} more chars, call history_get(id="${msg.id}") for full body]`,
           );
         }
         continue;
@@ -395,7 +395,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
         lines.push(`[${role} ${t}] ${asstClip.text}`);
         if (asstClip.truncated > 0) {
           lines.push(
-            `  [truncated, ${asstClip.truncated} more chars — call memory_describe(id="${msg.id}") for full body]`,
+            `  [truncated, ${asstClip.truncated} more chars, call history_get(id="${msg.id}") for full body]`,
           );
         }
       }
@@ -412,7 +412,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
               if (clipped.truncated > 0) {
                 truncatedResultCount += 1;
                 lines.push(
-                  `  [truncated, ${clipped.truncated} more chars — call memory_describe(id="${resultRow.id}") for full body]`,
+                  `  [truncated, ${clipped.truncated} more chars, call history_get(id="${resultRow.id}") for full body]`,
                 );
               }
               // Mark consumed so we don't double-emit below.
@@ -423,7 +423,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
       }
     }
 
-    // Footer — impossible to misread. Always tells the agent how to get
+    // Footer, impossible to misread. Always tells the agent how to get
     // older slices, where the truncation cursor is, and how many results
     // were clipped.
     lines.push('');
@@ -431,17 +431,17 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
     footerParts.push(`Showed ${messagesShown} messages from ${slice.length} fetched rows`);
     if (oldestIncludedId) {
       footerParts.push(
-        `oldest in this slice: id="${oldestIncludedId}" — call recall_recent_thread(before_id="${oldestIncludedId}") for older turns`,
+        `oldest in this slice: id="${oldestIncludedId}", call recall_recent_thread(before_id="${oldestIncludedId}") for older turns`,
       );
     }
     if (truncatedResultCount > 0) {
       footerParts.push(
-        `${truncatedResultCount} tool result(s) truncated — use the memory_describe(id="…") hints inline above to fetch full bodies`,
+        `${truncatedResultCount} tool result(s) truncated, use the history_get(id="…") hints inline above to fetch full bodies`,
       );
     }
     if (!includeToolResults) {
       footerParts.push(
-        'tool RESULTS were omitted — call recall_recent_thread(include_tool_results: true) if you need them',
+        'tool RESULTS were omitted, call recall_recent_thread(include_tool_results: true) if you need them',
       );
     }
     lines.push(`[${footerParts.join('. ')}.]`);

@@ -1,5 +1,5 @@
 // ════════════════════════════════════════
-// Agent SDK Transport — uses query() as a transport layer only
+// Agent SDK Transport, uses query() as a transport layer only
 // No SDK tools, no SDK agent loop, no SDK context management.
 // We send system prompt + messages and get text back.
 // ════════════════════════════════════════
@@ -161,6 +161,10 @@ export interface AgentSdkCallResult {
   toolCalls: ParsedToolCall[];
   inputTokens: number;
   outputTokens: number;
+  // Prompt-cache tokens when the SDK reports them (C28 P-7); undefined when
+  // absent so the recorder persists NULL rather than a fabricated zero.
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
   stopReason: string;
 }
 
@@ -174,7 +178,7 @@ export async function callAnthropicViaSdk(params: {
 }): Promise<AgentSdkCallResult> {
   const { agentId, apiModelId, systemPrompt, messages, tools, onChunk } = params;
 
-  // Dynamic import — SDK may not be installed
+  // Dynamic import, SDK may not be installed
   const sdk = await import('@anthropic-ai/claude-agent-sdk');
   const { query } = sdk;
 
@@ -191,6 +195,8 @@ export async function callAnthropicViaSdk(params: {
   let fullResponse = '';
   let inputTokens = 0;
   let outputTokens = 0;
+  let cacheReadTokens: number | undefined;
+  let cacheCreationTokens: number | undefined;
 
   logger.info('Calling Anthropic via Agent SDK', {
     model: sdkModel,
@@ -227,6 +233,9 @@ export async function callAnthropicViaSdk(params: {
         if (betaMsg?.usage) {
           inputTokens = betaMsg.usage.input_tokens ?? 0;
           outputTokens = betaMsg.usage.output_tokens ?? 0;
+          // Anthropic reports these disjoint from input_tokens (C28 P-7).
+          if (betaMsg.usage.cache_read_input_tokens != null) cacheReadTokens = betaMsg.usage.cache_read_input_tokens;
+          if (betaMsg.usage.cache_creation_input_tokens != null) cacheCreationTokens = betaMsg.usage.cache_creation_input_tokens;
         }
       } else if (message.type === 'stream_event') {
         // Streaming chunks
@@ -273,6 +282,8 @@ export async function callAnthropicViaSdk(params: {
     toolCalls,
     inputTokens,
     outputTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
     stopReason: toolCalls.length > 0 ? 'tool_use' : 'end_turn',
   };
 }

@@ -7,10 +7,10 @@ import { getLargeFile } from './large-files.js';
 
 const logger = createLogger('memory-retrieval');
 
-// v2.7.8 — self-echo filter for memory_grep.
+// v2.7.8, self-echo filter for history_search.
 //
 // Pure tool-call assistant messages persist as JSON like
-// `[{"type":"tool_use","id":"...","name":"memory_grep","input":{"pattern":"replace the"}}]`.
+// `[{"type":"tool_use","id":"...","name":"history_search","input":{"pattern":"replace the"}}]`.
 // FTS5 indexes that JSON. When the agent later searches for "replace
 // the", their OWN previous call shows up as a match, the agent reads
 // the snippet as a real conversation hit, refines their pattern, gets
@@ -36,7 +36,7 @@ function isPureToolCallMessage(content: string): boolean {
   }
 }
 
-// ── memory_grep: FTS5 search on messages and summaries ──
+// ── history_search: FTS5 search on messages and summaries ──
 
 export function memoryGrep(
   agentId: string,
@@ -64,7 +64,7 @@ export function memoryGrep(
   if (scope === 'messages' || scope === 'both') {
     const messageResults = searchMessages(db, agentId, pattern, mode, since, before, limit);
     if (messageResults.length > 0) {
-      results.push(`=== RAW MESSAGES (${messageResults.length} results — exact conversation records) ===`);
+      results.push(`=== RAW MESSAGES (${messageResults.length} results, exact conversation records) ===`);
       results.push(...messageResults);
     }
   }
@@ -72,7 +72,7 @@ export function memoryGrep(
   if (scope === 'summaries' || scope === 'both') {
     const summaryResults = searchSummaries(db, agentId, pattern, mode, limit);
     if (summaryResults.length > 0) {
-      results.push(`=== COMPRESSED SUMMARIES (${summaryResults.length} results — condensed history, details may be lost) ===`);
+      results.push(`=== COMPRESSED SUMMARIES (${summaryResults.length} results, condensed history, details may be lost) ===`);
       results.push(...summaryResults);
     }
   }
@@ -124,10 +124,10 @@ function searchMessages(
     `;
 
     try {
-      // v2.7.8 — over-fetch then filter. The agent's own pure-tool-call
+      // v2.7.8, over-fetch then filter. The agent's own pure-tool-call
       // messages (content is `[{"type":"tool_use",...}]`) match
       // patterns like `"replace the"` because the JSON of the agent's
-      // previous memory_grep call literally contains the search args.
+      // previous history_search call literally contains the search args.
       // Returning those triggers the self-echo loop where the agent
       // grep-the-grep-the-grep until the user hits STOP. Over-fetch
       // 3× the requested limit so post-filter still hits limit when
@@ -142,7 +142,7 @@ function searchMessages(
       }>;
       const rows = rawRows.filter((r) => !isPureToolCallMessage(r.content)).slice(0, limit ?? 20);
 
-      // Phase 3.5 (2026-05-04) — hard cap per-match snippet at 300 chars
+      // Phase 3.5 (2026-05-04), hard cap per-match snippet at 300 chars
       // (Part XVIII §A). FTS5's snippet() defaults to ~64 tokens which can
       // exceed 300 chars on long-token text; we trim defensively.
       const SNIPPET_CHARS = 300;
@@ -151,14 +151,14 @@ function searchMessages(
         const snippet = row.snippet.length > SNIPPET_CHARS
           ? row.snippet.slice(0, SNIPPET_CHARS) + '…'
           : row.snippet;
-        // Include the message ID so the agent can call memory_describe(id)
+        // Include the message ID so the agent can call history_get(id)
         // for the full body when the snippet isn't enough. Without this,
         // agents loop endlessly with different patterns trying to find
         // content that's right there but truncated. The fullChars suffix
         // tells the agent at a glance how much more there is to read.
         const idShort = row.id.slice(0, 8);
         const expandHint = isTruncated
-          ? ` [snippet only — call memory_describe(id="${row.id}") for full ${row.content.length}-char message]`
+          ? ` [snippet only, call history_get(id="${row.id}") for full ${row.content.length}-char message]`
           : '';
         results.push(`[id=${idShort} ${row.created_at}] (${row.role}) ${snippet}${expandHint}`);
       }
@@ -198,7 +198,7 @@ function searchMessagesLike(
     params.push(before);
   }
 
-  // v2.7.8 — over-fetch then filter pure tool-call self-echoes (see
+  // v2.7.8, over-fetch then filter pure tool-call self-echoes (see
   // isPureToolCallMessage rationale above).
   const fetchLimit = (limit ?? 20) * 3;
   const rawRows = db.prepare(`
@@ -219,7 +219,7 @@ function searchMessagesLike(
     const preview = isTruncated ? row.content.slice(0, 200) + '...' : row.content;
     const idShort = row.id.slice(0, 8);
     const expandHint = isTruncated
-      ? ` [snippet only — call memory_describe(id="${row.id}") for full ${row.content.length}-char message]`
+      ? ` [snippet only, call history_get(id="${row.id}") for full ${row.content.length}-char message]`
       : '';
     return `[id=${idShort} ${row.created_at}] (${row.role}) ${preview}${expandHint}`;
   });
@@ -298,7 +298,7 @@ function searchSummariesLike(
   });
 }
 
-// ── memory_describe: lookup summary or large file by ID ──
+// ── history_get: lookup summary or large file by ID ──
 
 export function memoryDescribe(agentId: string, params: { id: string }): string {
   const { id } = params;
@@ -352,15 +352,15 @@ export function memoryDescribe(agentId: string, params: { id: string }): string 
       'Exploration Summary:',
       meta.explorationSummary as string,
       '',
-      `Full content available (${meta.tokenCount} tokens). Use memory_expand to query specific parts.`,
+      `Full content available (${meta.tokenCount} tokens). Use history_expand to query specific parts.`,
     ];
 
     return parts.join('\n');
   }
 
   // Otherwise treat it as a message ID (UUID). Look up the row and return
-  // the full body. memory_grep emits message IDs in its output (along with
-  // a "snippet only — call memory_describe(...)" hint when truncated), so
+  // the full body. history_search emits message IDs in its output (along with
+  // a "snippet only, call history_get(...)" hint when truncated), so
   // this is the canonical path for getting full content of a search hit.
   try {
     const db = getDb();
@@ -385,10 +385,10 @@ export function memoryDescribe(agentId: string, params: { id: string }): string 
     }
   } catch { /* fall through to unknown-ID error */ }
 
-  return `Unknown ID format: ${id}. Expected sum_* (summary), file_* (large file), or a message UUID from memory_grep output.`;
+  return `Unknown ID format: ${id}. Expected sum_* (summary), file_* (large file), or a message UUID from history_search output.`;
 }
 
-// ── memory_expand: deep recall with DAG walking and LLM ──
+// ── history_expand: deep recall with DAG walking and LLM ──
 
 export async function memoryExpand(
   agentId: string,
@@ -553,7 +553,7 @@ export async function memorySearch(
       const results = await hybridSearch(query, agentId, { limit });
 
       if (results.length === 0) {
-        return `No results found for "${query}". This search checked all stored messages and summaries — retrying with a different query is unlikely to help.`;
+        return `No results found for "${query}". This search checked all stored messages and summaries, retrying with a different query is unlikely to help.`;
       }
 
       const formatted = results.map((r, i) => {

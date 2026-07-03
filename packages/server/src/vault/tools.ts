@@ -13,7 +13,7 @@ const logger = createLogger('vault-tools');
 //
 // Goals (per user direction): every entry should be a SUMMARY of source
 // content (not a transcription) and should have a REASON to exist. We
-// don't reject entries by length, prose shape, or technique overlap —
+// don't reject entries by length, prose shape, or technique overlap, 
 // the prompt sets the bar, the engine just helps quietly:
 //   - Strip common narrative cruft so transcribed-feeling entries lose
 //     their filler before saving.
@@ -23,9 +23,9 @@ const logger = createLogger('vault-tools');
 // Common bloat-phrase patterns the engine strips silently. These are
 // narrative fillers the model writes that carry no information ("the
 // user mentioned that…", "during a conversation on…"). Conservative by
-// design — only patterns that are unambiguous filler.
+// design, only patterns that are unambiguous filler.
 const BLOAT_STRIP_PATTERNS: Array<{ re: RegExp; replacement: string }> = [
-  // Date prefix — we already auto-prepend [YYYY-MM-DD], so a duplicate
+  // Date prefix, we already auto-prepend [YYYY-MM-DD], so a duplicate
   // "On YYYY-MM-DD," or "During a conversation on YYYY-MM-DD," is redundant.
   { re: /\b[Oo]n \d{4}-\d{2}-\d{2}[,:]?\s+/g, replacement: '' },
   { re: /\b[Dd]uring (?:a|the) conversation on \d{4}-\d{2}-\d{2}[,:]?\s+/g, replacement: '' },
@@ -53,7 +53,7 @@ function stripBloatPhrases(content: string): { stripped: string; charsRemoved: n
 // Credential-shaped content must not enter the vault. Credentials live in
 // the separate encrypted store (agent_credentials table, accessed via
 // credential_add/get/update/delete). Vault entries can decay, appear in
-// vault_search, and are visible to the Dreamer for summarization — none
+// vault_search, and are visible to the Dreamer for summarization, none
 // of which is appropriate for API keys, tokens, or passwords.
 //
 // Detection is high-precision (known token prefixes + key/value with
@@ -112,7 +112,7 @@ export async function executeVaultRemember(
   // turn so agents always re-fetch the current version. Letting the
   // agent vault_remember a chunk of technique text would re-introduce
   // the staleness this enforcement was built to prevent. Detection is
-  // by sentinel — every technique_read / use_technique response carries
+  // by sentinel, every technique_read / use_technique response carries
   // it (techniques/tools.ts:wrapTechniqueResult). If the agent wants
   // to capture WHY they made a decision while following a technique,
   // they can vault the decision itself ("chose path A because the
@@ -124,7 +124,7 @@ export async function executeVaultRemember(
       `engine stubs prior reads after 1 turn so agents always work from the current ` +
       `version. Vaulting technique text would re-introduce the staleness this is ` +
       `built to prevent. If you need to remember something ABOUT applying the ` +
-      `technique (a decision, a parameter you chose, a result), vault that — not the ` +
+      `technique (a decision, a parameter you chose, a result), vault that, not the ` +
       `technique body. Re-call technique_read whenever you need the steps again.`
     );
   }
@@ -134,7 +134,7 @@ export async function executeVaultRemember(
     return (
       `Refused: this content looks like it contains a credential (matched pattern: ${credentialPattern}). ` +
       `Credentials, API keys, tokens, passwords, and other authentication material do NOT belong in the vault. ` +
-      `Use credential_add(service_name, credentials, description) instead — values are encrypted at rest, never decay, ` +
+      `Use credential_add(service_name, credentials, description) instead, values are encrypted at rest, never decay, ` +
       `never appear in vault_search or Dreamer summaries, and are read on-demand at API-call time via credential_get. ` +
       `If you are saving a NOTE about a credential (e.g. "user prefers OAuth over PATs for GitHub"), rephrase to remove the ` +
       `credential-shaped substring and try again.`
@@ -193,7 +193,7 @@ export async function executeVaultRemember(
       const sameSubject = hits.filter(h => h.id !== entry.id && h.similarity >= 0.78 && h.similarity < 0.92);
       if (sameSubject.length > 0) {
         const top = sameSubject[0];
-        nearDupNote = `\n\nFYI: similar entry already exists — "${top.content.slice(0, 80)}…" (id ${top.id}, similarity ${top.similarity.toFixed(2)}). Consider vault_forget on the older one if yours supersedes it.`;
+        nearDupNote = `\n\nFYI: similar entry already exists, "${top.content.slice(0, 80)}…" (id ${top.id}, similarity ${top.similarity.toFixed(2)}). Consider vault_forget on the older one if yours supersedes it.`;
       }
     } catch { /* best effort */ }
 
@@ -217,16 +217,16 @@ export async function executeVaultSearch(
 ): Promise<string> {
   const query = args.query as string;
   const type = args.type as string | undefined;
-  // Phase 3.5 (2026-05-04) — default limit lowered from 10 to 5 to keep
+  // Phase 3.5 (2026-05-04), default limit lowered from 10 to 5 to keep
   // search results compact. The agent can still pass a higher limit when
   // they genuinely want more matches.
   const limit = (args.limit as number) ?? 5;
-  // v2.7.2 — explicit mode. 'semantic' (default) uses embedding similarity
-  // which is great for conceptual recall but blind to exact strings —
+  // v2.7.2, explicit mode. 'semantic' (default) uses embedding similarity
+  // which is great for conceptual recall but blind to exact strings, 
   // searching for an unusual literal substring like a misspelled domain
   // against the user's actual domain returns nothing relevant because
   // both embed to the same generic "email domain" cluster. 'exact' uses
-  // SQL LIKE on the content field — use it for debugging memory poisoning
+  // SQL LIKE on the content field, use it for debugging memory poisoning
   // or finding entries that contain a specific phrase verbatim.
   const mode = (args.mode as 'semantic' | 'exact' | undefined) ?? 'semantic';
 
@@ -254,7 +254,7 @@ export async function executeVaultSearch(
         const snippet = prefix + r.content.slice(start, end) + suffix;
         return `${i + 1}. [${r.type}]${flagStr} ${snippet}\n   ID: ${r.id} | Created: ${r.createdAt}`;
       });
-      return `Found ${rows.length} vault entr${rows.length === 1 ? 'y' : 'ies'} containing "${query}" (exact match):\n\n${lines.join('\n\n')}\n\nUse vault_expand(entry_id="…") for full content, vault_update to correct, vault_forget to mark obsolete.`;
+      return `Found ${rows.length} vault entr${rows.length === 1 ? 'y' : 'ies'} containing "${query}" (exact match):\n\n${lines.join('\n\n')}\n\nUse vault_get(entry_id="…") for full content, vault_update to correct, vault_forget to mark obsolete.`;
     }
 
     const results = await semanticSearch(query, { limit, type });
@@ -263,8 +263,8 @@ export async function executeVaultSearch(
       return 'No matching memories found in the vault. If you are looking for a specific literal string (e.g. an exact name or typo), retry with mode: "exact".';
     }
 
-    // Phase 3.5 — per-entry snippet cap at 200 chars. Full content is
-    // available on demand via vault_expand(entry_id). Keeps search results
+    // Phase 3.5, per-entry snippet cap at 200 chars. Full content is
+    // available on demand via vault_get(entry_id). Keeps search results
     // bounded so a 5-result query never blows past ~2K tokens.
     const lines = results.map((r, i) => {
       const flags: string[] = [];
@@ -282,7 +282,7 @@ export async function executeVaultSearch(
     const truncatedCount = results.filter((r) => r.content.length > SNIPPET_CHARS).length;
     const expandHint =
       truncatedCount > 0
-        ? `\n\n${truncatedCount} entry${truncatedCount === 1 ? '' : 'ies'} truncated. Use vault_expand(entry_id="…") for the full content.`
+        ? `\n\n${truncatedCount} entry${truncatedCount === 1 ? '' : 'ies'} truncated. Use vault_get(entry_id="…") for the full content.`
         : '';
 
     return `Found ${results.length} vault memor${results.length === 1 ? 'y' : 'ies'}:\n\n${lines.join('\n\n')}${expandHint}`;
@@ -294,7 +294,7 @@ export async function executeVaultSearch(
 }
 
 // ── vault_update ──
-// v2.7.2 — atomic content replacement for an existing vault entry. Pre-
+// v2.7.2, atomic content replacement for an existing vault entry. Pre-
 // existing flow required vault_forget + vault_remember which (a) lost the
 // stable entry ID, (b) created a window where both old and new lived, and
 // (c) tempted the agent to skip the forget step. updateEntry already
@@ -325,9 +325,9 @@ export async function executeVaultUpdate(
   return `Updated [${updated.type}] entry ${entryId}.\nReason: ${reason}\nNew content (first 200 chars): "${updated.content.slice(0, 200)}${updated.content.length > 200 ? '…' : ''}"`;
 }
 
-// Phase 3.5 (2026-05-04) — vault_expand: return the full content of one
+// Phase 3.5 (2026-05-04), vault_get: return the full content of one
 // specific vault entry. Pairs with vault_search's compact-by-default
-// snippets — agents skim search results, then expand the few that matter.
+// snippets, agents skim search results, then expand the few that matter.
 export function executeVaultExpand(
   agentId: string,
   args: Record<string, unknown>,

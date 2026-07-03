@@ -74,7 +74,7 @@ describe('trackerEnforcer', () => {
   it('skips when all calls are trivial', () => {
     const r = trackerEnforcer({
       ...baseInput,
-      plannedTools: [tc('get_current_time'), tc('vault_search'), tc('memory_grep'), tc('load_tool_docs')],
+      plannedTools: [tc('get_current_time'), tc('vault_search'), tc('history_search'), tc('load_tool_docs')],
     });
     expect(r.decision).toBe('skip');
   });

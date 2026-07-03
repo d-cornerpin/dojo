@@ -73,8 +73,8 @@ const DEFAULT_PROSE_FIELDS = new Set([
  */
 const SEARCH_TOOLS = new Set([
   // Vault + memory
-  'vault_search', 'vault_describe', 'vault_expand',
-  'memory_grep', 'memory_describe', 'memory_expand',
+  'vault_search', 'vault_describe', 'vault_get',
+  'history_search', 'history_get', 'history_expand',
   'squad_recall',
   // External search
   'web_search', 'web_fetch', 'web_browse',
@@ -87,7 +87,7 @@ const SEARCH_TOOLS = new Set([
   // Plaud
   'plaud_search_recordings',
   // Screen / techniques (different questions → different operations)
-  'screen_read', 'technique_read',
+  'screen_screenshot', 'technique_read',
 ]);
 
 const SEARCH_TOOL_PROSE_FIELDS = (() => {
@@ -159,8 +159,8 @@ const COORDINATION_TOOL_PROSE_FIELDS = (() => {
 const MUTATING_TOOLS = new Set([
   'file_write', 'file_append', 'file_patch',
   'imessage_send', 'sms_send',
-  'email_send', 'gmail_send', 'gmail_reply', 'gmail_send_message',
-  'outlook_send', 'outlook_reply', 'outlook_send_message',
+  'gmail_send', 'gmail_reply',
+  'outlook_send', 'outlook_reply',
   'teams_send_message',
 ]);
 
@@ -279,11 +279,11 @@ export function loopDetector(
 
   // Same-tool-name threshold REMOVED 2026-05-06. The blanket "same tool
   // called >5 times in the window" check (added in v2.2.2 to catch
-  // memory_grep thrashing) blocked legitimate batch operations, an agent
+  // history_search thrashing) blocked legitimate batch operations, an agent
   // updating profiles on 6 sub-agents looked identical to a real loop.
-  // The original target (memory_grep thrashing) is now handled by giving
-  // memory_grep results their message IDs + a copy-pasteable
-  // memory_describe(id="…") hint when truncated, so the agent has a clean
+  // The original target (history_search thrashing) is now handled by giving
+  // history_search results their message IDs + a copy-pasteable
+  // history_get(id="…") hint when truncated, so the agent has a clean
   // recovery path instead of needing to thrash. MAX_TOOL_LOOPS=75
   // remains as the per-turn ceiling for the truly-pathological case.
   return { decision: 'ok', signature, repeatCount: repeatCount + 1 };

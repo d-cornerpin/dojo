@@ -10,7 +10,7 @@ import type { ToolDefinition } from '../agent/tools.js';
 // model still knows every tool exists and can load_tool_docs any of them (the
 // two-phase-load design is preserved), at a fraction of the tokens.
 
-// Tool category definitions — order matters, categories are shown in this order
+// Tool category definitions, order matters, categories are shown in this order
 export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   {
     label: 'Meta',
@@ -18,7 +18,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'File & System',
-    tools: ['file_read', 'file_list', 'file_write', 'file_append', 'file_patch', 'exec', 'screen_read', 'keyboard_type', 'mouse_click', 'mouse_move', 'applescript_run', 'scratchpad_set', 'scratchpad_clear', 'get_current_time', 'convert_time'],
+    tools: ['file_read', 'file_list', 'file_write', 'file_append', 'file_patch', 'exec', 'screen_screenshot', 'keyboard_type', 'mouse_click', 'mouse_move', 'applescript_run', 'scratchpad_set', 'scratchpad_clear', 'get_current_time', 'convert_time'],
   },
   {
     label: 'Web',
@@ -26,10 +26,10 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     // Right-dock workspace: slides the dojo aside and shows something next to
-    // the chat. show_canvas renders agent-produced HTML/docs; open_browser
+    // the chat. canvas_render renders agent-produced HTML/docs; open_browser
     // loads a live website. Both are view-together surfaces, not file writes.
     label: 'Shared Workspace (right dock)',
-    tools: ['show_canvas', 'open_browser', 'view_canvas', 'screen_share'],
+    tools: ['canvas_render', 'open_browser', 'canvas_read', 'screen_broadcast'],
   },
   {
     // Platform-capability media generators. Each dispatches to the model
@@ -43,7 +43,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'DOJO Contacts (people the owner interacts with - persistent, agent-authored)',
-    tools: ['contact_remember', 'contact_search', 'contact_list', 'contact_get', 'contact_update', 'contact_forget', 'contact_describe'],
+    tools: ['contact_remember', 'contact_search', 'contact_list', 'contact_get', 'contact_update', 'contact_forget', 'contacts_overview'],
   },
   {
     label: 'Agent Credentials (encrypted API keys / tokens the agent uses to call services)',
@@ -51,11 +51,11 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'Vault (Long-Term Memory)',
-    tools: ['vault_remember', 'vault_search', 'vault_forget', 'vault_expand', 'vault_update', 'vault_refresh', 'vault_discard_archives'],
+    tools: ['vault_remember', 'vault_search', 'vault_forget', 'vault_get', 'vault_update', 'vault_refresh', 'vault_discard_archives'],
   },
   {
     label: 'Conversation Recall',
-    tools: ['recall_recent_thread', 'memory_grep', 'memory_describe', 'memory_expand', 'memory_search'],
+    tools: ['recall_recent_thread', 'history_search', 'history_get', 'history_expand'],
   },
   {
     // Squad-shared memory for multi-agent coordination (Phase 7 / Part X).
@@ -66,7 +66,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'Project Tracker',
-    tools: ['tracker_create_project', 'tracker_create_task', 'tracker_update_status', 'tracker_edit_task', 'tracker_edit_project', 'tracker_complete_step', 'tracker_close_project', 'tracker_add_notes', 'tracker_edit_notes', 'tracker_clear_notes', 'tracker_list_active', 'tracker_pause_schedule', 'tracker_resume_schedule', 'tracker_get_status', 'tracker_reassign_task', 'tracker_retask', 'tracker_resolve_missed_runs', 'tracker_validate_pause', 'tracker_validate_complete', 'tracker_validate_blocked', 'tracker_override', 'tracker_request_override', 'tracker_request_user_verdict', 'tracker_apply_user_verdict', 'tracker_apply_user_validation', 'reminder_create'],
+    tools: ['tracker_create_project', 'tracker_create_task', 'tracker_update_status', 'tracker_edit_task', 'tracker_edit_project', 'tracker_complete_step', 'tracker_close_project', 'tracker_add_notes', 'tracker_list_active', 'tracker_pause_schedule', 'tracker_resume_schedule', 'tracker_get_status', 'tracker_reassign_task', 'tracker_retask', 'tracker_resolve_missed_runs', 'tracker_validate', 'tracker_override', 'tracker_request_override', 'tracker_request_user_verdict', 'tracker_apply_user_verdict', 'tracker_apply_user_validation', 'reminder_create'],
   },
   {
     // Tools the primary agent uses to create, edit, organize, and communicate
@@ -74,7 +74,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     // edit identity → groups → messaging → session/presence.
     label: 'Managing Other Agents',
     tools: [
-      // Discovery — find what's out there before acting on it
+      // Discovery, find what's out there before acting on it
       'list_agents',
       'list_groups',
       'list_models',
@@ -84,9 +84,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
       // Reading sub-agent state
       'get_agent_profile',
       // Editing an existing sub-agent in place (non-destructive)
-      'update_agent_profile',
-      'update_agent_model',
-      'update_agent_permissions',
+      'update_agent',
       // Groups
       'create_agent_group',
       'update_group',
@@ -114,7 +112,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     // owner's behalf: change platform settings, navigate the dashboard,
     // toggle channels, and manage updates. See agent-controls.ts.
     label: 'DOJO Controls (change settings / navigate the dashboard on the owner\'s behalf)',
-    tools: ['set_user_presence', 'open_settings', 'open_page', 'set_capability_model', 'set_voice', 'set_channel', 'check_for_update', 'apply_update'],
+    tools: ['set_user_presence', 'open_settings', 'dashboard_navigate', 'set_capability_model', 'set_voice', 'set_channel', 'check_for_update', 'apply_update'],
   },
   {
     // Owner-facing oversight + the engine's self-repair surface.
@@ -127,7 +125,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'Tunnel (Remote Access)',
-    tools: ['tunnel_status', 'tunnel_start', 'tunnel_stop', 'tunnel_restart'],
+    tools: ['tunnel'],
   },
   {
     label: 'Gmail',
@@ -250,7 +248,7 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
   const lines: string[] = [];
   lines.push('## Available Tools');
   lines.push('');
-  // v2.5.42 — primary-class agents (the primary agent and equivalents) get the structured
+  // v2.5.42, primary-class agents (the primary agent and equivalents) get the structured
   // 5-bullet reflex block even in compact mode. Field test showed DeepSeek V4
   // Pro skimming past the one-paragraph version: the primary agent had file_append,
   // scratchpad_set, and tracker_create_project always-loaded on prod but
@@ -263,19 +261,19 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
     alwaysLoadedSet.has('scratchpad_set');
   if (!isPrimaryClass) {
     lines.push('Tools listed below by category. Always-loaded tools are callable immediately; for any other tool, call `load_tool_docs` first to get the full schema.');
-    lines.push('**Before defaulting to `exec`**, scan the index below for a purpose-built tool that fits the task — file/web/office/forms/tracker/vault/chat-recall all have dedicated tools. **If you feel disoriented or have just been compacted/model-switched**, call `recall_recent_thread` first. **When sharing a URL or file path with the user**: paste the literal string from the most recent tool result, ONCE, surrounded by spaces. Never wrap a URL in backticks (the closing tick gets sucked into the href and breaks the link). Never write the same URL twice in a row. Never paraphrase, truncate, or type a URL from memory — if you don\'t have the full string, call the source tool again.');
+    lines.push('**Before defaulting to `exec`**, scan the index below for a purpose-built tool that fits the task, file/web/office/forms/tracker/vault/chat-recall all have dedicated tools. **If you feel disoriented or have just been compacted/model-switched**, call `recall_recent_thread` first. **When sharing a URL or file path with the user**: paste the literal string from the most recent tool result, ONCE, surrounded by spaces. Never wrap a URL in backticks (the closing tick gets sucked into the href and breaks the link). Never write the same URL twice in a row. Never paraphrase, truncate, or type a URL from memory, if you don\'t have the full string, call the source tool again.');
   } else {
     lines.push('Tools listed below by category. Always-loaded tools are callable immediately; for any other tool, call `load_tool_docs` first to get the full schema.');
     lines.push('');
     lines.push('**Seven reflexes worth building:**');
-    lines.push('- **Document > memory.** When a technique, vault entry, or file *might* have the answer, READ IT before relying on what you think you remember. Your conversation memory is compacted aggressively and grows outdated — recited "facts" from memory are often subtly wrong (renamed sections, removed steps, outright fabrications). Documents on disk are the source of truth. Specifically: when following a technique, call `technique_read` (action="outline" to see structure, then "section" or "search" for what you need) — NEVER recite from memory what you think a technique says. Memory is the fallback when no document exists, not the default.');
-    lines.push('- **Before defaulting to `exec`**, scan the index below for a purpose-built tool — file/web/office/forms/tracker/vault/technique/chat-recall all have dedicated tools. `exec` is the fallback, not the default.');
-    lines.push('- **If you feel disoriented, just got compacted, or just switched models**, call `recall_recent_thread` first — it reads the actual chat history from your messages table and is your fastest path back to context.');
-    lines.push('- **When sharing a URL or file path with the user**: paste the literal string from the most recent tool result, ONCE, surrounded by spaces. Never wrap a URL in backticks (it gets sucked into the href and the browser encodes it as `%60`, breaking the link). Never write the same URL twice in a row. Never paraphrase, truncate, or type one from memory — if you don\'t have the full string, call the source tool again.');
-    lines.push('- **Default ON tracker for any work that isn\'t a one-shot lookup.** Open `tracker_create_project` BEFORE starting work on **any** request that has a deliverable, requires multiple steps, or could take more than ~3 tool calls. Don\'t try to predict whether you\'ll finish in one push — you usually can\'t, and the failure mode is silent context loss (compaction summarizes older turns, you write the deliverable from your own summarized memory, and confabulate). Tracker rows survive compaction AND session reset; scratchpad survives compaction but NOT reset; raw context survives neither. **Cost of opening a tracker entry you didn\'t end up needing: zero. Cost of not opening one for work that turns out to be multi-step: 30+ minutes of stalled work, PM pokes, and lost context.** Skip the tracker only for one-shot Q&A where you\'re answering from existing context or a single tool call. After opening the tracker: scaffold the deliverable with `file_write`; loop (read 3-5 sources, write findings with `file_append`/`file_patch`, update `scratchpad_set` for in-flight memory, mark tracker step complete, move on); verify at the end. The engine enforces this — after 6 loading calls without a tracker action or a file write the next loading call is refused. Scratchpad alone does NOT satisfy the gate; it\'s for inside a tracker step, not instead of one.');
-    lines.push('- **Close out tracker tasks the moment you finish them.** Don\'t end a turn with `in_progress` tasks you\'ve actually completed. For multi-step projects use `tracker_complete_step` (auto-advances). For standalone tasks use `tracker_update_status(complete)`. Blocked → mark blocked. Paused → mark paused **only for recurring/scheduled tasks** — pausing a one-shot task as a sloppy substitute for "complete" strands it forever. If a whole project was abandoned, duplicated, or superseded, call `tracker_close_project(project_id, status="cancelled", reason="…")` to clean up the project AND every open task in one call (vastly better than looping `tracker_update_status` per task). The engine catches dangling `in_progress` and stranded `on_deck` tasks at the start of every turn and refuses non-tracker tools until you resolve them; ignoring the gate means the engine suppresses your reply and resolves them itself.');
-    lines.push('- **Never read a timestamp without a timezone label.** If a time you encounter (calendar event, email, scraped web text, raw unix epoch, a tool result you\'re unsure of) does NOT include BOTH a timezone abbreviation (PT/ET/UTC/etc.) AND a UTC ISO, call `convert_time` to disambiguate before quoting it to the user or putting it in a reminder/email/task. The default failure mode is reading "19:00" as your local time when it\'s actually UTC — and getting every downstream time wrong by 7+ hours.');
-    lines.push('- **Hand off technique authorship to the trainer agent.** `save_technique` / `update_technique` / `publish_technique` / `delete_technique` are reserved for the trainer agent only — the engine refuses them from anyone else. **Why:** techniques are shareable across dojos; that only works if every file the technique needs is inside the technique\'s own directory and every external install (npm/brew/git/model) is declared in `dependencies.json`. If you create a script somewhere arbitrary on disk and reference it from TECHNIQUE.md, the technique silently breaks on every other user\'s machine. To avoid this, **don\'t write files for a future technique on your own** — when you realize a piece of work could become a reusable technique, send the trainer a message describing what you want with any custom file contents inline (use `file_read` to grab existing scripts), and they\'ll build it correctly. You can still `technique_read` and `use_technique` freely — those stay open to every agent.');
+    lines.push('- **Document > memory.** When a technique, vault entry, or file *might* have the answer, READ IT before relying on what you think you remember. Your conversation memory is compacted aggressively and grows outdated, recited "facts" from memory are often subtly wrong (renamed sections, removed steps, outright fabrications). Documents on disk are the source of truth. Specifically: when following a technique, call `technique_read` (action="outline" to see structure, then "section" or "search" for what you need), NEVER recite from memory what you think a technique says. Memory is the fallback when no document exists, not the default.');
+    lines.push('- **Before defaulting to `exec`**, scan the index below for a purpose-built tool, file/web/office/forms/tracker/vault/technique/chat-recall all have dedicated tools. `exec` is the fallback, not the default.');
+    lines.push('- **If you feel disoriented, just got compacted, or just switched models**, call `recall_recent_thread` first, it reads the actual chat history from your messages table and is your fastest path back to context.');
+    lines.push('- **When sharing a URL or file path with the user**: paste the literal string from the most recent tool result, ONCE, surrounded by spaces. Never wrap a URL in backticks (it gets sucked into the href and the browser encodes it as `%60`, breaking the link). Never write the same URL twice in a row. Never paraphrase, truncate, or type one from memory, if you don\'t have the full string, call the source tool again.');
+    lines.push('- **Default ON tracker for any work that isn\'t a one-shot lookup.** Open `tracker_create_project` BEFORE starting work on **any** request that has a deliverable, requires multiple steps, or could take more than ~3 tool calls. Don\'t try to predict whether you\'ll finish in one push, you usually can\'t, and the failure mode is silent context loss (compaction summarizes older turns, you write the deliverable from your own summarized memory, and confabulate). Tracker rows survive compaction AND session reset; scratchpad survives compaction but NOT reset; raw context survives neither. **Cost of opening a tracker entry you didn\'t end up needing: zero. Cost of not opening one for work that turns out to be multi-step: 30+ minutes of stalled work, PM pokes, and lost context.** Skip the tracker only for one-shot Q&A where you\'re answering from existing context or a single tool call. After opening the tracker: scaffold the deliverable with `file_write`; loop (read 3-5 sources, write findings with `file_append`/`file_patch`, update `scratchpad_set` for in-flight memory, mark tracker step complete, move on); verify at the end. The engine enforces this, after 6 loading calls without a tracker action or a file write the next loading call is refused. Scratchpad alone does NOT satisfy the gate; it\'s for inside a tracker step, not instead of one.');
+    lines.push('- **Close out tracker tasks the moment you finish them.** Don\'t end a turn with `in_progress` tasks you\'ve actually completed. For multi-step projects use `tracker_complete_step` (auto-advances). For standalone tasks use `tracker_update_status(complete)`. Blocked → mark blocked. Paused → mark paused **only for recurring/scheduled tasks**, pausing a one-shot task as a sloppy substitute for "complete" strands it forever. If a whole project was abandoned, duplicated, or superseded, call `tracker_close_project(project_id, status="cancelled", reason="…")` to clean up the project AND every open task in one call (vastly better than looping `tracker_update_status` per task). The engine catches dangling `in_progress` and stranded `on_deck` tasks at the start of every turn and refuses non-tracker tools until you resolve them; ignoring the gate means the engine suppresses your reply and resolves them itself.');
+    lines.push('- **Never read a timestamp without a timezone label.** If a time you encounter (calendar event, email, scraped web text, raw unix epoch, a tool result you\'re unsure of) does NOT include BOTH a timezone abbreviation (PT/ET/UTC/etc.) AND a UTC ISO, call `convert_time` to disambiguate before quoting it to the user or putting it in a reminder/email/task. The default failure mode is reading "19:00" as your local time when it\'s actually UTC, and getting every downstream time wrong by 7+ hours.');
+    lines.push('- **Hand off technique authorship to the trainer agent.** `save_technique` / `update_technique` / `publish_technique` / `delete_technique` are reserved for the trainer agent only, the engine refuses them from anyone else. **Why:** techniques are shareable across dojos; that only works if every file the technique needs is inside the technique\'s own directory and every external install (npm/brew/git/model) is declared in `dependencies.json`. If you create a script somewhere arbitrary on disk and reference it from TECHNIQUE.md, the technique silently breaks on every other user\'s machine. To avoid this, **don\'t write files for a future technique on your own**, when you realize a piece of work could become a reusable technique, send the trainer a message describing what you want with any custom file contents inline (use `file_read` to grab existing scripts), and they\'ll build it correctly. You can still `technique_read` and `use_technique` freely, those stay open to every agent.');
   }
   lines.push('');
   lines.push(`**Always-loaded tools**: ${alwaysLoaded.join(', ')}`);
@@ -297,7 +295,7 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
 
   // Tools not in any category. The user_* account-slot variants (one per
   // Google/Microsoft tool, acting on the owner's personal account instead of
-  // the agent's) are summarized as a pattern rather than enumerated — there can
+  // the agent's) are summarized as a pattern rather than enumerated, there can
   // be ~120 of them and they mirror the categories above one-to-one, so listing
   // every name would bloat the index for no added information. Anything else
   // genuinely uncategorized still gets an explicit Other line so nothing hides.

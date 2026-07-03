@@ -1042,7 +1042,7 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
       hour: '2-digit', minute: '2-digit', hour12: true,
       timeZoneName: 'short',
     });
-    const briefContent = `[CONTINUITY BRIEF, ${briefTimestamp}, generated before memory compaction]\n${result.text}\n\nYour older conversation history has been archived to the vault. If you need details beyond what's in this brief, use vault_search or memory_grep to find specific facts, file paths, decisions, or instructions from your earlier conversation.`;
+    const briefContent = `[CONTINUITY BRIEF, ${briefTimestamp}, generated before memory compaction]\n${result.text}\n\nYour older conversation history has been archived to the vault. If you need details beyond what's in this brief, use vault_search or history_search to find specific facts, file paths, decisions, or instructions from your earlier conversation.`;
 
     // Phase 4 §C (2026-05-04), set continuityBriefValidUntilTurn so the
     // assembler stops injecting the brief after 3 turns post-emergency

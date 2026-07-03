@@ -49,10 +49,9 @@ const LOADING_TOOLS = new Set<string>([
   'exec',
   'applescript_run',
   // Memory / vault reads
-  'memory_grep',
-  'memory_describe',
-  'memory_expand',
-  'memory_search',
+  'history_search',
+  'history_get',
+  'history_expand',
   'vault_search',
   'vault_describe',
   // NOTE (OPEN-16): recall_recent_thread is deliberately NOT counted. It is a

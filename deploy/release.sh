@@ -179,6 +179,19 @@ fi
 }
 echo "  ✓ packaged build boots — import graph resolves and migrations run"
 
+# ── Cacheable-prefix determinism gate (C28 Part 3) ──
+# The prompt cache erodes silently when a volatile token creeps into the cached
+# system prefix (a one-token change breaks caching and nothing fails). Assemble
+# the stable prefix TWICE from the PACKAGED dist and refuse to publish if it is
+# not byte-identical / smell-free / has a non-empty systemVolatile lane. Reuses
+# the smoke sandbox (migrations already ran, a primary agent exists). Runs in
+# --dry-run too, so it's a real preflight gate.
+step "Cacheable-prefix determinism gate (C28)"
+( cd "$SMOKE_PLATFORM" && HOME="$SMOKE_HOME" DOJO_DATA_DIR="$SMOKE_HOME/.dojo/data" \
+    DOJO_SKIP_SYSTEM_DEPS=1 NODE_ENV=production \
+    node "$SCRIPT_DIR/check-prefix-determinism.mjs" "$SMOKE_PLATFORM/packages/server/dist" ) \
+  || fail "Cacheable-prefix determinism gate: a cache-breaker is in the system prefix. NOT publishing."
+
 # ── Dev-instrument ship-gate (C23) ──
 # The dev-test-tools harness injects sim-outbound send-capture + /api/dev routes into
 # source (tools.ts, model.ts, imessage-bridge.ts, gateway/server.ts). uninstall.mjs

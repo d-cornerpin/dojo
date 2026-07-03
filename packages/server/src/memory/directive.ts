@@ -1,5 +1,5 @@
 // ════════════════════════════════════════
-// Active User Directive — the agent's "what was I asked to do" pin
+// Active User Directive, the agent's "what was I asked to do" pin
 // ════════════════════════════════════════
 //
 // Returns the most recent substantive user message in the agent's current
@@ -40,7 +40,7 @@ export function getActiveUserDirective(
      * On a HUMAN turn, exclude engine-origin rows (scheduler/reminder events)
      * so a task that just fired can't masquerade as the user's directive and
      * pull the agent off the human conversation it's actually in. On an ENGINE
-     * turn, leave them IN — the engine event IS the directive (OPEN-11).
+     * turn, leave them IN, the engine event IS the directive (OPEN-11).
      */
     excludeEngine?: boolean;
     /**
@@ -54,7 +54,7 @@ export function getActiveUserDirective(
     conversationKey?: string | null;
   },
 ): { content: string; messageId: string; createdAt: string } | null {
-  // C16: the '__none__' sentinel means "this turn has no user directive" — used on A2A
+  // C16: the '__none__' sentinel means "this turn has no user directive", used on A2A
   // and engine turns, whose directive comes from the A2A payload / engine event (rendered
   // by the counterparty/engine header), NOT from the newest user row. Returning null here
   // stops an A2A inbound from being pinned as the ACTIVE USER DIRECTIVE. (Distinct from
@@ -90,13 +90,13 @@ export function getActiveUserDirective(
   // stale answered ask and the agent re-replies out of nowhere. A user row is
   // "answered" iff a later assistant message carrying USER-FACING TEXT exists on
   // the SAME conv_key. Keying on a real text reply (not on pickup) means this can
-  // NEVER drop the ask currently being answered — at context-assembly time the
-  // turn has not produced its reply yet, so no later text row exists — and never
+  // NEVER drop the ask currently being answered, at context-assembly time the
+  // turn has not produced its reply yet, so no later text row exists, and never
   // touches a still-waiting ask (conv_key IS NULL can't match the correlation, so
   // those rows are always kept). Pure tool_use assistant turns are NOT a reply,
   // so a half-finished ask (tools fired, no text yet) also stays in force. This
   // only ever REMOVES an answered ask from the headline pin; it never blocks a
-  // turn — the live conversation tail is unaffected.
+  // turn, the live conversation tail is unaffected.
   baseClauses.push(
     "NOT EXISTS (SELECT 1 FROM messages a " +
       "WHERE a.agent_id = messages.agent_id AND a.role = 'assistant' " +
@@ -121,7 +121,7 @@ export function getActiveUserDirective(
     };
   }
 
-  // Nothing substantive in this session — fall back to the most recent user
+  // Nothing substantive in this session, fall back to the most recent user
   // message of any length so the agent at least sees "you're being talked
   // to by a person" rather than nothing.
   const fallback = db
@@ -138,18 +138,18 @@ export function getActiveUserDirective(
 
 /**
  * Format the directive as the wrapped scaffolding block the assembler injects.
- * Caps the body at DIRECTIVE_MAX_CHARS with a memory_describe pointer for the
+ * Caps the body at DIRECTIVE_MAX_CHARS with a history_get pointer for the
  * agent to fetch the full body if needed.
  */
 export function formatDirectiveBlock(directive: { content: string; messageId: string }): string {
   let body = directive.content;
   let truncationNote = '';
   if (body.length > DIRECTIVE_MAX_CHARS) {
-    truncationNote = `\n\n[directive truncated to ${DIRECTIVE_MAX_CHARS} chars — call memory_describe(id="${directive.messageId}") for the full body]`;
+    truncationNote = `\n\n[directive truncated to ${DIRECTIVE_MAX_CHARS} chars, call history_get(id="${directive.messageId}") for the full body]`;
     body = body.slice(0, DIRECTIVE_MAX_CHARS);
   }
   return (
-    `═══ ACTIVE USER DIRECTIVE (the user's most recent substantive ask — still in force unless explicitly superseded by a newer user message in the live conversation below) ═══\n` +
+    `═══ ACTIVE USER DIRECTIVE (the user's most recent substantive ask, still in force unless explicitly superseded by a newer user message in the live conversation below) ═══\n` +
     `${body}${truncationNote}\n` +
     `═══ END ACTIVE USER DIRECTIVE ═══`
   );

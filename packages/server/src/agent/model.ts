@@ -24,6 +24,13 @@ export interface ModelCallParams {
   modelId: string;
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string }>;
   systemPrompt: string;
+  /**
+   * C28 Part 1 (P-2): optional system-side volatile tail. Rendered AFTER the
+   * cached stable system block (Anthropic: a second uncached text block;
+   * OpenRouter: a second unmarked system message), so it can never invalidate
+   * the cached prefix. Empty after P-1; defense-in-depth for future needs.
+   */
+  systemVolatile?: string;
   tools?: boolean;
   onChunk?: (chunk: string) => void;
   /**
@@ -35,7 +42,7 @@ export interface ModelCallParams {
    */
   onReasoningChunk?: (chunk: string) => void;
   routerTier?: string; // populated by auto-router
-  // External abort signal — when fired, the underlying SDK call aborts
+  // External abort signal, when fired, the underlying SDK call aborts
   // and callModel throws. Used by the runtime's stop button to actually
   // cancel in-flight calls (vs. v1's pre-fix behavior where stop only
   // affected the runtime loop, not the underlying fetch).
@@ -91,7 +98,7 @@ function getClient(providerId: string): CachedClient {
 
   const credential = getProviderCredential(providerId);
   if (!credential) {
-    logger.error(`No credential found for provider "${providerId}" — check ~/.dojo/secrets.yaml providers.${providerId}`, {
+    logger.error(`No credential found for provider "${providerId}", check ~/.dojo/secrets.yaml providers.${providerId}`, {
       providerId,
     });
     throw new AgentError(`No credential found for provider: ${providerId}`, '', {
@@ -150,11 +157,11 @@ function getMaxOutputTokens(apiModelId: string, providerType: string): number {
 //
 // Parallel-call gotcha: when an agent fires N parallel tool_use blocks, the
 // store / assembler often emit N separate consecutive `role:'user'` (or
-// `role:'tool'`) messages — one per result — instead of a single bundled
+// `role:'tool'`) messages, one per result, instead of a single bundled
 // user message. The old version of this function only looked at the SINGLE
 // immediately-next message, so it saw the first tool_result and declared
 // the remaining N-1 tool_use blocks orphaned. Stripping them silently
-// rewrote the assistant message — on the next turn the model thought it
+// rewrote the assistant message, on the next turn the model thought it
 // had only called one tool, so it re-fired the others. That's the
 // "agent repeats itself" regression the owner caught.
 //
@@ -187,7 +194,7 @@ function sanitizeOrphanToolBlocks(
     if (useIds.length === 0) continue;
 
     // Collect tool_result IDs from ALL consecutive following tool-result
-    // carrier messages — not just messages[i+1]. Parallel tool calls
+    // carrier messages, not just messages[i+1]. Parallel tool calls
     // commonly result in multiple back-to-back tool-result messages.
     const resultIds = new Set<string>();
     let j = i + 1;
@@ -259,13 +266,13 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
         capabilitiesValid = true;
       }
     } catch {
-      // Invalid JSON — treat as text-only for safety rather than enabling everything
+      // Invalid JSON, treat as text-only for safety rather than enabling everything
       logger.warn('Model has invalid capabilities JSON, defaulting to text-only', { modelId });
       capabilities = ['text'];
       capabilitiesValid = false;
     }
   } else {
-    // No capabilities data at all — don't assume anything
+    // No capabilities data at all, don't assume anything
     capabilitiesValid = false;
   }
 
@@ -277,7 +284,7 @@ function getModelInfo(modelId: string): { providerId: string; apiModelId: string
     maxOutputTokens: row.max_output_tokens ?? getMaxOutputTokens(row.api_model_id, row.provider_type),
     providerType: row.provider_type,
     providerBaseUrl: row.provider_base_url,
-    // Default ON — matches migration default and the UX the user asked for.
+    // Default ON, matches migration default and the UX the user asked for.
     thinkingEnabled: row.thinking_enabled === null || row.thinking_enabled === undefined
       ? true
       : Boolean(row.thinking_enabled),
@@ -360,7 +367,7 @@ async function buildNativeOllamaMessages(
           if (typeof tr.content === 'string') {
             native.push({ role: 'tool', content: tr.content, tool_name: toolName });
           } else if (Array.isArray(tr.content)) {
-            // Structured content blocks — extract text for tool result,
+            // Structured content blocks, extract text for tool result,
             // queue images for a follow-up user message
             const contentBlocks = tr.content as Array<Record<string, unknown>>;
             const textParts = contentBlocks.filter(b => b.type === 'text').map(b => (b.text as string) ?? '').join('\n');
@@ -381,7 +388,7 @@ async function buildNativeOllamaMessages(
         if (pendingOllamaImages.length > 0) {
           native.push({
             role: 'user',
-            content: '[Image from tool result — analyze this image]',
+            content: '[Image from tool result, analyze this image]',
             images: pendingOllamaImages,
           } as unknown as typeof native[0]);
         }
@@ -415,7 +422,7 @@ async function buildNativeOllamaMessages(
           const source = doc.source as Record<string, unknown> | undefined;
           const title = (typeof doc.title === 'string' && doc.title) ? doc.title : 'attached document';
           if (!source || source.type !== 'base64' || typeof source.data !== 'string') {
-            logger.warn('Ollama translator: document block has no base64 data — skipping', {
+            logger.warn('Ollama translator: document block has no base64 data, skipping', {
               title,
             }, agentId);
             continue;
@@ -423,7 +430,7 @@ async function buildNativeOllamaMessages(
 
           try {
             const extracted = await extractPdfText(source.data);
-            const header = `[PDF attachment: ${title} — ${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}${extracted.truncated ? `, truncated to first ${extracted.pagesExtracted}` : ''}]`;
+            const header = `[PDF attachment: ${title}, ${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}${extracted.truncated ? `, truncated to first ${extracted.pagesExtracted}` : ''}]`;
             const footer = `[end of ${title}]`;
             textParts.push(`${header}\n${extracted.text}\n${footer}`);
 
@@ -431,7 +438,7 @@ async function buildNativeOllamaMessages(
               broadcast({
                 type: 'chat:error',
                 agentId,
-                error: `"${title}" was too large — only the first ${extracted.pagesExtracted} of ${extracted.pageCount} pages reached the agent.`,
+                error: `"${title}" was too large, only the first ${extracted.pagesExtracted} of ${extracted.pageCount} pages reached the agent.`,
                 severity: 'warning',
                 retryable: false,
               });
@@ -440,14 +447,14 @@ async function buildNativeOllamaMessages(
             const reason = err instanceof PdfExtractError
               ? err.message
               : (err instanceof Error ? err.message : String(err));
-            logger.warn('Ollama translator: PDF extraction failed — dropping attachment', {
+            logger.warn('Ollama translator: PDF extraction failed, dropping attachment', {
               title,
               reason,
             }, agentId);
             broadcast({
               type: 'chat:error',
               agentId,
-              error: `Couldn't read "${title}" — the agent will respond without it.`,
+              error: `Couldn't read "${title}", the agent will respond without it.`,
               severity: 'warning',
               retryable: false,
             });
@@ -514,7 +521,7 @@ async function callOllamaModel(
   const ollamaModelName = modelInfo.apiModelId;
 
   // Acquire the Ollama model lock (waits if a different model is in use
-  // ON THE SAME PROVIDER — remote Ollama hosts have their own slot pool).
+  // ON THE SAME PROVIDER, remote Ollama hosts have their own slot pool).
   const lock = getOllamaLock();
   await lock.acquire(modelInfo.providerId, ollamaModelName);
 
@@ -523,7 +530,7 @@ async function callOllamaModel(
   const nativeMessages = await buildNativeOllamaMessages(systemPrompt, messages, agentId);
 
   // Build tools in the shape Ollama's native API accepts (same as the OpenAI
-  // function-calling schema — Ollama mirrors it). Two-phase loading: only
+  // function-calling schema, Ollama mirrors it). Two-phase loading: only
   // always-loaded + session-loaded tools go to the model.
   let nativeTools: Array<{
     type: 'function';
@@ -578,7 +585,7 @@ async function callOllamaModel(
     // `think` is driven by the per-model toggle in Settings → Models. For
     // models without the thinking capability this is a harmless no-op. Some
     // families (gpt-oss, DeepSeek-R1) are trained to always think and will
-    // ignore the flag — the call still works; we just capture the thinking
+    // ignore the flag, the call still works; we just capture the thinking
     // separately and don't surface it to the UI.
     think: modelInfo.thinkingEnabled,
   };
@@ -683,7 +690,7 @@ async function callOllamaModel(
               try {
                 parsedArgs = JSON.parse(rawArgs);
               } catch {
-                // Structured repair before rejecting (OPEN-1) — same floor-model
+                // Structured repair before rejecting (OPEN-1), same floor-model
                 // failure mode (raw control chars in long string args).
                 const repaired = repairToolCallArgs(rawArgs);
                 if (repaired !== null) {
@@ -739,7 +746,7 @@ async function callOllamaModel(
       }, agentId);
     }
 
-    // Record cost ($0 for local models — still tracked for latency metrics)
+    // Record cost ($0 for local models, still tracked for latency metrics)
     recordCost({
       agentId,
       modelId,
@@ -849,13 +856,14 @@ function getOpenAIClient(providerId: string, baseUrl?: string | null): OpenAI {
 //
 // Any image/document blocks for models that LACK vision should already have
 // been stripped by `enforceModelCapabilities` in runtime.ts before this
-// function runs — this helper just translates whatever's left.
+// function runs, this helper just translates whatever's left.
 async function buildOpenAIMessages(
   systemPrompt: string,
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string }>,
   agentId: string,
   isDeepSeek = false,
   isOpenRouter = false,
+  systemVolatile = '',
 ): Promise<OpenAI.ChatCompletionMessageParam[]> {
   // OpenAI & DeepSeek auto-cache a stable system prefix with NO markup, so they
   // get a plain string (changing the shape could disturb their auto-cache).
@@ -866,6 +874,12 @@ async function buildOpenAIMessages(
     ? { role: 'system', content: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }] }
     : { role: 'system', content: systemPrompt }) as OpenAI.ChatCompletionMessageParam;
   const openaiMessages: OpenAI.ChatCompletionMessageParam[] = [systemMessage];
+  // C28 P-2: a second, unmarked system message for any system-side volatile
+  // content, so it sits AFTER the marked/auto-cached stable system prefix and
+  // cannot invalidate it. Empty after P-1; only added if ever populated.
+  if (systemVolatile) {
+    openaiMessages.push({ role: 'system', content: systemVolatile } as OpenAI.ChatCompletionMessageParam);
+  }
 
   for (const m of messages) {
     if (m.role === 'user') {
@@ -893,7 +907,7 @@ async function buildOpenAIMessages(
               content: tr.content,
             });
           } else if (Array.isArray(tr.content)) {
-            // Structured content blocks — extract text and images separately
+            // Structured content blocks, extract text and images separately
             const contentBlocks = tr.content as Array<Record<string, unknown>>;
             const textParts = contentBlocks.filter(b => b.type === 'text').map(b => (b.text as string) ?? '').join('\n');
             const imageBlks = contentBlocks.filter(b => b.type === 'image');
@@ -902,7 +916,7 @@ async function buildOpenAIMessages(
             openaiMessages.push({
               role: 'tool',
               tool_call_id: tr.tool_use_id as string,
-              content: textParts || '[Image loaded — see below]',
+              content: textParts || '[Image loaded, see below]',
             });
 
             // Queue images to be emitted as a user message after tool results
@@ -929,7 +943,7 @@ async function buildOpenAIMessages(
                     role: 'user',
                     content: `[PDF: ${title}]\n${extracted.text}\n[end of ${title}]`,
                   });
-                } catch { /* PDF extraction failed — skip */ }
+                } catch { /* PDF extraction failed, skip */ }
               }
             }
           } else {
@@ -946,7 +960,7 @@ async function buildOpenAIMessages(
         // user message with the image works for vision-capable models.
         if (pendingImages.length > 0) {
           const parts: OpenAI.ChatCompletionContentPart[] = [
-            { type: 'text', text: '[Image from tool result — analyze this image]' },
+            { type: 'text', text: '[Image from tool result, analyze this image]' },
             ...(pendingImages as unknown as OpenAI.ChatCompletionContentPart[]),
           ];
           openaiMessages.push({ role: 'user', content: parts });
@@ -960,7 +974,7 @@ async function buildOpenAIMessages(
         continue;
       }
 
-      // Regular user message — text + optional images + optional PDFs
+      // Regular user message, text + optional images + optional PDFs
       const textBlocks = blocks.filter(b => b.type === 'text');
       const imageBlocks = blocks.filter(b => b.type === 'image');
       const documentBlocks = blocks.filter(b => b.type === 'document');
@@ -976,14 +990,14 @@ async function buildOpenAIMessages(
           const source = doc.source as Record<string, unknown> | undefined;
           const title = (typeof doc.title === 'string' && doc.title) ? doc.title : 'attached document';
           if (!source || source.type !== 'base64' || typeof source.data !== 'string') {
-            logger.warn('OpenAI translator: document block has no base64 data — skipping', {
+            logger.warn('OpenAI translator: document block has no base64 data, skipping', {
               title,
             }, agentId);
             continue;
           }
           try {
             const extracted = await extractPdfText(source.data);
-            const header = `[PDF attachment: ${title} — ${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}${extracted.truncated ? `, truncated to first ${extracted.pagesExtracted}` : ''}]`;
+            const header = `[PDF attachment: ${title}, ${extracted.pageCount} page${extracted.pageCount === 1 ? '' : 's'}${extracted.truncated ? `, truncated to first ${extracted.pagesExtracted}` : ''}]`;
             const footer = `[end of ${title}]`;
             textContent = (textContent ? textContent + '\n\n' : '') + `${header}\n${extracted.text}\n${footer}`;
 
@@ -991,7 +1005,7 @@ async function buildOpenAIMessages(
               broadcast({
                 type: 'chat:error',
                 agentId,
-                error: `"${title}" was too large — only the first ${extracted.pagesExtracted} of ${extracted.pageCount} pages reached the agent.`,
+                error: `"${title}" was too large, only the first ${extracted.pagesExtracted} of ${extracted.pageCount} pages reached the agent.`,
                 severity: 'warning',
                 retryable: false,
               });
@@ -1000,14 +1014,14 @@ async function buildOpenAIMessages(
             const reason = err instanceof PdfExtractError
               ? err.message
               : (err instanceof Error ? err.message : String(err));
-            logger.warn('OpenAI translator: PDF extraction failed — dropping attachment', {
+            logger.warn('OpenAI translator: PDF extraction failed, dropping attachment', {
               title,
               reason,
             }, agentId);
             broadcast({
               type: 'chat:error',
               agentId,
-              error: `Couldn't read "${title}" — the agent will respond without it.`,
+              error: `Couldn't read "${title}", the agent will respond without it.`,
               severity: 'warning',
               retryable: false,
             });
@@ -1033,7 +1047,7 @@ async function buildOpenAIMessages(
       for (const img of imageBlocks) {
         const source = img.source as Record<string, unknown> | undefined;
         if (!source || source.type !== 'base64' || typeof source.data !== 'string') {
-          logger.warn('OpenAI translator: image block has no base64 data — skipping', {}, agentId);
+          logger.warn('OpenAI translator: image block has no base64 data, skipping', {}, agentId);
           continue;
         }
         const mediaType = (source.media_type as string) || 'image/jpeg';
@@ -1046,10 +1060,10 @@ async function buildOpenAIMessages(
       }
 
       if (parts.length === 0) {
-        // Nothing survived encoding — fall back to whatever text we have.
+        // Nothing survived encoding, fall back to whatever text we have.
         openaiMessages.push({ role: 'user', content: textContent || '(attachment could not be decoded)' });
       } else if (parts.length === 1 && parts[0].type === 'text') {
-        // Only text survived — send as string for compat with providers that
+        // Only text survived, send as string for compat with providers that
         // don't love the array form for text-only messages.
         openaiMessages.push({ role: 'user', content: parts[0].text });
       } else {
@@ -1089,7 +1103,7 @@ async function buildOpenAIMessages(
         }
 
         // DeepSeek 400s if reasoning_content is missing on tool-call
-        // follow-ups. Always include it — empty string when we don't have
+        // follow-ups. Always include it, empty string when we don't have
         // stored reasoning. Other providers ignore the unknown field.
         if (m.reasoningContent) {
           (assistantMsg as unknown as Record<string, unknown>).reasoning_content = m.reasoningContent;
@@ -1108,7 +1122,7 @@ async function buildOpenAIMessages(
 /**
  * Best-effort repair of malformed tool-call argument JSON from weak models.
  * The dominant DeepSeek (and other floor-model) failure mode is raw, unescaped
- * control characters — newlines / tabs / carriage returns — inside long string
+ * control characters, newlines / tabs / carriage returns, inside long string
  * values (e.g. a multi-line `result` or `description` field), plus the
  * occasional trailing comma. The engine must build to the floor: rejecting the
  * call forces a full retry that burns turns and can trip the thrash breaker
@@ -1132,7 +1146,7 @@ export function repairToolCallArgs(raw: string): Record<string, unknown> | null 
         if (ch === '\r') { out += '\\r'; continue; }
         if (ch === '\t') { out += '\\t'; continue; }
         // Other C0 control chars (e.g. \b, \f, vertical tab) are illegal raw in
-        // JSON strings too — escape via \u00XX so the parser accepts them.
+        // JSON strings too, escape via \u00XX so the parser accepts them.
         if (ch < ' ') { out += '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0'); continue; }
         out += ch;
       } else {
@@ -1166,7 +1180,7 @@ async function callOpenAIModel(
 
   const isDeepSeek = (modelInfo.providerBaseUrl ?? '').toLowerCase().includes('deepseek.com');
   const isOpenRouter = (modelInfo.providerBaseUrl ?? '').toLowerCase().includes('openrouter.ai');
-  const openaiMessages = await buildOpenAIMessages(systemPrompt, messages, agentId, isDeepSeek, isOpenRouter);
+  const openaiMessages = await buildOpenAIMessages(systemPrompt, messages, agentId, isDeepSeek, isOpenRouter, params.systemVolatile ?? '');
 
   // Build tools in OpenAI format (two-phase loading: only always-loaded + session-loaded)
   let openaiTools: OpenAI.ChatCompletionTool[] | undefined = undefined;
@@ -1205,7 +1219,7 @@ async function callOpenAIModel(
   const minOutputReserve = 1024;
   const hardCeiling = modelInfo.contextWindow - minOutputReserve;
   if (inputEstimate > hardCeiling && openaiMessages.length > 2) {
-    logger.warn('Input exceeds context window — trimming oldest messages to fit', {
+    logger.warn('Input exceeds context window, trimming oldest messages to fit', {
       inputEstimate,
       contextWindow: modelInfo.contextWindow,
       messageCount: openaiMessages.length,
@@ -1235,7 +1249,7 @@ async function callOpenAIModel(
         const first = openaiMessages[1] as unknown as Record<string, unknown>; // index 0 is system
         if (!first) break;
         if (first.role === 'tool') {
-          // Orphan tool result — its assistant was just dropped
+          // Orphan tool result, its assistant was just dropped
           const toolTokens = Math.ceil(
             (typeof first.content === 'string' ? first.content : JSON.stringify(first.content ?? '')).length / 3,
           );
@@ -1244,7 +1258,7 @@ async function callOpenAIModel(
           continue;
         }
         if (first.role === 'assistant' && Array.isArray(first.tool_calls)) {
-          // Assistant with tool_calls at the front — check if next message
+          // Assistant with tool_calls at the front, check if next message
           // is the matching tool result. If not, drop this assistant too.
           const next = openaiMessages[2] as unknown as Record<string, unknown> | undefined;
           if (!next || next.role !== 'tool') {
@@ -1284,12 +1298,12 @@ async function callOpenAIModel(
   // results) without crossing the context ceiling. Two passes:
   //   1. Drop any role='tool' message whose tool_call_id isn't owed by the
   //      MOST RECENT assistant-with-tool_calls. (The old version checked
-  //      the immediately-prior kept message only — that broke parallel
+  //      the immediately-prior kept message only, that broke parallel
   //      calls because after the first tool result was kept, subsequent
   //      tool results in the same parallel batch had a tool message as
   //      their immediate prior and got dropped. That made Pass 2 also
   //      drop the assistant because its tool_calls were "unanswered",
-  //      erasing the whole turn from history — the regression that made
+  //      erasing the whole turn from history, the regression that made
   //      DeepSeek re-fire identical parallel calls every turn.)
   //   2. Drop any assistant message whose tool_calls do not all have
   //      matching tool-result messages immediately after (orphan call).
@@ -1414,7 +1428,7 @@ async function callOpenAIModel(
 
   // ── DeepSeek native thinking ──
   // DeepSeek v4-flash/v4-pro return reasoning as a sibling `reasoning_content`
-  // field in stream deltas and on assistant messages — distinct from
+  // field in stream deltas and on assistant messages, distinct from
   // Anthropic's thinking-block-inside-content pattern. Toggle is sent via
   // top-level `thinking: { type: 'enabled' | 'disabled' }`. v4-pro defaults
   // to thinking-on; we honor model.thinking_enabled here so the user has
@@ -1422,7 +1436,7 @@ async function callOpenAIModel(
   // (a) capturing delta.reasoning_content in the stream loop below and
   // (b) passing assistantMsg.reasoning_content on subsequent requests via
   // the message build path. Per DeepSeek docs we also avoid sending
-  // temperature / top_p when thinking is enabled (they're rejected) — the
+  // temperature / top_p when thinking is enabled (they're rejected), the
   // current dispatch doesn't send those anyway, so no extra guard needed.
   if (isDeepSeek) {
     (requestParams as unknown as { thinking?: { type: string } }).thinking = {
@@ -1456,7 +1470,7 @@ async function callOpenAIModel(
           reasoningChars: typeof rc === 'string' ? rc.length : 0,
         };
       });
-    logger.info('DeepSeek request — assistant message reasoning round-trip', {
+    logger.info('DeepSeek request, assistant message reasoning round-trip', {
       assistantMessages: assistantSummary,
     }, agentId);
   }
@@ -1471,11 +1485,11 @@ async function callOpenAIModel(
     let fullReasoning = '';
     const toolCalls: ToolCall[] = [];
     const toolCallAccumulator = new Map<number, { id: string; name: string; args: string }>();
-    // Final usage chunk (from stream_options.include_usage) — carries cache stats.
+    // Final usage chunk (from stream_options.include_usage), carries cache stats.
     let realUsage: (OpenAI.CompletionUsage & { prompt_cache_hit_tokens?: number; prompt_cache_miss_tokens?: number }) | undefined;
 
     for await (const chunk of stream) {
-      // The usage chunk arrives last with an empty choices array — capture it
+      // The usage chunk arrives last with an empty choices array, capture it
       // before the delta guard skips it.
       if (chunk.usage) realUsage = chunk.usage as typeof realUsage;
       const delta = chunk.choices[0]?.delta;
@@ -1545,7 +1559,7 @@ async function callOpenAIModel(
       if (malformedArgs) {
         // Instead of silently using empty args, synthesize an error tool result
         // so the model sees the failure and can retry with valid JSON.
-        // We push a synthetic tool call that the runtime will execute — the
+        // We push a synthetic tool call that the runtime will execute, the
         // executeTool dispatcher will receive it, but we flag it here by
         // injecting a special __malformed_args field. The runtime handles this
         // before dispatching to produce a clear error message for the model.
@@ -1563,10 +1577,31 @@ async function callOpenAIModel(
     // Prompt-cache visibility: log how much of the prompt was served from cache.
     // DeepSeek exposes prompt_cache_hit/miss_tokens; OpenAI exposes
     // prompt_tokens_details.cached_tokens. Lets us confirm caching actually
-    // HITS (markers alone don't guarantee it — the prefix must be stable).
+    // HITS (markers alone don't guarantee it, the prefix must be stable).
+    // Token accounting (C28 P-7). Prefer real provider usage; the char
+    // estimate is now only the fallback for when the stream returned no usage.
+    //   inputTokens      = TOTAL prompt tokens (returned to the caller for
+    //                      context accounting; real when reported, else estimate)
+    //   uncachedInputTokens = the DISJOINT uncached input passed to recordCost
+    //   cacheReadTokens  = cache-hit portion (DeepSeek prompt_cache_hit /
+    //                      OpenAI prompt_tokens_details.cached), undefined when
+    //                      the provider did not report (persists NULL)
+    // These providers report cache HITS only (no cache-creation surcharge),
+    // so cacheCreationTokens is never passed here.
+    let inputTokens: number;
+    let outputTokens: number;
+    let uncachedInputTokens: number;
+    let cacheReadTokens: number | undefined;
     if (realUsage) {
       const promptTokens = realUsage.prompt_tokens ?? 0;
       const cachedTokens = realUsage.prompt_cache_hit_tokens ?? realUsage.prompt_tokens_details?.cached_tokens ?? 0;
+      // DeepSeek reports miss directly (prompt = hit + miss); OpenAI reports
+      // cached_tokens as a subset of prompt_tokens, so subtract for uncached.
+      const missTokens = realUsage.prompt_cache_miss_tokens;
+      cacheReadTokens = cachedTokens;
+      inputTokens = promptTokens;
+      uncachedInputTokens = typeof missTokens === 'number' ? missTokens : Math.max(0, promptTokens - cachedTokens);
+      outputTokens = realUsage.completion_tokens ?? 0;
       logger.info('prompt cache usage', {
         provider: modelInfo.providerType,
         model: modelInfo.apiModelId,
@@ -1574,15 +1609,19 @@ async function callOpenAIModel(
         cachedTokens,
         cacheHitRatio: promptTokens > 0 ? Math.round((cachedTokens / promptTokens) * 100) / 100 : 0,
       }, agentId);
+    } else {
+      // No usage in the stream: fall back to char-length estimates.
+      inputTokens = Math.ceil((systemPrompt.length + JSON.stringify(openaiMessages).length) / 4);
+      outputTokens = Math.ceil((fullText.length + JSON.stringify(toolCalls).length) / 4);
+      uncachedInputTokens = inputTokens;
+      cacheReadTokens = undefined;
     }
 
-    // Estimate tokens (OpenAI streaming doesn't always give usage in stream mode)
-    const inputTokens = Math.ceil((systemPrompt.length + JSON.stringify(openaiMessages).length) / 4);
-    const outputTokens = Math.ceil((fullText.length + JSON.stringify(toolCalls).length) / 4);
-
-    // Calculate cost
+    // Calculate cost. Uncached input at full rate + cache reads at 0.1x (P-7).
     const costPerM = getOpenAICost(modelInfo.apiModelId);
-    const totalCost = (inputTokens / 1_000_000) * costPerM.input + (outputTokens / 1_000_000) * costPerM.output;
+    const totalCost = (uncachedInputTokens / 1_000_000) * costPerM.input
+      + ((cacheReadTokens ?? 0) / 1_000_000) * costPerM.input * 0.1
+      + (outputTokens / 1_000_000) * costPerM.output;
 
     // Audit log
     const db = getDb();
@@ -1591,15 +1630,16 @@ async function callOpenAIModel(
       VALUES (?, ?, 'model_call', ?, 'success', ?, ?, datetime('now'))
     `).run(
       uuidv4(), agentId, modelInfo.apiModelId,
-      JSON.stringify({ inputTokens, outputTokens, latencyMs }),
+      JSON.stringify({ inputTokens, outputTokens, cacheReadTokens: cacheReadTokens ?? null, latencyMs }),
       totalCost,
     );
 
     recordCost({
       agentId, modelId,
       providerId: modelInfo.providerId,
-      inputTokens, outputTokens, latencyMs,
+      inputTokens: uncachedInputTokens, outputTokens, latencyMs,
       requestType: routerTier ?? 'agent_turn',
+      cacheReadTokens,
     });
 
     recordProviderSuccess(modelInfo.providerId);
@@ -1759,7 +1799,7 @@ async function callOpenAIModel(
     const isRateLimited = message.includes('rate_limit') || message.includes('429');
     const isOverloaded = message.includes('overloaded') || message.includes('529') || message.includes('503');
 
-    // Schedule background retry for rate limits — skip for auto-routed agents
+    // Schedule background retry for rate limits, skip for auto-routed agents
     // (the auto-router's fallback chain handles model switching)
     if ((isRateLimited || isOverloaded) && !params.routerTier) {
       // OpenAI and OpenRouter include retry-after headers
@@ -1818,7 +1858,7 @@ async function callAnthropicSdkModel(
 ): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
 
-  // Dynamic import — gracefully fail if SDK not installed
+  // Dynamic import, gracefully fail if SDK not installed
   const { callAnthropicViaSdk } = await import('../providers/anthropic-sdk.js');
 
   // Get tools for prompt-based formatting (two-phase loading)
@@ -1858,6 +1898,8 @@ async function callAnthropicSdkModel(
       outputTokens: result.outputTokens,
       latencyMs,
       requestType: routerTier ?? 'agent-sdk',
+      cacheReadTokens: result.cacheReadTokens,
+      cacheCreationTokens: result.cacheCreationTokens,
     });
   } catch { /* cost tracking is best-effort */ }
 
@@ -1880,6 +1922,10 @@ async function callAnthropicSdkModel(
 export async function callModel(params: ModelCallParams): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
 
+  // so the model-call-failure recovery path can be exercised end-to-end. Remove for release.
+  // C23: import wrapped so a partial uninstall no-ops instead of throwing on every model
+  // call; a genuine forced error still throws AFTER the try. release.sh also blocks shipping.
+
   // ── Universal orphan tool_use/tool_result sanitization ──
   // Runs BEFORE provider dispatch so ALL code paths (Anthropic, OpenAI, Ollama,
   // Agent SDK) get clean messages. The assembler has its own sanitization, but
@@ -1899,7 +1945,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     return callOpenAIModel(params, modelInfo);
   }
 
-  // Agent SDK transport — uses query() instead of the Anthropic Messages API
+  // Agent SDK transport, uses query() instead of the Anthropic Messages API
   const authType = getProviderAuthType(modelInfo.providerId);
   if (authType === 'agent-sdk') {
     return callAnthropicSdkModel(params, modelInfo);
@@ -1917,7 +1963,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
   const OAUTH_SYSTEM_PASSPHRASE = 'You are Claude Code, Anthropic\'s official CLI for Claude.';
   // Prompt caching: the system prompt is a large, mostly-stable prefix. Marking
   // its final block with cache_control lets Anthropic reuse the prefill across
-  // turns instead of re-processing it every call — a big TTFT + cost win for
+  // turns instead of re-processing it every call, a big TTFT + cost win for
   // rapid back-and-forth (e.g. voice). The OAuth passphrase block stays unmarked;
   // the breakpoint sits on the real prompt. Anthropic safely ignores the marker
   // on sub-minimum blocks, so this never errors on a short prompt.
@@ -1928,6 +1974,12 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
         { type: 'text' as const, text: systemPrompt, cache_control: CACHE_EPHEMERAL },
       ]
     : [{ type: 'text' as const, text: systemPrompt, cache_control: CACHE_EPHEMERAL }];
+  // C28 P-2: the stable system block above carries the cache breakpoint; any
+  // system-side volatile content trails it UNCACHED so it can't invalidate the
+  // cached prefix. Empty after P-1, so this block is only added if ever populated.
+  if (params.systemVolatile) {
+    systemParam.push({ type: 'text' as const, text: params.systemVolatile });
+  }
 
   // Estimate input tokens and enforce hard cap.
   // Use ~3.5 chars/token (conservative) to avoid underestimating.
@@ -1961,7 +2013,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     anthropicMessages.splice(0, 1);
     // After trimming, walk forward until we land on a valid first message.
     // Two invariants to enforce: (1) first message must be role=user, and
-    // (2) that user message must not START with tool_result blocks — if it
+    // (2) that user message must not START with tool_result blocks, if it
     // does, those tool_result IDs refer to a tool_use we just trimmed away,
     // which causes the Anthropic API to 400 with
     // "unexpected tool_use_id found in tool_result blocks". Strip orphan
@@ -1977,7 +2029,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
         const blocks = first.content as unknown as Array<Record<string, unknown>>;
         const kept = blocks.filter(b => b.type !== 'tool_result');
         if (kept.length === 0) {
-          // Entire message was orphan tool_results — drop it
+          // Entire message was orphan tool_results, drop it
           anthropicMessages.splice(0, 1);
           continue;
         }
@@ -2028,7 +2080,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
   const budgetCheck = checkBudget(agentId, 0.01);
   if (!budgetCheck.allowed) {
     if (budgetCheck.freeModelFallback) {
-      // Budget exceeded but free model available — redirect to it
+      // Budget exceeded but free model available, redirect to it
       const fb = budgetCheck.freeModelFallback;
       logger.warn(`Budget exceeded, falling back to free model: ${fb.modelName}`, {
         agentId,
@@ -2038,7 +2090,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
       }, agentId);
 
       // Notify the agent's chat
-      const notifyMsg = `[SOURCE: SYSTEM — not a message from the user] Daily budget reached ($${budgetCheck.dailySpend?.toFixed(2)} of $${budgetCheck.dailyLimit?.toFixed(2)}). Using ${fb.modelName} (free) instead.`;
+      const notifyMsg = `[SOURCE: SYSTEM, not a message from the user] Daily budget reached ($${budgetCheck.dailySpend?.toFixed(2)} of $${budgetCheck.dailyLimit?.toFixed(2)}). Using ${fb.modelName} (free) instead.`;
       try {
         const db = getDb();
         const msgId = uuidv4();
@@ -2053,7 +2105,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
         const primaryId = getPrimaryAgentId();
         if (!isPrimaryAgent(agentId)) {
           const primaryMsgId = uuidv4();
-          const primaryNotify = `[SOURCE: SYSTEM — not a message from the user] Agent "${agentId}" switched to free model (${fb.modelName}) due to budget limits.`;
+          const primaryNotify = `[SOURCE: SYSTEM, not a message from the user] Agent "${agentId}" switched to free model (${fb.modelName}) due to budget limits.`;
           db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(primaryMsgId, primaryId, primaryNotify);
           broadcast({
             type: 'chat:message',
@@ -2071,7 +2123,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
       });
     }
 
-    // No free models — block the call with clear message
+    // No free models, block the call with clear message
     const blockMsg = budgetCheck.reason ?? `Daily budget limit reached ($${budgetCheck.dailySpend?.toFixed(2)} spent of $${budgetCheck.dailyLimit?.toFixed(2)} limit). No free models available.`;
     throw new AgentError(blockMsg, agentId, {
       code: 'BUDGET_EXCEEDED',
@@ -2135,18 +2187,20 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
 
     // Prompt-cache visibility (Anthropic): cache_read = served from cache,
     // cache_creation = written to cache this call. Confirms the cache_control
-    // markers are actually hitting.
-    {
-      const u = finalMessage.usage as typeof finalMessage.usage & { cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
-      if (u.cache_read_input_tokens != null || u.cache_creation_input_tokens != null) {
-        logger.info('prompt cache usage', {
-          provider: 'anthropic',
-          model: modelInfo.apiModelId,
-          cacheReadTokens: u.cache_read_input_tokens ?? 0,
-          cacheCreationTokens: u.cache_creation_input_tokens ?? 0,
-          uncachedInputTokens: inputTokens,
-        }, agentId);
-      }
+    // markers are actually hitting. Anthropic reports input_tokens DISJOINT
+    // from these (it is already the uncached input), so they thread straight
+    // into recordCost without any normalization (C28 P-7).
+    const anthropicUsage = finalMessage.usage as typeof finalMessage.usage & { cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+    const cacheReadTokens = anthropicUsage.cache_read_input_tokens;
+    const cacheCreationTokens = anthropicUsage.cache_creation_input_tokens;
+    if (cacheReadTokens != null || cacheCreationTokens != null) {
+      logger.info('prompt cache usage', {
+        provider: 'anthropic',
+        model: modelInfo.apiModelId,
+        cacheReadTokens: cacheReadTokens ?? 0,
+        cacheCreationTokens: cacheCreationTokens ?? 0,
+        uncachedInputTokens: inputTokens,
+      }, agentId);
     }
 
     // Calculate cost
@@ -2186,6 +2240,8 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
       outputTokens,
       latencyMs,
       requestType: routerTier ?? (tools ? 'agent_turn' : 'completion'),
+      cacheReadTokens,
+      cacheCreationTokens,
     });
 
     // Update rate limits from response headers (if available from stream)
@@ -2281,7 +2337,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
       } catch { /* best effort */ }
     }
 
-    // Schedule background retry for rate limits — but NOT for auto-routed agents.
+    // Schedule background retry for rate limits, but NOT for auto-routed agents.
     // Auto-routed agents handle rate limits via the fallback chain in the runtime.
     if ((isRateLimited || isOverloaded) && !params.routerTier) {
       // Try to extract retry-after header (Anthropic API key responses include this)

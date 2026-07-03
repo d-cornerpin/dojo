@@ -1,5 +1,5 @@
 // ════════════════════════════════════════
-// Phase 1C — permission alternative finder
+// Phase 1C, permission alternative finder
 //
 // Per Part VI #19. When a tool call is denied by the permission
 // system, v1 returns a [BLOCKED] result with the bare reason.
@@ -7,7 +7,7 @@
 // (which is how `consecutivePermissionDenials` got invented).
 //
 // v2's enforcement is unchanged (existing per-agent manifest in
-// permissions.ts is still authoritative — REJECTED bypassing it
+// permissions.ts is still authoritative, REJECTED bypassing it
 // per Part XVI #20). What v2 ADDS is a suggestion layer: when a
 // denial occurs, this classifier produces a list of alternative
 // approaches the agent might try instead. The engine appends
@@ -71,7 +71,7 @@ export function permissionAlternativeFinder(
       }
       // Common substitution suggestions
       if (cmd === 'rm' || cmd === 'mv' || cmd === 'cp') {
-        suggestions.push('File management is restricted — use file_read / file_write through the API instead.');
+        suggestions.push('File management is restricted, use file_read / file_write through the API instead.');
       }
       if (cmd === 'curl' || cmd === 'wget') {
         suggestions.push('For HTTP fetches use web_fetch (it handles auth, headers, and parses content).');
@@ -83,7 +83,7 @@ export function permissionAlternativeFinder(
         suggestions.push('To list a directory, use file_list instead of shell commands.');
       }
       if (cmd === 'grep' || cmd === 'rg' || cmd === 'ag') {
-        suggestions.push('To search content, use memory_grep (conversation history) or vault_search (long-term memory).');
+        suggestions.push('To search content, use history_search (conversation history) or vault_search (long-term memory).');
       }
       break;
     }
@@ -109,20 +109,16 @@ export function permissionAlternativeFinder(
       break;
     }
 
-    case 'update_agent_permissions':
-    case 'update_agent_profile':
-    case 'update_agent_model':
+    case 'update_agent':
     case 'reset_session':
     case 'create_agent_group':
     case 'delete_group':
     case 'assign_to_group':
-    case 'spawn_agent ':
+    case 'spawn_agent':
     case 'kill_agent':
     case 'set_user_presence':
-    case 'tunnel_start':
-    case 'tunnel_stop':
-    case 'tunnel_restart': {
-      // Privileged ops — only the primary has these
+    case 'tunnel': {
+      // Privileged ops, only the primary has these
       suggestions.push(
         'This tool is restricted to the primary agent. Use send_to_agent to ask the primary to perform this action.',
       );

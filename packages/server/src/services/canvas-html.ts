@@ -1,18 +1,18 @@
 // ════════════════════════════════════════
-// inlineHtmlAssets — make an HTML file self-contained for the canvas.
+// inlineHtmlAssets, make an HTML file self-contained for the canvas.
 //
 // An HTML file written by an agent often references sibling assets by a
 // RELATIVE path, e.g. <img src="marianne-photo.png">. The right-dock canvas
 // serves that HTML from /api/upload/download/<id>?inline=1, so the iframe
 // resolves "marianne-photo.png" against that URL (-> 404) and the image never
-// shows — even though the file is sitting right next to the HTML on disk.
+// shows, even though the file is sitting right next to the HTML on disk.
 //
 // This reads the HTML and inlines its LOCAL assets (images, stylesheets,
 // scripts, fonts, url(...) refs) as data: URIs, resolved against the HTML
 // file's own directory. Remote refs (http/https/data/protocol-relative/#) are
-// left untouched. The result renders identically wherever it is served — the
-// canvas iframe AND the headless render view_canvas uses — so what the agent
-// sees in view_canvas matches what the user sees in the dock.
+// left untouched. The result renders identically wherever it is served, the
+// canvas iframe AND the headless render canvas_read uses, so what the agent
+// sees in canvas_read matches what the user sees in the dock.
 // ════════════════════════════════════════
 
 import fs from 'node:fs';
@@ -83,7 +83,7 @@ export function inlineHtmlAssets(htmlAbsPath: string): string {
       return data ? `${attr}=${q}${data}${q}` : m;
     }),
   );
-  // <link href> (stylesheets, icons) — only the link tag, not anchors.
+  // <link href> (stylesheets, icons), only the link tag, not anchors.
   html = html.replace(/<link\b[^>]*>/gi, (tag) =>
     tag.replace(/\bhref\s*=\s*(["'])(.*?)\1/gi, (m, q, ref) => {
       const data = resolveRef(ref);

@@ -1,12 +1,12 @@
-// Prompt-assembly registry — type definitions (R1).
+// Prompt-assembly registry, type definitions (R1).
 //
 // This module is the vocabulary for the single declarative injection registry
 // described in DOJO-PROMPT-REGISTRY-PLAN.md. It defines ONLY types + the slot
 // ordering + a couple of constants; it has no runtime behavior and is imported
 // by nothing yet, so adding it changes no assembled output (R1 gate: typecheck).
 //
-// The design (plan §2): every injectable — system-prompt block OR message-side
-// injection — becomes one `PromptInjection` entry that declares four things:
+// The design (plan §2): every injectable, system-prompt block OR message-side
+// injection, becomes one `PromptInjection` entry that declares four things:
 // its content (`render`), its trigger (`when` / a null render), its order
 // (`slot` + `order`), and its precedence (`precedenceTier`). One assembler
 // (R2) walks the registry per turn and produces { systemPrompt, messages }.
@@ -16,7 +16,7 @@
 // assembleContext. The migration is a strangler-fig: each legacy block is
 // extracted into a render function and registered at its slot, and the legacy
 // path is kept until the registry output is proven byte-identical (with the two
-// volatile timestamp lines normalized — see plan §6). Do NOT renumber a slot
+// volatile timestamp lines normalized, see plan §6). Do NOT renumber a slot
 // without re-running the byte-equivalence check.
 
 import type Anthropic from '@anthropic-ai/sdk';
@@ -39,7 +39,7 @@ export type InboundChannel = ReplyDestination;
 export const PART_JOINER = '\n\n---\n\n';
 
 // ───────────────────────────────────────────────────────────────────────────
-// Slots — the ordered sections. Integer value IS the canonical order; the
+// Slots, the ordered sections. Integer value IS the canonical order; the
 // assembler sorts entries by (slot value, then entry.order, then registration
 // index). Values are spaced by 100 so an entry can be inserted between two
 // slots in the future without renumbering everything.
@@ -49,7 +49,7 @@ export const PART_JOINER = '\n\n---\n\n';
  * System-prompt slots, in EXACT live order (R0). Slots 1-3 (ReplyDestination,
  * ChannelLandscape, PhoneConduct) are the front `destinationTags` array and are
  * primary-only; they sit BEFORE Time. VoiceConduct is last and is mutually
- * exclusive with PhoneConduct (phone is the more specific conduct — audit C7).
+ * exclusive with PhoneConduct (phone is the more specific conduct, audit C7).
  */
 export enum SystemSlot {
   ReplyDestination = 100,
@@ -76,13 +76,13 @@ export enum SystemSlot {
   TechniquesEquipped = 2100,
   Runtime = 2200,
   VoiceConduct = 2300,
-  /** Weak technique hint — raw-appended to the END (rawAppend), not slot-walked. */
+  /** Weak technique hint, raw-appended to the END (rawAppend), not slot-walked. */
   TechniqueWeakHint = 2400,
 }
 
 /**
  * Message-side slots, in build order. The scaffolding (A1-A11) and engine
- * injections (§3c) are content; the integrity repairs (B1-B14) are NOT slots —
+ * injections (§3c) are content; the integrity repairs (B1-B14) are NOT slots, 
  * they run as one final `applyIntegrityPass` stage (R6), never as entries.
  *
  * NOTE: the precise message ordering is validated/refined at R5 when these
@@ -112,11 +112,17 @@ export enum MessageSlot {
   Attachments = 1600, // image/PDF content blocks
   PendingNudge = 1700, // steering nudge
   ToolNote = 1800, // no-tools capability note
-  CurrentTime = 1900, // precise clock time — most volatile, always last (cache tail)
+  // C28 Part 1: per-turn volatile routing/presence context (ReplyDestination,
+  // ChannelLandscape, PhoneConduct, counterparty header, iMessage-bridge state,
+  // othersWaiting / conversational-turn hints) moved OUT of the cached system
+  // prefix into this near-tail engine message, so nothing volatile lives in the
+  // system string (all-provider cache fix, P-1). Sits just before CurrentTime.
+  TurnContext = 1850,
+  CurrentTime = 1900, // precise clock time, most volatile, always last (cache tail)
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// AssemblyContext — the single bundle threaded to every entry's when/render.
+// AssemblyContext, the single bundle threaded to every entry's when/render.
 // It replaces the scattered ad-hoc reads each legacy block does today (plan
 // §2.1). The R2 builder computes the shared/expensive values once (inbound
 // channel resolution, capabilities) so the front three slots and others don't
@@ -139,11 +145,11 @@ export interface AssemblyContext {
   capabilities: string[]; // getModelCapabilities(modelId); [] if unknown
   contextWindow: number; // getContextWindow(modelId)
   ownerName: string; // getOwnerName()
-  /** Who THIS turn's reply is addressed to — the counterparty's display name
+  /** Who THIS turn's reply is addressed to, the counterparty's display name
    *  (e.g. a friend who texted), falling back to the owner. The reply-destination
    *  slot names this so the agent replies to the ACTUAL sender, not always the
    *  owner. Without it the prompt said "iMessage to <owner>" even when a friend
-   *  texted, plus "use imessage_send for anyone other than <owner>" — which made
+   *  texted, plus "use imessage_send for anyone other than <owner>", which made
    *  the agent send via the tool AND write auto-routed text (a double reply). */
   replyRecipientName: string;
   ttsEngine: 'local' | 'cloud'; // resolveTtsEngine(turnContext)
@@ -171,7 +177,7 @@ export interface AssemblyContext {
 
   // ── Loop-computed injection payloads (set by the loop at each §3c site) ──
   // These injections' CONTENT is computed by interleaved loop logic (the
-  // technique matcher, the multistep classifier — which also create projects /
+  // technique matcher, the multistep classifier, which also create projects /
   // record usage / wake the PM). The loop computes them and sets the payload
   // here; the registry entry renders the payload and injects via the registry
   // channel, so the DECLARATION + injection are registry-owned without pulling
@@ -208,7 +214,7 @@ export interface EngineMessage {
 
 /**
  * A system entry renders one part, several parts, or nothing this turn.
- * Returning `string[]` contributes multiple parts each joined by PART_JOINER —
+ * Returning `string[]` contributes multiple parts each joined by PART_JOINER, 
  * this is how the IntegrationReconnect slot emits 0+ disconnected breadcrumbs
  * byte-identically to the legacy per-integration `parts.push`.
  */

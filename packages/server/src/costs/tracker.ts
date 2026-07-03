@@ -27,14 +27,21 @@ export interface RecordCostParams {
   imageWidth?: number;
   imageHeight?: number;
   // Generic per-unit count for every other non-token pricing unit:
-  //   second    — duration of generated media (video / audio gen)
-  //   character — characters of input text (TTS)
-  //   minute    — minutes of input audio (transcription)
-  //   item      — flat per-generated-item (a song, an image, a clip)
+  //   second, duration of generated media (video / audio gen)
+  //   character, characters of input text (TTS)
+  //   minute, minutes of input audio (transcription)
+  //   item, flat per-generated-item (a song, an image, a clip)
   // The model row's pricing_unit field disambiguates what this number
   // means. If unset, the recorder falls through to token math. For 'item'
   // a missing count defaults to 1 (one generation call = one item).
   units?: number;
+  // Prompt-cache tokens (token-priced calls only). Passed DISJOINT from
+  // inputTokens per C28 P-7: inputTokens is the UNCACHED input; cache reads
+  // bill at 0.1x the input rate, cache creation at 1.25x. Leave undefined
+  // when the provider does not report cache figures (persists as NULL, which
+  // a hit-ratio reader must not treat as a miss).
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
 }
 
 interface ModelPricing {
@@ -66,7 +73,7 @@ function getModelPricing(modelId: string): ModelPricing {
 
   // Prefer cost_per_unit (post-migration 061). For megapixel rows added
   // pre-061, cost_per_unit may still be null but cost_per_megapixel
-  // holds the legacy value — keep the fallback during the compat window.
+  // holds the legacy value, keep the fallback during the compat window.
   const costPerUnit =
     typeof row?.cost_per_unit === 'number'
       ? row.cost_per_unit
@@ -83,7 +90,7 @@ function getModelPricing(modelId: string): ModelPricing {
 }
 
 export function recordCost(params: RecordCostParams): void {
-  const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType, imageWidth, imageHeight, units } = params;
+  const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType, imageWidth, imageHeight, units, cacheReadTokens, cacheCreationTokens } = params;
 
   try {
     const pricing = getModelPricing(modelId);
@@ -115,16 +122,24 @@ export function recordCost(params: RecordCostParams): void {
       costUsd = unitCount * pricing.costPerUnit;
       costMode = pricing.unit;
     } else {
-      const inputCost = (inputTokens / 1_000_000) * pricing.inputCostPerM;
+      // Token math with prompt-cache tiers (C28 P-7). inputTokens is the
+      // UNCACHED input; cache reads bill at 0.1x the input rate and cache
+      // creation at 1.25x. Absent cache fields fall through as zero cost,
+      // leaving the plain input+output math unchanged.
+      const inRate = pricing.inputCostPerM / 1_000_000;
+      const inputCost = inputTokens * inRate;
+      const cacheReadCost = (cacheReadTokens ?? 0) * 0.1 * inRate;
+      const cacheCreationCost = (cacheCreationTokens ?? 0) * 1.25 * inRate;
       const outputCost = (outputTokens / 1_000_000) * pricing.outputCostPerM;
-      costUsd = inputCost + outputCost;
+      costUsd = inputCost + cacheReadCost + cacheCreationCost + outputCost;
     }
 
     const db = getDb();
     db.prepare(`
       INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens, output_tokens,
-                                cost_usd, latency_ms, request_type, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                                cost_usd, latency_ms, request_type,
+                                cache_read_tokens, cache_creation_tokens, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `).run(
       uuidv4(),
       agentId,
@@ -135,6 +150,11 @@ export function recordCost(params: RecordCostParams): void {
       costUsd,
       latencyMs ?? null,
       requestType ?? null,
+      // NULL when the provider did not report (undefined) vs 0 when it
+      // reported zero: keep the distinction so the reader does not count a
+      // non-reporting provider as a cache miss.
+      cacheReadTokens ?? null,
+      cacheCreationTokens ?? null,
     );
 
     // Invalidate daily spend cache so next budget check gets fresh data
@@ -150,6 +170,8 @@ export function recordCost(params: RecordCostParams): void {
       units: units ?? null,
       inputTokens,
       outputTokens,
+      cacheReadTokens: cacheReadTokens ?? null,
+      cacheCreationTokens: cacheCreationTokens ?? null,
       costUsd: costUsd.toFixed(6),
     }, agentId);
 
@@ -236,7 +258,7 @@ export function getCostSummary(period: '24h' | '7d' | '30d' | 'all'): CostSummar
     GROUP BY cr.agent_id ORDER BY totalCost DESC
   `).all() as Array<{ agentId: string; agentName: string; totalCost: number; requestCount: number }>;
 
-  // By tier — group by the tier the auto-router ACTUALLY chose for each call
+  // By tier, group by the tier the auto-router ACTUALLY chose for each call
   // (request_type), not a model->tier join. The old join mis-counted badly:
   // untagged models all fell into 'unknown' (the bulk of records), and a model
   // assigned to multiple tiers had its cost counted once per tier (identical
@@ -350,6 +372,82 @@ export function getCostRecords(filter?: {
   }));
 
   return { records, total };
+}
+
+// ── Cache Hit Stats (C28 Part 2) ──
+
+export interface CacheProviderStat {
+  provider: string;
+  calls: number;          // all calls in the window for this provider
+  reportedCalls: number;  // calls where the provider reported cache figures
+  readTokens: number;     // sum of cache_read_tokens
+  creationTokens: number; // sum of cache_creation_tokens
+  inputTokens: number;    // sum of uncached input_tokens over reported calls
+  // read / (read + uncached-input) over reported calls; null when no reported
+  // calls (provider does not surface cache figures, e.g. Ollama).
+  hitRatio: number | null;
+}
+
+export interface CacheStats {
+  window: number;          // number of most-recent calls examined
+  byProvider: CacheProviderStat[];
+  overall: { readTokens: number; creationTokens: number; inputTokens: number; hitRatio: number | null };
+}
+
+/**
+ * Per-provider prompt-cache stats over the last N cost_records.
+ * NULL cache columns (provider did not report) are excluded from the ratio
+ * denominator so a non-reporting provider is not counted as a cache miss.
+ */
+export function getCacheStats(limit = 200): CacheStats {
+  const db = getDb();
+  const window = Math.min(Math.max(1, limit), 5000);
+
+  const rows = db.prepare(`
+    SELECT provider_id AS provider,
+           COUNT(*) AS calls,
+           SUM(CASE WHEN cache_read_tokens IS NOT NULL THEN 1 ELSE 0 END) AS reportedCalls,
+           COALESCE(SUM(cache_read_tokens), 0) AS readTokens,
+           COALESCE(SUM(cache_creation_tokens), 0) AS creationTokens,
+           COALESCE(SUM(CASE WHEN cache_read_tokens IS NOT NULL THEN input_tokens ELSE 0 END), 0) AS inputTokens
+    FROM (SELECT provider_id, cache_read_tokens, cache_creation_tokens, input_tokens
+          FROM cost_records ORDER BY created_at DESC LIMIT ?)
+    GROUP BY provider_id
+    ORDER BY calls DESC
+  `).all(window) as Array<{
+    provider: string; calls: number; reportedCalls: number;
+    readTokens: number; creationTokens: number; inputTokens: number;
+  }>;
+
+  const byProvider: CacheProviderStat[] = rows.map(r => {
+    const denom = r.readTokens + r.inputTokens;
+    return {
+      provider: r.provider,
+      calls: r.calls,
+      reportedCalls: r.reportedCalls,
+      readTokens: r.readTokens,
+      creationTokens: r.creationTokens,
+      inputTokens: r.inputTokens,
+      hitRatio: r.reportedCalls > 0 && denom > 0 ? Math.round((r.readTokens / denom) * 1000) / 1000 : null,
+    };
+  });
+
+  const readTokens = byProvider.reduce((a, p) => a + p.readTokens, 0);
+  const creationTokens = byProvider.reduce((a, p) => a + p.creationTokens, 0);
+  const inputTokens = byProvider.reduce((a, p) => a + p.inputTokens, 0);
+  const reported = byProvider.reduce((a, p) => a + p.reportedCalls, 0);
+  const overallDenom = readTokens + inputTokens;
+
+  return {
+    window,
+    byProvider,
+    overall: {
+      readTokens,
+      creationTokens,
+      inputTokens,
+      hitRatio: reported > 0 && overallDenom > 0 ? Math.round((readTokens / overallDenom) * 1000) / 1000 : null,
+    },
+  };
 }
 
 // ── Daily Spend (cached for 5 seconds to avoid redundant SUM queries) ──

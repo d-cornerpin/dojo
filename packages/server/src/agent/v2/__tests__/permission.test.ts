@@ -77,7 +77,7 @@ describe('permissionAlternativeFinder', () => {
     expect(r.suggestions.some((s) => s.includes('web_fetch'))).toBe(true);
   });
 
-  it('suggests memory_grep / vault_search for grep', () => {
+  it('suggests history_search / vault_search for grep', () => {
     const r = permissionAlternativeFinder({
       toolName: 'exec',
       toolArgs: { command: 'grep TODO src/' },
@@ -86,7 +86,7 @@ describe('permissionAlternativeFinder', () => {
       hasSendToAgent: false,
       hasCompleteTask: false,
     });
-    expect(r.suggestions.some((s) => s.includes('memory_grep') || s.includes('vault_search'))).toBe(true);
+    expect(r.suggestions.some((s) => s.includes('history_search') || s.includes('vault_search'))).toBe(true);
   });
 
   it('suggests send_to_agent for spawn_agent denial', () => {
@@ -103,7 +103,7 @@ describe('permissionAlternativeFinder', () => {
 
   it('suggests primary escalation for privileged ops', () => {
     const r = permissionAlternativeFinder({
-      toolName: 'update_agent_permissions',
+      toolName: 'update_agent',
       toolArgs: {},
       denyReason: 'not allowed',
       manifest: subAgentManifest,

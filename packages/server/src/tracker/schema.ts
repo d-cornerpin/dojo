@@ -219,7 +219,7 @@ export function createProject(params: {
       // model (only the first-step task assigned to the creator started
       // in_progress, everything else 'on_deck') routinely produced the
       // failure mode where the agent finished the first task and then
-      // never returned to the on_deck pile — those tasks went unseen
+      // never returned to the on_deck pile, those tasks went unseen
       // forever. New rule: 'on_deck' is reserved for "scheduled for
       // later". A task with no future scheduled_start belongs in
       // 'in_progress' so the assigned agent (and the PM) keep seeing it
@@ -352,7 +352,7 @@ export function closeProjectAndOpenTasks(params: {
   // a literal "cancelled" on a task would make it disappear from the board.
   // So a user-facing "cancelled" task is stored as "fallen" (the existing
   // "didn't make it" terminal column) with a clear note. The project row
-  // itself stores the literal user-facing status — it isn't column-rendered.
+  // itself stores the literal user-facing status, it isn't column-rendered.
   const dbTaskStatus = taskStatus === 'cancelled' ? 'fallen' : 'complete';
   const noteMarker = taskStatus === 'cancelled' ? '[CANCELLED]' : '[Completed via bulk close]';
 
@@ -548,14 +548,14 @@ export function createTask(params: {
  * Called from deliverA2AMessage when an agent's send_to_agent uses
  * intent=ASSIGN. Auto-creates a tracker task on behalf of the sender so
  * the assignment is structurally tracked from the moment of the handoff
- * — no LLM cooperation required.
+ *, no LLM cooperation required.
  *
  * If a task already exists for this thread (later ASSIGNs on the same
  * thread are treated as clarifications, not new assignments), returns
  * the existing task ID instead of creating a duplicate.
  *
  * Returns null only on hard DB error so callers can fall back gracefully
- * — the message itself still gets delivered even if the auto-task fails.
+ *, the message itself still gets delivered even if the auto-task fails.
  */
 export function autoCreateAssignTask(params: {
   senderId: string;
@@ -565,7 +565,7 @@ export function autoCreateAssignTask(params: {
 }): { taskId: string; isNew: boolean } | null {
   const db = getDb();
   try {
-    // v2.9.22 — never auto-create tracker rows for system agents
+    // v2.9.22, never auto-create tracker rows for system agents
     // (PM/Healer/Dreamer). Their roles are meta and they don't own
     // user-facing work tasks. ASSIGN to a system agent is still a
     // valid wake-the-agent signal; the message delivers, just no
@@ -574,18 +574,18 @@ export function autoCreateAssignTask(params: {
     // to PM, which then became invisible to the user but kept
     // firing PM validation loops (production incident 2026-06-07).
     if (isDashboardHiddenAgent(params.receiverId)) {
-      logger.info('autoCreateAssignTask skipped — receiver is a system agent', {
+      logger.info('autoCreateAssignTask skipped, receiver is a system agent', {
         receiverId: params.receiverId, senderId: params.senderId, threadId: params.threadId,
       }, params.senderId);
       return null;
     }
 
-    // v2.10.2 — never auto-create tracker rows when the SENDER is the
+    // v2.10.2, never auto-create tracker rows when the SENDER is the
     // PM agent. PM's remediation flow is supposed to re-open the
     // existing task via tracker_retask (or close it via tracker_override
-    // / tracker_validate_complete), NOT fork a new task. Pre-fix, PM
+    // / tracker_validate), NOT fork a new task. Pre-fix, PM
     // sending send_to_agent(intent='ASSIGN') to remediate a close-out
-    // miss spawned a duplicate task and left the original abandoned —
+    // miss spawned a duplicate task and left the original abandoned, 
     // producing two tasks for one unit of work and, for non-idempotent
     // tools (gmail_send, sms_send, voice_call, exec hitting live APIs),
     // a duplicate side effect. Production incident 2026-06-08: Email
@@ -593,7 +593,7 @@ export function autoCreateAssignTask(params: {
     // after an auto-pause. The ASSIGN message itself still delivers
     // and wakes the receiver; just no fork.
     if (isPMAgent(params.senderId)) {
-      logger.info('autoCreateAssignTask skipped — sender is PM (remediation should use tracker_retask)', {
+      logger.info('autoCreateAssignTask skipped, sender is PM (remediation should use tracker_retask)', {
         senderId: params.senderId, receiverId: params.receiverId, threadId: params.threadId,
       }, params.senderId);
       return null;
@@ -617,7 +617,7 @@ export function autoCreateAssignTask(params: {
 
     const taskId = uuidv4();
     // Phase B.1: goal is required on every task. For engine-auto-created
-    // ASSIGN tasks we use the payload itself as the goal — it IS the
+    // ASSIGN tasks we use the payload itself as the goal, it IS the
     // sender's stated definition of done for the receiver.
     const autoGoal = params.payload.trim().slice(0, 2000) || title;
     // v2.8.x rule: auto-created ASSIGN tasks land in 'in_progress' so the
@@ -650,7 +650,7 @@ export function autoCreateAssignTask(params: {
 
     return { taskId, isNew: true };
   } catch (err) {
-    logger.warn('autoCreateAssignTask failed — proceeding without auto-task', {
+    logger.warn('autoCreateAssignTask failed, proceeding without auto-task', {
       threadId: params.threadId, error: err instanceof Error ? err.message : String(err),
     }, params.senderId);
     return null;
@@ -667,7 +667,7 @@ export function getTask(id: string): Task | null {
 // ── ID prefix resolution ──
 //
 // The tracker list tools display task/project ids truncated to 8 chars
-// (see tracker/tools.ts — `t.id.slice(0, 8)`). Agents naturally copy that
+// (see tracker/tools.ts, `t.id.slice(0, 8)`). Agents naturally copy that
 // prefix back when calling update/pause/etc. tools, but the underlying
 // DB rows have full UUID primary keys, so a WHERE id = 'aaa73e0e' lookup
 // returns nothing even when the task exists. This caused a loop where
@@ -693,11 +693,11 @@ function resolveIdIn(table: 'tasks' | 'projects', idOrPrefix: string): IdResolut
 
   const db = getDb();
 
-  // Full UUID form (with or without dashes) — try direct lookup first.
+  // Full UUID form (with or without dashes), try direct lookup first.
   if (input.length >= 32) {
     const row = db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(input) as { id: string } | undefined;
     if (row) return { ok: true, id: row.id };
-    // Fall through to prefix match — the "full" id may be malformed
+    // Fall through to prefix match, the "full" id may be malformed
   }
 
   // Prefix match. Limit to 5 so we can detect ambiguity cheaply.
@@ -790,7 +790,7 @@ export function updateTask(id: string, updates: Partial<{
   title: string;
   description: string | null;
   pausedUntil: string | null;
-  // Editable structural fields — added so tracker_edit_task can change them
+  // Editable structural fields, added so tracker_edit_task can change them
   // without forcing a delete+recreate. None of these have notification or
   // scheduler side-effects that the simpler tools (update_status, pause)
   // already cover, so it's safe to update them in the generic edit path.
@@ -838,7 +838,7 @@ export function updateTask(id: string, updates: Partial<{
         params.push(updates.pausedUntil);
       }
     } else {
-      // Moving OUT of paused — clear pause fields
+      // Moving OUT of paused, clear pause fields
       if (updates.status !== 'complete') {
         setClauses.push('is_paused = 0');
       }
@@ -933,7 +933,7 @@ export function updateTask(id: string, updates: Partial<{
   const result = db.prepare(`UPDATE tasks SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
 
   if (result.changes === 0) {
-    // UPDATE matched zero rows — the id doesn't exist. Callers that pass
+    // UPDATE matched zero rows, the id doesn't exist. Callers that pass
     // the result through tracker tools should have already resolved the
     // id via resolveTaskId() before calling updateTask(), so hitting this
     // path generally means a race (task deleted between resolve and

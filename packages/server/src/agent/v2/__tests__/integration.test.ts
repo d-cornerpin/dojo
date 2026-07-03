@@ -3,7 +3,7 @@
 //
 // These tests exercise runV2Turn end-to-end against a mocked callModel
 // and broadcast, with a real (in-memory) sqlite DB seeded with minimal
-// schema. The goal: catch the class of bugs that unit tests miss —
+// schema. The goal: catch the class of bugs that unit tests miss, 
 // "I forgot to wire X into the loop." Each test focuses on a specific
 // behavioral preservation contract from PRESERVATION_CHECKLIST.md.
 //
@@ -22,7 +22,7 @@ import type { ToolCall } from '@dojo/shared';
 
 // ── Mocks ──
 //
-// Hoisted via vi.mock — the implementations below replace the real modules
+// Hoisted via vi.mock, the implementations below replace the real modules
 // for the duration of these tests.
 
 const mockDb = { current: null as Database.Database | null };
@@ -124,7 +124,7 @@ vi.mock('../../../memory/assembler.js', () => ({
   })),
 }));
 
-// (config/runtime.js mock removed in Phase 9 Stage 2 — module deleted)
+// (config/runtime.js mock removed in Phase 9 Stage 2, module deleted)
 
 vi.mock('../../../config/platform.js', () => ({
   isPrimaryAgent: (id: string) => id === 'primary',
@@ -149,7 +149,7 @@ vi.mock('../../errors.js', () => ({
   clearErrors: vi.fn(),
 }));
 
-// Mocks for v2/recovery.ts dynamic imports — these only fire when an error
+// Mocks for v2/recovery.ts dynamic imports, these only fire when an error
 // reaches the recovery cascade, so they're a no-op in normal-path tests.
 vi.mock('../../../healer/injury-recovery.js', () => ({
   onAgentInjured: (...args: unknown[]) => onAgentInjuredSpy(...args),
@@ -403,7 +403,7 @@ describe('runV2Turn integration', () => {
     expect(params.abortSignal).toBeInstanceOf(AbortSignal);
   });
 
-  it('PRESERVATION #1: TRUE streaming — chunks broadcast immediately', async () => {
+  it('PRESERVATION #1: TRUE streaming, chunks broadcast immediately', async () => {
     // Mock callModel to invoke onChunk multiple times before resolving
     callModelSpy.mockImplementation(async (params: { onChunk?: (c: string) => void }) => {
       const chunks = ['Hel', 'lo ', 'there', '!'];
@@ -422,7 +422,7 @@ describe('runV2Turn integration', () => {
     await runV2Turn('primary');
 
     // Each chunk should have produced a separate chat:chunk broadcast
-    // (NOT batched until model finishes — that was v1's bug)
+    // (NOT batched until model finishes, that was v1's bug)
     const chunkEvents = getBroadcastEventsByType('chat:chunk') as Array<{ content?: string; done?: boolean }>;
     const streamingChunks = chunkEvents.filter((e) => e.done !== true);
     expect(streamingChunks).toHaveLength(4);
@@ -451,7 +451,7 @@ describe('runV2Turn integration', () => {
 
     await runV2Turn('primary');
 
-    // Loop should call model exactly ONCE — complete_task exits before
+    // Loop should call model exactly ONCE, complete_task exits before
     // a follow-up call.
     expect(callModelSpy).toHaveBeenCalledTimes(1);
     expect(executeToolSpy).toHaveBeenCalledTimes(1);
@@ -479,7 +479,7 @@ describe('runV2Turn integration', () => {
 
     await runV2Turn('primary');
 
-    // Same as complete_task — image_create exits without follow-up call.
+    // Same as complete_task, image_create exits without follow-up call.
     expect(callModelSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -591,12 +591,12 @@ describe('runV2Turn integration', () => {
       expect.objectContaining({ force: true }),
     );
 
-    // Model NOT called this turn — we surrendered after emergency compact
+    // Model NOT called this turn, we surrendered after emergency compact
     expect(callModelSpy).not.toHaveBeenCalled();
   });
 
   it('PRESERVATION #14: auto-continuation fires at MAX_TOOL_LOOPS (75) and schedules a fresh turn', async () => {
-    // v2/loop.ts:1282-1320 — when the inner tool loop hits MAX_TOOL_LOOPS
+    // v2/loop.ts:1282-1320, when the inner tool loop hits MAX_TOOL_LOOPS
     // (=75) without the model deciding to stop, persist a [System: ...]
     // message and self-schedule another handleMessage call. This is the
     // safety valve for long autonomous tasks.
@@ -619,7 +619,7 @@ describe('runV2Turn integration', () => {
     executeToolSpy.mockImplementation(async (_agentId, toolCall) => ({
       toolCallId: toolCall.id,
       name: toolCall.name,
-      content: 'file body — keep going',
+      content: 'file body, keep going',
       isError: false,
     }));
 
@@ -679,7 +679,7 @@ describe('runV2Turn integration', () => {
       expect.objectContaining({ force: true }),
     );
 
-    // Model was NOT called this turn — we surrendered.
+    // Model was NOT called this turn, we surrendered.
     expect(callModelSpy).not.toHaveBeenCalled();
 
     // A [System: ...] note was persisted explaining the surrender.
@@ -754,9 +754,9 @@ describe('runV2Turn integration', () => {
 
   it('PRESERVATION #38: empty response triggers silent retry, then nudge, then toast', async () => {
     // v1 behavior: 3-phase recovery from empty model responses.
-    //   phase 1 — silent retry (no nudge, no toast)
-    //   phase 2 — explicit pendingNudge injection
-    //   phase 3 — chat:error toast
+    //   phase 1, silent retry (no nudge, no toast)
+    //   phase 2, explicit pendingNudge injection
+    //   phase 3, chat:error toast
     // v2 used to skip straight to phase 3. This test enforces the full chain.
     let modelCallCount = 0;
     callModelSpy.mockImplementation(async () => {
@@ -774,9 +774,9 @@ describe('runV2Turn integration', () => {
     await runV2Turn('primary');
 
     // The model should have been called THREE times:
-    //   call 1 — initial empty
-    //   call 2 — after silent retry
-    //   call 3 — after explicit nudge
+    //   call 1, initial empty
+    //   call 2, after silent retry
+    //   call 3, after explicit nudge
     // After the third empty response, the loop breaks with the error toast.
     expect(modelCallCount).toBe(3);
 
@@ -813,7 +813,7 @@ describe('runV2Turn integration', () => {
 
     await runV2Turn('primary');
 
-    // Still exactly one assistant message — the dup was rejected.
+    // Still exactly one assistant message, the dup was rejected.
     const assistantMsgs = mockDb.current!
       .prepare("SELECT id FROM messages WHERE agent_id = 'primary' AND role = 'assistant'")
       .all();
@@ -857,7 +857,7 @@ describe('runV2Turn integration', () => {
   });
 
   it('PRESERVATION: no-results detector nudges after 2 consecutive empty turns, breaks after a 3rd', async () => {
-    // v2/loop.ts:1194-1232 — when every tool result in a turn contains
+    // v2/loop.ts:1194-1232, when every tool result in a turn contains
     // "No results found" / "not in memory" for two consecutive iterations,
     // a pendingNudge fires telling the model to switch tactics. If the
     // third iteration is STILL all-no-results, the loop breaks with a
@@ -865,12 +865,12 @@ describe('runV2Turn integration', () => {
     let modelCallCount = 0;
     callModelSpy.mockImplementation(async () => {
       modelCallCount++;
-      // Always plan another search — the no-results detector decides
+      // Always plan another search, the no-results detector decides
       // when to break, not the model.
       return {
         content: '',
         toolCalls: [
-          { id: `tc-${modelCallCount}`, name: 'memory_grep', arguments: { pattern: `term-${modelCallCount}` } },
+          { id: `tc-${modelCallCount}`, name: 'history_search', arguments: { pattern: `term-${modelCallCount}` } },
         ],
         inputTokens: 100,
         outputTokens: 5,
@@ -911,7 +911,7 @@ describe('runV2Turn integration', () => {
       return {
         content: '',
         toolCalls: [
-          { id: `tc-${modelCallCount}`, name: 'memory_grep', arguments: { pattern: `term-${modelCallCount}` } },
+          { id: `tc-${modelCallCount}`, name: 'history_search', arguments: { pattern: `term-${modelCallCount}` } },
         ],
         inputTokens: 100,
         outputTokens: 5,
@@ -921,7 +921,7 @@ describe('runV2Turn integration', () => {
     let toolCallNum = 0;
     executeToolSpy.mockImplementation(async (_agentId, toolCall) => {
       toolCallNum++;
-      // Pattern: empty, empty, GOOD, empty — counter goes 1→2-but-reset-by-good→1.
+      // Pattern: empty, empty, GOOD, empty, counter goes 1→2-but-reset-by-good→1.
       // The "good" result must reset, so the second 'empty' should leave us at 1, not 2.
       const isGood = toolCallNum === 3;
       return {
@@ -936,7 +936,7 @@ describe('runV2Turn integration', () => {
 
     await runV2Turn('primary');
 
-    // No NO_RESULTS error should have fired — the "good" result reset the counter.
+    // No NO_RESULTS error should have fired, the "good" result reset the counter.
     const noResultsErrors = (getBroadcastEventsByType('chat:error') as Array<{ code?: string }>).filter(
       (e) => e.code === 'NO_RESULTS',
     );
@@ -944,7 +944,7 @@ describe('runV2Turn integration', () => {
   });
 
   it('PRESERVATION #38: empty after tool calls is a clean end-of-turn (no toast)', async () => {
-    // Carve-out from v1 runtime.ts:1167-1171 — if the agent already executed
+    // Carve-out from v1 runtime.ts:1167-1171, if the agent already executed
     // tool calls this turn and now returns empty, that's a legitimate end.
     // No retry, no nudge, no toast.
     const toolCall: ToolCall = {
@@ -1049,17 +1049,17 @@ describe('runV2Turn integration', () => {
   });
 
   // ─────────────────────────────────────────────────────────
-  // Phase 6 — v2 owns its own recovery cascade (recovery.ts)
+  // Phase 6, v2 owns its own recovery cascade (recovery.ts)
   // ─────────────────────────────────────────────────────────
 
   it('PHASE 6: recoverable provider 4xx → system note + wakeup, no injury', async () => {
     // A "vision_mismatch" 400 from the provider. The classifier recognizes
     // it as recoverable; recovery persists a [System: …] note (per the
-    // spec table — vision_mismatch template) and queues a wakeup. The
-    // agent is NOT injured — recordError + onAgentInjured should NOT
+    // spec table, vision_mismatch template) and queues a wakeup. The
+    // agent is NOT injured, recordError + onAgentInjured should NOT
     // fire. Tier B = no status change.
     callModelSpy.mockRejectedValue(
-      new Error('400 The model does not support image input — no endpoints found that support images'),
+      new Error('400 The model does not support image input, no endpoints found that support images'),
     );
 
     await runV2Turn('primary');
@@ -1108,7 +1108,7 @@ describe('runV2Turn integration', () => {
       .all() as Array<{ content: string }>;
     expect(sysMsgs).toHaveLength(1);
     // Either the tool_format_rejected or tool_args_schema_mismatch template
-    // is acceptable — both are Tier B and both produce actionable notes
+    // is acceptable, both are Tier B and both produce actionable notes
     // about re-issuing the tool call. Classifier ordering decides which
     // fires for any given phrasing.
     expect(sysMsgs[0].content).toMatch(/tool call|Re-call with|Re-issue/i);
@@ -1125,7 +1125,7 @@ describe('runV2Turn integration', () => {
     // second identical call trips the cap because both kind and
     // fingerprint match.
     callModelSpy.mockRejectedValue(
-      new Error('400 The model does not support image input — no endpoints found that support images'),
+      new Error('400 The model does not support image input, no endpoints found that support images'),
     );
 
     // First run: streak gets created with the real fingerprint at count=1.
@@ -1146,7 +1146,7 @@ describe('runV2Turn integration', () => {
     recordErrorMock.mockClear();
     onAgentInjuredSpy.mockClear();
 
-    // Second identical failure — same kind, same fingerprint → escalate.
+    // Second identical failure, same kind, same fingerprint → escalate.
     await runV2Turn('primary');
 
     expect(recordErrorMock).toHaveBeenCalledWith('primary');
@@ -1188,7 +1188,7 @@ describe('runV2Turn integration', () => {
   });
 
   it('PHASE 6 (v2.3.19): auth_invalid 401 → Tier D lock with plain-English banner + system note', async () => {
-    // A 401 from the provider is a true platform condition — the user
+    // A 401 from the provider is a true platform condition, the user
     // needs to update their API key. Recovery should:
     //   - persist a [System (platform error): …] note for the agent
     //   - set status='error' (Tier D)
@@ -1199,7 +1199,7 @@ describe('runV2Turn integration', () => {
 
     await runV2Turn('primary');
 
-    // Healer was scheduled (Tier D does fire Healer — cross-provider,
+    // Healer was scheduled (Tier D does fire Healer, cross-provider,
     // potentially useful for diagnosis even if not auto-fix).
     expect(onAgentInjuredSpy).toHaveBeenCalled();
 
@@ -1285,7 +1285,7 @@ describe('runV2Turn integration', () => {
     expect(rateLimited?.severity).toBe('warning');
     expect(rateLimited?.retryable).toBe(true);
 
-    // v2.3.19 — system message text updated to the spec's plain-English
+    // v2.3.19, system message text updated to the spec's plain-English
     // template. Tests assert the agent-facing language, not the old
     // "[Rate limited]" bracket.
     const sysMsgs = mockDb.current!
@@ -1469,7 +1469,7 @@ describe('runV2Turn integration', () => {
     expect(selectModelMock.mock.calls[1][2]).toEqual(['primary-model']);
     // Both model calls fired.
     expect(callModelSpy).toHaveBeenCalledTimes(2);
-    // No injury — fallback succeeded.
+    // No injury, fallback succeeded.
     expect(recordErrorMock).not.toHaveBeenCalled();
     expect(onAgentInjuredSpy).not.toHaveBeenCalled();
   });

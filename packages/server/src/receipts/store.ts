@@ -1,0 +1,178 @@
+// ════════════════════════════════════════
+// C26: Verified action receipts (engine-written)
+// ════════════════════════════════════════
+//
+// The SOLE writer of tool_receipts rows. A consequential, side-effecting tool
+// (send / calendar / file) calls writeToolReceipt AFTER its provider call
+// returns, handing over the machine id the provider issued. The engine, not
+// the model, captures and persists it, so a weak model can never fabricate a
+// "sent it." The tracker complete gate then demands a verified receipt for any
+// turn that ran a send-class tool (see tracker/tools.ts).
+//
+// Two rows are written per receipt, atomically: the tool_receipts row itself
+// and a uniform audit_log `tool_call` row that points back at it (restoring a
+// provenance join, since a successful gmail_send writes no audit_log row today).
+// The receipt id is also registered in the per-turn in-memory register
+// (turn-state.ts) which is the gate's primary, same-process discovery path.
+//
+// HARD RULES: engine-written only (no model input reaches here); `detail` holds
+// status / anomaly JSON ONLY, never message bodies, never secrets.
+
+import { v4 as uuidv4 } from 'uuid';
+import { getDb } from '../db/connection.js';
+import { createLogger } from '../logger.js';
+import { noteTurnReceipt } from '../agent/turn-state.js';
+
+const logger = createLogger('receipts');
+
+export type ReceiptTier = 1 | 2 | 3;
+export type ReceiptBasis = 'provider-id' | 'refetch' | 'http-status' | 'exit-code';
+
+// C26: the side-effecting tools that produce a receipt, mapped to their tier.
+// Tier 1 = provider id already in hand; tier 2 = read-only re-fetch (Graph
+// sendMail 202 no-body); tier 3 = honestly unverifiable (iMessage exit code).
+// Used by the dev harness intercept to pick the tier for a synthetic
+// receipt, and available to any caller that needs the canonical tier.
+export const RECEIPT_TOOLS: Record<string, ReceiptTier> = {
+  gmail_send: 1, gmail_reply: 1, gmail_forward: 1,
+  calendar_create: 1, calendar_update: 1,
+  sms_send: 1, voice_call: 1,
+  teams_send_message: 1, teams_send_channel_message: 1,
+  outlook_send: 2, outlook_reply: 2, outlook_forward: 2,
+  imessage_send: 3,
+};
+
+export interface WriteReceiptParams {
+  agentId: string;
+  tool: string;                 // canonical tool name
+  tier: ReceiptTier;
+  verified: boolean;
+  basis: ReceiptBasis;
+  providerId?: string | null;   // Gmail message id, Twilio SID, Graph/event id, ...
+  threadId?: string | null;
+  recipient?: string | null;
+  // Status / anomaly data only. NEVER message bodies, NEVER secrets.
+  detail?: Record<string, unknown> | null;
+  sim?: boolean;
+  // When the caller already writes its own audit_log row (e.g. imessage_send
+  // keeps a richer over-share audit line), set this to skip the writer's paired
+  // row and avoid a double-write. The receipt row + turn register still happen.
+  skipAudit?: boolean;
+}
+
+export interface ToolReceiptRow {
+  id: string;
+  agent_id: string;
+  tool: string;
+  tier: number;
+  verified: number;
+  basis: string;
+  provider_id: string | null;
+  thread_id: string | null;
+  recipient: string | null;
+  detail: string | null;
+  audit_id: string | null;
+  task_id: string | null;
+  sim: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Persist an engine-written receipt for a side-effecting tool call, write the
+ * paired audit_log row, and register the id in the current turn. Returns the
+ * new receipt id. On DB failure it logs and returns the id without registering
+ * it (so the gate does not count a receipt that was never stored).
+ */
+export function writeToolReceipt(params: WriteReceiptParams): string {
+  const {
+    agentId, tool, tier, verified, basis,
+    providerId = null, threadId = null, recipient = null,
+    detail = null, sim = false, skipAudit = false,
+  } = params;
+
+  const receiptId = uuidv4();
+  const auditId = skipAudit ? null : uuidv4();
+  const detailJson = detail ? JSON.stringify(detail) : null;
+
+  try {
+    const db = getDb();
+    // Paired audit_log row (uniform tool_call provenance). detail points at the
+    // receipt id only (no bodies, no secrets). Skipped when the caller already
+    // wrote its own audit row for this send.
+    if (auditId) {
+      db.prepare(`
+        INSERT INTO audit_log (id, agent_id, action_type, target, result, detail, created_at)
+        VALUES (?, ?, 'tool_call', ?, 'success', ?, datetime('now'))
+      `).run(auditId, agentId, tool, `receipt=${receiptId}`);
+    }
+
+    db.prepare(`
+      INSERT INTO tool_receipts (
+        id, agent_id, tool, tier, verified, basis,
+        provider_id, thread_id, recipient, detail, audit_id, sim,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    `).run(
+      receiptId, agentId, tool, tier, verified ? 1 : 0, basis,
+      providerId, threadId, recipient, detailJson, auditId, sim ? 1 : 0,
+    );
+
+    noteTurnReceipt(agentId, receiptId);
+
+    logger.info('tool receipt written', {
+      tool, tier, verified, basis,
+      providerId: providerId ?? null,
+      sim: sim ? 1 : 0,
+      receiptId,
+    }, agentId);
+  } catch (err) {
+    logger.error('Failed to write tool receipt', {
+      tool, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+
+  return receiptId;
+}
+
+/** Load the tool_receipts rows for a set of ids (gate consumption). */
+export function getReceiptsByIds(ids: string[]): ToolReceiptRow[] {
+  if (ids.length === 0) return [];
+  const db = getDb();
+  const placeholders = ids.map(() => '?').join(',');
+  return db.prepare(
+    `SELECT * FROM tool_receipts WHERE id IN (${placeholders})`
+  ).all(...ids) as ToolReceiptRow[];
+}
+
+/**
+ * Stamp task_id (+ updated_at) on receipts consumed as evidence by the gate.
+ * Only rows not yet attached to a task are stamped (task_id IS NULL), so when
+ * two tasks complete in the same turn each receipt attaches to exactly one
+ * task (first complete wins) instead of the last complete overwriting all.
+ */
+export function stampReceiptsTask(ids: string[], taskId: string): void {
+  if (ids.length === 0) return;
+  try {
+    const db = getDb();
+    const stmt = db.prepare(
+      `UPDATE tool_receipts SET task_id = ?, updated_at = datetime('now') WHERE id = ? AND task_id IS NULL`
+    );
+    const tx = db.transaction((rows: string[]) => {
+      for (const id of rows) stmt.run(taskId, id);
+    });
+    tx(ids);
+  } catch (err) {
+    logger.warn('Failed to stamp task on receipts (non-fatal)', {
+      taskId, error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/** Receipts for a task, plus (optionally) recent rows for an assignee. PM read. */
+export function getReceiptsForTask(taskId: string): ToolReceiptRow[] {
+  const db = getDb();
+  return db.prepare(
+    `SELECT * FROM tool_receipts WHERE task_id = ? ORDER BY created_at DESC`
+  ).all(taskId) as ToolReceiptRow[];
+}

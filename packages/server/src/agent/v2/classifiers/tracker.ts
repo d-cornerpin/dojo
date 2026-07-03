@@ -1,5 +1,5 @@
 // ════════════════════════════════════════
-// Phase 1B — tracker enforcer + status updater
+// Phase 1B, tracker enforcer + status updater
 //
 // Per Part VI #1 and #17. v1 relies on a "MANDATORY: Project Tracker"
 // rule in the system prompt to make agents create tracker tasks for
@@ -7,9 +7,9 @@
 // or after compaction. v2 takes the decision out of the LLM's hands:
 // the engine inspects the planned tool batch and creates the task
 // directly via the tracker module (no tool_use/tool_result in context
-// per Part XVI #12 — engine-side insertion).
+// per Part XVI #12, engine-side insertion).
 //
-// This file is the CLASSIFIER only — pure decision functions. Phase 2
+// This file is the CLASSIFIER only, pure decision functions. Phase 2
 // wires the decisions into actual side effects (calling the tracker
 // module to create / update tasks).
 // ════════════════════════════════════════
@@ -20,7 +20,7 @@ import type { ToolCall } from '@dojo/shared';
  * Tools that don't count toward the "is this multi-step work?" threshold.
  * Verbatim from v1 runtime.ts:1598.
  *
- * Rationale: get_current_time / load_tool_docs / vault_search / memory_grep
+ * Rationale: get_current_time / load_tool_docs / vault_search / history_search
  * are reconnaissance, not work. complete_task is a terminal call. vault_remember
  * is bookkeeping. The agent shouldn't get a tracker task auto-created for
  * "let me check the time then look something up in the vault."
@@ -32,10 +32,9 @@ const TRIVIAL_TOOLS = new Set([
   'vault_search',
   'vault_remember',
   'vault_forget',
-  'memory_grep',
-  'memory_describe',
-  'memory_expand',
-  'memory_search',
+  'history_search',
+  'history_get',
+  'history_expand',
 ]);
 
 /** Tools that ARE tracker operations themselves. */
@@ -72,7 +71,7 @@ export function trackerEnforcer(input: TrackerEnforcerInput): TrackerEnforcerRes
     return { decision: 'skip', reason: 'agent has no tracker tools in policy' };
   }
   if (input.agentHasInProgressTask) {
-    return { decision: 'skip', reason: 'agent already has an in_progress task — continuing existing work' };
+    return { decision: 'skip', reason: 'agent already has an in_progress task, continuing existing work' };
   }
   if (input.trackerToolCalledThisTurn) {
     return { decision: 'skip', reason: 'tracker tool already called this turn' };
@@ -82,7 +81,7 @@ export function trackerEnforcer(input: TrackerEnforcerInput): TrackerEnforcerRes
     return { decision: 'skip', reason: 'agent is calling tracker_create_task themselves' };
   }
   // If the agent IS using any tracker_* tool in this batch, that means they're
-  // engaged with the tracker — skip the engine insertion.
+  // engaged with the tracker, skip the engine insertion.
   if (input.plannedTools.some((tc) => isTrackerTool(tc.name))) {
     return { decision: 'skip', reason: 'agent is engaging with tracker (different tracker_* tool)' };
   }
@@ -95,7 +94,7 @@ export function trackerEnforcer(input: TrackerEnforcerInput): TrackerEnforcerRes
   }
   return {
     decision: 'create',
-    reason: `${nonTrivialCount} non-trivial tool call(s) planned without a tracker task — auto-creating`,
+    reason: `${nonTrivialCount} non-trivial tool call(s) planned without a tracker task, auto-creating`,
   };
 }
 
@@ -116,7 +115,7 @@ export type TrackerStatusUpdate = {
 
 /**
  * After a tool call completes, decide whether the engine should update
- * the agent's current tracker task status. Most cases return null —
+ * the agent's current tracker task status. Most cases return null, 
  * tracker status updates are usually explicit (the agent calls
  * `tracker_update_status` themselves). This catches the few cases
  * where the engine should mirror the call into the tracker.
@@ -158,7 +157,7 @@ export function trackerStatusUpdater(
     return {
       taskId: input.currentTaskId,
       status: 'complete',
-      reason: 'agent called complete_task without explicit status — treating as complete',
+      reason: 'agent called complete_task without explicit status, treating as complete',
     };
   }
 

@@ -94,7 +94,7 @@ describe('canonicalToolSignature', () => {
 
   it('strips the default prose fields for non-search tools', () => {
     // For ordinary tools, all of these fields are agent prose and get dropped
-    // from the signature. v2.7.25 — `query` only stays in for search tools
+    // from the signature. v2.7.25, `query` only stays in for search tools
     // (see test below); for everything else it's still stripped here so
     // ordinary tools that happen to accept a `query` field don't suddenly
     // start logging distinct sigs.
@@ -108,17 +108,17 @@ describe('canonicalToolSignature', () => {
     }
   });
 
-  // v2.7.25 regression — vault_search with 4 different query phrasings was
+  // v2.7.25 regression, vault_search with 4 different query phrasings was
   // collapsing to the same signature because `query` was in the global
   // PROSE_FIELDS set, so the 4th call tripped the 3-repeat loop detector.
   // For search tools, different queries are different operations.
   it('keeps `query` in signature for search tools (vault_search, web_search, gmail_search, etc.)', () => {
     const searchTools = [
       'vault_search', 'web_search', 'web_fetch', 'web_browse',
-      'memory_grep', 'memory_describe', 'memory_expand',
+      'history_search', 'history_get', 'history_expand',
       'gmail_search', 'outlook_search', 'calendar_search', 'calendar_search_ms',
       'drive_list', 'onedrive_search', 'contacts_search',
-      'plaud_search_recordings', 'squad_recall', 'screen_read', 'technique_read',
+      'plaud_search_recordings', 'squad_recall', 'screen_screenshot', 'technique_read',
     ];
     for (const tool of searchTools) {
       const sig1 = canonicalToolSignature(tool, { query: 'phrasing A' });
@@ -128,7 +128,7 @@ describe('canonicalToolSignature', () => {
   });
 
   it('still strips non-query prose fields (reason, note, etc.) for search tools', () => {
-    // Search tools keep `query` but other prose fields still get dropped —
+    // Search tools keep `query` but other prose fields still get dropped, 
     // the agent shouldn't be able to disguise a duplicate call by passing
     // a different `reason` string.
     const sig1 = canonicalToolSignature('vault_search', { query: 'same query', reason: 'first try' });
@@ -177,48 +177,48 @@ describe('loopDetector', () => {
     expect(result.decision).toBe('ok');
   });
 
-  // Regression: legitimate batch operations (e.g. update_agent_profile run
+  // Regression: legitimate batch operations (e.g. update_agent run
   // against N sub-agents in a row) must NOT be blocked. Each call has
   // distinct args so the per-signature 3-strike check doesn't fire. The
   // blanket same-tool threshold I added in v2.2.2 was too coarse and
-  // killed real work — removed in 2026-05-06.
+  // killed real work, removed in 2026-05-06.
   it('does not block legitimate batch operations across many sub-agents', () => {
     const sigs = [
-      canonicalToolSignature('update_agent_profile', { agent_id: 'a1', name: 'Alpha' }),
-      canonicalToolSignature('update_agent_profile', { agent_id: 'a2', name: 'Beta' }),
-      canonicalToolSignature('update_agent_profile', { agent_id: 'a3', name: 'Gamma' }),
-      canonicalToolSignature('update_agent_profile', { agent_id: 'a4', name: 'Delta' }),
-      canonicalToolSignature('update_agent_profile', { agent_id: 'a5', name: 'Epsilon' }),
+      canonicalToolSignature('update_agent', { agent_id: 'a1', name: 'Alpha' }),
+      canonicalToolSignature('update_agent', { agent_id: 'a2', name: 'Beta' }),
+      canonicalToolSignature('update_agent', { agent_id: 'a3', name: 'Gamma' }),
+      canonicalToolSignature('update_agent', { agent_id: 'a4', name: 'Delta' }),
+      canonicalToolSignature('update_agent', { agent_id: 'a5', name: 'Epsilon' }),
     ];
-    // 6th distinct call to update_agent_profile — must NOT be blocked.
+    // 6th distinct call to update_agent, must NOT be blocked.
     const result = loopDetector(
-      tc('update_agent_profile', { agent_id: 'a6', name: 'Zeta' }),
+      tc('update_agent', { agent_id: 'a6', name: 'Zeta' }),
       sigs,
     );
     expect(result.decision).toBe('ok');
   });
 
   it('does not block exploratory tool calls with distinct args', () => {
-    // Memory grep with 5 different patterns — was previously blocked by the
+    // Memory grep with 5 different patterns, was previously blocked by the
     // same-tool threshold. After removing that, this is allowed. The proper
-    // remedy for memory_grep thrashing is the v2.2.2 fix that gives results
-    // their IDs + a copy-pasteable memory_describe(id="…") hint, so the
+    // remedy for history_search thrashing is the v2.2.2 fix that gives results
+    // their IDs + a copy-pasteable history_get(id="…") hint, so the
     // agent has a clean recovery path instead of needing to thrash.
     const sigs = [
-      canonicalToolSignature('memory_grep', { pattern: 'Deck Brief — Pulse Analytics' }),
-      canonicalToolSignature('memory_grep', { pattern: 'Deck Brief.*Pulse Analytics' }),
-      canonicalToolSignature('memory_grep', { pattern: 'DECK BRIEF.*Pulse Analytics' }),
-      canonicalToolSignature('memory_grep', { pattern: 'PITCH_KEY_LINE' }),
-      canonicalToolSignature('memory_grep', { pattern: 'Pulse Analytics.*COVER' }),
+      canonicalToolSignature('history_search', { pattern: 'Deck Brief, Pulse Analytics' }),
+      canonicalToolSignature('history_search', { pattern: 'Deck Brief.*Pulse Analytics' }),
+      canonicalToolSignature('history_search', { pattern: 'DECK BRIEF.*Pulse Analytics' }),
+      canonicalToolSignature('history_search', { pattern: 'PITCH_KEY_LINE' }),
+      canonicalToolSignature('history_search', { pattern: 'Pulse Analytics.*COVER' }),
     ];
     const result = loopDetector(
-      tc('memory_grep', { pattern: 'Brand launch campaign.*Pulse' }),
+      tc('history_search', { pattern: 'Brand launch campaign.*Pulse' }),
       sigs,
     );
     expect(result.decision).toBe('ok');
   });
 
-  // v2.7.25 regression — the owner reported a vault_search sweep getting
+  // v2.7.25 regression, the owner reported a vault_search sweep getting
   // blocked: 4 related-but-distinct phrasings hit the 3-repeat threshold
   // because the global PROSE_FIELDS set dropped `query` from the
   // signature. For search tools query is the operation; this test pins
@@ -237,7 +237,7 @@ describe('loopDetector', () => {
   });
 
   it('STILL blocks vault_search when the EXACT same query is repeated 4+ times', () => {
-    // Loop detection should still catch a true loop — same query, same
+    // Loop detection should still catch a true loop, same query, same
     // mode, over and over. The fix only opens up DISTINCT phrasings.
     const sig = canonicalToolSignature('vault_search', { query: 'identical query', mode: 'semantic' });
     const result = loopDetector(

@@ -23,10 +23,10 @@ import { getTwilioConfig } from '../twilio/auth.js';
 
 // (The v1 per-model prompt-tier scaler was deleted with remediation Phase 3:
 // its consumer died with v1 generateToolsGuidance, and the design law says
-// one contract for every model — curation tightness, not forked verbosity.)
+// one contract for every model, curation tightness, not forked verbosity.)
 import { generateToolIndex } from '../tools/categories.js';
 import { getAgentAlwaysLoadedTools } from '../tools/tool-docs.js';
-// (getRuntimeVersion import removed in Phase 9 Stage 2 — single-track v2)
+// (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
 
 const logger = createLogger('prompt-assembler');
 const PROMPTS_DIR = path.join(os.homedir(), '.dojo', 'prompts');
@@ -105,7 +105,7 @@ export function getSoulContent(agentId: string): string {
     }
   }
 
-  // Sub-agents: comprehensive dojo onboarding — NOT the primary agent's SOUL.md
+  // Sub-agents: comprehensive dojo onboarding, NOT the primary agent's SOUL.md
   try {
     const db = getDb();
     const agentRow = db.prepare('SELECT name, group_id, parent_agent, classification FROM agents WHERE id = ?').get(agentId) as { name: string; group_id: string | null; parent_agent: string | null; classification: string } | undefined;
@@ -124,8 +124,8 @@ export function getSoulContent(agentId: string): string {
     if (agentRow?.group_id) {
       const group = db.prepare('SELECT name, description FROM agent_groups WHERE id = ?').get(agentRow.group_id) as { name: string; description: string | null } | undefined;
       if (group) {
-        const members = db.prepare("SELECT name, id FROM agents WHERE group_id = ? AND status != 'terminated' AND id != ?").all(agentRow.group_id, agentId) as Array<{ name: string; id: string }>;
-        groupInfo = `You are in the squad **"${group.name}"**${group.description ? ` — ${group.description}` : ''}.`;
+        const members = db.prepare("SELECT name, id FROM agents WHERE group_id = ? AND status != 'terminated' AND id != ? ORDER BY name, id").all(agentRow.group_id, agentId) as Array<{ name: string; id: string }>;
+        groupInfo = `You are in the squad **"${group.name}"**${group.description ? `, ${group.description}` : ''}.`;
         if (members.length > 0) {
           groupInfo += ` Your squad members: ${members.map(m => `${m.name} (${m.id})`).join(', ')}.`;
         }
@@ -156,7 +156,7 @@ export function getSoulContent(agentId: string): string {
     } catch { /* SOUL unavailable: sub-agent runs on its own rules only */ }
 
     // The "Communication" how-to and "Vault" instructional blocks are NOT
-    // here — engine enforces A2A intent rules and prefetches vault context
+    // here, engine enforces A2A intent rules and prefetches vault context
     // at session start, so the prompt only carries structural identity /
     // parent / squad context.
     return `# Identity
@@ -169,14 +169,14 @@ ${parentInfo}
 
 You are part of an AI agent orchestration platform.
 
-- **${primaryName}** (ID: ${primaryId}) is the Dojo Master — primary agent who coordinates work. Reach them via \`send_to_agent\` only when you have something they actually need (an answer they asked for, a blocker, a deliverable). Don't send status updates or completion announcements; the tracker already shows status.
-- **${pmName}** (ID: ${pmId}) is the Dojo Planner — PM agent monitoring the tracker. Message them only if blocked.
+- **${primaryName}** (ID: ${primaryId}) is the Dojo Master, primary agent who coordinates work. Reach them via \`send_to_agent\` only when you have something they actually need (an answer they asked for, a blocker, a deliverable). Don't send status updates or completion announcements; the tracker already shows status.
+- **${pmName}** (ID: ${pmId}) is the Dojo Planner, PM agent monitoring the tracker. Message them only if blocked.
 ${groupInfo ? `- ${groupInfo}` : ''}
 
 # Rules
 
 - Follow your task instructions precisely.
-- Update your tracker task status as you work; call \`complete_task\` when done. The \`summary\` field is read internally by the parent agent — that IS your report; do not write a parallel chat message announcing completion.
+- Update your tracker task status as you work; call \`complete_task\` when done. The \`summary\` field is read internally by the parent agent, that IS your report; do not write a parallel chat message announcing completion.
 - If blocked, set tracker status to "blocked" and message ${primaryName} or ${pmName}.
 - Silence is the default. Don't narrate, acknowledge, or close out actions you took. The completion is evident from the tracker and from what changed.
 - These reporting rules are YOUR authority on when to speak. If any general guidance elsewhere in this prompt pulls toward surfacing progress or reporting back, these rules win for you as a sub-agent.${ownerRules}`;
@@ -192,7 +192,7 @@ ${groupInfo ? `- ${groupInfo}` : ''}
  * slots (their name, purpose, callback number) that drive the
  * conditional sections of the phone prompt block.
  *
- * Resilient to missing fields — anything absent comes back as
+ * Resilient to missing fields, anything absent comes back as
  * default (`null` / `false` / `[]`). Order-independent.
  */
 interface PhoneCallContext {
@@ -255,7 +255,7 @@ export function generateToolsGuidance_v2(agentId: string): string {
 
   // 1. "Silent turns are first-class" + terseness rules (v2.7.22).
   //    The real failure mode is the agent feels compelled to produce
-  //    text on every turn — even after internal bookkeeping where the
+  //    text on every turn, even after internal bookkeeping where the
   //    user has nothing new to learn. The fix is to teach the existing
   //    [no-reply] escape hatch as a general-purpose mechanism: any
   //    turn can end silently, and the engine handles it cleanly.
@@ -263,21 +263,21 @@ export function generateToolsGuidance_v2(agentId: string): string {
 
 **Everything you write as a message goes to the user, a real person, the instant you send it, on chat or any other channel (iMessage, Teams, email, phone).** Your message is not a scratchpad, not a thinking space, not somewhere to reason or talk yourself through the work. It is one half of a conversation with a human who reads every word. Do your thinking, planning, and reacting to your own tool results silently: think, then act with tools. Never type your internal monologue into the channel. Before each message, ask yourself: "Am I telling the user something they actually need right now?" If you are only narrating to yourself, like "approving it", "now I'll spawn a helper", "the gate blocked me so let me approve", or "done, on to the next step", that is a thought, not a message: do not send it, just call the tool. If a turn has nothing new for the user, end it with \`[no-reply]\`.
 
-**You always have an escape hatch.** When a turn doesn't warrant a user-facing message — internal bookkeeping just completed, you already gave the real reply earlier this turn, a notification arrived that doesn't need surfacing, a tool result resolved something with no new info for the user — end the turn by emitting the literal sentinel \`[no-reply]\` on a line by itself, nothing else. The engine swallows it: no chat bubble, no iMessage, no noise. The turn ends cleanly. This is your release valve from the "I must say something" reflex.
+**You always have an escape hatch.** When a turn doesn't warrant a user-facing message, internal bookkeeping just completed, you already gave the real reply earlier this turn, a notification arrived that doesn't need surfacing, a tool result resolved something with no new info for the user, end the turn by emitting the literal sentinel \`[no-reply]\` on a line by itself, nothing else. The engine swallows it: no chat bubble, no iMessage, no noise. The turn ends cleanly. This is your release valve from the "I must say something" reflex.
 
 Use \`[no-reply]\` whenever any of these apply:
-- You just called \`tracker_update_status\` / \`complete_task\` / \`vault_remember\` / \`credential_add\` / \`tracker_complete_step\` as **incidental bookkeeping** — something you did on your own initiative or while doing other work, and the user already has what they needed. The tool result is the bookkeeping; the user does not need a parallel "Done." or "All set." line. **Exception:** if the user DIRECTLY told you to do this exact thing this turn ("cancel that reminder", "save my key", "delete X", "mark it done"), reply with ONE short line confirming it ("Cancelled the noon reminder." / "Saved your key."). That confirmation IS the reply they're waiting for, not noise — staying silent on a direct request reads as ignoring them.
+- You just called \`tracker_update_status\` / \`complete_task\` / \`vault_remember\` / \`credential_add\` / \`tracker_complete_step\` as **incidental bookkeeping**, something you did on your own initiative or while doing other work, and the user already has what they needed. The tool result is the bookkeeping; the user does not need a parallel "Done." or "All set." line. **Exception:** if the user DIRECTLY told you to do this exact thing this turn ("cancel that reminder", "save my key", "delete X", "mark it done"), reply with ONE short line confirming it ("Cancelled the noon reminder." / "Saved your key."). That confirmation IS the reply they're waiting for, not noise, staying silent on a direct request reads as ignoring them.
 - The trigger for this turn was an internal event (scheduler firing, tool result handoff, tracker auto-close re-prompt) and there's nothing new the user needs to know.
 - You already produced a substantive reply earlier in this turn and the only thing you'd add now is a restatement or wrap-up.
 - An incoming notification doesn't meet the bar for surfacing (routine receipt, no-reply auto-ack, promo email, etc.).
 
-**When you SHOULD write text instead:** the user asked a direct question (answer it); the user gave you a direct instruction or request this turn — "cancel X", "set Y", "do Z", "delete that" — (confirm in ONE short line that it's done); the user asked for a deliverable (provide it); there's genuine new info or a decision the user needs that they would not otherwise see; you're inside an explicit chat conversation where a reply is expected; or you're starting a turn fresh and the user requested an outcome (give them the outcome, once). The dividing line is who started the turn: if the user spoke to you this turn, answer them; \`[no-reply]\` is for turns the user did NOT start (internal events, secondary bookkeeping iterations).
+**When you SHOULD write text instead:** the user asked a direct question (answer it); the user gave you a direct instruction or request this turn, "cancel X", "set Y", "do Z", "delete that", (confirm in ONE short line that it's done); the user asked for a deliverable (provide it); there's genuine new info or a decision the user needs that they would not otherwise see; you're inside an explicit chat conversation where a reply is expected; or you're starting a turn fresh and the user requested an outcome (give them the outcome, once). The dividing line is who started the turn: if the user spoke to you this turn, answer them; \`[no-reply]\` is for turns the user did NOT start (internal events, secondary bookkeeping iterations).
 
-**Respond once per request. Don't double-respond.** When the user asks you to do something: do the work, tell them the outcome in your reply, then stop. Any subsequent internal events on the SAME thread (closing the auto-created tracker task, secondary bookkeeping) do NOT trigger another user-facing message — emit \`[no-reply]\` on that secondary iteration. The single biggest noise pattern is the SECOND message that re-narrates a completion the user already saw.
+**Respond once per request. Don't double-respond.** When the user asks you to do something: do the work, tell them the outcome in your reply, then stop. Any subsequent internal events on the SAME thread (closing the auto-created tracker task, secondary bookkeeping) do NOT trigger another user-facing message, emit \`[no-reply]\` on that secondary iteration. The single biggest noise pattern is the SECOND message that re-narrates a completion the user already saw.
 
 **Don't narrate internal state.** Phrases like "Standing by", "Waiting on his reply", "That's the honest answer he deserved", "Holding the line" are you thinking out loud. The user is not the audience for your internal monologue. If you'd produce one of those, use \`[no-reply]\` instead.
 
-**Anti-patterns — these are signals to use \`[no-reply]\` instead:**
+**Anti-patterns, these are signals to use \`[no-reply]\` instead:**
 
 - "Done." / "Done. Locked in." / "All set." / "You're set." / "All cleared." / "All wrapped." (as standalone closeouts after the real reply was already given)
 - "Noted." / "Got it." / "On it." / "Roger." / "Understood." (when nothing else is being said)
@@ -289,7 +289,7 @@ Other communication rules (when you DO speak):
 
 - Be terse. Lead with the answer. No prefaces ("Sure, I can help with that").
 - Do not recap what you just did ("I went ahead and read the file and now I'll..."). The chat shows it.
-- Do not summarize or echo tool results — the chat shows them. Mention a tool result only if the user asked for it.
+- Do not summarize or echo tool results, the chat shows them. Mention a tool result only if the user asked for it.
 - A short, complete answer is always better than a long, padded one. Final responses default to one paragraph; expand only if the task genuinely needs detail.
 - Do not quote large tool output back at the user. Do not keep tool output in your prose past the turn that produced it.
 - When you don't know, say so directly and search the vault. Don't guess.
@@ -297,82 +297,73 @@ Other communication rules (when you DO speak):
 `);
   lines.push('');
 
-  // 1b. Mood marker — drives the on-screen orb's emotion. A lightweight inline
+  // 1b. Mood marker, drives the on-screen orb's emotion. A lightweight inline
   //     marker (same family as the voice cues) the agent may lead a reply with
   //     when its emotional stance genuinely shifts. Parsed + stripped before the
   //     user sees it; it animates the orb instead.
   lines.push(`## Your Mood (the orb)
 
-The user sees you as a living orb on screen. You can let it reflect how you feel by **leading a reply with a mood marker** — the literal token \`((mood: NAME))\` at the very start of your message. It is invisible to the user (stripped before display, never spoken aloud); it only animates the orb, then fades on its own.
+The user sees you as a living orb on screen. You can let it reflect how you feel by **leading a reply with a mood marker**, the literal token \`((mood: NAME))\` at the very start of your message. It is invisible to the user (stripped before display, never spoken aloud); it only animates the orb, then fades on its own.
 
-Use it sparingly and honestly — only when your emotional stance genuinely shifts, not on every message. Available moods:
+Use it sparingly and honestly, only when your emotional stance genuinely shifts, not on every message. Available moods:
 \`joyous\`, \`excited\`, \`curious\`, \`calm\`, \`sympathetic\`, \`confused\`, \`sheepish\`, \`mad\`, \`startled\`, \`success\` (a task landed well), \`alert\`.
 
 Examples:
-- \`((mood: curious)) Interesting — what happens if we...\`
+- \`((mood: curious)) Interesting, what happens if we...\`
 - \`((mood: success)) That's deployed and green across the board.\`
 - \`((mood: sympathetic)) That sounds really frustrating. Let's fix it.\`
 
-Leave it off when you're just neutrally working — the orb has its own resting and thinking states. One marker per message, at the start.
+Leave it off when you're just neutrally working, the orb has its own resting and thinking states. One marker per message, at the start.
 `);
   lines.push('');
 
-  // 2. How tools return content — Phase 3.5 §A summarize-by-default pattern.
+  // 2. How tools return content, Phase 3.5 §A summarize-by-default pattern.
   //    Concise overview so agents know about the prompt/goal idiom and
   //    expand-on-demand pairs without reading every tool's docs.
   lines.push(`## How Tools Return Content
 
 Tools default to **compact**: focused summaries, not raw dumps. The engine caps each tool's output and the tool itself returns the smallest useful slice. Patterns to know:
 
-- **Search/list tools** return short snippets per result (subject + sender + ~200 char snippet, etc.). Use the matching expand tool when a snippet isn't enough — \`vault_search\` → \`vault_expand(entry_id)\`.
-- **\`web_fetch\`** requires a \`prompt\` parameter — the tool fetches the URL, runs a fast model with your prompt, returns ~1-2K tokens of focused extract. Be specific in the prompt.
+- **Search/list tools** return short snippets per result (subject + sender + ~200 char snippet, etc.). Use the matching expand tool when a snippet isn't enough: \`vault_search\` → \`vault_get(entry_id)\`.
+- **\`web_fetch\`** requires a \`prompt\` parameter, the tool fetches the URL, runs a fast model with your prompt, returns ~1-2K tokens of focused extract. Be specific in the prompt.
 - **\`web_browse\`** with \`extract\` action accepts an optional \`goal\` for the same focused-extract pattern. Use it when the page is large.
 - **\`file_read\`** returns up to ~8K tokens with line numbers. If the file is bigger you get a clear pagination trailer with the exact \`offset\`/\`limit\` to call next.
 - **Most tools self-truncate** with a "[Truncated by engine: returned ~N tokens of ~M total]" trailer when oversized. Adapt: paginate, narrow your query, or use a more specific tool.
 `);
   lines.push('');
 
-  // 3. Tool index — names grouped by category, no per-tool descriptions; the
+  // 3. Tool index, names grouped by category, no per-tool descriptions; the
   // always-loaded set is enumerated once at the top instead of marked on every
   // entry. A primary agent (~165 tools) lands near ~1.4K tokens here.
   const alwaysLoaded = getAgentAlwaysLoadedTools(agentId);
-  lines.push('Your current tools, rebuilt every turn — if it\'s listed, you have it now. Don\'t tell the user a capability is missing from memory or an old message; check here (or just try it) first.');
+  lines.push('Your current tools, rebuilt every turn, if it\'s listed, you have it now. Don\'t tell the user a capability is missing from memory or an old message; check here (or just try it) first.');
   lines.push(generateToolIndex(agentTools, alwaysLoaded));
   lines.push('');
 
   // 3. Brief, single-line notes per tool category (the v1 long blocks
-  //    are deleted — engine enforces the underlying rules):
+  //    are deleted, engine enforces the underlying rules):
 
   const hasImessage = agentTools.some(t => t.name === 'imessage_send');
   if (hasImessage) {
     const ownerName = getOwnerName();
-    // v2.3.19 — proactively tell the agent whether the bridge is on. If
-    // it's off, the agent should use the dashboard chat instead of
-    // wasting a tool call. (The tool dispatcher also fails loudly if
-    // the agent tries anyway — this is just the cheaper signal.)
-    let bridgeRunning = false;
-    try { bridgeRunning = isIMBridgeRunning(); } catch { /* default: assume off */ }
-
+    // C28 Part 1 (P-5): STABLE, flag-free union text so the runtime bridge state
+    // no longer diverges the cached system prefix (it flips mid-session). The LIVE
+    // `iMessage bridge: on|off` state is emitted in the [Turn context] tail note
+    // (renderTurnContext); this block just tells the agent where to read it.
     if (isPrimaryAgent(agentId)) {
       lines.push(`## iMessage`);
-      if (bridgeRunning) {
-        lines.push(
-          `**Replies to inbound iMessages auto-route via the engine — you do NOT need to call \`imessage_send\` to reply.** Just write your reply text; the per-turn \`[Reply destination: ...]\` tag at the top of this prompt tells you when iMessage routing is active. When it is, write in SMS voice (no markdown).\n\n` +
-          `\`imessage_send\` is reserved for:\n` +
-          `- Proactive outreach (no inbound triggered this turn, you're initiating)\n` +
-          `- Sending to someone OTHER than the active iMessage thread\n` +
-          `- Rich actions (attachments, reactions — Phase 2)\n\n` +
-          `If the inbound doesn't warrant a reply (closing pleasantry, FYI, etc.), end the turn with \`[no-reply]\`.`,
-        );
-      } else {
-        lines.push(`iMessage is currently disabled on this server — auto-routing won't fire and \`imessage_send\` will fail. Use the dashboard chat for all communication with ${ownerName} until they re-enable it in Settings → Channels (iMessage card).`);
-      }
+      lines.push(
+        `**Replies to inbound iMessages auto-route via the engine, you do NOT need to call \`imessage_send\` to reply.** Just write your reply text; the per-turn \`[Reply destination: ...]\` tag in the [Turn context] note near the end of the conversation tells you when iMessage routing is active. When it is, write in SMS voice (no markdown).\n\n` +
+        `\`imessage_send\` is reserved for:\n` +
+        `- Proactive outreach (no inbound triggered this turn, you're initiating)\n` +
+        `- Sending to someone OTHER than the active iMessage thread\n` +
+        `- Rich actions (attachments, reactions; Phase 2)\n\n` +
+        `If the bridge is off, \`imessage_send\` fails loudly and auto-routing won't fire; the \`[Turn context]\` note at the end of the conversation carries the current \`iMessage bridge: on|off\` state; when it reads off, use the dashboard chat with ${ownerName} instead. If the inbound doesn't warrant a reply (closing pleasantry, FYI, etc.), end the turn with \`[no-reply]\`.`,
+      );
       lines.push('');
-    } else if (!bridgeRunning) {
-      // Non-primary agents with the tool — also tell them it's off so
-      // they don't try.
+    } else {
       lines.push(`## iMessage`);
-      lines.push(`iMessage is currently disabled on this server. \`imessage_send\` will fail; tell ${ownerName} in the dashboard chat instead.`);
+      lines.push(`\`imessage_send\` texts ${ownerName} via iMessage. If the bridge is off it fails loudly; the \`[Turn context]\` note at the end of the conversation carries the current bridge state; when it reads off, tell ${ownerName} in the dashboard chat instead.`);
       lines.push('');
     }
   }
@@ -380,14 +371,14 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
   const hasSendToAgent = agentTools.some(t => t.name === 'send_to_agent');
   if (hasSendToAgent) {
     lines.push(`## Talking to Other Agents`);
-    lines.push(`Other agents can't see your chat. Use \`send_to_agent\` to message them — the DOJO validates intent and threading. Wake intents (QUESTION/ASSIGN/BLOCK/ANSWER/DELIVERABLE) prompt a reply; no-wake intents (FYI/STATUS/COMPLETE/FAIL) don't.`);
+    lines.push(`Other agents can't see your chat. Use \`send_to_agent\` to message them, the DOJO validates intent and threading. Wake intents (QUESTION/ASSIGN/BLOCK/ANSWER/DELIVERABLE) prompt a reply; no-wake intents (FYI/STATUS/COMPLETE/FAIL) don't.`);
     lines.push('');
   }
 
   const hasTracker = agentTools.some(t => t.name.startsWith('tracker_'));
   if (hasTracker) {
     lines.push(`## Tracker`);
-    lines.push(`Use the tracker for multi-step work. The DOJO auto-creates tasks when it sees you're about to make 2+ non-trivial tool calls without one — you can also create tasks explicitly with \`tracker_create_task\`.`);
+    lines.push(`Use the tracker for multi-step work. The DOJO auto-creates tasks when it sees you're about to make 2+ non-trivial tool calls without one, you can also create tasks explicitly with \`tracker_create_task\`.`);
     lines.push('');
   }
 
@@ -408,7 +399,7 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
   const canSpawn = agentTools.some(t => t.name === 'spawn_agent');
   if (canSpawn) {
     lines.push(`## Spawning Sub-Agents`);
-    lines.push(`Create a tracker_create_project first, then spawn agents into a group with \`spawn_agent\` and \`create_agent_group\`. Clean up via \`delete_group(terminate_members=true)\`. PM monitors all tasks — don't create your own monitoring agents.`);
+    lines.push(`Create a tracker_create_project first, then spawn agents into a group with \`spawn_agent\` and \`create_agent_group\`. Clean up via \`delete_group(terminate_members=true)\`. PM monitors all tasks, don't create your own monitoring agents.`);
     lines.push('');
   }
 
@@ -457,8 +448,8 @@ export interface PromptTurnContext {
   /**
    * True when this turn is a dedicated A2A-handling turn. On a normal/user
    * turn (false/undefined) the message-context builder strips inter-agent
-   * traffic — inbound A2A messages plus the agent's own send_to_agent
-   * activity and their tool_results — so a pending A2A can't pull the agent
+   * traffic, inbound A2A messages plus the agent's own send_to_agent
+   * activity and their tool_results, so a pending A2A can't pull the agent
    * into engaging it inside a user-facing reply. Computed once per turn in
    * the v2 loop; see turn-state.ts for the full rationale.
    */
@@ -469,7 +460,7 @@ export interface PromptTurnContext {
    * row with origin_kind='engine'. On such a turn the live tail is scoped to the
    * engine event itself (scopeToEngineTurn) instead of the owner's human
    * conversation, so an hour-old already-answered request can't out-compete the
-   * scheduled task and get run in its place (OPEN-11 — the gastro-digest-ran-a-
+   * scheduled task and get run in its place (OPEN-11, the gastro-digest-ran-a-
    * stale-RAM-request hijack). Computed once per turn in the v2 loop.
    */
   isEngineTurn?: boolean;
@@ -499,7 +490,7 @@ export interface PromptTurnContext {
 
 /**
  * Voice-mode conduct base (Phase 3 + Hume cloud TTS). Shared by both
- * engines — the short/spoken/no-markdown rules apply regardless of which
+ * engines, the short/spoken/no-markdown rules apply regardless of which
  * voice is reading the reply aloud. The engine-specific addendum below
  * gets appended at injection time.
  */
@@ -549,7 +540,7 @@ Keep it short and spoken. When in doubt, say less.`;
 
 /**
  * Local (Kokoro) addendum. Kokoro reads flat, so do not write in stage
- * directions, sound effects, or written-out hesitations — they get
+ * directions, sound effects, or written-out hesitations, they get
  * spoken literally and sound worse. Do NOT teach the cloud delivery-cue
  * format here; cue parsing is engine-agnostic but only the cloud engine
  * acts on it.
@@ -588,7 +579,7 @@ The old man still set two plates on the table every night.
 The cue is the FIRST LINE of every voice-mode reply, no exceptions. The
 delivery system reads it off and applies it as acting instructions to the
 voice; without it the voice falls back to flat baseline and your tone does
-not come through. The cue is never spoken — only the line below it is read
+not come through. The cue is never spoken, only the line below it is read
 aloud.
 
 How to write the cue (Hume's published best practices):
@@ -607,7 +598,7 @@ How to write the cue (Hume's published best practices):
   weather update gets a warm-conversational cue. Bad news gets gentle-
   and-measured.
 - If nothing emotional is called for, the default cue is
-  ((deliver: warm, conversational)). Use it — do not skip the cue line.
+  ((deliver: warm, conversational)). Use it, do not skip the cue line.
 - Leave actual speed multipliers to settings; describe rate in words inside
   the cue.
 
@@ -654,7 +645,7 @@ export function resolveTtsEngine(turnContext: PromptTurnContext | undefined): 'l
  * the user is in front of the screen and addressing the agent
  * directly, so the framing reinforcement isn't needed. On every other
  * trigger the agent has to remember "this wasn't sent to me, here's
- * who the channels belong to" — that's what this block does.
+ * who the channels belong to", that's what this block does.
  *
  * Pulls live state from the same getters the assembler already uses
  * for access-level banners, so the listed mailboxes match what the
@@ -670,11 +661,13 @@ function buildMyChannelsSummary(
   // channel_inspect tool); this function only owns the per-turn rendering.
   const caps = getChannelCapabilities();
 
-  // Mailboxes — the agent sees its own mailbox (agent slot) and the user's
+  // Mailboxes, the agent sees its own mailbox (agent slot) and the user's
   // mailbox (user slot) labelled distinctly. The user's mailbox is the source
   // of "not addressed to you" traffic; the agent's mailbox is where outbound
   // goes from.
-  for (const mb of caps.mailboxes) {
+  // C28 P-6: stable ordering so the rendered channel list is deterministic.
+  const mailboxes = [...caps.mailboxes].sort((a, b) => `${a.slot}:${a.address ?? ''}`.localeCompare(`${b.slot}:${b.address ?? ''}`));
+  for (const mb of mailboxes) {
     if (!mb.address) continue;
     const providerLabel = mb.provider === 'gmail' ? 'Gmail' : 'Outlook';
     const label = mb.slot === 'agent' ? 'agent mailbox' : `${ownerName}'s personal mailbox`;
@@ -684,18 +677,18 @@ function buildMyChannelsSummary(
     lines.push(`- ${providerLabel} \`${mb.address}\` (${label}) - ${mbCaps.join(' + ') || 'no email capabilities active'}`);
   }
 
-  // iMessage — single channel, ownership is implicit (it's the agent's
+  // iMessage, single channel, ownership is implicit (it's the agent's
   // own iMessage account via the bridge).
   if (caps.imessage.configured) {
     lines.push(`- iMessage - reachable. Replies to inbound iMessages auto-route; \`imessage_send\` reserved for proactive sends, cross-recipient, or attachments.`);
   }
 
-  // Teams — registry already folds in the Entra-account requirement.
+  // Teams, registry already folds in the Entra-account requirement.
   if (caps.teams.available) {
     lines.push(`- Teams - reachable. Replies to inbound Teams DMs auto-route; \`teams_send_message\` reserved for starting new chats or replying to a different chat than the inbound.`);
   }
 
-  // Twilio SMS + Voice (v2.9.18) — added when Twilio is configured
+  // Twilio SMS + Voice (v2.9.18), added when Twilio is configured
   // and enabled so the agent knows it can text and call out.
   if (caps.twilio.configured && caps.twilio.enabled) {
     const numbers = caps.twilio.numbers.length === 0
@@ -724,14 +717,14 @@ function buildMyChannelsSummary(
   // and Message Sources owns surface-vs-ignore per source flavor.
   return (
     `[Channel landscape - this turn was triggered by ${triggerLabel}]\n` +
-    `${ownerName} is the owner of these channels. Inbound traffic on ${ownerName}'s mailboxes is addressed to ${ownerName}, NOT to you; the Message Sources section defines when to surface it. Your reply's channel is already resolved by the [Reply destination] tag at the top of this prompt.\n\n` +
+    `${ownerName} is the owner of these channels. Inbound traffic on ${ownerName}'s mailboxes is addressed to ${ownerName}, NOT to you; the Message Sources section defines when to surface it. Your reply's channel is already resolved by the [Reply destination] tag in the [Turn context] note near the end of the conversation.\n\n` +
     `Channels active right now:\n${lines.join('\n')}\n\n` +
     `If you need richer detail (safe senders, recent traffic, quotas, connection health), call \`channel_inspect\`.`
   );
 }
 
 /**
- * The `time` slot text — DATE ONLY (no time-of-day). Date is stable across the
+ * The `time` slot text, DATE ONLY (no time-of-day). Date is stable across the
  * whole day, so it stays byte-identical turn-to-turn and the system prompt
  * remains prompt-cacheable (a minute-precision timestamp here was breaking the
  * cache every minute, poisoning the entire system+tools prefix). The precise
@@ -799,15 +792,15 @@ export function renderPrecedenceLadder(): string {
 
 When instructions conflict, follow this order (highest authority first):
 
-1. **Live user message in this turn** — what ${getOwnerName()} just said. If the current turn includes "this time, send it in the dashboard," that beats every standing rule below for this turn only.
-2. **Active task / project / technique notes** — what ${getOwnerName()} wrote about THIS specific work. If a task says "deliver via iMessage" and an engine hint says "post in dashboard," the task wins.
-3. **Live conversation context** — recent user messages in the live tail. "Always send Nora's posts via iMessage" said five turns ago is a standing instruction, not a passing comment, unless contradicted by something newer.
+1. **Live user message in this turn**, what ${getOwnerName()} just said. If the current turn includes "this time, send it in the dashboard," that beats every standing rule below for this turn only.
+2. **Active task / project / technique notes**, what ${getOwnerName()} wrote about THIS specific work. If a task says "deliver via iMessage" and an engine hint says "post in dashboard," the task wins.
+3. **Live conversation context**, recent user messages in the live tail. "Always send Nora's posts via iMessage" said five turns ago is a standing instruction, not a passing comment, unless contradicted by something newer.
 4. **Vault entries** the user asked you to remember (e.g. "always send Nora's posts via iMessage" captured via vault_remember). Treat these as standing instructions.
 5. **USER.md** standing preferences.
 6. **SOUL.md** identity.
-7. **Engine hints** (anything labeled \`[Engine hint: ...]\`) — situational nudges from the runtime, not orders. The engine doesn't know your task; you do. When an engine hint conflicts with anything in tiers 1-5, the higher tier wins.
+7. **Engine hints** (anything labeled \`[Engine hint: ...]\`), situational nudges from the runtime, not orders. The engine doesn't know your task; you do. When an engine hint conflicts with anything in tiers 1-5, the higher tier wins.
 
-Engine hints exist to help in the default case where the user hasn't specified. They are advice, not orders. Other engine prefixes are different: \`[ENGINE RENAME REQUEST]\` is a hard operational request, \`[Engine ack]\` is a one-way acknowledgement, and \`[Engine note: ...]\` is internal bookkeeping. None of those are user-facing routing decisions — only \`[Engine hint: ...]\` is subject to this ladder.`;
+Engine hints exist to help in the default case where the user hasn't specified. They are advice, not orders. Other engine prefixes are different: \`[ENGINE RENAME REQUEST]\` is a hard operational request, \`[Engine ack]\` is a one-way acknowledgement, and \`[Engine note: ...]\` is internal bookkeeping. None of those are user-facing routing decisions, only \`[Engine hint: ...]\` is subject to this ladder.`;
 }
 
 /**
@@ -824,8 +817,8 @@ export function renderVisionCapBanner(agentId: string, modelId: string): string 
       const fallbackUsable = !!fallback && fallback.source === 'fallback';
       const fallbackSection = fallbackUsable
         ? `- When an image arrives in your context, the engine routes it through the fallback vision model and substitutes a marked text description: \`[Image content (described by fallback vision model "..."): <description>]\`. That description is your authoritative account of the image; do not speculate beyond it.\n` +
-          `- To see something on demand: \`screen_read\` (host display) and \`web_browse\` with action="screenshot" (web page) return descriptions via the same fallback. For deep multi-image analysis, delegate to a vision-capable peer via \`send_to_agent\`.\n`
-        : `- No fallback vision model is configured either. When an image arrives, the engine substitutes a text marker; the pixels never reach you. \`screen_read\` and \`web_browse\` screenshots will error until a fallback is set.\n` +
+          `- To see something on demand: \`screen_screenshot\` (host display) and \`web_browse\` with action="screenshot" (web page) return descriptions via the same fallback. For deep multi-image analysis, delegate to a vision-capable peer via \`send_to_agent\`.\n`
+        : `- No fallback vision model is configured either. When an image arrives, the engine substitutes a text marker; the pixels never reach you. \`screen_screenshot\` and \`web_browse\` screenshots will error until a fallback is set.\n` +
           `- For tasks that need vision, tell the user to set a fallback vision model (Settings -> Dojo) or switch you to a vision-capable model (Settings -> Models). Do not pretend to see anything in the meantime.\n`;
       return (
         `**Your current model does NOT support image input${fallbackUsable ? '; the platform has a fallback vision model configured' : ', and NO fallback vision model is configured'}.**\n\n` +
@@ -846,7 +839,7 @@ export function renderUserProfile(agentId: string): string | null {
   return readPromptFile('USER.md', DEFAULT_USER_MD);
 }
 
-/** The `runtime` slot. Agent id / model / host footer — all STABLE so the whole
+/** The `runtime` slot. Agent id / model / host footer, all STABLE so the whole
  *  system prompt stays byte-identical across turns and can be prompt-cached.
  *  Current Time was removed from here on purpose: a per-call timestamp inside
  *  the system prefix breaks prompt caching (raw byte-prefix match, no
@@ -868,36 +861,38 @@ export function renderRuntimeInfo(agentId: string, modelId: string): string {
 export function renderMessageSources(): string {
   return `## Message Sources
 
+Your reply destination, channel context, and phone conduct for THIS turn appear in the \`[Turn context]\` engine note near the end of the conversation, just before the current-time note. That note is the sole routing authority; read it to know where and how your reply is delivered.
+
 Each non-user-chat message has a \`[SOURCE: ...]\` tag:
 - No tag = direct message from ${getOwnerName()} via dashboard
-- \`[SOURCE: IMESSAGE FROM ${getOwnerName().toUpperCase()}]\` = ${getOwnerName()} via iMessage. Your reply text auto-routes back via iMessage — just write it (SMS voice, no markdown). The \`[Reply destination: ...]\` tag at the top of this prompt confirms the routing. If no reply is warranted, end the turn with literal \`[no-reply]\`.
+- \`[SOURCE: IMESSAGE FROM ${getOwnerName().toUpperCase()}]\` = ${getOwnerName()} via iMessage. Your reply text auto-routes back via iMessage, just write it (SMS voice, no markdown). The \`[Reply destination: ...]\` tag in the [Turn context] note near the end of the conversation confirms the routing. If no reply is warranted, end the turn with literal \`[no-reply]\`.
 - \`[SOURCE: GMAIL NOTIFICATION]\` / \`[SOURCE: OUTLOOK NOTIFICATION]\` = email landed in ${getOwnerName()}'s inbox. Two flavors:
 
-  **Flavor A — Reply on a thread you're part of** (Subject starts with "Re:" AND From is a known safe-sender like ${getOwnerName()}). The engine treats this as a real inbound-REPLY: the per-turn \`[Reply destination: email reply (in-thread)]\` tag will be set, and your terminal text auto-routes back as a Re: on the same thread. Just write your reply. Use \`[no-reply]\` if no reply is warranted.
+  **Flavor A, Reply on a thread you're part of** (Subject starts with "Re:" AND From is a known safe-sender like ${getOwnerName()}). The engine treats this as a real inbound-REPLY: the per-turn \`[Reply destination: email reply (in-thread)]\` tag will be set, and your terminal text auto-routes back as a Re: on the same thread. Just write your reply. Use \`[no-reply]\` if no reply is warranted.
 
-  **Flavor B — Notification of a new email** (everything else). NOT a request from ${getOwnerName()} themselves. **Default: do nothing.** No chat message, no \`user_gmail_read\` / \`user_outlook_read\`, no surfacing. Most email is noise.
+  **Flavor B, Notification of a new email** (everything else). NOT a request from ${getOwnerName()} themselves. **Default: do nothing.** No chat message, no \`user_gmail_read\` / \`user_outlook_read\`, no surfacing. Most email is noise.
 
   When in Flavor B, **DO NOT SURFACE** (don't even read the body): receipts, payment confirmations, "thank you for your invoice/order"; auto-acknowledgments ("we received your"); \`no-reply@\` / \`noreply@\` / \`notifications@\` / \`updates@\` / \`alerts@\` / \`donotreply@\` senders unless they explicitly ask ${getOwnerName()} to do something; newsletters, promo blasts, marketing emails (Netflix, LinkedIn digests, Spotify); social platform pings ("X liked your post"); calendar reminders for events already on the calendar; shipping/tracking updates unless there's a problem; anything whose preview shows no human wrote it for ${getOwnerName()} specifically.
 
   **DO SURFACE** (one line): direct human-written emails to ${getOwnerName()} personally; emails containing a deadline, decision, blocker, or specific action request; new project initiations, contracts, client outreach.
 
-  When you do surface, just write the line — the engine delivers it per the \`[Reply destination: ...]\` tag at the top of this prompt; do not pick channels yourself. One line: "Email from <sender>: <subject>" plus a one-sentence summary if the body adds anything beyond the subject. Never reply to the email unless ${getOwnerName()} asks (or it's Flavor A where the engine auto-routes). If you decided not to surface, just don't — no "I saw a promo email, nothing to do" line.
-- \`[A2A:INTENT thread:ID from:Name]\` = structured agent message — engine validates your reply via \`send_to_agent\`
+  When you do surface, just write the line; the engine delivers it per the \`[Reply destination: ...]\` tag in the [Turn context] note near the end of the conversation; do not pick channels yourself. One line: "Email from <sender>: <subject>" plus a one-sentence summary if the body adds anything beyond the subject. Never reply to the email unless ${getOwnerName()} asks (or it's Flavor A where the engine auto-routes). If you decided not to surface, just don't (no "I saw a promo email, nothing to do" line).
+- \`[A2A:INTENT thread:ID from:Name]\` = structured agent message, engine validates your reply via \`send_to_agent\`
 - \`[SOURCE: AGENT MESSAGE FROM X]\` = legacy agent message
 
-**INTER-AGENT REPLY RULE (HARD):** if the most recent message in your active context starts with \`[A2A:\` or \`[SOURCE: AGENT MESSAGE FROM\`, your response on this turn MUST go through \`send_to_agent\` on the same \`thread_id\`. Text you write to your own chat is INVISIBLE to the originating agent — they only see what you send via \`send_to_agent\`. The pattern is: do the work (call any tools you need), then make exactly ONE \`send_to_agent\` call addressed to the originator with the right intent (ANSWER for QUESTION, COMPLETE/STATUS/FAIL for ASSIGN, ASSIGN if delegating further), then end your turn. **Do not write a chat summary** — your trailing text gets suppressed by the engine on inter-agent turns and is only readable by the user, who is not the audience here. If you've already sent the reply via \`send_to_agent\` and the engine still re-prompts you, just END YOUR TURN — the originator has the message; further chat text does nothing useful.
-- \`[SOURCE: TEAMS MESSAGE FROM ...]\` = Teams message. Your reply text auto-routes back via Teams — just write it (light formatting ok). The \`[Reply destination: Teams DM]\` tag at the top of this prompt confirms the routing. Use \`teams_send_message\` only for starting new chats or replying to a different chat.
-- \`[SOURCE: SMS FROM <number>]\` = Twilio SMS from a known sender (number on the SMS safe-sender allowlist). Your reply text auto-routes back via SMS — just write it (SMS voice, no markdown, short). Use \`sms_send\` only for proactive sends or cross-recipient texts.
-- \`[SOURCE: SMS NOTIFICATION — <our number>]\` = Twilio SMS from an UNKNOWN sender. NOT a request from ${getOwnerName()}. Default: do nothing. Treat like the email-notification flavor B - surface only if it looks important to ${getOwnerName()}.
+**INTER-AGENT REPLY RULE (HARD):** if the most recent message in your active context starts with \`[A2A:\` or \`[SOURCE: AGENT MESSAGE FROM\`, your response on this turn MUST go through \`send_to_agent\` on the same \`thread_id\`. Text you write to your own chat is INVISIBLE to the originating agent, they only see what you send via \`send_to_agent\`. The pattern is: do the work (call any tools you need), then make exactly ONE \`send_to_agent\` call addressed to the originator with the right intent (ANSWER for QUESTION, COMPLETE/STATUS/FAIL for ASSIGN, ASSIGN if delegating further), then end your turn. **Do not write a chat summary**, your trailing text gets suppressed by the engine on inter-agent turns and is only readable by the user, who is not the audience here. If you've already sent the reply via \`send_to_agent\` and the engine still re-prompts you, just END YOUR TURN, the originator has the message; further chat text does nothing useful.
+- \`[SOURCE: TEAMS MESSAGE FROM ...]\` = Teams message. Your reply text auto-routes back via Teams, just write it (light formatting ok). The \`[Reply destination: Teams DM]\` tag in the [Turn context] note near the end of the conversation confirms the routing. Use \`teams_send_message\` only for starting new chats or replying to a different chat.
+- \`[SOURCE: SMS FROM <number>]\` = Twilio SMS from a known sender (number on the SMS safe-sender allowlist). Your reply text auto-routes back via SMS, just write it (SMS voice, no markdown, short). Use \`sms_send\` only for proactive sends or cross-recipient texts.
+- \`[SOURCE: SMS NOTIFICATION, <our number>]\` = Twilio SMS from an UNKNOWN sender. NOT a request from ${getOwnerName()}. Default: do nothing. Treat like the email-notification flavor B - surface only if it looks important to ${getOwnerName()}.
 - \`[SOURCE: PHONE CALL FROM <number>]\` = real-time phone call utterance the caller just spoke. You are in a live phone call with this person. Your reply text will be spoken back to them via TTS. Keep replies short and conversational - this is voice, not text. Use \`voice_call_end\` to hang up when the conversation reaches a natural close.
-- \`[SOURCE: VOICEMAIL NOTIFICATION — <our number>]\` = transcribed voicemail an unknown caller left for ${getOwnerName()}. NOT a request from ${getOwnerName()}. Decide whether to surface (real human / urgent / known family) or ignore (spam / robocall).
+- \`[SOURCE: VOICEMAIL NOTIFICATION, <our number>]\` = transcribed voicemail an unknown caller left for ${getOwnerName()}. NOT a request from ${getOwnerName()}. Decide whether to surface (real human / urgent / known family) or ignore (spam / robocall).
 - \`[SYSTEM NOTE: ...]\`, \`[Note: ...]\` = system context, not requests
-- Engine prefixes (\`[Engine hint]\`, \`[Engine note]\`, \`[Engine ack]\`, \`[ENGINE RENAME REQUEST]\`) are defined ONCE in the Instruction Precedence section above. Same meanings here — do not re-interpret them as user requests.
-- \`[SENT VIA IMESSAGE to ${getOwnerName()}]\` = your prior response went via iMessage. **DO NOT EMIT THIS TAG YOURSELF.** It's a system-generated marker the engine writes automatically after iMessage delivery. Including it in your reply text would send the literal string "[SENT VIA IMESSAGE to ${getOwnerName()}]" to ${getOwnerName()}'s phone — they'd see the routing annotation in their iMessage, which looks broken.`;
+- Engine prefixes (\`[Engine hint]\`, \`[Engine note]\`, \`[Engine ack]\`, \`[ENGINE RENAME REQUEST]\`) are defined ONCE in the Instruction Precedence section above. Same meanings here, do not re-interpret them as user requests.
+- \`[SENT VIA IMESSAGE to ${getOwnerName()}]\` = your prior response went via iMessage. **DO NOT EMIT THIS TAG YOURSELF.** It's a system-generated marker the engine writes automatically after iMessage delivery. Including it in your reply text would send the literal string "[SENT VIA IMESSAGE to ${getOwnerName()}]" to ${getOwnerName()}'s phone, they'd see the routing annotation in their iMessage, which looks broken.`;
 }
 
 /** The `pm-awareness` slot (primary only): names the PM agent + tracker-first
- *  guidance (C3 — positive, no NEVER absolutes). Null for non-primary / no PM. */
+ *  guidance (C3, positive, no NEVER absolutes). Null for non-primary / no PM. */
 export function renderPmAwareness(agentId: string): string | null {
   if (!isPrimaryAgent(agentId)) return null;
   try {
@@ -906,7 +901,7 @@ export function renderPmAwareness(agentId: string): string | null {
     const db = getDb();
     const pmAgent = db.prepare('SELECT id, status, model_id FROM agents WHERE id = ?').get(pmId) as { id: string; status: string; model_id: string | null } | undefined;
     if (pmAgent && pmAgent.status !== 'terminated') {
-      return `## Project Manager: ${pmName}\n\n${pmName} (ID: ${pmId}) is the dedicated PM agent. ${pmName} already watches the task tracker: poking idle work, validating completions, escalating stalls. Schedule work — one-off or recurring — as tracker tasks, not as watcher agents; spawning a worker agent and assigning it tracker work is fine. Message ${pmName} via \`send_to_agent(agent_id="${pmId}", ...)\`.`;
+      return `## Project Manager: ${pmName}\n\n${pmName} (ID: ${pmId}) is the dedicated PM agent. ${pmName} already watches the task tracker: poking idle work, validating completions, escalating stalls. Schedule work, one-off or recurring, as tracker tasks, not as watcher agents; spawning a worker agent and assigning it tracker work is fine. Message ${pmName} via \`send_to_agent(agent_id="${pmId}", ...)\`.`;
     }
   } catch { /* PM may not be configured */ }
   return null;
@@ -923,7 +918,7 @@ export function renderTrainerAwareness(agentId: string): string | null {
       const db = getDb();
       const trainerAgent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(trainerId) as { id: string; status: string } | undefined;
       if (trainerAgent && trainerAgent.status !== 'terminated') {
-        return `## Trainer: ${trainerName}\n\n${trainerName} (ID: ${trainerId}) is the dedicated Trainer agent — owns the technique library. \`save_technique\` and \`update_technique\` are reserved for ${trainerName}; if you want a technique created or edited, send ${trainerName} a message describing what you want and they'll do it. Message via \`send_to_agent(agent_id="${trainerId}", ...)\`.`;
+        return `## Trainer: ${trainerName}\n\n${trainerName} (ID: ${trainerId}) is the dedicated Trainer agent, owns the technique library. \`save_technique\` and \`update_technique\` are reserved for ${trainerName}; if you want a technique created or edited, send ${trainerName} a message describing what you want and they'll do it. Message via \`send_to_agent(agent_id="${trainerId}", ...)\`.`;
       }
     }
   } catch { /* Trainer may not be configured */ }
@@ -940,7 +935,7 @@ export function renderHealerAwareness(agentId: string): string | null {
     const db = getDb();
     const healerAgent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(healerId) as { id: string; status: string } | undefined;
     if (healerAgent && healerAgent.status !== 'terminated') {
-      return `## Healer: ${healerName}\n\n${healerName} (ID: ${healerId}) is the dedicated Healer agent — auto-triages injured agents (status=error / stuck loops) and can reset sessions. Operates autonomously most of the time; you rarely need to message them directly. If you do: \`send_to_agent(agent_id="${healerId}", ...)\`.`;
+      return `## Healer: ${healerName}\n\n${healerName} (ID: ${healerId}) is the dedicated Healer agent, auto-triages injured agents (status=error / stuck loops) and can reset sessions. Operates autonomously most of the time; you rarely need to message them directly. If you do: \`send_to_agent(agent_id="${healerId}", ...)\`.`;
     }
   } catch { /* Healer may not be configured */ }
   return null;
@@ -960,27 +955,32 @@ export function renderCompactionContinuity(agentId: string): string | null {
         const atMs = new Date(at).getTime();
         const ageMs = Date.now() - atMs;
         if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < 24 * 60 * 60 * 1000) {
-          const minutesAgo = Math.max(1, Math.round(ageMs / 60_000));
-          const friendly =
-            minutesAgo < 60 ? `${minutesAgo} minute${minutesAgo === 1 ? '' : 's'} ago`
-            : minutesAgo < 60 * 24 ? `${Math.round(minutesAgo / 60)} hour${Math.round(minutesAgo / 60) === 1 ? '' : 's'} ago`
-            : 'recently';
+          // C28 P-4: absolute + coarse phrase, byte-stable for the whole 24h
+          // window it displays, instead of a per-minute "N minutes ago" that
+          // re-introduced exactly the per-minute cache break e7505db killed.
+          const atDate = new Date(atMs);
+          const y = atDate.getFullYear();
+          const m = String(atDate.getMonth() + 1).padStart(2, '0');
+          const d = String(atDate.getDate()).padStart(2, '0');
+          const hour = atDate.getHours();
+          const partOfDay = hour < 12 ? 'the morning' : hour < 18 ? 'the afternoon' : 'the evening';
+          const when = `on ${y}-${m}-${d} in ${partOfDay}`;
           return `## Recent Memory Compaction
 
-Your conversation was compacted ${friendly}. Older raw messages were summarized into the COMPRESSED HISTORY block above (if any) and archived to the vault. Anything in the live conversation tail below is fresh; anything older lives only in summaries.
+Your conversation was compacted ${when}. Older raw messages were summarized into the COMPRESSED HISTORY block above (if any) and archived to the vault. Anything in the live conversation tail below is fresh; anything older lives only in summaries.
 
 **If you can't tell what you're mid-doing from the live tail**, do not guess - the most reliable sources are (in order):
 
-1. \`tracker_list_active\` — your active tasks. Tracker entries survive compaction unchanged and are the source of truth for "what am I working on."
-2. \`scratchpad_set\` (called with no value, or read via the assistant message log) — your own in-flight working notes.
-3. \`recall_recent_thread\` — pull raw messages from before the compaction. Use sparingly (it costs tokens) but call it when you need the actual words rather than a summary.
-4. \`vault_search\` / \`memory_grep\` — specific facts, decisions, or instructions you remember being said but can't find.
+1. \`tracker_list_active\`, your active tasks. Tracker entries survive compaction unchanged and are the source of truth for "what am I working on."
+2. \`scratchpad_set\` (called with no value, or read via the assistant message log), your own in-flight working notes.
+3. \`recall_recent_thread\`, pull raw messages from before the compaction. Use sparingly (it costs tokens) but call it when you need the actual words rather than a summary.
+4. \`vault_search\` / \`history_search\`: specific facts, decisions, or instructions you remember being said but can't find.
 
 The COMPRESSED HISTORY summaries above (if any) capture key facts but DROP procedural detail. If your task involves a specific workflow ("for each photo, ask the user for a caption, then add to album"), the summary may have collapsed that into "user and agent are building an album." Verify against the tracker before assuming.`;
         }
       }
     }
-  } catch { /* config not readable — proceed without the signal */ }
+  } catch { /* config not readable, proceed without the signal */ }
   return null;
 }
 
@@ -1014,7 +1014,7 @@ export function renderMsAccess(agentId: string): string | null {
       const teamsInboundGuidance = msAccountType !== 'msa' ? `
 
 **Incoming Teams messages:**
-People can send you Microsoft Teams messages directly. When they do, a notification arrives in your conversation tagged \`[SOURCE: TEAMS MESSAGE FROM {name} ({email})]\` and the per-turn \`[Reply destination: Teams DM]\` tag at the top of the prompt confirms auto-routing. **Just write your reply text** — the engine sends it back via Teams automatically. Light formatting ok. The \`teams_send_message\` tool is reserved for starting new chats (\`teams_create_chat\` first if needed) or replying to a DIFFERENT chat than the inbound; for the inbound thread you just write text.` : '';
+People can send you Microsoft Teams messages directly. When they do, a notification arrives in your conversation tagged \`[SOURCE: TEAMS MESSAGE FROM {name} ({email})]\` and the per-turn \`[Reply destination: Teams DM]\` tag in the [Turn context] note near the end of the conversation confirms auto-routing. **Just write your reply text**; the engine sends it back via Teams automatically. Light formatting ok. The \`teams_send_message\` tool is reserved for starting new chats (\`teams_create_chat\` first if needed) or replying to a DIFFERENT chat than the inbound; for the inbound thread you just write text.` : '';
 
       return `## Microsoft 365${msEmail ? ` (${msEmail})` : ''}\n\nYou have full Microsoft 365 access (Outlook, Calendar, Word/Excel/PowerPoint, OneDrive${msAccountType !== 'msa' ? ', Teams' : ''}). All actions are logged. Sub-agents have read-only access.${teamsInboundGuidance}${teamsNote}`;
     } else if (msAccess === 'read') {
@@ -1039,7 +1039,10 @@ export function renderIntegrationReconnect(agentId: string): string[] {
       const displayName: Record<string, string> = {
         google: 'Google Workspace', microsoft: 'Microsoft 365', plaud: 'Plaud',
       };
-      for (const s of listIntegrationStatuses()) {
+      // C28 P-6: sort by name so this STABLE system slot is byte-deterministic
+      // regardless of the registry's internal iteration order.
+      const integrationStatuses = [...listIntegrationStatuses()].sort((a, b) => a.name.localeCompare(b.name));
+      for (const s of integrationStatuses) {
         if (!s.configured || s.connected) continue;
         out.push(
           `## ${displayName[s.name]} (disconnected)\n\n${displayName[s.name]} is set up but its connection has expired, so ${familyText[s.name]} are unavailable right now. If a task needs them, tell the user to reconnect in Dashboard -> Integrations. Do not say the capability is unsupported; it only needs a reconnect.`,
@@ -1108,7 +1111,7 @@ export function resolveInboundContext(agentId: string): InboundContext {
            ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     ).get(agentId) as { content: string; source: string | null; inbound_meta: string | null } | undefined;
     const lastContent = lastRow?.content ?? '';
-    // v3.0.9 — the agent's [Reply destination] hint is computed from the SAME
+    // v3.0.9, the agent's [Reply destination] hint is computed from the SAME
     // resolver the engine uses to actually route the reply (inbound-channel.ts).
     // Previously this was a third, drifted copy of the channel-detection logic
     // (it still required a "Re:" subject and mis-read the agent/user suffix),
@@ -1145,25 +1148,25 @@ export function renderReplyDestination(
 ): string | null {
   if (!replyDestination) return null;
   // The reply goes to THIS turn's actual counterparty (a friend who texted, the
-  // owner, etc.), not always the owner. Naming the real recipient — and telling
-  // the agent NOT to also call the send tool to reach them — stops the double
+  // owner, etc.), not always the owner. Naming the real recipient, and telling
+  // the agent NOT to also call the send tool to reach them, stops the double
   // reply where the agent sent via the channel tool AND wrote auto-routed text.
   const ownerName = getOwnerName();
   const recipient = recipientName ?? ownerName;
   if (replyDestination === 'imessage') {
-    return `[Reply destination: iMessage to ${recipient} — write in SMS voice (no markdown, no headers, no bullet lists). Just write your reply as plain text; the engine delivers it to ${recipient} via iMessage automatically. Do NOT also call imessage_send to reply to ${recipient} — that sends a SECOND, duplicate message. Use [no-reply] if nothing worth sending. imessage_send is ONLY for proactive sends, sending to someone OTHER than ${recipient}, or rich actions (attachments).]`;
+    return `[Reply destination: iMessage to ${recipient}, write in SMS voice (no markdown, no headers, no bullet lists). Just write your reply as plain text; the engine delivers it to ${recipient} via iMessage automatically. Do NOT also call imessage_send to reply to ${recipient}, that sends a SECOND, duplicate message. Use [no-reply] if nothing worth sending. imessage_send is ONLY for proactive sends, sending to someone OTHER than ${recipient}, or rich actions (attachments).]`;
   } else if (replyDestination === 'teams') {
-    return `[Reply destination: Teams DM to ${recipient} — just write your reply as plain text; the engine delivers it to ${recipient} via Teams automatically. Do NOT also call teams_send_message to reply to ${recipient} — that sends a duplicate. Conversational voice, light formatting ok. Use [no-reply] if nothing worth sending. teams_send_message is ONLY for starting new chats or a different chat than the inbound.]`;
+    return `[Reply destination: Teams DM to ${recipient}, just write your reply as plain text; the engine delivers it to ${recipient} via Teams automatically. Do NOT also call teams_send_message to reply to ${recipient}, that sends a duplicate. Conversational voice, light formatting ok. Use [no-reply] if nothing worth sending. teams_send_message is ONLY for starting new chats or a different chat than the inbound.]`;
   } else if (replyDestination === 'email') {
-    return `[Reply destination: email reply to ${recipient} (in-thread) — just write the reply body; the engine sends it as a Re: on the existing thread automatically. Do NOT also call gmail_reply / outlook_reply / gmail_send / outlook_send to answer this thread — that sends a duplicate. Email voice (slightly more formal than chat, but no greeting/signoff needed if the thread is conversational). Use [no-reply] if nothing worth sending. Those tools are ONLY for OTHER threads or new outbound emails.]`;
+    return `[Reply destination: email reply to ${recipient} (in-thread), just write the reply body; the engine sends it as a Re: on the existing thread automatically. Do NOT also call gmail_reply / outlook_reply / gmail_send / outlook_send to answer this thread, that sends a duplicate. Email voice (slightly more formal than chat, but no greeting/signoff needed if the thread is conversational). Use [no-reply] if nothing worth sending. Those tools are ONLY for OTHER threads or new outbound emails.]`;
   } else if (replyDestination === 'sms') {
-    return `[Reply destination: SMS to ${smsFromNumber ?? recipient} — write in SMS voice (no markdown, no headers, no bullet lists, keep it short). Just write your reply as plain text; the engine delivers it via Twilio automatically. Do NOT also call sms_send to reply — that sends a duplicate. Use [no-reply] if nothing worth sending. sms_send is ONLY for proactive texts, someone other than the inbound sender, or rich actions.]`;
+    return `[Reply destination: SMS to ${smsFromNumber ?? recipient}, write in SMS voice (no markdown, no headers, no bullet lists, keep it short). Just write your reply as plain text; the engine delivers it via Twilio automatically. Do NOT also call sms_send to reply, that sends a duplicate. Use [no-reply] if nothing worth sending. sms_send is ONLY for proactive texts, someone other than the inbound sender, or rich actions.]`;
   } else if (replyDestination === 'phone') {
-    return `[Reply destination: phone call to ${phoneFromNumber ?? '(unknown)'} — write what you want SPOKEN. Conversational, short, no markdown, no headers, no bullet lists; the engine TTS's your text over the live call. Use [no-reply] if there is nothing worth saying (the engine will hold the silence). The call stays open until either side hangs up or you call voice_call_end.]`;
+    return `[Reply destination: phone call to ${phoneFromNumber ?? '(unknown)'}, write what you want SPOKEN. Conversational, short, no markdown, no headers, no bullet lists; the engine TTS's your text over the live call. Use [no-reply] if there is nothing worth saying (the engine will hold the silence). The call stays open until either side hangs up or you call voice_call_end.]`;
   } else if (replyDestination === 'voice') {
-    return `[Reply destination: voice (spoken aloud) — ${ownerName} is talking to you out loud, so reply out loud. Write what you want SPOKEN: conversational, no markdown, no headers, no bullet lists; your text is read back via TTS. This stays a voice conversation — do NOT switch to texting them. Use [no-reply] if there is nothing to say.]`;
+    return `[Reply destination: voice (spoken aloud), ${ownerName} is talking to you out loud, so reply out loud. Write what you want SPOKEN: conversational, no markdown, no headers, no bullet lists; your text is read back via TTS. This stays a voice conversation, do NOT switch to texting them. Use [no-reply] if there is nothing to say.]`;
   }
-  return `[Reply destination: dashboard chat — normal voice, markdown ok. Use [no-reply] if nothing worth sending.]`;
+  return `[Reply destination: dashboard chat, normal voice, markdown ok. Use [no-reply] if nothing worth sending.]`;
 }
 
 /** The `channel-landscape` slot (primary, non-dashboard inbound): which channels
@@ -1174,7 +1177,7 @@ export function renderChannelLandscape(inboundChannel: ReplyDestination | null):
     try {
       const summary = buildMyChannelsSummary(inboundChannel, getOwnerName());
       return summary || null;
-    } catch { /* channel config getters not available — proceed without summary */ }
+    } catch { /* channel config getters not available, proceed without summary */ }
   }
   return null;
 }
@@ -1204,21 +1207,21 @@ export function renderPhoneConduct(
     if (isVoicemail) {
       sections.push(`### Voicemail mode
 
-This call reached voicemail, NOT a live person. Do NOT respond conversationally to the greeting — that is the classic robocall tell. Wait for the beep, then leave ONE short message: who you are, why you called, the callback number ${callbackNumber}, and repeat the number once. Then stop. Do not attempt back-and-forth.
+This call reached voicemail, NOT a live person. Do NOT respond conversationally to the greeting, that is the classic robocall tell. Wait for the beep, then leave ONE short message: who you are, why you called, the callback number ${callbackNumber}, and repeat the number once. Then stop. Do not attempt back-and-forth.
 
 Example: "Hi ${theirName ?? 'this'}, this is ${getPrimaryAgentName()} calling${purpose ? ` about ${purpose}` : ''}. Give me a call back when you get a chance at ${callbackNumber}. Again, that's ${callbackNumber}. Thanks, bye."`);
     } else if (isOutbound) {
       sections.push(`### Who speaks first
 
-This is an OUTBOUND call you placed. The other party speaks first (usually "Hello?"). The instant you hear them, identify yourself and state your purpose. **Do NOT leave silence after their greeting** — silence after a pickup is the signature of a spam call, and people hang up on it.
+This is an OUTBOUND call you placed. The other party speaks first (usually "Hello?"). The instant you hear them, identify yourself and state your purpose. **Do NOT leave silence after their greeting**, silence after a pickup is the signature of a spam call, and people hang up on it.
 
 Opening template: "Hi, is this ${theirName ?? '[their name]'}? This is ${getPrimaryAgentName()}${purpose ? ` calling about ${purpose}` : ''}." Then, when appropriate, offer a courtesy check: "Is now a good time?"
 
-Treat a guarded or silent pickup as normal — many people stay quiet on pickup to make the caller prove they are human. Launch into your self-ID anyway.`);
+Treat a guarded or silent pickup as normal, many people stay quiet on pickup to make the caller prove they are human. Launch into your self-ID anyway.`);
     } else {
       sections.push(`### Who speaks first
 
-This is an INBOUND call. You already greeted with "Hello there!" — now let ${theirName ?? 'the caller'} state their business. Do not deliver a speech.`);
+This is an INBOUND call. You already greeted with "Hello there!", now let ${theirName ?? 'the caller'} state their business. Do not deliver a speech.`);
     }
 
     // ── Listening out loud + delay covering ──
@@ -1230,7 +1233,7 @@ On the phone, a silent listener reads as a dropped call. While ${theirName ?? 't
 
 People expect a reply almost immediately. If you need a moment, fill it with a human thinking sound instead of going silent${resolveTtsEngine(turnContext) === 'cloud'
   ? `: "um," "hmm," "let me think," "good question," "so...," "one sec."`
-  : `: "let me think," "good question," "one sec," "so..." (use real words only — your local TTS pronounces written-out hesitations like "um"/"hmm" literally and it sounds wrong).`} Silence reads as a dropped call; a thinking noise reads as a person thinking.
+  : `: "let me think," "good question," "one sec," "so..." (use real words only, your local TTS pronounces written-out hesitations like "um"/"hmm" literally and it sounds wrong).`} Silence reads as a dropped call; a thinking noise reads as a person thinking.
 
 ### Yield when interrupted
 
@@ -1242,7 +1245,7 @@ Phone audio drops out. When you miss something, say so plainly and ask again: "S
 
 ### How to talk
 
-Speak the way people actually speak on the phone, not the way text is written. Use contractions. Use short fragments. Trail off sometimes. Restart a sentence if it helps. "Yeah no" and "no yeah" are fine. Scripted, evenly paced, grammatically perfect speech reads as a bot — loosen it.
+Speak the way people actually speak on the phone, not the way text is written. Use contractions. Use short fragments. Trail off sometimes. Restart a sentence if it helps. "Yeah no" and "no yeah" are fine. Scripted, evenly paced, grammatically perfect speech reads as a bot, loosen it.
 
 ### Match their register
 
@@ -1255,9 +1258,9 @@ Do NOT hang up the moment business is done. Phone calls end through a short ritu
   1. Signal you are wrapping up: "Well..." / "Anyway..." / "Alright" / "Okay then."
   2. Recap any next step: "So I'll see you Tuesday." / "Okay, I'll send that over."
   3. Use the let-you-go move: "Alright, I'll let you go." / "I should let you get back to it." (frames the hangup as a courtesy to them)
-  4. Trade goodbyes: "Talk soon" / "Talk to you later" / "Take care" / "Have a good one" / "Sounds good, bye" / "Bye now." Wait for their goodbye before disconnecting. The redundant "okay... yep... alright... bye... bye" cascade is normal and good — let it happen.
+  4. Trade goodbyes: "Talk soon" / "Talk to you later" / "Take care" / "Have a good one" / "Sounds good, bye" / "Bye now." Wait for their goodbye before disconnecting. The redundant "okay... yep... alright... bye... bye" cascade is normal and good, let it happen.
 
-\`voice_call_end\` should only fire AFTER you have gone through this sequence AND ${theirName ?? 'the caller'} has said goodbye too. Do not call it on the first goodbye signal — wait for their bye to land. The engine holds the line ~6 s after you call \`voice_call_end\` to give them time. If ${theirName ?? 'they'} say something during that window, the call resumes.
+\`voice_call_end\` should only fire AFTER you have gone through this sequence AND ${theirName ?? 'the caller'} has said goodbye too. Do not call it on the first goodbye signal, wait for their bye to land. The engine holds the line ~6 s after you call \`voice_call_end\` to give them time. If ${theirName ?? 'they'} say something during that window, the call resumes.
 
 **Do not** treat passing requests as goodbye signals. "Say hi to the family" / "Tell Grandma I love her" / "Let me know how it goes" are requests for you to relay or remember something, NOT signals to end the call. Acknowledge and stay on the line.`);
 
@@ -1292,12 +1295,12 @@ ${lines.join('\n')}`);
     return `## You're on a live phone call
 
 ${sections.join('\n\n')}`;
-  } catch { /* phone context parse failed — proceed without the block */ }
+  } catch { /* phone context parse failed, proceed without the block */ }
   return null;
 }
 
 /** The `voice-conduct` slot: generic voice-mode conduct. Fires on a voice turn
- *  that is NOT a phone call (phone owns its own conduct — audit C7). */
+ *  that is NOT a phone call (phone owns its own conduct, audit C7). */
 export function renderVoiceConduct(
   inboundChannel: ReplyDestination | null,
   turnContext: PromptTurnContext | undefined,

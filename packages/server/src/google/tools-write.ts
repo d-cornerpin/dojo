@@ -1,10 +1,11 @@
 // ════════════════════════════════════════
-// Google Workspace WRITE Tools — Native REST API
+// Google Workspace WRITE Tools, Native REST API
 // Available to: primary agent ONLY
 // ════════════════════════════════════════
 
 import type { ToolDefinition } from '../agent/tools.js';
 import { googleRead, googleWrite } from './client.js';
+import { writeToolReceipt } from '../receipts/store.js';
 import {
   type LocalAttachment,
   readLocalAttachments,
@@ -27,7 +28,7 @@ const UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3';
 export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'gmail_send',
-    description: 'Send an email from the connected Google account. Supports attachments — pass an array of absolute local file paths. Files totalling up to 25MB go inline; anything over auto-uploads to your Google Drive (folder "DOJO Email Attachments/<YYYY-MM>") and the recipient gets a shareable link appended to the body.',
+    description: 'Send an email from the connected Google account. Supports attachments, pass an array of absolute local file paths. Files totalling up to 25MB go inline; anything over auto-uploads to your Google Drive (folder "DOJO Email Attachments/<YYYY-MM>") and the recipient gets a shareable link appended to the body.',
     input_schema: {
       type: 'object',
       properties: {
@@ -43,7 +44,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'gmail_reply',
-    description: 'Reply to an existing email thread. **As of v2.7.24, in-thread replies to "Re:" messages from known correspondents auto-route via the engine — you do NOT need to call this tool for those.** Just write your reply text; the engine sends it on the same thread. Call this tool when: replying to a DIFFERENT thread than the inbound, replying to a notification that the engine did NOT auto-route, or when you need attachments / reply_all behavior. Supports attachments — same rules as gmail_send (25MB inline cap, overflow to Drive link).',
+    description: 'Reply to an existing email thread. **As of v2.7.24, in-thread replies to "Re:" messages from known correspondents auto-route via the engine, you do NOT need to call this tool for those.** Just write your reply text; the engine sends it on the same thread. Call this tool when: replying to a DIFFERENT thread than the inbound, replying to a notification that the engine did NOT auto-route, or when you need attachments / reply_all behavior. Supports attachments, same rules as gmail_send (25MB inline cap, overflow to Drive link).',
     input_schema: {
       type: 'object',
       properties: {
@@ -187,7 +188,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'calendar_subscribe',
-    description: "Subscribe to a Google calendar that's been shared with you (adds it to your calendar list so calendar_list shows it and read/write tools can target it). The owner must have already shared the calendar with this account; this tool just accepts/registers that share. To find the calendar_id, look in the share-invitation email — it's typically the owner's email address or a specific calendar ID. For RSVPing to meeting invites use calendar_respond_invite instead.",
+    description: "Subscribe to a Google calendar that's been shared with you (adds it to your calendar list so calendar_list shows it and read/write tools can target it). The owner must have already shared the calendar with this account; this tool just accepts/registers that share. To find the calendar_id, look in the share-invitation email, it's typically the owner's email address or a specific calendar ID. For RSVPing to meeting invites use calendar_respond_invite instead.",
     input_schema: {
       type: 'object',
       properties: {
@@ -198,7 +199,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'calendar_unsubscribe',
-    description: 'Remove a calendar from your calendar list (you stop seeing/syncing it). Does NOT delete the calendar — only removes the subscription. Re-subscribe later with calendar_subscribe.',
+    description: 'Remove a calendar from your calendar list (you stop seeing/syncing it). Does NOT delete the calendar, only removes the subscription. Re-subscribe later with calendar_subscribe.',
     input_schema: {
       type: 'object',
       properties: {
@@ -222,7 +223,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'drive_share',
-    description: 'Share a Google Drive file or folder.\n\nFor "anyone with the link" sharing: pass audience: "anyone" — DO NOT pass "anyone" as the email value, that will fail. Email-share is only used when audience is "user" (the default).\n\nExamples:\n  • Share with a specific person:  { file_id, email: "alice@example.com", role: "reader" }\n  • Share via link (no email):     { file_id, audience: "anyone", role: "reader" }',
+    description: 'Share a Google Drive file or folder.\n\nFor "anyone with the link" sharing: pass audience: "anyone", DO NOT pass "anyone" as the email value, that will fail. Email-share is only used when audience is "user" (the default).\n\nExamples:\n  • Share with a specific person:  { file_id, email: "alice@example.com", role: "reader" }\n  • Share via link (no email):     { file_id, audience: "anyone", role: "reader" }',
     input_schema: {
       type: 'object',
       properties: {
@@ -230,18 +231,18 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
         audience: {
           type: 'string',
           enum: ['user', 'anyone'],
-          description: '"user" (default) shares with a specific email — `email` is required. "anyone" turns on link-share — anyone with the URL can access at the given role, no email needed. Aliases accepted: "public", "link", "everyone" all map to "anyone".',
+          description: '"user" (default) shares with a specific email, `email` is required. "anyone" turns on link-share, anyone with the URL can access at the given role, no email needed. Aliases accepted: "public", "link", "everyone" all map to "anyone".',
         },
-        email: { type: 'string', description: 'Email address to share with. Required when audience is "user" (the default). Ignored for "anyone". Do NOT pass "anyone"/"public"/"everyone" here — use the `audience` parameter instead.' },
+        email: { type: 'string', description: 'Email address to share with. Required when audience is "user" (the default). Ignored for "anyone". Do NOT pass "anyone"/"public"/"everyone" here, use the `audience` parameter instead.' },
         role: { type: 'string', description: "Permission level: 'reader' (default), 'writer', or 'commenter'." },
-        discoverable: { type: 'boolean', description: 'Only relevant when audience is "anyone". When true, the file appears in Google Drive search results for anyone (broad public). Default false — the file is link-share only and not discoverable via search.' },
+        discoverable: { type: 'boolean', description: 'Only relevant when audience is "anyone". When true, the file appears in Google Drive search results for anyone (broad public). Default false, the file is link-share only and not discoverable via search.' },
       },
       required: ['file_id'],
     },
   },
   {
     name: 'drive_delete',
-    description: 'Delete a Google Drive file (or folder). Works for any Drive file: docs, sheets, slides, forms, uploads. Defaults to TRASH (recoverable for 30 days from the Drive trash UI). Pass permanent: true to skip trash and delete immediately — irreversible.\n\nNote: Forms are stored as Drive files. To delete a form, pass its form_id as file_id here. The Forms API itself has no delete endpoint.',
+    description: 'Delete a Google Drive file (or folder). Works for any Drive file: docs, sheets, slides, forms, uploads. Defaults to TRASH (recoverable for 30 days from the Drive trash UI). Pass permanent: true to skip trash and delete immediately, irreversible.\n\nNote: Forms are stored as Drive files. To delete a form, pass its form_id as file_id here. The Forms API itself has no delete endpoint.',
     input_schema: {
       type: 'object',
       properties: {
@@ -428,7 +429,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
 // ── v2.7.1 multi-account: user_* send tool variants ──
 //
 // Mirror of the read-side USER_SLOT_READ_TOOLS pattern. Send/reply/forward
-// from the user slot is gated by isEmailSendingEnabled('user') — see the
+// from the user slot is gated by isEmailSendingEnabled('user'), see the
 // executor for the refusal path. The toggle defaults OFF so connecting a
 // personal Gmail doesn't silently grant the agent permission to send mail
 // from it; the user has to flip the switch in Settings → Google → User.
@@ -439,7 +440,7 @@ for (const canonical of USER_SLOT_SEND_TOOLS) {
   googleWriteToolDefinitions.push({
     ...baseDef,
     name: `user_${canonical}`,
-    description: `[USER'S Google account variant of \`${canonical}\`] ${baseDef.description}\n\nSends from the user's connected Google account (Settings → Google → User slot). Disabled by default — the user must turn on "Allow sending email" on the User slot card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,
+    description: `[USER'S Google account variant of \`${canonical}\`] ${baseDef.description}\n\nSends from the user's connected Google account (Settings → Google → User slot). Disabled by default, the user must turn on "Allow sending email" on the User slot card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,
   });
 }
 
@@ -509,14 +510,14 @@ function buildRfc2822Email(
 
   const attachments = options?.attachments ?? [];
   if (attachments.length === 0) {
-    // Plain text — original behavior, kept identical for non-attachment sends.
+    // Plain text, original behavior, kept identical for non-attachment sends.
     headers.push('Content-Type: text/plain; charset=utf-8');
     headers.push('');
     return Buffer.from(headers.join('\r\n') + '\r\n' + body).toString('base64url');
   }
 
   // multipart/mixed: one text/plain body part + one base64-encoded part per
-  // attachment. Boundary is random per message — Gmail tolerates any boundary
+  // attachment. Boundary is random per message, Gmail tolerates any boundary
   // that doesn't collide with the parts' contents.
   const boundary = `=_dojo_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
   headers.push('MIME-Version: 1.0');
@@ -727,7 +728,7 @@ async function fetchOriginalAttachments(
  * Read and partition user-provided attachment paths for Gmail. Returns the
  * inline-eligible set and the overflow set that needs Drive upload. On any
  * file-read error, returns the error string so the caller can return it as
- * the tool result (fail-fast — no partial sends).
+ * the tool result (fail-fast, no partial sends).
  */
 function loadUserAttachmentsForGmail(
   paths: readonly string[] | undefined,
@@ -737,7 +738,7 @@ function loadUserAttachmentsForGmail(
 }
 
 // Path B (layer 3): every Google write tool can target a specific connected
-// account of its kind via an `account` param (the account's email). Optional —
+// account of its kind via an `account` param (the account's email). Optional, 
 // omit to use the only connected account. Injected once across base + user_
 // variants (which share the same input_schema object), so it stays in sync.
 for (const def of googleWriteToolDefinitions) {
@@ -805,7 +806,7 @@ export async function executeGoogleWriteTool(
       for (const att of overflow) {
         const up = await uploadAttachmentToDrive(att, agentId, agentName, slot);
         if (!up.ok) return `Error uploading attachment "${att.name}" to Drive: ${up.error}`;
-        overflowLines.push(`  • ${up.name} (${formatSize(att.size)}) — ${up.url}`);
+        overflowLines.push(`  • ${up.name} (${formatSize(att.size)}), ${up.url}`);
       }
       if (overflowLines.length > 0) {
         body = `${body}\n\nAttached via Google Drive (file too large to inline):\n${overflowLines.join('\n')}`;
@@ -819,6 +820,16 @@ export async function executeGoogleWriteTool(
 
       const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw }, agentId, agentName, 'gmail_send', { to, subject, slot, inlineAttachments: inline.length, driveAttachments: overflow.length }, undefined, slot);
       if (!result.ok) return `Error sending email: ${result.error}`;
+
+      // C26: capture the provider id the Gmail API already returned (was
+      // discarded). A 2xx with no message id means we cannot confirm the send;
+      // fail the turn and write an unverified receipt so the gate blocks close.
+      const sendData = result.data as { id?: string; threadId?: string } | null;
+      if (!sendData?.id) {
+        writeToolReceipt({ agentId, tool: 'gmail_send', tier: 1, verified: false, basis: 'http-status', recipient: to, detail: { anomaly: 'gmail send 2xx but no message id', threadId: sendData?.threadId ?? null } });
+        return `Error: the Gmail API accepted the request but returned no message id, so the send to ${to} could not be verified. It may still have gone out: check the Sent folder FIRST, and re-send only if it is not there.`;
+      }
+      writeToolReceipt({ agentId, tool: 'gmail_send', tier: 1, verified: true, basis: 'provider-id', providerId: sendData.id, threadId: sendData.threadId ?? null, recipient: to, detail: { status: 'sent' } });
 
       const attachSummary = (inline.length + overflow.length) === 0 ? '' :
         ` with ${inline.length} inline attachment(s)${overflow.length > 0 ? ` and ${overflow.length} Drive link(s)` : ''}`;
@@ -852,7 +863,7 @@ export async function executeGoogleWriteTool(
       for (const att of overflow) {
         const up = await uploadAttachmentToDrive(att, agentId, agentName, slot);
         if (!up.ok) return `Error uploading attachment "${att.name}" to Drive: ${up.error}`;
-        overflowLines.push(`  • ${up.name} (${formatSize(att.size)}) — ${up.url}`);
+        overflowLines.push(`  • ${up.name} (${formatSize(att.size)}), ${up.url}`);
       }
       if (overflowLines.length > 0) {
         body = `${body}\n\nAttached via Google Drive (file too large to inline):\n${overflowLines.join('\n')}`;
@@ -866,6 +877,14 @@ export async function executeGoogleWriteTool(
 
       const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw, threadId: origData.threadId }, agentId, agentName, 'gmail_reply', { messageId, replyAll, slot, inlineAttachments: inline.length, driveAttachments: overflow.length }, undefined, slot);
       if (!result.ok) return `Error replying to email: ${result.error}`;
+
+      // C26: capture the provider id (was discarded); missing id fails the turn.
+      const replyData = result.data as { id?: string; threadId?: string } | null;
+      if (!replyData?.id) {
+        writeToolReceipt({ agentId, tool: 'gmail_reply', tier: 1, verified: false, basis: 'http-status', recipient: replyTo, detail: { anomaly: 'gmail reply 2xx but no message id', threadId: replyData?.threadId ?? origData.threadId ?? null } });
+        return `Error: the Gmail API accepted the reply but returned no message id, so the reply to message ${messageId} could not be verified. It may still have gone out: check the thread / Sent folder FIRST, and re-send only if it is not there.`;
+      }
+      writeToolReceipt({ agentId, tool: 'gmail_reply', tier: 1, verified: true, basis: 'provider-id', providerId: replyData.id, threadId: replyData.threadId ?? origData.threadId ?? null, recipient: replyTo, detail: { status: 'sent' } });
 
       const attachSummary = (inline.length + overflow.length) === 0 ? '' :
         ` with ${inline.length} inline attachment(s)${overflow.length > 0 ? ` and ${overflow.length} Drive link(s)` : ''}`;
@@ -920,7 +939,7 @@ export async function executeGoogleWriteTool(
       for (const att of overflow) {
         const up = await uploadAttachmentToDrive(att, agentId, agentName, slot);
         if (!up.ok) return `Error uploading attachment "${att.name}" to Drive: ${up.error}`;
-        overflowLines.push(`  • ${up.name} (${formatSize(att.size)}) — ${up.url}`);
+        overflowLines.push(`  • ${up.name} (${formatSize(att.size)}), ${up.url}`);
       }
       if (overflowLines.length > 0) {
         fwdBody += `\n\nAttached via Google Drive (file too large to inline):\n${overflowLines.join('\n')}`;
@@ -931,6 +950,14 @@ export async function executeGoogleWriteTool(
       const result = await googleWrite('POST', `${GMAIL_BASE}/messages/send`, { raw }, agentId, agentName, 'gmail_forward', { messageId, to, slot, inlineAttachments: inline.length, driveAttachments: overflow.length, preservedFromOriginal: origAttachments.length }, undefined, slot);
       if (!result.ok) return `Error forwarding email: ${result.error}`;
 
+      // C26: capture the provider id (was discarded); missing id fails the turn.
+      const fwdData = result.data as { id?: string; threadId?: string } | null;
+      if (!fwdData?.id) {
+        writeToolReceipt({ agentId, tool: 'gmail_forward', tier: 1, verified: false, basis: 'http-status', recipient: to, detail: { anomaly: 'gmail forward 2xx but no message id', threadId: fwdData?.threadId ?? null } });
+        return `Error: the Gmail API accepted the forward but returned no message id, so the forward to ${to} could not be verified. It may still have gone out: check the Sent folder FIRST, and re-send only if it is not there.`;
+      }
+      writeToolReceipt({ agentId, tool: 'gmail_forward', tier: 1, verified: true, basis: 'provider-id', providerId: fwdData.id, threadId: fwdData.threadId ?? null, recipient: to, detail: { status: 'sent' } });
+
       const attachSummary = allAttachments.length === 0 ? '' :
         ` (${inline.length} inline, ${overflow.length} via Drive link; ${origAttachments.length} preserved from original)`;
       return `Email forwarded to ${to}${attachSummary}`;
@@ -940,7 +967,7 @@ export async function executeGoogleWriteTool(
       const messageId = args.message_id as string;
       const attachmentId = args.attachment_id as string;
       const url = `${GMAIL_BASE}/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}`;
-      // googleWrite is fine here for the read — it just makes an authenticated GET.
+      // googleWrite is fine here for the read, it just makes an authenticated GET.
       // Using googleRead module to avoid quirky write-side audit semantics.
       const { googleRead } = await import('./client.js');
       const result = await googleRead(url, agentId, agentName, 'gmail_read_attachment', { messageId, attachmentId }, slot);
@@ -967,7 +994,7 @@ export async function executeGoogleWriteTool(
       if (isAudio || isVideo) {
         hint = `Use transcribe_audio with path="${outPath}" to get the spoken content as text.`;
       } else if (isImage) {
-        hint = `Use show_to_user with this path to attach the image to your reply, or screen_read / vision tools to interpret it.`;
+        hint = `Use show_to_user with this path to attach the image to your reply, or screen_screenshot / vision tools to interpret it.`;
       } else {
         hint = `Use file_read or show_to_user with this path.`;
       }
@@ -1032,7 +1059,13 @@ export async function executeGoogleWriteTool(
       if (!result.ok) return `Error creating event: ${result.error}`;
 
       const data = result.data as { id?: string; htmlLink?: string };
-      return `Calendar event "${resolvedTitle}" created${data?.id ? ` (ID: ${data.id})` : ''}${data?.htmlLink ? `\nLink: ${data.htmlLink}` : ''}`;
+      // C26: the event id confirms the create landed. A 2xx with no id fails the turn.
+      if (!data?.id) {
+        writeToolReceipt({ agentId, tool: 'calendar_create', tier: 1, verified: false, basis: 'http-status', detail: { anomaly: 'calendar create 2xx but no event id', calendarId } });
+        return `Error: the Calendar API accepted the request but returned no event id, so the event "${resolvedTitle}" could not be verified as created. It may still exist: check the calendar FIRST, and re-create only if it is not there.`;
+      }
+      writeToolReceipt({ agentId, tool: 'calendar_create', tier: 1, verified: true, basis: 'provider-id', providerId: data.id, detail: { calendarId, htmlLink: data.htmlLink ?? null } });
+      return `Calendar event "${resolvedTitle}" created (ID: ${data.id})${data?.htmlLink ? `\nLink: ${data.htmlLink}` : ''}`;
     }
 
     case 'calendar_update': {
@@ -1048,6 +1081,14 @@ export async function executeGoogleWriteTool(
       const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
       const result = await googleWrite('PATCH', url, patch, agentId, agentName, 'calendar_update', { eventId, calendarId, ...patch }, undefined, slot);
       if (!result.ok) return `Error updating event: ${result.error}`;
+
+      // C26: Google returns the patched event with its id; confirm it echoes back.
+      const updData = result.data as { id?: string; htmlLink?: string } | null;
+      if (!updData?.id) {
+        writeToolReceipt({ agentId, tool: 'calendar_update', tier: 1, verified: false, basis: 'http-status', detail: { anomaly: 'calendar update 2xx but no event id', eventId, calendarId } });
+        return `Error: the Calendar API accepted the update but returned no event id, so the change to event ${eventId} could not be verified. It may still have applied: check the event on the calendar FIRST, and re-apply only if it did not.`;
+      }
+      writeToolReceipt({ agentId, tool: 'calendar_update', tier: 1, verified: true, basis: 'provider-id', providerId: updData.id, detail: { eventId, calendarId, htmlLink: updData.htmlLink ?? null } });
       return `Calendar event ${eventId} updated`;
     }
 
@@ -1145,7 +1186,7 @@ export async function executeGoogleWriteTool(
 
       // Pass the multipart body as a raw Buffer. Pre-2026-04-30 this called
       // .toString('base64') here, sending a base64 string with content-type
-      // multipart/related — which Google rejects with 400 because it expects
+      // multipart/related, which Google rejects with 400 because it expects
       // raw bytes for the multipart payload, not a base64 wrapper. The
       // Google client now passes Uint8Array/Buffer through to fetch as-is.
       const result = await googleWrite(
@@ -1180,7 +1221,7 @@ export async function executeGoogleWriteTool(
       // user-share branch and Google rejected with a confusing
       // "emailAddress is invalid" error. Now we accept common synonyms
       // for "anyone" and ALSO auto-correct when an audience-keyword shows
-      // up in the email slot — better than failing with a cryptic message.
+      // up in the email slot, better than failing with a cryptic message.
       const ANYONE_ALIASES = new Set(['anyone', 'public', 'link', 'everyone', 'world', '*']);
       let audience = ((args.audience as string | undefined) ?? '').toLowerCase().trim();
       if (ANYONE_ALIASES.has(audience)) audience = 'anyone';
@@ -1216,9 +1257,9 @@ export async function executeGoogleWriteTool(
         if (!result.ok) return `Error sharing file: ${result.error}`;
         const accessNote = discoverable ? 'discoverable via Drive search' : 'link-share only (not discoverable)';
         const correctedNote = emailLooksLikeAudienceKeyword && !args.audience
-          ? ` (Note: I auto-corrected your call — pass audience: "anyone" rather than email: "${rawEmail}" next time.)`
+          ? ` (Note: I auto-corrected your call, pass audience: "anyone" rather than email: "${rawEmail}" next time.)`
           : '';
-        return `File ${fileId} is now accessible to anyone with the link as ${role} (${accessNote}). Share the file's URL directly — no email required.${correctedNote}`;
+        return `File ${fileId} is now accessible to anyone with the link as ${role} (${accessNote}). Share the file's URL directly, no email required.${correctedNote}`;
       }
 
       // Default: share with a specific email.
@@ -1226,7 +1267,7 @@ export async function executeGoogleWriteTool(
         return `Error: email is required when audience is "user". Either pass a real email address, or set audience: "anyone" to enable link-share (no email required).`;
       }
       if (!rawEmail.includes('@')) {
-        return `Error: "${rawEmail}" is not a valid email address. For link-share use audience: "anyone" instead — DO NOT pass "anyone"/"public"/"everyone" as the email value.`;
+        return `Error: "${rawEmail}" is not a valid email address. For link-share use audience: "anyone" instead, DO NOT pass "anyone"/"public"/"everyone" as the email value.`;
       }
       const result = await googleWrite(
         'POST', url,

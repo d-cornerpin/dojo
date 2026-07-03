@@ -24,6 +24,8 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, isPrimaryAgent, getOwnerName, isPMAgent } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
+import { getTurnReceipts } from '../agent/turn-state.js';
+import { getReceiptsByIds, stampReceiptsTask, type ToolReceiptRow } from '../receipts/store.js';
 import { formatTimeForAgent } from '../services/format-time.js';
 
 const logger = createLogger('tracker-tools');
@@ -48,7 +50,7 @@ function notifyPrimaryAgent(message: string, callingAgentId: string, forceNotify
     // We do NOT call handleMessage here -- task updates are informational,
     // not conversations that require a reply. This prevents the primary
     // agent from waking up and responding to every sub-agent status change.
-    const content = `[SOURCE: TRACKER TASK UPDATE — automated status update, not a message from the user] ${message}`;
+    const content = `[SOURCE: TRACKER TASK UPDATE, automated status update, not a message from the user] ${message}`;
     db.prepare(`
       INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
       VALUES (?, ?, 'system', ?, datetime('now'))
@@ -85,18 +87,18 @@ function checkProjectCompletion(projectId: string | null, callingAgentId: string
         db.prepare("UPDATE projects SET status = 'complete', updated_at = datetime('now') WHERE id = ?").run(projectId);
 
         // Count the tasks for the brief completion line. comms-audit rank 5: the old
-        // code enumerated EVERY task ("- title: status — last-notes-line") into the notice
-        // — a firehose duplicating the kanban board. The board already shows the per-task
+        // code enumerated EVERY task ("- title: status, last-notes-line") into the notice
+        //, a firehose duplicating the kanban board. The board already shows the per-task
         // detail; the notice only needs the count.
         const tasks = db.prepare(`
           SELECT COUNT(*) AS count FROM tasks WHERE project_id = ?
         `).get(projectId) as { count: number };
 
-        // v2.7.2 — fixes the duplicate-final-answer failure shape:
+        // v2.7.2, fixes the duplicate-final-answer failure shape:
         //
         //   1. forceNotify dropped from true → the default false. When the
         //      PRIMARY agent itself completes the final task, they don't
-        //      need a separate "project complete!" message — they just made
+        //      need a separate "project complete!" message, they just made
         //      the action that completed it and their own response wraps
         //      up the work. The notification was firing mid-turn, getting
         //      pulled into their next context iteration, and prompting a
@@ -110,8 +112,8 @@ function checkProjectCompletion(projectId: string | null, callingAgentId: string
         //      instruction. The old text said "Please review the results
         //      and let the owner know" which the model interpreted as a fresh
         //      assignment and kept working. The new text contains no
-        //      verbs aimed at the reader — it's just the completion fact.
-        const completionLine = `[tracker:project_complete] "${project.title}" — ${tasks.count} task${tasks.count === 1 ? '' : 's'} closed.`;
+        //      verbs aimed at the reader, it's just the completion fact.
+        const completionLine = `[tracker:project_complete] "${project.title}", ${tasks.count} task${tasks.count === 1 ? '' : 's'} closed.`;
         notifyPrimaryAgent(completionLine, callingAgentId);
 
         logger.info('Project completed', { projectId, title: project.title, taskCount: tasks.count });
@@ -159,7 +161,7 @@ interface DuplicateMatch {
    * classifier on the agent's most recent user turn (not by the agent
    * calling tracker_create_project themselves). */
   engineAutoCreated: boolean;
-  /** First in_progress / on_deck task on the existing project, if any —
+  /** First in_progress / on_deck task on the existing project, if any, 
    * the natural target for tracker_edit_task. */
   firstOpenTask: { id: string; title: string } | null;
 }
@@ -170,7 +172,7 @@ interface DuplicateMatch {
  *   (a) Engine-auto-created override: if the creator has ANY active
  *       project with the ENGINE_AUTO_MARKER in its description created
  *       in the last 5 minutes, treat that as a duplicate of whatever
- *       the agent is now trying to create — regardless of title
+ *       the agent is now trying to create, regardless of title
  *       similarity. The engine just opened a project for this turn;
  *       the agent should edit it, not parallel it. (Without this, the
  *       agent's better name often diverges enough from the engine's
@@ -186,7 +188,7 @@ function findRecentNearDuplicateProject(
 ): DuplicateMatch | null {
   const db = getDb();
 
-  // (a) Engine-auto-created in the last 5 minutes — short window so we
+  // (a) Engine-auto-created in the last 5 minutes, short window so we
   //     only catch the same-turn case, not a stale auto-project from
   //     half an hour ago that the agent has already moved past.
   const engineAuto = db.prepare(`
@@ -283,7 +285,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
 
     // Hard engine gate (2026-06-03 bug fix): a project MUST be opened
     // with at least one task. Agents were creating projects without any
-    // task — leaving the project sitting open with nothing to do, PM
+    // task, leaving the project sitting open with nothing to do, PM
     // pokes piling up, and no recovery path. The fix is at the engine,
     // not in the prompt: refuse the create if `tasks` is missing or
     // empty. The agent can always add more tasks later with
@@ -297,9 +299,9 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
         `    level: 1,\n` +
         `    tasks: [{ title: "<the first concrete thing you'll do>", assigned_to: "${agentId}" }]\n` +
         `  )\n\n` +
-        `If you don't know every step upfront, that's fine — just put down the FIRST one (e.g. "scope the deliverable", ` +
+        `If you don't know every step upfront, that's fine, just put down the FIRST one (e.g. "scope the deliverable", ` +
         `"draft the outline", "pull source data"). Add more tasks incrementally with tracker_create_task as the shape clarifies. ` +
-        `A project with zero tasks is a stuck project — PM has no row to poke, you have nothing to mark complete, ` +
+        `A project with zero tasks is a stuck project, PM has no row to poke, you have nothing to mark complete, ` +
         `and the tracker can't tell whether the work is done.`
       );
     }
@@ -307,7 +309,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
     // Duplicate guard. Catches the most common failure shape: agent gets
     // compacted mid-task, loses the project it already opened, and creates
     // a near-identical one. Agents can override by setting allow_duplicate=true
-    // (rare — usually only valid for genuinely independent re-runs).
+    // (rare, usually only valid for genuinely independent re-runs).
     const allowDuplicate = args.allow_duplicate === true;
     if (!allowDuplicate) {
       const dup = findRecentNearDuplicateProject(agentId, title);
@@ -321,16 +323,16 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
           // turn. Steer the agent toward editing/extending it rather than
           // building a parallel project.
           return (
-            `Refused: the engine already auto-opened project "${dup.title}" (id=${shortPid}) for this user turn — that's what the multi-step classifier does when a prompt looks like multi-step work, so you don't have to remember to call tracker_create_project yourself.${firstTaskHint} ` +
+            `Refused: the engine already auto-opened project "${dup.title}" (id=${shortPid}) for this user turn, that's what the multi-step classifier does when a prompt looks like multi-step work, so you don't have to remember to call tracker_create_project yourself.${firstTaskHint} ` +
             `Work WITHIN that project instead of creating a parallel one:\n` +
-            `  • tracker_edit_task(task_id=<id>, title=..., description=...) — rename / re-scope the auto-created first task to fit what you'd actually do first.\n` +
-            `  • tracker_create_task(project_id="${shortPid}", title=..., step_number=..., assigned_to=...) — add the additional steps.\n` +
-            `  • tracker_close_project(project_id="${shortPid}", status="cancelled", reason="...") — only if the classifier got it wrong and there's no useful project to do.\n` +
+            `  • tracker_edit_task(task_id=<id>, title=..., description=...), rename / re-scope the auto-created first task to fit what you'd actually do first.\n` +
+            `  • tracker_create_task(project_id="${shortPid}", title=..., step_number=..., assigned_to=...), add the additional steps.\n` +
+            `  • tracker_close_project(project_id="${shortPid}", status="cancelled", reason="..."), only if the classifier got it wrong and there's no useful project to do.\n` +
             `If you genuinely need a separate, unrelated project right now, retry with allow_duplicate=true.`
           );
         }
         return (
-          `Refused: project "${dup.title}" (id=${shortPid}) was already created by you ${dup.createdMinutesAgo} minute(s) ago and is still active — the new title "${title}" looks like a near-duplicate.${firstTaskHint} ` +
+          `Refused: project "${dup.title}" (id=${shortPid}) was already created by you ${dup.createdMinutesAgo} minute(s) ago and is still active, the new title "${title}" looks like a near-duplicate.${firstTaskHint} ` +
           `Use the existing project: tracker_get_status(id="${shortPid}") to see current tasks, tracker_edit_task to rename/rescope a task, tracker_create_task(project_id="${shortPid}", ...) to add new steps, or tracker_close_project(project_id="${shortPid}", status="cancelled", reason="...") if it was a mistake. ` +
           `If this really is unrelated work that happens to share keywords, retry with allow_duplicate=true.`
         );
@@ -346,12 +348,12 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
     });
 
     // Give every inline task a goal. The tasks[] shape historically carried no
-    // goal field, so createProject left them goal=NULL — which makes them
+    // goal field, so createProject left them goal=NULL, which makes them
     // impossible for PM to validate ("(none recorded)"): PM reverts each
     // completion and the agent re-submits forever (the validation ping-pong the
     // user reported). Mirror tracker_create_task: default the goal from the
     // caller-provided goal (if any), else the task's description, else its
-    // title. Only fill when empty — never overwrite a real goal.
+    // title. Only fill when empty, never overwrite a real goal.
     for (let i = 0; i < result.taskIds.length; i++) {
       const id = result.taskIds[i];
       const t = getTask(id);
@@ -381,7 +383,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
         const t = getTask(id);
         const step = t?.stepNumber !== null ? ` (step ${t?.stepNumber})` : '';
         const status = t?.status ?? 'on_deck';
-        return `  ${i + 1}. "${t?.title ?? 'Unknown'}" — ID: ${id}${step} [${status}]`;
+        return `  ${i + 1}. "${t?.title ?? 'Unknown'}", ID: ${id}${step} [${status}]`;
       });
       taskSummary = `\nTasks (${result.taskIds.length}):\n${taskLines.join('\n')}`;
     }
@@ -392,7 +394,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
     for (const taskId of result.taskIds) {
       const t = getTask(taskId);
       if (!t || !t.assignedTo) continue;
-      // Skip tasks with a future scheduled_start — scheduler handles those
+      // Skip tasks with a future scheduled_start, scheduler handles those
       if (t.scheduledStart) {
         const scheduledMs = new Date(t.scheduledStart.includes('Z') ? t.scheduledStart : t.scheduledStart + 'Z').getTime();
         if (scheduledMs > Date.now()) continue;
@@ -455,7 +457,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
 
     // Near-duplicate guard (2026-06-02 bug fix). Without this, a hoarding-
     // gate error on file_read/exec can put the agent into a loop where
-    // every iteration calls tracker_create_task with the same title — 27
+    // every iteration calls tracker_create_task with the same title, 27
     // duplicates landed in one session before this guard. Two prongs,
     // both within a 5-minute window because tasks turn over faster than
     // projects:
@@ -540,7 +542,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     // tasks with a FUTURE scheduled_start (the scheduler owns the
     // transition to 'in_progress' at fire time). Anything else lands
     // in 'in_progress' immediately so the assigned agent and the PM
-    // keep seeing it as work to do — sitting in 'on_deck' without a
+    // keep seeing it as work to do, sitting in 'on_deck' without a
     // schedule was the failure mode where agents created multi-task
     // projects, worked the first one, and never returned to the rest.
     // The schema default (set in createTask above) is now 'in_progress'
@@ -585,10 +587,10 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       const repeatUnit = args.repeat_unit as string | undefined;
       const repeatEndType = (args.repeat_end_type as string | undefined) ?? 'never';
       const repeatEndValue = args.repeat_end_value as string | undefined;
-      // v2.5.2 — specific_days uses an explicit day-of-week allowlist.
+      // v2.5.2, specific_days uses an explicit day-of-week allowlist.
       // Already normalized to CSV-of-ints by the tool dispatcher.
       const repeatDaysOfWeek = args.repeat_days_of_week as string | undefined;
-      // v2.5.45 — anchor_time defaults to scheduled_start, normalizing
+      // v2.5.45, anchor_time defaults to scheduled_start, normalizing
       // wall-clock alignment for all future recurring runs. Caller can
       // override (e.g. agent setting "anchor at 06:00 even though I'm
       // creating this at 14:23").
@@ -649,7 +651,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     if (scheduledStart) parts.push(`Scheduled: ${scheduledStart}`);
 
     // Notify assigned agent about the new task (unless they created it themselves,
-    // or it's a scheduled task — the scheduler handles those).
+    // or it's a scheduled task, the scheduler handles those).
     if (assignedTo && !hasFutureSchedule) {
       injectTaskAssignmentNotification({
         assignedAgentId: assignedTo,
@@ -677,7 +679,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
 // `when` (optional). If `when` is missing, returns an ASK_USER
 // instruction so the agent loops back, asks the user, and re-fires with
 // the resolved ISO time. Otherwise creates a tracker task with
-// kind='reminder' and the supplied schedule — the scheduler then fires
+// kind='reminder' and the supplied schedule, the scheduler then fires
 // it with the reminder-flavored template (see scheduler/runner.ts).
 
 export function reminderCreate(agentId: string, args: Record<string, unknown>): string {
@@ -695,7 +697,7 @@ export function reminderCreate(agentId: string, args: Record<string, unknown>): 
     );
   }
 
-  // Title is for the kanban — keep short and recognizable.
+  // Title is for the kanban, keep short and recognizable.
   const titleSnippet = what.length > 60 ? what.slice(0, 57).trimEnd() + '…' : what;
 
   return trackerCreateTask(agentId, {
@@ -715,6 +717,25 @@ export function reminderCreate(agentId: string, args: Record<string, unknown>): 
 }
 
 // ── trackerUpdateStatus ──
+
+// C26: the published evidence-kind allowlist. Before this, the complete gate
+// checked only that each entry HAD a kind + claim, so any invented kind
+// ("vibes") passed. `verified_receipt` is reserved to the engine and rejected
+// when an agent supplies it (the engine appends its own after the gate passes).
+const VALID_EVIDENCE_KINDS = new Set([
+  'claim', 'file_modified', 'file_read', 'tool_call_ref', 'output_paste', 'external_action', 'quote',
+]);
+
+/** A tier-2 receipt counts as gate-passing when Graph accepted it (async index). */
+function receiptDetailAccepted(row: ToolReceiptRow): boolean {
+  if (!row.detail) return false;
+  try {
+    const d = JSON.parse(row.detail) as { accepted?: unknown };
+    return d.accepted === true;
+  } catch {
+    return false;
+  }
+}
 
 export function trackerUpdateStatus(agentId: string, args: Record<string, unknown>): string {
   try {
@@ -747,7 +768,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     const isScheduledRecurring = taskRow && taskRow.schedule_status !== 'unscheduled' && taskRow.repeat_interval;
     const priorStatus = taskRow?.prior_status ?? null;
 
-    // v2.10.1 — idempotency check. When the agent calls
+    // v2.10.1, idempotency check. When the agent calls
     // tracker_update_status with a status that the task is already at,
     // do nothing and tell the agent clearly. Pre-fix the call still ran
     // the full update + emitted "[OK] Task updated" + sent the success
@@ -770,9 +791,9 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       !(status === 'complete' && isScheduledRecurring)
     ) {
       return (
-        `[NO-OP] task_id=${taskId} | status=${status} — already at this status, no change made.\n\n` +
+        `[NO-OP] task_id=${taskId} | status=${status}, already at this status, no change made.\n\n` +
         `Task: ${taskRow?.title ?? '(unknown title)'}\n\n` +
-        `If a scheduler trigger for this task is showing in your recent context but the task is already ${status}, that is a STALE trigger left over from when the run actually fired — the scheduler is NOT re-firing it. Skip it silently and move on; you do not need to "re-close" already-closed work.`
+        `If a scheduler trigger for this task is showing in your recent context but the task is already ${status}, that is a STALE trigger left over from when the run actually fired, the scheduler is NOT re-firing it. Skip it silently and move on; you do not need to "re-close" already-closed work.`
       );
     }
 
@@ -786,7 +807,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // at fire time). Anything else belongs in 'in_progress' so the work
     // stays visible to the assigned agent and the PM. Refuse explicit
     // moves to 'on_deck' on tasks without a future schedule so agents
-    // don't accidentally park work in the "waiting for never" bucket —
+    // don't accidentally park work in the "waiting for never" bucket, 
     // the failure mode being addressed is the agent creating tasks,
     // working one, and forgetting the rest.
     if (status === 'on_deck' && !isPMAgent(agentId)) {
@@ -829,7 +850,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // pattern: agents marked tasks paused just to silence PM pokes. The
     // engine refuses empty/short notes here; PM validates the SUBSTANCE of
     // the reason on its next tick (see pause_validated column + the
-    // tracker_validate_pause tool).
+    // tracker_validate tool).
     if (status === 'paused' && !callerIsPM) {
       const pauseNotes = typeof args.notes === 'string' ? args.notes.trim() : '';
       const MIN_PAUSE_NOTES_LEN = 15;
@@ -893,17 +914,66 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
           const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] missing kind or claim`);
           return `Error: evidence[${i}] must have both \`kind\` (string) and \`claim\` (string). Got kind="${kind}", claim length=${claim.length}.${breaker}`;
         }
+        // C26: verified_receipt is engine-only; the engine appends it after the
+        // gate passes. An agent supplying it is trying to fabricate a receipt.
+        if (kind === 'verified_receipt') {
+          const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] used the reserved verified_receipt kind`);
+          return `Error: evidence[${i}] kind "verified_receipt" is reserved for the engine and cannot be supplied by an agent. The engine writes verified receipts itself from the tool's provider response. Use one of: ${[...VALID_EVIDENCE_KINDS].join(', ')}.${breaker}`;
+        }
+        // C26: enforce the published allowlist so an invented kind no longer passes.
+        if (!VALID_EVIDENCE_KINDS.has(kind)) {
+          const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] has unrecognized kind "${kind}"`);
+          return `Error: evidence[${i}] kind "${kind}" is not a recognized evidence kind. Use one of: ${[...VALID_EVIDENCE_KINDS].join(', ')}.${breaker}`;
+        }
       }
-      // Persist result + evidence on the task row for PM to read.
+      // ── C26 receipt gate ──
+      // A turn that ran a tier-1/2 (machine-verifiable) send tool must produce a
+      // verified receipt to close as complete. This makes Layer 1 a REAL gate
+      // for the send subset, on the weakest model, instead of structure-only.
+      // Tier-3 (iMessage) turns impose NO new requirement; a turn that ran no
+      // receipt tool at all keeps the existing prose-evidence + PM path (D-3).
+      const turnReceiptIds = getTurnReceipts(agentId);
+      const receiptRows = turnReceiptIds.length > 0 ? getReceiptsByIds(turnReceiptIds) : [];
+      const tier12 = receiptRows.filter(r => r.tier === 1 || r.tier === 2);
+      if (tier12.length > 0) {
+        const satisfied = tier12.some(r => r.verified === 1 || (r.tier === 2 && receiptDetailAccepted(r)));
+        if (!satisfied) {
+          const worst = tier12[0];
+          const breaker = noteHardGateRejection(taskId, agentId, `send via ${worst.tool} not verified by receipt`);
+          return (
+            `Error: this turn ran a send tool (${worst.tool}) but the engine could NOT verify the send landed ` +
+            `(basis=${worst.basis}, detail=${worst.detail ?? '(none)'}). A send-class task cannot be marked complete ` +
+            `until delivery is confirmed. The send may still have gone out: verify FIRST (check the sent folder / thread / recipient) ` +
+            `and re-send only if you confirm it did not land. If it genuinely failed, mark the task blocked with the reason. ` +
+            `Do not claim it was sent.${breaker}`
+          );
+        }
+      }
+
+      // On pass, the engine appends one verified_receipt evidence entry per
+      // receipt written THIS turn (tier 3 included, honestly marked unverified)
+      // so PM's existing evidence-reading flow sees the machine receipts, then
+      // stamps task_id on the consumed rows. Engine-authored, appended AFTER the
+      // agent-supplied evidence was validated above.
+      const evidenceOut: unknown[] = [...evidence];
+      for (const r of receiptRows) {
+        const label = r.verified === 1 ? 'verified' : 'unverified';
+        const idPart = r.provider_id ? `, id ${r.provider_id}` : '';
+        evidenceOut.push({ kind: 'verified_receipt', claim: `${r.tool} ${label} (${r.basis})${idPart}`, pointer: r.id });
+      }
+
+      // Persist result + (augmented) evidence on the task row for PM to read.
       try {
         db.prepare(`UPDATE tasks SET result = ?, evidence_json = ?, updated_at = datetime('now') WHERE id = ?`)
-          .run(result, JSON.stringify(evidence), taskId);
+          .run(result, JSON.stringify(evidenceOut), taskId);
       } catch (err) {
         logger.warn('Failed to persist result/evidence on complete (non-fatal)', {
           taskId, error: err instanceof Error ? err.message : String(err),
         });
       }
-      // Clear circuit-breaker tracking — the hard gate accepted.
+      // Stamp task_id (+ updated_at) on the receipts consumed as evidence.
+      if (turnReceiptIds.length > 0) stampReceiptsTask(turnReceiptIds, taskId);
+      // Clear circuit-breaker tracking, the hard gate accepted.
       clearHardGateBreaker(taskId, agentId);
     }
 
@@ -925,7 +995,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
 
     // For recurring tasks being marked complete with complete_all_runs=true,
     // the agent is asserting that NO further runs are needed. Stop the
-    // schedule immediately and bypass per-run PM validation — this is the
+    // schedule immediately and bypass per-run PM validation, this is the
     // "I did them all internally, please close the loop" path.
     if (status === 'complete' && isScheduledRecurring && (args.complete_all_runs as boolean) === true) {
       const notes = args.notes as string | undefined;
@@ -944,13 +1014,13 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // Recurring per-run complete (non-terminal): advance the schedule
     // immediately so the wall-clock anchor is preserved. PM validation
     // happens as an async audit on task_log but does NOT gate the next
-    // fire — late validation must never lose a scheduled run. The hard
+    // fire, late validation must never lose a scheduled run. The hard
     // gate above already validated result+evidence presence, so we have
     // a clean record to archive.
     //
     // Detection: probe calculateNextRun with run_count+1. If it would
     // return null, this run is the TERMINAL close and we hold for the PM's
-    // validation (matches one-shot complete semantics — final state needs
+    // validation (matches one-shot complete semantics, final state needs
     // the same review discipline).
     if (status === 'complete' && isScheduledRecurring) {
       const detail = db.prepare(`
@@ -1007,9 +1077,9 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
           logger.warn('Failed to archive recurring per-run to task_log (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
         }
         // Clear result/evidence on the task row so the next fire starts
-        // from scratch — the per-run record lives in task_log.
+        // from scratch, the per-run record lives in task_log.
         db.prepare(`UPDATE tasks SET result = NULL, evidence_json = NULL WHERE id = ?`).run(taskId);
-        // Advance the schedule (fire-and-forget — same pattern the
+        // Advance the schedule (fire-and-forget, same pattern the
         // generic complete handler uses below).
         const notes = args.notes as string | undefined;
         onTaskRunComplete(taskId, 'complete', notes ?? '').catch(err => {
@@ -1042,12 +1112,12 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       // A null return from updateTask now means one of two rare things:
       //   1. Another agent deleted the task between resolve and update
       //   2. The task was deleted between the UPDATE and the SELECT
-      // Either way, the task genuinely no longer exists — not a prefix mismatch.
+      // Either way, the task genuinely no longer exists, not a prefix mismatch.
       return `Error: Task ${taskId} was deleted before the update completed. It no longer exists.`;
     }
 
     // Phase B.0: write the transition + any supplied notes to task_log.
-    // tasks.notes is now read-only legacy (Q7) — new code does not append to it.
+    // tasks.notes is now read-only legacy (Q7), new code does not append to it.
     {
       const fromEntity = isPMAgent(agentId)
         ? 'pm'
@@ -1086,8 +1156,8 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         agentId,
       );
       // Handle one-time scheduled task completion. Recurring tasks are
-      // gated out — their per-run advance happens only after the PM
-      // validates this run via tracker_validate_complete. Calling
+      // gated out, their per-run advance happens only after the PM
+      // validates this run via tracker_validate. Calling
       // onTaskRunComplete here would silently advance the schedule and
       // bypass PM review (the bug v2.8.2 fixes).
       if (!isScheduledRecurring) {
@@ -1108,12 +1178,12 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     if (task.status === 'paused' && task.pausedUntil) {
       parts.push(`Auto-resumes: ${formatTimeForAgent(task.pausedUntil)} (will restore to "${task.statusBeforePause ?? 'on_deck'}")`);
     } else if (task.status === 'paused') {
-      parts.push('Paused indefinitely — must be resumed manually.');
+      parts.push('Paused indefinitely, must be resumed manually.');
     }
 
     // Apprentice safety net: if an apprentice just marked their OWN primary task
     // 'complete' via tracker_update_status, they almost certainly meant to finalize
-    // their work. tracker_update_status alone leaves them idle — their parent will
+    // their work. tracker_update_status alone leaves them idle, their parent will
     // never get the structured completion notification. Nudge them to call
     // complete_task on the next turn.
     if (status === 'complete') {
@@ -1166,44 +1236,12 @@ export function trackerAddNotes(agentId: string, args: Record<string, unknown>):
   }
 }
 
-// ── trackerEditNotes (deprecated v2.8.0) ──
-//
-// Phase B.0 makes the task_log append-only by design (audit trail).
-// Mutating past entries breaks the audit guarantees. The tool stays in the
-// registry for one release so existing prompts do not 404; returns a
-// directive instead of doing the edit. Removed in Phase C.
-export function trackerEditNotes(agentId: string, args: Record<string, unknown>): string {
-  const rawTaskId = args.taskId as string | undefined;
-  const taskFragment = rawTaskId ? ` (task ${rawTaskId.slice(0, 8)})` : '';
-  logger.info('trackerEditNotes called against deprecated tool', { agentId }, agentId);
-  return (
-    `Error: tracker_edit_notes is deprecated as of v2.8.0${taskFragment}. ` +
-    `Task notes are now an append-only audit log (task_log). To correct a ` +
-    `prior entry, write a new observation that supersedes it via ` +
-    `tracker_add_notes(taskId, notes="Correction to my earlier note: <new info>"). ` +
-    `The original entry stays in the log for the audit trail.`
-  );
-}
-
-// ── trackerClearNotes (deprecated v2.8.0) ──
-//
-// Same deprecation rationale as trackerEditNotes. The task_log is the
-// audit trail; wiping it would defeat the point. Returns a directive
-// instead of clearing.
-export function trackerClearNotes(agentId: string, args: Record<string, unknown>): string {
-  const rawTaskId = args.taskId as string | undefined;
-  const taskFragment = rawTaskId ? ` (task ${rawTaskId.slice(0, 8)})` : '';
-  logger.info('trackerClearNotes called against deprecated tool', { agentId }, agentId);
-  return (
-    `Error: tracker_clear_notes is deprecated as of v2.8.0${taskFragment}. ` +
-    `Task notes are now an append-only audit log (task_log) and cannot be ` +
-    `wiped. If a prior entry is obsolete, write a new observation that says ` +
-    `so via tracker_add_notes(taskId, notes="The prior entries are stale: <why>").`
-  );
-}
+// C27: trackerEditNotes + trackerClearNotes (dead v2.8.0 stubs that always
+// returned an Error directive) were DELETED along with their tool defs; the old
+// tool names are now tombstone aliases (tools/aliases.ts).
 
 // ── trackerEditTask ──
-// Edit any structural field on a task — title, description, dependencies,
+// Edit any structural field on a task, title, description, dependencies,
 // step ordering, schedule. This is the catch-all editor; status changes still
 // go through trackerUpdateStatus (because completing a task has notification
 // + project-rollup side-effects), and the schedule pause/resume pair stays on
@@ -1250,7 +1288,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     }
 
     // Recurring-schedule integrity gate. Same shape as the gate in
-    // tracker_create_task's dispatch — the edit path is the OTHER way to
+    // tracker_create_task's dispatch, the edit path is the OTHER way to
     // produce a partial schedule (e.g. add repeat_interval to a row that
     // had no repeat_unit, or strip repeat_unit while leaving
     // repeat_interval set). Compute the EFFECTIVE post-edit values and
@@ -1332,7 +1370,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     if (phase !== undefined) updates.phase = phase;
     if (scheduledStart !== undefined) {
       // Normalize to UTC ISO so downstream scheduling code doesn't trip on
-      // a local-time string — same handling as trackerCreateTask.
+      // a local-time string, same handling as trackerCreateTask.
       if (scheduledStart === null || scheduledStart === '') {
         updates.scheduledStart = null;
       } else {
@@ -1369,7 +1407,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       return `Error: Task ${taskId} was deleted before the update completed. It no longer exists.`;
     }
 
-    // v2.5.3 — if any schedule field changed, recompute next_run_at so the
+    // v2.5.3, if any schedule field changed, recompute next_run_at so the
     // scheduler picks up the edit. Without this, agents could change the
     // recurrence (interval, unit, day-of-week list, end conditions) but the
     // task would still fire at the old cadence until the next natural run.
@@ -1410,7 +1448,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
           const nextRun = calculateNextRun(row);
           // Only set schedule_status to 'waiting' if there is a future run.
           // calculateNextRun returns null for completed/non-recurring tasks
-          // that have already fired — in that case leave whatever status was
+          // that have already fired, in that case leave whatever status was
           // there (typically 'completed' or 'idle').
           if (nextRun) {
             db.prepare(`
@@ -1419,7 +1457,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
               WHERE id = ?
             `).run(nextRun, taskId);
           } else if (row.scheduled_start === null) {
-            // Schedule was cleared entirely — drop next_run_at too.
+            // Schedule was cleared entirely, drop next_run_at too.
             db.prepare(`
               UPDATE tasks
               SET next_run_at = NULL, schedule_status = 'idle', updated_at = datetime('now')
@@ -1498,7 +1536,7 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
 
         return parts.join('\n');
       }
-      // Task resolution failed — if we also have a projectId (usually the
+      // Task resolution failed, if we also have a projectId (usually the
       // same string), try the project branch below before reporting.
       if (!rawProjectId) {
         return formatResolveError('task', rawTaskId, taskResolved);
@@ -1672,7 +1710,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
     const task = getTask(taskId);
     if (!task) return `Error: Task ${taskId} was deleted before completion could be recorded.`;
 
-    // Guard: don't complete a paused task — it was intentionally put on hold
+    // Guard: don't complete a paused task, it was intentionally put on hold
     if (task.status === 'paused') {
       return `Error: Task "${task.title}" is paused. It cannot be completed while paused. Unpause it first (tracker_update_status with status="in_progress") or ask ${getOwnerName()} for instructions.`;
     }
@@ -1693,7 +1731,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
 
       if (nextStep) {
         updateTask(nextStep.id, { status: 'in_progress' });
-        nextTaskInfo = `\nNext step started: "${nextStep.title}" (${nextStep.id}) — step ${nextStep.step_number}, now in_progress.`;
+        nextTaskInfo = `\nNext step started: "${nextStep.title}" (${nextStep.id}), step ${nextStep.step_number}, now in_progress.`;
       } else {
         // Check if all tasks in this project are now complete
         const remaining = db.prepare(`
@@ -1706,7 +1744,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
             UPDATE projects SET status = 'complete', completed_at = datetime('now'), updated_at = datetime('now')
             WHERE id = ?
           `).run(task.projectId);
-          nextTaskInfo = '\nAll steps complete — project marked as complete!';
+          nextTaskInfo = '\nAll steps complete, project marked as complete!';
         } else {
           nextTaskInfo = `\nNo next sequential step found. ${remaining.count} task(s) remaining in project.`;
         }
@@ -1733,7 +1771,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
 // ── trackerEditProject ──
 //
 // Rename / re-describe a project. Until now, projects literally had no
-// editable title — only status and currentPhase could be changed. Added
+// editable title, only status and currentPhase could be changed. Added
 // so the PM agent can rename engine-auto-created projects (the multistep
 // classifier names them with a slice of the user prompt; PM rewrites
 // both project and first task to clean names on its next turn).
@@ -1793,7 +1831,7 @@ export function trackerCloseProject(agentId: string, args: Record<string, unknow
   if (!resolved.ok) return formatResolveError('project', rawProjectId, resolved);
   const projectId = resolved.id;
 
-  // Default to status='cancelled' — most calls to this tool are clean-up of
+  // Default to status='cancelled', most calls to this tool are clean-up of
   // abandoned/duplicated projects rather than "we actually finished it."
   // Agents who really did finish all the work should pass status='complete'.
   const rawStatus = (args.status as string | undefined)?.toLowerCase() ?? 'cancelled';
@@ -1804,7 +1842,7 @@ export function trackerCloseProject(agentId: string, args: Record<string, unknow
 
   const reason = (args.reason as string | undefined)?.trim();
   if (!reason || reason.length < 4) {
-    return 'Error: reason is required (a short sentence on why this project is being closed — will be appended to every task as a note for the audit trail).';
+    return 'Error: reason is required (a short sentence on why this project is being closed, will be appended to every task as a note for the audit trail).';
   }
 
   const project = getProject(projectId);
@@ -1878,7 +1916,7 @@ export async function trackerValidatePause(
       entryKind: 'transition',
       fromStatus: 'paused',
       toStatus: 'paused',
-      actionTaken: 'tracker_validate_pause(valid=true)',
+      actionTaken: 'tracker_validate(kind=pause, valid=true)',
       reason: 'PM blessed the pause as legitimate',
     });
     // Real-time dashboard sync: the validate-success path bypasses
@@ -1908,7 +1946,7 @@ export async function trackerValidatePause(
   // Increment revert_count and log the reject + transition.
   db.prepare(`UPDATE tasks SET revert_count = revert_count + 1, updated_at = datetime('now') WHERE id = ?`).run(taskId);
   // updateTask already broadcast with the status flip, but revert_count
-  // moved after that broadcast — re-broadcast so the dashboard's copy
+  // moved after that broadcast, re-broadcast so the dashboard's copy
   // matches the row.
   const freshPauseReject = getTask(taskId);
   if (freshPauseReject) broadcast({ type: 'tracker:task_updated', data: freshPauseReject });
@@ -1918,7 +1956,7 @@ export async function trackerValidatePause(
     entryKind: 'reject',
     fromStatus: 'paused',
     toStatus: targetStatus,
-    actionTaken: 'tracker_validate_pause(valid=false)',
+    actionTaken: 'tracker_validate(kind=pause, valid=false)',
     reason: rejectReason,
   });
   // Check whether revert_count just crossed the stalemate threshold.
@@ -1931,10 +1969,10 @@ export async function trackerValidatePause(
     try {
       const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
       const directive =
-        `Your pause on "${task.title}" (${taskId.slice(0, 8)}) was lifted back to in_progress — PM didn't see a real wait condition. This is a routine check, not a penalty.\n\n` +
+        `Your pause on "${task.title}" (${taskId.slice(0, 8)}) was lifted back to in_progress, PM didn't see a real wait condition. This is a routine check, not a penalty.\n\n` +
         `PM's reason: ${rejectReason}\n\n` +
         `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
-        `Pick one and move: (a) finish the work and mark complete with result + evidence, (b) mark blocked with the real obstacle if you can't proceed, (c) ask the user a specific question and re-pause naming what you're waiting for. Don't re-pause with the same notes — PM will reject again.`;
+        `Pick one and move: (a) finish the work and mark complete with result + evidence, (b) mark blocked with the real obstacle if you can't proceed, (c) ask the user a specific question and re-pause naming what you're waiting for. Don't re-pause with the same notes, PM will reject again.`;
       const { v4: uuidv4 } = await import('uuid');
       await deliverA2AMessage({
         intent: 'QUESTION',
@@ -1964,7 +2002,7 @@ export async function trackerValidatePause(
 //
 // PM-only forward-leaning verb. Use when an agent's outcome on a task is
 // wrong (work skipped, channel wrong, evidence missing, claim doesn't
-// match goal) and you want them to redo it with specific guidance —
+// match goal) and you want them to redo it with specific guidance, 
 // instead of just confirming a pause or rejecting a complete.
 //
 // Works from any status except 'cancelled'. Resets validation flags so
@@ -2052,7 +2090,7 @@ export async function trackerRetask(
       `PM retask on "${task.title}" (${taskId.slice(0, 8)}). Task is back to ${targetStatus}.\n\n` +
       `PM directive: ${directive}\n\n` +
       `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
-      `Do the work the directive describes, then close out (tracker_update_status with status="complete", a clear result, and evidence pointing at the concrete artifact — file path, message id, tool_call_ref, etc.). Don't just acknowledge; do the thing.`;
+      `Do the work the directive describes, then close out (tracker_update_status with status="complete", a clear result, and evidence pointing at the concrete artifact, file path, message id, tool_call_ref, etc.). Don't just acknowledge; do the thing.`;
     const { v4: uuidv4 } = await import('uuid');
     await deliverA2AMessage({
       intent: 'QUESTION',
@@ -2093,10 +2131,10 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
   if (!task) return `Error: Task ${taskId} was deleted before pause could be applied.`;
   if (task.schedule_status === 'unscheduled') {
     return (
-      `Refused: tracker_pause_schedule is for recurring/scheduled tasks only — "${task.title}" has no schedule. ` +
+      `Refused: tracker_pause_schedule is for recurring/scheduled tasks only, "${task.title}" has no schedule. ` +
       `For a one-shot task: if the work is DONE, call tracker_update_status(task_id="${task.id}", status="complete"). ` +
       `If you're stuck, call tracker_update_status(..., status="blocked", notes="why"). ` +
-      `If the task is no longer needed, call tracker_update_status(..., status="paused", resume_at="<ISO datetime>") to pause until a specific time, or — if you want it cleanly off the active board — tracker_close_project for whole-project cleanup. ` +
+      `If the task is no longer needed, call tracker_update_status(..., status="paused", resume_at="<ISO datetime>") to pause until a specific time, or, if you want it cleanly off the active board, tracker_close_project for whole-project cleanup. ` +
       `Pausing a one-shot task without a resume_at strands it: it sits in the Paused column, can\'t be completed without unpausing, and the PM stops watching it.`
     );
   }
@@ -2116,7 +2154,7 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
   const freshSchedPaused = getTask(taskId);
   if (freshSchedPaused) broadcast({ type: 'tracker:task_updated', data: freshSchedPaused });
   logger.info('Schedule paused', { taskId }, agentId);
-  return `Schedule paused for "${task.title}". Status set to "paused" — stale detection and PM monitoring will ignore it until resumed.`;
+  return `Schedule paused for "${task.title}". Status set to "paused", stale detection and PM monitoring will ignore it until resumed.`;
 }
 
 // ── trackerResumeSchedule ──
@@ -2197,7 +2235,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
 
   if (action === 'skip') {
     // Compute next future anchor (strictly > now). calculateNextRun
-    // already does this when fed an unpaused snapshot — its inner loop
+    // already does this when fed an unpaused snapshot, its inner loop
     // walks the anchor forward until it lands in the future.
     const scheduledTask: ScheduledTask = {
       id: task.id as string,
@@ -2216,7 +2254,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
     };
     const nextRun = calculateNextRun(scheduledTask);
     if (!nextRun) {
-      // End conditions reached or anchor unset — leave paused.
+      // End conditions reached or anchor unset, leave paused.
       return `Could not compute a next-run for "${title}" (likely past repeat_end_value or anchor missing). Task stays paused; investigate manually.`;
     }
     db.prepare(`
@@ -2245,7 +2283,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
 }
 
 /**
- * tracker_apply_user_validation — used by the primary agent when the user
+ * tracker_apply_user_validation, used by the primary agent when the user
  * replies to a "[VALIDATION CHECK]" system message in chat. The user is
  * telling us whether work that's been sitting unvalidated is actually
  * done or not.
@@ -2439,7 +2477,7 @@ function noteHardGateRejection(taskId: string, agentId: string, reason: string):
 }
 /**
  * Reset the breaker for a (task, agent) pair. Called when the hard gate
- * accepts a transition — the agent is back in a good state.
+ * accepts a transition, the agent is back in a good state.
  */
 function clearHardGateBreaker(taskId: string, agentId: string): void {
   hardGateBreaker.delete(breakerKey(taskId, agentId));
@@ -2511,7 +2549,7 @@ async function maybeTriggerStalemate(taskId: string, pmAgentId: string): Promise
 }
 
 /**
- * tracker_validate_complete — PM-only.
+ * tracker_validate, PM-only.
  *
  * Mirrors trackerValidatePause. On valid=true, complete_validated=1
  * fires, the dependency cascade runs, and (for recurring tasks) the
@@ -2574,7 +2612,7 @@ export async function trackerValidateComplete(
     // the scheduler's onTaskRunComplete decide whether to advance the
     // schedule (more runs) or close terminal. Previously this branch
     // used `task.next_run_at === null` to detect terminal, but the
-    // scheduler doesn't null next_run_at on terminal close — so the
+    // scheduler doesn't null next_run_at on terminal close, so the
     // detection misfired and the PM mis-routed terminal closes through
     // the per-run reset, leaving inconsistent state. Now we just run
     // the same advance the scheduler would and observe the outcome.
@@ -2582,14 +2620,14 @@ export async function trackerValidateComplete(
 
     if (isRecurring) {
       // Archive this run's result/evidence to task_log BEFORE clearing
-      // them — preserves the per-run history.
+      // them, preserves the per-run history.
       writeTaskLog({
         taskId,
         fromEntity: 'pm',
         entryKind: 'transition',
         fromStatus: 'complete',
         toStatus: 'pending-advance',
-        actionTaken: `tracker_validate_complete(valid=true) — recurring per-run`,
+        actionTaken: `tracker_validate(kind=complete, valid=true), recurring per-run`,
         reason: 'PM blessed this run',
         note: task.result,
         evidenceJson: task.evidence_json,
@@ -2634,7 +2672,7 @@ export async function trackerValidateComplete(
       // Per-run advance: next run will need its own validation.
       const fresh = getTask(taskId);
       if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
-      logger.info('Per-run validation success — schedule advanced', { taskId, pmAgentId, runCount: after.runCount, nextRunAt: after.nextRunAt }, pmAgentId);
+      logger.info('Per-run validation success, schedule advanced', { taskId, pmAgentId, runCount: after.runCount, nextRunAt: after.nextRunAt }, pmAgentId);
       return `[OK] Per-run validation success on "${task.title}" (${taskId.slice(0, 8)}). Schedule advanced to next run at ${after.nextRunAt ?? '(unknown)'}.`;
     }
 
@@ -2649,7 +2687,7 @@ export async function trackerValidateComplete(
       entryKind: 'transition',
       fromStatus: 'complete',
       toStatus: 'complete',
-      actionTaken: 'tracker_validate_complete(valid=true) — terminal',
+      actionTaken: 'tracker_validate(kind=complete, valid=true), terminal',
       reason: 'PM blessed the complete',
     });
     try {
@@ -2688,7 +2726,7 @@ export async function trackerValidateComplete(
         updated_at = datetime('now')
     WHERE id = ?
   `).run(taskId);
-  // updateTask broadcast with stale result/evidence/revert_count above —
+  // updateTask broadcast with stale result/evidence/revert_count above, 
   // re-broadcast so the dashboard's evidence panel reflects the cleared
   // state.
   const freshCompleteReject = getTask(taskId);
@@ -2700,7 +2738,7 @@ export async function trackerValidateComplete(
     entryKind: 'reject',
     fromStatus: 'complete',
     toStatus: targetStatus,
-    actionTaken: 'tracker_validate_complete(valid=false)',
+    actionTaken: 'tracker_validate(kind=complete, valid=false)',
     reason: rejectReason,
   });
 
@@ -2708,10 +2746,10 @@ export async function trackerValidateComplete(
     try {
       const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
       const directive =
-        `Your complete on "${task.title}" (${taskId.slice(0, 8)}) was reverted to ${targetStatus} for a recheck — this is a routine PM check, not a penalty.\n\n` +
+        `Your complete on "${task.title}" (${taskId.slice(0, 8)}) was reverted to ${targetStatus} for a recheck, this is a routine PM check, not a penalty.\n\n` +
         `PM's reason: ${rejectReason}\n\n` +
         `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
-        `To close this out: address what PM flagged, then call tracker_update_status(status='complete') again with a clear result + evidence pointing at the concrete work (file paths, tool_call_ref, output paste, external_action). You don't have to redo work that's already done — just fix the gap PM named. PM validates fast when the evidence matches the goal. revert_count=${(updated as { revertCount?: number }).revertCount ?? '(incremented)'}.`;
+        `To close this out: address what PM flagged, then call tracker_update_status(status='complete') again with a clear result + evidence pointing at the concrete work (file paths, tool_call_ref, output paste, external_action). You don't have to redo work that's already done, just fix the gap PM named. PM validates fast when the evidence matches the goal. revert_count=${(updated as { revertCount?: number }).revertCount ?? '(incremented)'}.`;
       await deliverA2AMessage({
         intent: 'QUESTION',
         threadId: '',
@@ -2732,7 +2770,7 @@ export async function trackerValidateComplete(
 }
 
 /**
- * tracker_validate_blocked — PM-only. Mirror of validate_complete for the
+ * tracker_validate, PM-only. Mirror of validate_complete for the
  * blocked transition. Bless or revert.
  */
 export async function trackerValidateBlocked(
@@ -2774,11 +2812,11 @@ export async function trackerValidateBlocked(
       entryKind: 'transition',
       fromStatus: 'blocked',
       toStatus: 'blocked',
-      actionTaken: 'tracker_validate_blocked(valid=true)',
+      actionTaken: 'tracker_validate(kind=blocked, valid=true)',
       reason: 'PM blessed the block as real',
     });
     // comms-audit (actionable-but-invisible correctness bug): this is an ACTIONABLE
-    // notice — the primary is told to "surface to the user or unblock manually" — but it
+    // notice, the primary is told to "surface to the user or unblock manually", but it
     // used to go through notifyPrimaryAgent (role='system'), which the model-context
     // builder SKIPS, so the primary's model never saw it and could never take either
     // action. Route it through the model-visible awareness lane (postAgentNotice) so the
@@ -2815,7 +2853,7 @@ export async function trackerValidateBlocked(
     entryKind: 'reject',
     fromStatus: 'blocked',
     toStatus: targetStatus,
-    actionTaken: 'tracker_validate_blocked(valid=false)',
+    actionTaken: 'tracker_validate(kind=blocked, valid=false)',
     reason: rejectReason,
   });
 
@@ -2823,10 +2861,10 @@ export async function trackerValidateBlocked(
     try {
       const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
       const directive =
-        `Your block on "${task.title}" (${taskId.slice(0, 8)}) was reverted to ${targetStatus} — PM didn't see a real obstacle. Routine check, not a penalty.\n\n` +
+        `Your block on "${task.title}" (${taskId.slice(0, 8)}) was reverted to ${targetStatus}, PM didn't see a real obstacle. Routine check, not a penalty.\n\n` +
         `PM's reason: ${rejectReason}\n\n` +
         `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
-        `Address what PM flagged, then either complete with result + evidence, or re-block with a clearer reason naming the specific obstacle. Don't re-block with the same notes — PM will reject again.`;
+        `Address what PM flagged, then either complete with result + evidence, or re-block with a clearer reason naming the specific obstacle. Don't re-block with the same notes, PM will reject again.`;
       await deliverA2AMessage({
         intent: 'QUESTION',
         threadId: '',
@@ -2847,7 +2885,7 @@ export async function trackerValidateBlocked(
 }
 
 /**
- * tracker_request_override — agent-side. Queues a request for PM (or
+ * tracker_request_override, agent-side. Queues a request for PM (or
  * the user via dashboard) to manually force a status change that the
  * engine's hard gate refused, or that the agent thinks should land
  * despite a PM rejection.
@@ -2908,7 +2946,7 @@ export function trackerRequestOverride(
 }
 
 /**
- * tracker_override — PM-only. Resolves a queued OVERRIDE_REQUEST by
+ * tracker_override, PM-only. Resolves a queued OVERRIDE_REQUEST by
  * either approving (force the requested status through, bypassing the
  * engine hard gate) or denying (the engine was right; notify the
  * agent).
@@ -2960,7 +2998,7 @@ export async function trackerOverride(
           updated_at = datetime('now')
       WHERE id = ?
     `).run(req.requested_status, req.requested_status, req.requested_status, req.task_id);
-    // updateTask broadcast above with only the status flip — re-broadcast
+    // updateTask broadcast above with only the status flip, re-broadcast
     // so revert_count=0 and the matching *_validated flag reach the dashboard.
     const freshOverride = getTask(req.task_id);
     if (freshOverride) broadcast({ type: 'tracker:task_updated', data: freshOverride });
@@ -3015,7 +3053,7 @@ export async function trackerOverride(
 }
 
 /**
- * tracker_request_user_verdict — assigned-agent-side, only callable
+ * tracker_request_user_verdict, assigned-agent-side, only callable
  * while awaiting_user_verdict=1. Composes a user-facing message
  * describing the stalemate and routes it.
  */
@@ -3101,7 +3139,7 @@ export async function trackerRequestUserVerdict(
 }
 
 /**
- * tracker_apply_user_verdict — the receiving agent (primary if relayed,
+ * tracker_apply_user_verdict, the receiving agent (primary if relayed,
  * assigned agent if it owns the user chat) calls this with the user's
  * reply to land the final decision.
  */
@@ -3146,7 +3184,7 @@ export async function trackerApplyUserVerdict(
         updated_at = datetime('now')
     WHERE id = ?
   `).run(status, status, status, taskId);
-  // updateTask broadcast the status flip above — re-broadcast so the
+  // updateTask broadcast the status flip above, re-broadcast so the
   // dashboard sees the validated flag flip and the stalemate clear.
   const freshUserVerdict = getTask(taskId);
   if (freshUserVerdict) broadcast({ type: 'tracker:task_updated', data: freshUserVerdict });

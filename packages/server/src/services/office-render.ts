@@ -1,15 +1,15 @@
 // ════════════════════════════════════════
-// renderOfficeToHtml — convert Office documents to canvas-renderable HTML.
+// renderOfficeToHtml, convert Office documents to canvas-renderable HTML.
 //
-// The right-dock canvas (and view_canvas) render HTML in an iframe, but Word /
+// The right-dock canvas (and canvas_read) render HTML in an iframe, but Word /
 // Excel files are binary OOXML the browser can't display. This converts them
 // to a clean, self-contained HTML page:
 //   .docx              -> mammoth (semantic HTML)
 //   .xlsx/.xls/.xlsm   -> SheetJS (one HTML table per sheet)
-// Used by BOTH the /upload/render endpoint (dashboard canvas) and view_canvas
+// Used by BOTH the /upload/render endpoint (dashboard canvas) and canvas_read
 // (the agent), so what the agent sees matches what the user sees.
 //
-// Not handled: legacy .doc (binary Word) and .pptx — there is no bundled
+// Not handled: legacy .doc (binary Word) and .pptx, there is no bundled
 // converter; callers fall back to a "download to view" message.
 // ════════════════════════════════════════
 
@@ -62,7 +62,7 @@ export async function renderOfficeToHtml(filePath: string): Promise<string | nul
       return wrap(base, `<article class="doc">${value || '<p><em>(empty document)</em></p>'}</article>`);
     }
     if (ext === '.xlsx' || ext === '.xls' || ext === '.xlsm' || ext === '.xlsb' || ext === '.csv') {
-      // Read bytes ourselves — XLSX.readFile can't reach Node fs under ESM.
+      // Read bytes ourselves, XLSX.readFile can't reach Node fs under ESM.
       const wb = ext === '.csv'
         ? XLSX.read(fs.readFileSync(filePath, 'utf-8'), { type: 'string' })
         : XLSX.read(fs.readFileSync(filePath), { type: 'buffer' });

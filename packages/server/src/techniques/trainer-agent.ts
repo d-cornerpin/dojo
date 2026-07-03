@@ -45,12 +45,12 @@ You are ${trainerName}, the technique trainer for the DOJO Agent Platform. Your 
 
 # Rules
 
-- Always use the \`save_technique\` tool to create techniques — never just describe them
+- Always use the \`save_technique\` tool to create techniques, never just describe them
 - Include supporting files (scripts, templates) when they add value
 - Choose descriptive, lowercase-hyphenated names for techniques
 - Tag techniques accurately for discoverability
 - When updating a technique, explain what changed in the change summary
-- Keep instructions clear and actionable — other agents need to follow them exactly`;
+- Keep instructions clear and actionable, other agents need to follow them exactly`;
 }
 
 // ── Ensure Trainer Agent Running ──
@@ -76,7 +76,7 @@ export function ensureTrainerAgentRunning(): void {
   // Ensure the primary agent exists before creating Trainer (parent_agent FK constraint)
   const primaryExists = db.prepare('SELECT id FROM agents WHERE id = ?').get(primaryId);
   if (!primaryExists) {
-    logger.warn('Primary agent not yet created — deferring Trainer agent spawn', { primaryId });
+    logger.warn('Primary agent not yet created, deferring Trainer agent spawn', { primaryId });
     // Retry after a short delay
     setTimeout(() => ensureTrainerAgentRunning(), 5000);
     return;
@@ -100,19 +100,19 @@ export function ensureTrainerAgentRunning(): void {
       // Communication
       'send_to_agent', 'list_agents',
       // Memory
-      'vault_remember', 'vault_search', 'memory_grep', 'memory_describe',
-      // Tracker — trainer drives multi-step technique builds and needs to
+      'vault_remember', 'vault_search', 'history_search', 'history_get',
+      // Tracker, trainer drives multi-step technique builds and needs to
       // manage its own tasks/projects without getting stuck.
       'tracker_create_project', 'tracker_create_task', 'tracker_list_active',
       'tracker_get_status', 'tracker_update_status',
-      'tracker_add_notes', 'tracker_edit_notes', 'tracker_clear_notes',
+      'tracker_add_notes',
       'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
       // Utility
       'load_tool_docs', 'get_current_time', 'complete_task',
     ],
   });
 
-  // v2.5.15 — Permissions are also defined here (before the early-return path)
+  // v2.5.15, Permissions are also defined here (before the early-return path)
   // so the "trainer already exists" branch can refresh them too. Previously
   // permissions were only set on initial create, which meant existing
   // trainers from older versions kept restrictive defaults forever
@@ -139,8 +139,8 @@ export function ensureTrainerAgentRunning(): void {
   }
 
   if (trainer && trainer.status !== 'terminated') {
-    logger.info('Trainer agent already running — refreshing tools_policy + permissions', { status: trainer.status });
-    // v2.5.15 — Refresh BOTH tools_policy and permissions on every boot.
+    logger.info('Trainer agent already running, refreshing tools_policy + permissions', { status: trainer.status });
+    // v2.5.15, Refresh BOTH tools_policy and permissions on every boot.
     // Previously only tools_policy was refreshed, leaving stale permissions
     // (e.g. network_domains:'none') that silently blocked tools.
     db.prepare("UPDATE agents SET tools_policy = ?, permissions = ?, updated_at = datetime('now') WHERE id = ?")
@@ -159,7 +159,7 @@ export function ensureTrainerAgentRunning(): void {
   }
 
   if (trainer) {
-    // Trainer exists but was terminated — reactivate
+    // Trainer exists but was terminated, reactivate
     db.prepare(`
       UPDATE agents SET
         name = ?,

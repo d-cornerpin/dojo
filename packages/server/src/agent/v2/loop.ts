@@ -60,7 +60,9 @@ import { queueEmbedding } from '../../memory/embeddings.js';
 import { isPrimaryAgent, isTrainerAgent, isPMAgent } from '../../config/platform.js';
 import os from 'node:os';
 import path from 'node:path';
-import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, continuationContext } from '../turn-state.js';
+import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, continuationContext, clearTurnReceipts } from '../turn-state.js';
+import { writeToolReceipt } from '../../receipts/store.js';
+import { resolveToolAlias } from '../../tools/aliases.js';
 
 import {
   stoppedAgents,
@@ -435,7 +437,7 @@ export function setAgentStatus(agentId: string, status: string): void {
         UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?
       `).run(status, agentId);
     }
-    if (status === 'idle') { currentTurnKind.delete(agentId); currentTurnConvKey.delete(agentId); currentTurnImRecipient.delete(agentId); }
+    if (status === 'idle') { currentTurnKind.delete(agentId); currentTurnConvKey.delete(agentId); currentTurnImRecipient.delete(agentId); clearTurnReceipts(agentId); }
     // On 'working', carry the turn kind so the composer can stay quiet on pure
     // A2A turns (unless wordy mode). Defaults to 'user' until the counterparty
     // is resolved early in the turn.
@@ -787,6 +789,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // wordy mode is on). The DB status was already set to 'working' at turn start;
   // this is a broadcast-only update and the 30s heartbeat reads the same map.
   currentTurnKind.set(agentId, isA2ATurn ? 'a2a' : 'user');
+  // C26: start each turn with a clean receipt register so receipts only ever
+  // count for the turn that produced them (a later poked turn keeps the
+  // prose-evidence path). Cleared again on idle at the boundary above.
+  clearTurnReceipts(agentId);
   broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: isA2ATurn ? 'a2a' : 'user' });
 
   // Enforcer arms ONLY on A2A turns. On a user turn a pending/lingering A2A
@@ -1583,19 +1589,24 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // it directly. (Reuses the complexity classifier that was computed but unconsumed.)
       const conversationalTurn = counterparty.kind === 'user'
         && complexityClassifier(lastUserMessageContent ?? '').complexity === 'simple';
-      const ctx = await assembleContext(agentId, contextModelId, { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn });
+      // C28 Part 1: one shared turn context, threaded into BOTH assembleContext
+      // (system) AND the message-injection mctx, so the msg.turn-context entry can
+      // read counterparty / othersWaiting / conversationalTurn / isEngineTurn (they
+      // are not recomputed).
+      const sharedTurnContext = { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn };
+      const ctx = await assembleContext(agentId, contextModelId, sharedTurnContext);
       let systemPrompt = ctx.systemPrompt;
       const messages = ctx.messages;
 
       // One message-injection context for this iteration's §3c entries
-      // (technique, context-gap, tracker-notif, nudge, tool-note). The loop sets
-      // mutable fields (pendingNudge, technique payload) at each site and calls
-      // injectRegistryMessage, so injection is registry-owned (R8). The registry
-      // is the only assembler path (R7), so this is always built.
+      // (technique, context-gap, tracker-notif, nudge, tool-note, turn-context). The
+      // loop sets mutable fields (pendingNudge, technique payload) at each site and
+      // calls injectRegistryMessage, so injection is registry-owned (R8). The
+      // registry is the only assembler path (R7), so this is always built.
       const mctx: AssemblyContext = buildAssemblyContext(
         agentId,
         contextModelId,
-        { latestUserSource, ttsEngine: latestTtsEngine },
+        sharedTurnContext,
         { loopCount: state.loopCount, turnNumber, lastUserMessageContent: lastUserMessageContent ?? '', pendingNudge: state.pendingNudge },
       );
 
@@ -2149,6 +2160,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // prefix (system + tools + conversation history + other injections)
       // instead of breaking it. The system prompt carries date-only; this is
       // the live time. Always injected.
+      // C28 Part 1: the per-turn routing/presence block (reply destination, the
+      // sole routing authority C5, channel landscape, phone conduct, counterparty
+      // header, bridge state, waiting/conversational hints) injects HERE, right
+      // before current-time, so the volatile route sits past the cached prefix.
+      injectRegistryMessage('msg.turn-context', messages, mctx);
       injectRegistryMessage('msg.current-time', messages, mctx);
 
       // ── Context receipt (debug-gated, fire-and-forget) ──
@@ -2187,6 +2203,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
             modelId,
             messages,
             systemPrompt,
+            // C28 P-2: system-side volatile lane (empty after P-1). Trails the
+            // cached stable system block so it can't invalidate the cached prefix.
+            systemVolatile: ctx.systemVolatile,
             tools: useTools,
             routerTier: routerTier ?? undefined,
             // Real abort signal, when stopAgent fires controller.abort(), the
@@ -2409,6 +2428,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
         try {
           queueEmbedding('message', messageId, agentId, result.content);
         } catch { /* best effort */ }
+      }
+
+      // C27 hook 1: canonicalize aliased (renamed) tool-call names + args BEFORE
+      // any gate/classifier reads them (they match on canonical names). Tombstoned
+      // tools are left as-is; executeTool returns their pointer error at dispatch.
+      for (const tc of result.toolCalls) {
+        const aliasResolved = resolveToolAlias(tc.name, tc.arguments ?? {});
+        if (!aliasResolved.tombstone && aliasResolved.name !== tc.name) {
+          tc.name = aliasResolved.name;
+          tc.arguments = aliasResolved.args;
+        }
       }
 
       state = advance(state, { lastResponse: result, toolCalls: result.toolCalls });
@@ -2874,7 +2904,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // show_to_user): surface the pending "Open in canvas" chip / thumbnails
         // onto this otherwise-empty assistant bubble instead of dropping it. The
         // user asked the agent to open a canvas; even on [no-reply] they need the
-        // affordance back to it (an explicit show_canvas + [no-reply] otherwise
+        // affordance back to it (an explicit canvas_render + [no-reply] otherwise
         // left NO chip). Draining here also pre-empts the end-of-turn safety net,
         // so the chip is surfaced exactly once.
         let surfacedNoReplyAttachments = false;
@@ -3381,7 +3411,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           const SIDE_EFFECTING = new Set([
             'gmail_send', 'outlook_send', 'gmail_reply', 'outlook_reply', 'gmail_forward', 'outlook_forward',
             'imessage_send', 'sms_send', 'teams_send_message', 'teams_send_channel_message', 'voice_call',
-            'calendar_create', 'calendar_update', 'drive_upload', 'docs_create', 'sheets_create', 'slides_create',
+            'calendar_create', 'calendar_update', 'drive_upload', 'docs_create', 'sheets_create', 'slides_create_presentation',
             'share_publicly', 'exec', 'file_write', 'tracker_add_notes', 'tracker_create_task',
           ]);
           const schedulerTurn = mostRecentInbound?.origin_intent === 'scheduler' || (lastUserMessageContent ?? '').includes('[SOURCE: SCHEDULER');
@@ -3413,7 +3443,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               'gmail_send', 'outlook_send', 'gmail_reply', 'outlook_reply',
               'imessage_send', 'sms_send', 'teams_send_message',
               'voice_call', 'calendar_create', 'calendar_update',
-              'drive_upload', 'docs_create', 'sheets_create', 'slides_create',
+              'drive_upload', 'docs_create', 'sheets_create', 'slides_create_presentation',
               'share_publicly', 'exec',
             ]);
             const recentSideEffects: Array<{ name: string; preview: string }> = [];
@@ -5040,7 +5070,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       }
 
       // ── No-results detection (matches v1 runtime.ts:1658-1678) ──
-      // When search tools (vault_search, memory_grep, web_search, etc.)
+      // When search tools (vault_search, history_search, web_search, etc.)
       // repeatedly return "No results found" / "not in memory", the agent
       // is probably looking for something that doesn't exist. Nudge once,
       // then break with a NO_RESULTS error if it persists.
@@ -5403,6 +5433,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
           const ownerBound = imRecipient === undefined;
           const delivered = sendResponseViaIMessage(state.lastAssistantTextForIM, agentId, imRecipient, ownerBound);
           if (delivered) {
+            // C26 tier 3: the engine iMessage auto-route is honestly
+            // UNVERIFIABLE (AppleScript/imsg exit code only). Write an
+            // exit-code receipt so PM/the user story never pretend delivery
+            // was confirmed. Tier 3 imposes no new gate requirement.
+            writeToolReceipt({ agentId, tool: 'imessage_send', tier: 3, verified: false, basis: 'exit-code', recipient: delivered.address, detail: { route: 'auto', textLength: state.lastAssistantTextForIM.length } });
             persistRoutingMarker(`iMessage to ${delivered.name}`);
             logger.info('v2.7.23: routed reply via iMessage', {
               agentId,

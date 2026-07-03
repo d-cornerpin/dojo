@@ -68,7 +68,7 @@ export function createServer() {
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   }));
 
-  // Public file shares — served unauthenticated so anyone with the slug
+  // Public file shares, served unauthenticated so anyone with the slug
   // URL can view (this is the whole point of share_publicly). The slug
   // includes a 28-bit random tag, so URLs are unguessable in practice.
   // We hand-roll the static handler here instead of using serveStatic so
@@ -81,14 +81,14 @@ export function createServer() {
     if (!/^[a-zA-Z0-9._-]+$/.test(slug)) {
       return c.json({ ok: false, error: 'invalid share slug' }, 400);
     }
-    // Hono gives us the rest of the path as `:slug/*` — extract it from the URL.
+    // Hono gives us the rest of the path as `:slug/*`, extract it from the URL.
     const url = new URL(c.req.url);
     const pathname = url.pathname;
     const relMatch = pathname.match(/^\/share\/[^/]+\/(.*)$/);
     const rel = relMatch ? relMatch[1] : '';
     const shareDir = path.join(OUT_DIR, slug);
     const fullPath = rel ? path.join(shareDir, rel) : path.join(shareDir, 'index.html');
-    // Block traversal — fullPath must stay inside shareDir.
+    // Block traversal, fullPath must stay inside shareDir.
     const resolved = path.resolve(fullPath);
     if (!resolved.startsWith(path.resolve(shareDir) + path.sep) && resolved !== path.resolve(shareDir)) {
       return c.json({ ok: false, error: 'invalid path' }, 400);
@@ -156,7 +156,7 @@ export function createServer() {
     };
   }));
 
-  // Screen-share VNC bridge — binary WebSocket piped to local Screen Sharing
+  // Screen-share VNC bridge, binary WebSocket piped to local Screen Sharing
   // (TCP 5900). JWT-gated and gated on the feature being enabled; noVNC does the
   // VNC auth handshake (second factor). See screen-share/bridge.ts.
   app.get('/api/screen/vnc', upgradeWebSocket((c) => {
@@ -169,7 +169,7 @@ export function createServer() {
     };
   }));
 
-  // Voice mode WebSocket — separate endpoint because it carries binary audio
+  // Voice mode WebSocket, separate endpoint because it carries binary audio
   // frames in both directions and runs its own per-session state machine.
   app.get('/api/ws/voice', upgradeWebSocket((c) => {
     return {
@@ -191,7 +191,7 @@ export function createServer() {
     };
   }));
 
-  // Twilio Media Streams WebSocket — Twilio opens this when a call
+  // Twilio Media Streams WebSocket, Twilio opens this when a call
   // is connected to <Stream>. Carries μ-law audio frames in both
   // directions. Public path (Twilio doesn't have a JWT) - auth is
   // enforced by the fact that Twilio only knows the URL after we
@@ -286,14 +286,14 @@ export function createServer() {
       app.use('/assets/*', serveStatic({ root: './packages/dashboard/dist' }));
       app.use('/favicon.png', serveStatic({ root: './packages/dashboard/dist', path: '/favicon.png' }));
       app.use('/dojologo.svg', serveStatic({ root: './packages/dashboard/dist', path: '/dojologo.svg' }));
-      // v2.5.5 — Feng Shui theme files live in dashboard's public/themes/<id>/
+      // v2.5.5, Feng Shui theme files live in dashboard's public/themes/<id>/
       // and are emitted to dist/themes/ at build time. ThemeProvider injects
       // <link href="/themes/<id>/theme.css"> at runtime when the user picks a
       // non-default theme. Without this handler, those requests fall through
-      // to the SPA fallback below, which returns index.html — the browser
+      // to the SPA fallback below, which returns index.html, the browser
       // then tries to parse HTML as CSS and silently no-ops the theme switch.
       app.use('/themes/*', serveStatic({ root: './packages/dashboard/dist' }));
-      // Voice mode chimes — same trap as the theme.css note above. Without
+      // Voice mode chimes, same trap as the theme.css note above. Without
       // these explicit handlers, /wake-chime.wav etc. fall through to the SPA
       // fallback, which returns index.html, and the browser silently fails to
       // decode HTML as audio. Affects every prod user (tunnel or local).

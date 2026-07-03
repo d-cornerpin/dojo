@@ -1,5 +1,5 @@
 // ════════════════════════════════════════
-// Healer Agent — Self-Healing Orchestrator
+// Healer Agent, Self-Healing Orchestrator
 //
 // Manages the healing cycle: compile diagnostic,
 // run auto-fixes, then wake the permanent Healer
@@ -33,13 +33,13 @@ import {
 const logger = createLogger('healer-agent');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// ── v2.3.19 (error-handling-spec Phase 3) — Dreamer-pattern budget ──
+// ── v2.3.19 (error-handling-spec Phase 3), Dreamer-pattern budget ──
 //
 // The Healer must never receive a runaway cycle message that blows its
 // context window. Constants mirror the Dreamer's approach in
 // vault/maintenance.ts. Per-collector caps are enforced in diagnostic.ts;
 // these constants are for the TOTAL cycle-message ceiling.
-const CHARS_PER_TOKEN = 3;             // conservative — same as Dreamer
+const CHARS_PER_TOKEN = 3;             // conservative, same as Dreamer
 const HEALER_CONTEXT_OVERHEAD_TOKENS = 40_000; // sys prompt + tool schemas + vault retrieval
 const HEALER_PROCESSING_GROWTH_FACTOR = 1.3;   // Healer makes fewer tool calls than Dreamer
 const HEALER_BATCH_BUDGET_CAP_RATIO = 0.35;    // hard ceiling: 35% of context for diagnostic payload
@@ -75,7 +75,7 @@ interface BuildCycleMessageResult {
  * Compose the Healer's cycle message under a strict char budget. If the
  * composed text would exceed the budget, the diagnostic REPORT is
  * truncated (with a marker) so approved proposals + instructions are
- * preserved — those are the highest-value content.
+ * preserved, those are the highest-value content.
  */
 function buildHealerCycleMessage(opts: BuildCycleMessageOptions): BuildCycleMessageResult {
   const { reportText, approvedSection, autoFixCount, contextWindow } = opts;
@@ -93,7 +93,7 @@ function buildHealerCycleMessage(opts: BuildCycleMessageOptions): BuildCycleMess
     `For each issue in the diagnostic:\n` +
     `1. Search the vault for past healer context on similar issues\n` +
     `2. Fix it yourself, propose it to the user (healer_propose), or log and skip it (healer_log_action)\n` +
-    `3. Do NOT message other agents for advice — you are the diagnostician\n` +
+    `3. Do NOT message other agents for advice, you are the diagnostician\n` +
     `4. When done with all issues, call complete_task with a summary`;
 
   const fixedOverhead = approvedSection.length + instructions.length;
@@ -121,7 +121,7 @@ export function getHealerConfig(): {
   modelId: string | null;
   healerTime: string;
   healerMode: HealerMode;
-  /** v2.3.19 — true when the Healer and primary agent share a provider.
+  /** v2.3.19, true when the Healer and primary agent share a provider.
    *  If their provider goes down both Healers go down at once, defeating
    *  the cross-provider isolation that's the whole point of having a
    *  separate Healer model. The dashboard surfaces a Settings warning
@@ -248,7 +248,7 @@ When you receive an \`[INJURY ALERT]\`, an agent has been down for 5+ minutes an
 1. **Read the error type and message** in the alert. This tells you what went wrong.
 2. **For transient errors** (rate limits, network issues, timeouts, 5xx errors):
    - The issue has likely resolved itself. Poke the agent with \`send_to_agent\` using \`intent="QUESTION"\` (without that intent the message defaults to FYI and the agent will NOT wake to retry). Tell them what happened and ask them to check \`tracker_list_active\` and resume where they left off.
-   - Example: \`send_to_agent(agent="[agent_id]", intent="QUESTION", payload="You hit a rate limit 5 minutes ago and went offline. It should be cleared now — please check your tasks with tracker_list_active and continue working.")\`
+   - Example: \`send_to_agent(agent="[agent_id]", intent="QUESTION", payload="You hit a rate limit 5 minutes ago and went offline. It should be cleared now, please check your tasks with tracker_list_active and continue working.")\`
 3. **For context corruption** (malformed tool calls, invalid request errors, tool_use_id errors):
    - The agent's conversation history is likely corrupted. Use \`reset_session(agent_id="...")\` to clear their context and give them a fresh start. Then poke them to resume their tasks.
 4. **For config errors** (wrong model, auth failures, API key issues):
@@ -256,9 +256,9 @@ When you receive an \`[INJURY ALERT]\`, an agent has been down for 5+ minutes an
 5. **For unknown errors:**
    - Try poking the agent first. If that fails (you get another injury alert shortly after), use \`reset_session\`. If that also fails, alert the user via iMessage.
 
-When you receive a \`[RECOVERY NOTICE]\`, the agent is back online. No action needed — just note it for context.
+When you receive a \`[RECOVERY NOTICE]\`, the agent is back online. No action needed, just note it for context.
 
-**After handling an injury:** Log what you did with \`healer_log_action\`, then end your turn. Do NOT keep checking on the agent — you'll get another injury alert if they go down again. If the recovered agent replies to your poke, do NOT respond. The exchange is done — log and move on. No acknowledgement loops.
+**After handling an injury:** Log what you did with \`healer_log_action\`, then end your turn. Do NOT keep checking on the agent, you'll get another injury alert if they go down again. If the recovered agent replies to your poke, do NOT respond. The exchange is done, log and move on. No acknowledgement loops.
 
 # Daily Diagnostics
 
@@ -275,7 +275,7 @@ When you receive a \`[RECOVERY NOTICE]\`, the agent is back online. No action ne
 - Use \`send_to_agent\` with \`intent="QUESTION"\` to poke injured agents (other intents default to FYI which will NOT wake them).
 - Use \`reset_session\` to clear corrupted agent context.
 - Use \`imessage_send\` ONLY to alert the user about problems you cannot fix yourself.
-- Do NOT message other agents for advice — you are the diagnostician.
+- Do NOT message other agents for advice, you are the diagnostician.
 - Do NOT touch the tracker. You have no tracker tools. Tasks are managed by the PM agent, not you.
 - When done with a healing action, call complete_task to finish.
 - Do NOT reply to agents that respond to your pokes. Log the result with healer_log_action and end your turn.`;
@@ -288,14 +288,14 @@ const HEALER_TOOLS_POLICY = JSON.stringify({
     // Diagnostic and healing
     'healer_propose',
     'healer_log_action',
-    // v2.3.19 — Dreamer-style log access via engine helpers. NEVER read
+    // v2.3.19, Dreamer-style log access via engine helpers. NEVER read
     // healer-report-*.log directly; these helpers cap the response so
     // the Healer can't choke on its own history.
     'healer_recent_actions',
     'healer_action_detail',
-    // v2.3.19 — close the audit loop on approved proposals.
+    // v2.3.19, close the audit loop on approved proposals.
     'healer_mark_applied',
-    // Agent management — for injury recovery
+    // Agent management, for injury recovery
     'list_agents',
     'send_to_agent',       // Poke injured agents to see if they can resume
     'reset_session',       // Clear corrupted context to heal stuck agents
@@ -303,12 +303,12 @@ const HEALER_TOOLS_POLICY = JSON.stringify({
     // Vault
     'vault_remember', 'vault_search', 'vault_forget',
     // Memory
-    'memory_grep', 'memory_describe', 'memory_search',
+    'history_search', 'history_get',
     // File + shell access. The Healer's whole purpose is to dig into
     // arbitrary problems and produce evidence-backed proposals. The
     // global denies in permissions.ts (healer log files, secrets.yaml)
-    // are the only off-limits paths; everything else — the SQLite
-    // database, audit logs, app logs, configs, agent message tables —
+    // are the only off-limits paths; everything else, the SQLite
+    // database, audit logs, app logs, configs, agent message tables, 
     // is fair game and frequently necessary to verify what the
     // diagnostic surfaced. `exec` is included so the Healer can run
     // `sqlite3 ~/.dojo/data/dojo.sqlite "SELECT ..."` to look up
@@ -335,7 +335,7 @@ const HEALER_PERMISSIONS = JSON.stringify({
   system_control: [],
 });
 
-// ── v2.3.19 (error-handling-spec Phase 3) — Healer self-watchdog ──
+// ── v2.3.19 (error-handling-spec Phase 3), Healer self-watchdog ──
 //
 // The pre-spec system had a chicken-and-egg problem: if the Healer
 // itself was injured, onAgentInjured exited early ("can't heal myself")
@@ -388,7 +388,7 @@ function runHealerSelfWatchdog(): void {
         healerId, healerName: row.name, prevStatus: row.status, reason,
       });
       // Also clear the per-agent backoff state for the Healer if any
-      // (defensive — under normal flow this won't be set since the
+      // (defensive, under normal flow this won't be set since the
       // Healer's onAgentInjured short-circuits, but if a future code path
       // changes that this keeps us safe).
       import('./injury-recovery.js').then((m) => {
@@ -407,7 +407,7 @@ export function startHealerSelfWatchdog(): void {
   healerWatchdogTimer = setInterval(runHealerSelfWatchdog, HEALER_WATCHDOG_INTERVAL_MS);
   // Also run once on startup so any state left over from a crash gets cleaned.
   setTimeout(runHealerSelfWatchdog, 30_000);
-  // One-shot prune of stale archives at startup — catches accumulated
+  // One-shot prune of stale archives at startup, catches accumulated
   // logs even if no new cycle ran in the retention window.
   setTimeout(pruneOldArchives, 60_000);
   logger.info('Healer self-watchdog started', { intervalMs: HEALER_WATCHDOG_INTERVAL_MS });
@@ -430,7 +430,7 @@ export function ensureHealerAgentRunning(): void {
 
   const primaryExists = db.prepare('SELECT id FROM agents WHERE id = ?').get(primaryId);
   if (!primaryExists) {
-    logger.warn('Primary agent not yet created — deferring Healer spawn', { primaryId });
+    logger.warn('Primary agent not yet created, deferring Healer spawn', { primaryId });
     setTimeout(() => ensureHealerAgentRunning(), 5000);
     return;
   }
@@ -520,7 +520,7 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
     infoCount: report.infoCount,
   });
 
-  // Step 2: Sweep pending proposals — anything that's no longer in the
+  // Step 2: Sweep pending proposals, anything that's no longer in the
   // current diagnostic is closed out as auto-resolved. Users don't check
   // the Healer block often, and a lot of intermittent issues clear on
   // their own (e.g., a transient provider failure, a stuck agent that
@@ -542,7 +542,7 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
       const currentKeys = new Set<string>();
       for (const item of report.items) {
         // Agent-scoped issues key on (code, agent). Global issues key
-        // on (code, title) — title is the discriminator there.
+        // on (code, title), title is the discriminator there.
         if (item.agentId) {
           currentKeys.add(`${item.code}::${item.agentId}`);
         }
@@ -558,7 +558,7 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
             `UPDATE healer_proposals
              SET status = 'auto_resolved',
                  resolved_at = datetime('now'),
-                 result_summary = 'Issue no longer detected in diagnostic — closed by sweep.'
+                 result_summary = 'Issue no longer detected in diagnostic, closed by sweep.'
              WHERE id = ? AND status = 'pending'`,
           ).run(p.id);
           autoResolvedCount++;
@@ -576,7 +576,7 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
     });
   }
 
-  // Step 3: Run auto-fixes (Tier 1) — no LLM needed
+  // Step 3: Run auto-fixes (Tier 1), no LLM needed
   let autoFixCount = 0;
   if (config.healerMode === 'active') {
     const autoResult = runAutoFixes(report.id, report.items);
@@ -585,7 +585,7 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
 
   // Step 3: If there are warnings/critical items remaining, OR if there
   // are approved-but-not-yet-applied proposals waiting, wake the permanent
-  // Healer agent. v2.3.19 — pre-spec, the Healer only fired when the
+  // Healer agent. v2.3.19, pre-spec, the Healer only fired when the
   // diagnostic found something to diagnose. If the owner approved a proposal
   // but no NEW issues came up, the proposal sat forever waiting for
   // Healer to execute it. Now any pending approval also triggers the
@@ -614,15 +614,15 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
         | undefined;
 
       if (healerState?.status === 'working') {
-        logger.warn('Healer is already running a cycle — skipping LLM trigger');
+        logger.warn('Healer is already running a cycle, skipping LLM trigger');
       } else if (!healerState) {
-        logger.warn('Healer agent not found after ensureHealerAgentRunning — skipping LLM trigger');
+        logger.warn('Healer agent not found after ensureHealerAgentRunning, skipping LLM trigger');
       } else {
         // Check for approved proposals from the user. v2.3.19:
         // applied_at filters out proposals you've already executed in a
-        // prior cycle — only the OUTSTANDING approvals show up here.
+        // prior cycle, only the OUTSTANDING approvals show up here.
         // After executing, you MUST call healer_mark_applied(proposal_id)
-        // to record the work — otherwise the proposal will show up
+        // to record the work, otherwise the proposal will show up
         // again on the next cycle.
         const approved = db.prepare(`
           SELECT id, title, proposed_fix, fix_action FROM healer_proposals
@@ -631,17 +631,17 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
 
         let approvedSection = '';
         if (approved.length > 0) {
-          approvedSection = '\n\n═══ APPROVED PROPOSALS — execute these, then call healer_mark_applied(proposal_id) ═══\n' +
+          approvedSection = '\n\n═══ APPROVED PROPOSALS, execute these, then call healer_mark_applied(proposal_id) ═══\n' +
             approved.map((p) =>
               `[ID: ${p.id.slice(0, 8)}] ${p.title}\n   Fix: ${p.proposed_fix}`
             ).join('\n') +
             '\n═══ END APPROVED ═══';
         }
 
-        // v2.3.19 (error-handling-spec Phase 3) — Dreamer-pattern budget.
+        // v2.3.19 (error-handling-spec Phase 3), Dreamer-pattern budget.
         // Build the cycle message and enforce a hard ceiling on its
         // length BEFORE delivering it. If it exceeds the cap, drop the
-        // lowest-priority sections (approved proposals are KEPT — user
+        // lowest-priority sections (approved proposals are KEPT, user
         // explicitly asked for those; report content gets trimmed first
         // since collectors were already capped individually).
         const buildResult = buildHealerCycleMessage({
@@ -653,14 +653,14 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
         const cycleMessage = buildResult.message;
 
         // Telemetry: log the final composed prompt size. If it ever
-        // climbs past 80% of context, that's a Tier C signal — the
+        // climbs past 80% of context, that's a Tier C signal, the
         // collectors need further tightening. Surface via warning log.
         const promptCharLimit = Math.floor(
           buildResult.contextWindow * HEALER_BATCH_BUDGET_CAP_RATIO * CHARS_PER_TOKEN,
         );
         const utilizationPct = Math.round((cycleMessage.length / promptCharLimit) * 100);
         if (utilizationPct >= 80) {
-          logger.warn('Healer cycle message at high utilization — consider tightening collectors', {
+          logger.warn('Healer cycle message at high utilization, consider tightening collectors', {
             charLength: cycleMessage.length,
             charLimit: promptCharLimit,
             utilizationPct,
@@ -714,13 +714,13 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
       });
     }
   } else if (config.healerMode === 'monitor') {
-    logger.info('Healer in monitor mode — report compiled but no fixes applied');
+    logger.info('Healer in monitor mode, report compiled but no fixes applied');
   }
 
   // Step 4: Append to the healer log file
   appendToHealerLog(report, autoFixCount);
 
-  // Step 5 (owner request): ONE daily heartbeat to the primary — a positive "all systems
+  // Step 5 (owner request): ONE daily heartbeat to the primary, a positive "all systems
   // operational" when healthy, or a brief notice of what needs attention when not. This is
   // the Healer's single daily message; real-time injury alerts (runtime.notifyPrimaryOfInjury)
   // fire on the spot for immediate breakage and are separate. Re-compile AFTER the auto-fixes
@@ -743,7 +743,7 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
       postAgentNotice({
         toAgentId: getPrimaryAgentId(),
         fromName: 'Healer',
-        brief: `Daily health check: ${problems.length} issue${problems.length === 1 ? '' : 's'} need attention — ${titles}${more}. I'm ${config.healerMode === 'active' ? 'working on what I can' : 'in monitor mode'}.`,
+        brief: `Daily health check: ${problems.length} issue${problems.length === 1 ? '' : 's'} need attention, ${titles}${more}. I'm ${config.healerMode === 'active' ? 'working on what I can' : 'in monitor mode'}.`,
         intent: 'agent_health',
       });
     }
@@ -828,7 +828,7 @@ function agentRoleLabel(agentId?: string, agentName?: string): string {
   if (isTrainerAgent(agentId)) return 'Trainer Agent';
   if (isImaginerAgent(agentId)) return 'Imaginer Agent';
   if (agentId === 'healer') return 'Healer Agent';
-  // Sub-agents: just say "sub-agent" — no user-specific names
+  // Sub-agents: just say "sub-agent", no user-specific names
   return 'Sub-Agent';
 }
 
@@ -918,9 +918,9 @@ export function getHealerLogContent(): string | null {
  * Archive the current healer log and start a new one.
  * Returns the archive filename.
  */
-// v2.3.19 (error-handling-spec Phase 3 cleanup) — archive retention.
+// v2.3.19 (error-handling-spec Phase 3 cleanup), archive retention.
 // Without pruning, healer-report-*.log files accumulate forever in
-// ~/.dojo/logs/healer-archives/. 30 days is generous — if you need
+// ~/.dojo/logs/healer-archives/. 30 days is generous, if you need
 // older diagnostics they're in the structured DB tables anyway
 // (healer_diagnostics, healer_actions).
 const ARCHIVE_RETENTION_DAYS = 30;
@@ -970,7 +970,7 @@ export function archiveHealerLog(): string | null {
     fs.renameSync(HEALER_LOG_PATH, archivePath);
     logger.info('Healer log archived', { archivePath });
 
-    // Prune anything older than the retention window. Best-effort —
+    // Prune anything older than the retention window. Best-effort, 
     // failures here don't fail the archive operation.
     pruneOldArchives();
 
@@ -1020,7 +1020,7 @@ export async function sendHealerReport(): Promise<{ ok: boolean; error?: string 
   if (!recipient) {
     return { ok: false, error: 'NO_REPORT_RECIPIENT' };
   }
-  const subject = `DOJO Healer Report — ${new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}`;
+  const subject = `DOJO Healer Report, ${new Date().toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' })}`;
   const body = `DOJO Healer Report\nVersion: ${version}\nPlatform: ${platform}\nActive Agents: ${agentCount}\nModels: ${modelList}\n\n${'─'.repeat(50)}\n\n${logContent}\n\n${'─'.repeat(50)}\n\nThis report was generated by the DOJO Healer agent.`;
 
   try {
@@ -1048,7 +1048,7 @@ export async function sendHealerReport(): Promise<{ ok: boolean; error?: string 
       }
     }
 
-    // Email sent successfully — archive the log
+    // Email sent successfully, archive the log
     const archiveName = archiveHealerLog();
     logger.info('Healer report sent and archived', { recipient, archiveName });
     return { ok: true };

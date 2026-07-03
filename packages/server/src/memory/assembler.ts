@@ -2,7 +2,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { type PromptTurnContext } from '../prompt/assembler.js';
-import { renderCounterpartyHeader, conversationKey, type TurnCounterparty } from '../agent/v2/counterparty.js';
+import { conversationKey, type TurnCounterparty } from '../agent/v2/counterparty.js';
 import { getContextWindow } from '../agent/model.js';
 import { estimateTokens, getRecentMessages } from './store.js';
 import { getContextSummaries } from './dag.js';
@@ -234,6 +234,13 @@ function applyIntegrityPass(messages: LoopMsg[], agentId: string): LoopMsg[] {
 
 export interface AssembledContext {
   systemPrompt: string;
+  // C28 Part 1 (P-2, defense-in-depth): a system-side lane for any content that
+  // must live in the system role yet is volatile per turn. It renders AFTER the
+  // cached stable system block (Anthropic: a second uncached text block;
+  // OpenRouter: a second unmarked system message), so it can never invalidate the
+  // cached prefix. EMPTY after P-1 (all volatile content moved to msg.turn-context);
+  // the Part 3 determinism check asserts it stays empty.
+  systemVolatile: string;
   messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>;
   /**
    * Registry path only: the entry id that produced each system-prompt part
@@ -279,32 +286,17 @@ async function assembleContextViaRegistry(
 ): Promise<AssembledContext> {
   const ctx = buildAssemblyContext(agentId, modelId, turnContext, turnState);
   const sys = assembleSystemFromRegistry(ctx);
-  // Attribution redesign (Phase 3): append the explicit "who you're talking to"
-  // header AFTER the stable cached prefix. It's small + volatile (per
-  // counterparty), so trailing it keeps the cacheable system body intact while
-  // giving the model an unambiguous anchor on the current counterparty.
-  let systemPrompt = sys.text;
-  if (turnContext?.counterparty) {
-    systemPrompt = `${systemPrompt}\n\n---\n\n${renderCounterpartyHeader(turnContext.counterparty, { isEngineTurn: turnContext.isEngineTurn })}`;
-  }
-  // Head-of-line hint (just-in-time, only when others are waiting): the engine
-  // serves one conversation at a time, so a long synchronous task makes everyone
-  // behind it wait. Offer the agent the option to ack + track big work as a
-  // project and move on, with the quick-reply default. Not a standing SOUL rule.
-  if (turnContext?.counterparty?.kind === 'user' && (turnContext.othersWaiting ?? 0) > 0) {
-    const n = turnContext.othersWaiting!;
-    systemPrompt = `${systemPrompt}\n\n[Engine hint: ${n} other conversation${n === 1 ? ' is' : 's are'} waiting for you right now. If THIS request is quick, just answer it. If it's a large or multi-step task (research, a plan, a project), don't do all the deep work now while the others wait, send a brief acknowledgment, capture it with tracker_create_project / a tracker task, and end the turn so you can serve the others; then work the project across later turns. Reply on this turn's channel as usual. Speak only to the person this turn is for: your text output IS the message they receive, so write the reply itself, don't narrate your triage ("I have two things to handle, let me reply to X and check Y's thread") and don't mention other people's or other agents' threads to them. Deciding what order to work things in is yours to do silently; the engine will bring you back for the others.]`;
-  }
-  // Intent hint (just-in-time): this turn is a quick CONVERSATIONAL ask, not a project.
-  // Keep the agent from over-tracking it, a one-line request that becomes a tracked,
-  // PM-validated task churns (enforcement nags → wrong completion → PM reverts → re-asks
-  // the user). Handle it directly; if a detail is missing, ask once and let the
-  // conversation hold. (Suppressed when others are waiting, since that hint already covers it.)
-  if (turnContext?.conversationalTurn && !(turnContext?.othersWaiting && turnContext.othersWaiting > 0)) {
-    systemPrompt = `${systemPrompt}\n\n[Engine hint: this is a quick conversational request, not a multi-step project. Handle it directly, answer it, do the small thing (set the reminder, move the event), or ask ONE clarifying question and then stop. Do NOT create a tracked project/task or loop in the PM for something this small. If you're missing a detail, just ask the user once and wait, the conversation holds until they reply, so don't re-ask it later or keep working it in the background.]`;
-  }
+  // C28 Part 1: the counterparty header, the othersWaiting head-of-line hint, and
+  // the conversational-turn hint used to be appended to the system string HERE
+  // (small but volatile, they broke prompt caching on every counterparty / waiting
+  // / turn-type change). They now render inside the msg.turn-context near-tail
+  // engine message (prompt/registry/entries.ts renderTurnContext), so the system
+  // prefix stays byte-stable and cacheable across those changes.
+  const systemPrompt = sys.text;
   const { messages } = await assembleMessageContext(agentId, modelId, systemPrompt, turnContext);
-  return { systemPrompt, messages, systemEntryIds: sys.entryIds };
+  // systemVolatile is empty after P-1 (all per-turn volatile content moved to the
+  // msg.turn-context tail); the field is the reserved system-side lane (P-2).
+  return { systemPrompt, systemVolatile: '', messages, systemEntryIds: sys.entryIds };
 }
 
 /**
@@ -516,7 +508,7 @@ async function assembleMessageContext(
       messageCount: messages.length,
     }, agentId);
 
-    return { systemPrompt, messages };
+    return { systemPrompt, systemVolatile: "", messages };
   }
 
   // Track whether any scaffolding section was injected so we can push a
@@ -1330,7 +1322,7 @@ async function assembleMessageContext(
     estimatedTokens: usedTokens,
   }, agentId);
 
-  return { systemPrompt, messages: merged };
+  return { systemPrompt, systemVolatile: "", messages: merged };
 }
 
 // ── Helpers ──

@@ -56,8 +56,8 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'image_create',
   'show_to_user',
   // Pre-loaded so "show me your screen" works in one call, without it the
-  // model reaches for screen_read (which only screenshots for itself) instead.
-  'screen_share',
+  // model reaches for screen_screenshot (which only screenshots for itself) instead.
+  'screen_broadcast',
   'recall_recent_thread',
   'scratchpad_set',
   'technique_read',
@@ -80,12 +80,10 @@ export const PM_AGENT_ALWAYS_LOADED = [
   'tracker_get_status',
   'tracker_update_status',
   'tracker_add_notes',
-  'tracker_edit_notes',
-  'tracker_clear_notes',
   'tracker_edit_task',
   'tracker_edit_project',
   'tracker_close_project',
-  'tracker_validate_pause',
+  'tracker_validate',
   'tracker_retask',
   'send_to_agent',
   'list_agents',
@@ -95,7 +93,7 @@ export const PM_AGENT_ALWAYS_LOADED = [
   // one call away, not gated behind load_tool_docs, or PM falls back
   // to the lazy reject pattern that triggered the JJ-report incident.
   'vault_search',
-  'vault_expand',
+  'vault_get',
   'file_read',
 ];
 
@@ -115,7 +113,7 @@ export const DREAMER_AGENT_ALWAYS_LOADED = [
   'vault_update',
   'contact_remember',
   'contact_search',
-  'contact_describe',
+  'contacts_overview',
   'credential_list',
   'credential_add',
   'send_to_agent',
@@ -141,8 +139,6 @@ export const TRAINER_AGENT_ALWAYS_LOADED = [
   'tracker_create_project',
   'tracker_update_status',
   'tracker_add_notes',
-  'tracker_edit_notes',
-  'tracker_clear_notes',
   'tracker_edit_task',
   'tracker_edit_project',
   'tracker_close_project',

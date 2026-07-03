@@ -2,7 +2,7 @@
 // Canvas (right-dock) routes.
 //
 // The canvas is a single durable surface. The agent opens things in it
-// (show_canvas / auto-open on file write); the server persists the current
+// (canvas_render / auto-open on file write); the server persists the current
 // canvas + an open/collapsed status (see agent/canvas-view.ts). The dashboard
 // reads GET /api/canvas on mount so the canvas survives a refresh, a server
 // restart, and follows the user across devices. POST /api/canvas/status lets the

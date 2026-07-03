@@ -1,9 +1,9 @@
 // ════════════════════════════════════════
-// view_canvas — let the agent "look at" the right-dock canvas.
+// canvas_read, let the agent "look at" the right-dock canvas.
 //
 // The canvas is a client-side surface, so the server tracks the most recent
-// thing the agent put there (setCurrentCanvas, called from show_canvas /
-// open_browser). view_canvas then renders that content and routes it through
+// thing the agent put there (setCurrentCanvas, called from canvas_render /
+// open_browser). canvas_read then renders that content and routes it through
 // the platform vision model:
 //   - HTML (inline / .html file / any URL) -> headless Chromium screenshot
 //   - image file                            -> the image itself
@@ -12,7 +12,7 @@
 //                                              more accurate than a screenshot)
 //
 // Vision uses getEffectiveVisionModel: the agent's own model if it is
-// vision-capable, otherwise the configured fallback vision model — so this
+// vision-capable, otherwise the configured fallback vision model, so this
 // works even when the calling agent can't see images itself.
 // ════════════════════════════════════════
 
@@ -45,7 +45,7 @@ export interface CanvasState {
 let currentCanvas: CanvasState | null = null;
 
 // Live re-render: watch the file currently shown in the canvas and tell the
-// client to re-fetch whenever it changes on disk — NO MATTER how it was edited.
+// client to re-fetch whenever it changes on disk, NO MATTER how it was edited.
 // The proper edit tools (file_write/file_patch, office_*) already ping the
 // canvas, but weak models routinely reach for shell hacks instead (sed -i,
 // python-docx, a heredoc redirect). Those bypass the in-tool ping, so without a
@@ -69,7 +69,7 @@ function startCanvasWatch(filePath: string): void {
       }
     });
     watchedPath = filePath;
-  } catch { /* best effort — never let watching break a canvas open */ }
+  } catch { /* best effort, never let watching break a canvas open */ }
 }
 
 // Canvas status: once a canvas exists it is either OPEN (dock showing) or
@@ -90,7 +90,7 @@ function persistCanvas(): void {
       `INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
     ).run(CANVAS_CONFIG_KEY, value);
-  } catch { /* best effort — never let persistence break a canvas open */ }
+  } catch { /* best effort, never let persistence break a canvas open */ }
 }
 
 // Lazily rehydrate the in-memory canvas from the DB on first access, so a server
@@ -194,12 +194,12 @@ async function describeImage(
   }
   const accuracy =
     ' Report only what is actually rendered. If an image is missing, broken, or shows a' +
-    ' broken-image placeholder / empty box (no real picture), say so explicitly — do NOT' +
+    ' broken-image placeholder / empty box (no real picture), say so explicitly, do NOT' +
     ' describe an absent or failed image as if it were present. Do not assume content you' +
     ' cannot see.';
   const instruction = userPrompt && userPrompt.trim()
     ? `Look at this canvas (a document/render the user and I are viewing together) and answer: ${userPrompt.trim()}.${accuracy}`
-    : `Describe what is shown in this canvas in detail — layout, text, visuals, and anything notable.${accuracy}`;
+    : `Describe what is shown in this canvas in detail, layout, text, visuals, and anything notable.${accuracy}`;
   try {
     const result = await callModel({
       agentId,
@@ -217,7 +217,7 @@ async function describeImage(
     return result.content;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.warn('Vision model failed for view_canvas', { error: msg }, agentId);
+    logger.warn('Vision model failed for canvas_read', { error: msg }, agentId);
     return `A snapshot of the canvas was captured, but vision analysis failed: ${msg}`;
   }
 }
@@ -236,10 +236,10 @@ export async function viewCanvas(agentId: string, args: Record<string, unknown>)
     target = currentCanvas;
   }
   if (!target || (!target.html && !target.url && !target.path)) {
-    return 'Error: nothing is open in the canvas. Show something first with show_canvas (or pass html / url / path to view a specific thing).';
+    return 'Error: nothing is open in the canvas. Show something first with canvas_render (or pass html / url / path to view a specific thing).';
   }
 
-  logger.info('view_canvas', { kind: target.kind, hasHtml: !!target.html, hasUrl: !!target.url, hasPath: !!target.path }, agentId);
+  logger.info('canvas_read', { kind: target.kind, hasHtml: !!target.html, hasUrl: !!target.url, hasPath: !!target.path }, agentId);
 
   try {
     // File-backed canvas: branch by type.
@@ -262,7 +262,7 @@ export async function viewCanvas(agentId: string, args: Record<string, unknown>)
         let truncated = '';
         if (stat.size > TEXT_MAX_BYTES) {
           text = text.slice(0, TEXT_MAX_BYTES);
-          truncated = `\n\n[...truncated — file is ${stat.size} bytes; showing the first ${TEXT_MAX_BYTES}.]`;
+          truncated = `\n\n[...truncated, file is ${stat.size} bytes; showing the first ${TEXT_MAX_BYTES}.]`;
         }
         return `The canvas is showing ${path.basename(filePath)} (${ext} file). Its current contents:\n\n${text}${truncated}`;
       }
@@ -277,7 +277,7 @@ export async function viewCanvas(agentId: string, args: Record<string, unknown>)
       }
       // HTML -> render the SAME self-contained markup the canvas iframe shows
       // (relative assets inlined), so what the agent sees here matches exactly
-      // what the user sees in the dock — including a missing image that failed
+      // what the user sees in the dock, including a missing image that failed
       // to resolve, rather than file:// quietly loading a sibling the dock can't.
       if (ext === '.html' || ext === '.htm') {
         const png = await renderToPng({ html: inlineHtmlAssets(filePath) });
@@ -299,7 +299,7 @@ export async function viewCanvas(agentId: string, args: Record<string, unknown>)
     return await describeImage(agentId, png.toString('base64'), 'image/png', prompt);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.warn('view_canvas failed', { error: msg }, agentId);
+    logger.warn('canvas_read failed', { error: msg }, agentId);
     return `Error viewing the canvas: ${msg}`;
   }
 }

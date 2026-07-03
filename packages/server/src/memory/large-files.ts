@@ -14,7 +14,7 @@ const logger = createLogger('memory-large-files');
 // threshold left 25K tokens of raw content sitting in the fresh tail every
 // time someone opened a moderately-sized code file or fetched a web page,
 // which by itself could trip the compaction gate within a few turns. 8K is
-// roughly "a long blog post" — anything bigger is almost always faster to
+// roughly "a long blog post", anything bigger is almost always faster to
 // re-fetch than to keep in context.
 const LARGE_FILE_TOKEN_THRESHOLD = 8000;
 const FILES_BASE_DIR = path.join(os.homedir(), '.dojo', 'data', 'files');
@@ -283,7 +283,7 @@ export function interceptLargeFile(
   }, agentId);
 
   // Build replacement text
-  const replacement = `[File intercepted: ${fileId} | ${tokenCount} tokens stored on disk]\n\n${explorationSummary}\n\nUse memory_describe("${fileId}") or memory_expand with this file ID to explore further.`;
+  const replacement = `[File intercepted: ${fileId} | ${tokenCount} tokens stored on disk]\n\n${explorationSummary}\n\nUse history_get("${fileId}") or history_expand with this file ID to explore further.`;
 
   return { fileId, replacement };
 }

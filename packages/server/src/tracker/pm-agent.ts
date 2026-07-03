@@ -113,14 +113,14 @@ export function ensurePMAgentRunning(): void {
     const syncToolsPolicy = JSON.stringify({
       allow: [
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
-        'tracker_add_notes', 'tracker_edit_notes', 'tracker_clear_notes', 'tracker_complete_step',
+        'tracker_add_notes', 'tracker_complete_step',
         'tracker_pause_schedule', 'tracker_resume_schedule',
-        'tracker_validate_pause', 'tracker_validate_complete', 'tracker_validate_blocked',
+        'tracker_validate',
         'tracker_override', 'tracker_request_override',
         'tracker_apply_user_verdict',
         'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
-        'vault_search', 'vault_remember', 'memory_grep', 'memory_describe',
+        'vault_search', 'vault_remember', 'history_search', 'history_get',
         'load_tool_docs', 'get_current_time',
       ],
     });
@@ -177,14 +177,14 @@ export function ensurePMAgentRunning(): void {
     const reactivateToolsPolicy = JSON.stringify({
       allow: [
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
-        'tracker_add_notes', 'tracker_edit_notes', 'tracker_clear_notes', 'tracker_complete_step',
+        'tracker_add_notes', 'tracker_complete_step',
         'tracker_pause_schedule', 'tracker_resume_schedule',
-        'tracker_validate_pause', 'tracker_validate_complete', 'tracker_validate_blocked',
+        'tracker_validate',
         'tracker_override', 'tracker_request_override',
         'tracker_apply_user_verdict',
         'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
-        'vault_search', 'vault_remember', 'memory_grep', 'memory_describe',
+        'vault_search', 'vault_remember', 'history_search', 'history_get',
         'load_tool_docs', 'get_current_time',
       ],
     });
@@ -221,14 +221,14 @@ export function ensurePMAgentRunning(): void {
     const pmToolsPolicy = JSON.stringify({
       allow: [
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
-        'tracker_add_notes', 'tracker_edit_notes', 'tracker_clear_notes', 'tracker_complete_step',
+        'tracker_add_notes', 'tracker_complete_step',
         'tracker_pause_schedule', 'tracker_resume_schedule',
-        'tracker_validate_pause', 'tracker_validate_complete', 'tracker_validate_blocked',
+        'tracker_validate',
         'tracker_override', 'tracker_request_override',
         'tracker_apply_user_verdict',
         'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
-        'vault_search', 'vault_remember', 'memory_grep', 'memory_describe',
+        'vault_search', 'vault_remember', 'history_search', 'history_get',
         'load_tool_docs', 'get_current_time',
       ],
     });
@@ -470,6 +470,34 @@ export async function escalateCloseoutMissToPM(ctx: {
         receiptLines.push(`    [${a.created_at}] ${action}${detail ? `, ${detail}` : ''}`);
       }
     }
+    // C26: engine-written verification receipts. These are machine facts (the
+    // provider's own id / a read-only re-fetch), not the agent's prose, so PM
+    // can tell a real send from an invented "sent it." Render per-task rows
+    // (stamped when the complete gate consumed them) plus the assignee's recent
+    // rows in the window (a turn that did NOT close through the gate leaves them
+    // unstamped). Read-only.
+    const fmtReceipt = (vr: { tool: string; verified: number; basis: string; provider_id: string | null; created_at: string }): string =>
+      `    [${vr.created_at}] ${vr.tool} ${vr.verified ? 'VERIFIED' : 'unverified'} (${vr.basis})${vr.provider_id ? `, id ${vr.provider_id}` : ''}`;
+    for (const r of rows) {
+      const taskReceipts = db.prepare(`
+        SELECT tool, verified, basis, provider_id, created_at
+        FROM tool_receipts WHERE task_id = ?
+        ORDER BY created_at DESC LIMIT 10
+      `).all(r.id) as Array<{ tool: string; verified: number; basis: string; provider_id: string | null; created_at: string }>;
+      if (taskReceipts.length === 0) continue;
+      receiptLines.push(`  ${r.id.slice(0, 8)} engine receipts:`);
+      for (const vr of taskReceipts) receiptLines.push(fmtReceipt(vr));
+    }
+    const assigneeReceipts = db.prepare(`
+      SELECT tool, verified, basis, provider_id, created_at
+      FROM tool_receipts
+      WHERE agent_id = ? AND task_id IS NULL AND created_at >= datetime('now', '-2 hours')
+      ORDER BY created_at DESC LIMIT 10
+    `).all(ctx.agentId) as Array<{ tool: string; verified: number; basis: string; provider_id: string | null; created_at: string }>;
+    if (assigneeReceipts.length > 0) {
+      receiptLines.push(`  ${ctx.agentId} recent engine receipts (unstamped, last 2h):`);
+      for (const vr of assigneeReceipts) receiptLines.push(fmtReceipt(vr));
+    }
     if (receiptLines.length > 0) {
       receiptsBlock = `Audit log excerpts (the actual receipts, read these BEFORE deciding):\n${receiptLines.join('\n')}\n\n`;
     }
@@ -491,12 +519,12 @@ export async function escalateCloseoutMissToPM(ctx: {
     `Your verbs:\n` +
     `  (a) tracker_retask(task_id, directive), push the agent back at it with concrete corrective guidance ` +
     `(e.g. "you wrote the brief in chat but the task spec is email; call send_email with this same content to <recipient>"). USE THIS WHEN the agent did the wrong thing and you can name what they should do instead.\n` +
-    `  (b) tracker_validate_pause(task_id, valid=true), confirm the pause stands. USE THIS WHEN the work genuinely can't proceed without user input you can name, or when the task is no longer relevant.\n` +
-    `  (c) tracker_override(...) or tracker_validate_complete(...), accept as complete. USE THIS WHEN you can verify (via the audit-log excerpts above + the suppressed text + a quick tracker_get_status / file check / etc.) that the work actually got done and the agent just forgot to close the tracker.\n\n` +
+    `  (b) tracker_validate(kind="pause", task_id, valid=true), confirm the pause stands. USE THIS WHEN the work genuinely can't proceed without user input you can name, or when the task is no longer relevant.\n` +
+    `  (c) tracker_override(...) or tracker_validate(kind="complete", ...), accept as complete. USE THIS WHEN you can verify (via the audit-log excerpts above + the suppressed text + a quick tracker_get_status / file check / etc.) that the work actually got done and the agent just forgot to close the tracker.\n\n` +
     `**Non-idempotent tools demand option (c), not (a).** If the audit log shows a successful call to gmail_send, outlook_send, ` +
     `imessage_send, sms_send, teams_send_message, voice_call, calendar_create, drive_upload, docs_create, sheets_create, share_publicly, ` +
     `or an exec that hit a live external API, the action already happened. Re-running it would duplicate the side effect (double email, ` +
-    `double text, double charge). Accept as complete via tracker_override / tracker_validate_complete, citing the audit row as evidence. ` +
+    `double text, double charge). Accept as complete via tracker_override / tracker_validate, citing the audit row as evidence. ` +
     `Do NOT use tracker_retask on these; that produces duplicates.\n\n` +
     `For everything else, inspect the goal against what the agent said. If they delivered the wrong artifact OR in the wrong channel, retask. ` +
     `Rubber-stamping the pause means the recurring task / user-promised work dies silently. Be a PM, not a status forwarder.`;
@@ -1008,8 +1036,8 @@ async function runPMReview(): Promise<void> {
         `  Pause reason notes: "${pauseReason}"\n` +
         `  Agent's last user-facing message: "${lastAssistantSnippet}"\n` +
         `  Decide: valid pause (names a specific external trigger that matches a real request) or gaming (vague / no matching request / sounds like 'blocked' instead). ` +
-        `Call tracker_validate_pause(task_id="${pTask.id}", valid=true) if real. ` +
-        `Call tracker_validate_pause(task_id="${pTask.id}", valid=false, reject_reason="...one sentence...") if gaming. ` +
+        `Call tracker_validate(kind="pause", task_id="${pTask.id}", valid=true) if real. ` +
+        `Call tracker_validate(kind="pause", task_id="${pTask.id}", valid=false, reject_reason="...one sentence...") if gaming. ` +
         `Rejection auto-reverts the task to in_progress (or pass target_status to pick on_deck/blocked) and notifies the agent.`,
     });
   }
@@ -1086,8 +1114,8 @@ async function runPMReview(): Promise<void> {
         `  Evidence:\n${evidenceLines}\n` +
         `  Priority=${cTask.priority}, revert_count=${cTask.revert_count}.${tierHint}\n` +
         `  Read the file/audit log/output referenced in evidence BEFORE validating (skepticism rule). ` +
-        `Call tracker_validate_complete(task_id="${cTask.id}", valid=true) when the work demonstrably matches the goal. ` +
-        `Call tracker_validate_complete(task_id="${cTask.id}", valid=false, reject_reason="...", target_status="in_progress") when it does not.`,
+        `Call tracker_validate(kind="complete", task_id="${cTask.id}", valid=true) when the work demonstrably matches the goal. ` +
+        `Call tracker_validate(kind="complete", task_id="${cTask.id}", valid=false, reject_reason="...", target_status="in_progress") when it does not.`,
     });
   }
 
@@ -1119,8 +1147,8 @@ async function runPMReview(): Promise<void> {
         `  Goal: ${bTask.goal ?? '(no goal recorded)'}\n` +
         `  Block reason: ${blockReason}\n` +
         `  Priority=${bTask.priority}, revert_count=${bTask.revert_count}.\n` +
-        `  Real block (genuine external obstacle, no workaround) -> tracker_validate_blocked(task_id="${bTask.id}", valid=true). ` +
-        `Not really blocked (agent hasn't asked the user, or has a workaround they haven't tried) -> tracker_validate_blocked(task_id="${bTask.id}", valid=false, reject_reason="...").`,
+        `  Real block (genuine external obstacle, no workaround) -> tracker_validate(kind="blocked", task_id="${bTask.id}", valid=true). ` +
+        `Not really blocked (agent hasn't asked the user, or has a workaround they haven't tried) -> tracker_validate(kind="blocked", task_id="${bTask.id}", valid=false, reject_reason="...").`,
     });
   }
 

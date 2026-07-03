@@ -7,7 +7,9 @@
 // registry has been byte-proven on the dev server.
 
 import { register } from './registry.js';
-import { SystemSlot, MessageSlot, type SystemInjection, type MessageInjection } from './types.js';
+import { SystemSlot, MessageSlot, type SystemInjection, type MessageInjection, type AssemblyContext, type EngineMessage } from './types.js';
+import { renderCounterpartyHeader } from '../../agent/v2/counterparty.js';
+import { isIMBridgeRunning } from '../../services/imessage-bridge.js';
 import {
   renderTimeHeader,
   renderCurrentTimeMessage,
@@ -233,9 +235,11 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     slot: SystemSlot.ReplyDestination,
     precedenceTier: 7,
     reason:
-      'Primary only: the engine-resolved per-turn route + the voice to write in ' +
-      '(SMS for iMessage, markdown for dashboard, etc.). Sole routing authority (C5).',
-    render: (ctx) => renderReplyDestination(ctx.replyDestination, ctx.smsFromNumber, ctx.phoneFromNumber, ctx.replyRecipientName),
+      'Primary only: the engine-resolved per-turn route + the voice to write in. ' +
+      'Sole routing authority (C5). C28 Part 1: MOVED to the msg.turn-context tail ' +
+      'message so the volatile route no longer breaks the cached system prefix; the ' +
+      'render fn is called from renderTurnContext. This SYSTEM entry now emits nothing.',
+    render: () => null,
   },
   {
     id: 'sys.channel-landscape',
@@ -243,9 +247,9 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     slot: SystemSlot.ChannelLandscape,
     precedenceTier: 7,
     reason:
-      'Primary, non-dashboard inbound: which channels belong to the owner vs the ' +
-      'agent. Describes presence only (C11); routing stays with reply-destination.',
-    render: (ctx) => renderChannelLandscape(ctx.inboundChannel),
+      'Primary, non-dashboard inbound: channel presence (C11). C28 Part 1: MOVED to ' +
+      'the msg.turn-context tail message (volatile per channel). This entry emits nothing.',
+    render: () => null,
   },
   {
     id: 'sys.phone-conduct',
@@ -253,9 +257,9 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     slot: SystemSlot.PhoneConduct,
     precedenceTier: 6,
     reason:
-      'Live phone-call conduct (greeting/backchannel/closing ritual/TTS-conditional ' +
-      'fillers). Fires on a phone inbound; scopes out the generic voice block (C7).',
-    render: (ctx) => renderPhoneConduct(ctx.inboundChannel, ctx.lastUserContent, ctx.turnContext),
+      'Live phone-call conduct (C7). C28 Part 1: MOVED to the msg.turn-context tail ' +
+      'message (present only on phone turns → volatile). This entry emits nothing.',
+    render: () => null,
   },
   {
     id: 'sys.voice-conduct',
@@ -273,12 +277,56 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
 // Note: msg.technique-strong was the plan's named PoC, but it is conjoined with
 // the weak hint (shared async matcher + a once-only recordTechniqueUsage) and
 // the weak hint does a raw `systemPrompt +=`, so it can't migrate cleanly in
-// isolation — it migrates as a GROUP in R5. msg.context-gap is the clean
+// isolation, it migrates as a GROUP in R5. msg.context-gap is the clean
 // representative: sync, standalone, conditional, message-side.
 const TOOL_NOTE_TEXT =
   `[System note: Your current model does not support tool calling. You can only respond with text. ` +
   `If the user asks you to do something that requires tools (file access, web search, tracker, etc.), ` +
   `explain that your model doesn't support it and suggest they switch to a tool-capable model in Settings.]`;
+
+// C28 Part 1: the per-turn volatile routing/presence context, rendered as ONE
+// near-tail engine message instead of scattered across the cached system prefix.
+// Combines (in fixed order): counterparty header, the [Reply destination] routing
+// tag (sole routing authority, C5, its FIRST salient line), channel landscape,
+// phone conduct (phone turns), the live iMessage bridge state (P-5), and the
+// othersWaiting / conversational-turn just-in-time hints (moved from the system
+// string, memory/assembler.ts). Everything here changes turn-to-turn, so keeping
+// it OUT of the system prefix is what makes the prefix cache across channel /
+// presence / waiting-count changes (all-provider fix, P-1).
+function renderTurnContext(ctx: AssemblyContext): EngineMessage | null {
+  const tc = ctx.turnContext;
+  const parts: string[] = [];
+
+  if (tc?.counterparty) {
+    parts.push(renderCounterpartyHeader(tc.counterparty, { isEngineTurn: tc.isEngineTurn }));
+  }
+  const rd = renderReplyDestination(ctx.replyDestination, ctx.smsFromNumber, ctx.phoneFromNumber, ctx.replyRecipientName);
+  if (rd) parts.push(rd);
+  const cl = renderChannelLandscape(ctx.inboundChannel);
+  if (cl) parts.push(cl);
+  const pc = renderPhoneConduct(ctx.inboundChannel, ctx.lastUserContent, ctx.turnContext);
+  if (pc) parts.push(pc);
+  // P-5: live iMessage bridge state (the slot-700 tool guidance now carries only a
+  // stable union sentence and points here). Primary only, matching where the tool
+  // guidance describes the bridge.
+  if (ctx.isPrimary) {
+    let bridgeOn = false;
+    try { bridgeOn = isIMBridgeRunning(); } catch { /* default off */ }
+    parts.push(`iMessage bridge: ${bridgeOn ? 'on' : 'off'}`);
+  }
+  // othersWaiting head-of-line hint (moved verbatim from memory/assembler.ts).
+  if (tc?.counterparty?.kind === 'user' && (tc.othersWaiting ?? 0) > 0) {
+    const n = tc.othersWaiting!;
+    parts.push(`[Engine hint: ${n} other conversation${n === 1 ? ' is' : 's are'} waiting for you right now. If THIS request is quick, just answer it. If it's a large or multi-step task (research, a plan, a project), don't do all the deep work now while the others wait, send a brief acknowledgment, capture it with tracker_create_project / a tracker task, and end the turn so you can serve the others; then work the project across later turns. Reply on this turn's channel as usual. Speak only to the person this turn is for: your text output IS the message they receive, so write the reply itself, don't narrate your triage ("I have two things to handle, let me reply to X and check Y's thread") and don't mention other people's or other agents' threads to them. Deciding what order to work things in is yours to do silently; the engine will bring you back for the others.]`);
+  }
+  // conversational-turn hint (moved verbatim; suppressed when othersWaiting covers it).
+  if (tc?.conversationalTurn && !(tc?.othersWaiting && tc.othersWaiting > 0)) {
+    parts.push(`[Engine hint: this is a quick conversational request, not a multi-step project. Handle it directly, answer it, do the small thing (set the reminder, move the event), or ask ONE clarifying question and then stop. Do NOT create a tracked project/task or loop in the PM for something this small. If you're missing a detail, just ask the user once and wait, the conversation holds until they reply, so don't re-ask it later or keep working it in the background.]`);
+  }
+
+  if (parts.length === 0) return null;
+  return { role: 'user', content: `[Turn context]\n\n${parts.join('\n\n')}` };
+}
 
 const MESSAGE_ENTRIES: MessageInjection[] = [
   {
@@ -335,7 +383,7 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     precedenceTier: 2,
     reason:
       'Strong-match technique procedure injected as its OWN engine-marked message ' +
-      'adjacent to the ask (C12), at technique-notes precedence — the live user ' +
+      'adjacent to the ask (C12), at technique-notes precedence, the live user ' +
       'message outranks it. Content (matcher + body) is computed by the loop; the ' +
       'entry renders + injects it.',
     render: (ctx) => (ctx.techniqueStrong ? { role: 'user', content: ctx.techniqueStrong } : null),
@@ -356,6 +404,20 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
       const h = ctx.techniqueWeakHint?.trimStart();
       return h ? { role: 'user', content: h } : null;
     },
+  },
+  {
+    id: 'msg.turn-context',
+    target: 'messages',
+    slot: MessageSlot.TurnContext,
+    precedenceTier: 7,
+    reason:
+      'C28 Part 1: the per-turn volatile routing/presence block (reply destination, ' +
+      'the sole routing authority C5, channel landscape, phone conduct, counterparty ' +
+      'header, live iMessage bridge state, othersWaiting / conversational-turn hints) ' +
+      'as ONE near-tail engine message. Moved out of the cached system prefix so a ' +
+      'channel/presence/waiting-count change no longer invalidates it (all-provider ' +
+      'cache fix, P-1). Sits just before the current-time tail.',
+    render: (ctx) => renderTurnContext(ctx),
   },
   {
     id: 'msg.current-time',

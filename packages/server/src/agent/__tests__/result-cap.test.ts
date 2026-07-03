@@ -1,4 +1,4 @@
-// Phase 3 (2026-05-04) — per-tool result cap enforcement tests.
+// Phase 3 (2026-05-04), per-tool result cap enforcement tests.
 //
 // `applyMaxResultTokensCap` is the post-processing step that runs at the
 // end of executeTool for any tool whose definition declares
@@ -19,7 +19,7 @@ describe('applyMaxResultTokensCap', () => {
   });
 
   it('returns content unchanged for tools without maxResultTokens set', () => {
-    // file_write has no maxResultTokens — should never truncate.
+    // file_write has no maxResultTokens, should never truncate.
     const huge = 'x'.repeat(100_000);
     expect(applyMaxResultTokensCap('file_write', huge)).toBe(huge);
   });
@@ -35,7 +35,7 @@ describe('applyMaxResultTokensCap', () => {
   });
 
   it('uses narrow-your-query guidance for tools without pagination', () => {
-    // web_search has a cap but no offset/limit — trailer should NOT suggest it.
+    // web_search has a cap but no offset/limit, trailer should NOT suggest it.
     const huge = 'w'.repeat(20_000);
     const out = applyMaxResultTokensCap('web_search', huge);
     expect(out).toMatch(/Narrow your query/);
@@ -62,9 +62,9 @@ describe('applyMaxResultTokensCap', () => {
     expect(out.length).toBeLessThanOrEqual(3000 * 4);
   });
 
-  it('truncates memory_grep output above 4000 tokens', () => {
+  it('truncates history_search output above 4000 tokens', () => {
     const huge = 'd'.repeat(20_000);
-    const out = applyMaxResultTokensCap('memory_grep', huge);
+    const out = applyMaxResultTokensCap('history_search', huge);
     expect(out.length).toBeLessThanOrEqual(4000 * 4);
   });
 
@@ -79,12 +79,12 @@ describe('applyMaxResultTokensCap', () => {
     expect(out).toMatch(/of ~10000 total/);
   });
 
-  it('Phase 3.5 — does not re-truncate content that already has a friendly file_read trailer', () => {
+  it('Phase 3.5, does not re-truncate content that already has a friendly file_read trailer', () => {
     // The v2 file_read path appends its own pagination trailer
     // ("[Read lines 0-2000 of 4280 total. To continue: file_read(...)]")
     // when it returns less than the full file. The generic engine cap
     // must NOT re-truncate that output and replace the friendly trailer
-    // with a generic one — the per-tool guidance is more useful.
+    // with a generic one, the per-tool guidance is more useful.
     const body = 'x'.repeat(40_000); // exceeds file_read's 8K cap on its own
     const friendly =
       body +
@@ -92,19 +92,19 @@ describe('applyMaxResultTokensCap', () => {
       ' To continue: file_read(path="/x", offset=2000, limit=2000).\n' +
       ' To search for specific content: use grep instead.]';
     const out = applyMaxResultTokensCap('file_read', friendly);
-    // Output unchanged — the friendly trailer was preserved.
+    // Output unchanged, the friendly trailer was preserved.
     expect(out).toBe(friendly);
     expect(out).not.toMatch(/\[Truncated by engine/);
   });
 
-  it('Phase 3.5 — does not re-truncate content with end-of-file trailer', () => {
+  it('Phase 3.5, does not re-truncate content with end-of-file trailer', () => {
     const body = 'y'.repeat(40_000);
     const friendly = body + '\n\n[End of file. Read lines 100-180 of 180 total.]';
     const out = applyMaxResultTokensCap('file_read', friendly);
     expect(out).toBe(friendly);
   });
 
-  it('Phase 3.5 — registered cross-file caps work (Google/MS tools)', async () => {
+  it('Phase 3.5, registered cross-file caps work (Google/MS tools)', async () => {
     // Importing google/tools-read.ts triggers its registerMaxResultTokens
     // calls. After import, gmail_read should have a registered cap (4K)
     // even though it's not in agent/tools.ts toolDefinitions.
@@ -176,7 +176,7 @@ describe('applyTextPagination (Phase 3.5)', () => {
     const out = applyTextPagination(
       body,
       'gmail_read',
-      // String values — what DeepSeek actually sends despite schema saying number
+      // String values, what DeepSeek actually sends despite schema saying number
       { offset: '0' as unknown as number, limit: '200' as unknown as number },
       { message_id: 'abc' },
     );
@@ -188,7 +188,7 @@ describe('applyTextPagination (Phase 3.5)', () => {
   it('engine cap carve-out preserves the pagination trailer on minor overshoots', () => {
     // applyMaxResultTokensCap should NOT re-truncate content with the new
     // pagination trailer pattern when overshoot is minor (≤ 2x budget).
-    // gmail_read cap is 4000 tokens ≈ 16K char budget — body of 18K chars
+    // gmail_read cap is 4000 tokens ≈ 16K char budget, body of 18K chars
     // is a 1.13x overshoot, well under the 2x hard-overshoot cutoff.
     const body = 'q'.repeat(18_000) + '\n\n[Read chars 0-18000 of 100000 total. 82000 more chars remain.\n To continue: gmail_read(message_id="x", offset=18000, limit=18000).]';
     const out = applyMaxResultTokensCap('gmail_read', body);

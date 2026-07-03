@@ -8,11 +8,13 @@ import { v4 as uuidv4 } from 'uuid';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+import { writeToolReceipt } from '../receipts/store.js';
+import { resolveToolAlias } from '../tools/aliases.js';
 import { broadcast } from '../gateway/ws.js';
 import { setCurrentCanvas, getCurrentCanvas, viewCanvas } from './canvas-view.js';
 import { isEmbeddable, captureSiteScreenshot } from './site-snapshot.js';
 import { queueCanvasDoc, queueScreenChip } from './pending-attachments.js';
-import { memoryGrep, memoryDescribe, memoryExpand, memorySearch } from '../memory/retrieval.js';
+import { memoryGrep, memoryDescribe, memoryExpand } from '../memory/retrieval.js';
 import { checkRequired, friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer, type FieldSpec } from './tool-helpers.js';
 // Phase 3.5 (2026-05-04), `shouldIntercept` / `interceptLargeFile` removed
 // from the executeTool path. See agent/tools.ts:executeTool for the explanation.
@@ -31,8 +33,6 @@ import {
   trackerUpdateStatus,
   trackerEditTask,
   trackerAddNotes,
-  trackerEditNotes,
-  trackerClearNotes,
   trackerGetStatus,
   trackerListActive,
   trackerCompleteStep,
@@ -197,7 +197,7 @@ function queueCanvasDocAttachment(agentId: string, filePath: string, downloadUrl
 // this exact file, just refresh it. Otherwise, if it's anything the canvas can
 // render (CANVAS_VIEWABLE_EXTS, documents, data, AND source/config code),
 // AUTO-OPEN it in the dock, so "write me a page / doc / script" lands in the
-// canvas without the model having to remember show_canvas (weaker models
+// canvas without the model having to remember canvas_render (weaker models
 // routinely don't, even when explicitly told to). Non-renderable writes only
 // ping (a no-op unless some canvas already watches that path).
 function syncCanvasAfterWrite(agentId: string, filePath: string, downloadUrl: string | null): { opened: boolean } {
@@ -229,7 +229,7 @@ function syncCanvasAfterWrite(agentId: string, filePath: string, downloadUrl: st
 // Open an arbitrary on-disk file in the canvas (register it, then broadcast the
 // dock:open). Used to AUTO-OPEN Office documents the moment they're created, 
 // the same "it just appears in the canvas" behaviour html/md/txt get from
-// syncCanvasAfterWrite. Without this the model has to pick show_canvas over
+// syncCanvasAfterWrite. Without this the model has to pick canvas_render over
 // show_to_user / share_file, and weak models reliably pick the wrong one (a
 // .docx via show_to_user is a useless download chip, not a preview).
 function openFileInCanvas(agentId: string, filePath: string): { opened: boolean } {
@@ -311,6 +311,15 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
       if (parsed.deny) toolsPolicy.deny = parsed.deny;
     } catch { /* ignore */ }
   }
+  // C27 hook 4: a stored tools_policy may reference OLD (renamed) tool names.
+  // Map them to canonical so allow/deny still applies to the new tool (no data
+  // migration needed). Tombstoned names are left as-is (they match nothing).
+  const canonPolicyName = (n: string): string => {
+    const r = resolveToolAlias(n, {});
+    return r.tombstone ? n : r.name;
+  };
+  toolsPolicy.allow = toolsPolicy.allow.map(canonPolicyName);
+  toolsPolicy.deny = toolsPolicy.deny.map(canonPolicyName);
 
   // Base toolkit includes the static `toolDefinitions` plus the PDF
   // creation/manipulation tools, which require no external auth and
@@ -358,18 +367,20 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   if (!hasFileWrite) removeTools.push('file_write', 'file_append');
   if (!hasExec) removeTools.push('exec');
   if (!hasNetwork) removeTools.push('web_search', 'web_fetch');
-  if (!hasSysControl) removeTools.push('mouse_click', 'mouse_move', 'keyboard_type', 'screen_read', 'applescript_run');
+  if (!hasSysControl) removeTools.push('mouse_click', 'mouse_move', 'keyboard_type', 'screen_screenshot', 'applescript_run');
   if (!hasWebBrowse) removeTools.push('web_browse');
   if (!manifest.can_spawn_agents) removeTools.push('spawn_agent', 'kill_agent');
 
-  // Only agents with can_assign_permissions get permission management tools
-  if (!manifest.can_assign_permissions) {
-    removeTools.push('update_agent_permissions');
-  }
+  // C27: update_agent (merged) self-gates its permissions/tools fields on
+  // can_assign_permissions inside the handler, so it stays available for
+  // name/model/prompt edits even without that permission (no removeTools here).
 
-  // Only primary-level agents should have group management, session, and presence tools
+  // Only primary-level agents should have group management, session, and presence tools.
+  // C27: update_agent replaces update_agent_{model,profile}; tunnel replaces the
+  // tunnel_* quartet but self-gates mutating actions (start/stop/restart) to the
+  // primary inside the handler, so non-primary agents keep tunnel({action:"status"}).
   if (!isPrimaryAgent(agentId)) {
-    removeTools.push('create_agent_group', 'update_group', 'assign_to_group', 'delete_group', 'reset_session', 'set_user_presence', 'update_agent_model', 'update_agent_profile', 'get_agent_profile', 'tunnel_start', 'tunnel_stop', 'tunnel_restart', 'open_settings', 'open_page', 'set_capability_model', 'check_for_update', 'apply_update', 'set_voice', 'set_channel');
+    removeTools.push('create_agent_group', 'update_group', 'assign_to_group', 'delete_group', 'reset_session', 'set_user_presence', 'update_agent', 'get_agent_profile', 'open_settings', 'dashboard_navigate', 'set_capability_model', 'check_for_update', 'apply_update', 'set_voice', 'set_channel');
   }
 
   // Technique tools: only Sensei can save/publish/update, everyone can use/list
@@ -903,7 +914,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'recall_recent_thread',
-    description: '**Call this when you genuinely feel disoriented and the active context is not enough.** Common triggers: you just saw a `── Memory Compacted ──` divider and you\'re mid-task with no clear sense of what was just done; you switched models and lost reasoning state; you\'re about to start something and want to confirm what the user actually asked for; you suspect you might double-process work that was already done.\n\n**v2.7.10 note (IMPORTANT):** the engine no longer auto-runs this for you after compaction. Earlier versions secretly executed recall + injected the result as a system message on your next significant tool call; that caused context spirals (each compaction → auto-recall → bigger fresh tail → faster next compaction → bigger re-injection → ...). Now compaction is silent except for the divider, and YOU decide whether to call this. If you are confidently executing a scheduled task or a clear next step, DON\'T call it, your tracker tasks, equipped techniques, and active directives already carry the state you need. Calling unnecessarily wastes tokens and re-introduces stale content.\n\nReturns a clean transcript of the recent conversation read directly from your messages table (same data shown on the dashboard chat), regardless of what the assembler put in your active context. By default the last 8 user→assistant exchanges with tool *call* lines (file_read path=…, exec command=…). To recover **actual content** the agent saw earlier (file contents, web fetch bodies, search results), set `include_tool_results: true`, that switches on "wordy mode" which includes tool RESULTS up to a per-result char cap (default 1500). User/assistant message text is also capped per message (default 1500 chars, raise via `truncate_message_chars` up to 8000), anything truncated ends with a memory_describe pointer so you can fetch the full body. For longer lookback, paginate with `before_id` (the response footer tells you which id to pass). Cheap, read-only, safe to call anytime.',
+    description: '**Call this when you genuinely feel disoriented and the active context is not enough.** Common triggers: you just saw a `── Memory Compacted ──` divider and you\'re mid-task with no clear sense of what was just done; you switched models and lost reasoning state; you\'re about to start something and want to confirm what the user actually asked for; you suspect you might double-process work that was already done.\n\n**v2.7.10 note (IMPORTANT):** the engine no longer auto-runs this for you after compaction. Earlier versions secretly executed recall + injected the result as a system message on your next significant tool call; that caused context spirals (each compaction → auto-recall → bigger fresh tail → faster next compaction → bigger re-injection → ...). Now compaction is silent except for the divider, and YOU decide whether to call this. If you are confidently executing a scheduled task or a clear next step, DON\'T call it, your tracker tasks, equipped techniques, and active directives already carry the state you need. Calling unnecessarily wastes tokens and re-introduces stale content.\n\nReturns a clean transcript of the recent conversation read directly from your messages table (same data shown on the dashboard chat), regardless of what the assembler put in your active context. By default the last 8 user→assistant exchanges with tool *call* lines (file_read path=…, exec command=…). To recover **actual content** the agent saw earlier (file contents, web fetch bodies, search results), set `include_tool_results: true`, that switches on "wordy mode" which includes tool RESULTS up to a per-result char cap (default 1500). User/assistant message text is also capped per message (default 1500 chars, raise via `truncate_message_chars` up to 8000), anything truncated ends with a history_get pointer so you can fetch the full body. For longer lookback, paginate with `before_id` (the response footer tells you which id to pass). Cheap, read-only, safe to call anytime.',
     input_schema: {
       type: 'object',
       properties: {
@@ -921,11 +932,11 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         truncate_tool_result_chars: {
           type: 'number',
-          description: 'Per-tool-result character cap when include_tool_results=true. Default 1500, max 4000. Each truncated result ends with a memory_describe pointer for the full body.',
+          description: 'Per-tool-result character cap when include_tool_results=true. Default 1500, max 4000. Each truncated result ends with a history_get pointer for the full body.',
         },
         truncate_message_chars: {
           type: 'number',
-          description: 'Per-message character cap for user/assistant text. Default 1500, max 8000. Each truncated message ends with a memory_describe pointer for the full body. Raise this when you need to read longer messages in full instead of paginating through memory_describe.',
+          description: 'Per-message character cap for user/assistant text. Default 1500, max 8000. Each truncated message ends with a history_get pointer for the full body. Raise this when you need to read longer messages in full instead of paginating through history_get.',
         },
         before_id: {
           type: 'string',
@@ -946,8 +957,8 @@ export const toolDefinitions: ToolDefinition[] = [
     maxResultTokens: 4000,
   },
   {
-    name: 'memory_grep',
-    description: 'Search through conversation history and memory summaries using full-text search or pattern matching. Returns matching messages and summaries with context. Example: memory_grep({ pattern: "budget meeting", limit: 10 }).\n\nResult format: each line starts with `[id=<short> <timestamp>] (role) <snippet>`. When a snippet is truncated, the line ends with `[snippet only, call memory_describe(id="…") for full N-char message]`, DO this rather than retrying memory_grep with a different pattern. Repeating memory_grep with variations of the same query when the snippet is already present will be loop-blocked. Use memory_describe to get the FULL message body once you have a hit.',
+    name: 'history_search',
+    description: 'Search through conversation history and memory summaries using full-text search or pattern matching. Returns matching messages and summaries with context. Example: history_search({ pattern: "budget meeting", limit: 10 }).\n\nResult format: each line starts with `[id=<short> <timestamp>] (role) <snippet>`. When a snippet is truncated, the line ends with `[snippet only, call history_get(id="…") for full N-char message]`, DO this rather than retrying history_search with a different pattern. Repeating history_search with variations of the same query when the snippet is already present will be loop-blocked. Use history_get to get the FULL message body once you have a hit.',
     input_schema: {
       type: 'object',
       properties: {
@@ -984,21 +995,21 @@ export const toolDefinitions: ToolDefinition[] = [
     maxResultTokens: 4000,
   },
   {
-    name: 'memory_describe',
-    description: 'Look up the full content of a stored item by its ID. Accepts THREE id types:\n  - Summary IDs (sum_*), returns full summary text + metadata\n  - Large file IDs (file_*), returns the exploration summary + metadata\n  - Raw message UUIDs, returns the full message body\n\nUse this AFTER memory_grep when a snippet is truncated and you need the full message. memory_grep emits a ready-to-copy hint at the end of each truncated result line: `[snippet only, call memory_describe(id="…") for full N-char message]`. Copy the full UUID from inside those quotes, the short `id=<8chars>` shown at the start of the result line is for visual scanning only and is NOT enough.',
+    name: 'history_get',
+    description: 'Look up the full content of a stored item by its ID. Accepts THREE id types:\n  - Summary IDs (sum_*), returns full summary text + metadata\n  - Large file IDs (file_*), returns the exploration summary + metadata\n  - Raw message UUIDs, returns the full message body\n\nUse this AFTER history_search when a snippet is truncated and you need the full message. history_search emits a ready-to-copy hint at the end of each truncated result line: `[snippet only, call history_get(id="…") for full N-char message]`. Copy the full UUID from inside those quotes, the short `id=<8chars>` shown at the start of the result line is for visual scanning only and is NOT enough.',
     input_schema: {
       type: 'object',
       properties: {
         id: {
           type: 'string',
-          description: 'A summary ID (sum_*), large file ID (file_*), or full message UUID (from the parens in memory_grep\'s expand hint).',
+          description: 'A summary ID (sum_*), large file ID (file_*), or full message UUID (from the parens in history_search\'s expand hint).',
         },
       },
       required: ['id'],
     },
   },
   {
-    name: 'memory_expand',
+    name: 'history_expand',
     description: 'Deep recall: walks the summary DAG to retrieve original source messages, optionally uses an LLM to synthesize an answer from expanded material. Use when summaries lack detail.',
     input_schema: {
       type: 'object',
@@ -1020,26 +1031,9 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['prompt'],
     },
   },
-  {
-    name: 'memory_search',
-    description: 'Simplified memory search that searches both messages and summaries using full-text search. A convenience wrapper around memory_grep.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        query: {
-          type: 'string',
-          description: 'The search query',
-        },
-        limit: {
-          type: 'number',
-          description: 'Maximum number of results (default: 10)',
-        },
-      },
-      required: ['query'],
-    },
-    concurrency: 'safe',
-    maxResultTokens: 4000,
-  },
+  // C27: memory_search (a self-described convenience wrapper around
+  // history_search / former memory_grep) was DELETED; it is now a hidden alias
+  // that routes to history_search with {query} -> {pattern}. See tools/aliases.ts.
   // ── Web Tools ──
   {
     name: 'web_search',
@@ -1085,9 +1079,9 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   // ── Right Dock (shared workspace) ──
   {
-    name: 'show_canvas',
+    name: 'canvas_render',
     description:
-      'Open a canvas in the user\'s right dock, a side panel where you and the user look at a working document together. The dojo interface slides left to make room and the canvas renders on the right. Use this to show the user something you have produced or have on disk: an HTML page, a Markdown doc, a plain-text/code file, a report, a chart, a mockup, or a Word / Excel / PDF document (these render as a formatted preview).\n\nNOTE: any canvas-renderable file already opens in the canvas automatically the moment you create it, writing one with file_write (HTML, Markdown, text, code, JSON, CSV, SVG, ...) and creating a Word / Excel / PDF document all auto-open. You usually do NOT need to call show_canvas at all. Use show_canvas to (re)show an existing file, or to render inline `html` / a `url`.\n\nThree ways to fill it (use ONE):\n  • `path`, the absolute path to a file on disk you wrote with file_write (e.g. "/Users/.../uploads/<agent-id>/report.md"). BEST for documents you will keep editing: HTML renders, Markdown renders formatted, text/code shows monospaced, and the canvas gets a download button. After you call show_canvas({path}), any later file_write / file_patch / file_append to that SAME path auto-refreshes the canvas, you do NOT need to call show_canvas again. For HTML, relative asset paths resolve against the file\'s own folder, so reference local images as <img src="photo.png"> with the image saved next to the .html file and it will render.\n  • `html`, inline HTML markup to render directly (runs sandboxed); no file needed. Inline markup cannot reference local files, embed images as data: URIs or write a file with the image beside it instead.\n  • `url`, content already hosted at a URL (a file_write download URL also works).\n\nExamples:\n  • show_canvas({ title: "Spec", path: "/Users/me/uploads/<agent-id>/spec.md" })\n  • show_canvas({ title: "Q3", html: "<h1>Q3</h1><p>...</p>" })',
+      'Open a canvas in the user\'s right dock, a side panel where you and the user look at a working document together. The dojo interface slides left to make room and the canvas renders on the right. Use this to show the user something you have produced or have on disk: an HTML page, a Markdown doc, a plain-text/code file, a report, a chart, a mockup, or a Word / Excel / PDF document (these render as a formatted preview).\n\nNOTE: any canvas-renderable file already opens in the canvas automatically the moment you create it, writing one with file_write (HTML, Markdown, text, code, JSON, CSV, SVG, ...) and creating a Word / Excel / PDF document all auto-open. You usually do NOT need to call canvas_render at all. Use canvas_render to (re)show an existing file, or to render inline `html` / a `url`.\n\nThree ways to fill it (use ONE):\n  • `path`, the absolute path to a file on disk you wrote with file_write (e.g. "/Users/.../uploads/<agent-id>/report.md"). BEST for documents you will keep editing: HTML renders, Markdown renders formatted, text/code shows monospaced, and the canvas gets a download button. After you call canvas_render({path}), any later file_write / file_patch / file_append to that SAME path auto-refreshes the canvas, you do NOT need to call canvas_render again. For HTML, relative asset paths resolve against the file\'s own folder, so reference local images as <img src="photo.png"> with the image saved next to the .html file and it will render.\n  • `html`, inline HTML markup to render directly (runs sandboxed); no file needed. Inline markup cannot reference local files, embed images as data: URIs or write a file with the image beside it instead.\n  • `url`, content already hosted at a URL (a file_write download URL also works).\n\nExamples:\n  • canvas_render({ title: "Spec", path: "/Users/me/uploads/<agent-id>/spec.md" })\n  • canvas_render({ title: "Q3", html: "<h1>Q3</h1><p>...</p>" })',
     input_schema: {
       type: 'object',
       properties: {
@@ -1113,9 +1107,9 @@ export const toolDefinitions: ToolDefinition[] = [
     concurrency: 'safe',
   },
   {
-    name: 'screen_share',
+    name: 'screen_broadcast',
     description:
-      "Show the user THIS Mac's screen, live, in their right-dock canvas. Use this whenever the user wants to SEE your screen or control this Mac, phrasings like \"show me your screen\", \"let me see your screen\", \"share your screen\", \"can I see what you're doing\", \"open your screen so I can click something\". This is the right tool for that, NOT screen_read (which only screenshots the screen for you to read, and shows the user nothing).\n\nUse it proactively whenever you need a HUMAN to do something on THIS Mac that you can't do yourself: approve a macOS permission/confirmation dialog, hit OK on a prompt, or complete a sign-in / re-authenticate an account (e.g. a Google or Microsoft re-auth, which opens a login window in the browser on this Mac). The flow is: kick off the action that needs them (so the dialog or sign-in window appears on this Mac), then open the screen with this tool so they can take control and finish it. Judge local vs remote first: if the user is sitting AT this Mac, just ask them to do it on their screen directly, no need to share. If they're remote (over the tunnel) and can't reach the Mac, that's exactly when to open the screen. (One caveat to relay if it comes up: a few highly-secured macOS dialogs, like granting Accessibility/Screen Recording permissions, may refuse remote clicks and need someone physically at the Mac.)\n\nIt opens view-only. The user clicks \"Take control\" at the top of the canvas to use the mouse and keyboard, and enters the screen-sharing (VNC) password to connect, that's their second factor, on top of being logged in.\n\nThis only works if the user has turned the feature on in Settings > Integrations > Screen Sharing (it's disabled by default; one-time setup needs approval on the Mac). If it's off, calling this returns step-by-step setup instructions, relay them and offer to walk the user through enabling it. So if the user asks how to set up screen sharing, or you think it would help, just call this tool: when it's off you'll get the exact steps to guide them. Takes no required arguments.",
+      "Show the user THIS Mac's screen, live, in their right-dock canvas. Use this whenever the user wants to SEE your screen or control this Mac, phrasings like \"show me your screen\", \"let me see your screen\", \"share your screen\", \"can I see what you're doing\", \"open your screen so I can click something\".\n\nUse it proactively whenever you need a HUMAN to do something on THIS Mac that you can't do yourself: approve a macOS permission/confirmation dialog, hit OK on a prompt, or complete a sign-in / re-authenticate an account (e.g. a Google or Microsoft re-auth, which opens a login window in the browser on this Mac). The flow is: kick off the action that needs them (so the dialog or sign-in window appears on this Mac), then open the screen with this tool so they can take control and finish it. Judge local vs remote first: if the user is sitting AT this Mac, just ask them to do it on their screen directly, no need to share. If they're remote (over the tunnel) and can't reach the Mac, that's exactly when to open the screen. (One caveat to relay if it comes up: a few highly-secured macOS dialogs, like granting Accessibility/Screen Recording permissions, may refuse remote clicks and need someone physically at the Mac.)\n\nIt opens view-only. The user clicks \"Take control\" at the top of the canvas to use the mouse and keyboard, and enters the screen-sharing (VNC) password to connect, that's their second factor, on top of being logged in.\n\nThis only works if the user has turned the feature on in Settings > Integrations > Screen Sharing (it's disabled by default; one-time setup needs approval on the Mac). If it's off, calling this returns step-by-step setup instructions, relay them and offer to walk the user through enabling it. So if the user asks how to set up screen sharing, or you think it would help, just call this tool: when it's off you'll get the exact steps to guide them. Takes no required arguments.",
     input_schema: {
       type: 'object',
       properties: {
@@ -1131,7 +1125,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'open_browser',
     description:
-      'Open a live website in the user\'s right dock so you and the user can view it together. The dojo interface slides left and the page loads in a resizable frame on the right with refresh and close controls. Use this for showing a real, working website at a URL (not your own generated markup, for that use show_canvas). Note: some sites refuse to load inside a frame; if a page comes up blank the site has blocked embedding. Example: open_browser({ url: "https://example.com", title: "Example" }).',
+      'Open a live website in the user\'s right dock so you and the user can view it together. The dojo interface slides left and the page loads in a resizable frame on the right with refresh and close controls. Use this for showing a real, working website at a URL (not your own generated markup, for that use canvas_render). Note: some sites refuse to load inside a frame; if a page comes up blank the site has blocked embedding. Example: open_browser({ url: "https://example.com", title: "Example" }).',
     input_schema: {
       type: 'object',
       properties: {
@@ -1149,9 +1143,9 @@ export const toolDefinitions: ToolDefinition[] = [
     concurrency: 'safe',
   },
   {
-    name: 'view_canvas',
+    name: 'canvas_read',
     description:
-      'Look at what is currently shown in the user\'s right-dock canvas, use this when the user asks you to look at / read / check / review what is on the canvas. By default it views whatever you most recently opened there (with show_canvas or open_browser). It renders the content and reads it back: an HTML page or website is screenshotted and described, an image is examined directly, and a markdown/text/code file is returned as text. Works even if your own model cannot see images (it falls back to the configured vision model). Pass an optional `prompt` to ask something specific (e.g. "does the chart axis start at zero?", "summarize the page", "is the header centered?"). You can also point it at a specific `html`, `url`, or `path` to view that instead of the current canvas.',
+      'Look at what is currently shown in the user\'s right-dock canvas, use this when the user asks you to look at / read / check / review what is on the canvas. It views whatever you most recently opened there (with canvas_render or open_browser): an HTML page or website is screenshotted and described, an image is examined directly, and a markdown/text/code file is returned as text. Works even if your own model cannot see images (it falls back to the configured vision model). Pass an optional `prompt` to ask something specific (e.g. "does the chart axis start at zero?", "summarize the page", "is the header centered?"). To read a specific file/URL/HTML, open it first with canvas_render (or open_browser), then call canvas_read.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1159,9 +1153,6 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'string',
           description: 'Optional. What to look for or answer about the canvas. Omit for a general description.',
         },
-        path: { type: 'string', description: 'Optional. View a specific file on disk instead of the current canvas.' },
-        url: { type: 'string', description: 'Optional. View a specific URL instead of the current canvas.' },
-        html: { type: 'string', description: 'Optional. View specific inline HTML instead of the current canvas.' },
       },
       required: [],
     },
@@ -1577,7 +1568,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'tracker_add_notes',
-    description: 'APPEND a timestamped note to a task. Preserves all prior notes - each call adds a new `[ISO timestamp] <your text>` line. Good for progress logs and issue trails. **Does NOT replace the existing notes.** To replace the entire notes field with new content, call tracker_edit_notes. To wipe notes back to empty, call tracker_clear_notes.\n\n**CRITICAL - this is a checkpoint, NOT a stopping point.** Adding a note does not pause your work. If the task is still in_progress after you write the note, CONTINUE EXECUTING the project on the same turn - call the next tool, do the next step, do not just end the turn. Only end your turn when (a) you have completed a meaningful chunk that needs user acknowledgement, OR (b) you have hit a genuine blocker. In either case, your final assistant message must explicitly say WHY you stopped ("completed step 3, waiting on user input about X", "blocked - can\'t proceed without Y"). A silent stop after tracker_add_notes leaves the user staring at idle progress with no idea what is happening.',
+    description: 'APPEND a timestamped note to a task. Preserves all prior notes - each call adds a new `[ISO timestamp] <your text>` line. Good for progress logs and issue trails. **Does NOT replace the existing notes.** To replace the entire notes field with new content, call tracker_edit_task({notes}).\n\n**CRITICAL - this is a checkpoint, NOT a stopping point.** Adding a note does not pause your work. If the task is still in_progress after you write the note, CONTINUE EXECUTING the project on the same turn - call the next tool, do the next step, do not just end the turn. Only end your turn when (a) you have completed a meaningful chunk that needs user acknowledgement, OR (b) you have hit a genuine blocker. In either case, your final assistant message must explicitly say WHY you stopped ("completed step 3, waiting on user input about X", "blocked - can\'t proceed without Y"). A silent stop after tracker_add_notes leaves the user staring at idle progress with no idea what is happening.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1593,29 +1584,9 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['task_id', 'notes'],
     },
   },
-  {
-    name: 'tracker_edit_notes',
-    description: 'REPLACE the entire notes field on a task with new content. Use when the existing notes are wrong, stale, or need a clean rewrite, calling this with a fresh string discards all prior `[timestamp] …` entries. For appending without losing prior notes, use tracker_add_notes. For wiping notes back to empty, use tracker_clear_notes.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        task_id: { type: 'string', description: 'The task ID whose notes you want to replace' },
-        notes: { type: 'string', description: 'New notes content. Replaces the entire notes field, prior entries are discarded.' },
-      },
-      required: ['task_id', 'notes'],
-    },
-  },
-  {
-    name: 'tracker_clear_notes',
-    description: 'Wipe the notes field on a task back to empty (NULL). Use when the existing notes are obsolete and no replacement is appropriate. For replacing notes with new content, use tracker_edit_notes. For appending, use tracker_add_notes.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        task_id: { type: 'string', description: 'The task ID whose notes you want to clear' },
-      },
-      required: ['task_id'],
-    },
-  },
+  // C27: tracker_edit_notes + tracker_clear_notes were already dead v2.8.0 stubs
+  // (always returned Error). DELETED and registered as tombstone aliases. To
+  // append notes use tracker_add_notes; to replace notes use tracker_edit_task({notes}).
   {
     name: 'tracker_edit_task',
     description: 'Edit any structural field on a task, title, description, dependencies, step ordering, schedule (including the day-of-week list for "specific_days" recurrence), priority, notes. Pass any subset of fields. Editing any schedule field automatically recomputes next_run_at so the scheduler picks up the change. Use tracker_update_status for status changes, tracker_reassign_task for assignee changes, and tracker_pause_schedule for pause/resume, those have side-effects this tool intentionally skips.',
@@ -1736,17 +1707,18 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
-    name: 'tracker_validate_pause',
-    description: '**PM AGENT ONLY.** Adjudicate whether an agent\'s pause of a task is legitimate. Call this for every UNVALIDATED_PAUSE issue surfaced in the situation report. Pass `valid=true` if the pause reason names a real, specific external trigger the agent has actually requested (e.g. "waiting for user to reboot ESP", "waiting for vendor to send tracking number"). Pass `valid=false` if the reason is vague, complains about the PM, or describes a stuck/blocked condition that should be `blocked` not `paused`. On a valid call, the task stays paused and PM ignores it from now on. On an invalid call, the task is reverted to target_status (default in_progress) and the assigned agent gets a directive explaining why.',
+    name: 'tracker_validate',
+    description: '**PM AGENT ONLY.** Adjudicate an agent\'s status claim. Pass `kind`:\n  - "pause": is the pause legitimate? valid=true if the reason names a real, specific external trigger the agent actually requested (e.g. "waiting for user to reboot ESP", "waiting for vendor tracking number"); valid=false if vague, complains about the PM, or is really a block. (Call for every UNVALIDATED_PAUSE in the situation report.)\n  - "complete": does the goal match the result + evidence? Read the file/audit-log/output named in evidence first, do NOT validate on prose alone. valid=false when the evidence does not demonstrate the goal.\n  - "blocked": is the block real and external (no workaround the agent could try)? valid=false when the agent has not attempted the work, has not asked a question they could ask, or the "block" is confusion.\nOn valid=true the status stands (per-kind side effects: complete fires the dependency cascade / archives a recurring per-run to task_log and resets to on_deck; blocked notifies the primary to investigate). On valid=false the task reverts to target_status (default in_progress) and the assigned agent gets the one-sentence directive in reject_reason.',
     input_schema: {
       type: 'object',
       properties: {
-        task_id: { type: 'string', description: 'Task ID with status=paused.' },
-        valid: { type: 'boolean', description: 'true = pause stands; false = pause rejected and reverted.' },
-        reject_reason: { type: 'string', description: 'Required when valid=false. One-sentence explanation for the agent.' },
-        target_status: { type: 'string', enum: ['in_progress', 'on_deck', 'blocked'], description: 'Optional. Where to send the task on rejection. Default in_progress. Use blocked if the pause reason was really a block.' },
+        kind: { type: 'string', enum: ['pause', 'complete', 'blocked'], description: 'Which claim to adjudicate: pause, complete, or blocked.' },
+        task_id: { type: 'string', description: 'Task ID. pause: status=paused; complete: status=complete & complete_validated=0; blocked: status=blocked & blocked_validated=0.' },
+        valid: { type: 'boolean', description: 'true = the claim stands; false = rejected and reverted.' },
+        reject_reason: { type: 'string', description: 'Required when valid=false. One-sentence directive for the agent.' },
+        target_status: { type: 'string', enum: ['in_progress', 'on_deck', 'blocked'], description: 'Optional. Where to send the task on rejection. Default in_progress. Use blocked if a rejected pause was really a block.' },
       },
-      required: ['task_id', 'valid'],
+      required: ['kind', 'task_id', 'valid'],
     },
   },
   {
@@ -1762,34 +1734,8 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['task_id', 'directive'],
     },
   },
-  {
-    name: 'tracker_validate_complete',
-    description: '**PM AGENT ONLY.** Adjudicate whether an agent\'s claim of complete is legitimate by comparing the goal against the result and evidence. Read the file/audit-log/output named in evidence before validating, do not validate on prose alone (see your skepticism guidance). For recurring tasks, valid=true on a per-run completion archives result/evidence to task_log and resets the task to on_deck for the next fire. For one-shot tasks, valid=true fires the dependency cascade and notifies the parent. Pass valid=false when the evidence does not actually demonstrate the goal was met; the task reverts to target_status and the agent gets a one-sentence directive.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        task_id: { type: 'string', description: 'Task ID with status=complete and complete_validated=0.' },
-        valid: { type: 'boolean', description: 'true = complete stands; false = complete rejected and reverted.' },
-        reject_reason: { type: 'string', description: 'Required when valid=false. One-sentence directive (e.g. "your evidence does not show field-15 was migrated; finish that field and resubmit").' },
-        target_status: { type: 'string', enum: ['in_progress', 'on_deck', 'blocked'], description: 'Optional. Where to send the task on rejection. Default in_progress.' },
-      },
-      required: ['task_id', 'valid'],
-    },
-  },
-  {
-    name: 'tracker_validate_blocked',
-    description: '**PM AGENT ONLY.** Adjudicate whether a blocked claim is real. Pass valid=true when the obstacle named in the agent\'s notes is genuine and external (no workaround the agent could try), the primary agent gets notified to investigate or unblock. Pass valid=false when the agent has not actually attempted the work, has not asked the user a question they could ask, or has named a "block" that is really just confusion; the task reverts to target_status with a directive.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        task_id: { type: 'string', description: 'Task ID with status=blocked and blocked_validated=0.' },
-        valid: { type: 'boolean', description: 'true = block stands and primary is notified; false = block rejected and reverted.' },
-        reject_reason: { type: 'string', description: 'Required when valid=false. One-sentence directive for the agent.' },
-        target_status: { type: 'string', enum: ['in_progress', 'on_deck', 'blocked'], description: 'Optional. Where to send the task on rejection. Default in_progress.' },
-      },
-      required: ['task_id', 'valid'],
-    },
-  },
+  // C27: tracker_validate_complete + tracker_validate_blocked merged into
+  // tracker_validate({kind}) above (schemas were near-identical).
   {
     name: 'tracker_request_override',
     description: 'Queue an explicit ask for the PM (or the user via dashboard) to force a status change that the engine\'s hard gate refused, OR that you believe the PM\'s last rejection got wrong. Auto-fired by the engine when the hard-gate circuit-breaker trips after 3 consecutive same-task hard-gate rejections by you (in which case you do NOT need to call this yourself, the engine queued it on your behalf). Justification must be at least 30 characters explaining concretely why the engine/PM was wrong. Rate limit: at most one pending request per (task, you) at a time. Auto-denied after 12 hours if PM does not resolve.',
@@ -1832,7 +1778,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'tracker_apply_user_verdict',
-    description: 'Apply the user\'s reply to a stalemate. Only valid when awaiting_user_verdict=1 on the task. Quote the user\'s exact words in user_quote for the audit log. The status flips immediately with from_entity="user", the validation flag for that status is set to 1, revert_count resets, and the stalemate flag clears. The user\'s authority is supreme, PM is told not to revisit.',
+    description: 'Call ONLY when a task is in awaiting_user_verdict (=1). Apply the user\'s reply to that stalemate. Quote the user\'s exact words in user_quote for the audit log. The status flips immediately with from_entity="user", the validation flag for that status is set to 1, revert_count resets, and the stalemate flag clears. The user\'s authority is supreme, PM is told not to revisit.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1845,7 +1791,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'tracker_apply_user_validation',
-    description: '**Call this when the user replies to a "[VALIDATION CHECK]" system message in chat.** The engine asks the user about a task that has been sitting unvalidated for 5 minutes. The user\'s reply tells us whether the work was actually done. validated=true confirms it (clears the bug icon). validated=false reverts the task to in_progress and pings the assigned agent with any feedback the user provided. Quote the user\'s exact reply in user_quote for audit.',
+    description: 'Call ONLY when the user replied to a "[VALIDATION CHECK]" message in chat. The engine asks the user about a task that has been sitting unvalidated for 5 minutes. The user\'s reply tells us whether the work was actually done. validated=true confirms it (clears the bug icon). validated=false reverts the task to in_progress and pings the assigned agent with any feedback the user provided. Quote the user\'s exact reply in user_quote for audit.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2000,30 +1946,16 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Presence ──
   // ── Tunnel (Remote Access) ──
   {
-    name: 'tunnel_status',
-    description: 'Get the current Cloudflare tunnel status and public URL. Use this when the user asks for the dojo URL or wants to know if remote access is running. Works for both quick tunnels (auto-generated trycloudflare.com URL) and named tunnels (custom domain URL the user configured in Cloudflare and saved in Settings → Remote Access). The `url` field in the response is the URL to share with the user. The `mode` field tells you which kind of tunnel is active.',
-    input_schema: { type: 'object', properties: {}, required: [] },
-  },
-  {
-    name: 'tunnel_start',
-    description: 'Start the Cloudflare tunnel for remote access. Only use when the user explicitly asks to start/enable the tunnel.',
+    name: 'tunnel',
+    description: 'Manage the Cloudflare tunnel for remote access. Pass `action`:\n  - "status": get the current tunnel status + public URL (use when the user asks for the dojo URL or whether remote access is running). The `url` field is what to share; `mode` tells you quick (trycloudflare.com) vs named (custom domain).\n  - "start": start the tunnel (only when the user explicitly asks to start/enable it). Optional `mode`: "quick" for a random URL, "named" for the configured persistent tunnel; defaults to the saved config.\n  - "stop": stop the tunnel (only when the user explicitly asks to stop/disable remote access).\n  - "restart": restart it (useful when stuck or the user wants a fresh URL).',
     input_schema: {
       type: 'object',
       properties: {
-        mode: { type: 'string', enum: ['quick', 'named'], description: 'Optional mode: "quick" for a random URL, "named" for a configured persistent tunnel. Defaults to the saved config.' },
+        action: { type: 'string', enum: ['status', 'start', 'stop', 'restart'], description: 'The tunnel operation to perform.' },
+        mode: { type: 'string', enum: ['quick', 'named'], description: 'Optional, only for action="start": "quick" for a random URL, "named" for a configured persistent tunnel. Defaults to the saved config.' },
       },
-      required: [],
+      required: ['action'],
     },
-  },
-  {
-    name: 'tunnel_stop',
-    description: 'Stop the Cloudflare tunnel. Only use when the user explicitly asks to stop/disable remote access.',
-    input_schema: { type: 'object', properties: {}, required: [] },
-  },
-  {
-    name: 'tunnel_restart',
-    description: 'Restart the Cloudflare tunnel. Useful when the tunnel is stuck or the user asks for a fresh URL.',
-    input_schema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'set_user_presence',
@@ -2053,33 +1985,24 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
-    name: 'update_agent_model',
-    description: 'Change another agent\'s model. This is THE tool for switching what model a sub-agent runs on, do NOT try to modify the database or respawn the agent. Pass a model ID, or "auto" to enable auto-routing. The agent uses the new model on its next turn.',
+    name: 'update_agent',
+    description: 'Change another sub-agent\'s configuration: name, system prompt, model, permissions, and/or tool policy in one call. This is THE tool for editing a sub-agent, do NOT modify files, SOUL.md, or the database directly. Provide agent_id plus at least one field to change; omitted fields are left untouched. Mirrors spawn_agent\'s parameters. Conversation history, tracker tasks, and group membership are always preserved; changes take effect on the agent\'s next turn. Cannot change the identity (name/system_prompt) of the primary agent (edit its SOUL.md via Settings instead). Changing `permissions` or `tools` requires the caller to have can_assign_permissions. Pair with get_agent_profile to read current values before rewriting.',
     input_schema: {
       type: 'object',
       properties: {
-        agent_id: { type: 'string', description: 'The agent ID to update' },
-        model_id: { type: 'string', description: 'The new model ID to assign, or "auto" for auto-routing' },
-      },
-      required: ['agent_id', 'model_id'],
-    },
-  },
-  {
-    name: 'update_agent_profile',
-    description: 'Change another agent\'s system prompt, role, personality, instructions, or name. This is THE tool for editing a sub-agent\'s identity, do NOT try to modify files, SOUL.md, or the database directly. Provide at least one of name or system_prompt. Conversation history, tracker tasks, group membership, permissions, and model are all preserved. The agent uses the new identity on its next turn. Cannot be used on the primary agent (edit its SOUL.md via Settings instead). Pair with get_agent_profile if you need to read the current prompt before rewriting it.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        agent_id: { type: 'string', description: 'The agent ID or name to update' },
+        agent_id: { type: 'string', description: 'The agent ID or name to update.' },
         name: { type: 'string', description: 'New name for the agent. Omit to keep the current name.' },
-        system_prompt: { type: 'string', description: 'New system prompt defining the agent\'s role, personality, and instructions. REPLACES the existing prompt entirely, include everything you want the agent to remember. Omit to keep the current prompt.' },
+        system_prompt: { type: 'string', description: 'New system prompt (role, personality, instructions). REPLACES the existing prompt entirely, include everything you want kept. Omit to keep the current prompt.' },
+        model_id: { type: 'string', description: 'New model ID to assign, or "auto" for auto-routing. Call list_models for valid IDs. Omit to keep the current model.' },
+        permissions: { type: 'object', description: 'Permission fields to MERGE (only include what changes): file_read/file_write ("*" or path array), file_delete, exec_allow/exec_deny (command arrays), network_domains ("*"|"none"|array), max_processes, can_spawn_agents, can_assign_permissions, system_control (array of "mouse"/"keyboard"/"screen"/"applescript"/"web_browse" or ["*"]). Requires can_assign_permissions.' },
+        tools: { type: 'object', description: 'Tool-access policy to MERGE: { allow?: string[], deny?: string[] } of tool names. Requires can_assign_permissions.' },
       },
       required: ['agent_id'],
     },
   },
   {
     name: 'get_agent_profile',
-    description: 'Read another agent\'s current identity: name, system prompt, model, tools policy, permissions, classification, group, status, and parent. Use this to audit what a sub-agent is currently set up as, or to read the existing system prompt before calling update_agent_profile (which fully REPLACES the prompt, without reading first you can\'t append). Read-only, no side effects.',
+    description: 'Read another agent\'s current identity: name, system prompt, model, tools policy, permissions, classification, group, status, and parent. Use this to audit what a sub-agent is currently set up as, or to read the existing system prompt before calling update_agent (which fully REPLACES the prompt, without reading first you can\'t append). Read-only, no side effects.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2205,21 +2128,7 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['task_id'],
     },
   },
-  {
-    name: 'update_agent_permissions',
-    description: 'Change another agent\'s permissions, grant or revoke file access, command execution, web access, system control, spawn rights, etc. This is THE tool for editing permissions, do NOT try to modify the database or respawn the agent. Permissions take effect immediately.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        agent_id: { type: 'string', description: 'The agent ID to update' },
-        permissions: {
-          type: 'object',
-          description: 'Permission fields to set. Only include fields you want to change. Fields: file_read ("*" or path array), file_write ("*" or path array), file_delete ("none" or path array), exec_allow (command array, ["*"] for all), exec_deny (command array), network_domains ("*", "none", or domain array), max_processes (number), can_spawn_agents (boolean), can_assign_permissions (boolean), system_control (array: "mouse","keyboard","screen","applescript","web_browse", or ["*"] for all)',
-        },
-      },
-      required: ['agent_id', 'permissions'],
-    },
-  },
+  // C27: update_agent_permissions merged into update_agent({permissions}) above.
   // ── Public file sharing ──
   {
     name: 'share_publicly',
@@ -2242,7 +2151,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Show files to user ──
   {
     name: 'show_to_user',
-    description: 'Display one or more IMAGES (and short audio/video clips) to the user IN THE CHAT as inline thumbnails, as part of your reply. Use this for a picture you want the user to actually look at right in the conversation, a slide PNG a sub-agent sent you, a Drive image you downloaded, a photo from your uploads folder. WITHOUT this tool, "take a look at this image" is a lie, the file is on disk but the user sees no thumbnail.\n\nDOCUMENTS GO IN THE CANVAS, NOT HERE. A PDF, Word/Excel/PowerPoint, Markdown, text, or code file passed to show_to_user is REJECTED, those render as a real formatted preview in the canvas. Canvas-renderable files auto-open the moment you write them (file_write, or creating a Word/Excel/PDF); use show_canvas({ path }) to (re)open one. Reserve show_to_user for images/media.\n\nThis tool inserts an assistant-role message into your chat with the files attached and your `caption` as the bubble text. The user sees: your caption + thumbnails. After calling, end your turn (or continue with more tool calls if needed).\n\nExample (forwarding a slide preview a sub-agent sent):\n  show_to_user({ file_paths: ["/Users/.../uploads/<your-agent-id>/draft_slide_preview.png"], caption: "Sub-agent finished a draft of the title slide. Looks good to me, anything you want changed?" })\n\nFile paths must already exist (typically under ~/.dojo/uploads/<your-agent-id>/ or wherever a sub-agent delivered them). Files outside the uploads dir are copied in.',
+    description: 'Display one or more IMAGES (and short audio/video clips) to the user IN THE CHAT as inline thumbnails, as part of your reply. Use this for a picture you want the user to actually look at right in the conversation, a slide PNG a sub-agent sent you, a Drive image you downloaded, a photo from your uploads folder. WITHOUT this tool, "take a look at this image" is a lie, the file is on disk but the user sees no thumbnail.\n\nDOCUMENTS GO IN THE CANVAS, NOT HERE. A PDF, Word/Excel/PowerPoint, Markdown, text, or code file passed to show_to_user is REJECTED, those render as a real formatted preview in the canvas. Canvas-renderable files auto-open the moment you write them (file_write, or creating a Word/Excel/PDF); use canvas_render({ path }) to (re)open one. Reserve show_to_user for images/media.\n\nThis tool inserts an assistant-role message into your chat with the files attached and your `caption` as the bubble text. The user sees: your caption + thumbnails. After calling, end your turn (or continue with more tool calls if needed).\n\nExample (forwarding a slide preview a sub-agent sent):\n  show_to_user({ file_paths: ["/Users/.../uploads/<your-agent-id>/draft_slide_preview.png"], caption: "Sub-agent finished a draft of the title slide. Looks good to me, anything you want changed?" })\n\nFile paths must already exist (typically under ~/.dojo/uploads/<your-agent-id>/ or wherever a sub-agent delivered them). Files outside the uploads dir are copied in.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2553,7 +2462,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── System Control Tools (Phase 5A) ──
   {
     name: 'mouse_click',
-    description: 'Move the mouse to coordinates and click. Use after screen_read to identify target positions.',
+    description: 'Move the mouse to coordinates and click. Use after screen_screenshot to identify target positions.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2589,8 +2498,8 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
-    name: 'screen_read',
-    description: 'Take a screenshot and describe what is visible using a vision model, this is for YOU to perceive the screen (then act, e.g. before mouse_click to find targets). Returns a text description with approximate coordinates for interactive elements. Pass `query` to focus the description on what you\'re looking for (recommended).\n\nIMPORTANT, do NOT use this to "show the user the screen." If the user wants to SEE your live screen, watch what you are doing, or take control of this Mac remotely (common when they\'re away and need to click/approve something here), use `screen_share` instead, it opens a live, interactive viewer in their canvas. screen_read only gives YOU a still snapshot; it shows the user nothing.',
+    name: 'screen_screenshot',
+    description: 'Take a screenshot and describe what is visible using a vision model, this is for YOU to perceive the screen (then act, e.g. before mouse_click to find targets). Returns a text description with approximate coordinates for interactive elements. Pass `query` to focus the description on what you\'re looking for (recommended).\n\nIMPORTANT, do NOT use this to "show the user the screen." If the user wants to SEE your live screen, watch what you are doing, or take control of this Mac remotely (common when they\'re away and need to click/approve something here), use `screen_broadcast` instead, it opens a live, interactive viewer in their canvas. screen_screenshot only gives YOU a still snapshot; it shows the user nothing.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2866,7 +2775,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'vault_search',
-    description: 'Search the dojo\'s long-term memory vault. Two modes: `semantic` (default) uses embedding similarity, great for conceptual recall like "what does the user prefer about commit messages?". `exact` does substring matching on entry content, use when you need to find a literal string, e.g. debugging memory poisoning, finding entries that mention a specific name/phrase/typo verbatim, or auditing what got saved. Semantic search is blind to exact spelling (a query for "corp erp" returns concepts about email domains, not the literal string), so reach for `exact` whenever the question is "is this specific text anywhere in my memory?". Use vault_expand(entry_id) for full content of a match, vault_update to fix incorrect entries in place, vault_forget to mark obsolete.',
+    description: 'Search the dojo\'s long-term memory vault. Two modes: `semantic` (default) uses embedding similarity, great for conceptual recall like "what does the user prefer about commit messages?". `exact` does substring matching on entry content, use when you need to find a literal string, e.g. debugging memory poisoning, finding entries that mention a specific name/phrase/typo verbatim, or auditing what got saved. Semantic search is blind to exact spelling (a query for "corp erp" returns concepts about email domains, not the literal string), so reach for `exact` whenever the question is "is this specific text anywhere in my memory?". Use vault_get(entry_id) for full content of a match, vault_update to fix incorrect entries in place, vault_forget to mark obsolete.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2881,7 +2790,7 @@ export const toolDefinitions: ToolDefinition[] = [
     maxResultTokens: 2000,
   },
   {
-    name: 'vault_expand',
+    name: 'vault_get',
     description: 'Get the full content of a specific vault entry by ID. Pairs with vault_search, search returns short snippets; expand returns the full entry when you need details.',
     input_schema: {
       type: 'object',
@@ -3044,7 +2953,7 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
-    name: 'contact_describe',
+    name: 'contacts_overview',
     description: 'Quick orientation: how many contacts the DOJO has on file, the top tags, and the top companies. Cheap, no args.',
     input_schema: { type: 'object', properties: {}, required: [] },
   },
@@ -3066,7 +2975,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'squad_recall',
-    description: 'Search your squad\'s shared memory for relevant entries written by you or other members. Returns short snippets, call vault_expand(entry_id) for full content if needed. Example: squad_recall({ query: "customer comms" }).',
+    description: 'Search your squad\'s shared memory for relevant entries written by you or other members. Returns short snippets, call vault_get(entry_id) for full content if needed. Example: squad_recall({ query: "customer comms" }).',
     input_schema: {
       type: 'object',
       properties: {
@@ -3122,7 +3031,7 @@ export const toolDefinitions: ToolDefinition[] = [
     maxResultTokens: 300,
   },
   {
-    name: 'open_page',
+    name: 'dashboard_navigate',
     description: 'Navigate the user\'s dashboard to a top-level page. Use when the user asks you to take them somewhere ("show me the cost dashboard", "open the tracker", "pull up my agents"). Only moves the UI for a user who has the dashboard open; changes nothing on its own. For the Settings page use open_settings instead. Pages: chat (main conversation), agents (agent roster), techniques (saved workflows), tracker (tasks + projects), memory (vault + memories), costs (spend dashboard), health (system health).',
     input_schema: {
       type: 'object',
@@ -3140,7 +3049,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'set_capability_model',
-    description: 'Change which model the DOJO uses for a media/perception capability, on the user\'s behalf ("use Flux for image generation", "switch the video model to Veo", "use the on-device whisper for transcription"). Do this yourself with this tool when asked, don\'t tell the user to go change it in Settings. The model must already be added and enabled in Settings → Models and actually have that capability, if it isn\'t, this changes nothing and returns the list of valid models so you can pick correctly. Capabilities: image (the image_create tool), video (video_create), tts (tts_create / spoken audio), music (music_create), vision (the fallback model that reads images + screenshots), transcription (speech-to-text; also accepts local:whisper or local:moonshine for the on-device engines). NOTE: this is only for the platform capability models, to change the PRIMARY agent\'s own chat model, use update_agent_model instead.',
+    description: 'Change which model the DOJO uses for a media/perception capability, on the user\'s behalf ("use Flux for image generation", "switch the video model to Veo", "use the on-device whisper for transcription"). Do this yourself with this tool when asked, don\'t tell the user to go change it in Settings. The model must already be added and enabled in Settings → Models and actually have that capability, if it isn\'t, this changes nothing and returns the list of valid models so you can pick correctly. Capabilities: image (the image_create tool), video (video_create), tts (tts_create / spoken audio), music (music_create), vision (the fallback model that reads images + screenshots), transcription (speech-to-text; also accepts local:whisper or local:moonshine for the on-device engines). NOTE: this is only for the platform capability models, to change the PRIMARY agent\'s own chat model, use update_agent instead.',
     input_schema: {
       type: 'object',
       properties: {
@@ -3677,7 +3586,7 @@ async function executeFileWrite(agentId: string, args: Record<string, unknown>):
     // Auto-open documents (html/markdown/text) in the canvas; refresh if already shown.
     const canvas = syncCanvasAfterWrite(agentId, filePath, downloadUrl);
     const canvasNote = canvas.opened
-      ? '\nThis document is now open in the canvas, the user can see it. No need to call show_canvas; just tell them what you did.'
+      ? '\nThis document is now open in the canvas, the user can see it. No need to call canvas_render; just tell them what you did.'
       : '';
     return `File written successfully: ${filePath} (${content.length} bytes)${canvasNote}${downloadUrl ? `\nDownload: ${downloadUrl}\nWhen you give this file to the user (or hand it to another agent), share the Download link above by default; mention the local path only if asked where it is on disk.` : ''}`;
   } catch (err) {
@@ -4026,6 +3935,25 @@ function normalizeRepeatDaysOfWeek(rawDays: unknown): string | null | undefined 
 }
 
 export async function executeTool(agentId: string, toolCall: ToolCall): Promise<ToolResult> {
+  // C27 hook 2: resolve tool aliases FIRST, so the sim intercept, unknown-arg
+  // detection, and every dispatcher case operate on the CANONICAL name. This is
+  // the safety net covering every dispatch path (synthetic calls, A2A relay,
+  // auto-route) even when the loop-ingestion hook (hook 1) did not run. A
+  // tombstoned (removed) tool returns its pointer error immediately; a rename
+  // prepends a one-line note so the model learns the new name.
+  const resolved = resolveToolAlias(toolCall.name, (toolCall.arguments ?? {}) as Record<string, unknown>);
+  if (resolved.tombstone) {
+    return { toolCallId: toolCall.id, name: toolCall.name, content: resolved.tombstone, isError: true };
+  }
+  if (resolved.name === toolCall.name) {
+    return executeToolInner(agentId, toolCall);
+  }
+  const result = await executeToolInner(agentId, { ...toolCall, name: resolved.name, arguments: resolved.args });
+  if (resolved.note) result.content = `${resolved.note}\n${result.content}`;
+  return result;
+}
+
+async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<ToolResult> {
   const { id, name, arguments: args } = toolCall;
 
   logger.info('Executing tool', { tool: name, args }, agentId);
@@ -4143,7 +4071,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
     }
   }
 
-  if (name === 'tracker_validate_pause' || name === 'tracker_validate_complete' || name === 'tracker_validate_blocked' || name === 'tracker_override' || name === 'tracker_retask') {
+  if (name === 'tracker_validate' || name === 'tracker_override' || name === 'tracker_retask') {
     if (!isPMAgent(agentId)) {
       auditLog(agentId, name, null, 'denied', `${name} is restricted to the PM agent`);
       return { toolCallId: id, name, content: `Permission denied: only the PM agent can call ${name}. If you think the engine or PM got it wrong, call tracker_request_override with a justification instead.`, isError: true };
@@ -4185,12 +4113,12 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
   }
 
   // System control tools: check system_control permission
-  if (['mouse_click', 'mouse_move', 'keyboard_type', 'screen_read', 'applescript_run'].includes(name)) {
+  if (['mouse_click', 'mouse_move', 'keyboard_type', 'screen_screenshot', 'applescript_run'].includes(name)) {
     const manifest = (await import('./permissions.js')).getAgentPermissions(agentId);
     const controlPerms = manifest.system_control ?? [];
     const toolCategory = name === 'mouse_click' || name === 'mouse_move' ? 'mouse'
       : name === 'keyboard_type' ? 'keyboard'
-      : name === 'screen_read' ? 'screen'
+      : name === 'screen_screenshot' ? 'screen'
       : name === 'applescript_run' ? 'applescript'
       : name;
     const allowed = Array.isArray(controlPerms)
@@ -4215,7 +4143,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       if (!isError && !PDF_READ_ONLY) {
         const pdfPath = content.match(/(\/\S+\.pdf)\b/i)?.[1];
         if (pdfPath && openFileInCanvas(agentId, pdfPath).opened) {
-          content += '\n\nThis PDF is now open in the canvas, the user can see it. No need to call show_canvas, show_to_user, or share_file to show it; just tell them it is on the canvas (share the download link only if they ask to save it).';
+          content += '\n\nThis PDF is now open in the canvas, the user can see it. No need to call canvas_render, show_to_user, or share_file to show it; just tell them it is on the canvas (share the download link only if they ask to save it).';
         }
       }
       return { toolCallId: id, name, content, isError };
@@ -4276,10 +4204,20 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           isError = true;
           break;
         }
+        // C27 hook 3: an old (renamed) tool name resolves to the NEW tool's
+        // docs; collect a note so the model learns the new name. Tombstoned
+        // (removed) tools keep their name and fall through to the blocked path.
+        const aliasDocNotes: string[] = [];
+        const canonicalRequested = requestedTools.map((t) => {
+          const r = resolveToolAlias(t, {});
+          if (r.tombstone) return t;
+          if (r.name !== t) aliasDocNotes.push(`"${t}" is now "${r.name}"`);
+          return r.name;
+        });
         // Now intersect with the agent's accessible tools.
         const allowedToolNames = new Set(getFilteredTools(agentId).map(t => t.name));
-        const filteredTools = requestedTools.filter(t => allowedToolNames.has(t));
-        const blockedTools = requestedTools.filter(t => !allowedToolNames.has(t));
+        const filteredTools = canonicalRequested.filter(t => allowedToolNames.has(t));
+        const blockedTools = canonicalRequested.filter(t => !allowedToolNames.has(t));
         if (filteredTools.length === 0) {
           content =
             `Error: none of the requested tools are accessible to this agent. ` +
@@ -4291,6 +4229,10 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           break;
         }
         content = executeLoadToolDocs(agentId, filteredTools);
+        // C27 hook 3: tell the model which requested names were renamed.
+        if (aliasDocNotes.length > 0 && !content.startsWith('Error')) {
+          content += `\n\n[Engine note: ${aliasDocNotes.join('; ')}. Docs above are for the new name(s).]`;
+        }
         // If some (but not all) of the requested tools were blocked, append
         // a note so the agent knows which ones it didn't get and why.
         if (blockedTools.length > 0 && !content.startsWith('Error')) {
@@ -4484,7 +4426,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         });
         break;
       }
-      case 'memory_grep': {
+      case 'history_search': {
         // Accept `query` as an alias for `pattern`, the schema names the
         // param `pattern`, but agents who learned the tool from natural
         // descriptions ("search for the QUARK marker") often pass `query`.
@@ -4492,7 +4434,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         // engine and returned irrelevant rows. Validate explicitly.
         const grepPattern = (args.pattern ?? args.query) as string | undefined;
         if (!grepPattern || typeof grepPattern !== 'string' || !grepPattern.trim()) {
-          content = 'Error: memory_grep needs a non-empty `pattern` (the search string). Example: memory_grep({ pattern: "budget meeting" }).';
+          content = 'Error: history_search needs a non-empty `pattern` (the search string). Example: history_search({ pattern: "budget meeting" }).';
           isError = true;
           break;
         }
@@ -4506,13 +4448,13 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         });
         break;
       }
-      case 'memory_describe': {
+      case 'history_get': {
         const mdErr = checkRequired([{ name: 'id', value: args.id, type: 'string' }]);
         if (mdErr) { content = mdErr; isError = true; break; }
         content = memoryDescribe(agentId, { id: args.id as string });
         break;
       }
-      case 'memory_expand': {
+      case 'history_expand': {
         const meErr = checkRequired([{ name: 'prompt', value: args.prompt, type: 'string' }]);
         if (meErr) { content = meErr; isError = true; break; }
         content = await memoryExpand(agentId, {
@@ -4522,15 +4464,8 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         });
         break;
       }
-      case 'memory_search': {
-        const msErr = checkRequired([{ name: 'query', value: args.query, type: 'string' }]);
-        if (msErr) { content = msErr; isError = true; break; }
-        content = await memorySearch(agentId, {
-          query: args.query as string,
-          limit: args.limit as number | undefined,
-        });
-        break;
-      }
+      // C27: memory_search removed; its calls alias to history_search
+      // ({query} -> {pattern}) before dispatch, so no case is needed here.
 
       // ── Web Tools ──
       case 'web_search': {
@@ -4565,7 +4500,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
       }
 
       // ── Right Dock ──
-      case 'show_canvas': {
+      case 'canvas_render': {
         const html = typeof args.html === 'string' ? args.html : undefined;
         let url = typeof args.url === 'string' ? args.url : undefined;
         const rawPath = typeof args.path === 'string' ? args.path : undefined;
@@ -4576,7 +4511,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           canvasPath = resolvePath(rawPath);
           const registered = registerSharedFile(agentId, canvasPath);
           if (!registered) {
-            content = `Error: show_canvas could not read the file at ${canvasPath}. Make sure it exists (write it with file_write first).`;
+            content = `Error: canvas_render could not read the file at ${canvasPath}. Make sure it exists (write it with file_write first).`;
             isError = true;
             break;
           }
@@ -4586,7 +4521,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
           url = toDashboardPath(registered);
         }
         if (!html && !url) {
-          content = 'Error: show_canvas requires one of `path` (a file on disk), `html` (markup to render), or `url` (a page/file to load).';
+          content = 'Error: canvas_render requires one of `path` (a file on disk), `html` (markup to render), or `url` (a page/file to load).';
           isError = true;
           break;
         }
@@ -4602,17 +4537,17 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         setCurrentCanvas({ kind: 'canvas', html, url, path: canvasPath, title });
         // Drop an "Open in canvas" chip on this reply for file-backed canvases.
         if (canvasPath) queueCanvasDocAttachment(agentId, canvasPath, url ?? null);
-        content = `Canvas opened in the user's right dock${title ? ` ("${title}")` : ''}. The user can now see it.${canvasPath ? ' Edits you make to this file (file_write/file_patch/file_append) will refresh the canvas automatically.' : ''} Call view_canvas if you need to look at it yourself.`;
+        content = `Canvas opened in the user's right dock${title ? ` ("${title}")` : ''}. The user can now see it.${canvasPath ? ' Edits you make to this file (file_write/file_patch/file_append) will refresh the canvas automatically.' : ''} Call canvas_read if you need to look at it yourself.`;
         break;
       }
-      case 'screen_share': {
+      case 'screen_broadcast': {
         const { isScreenShareEnabled } = await import('../screen-share/manager.js');
         if (!isScreenShareEnabled()) {
           content = "Screen sharing is OFF (it's disabled by default). It's a one-time setup done on this Mac. Offer to walk the user through it, then tell them these steps:\n\n" +
             "1. Open Settings > Integrations > Screen Sharing and click Enable. A macOS admin-password prompt will appear ON THIS MAC, approve it. (macOS may also ask to approve Screen Sharing in System Settings > Privacy & Security; approve that too.)\n" +
             "2. Set a screen-sharing password they'll remember: open System Settings > General > Sharing, click the (i) next to Screen Sharing > Computer Settings, check \"VNC viewers may control screen with password\", and set a password.\n" +
             "3. That's it. When you open the screen for them, they'll type that password to connect, and click \"Take control\" to use the mouse and keyboard.\n\n" +
-            "Note: this one-time setup has to be done while at this Mac (the prompts appear on it). If they can see the screen later but can't control it, have them make sure macOS \"Remote Management\" is turned off (it can limit connections to view-only) and just \"Screen Sharing\" is on. Once they've enabled it, call screen_share again.";
+            "Note: this one-time setup has to be done while at this Mac (the prompts appear on it). If they can see the screen later but can't control it, have them make sure macOS \"Remote Management\" is turned off (it can limit connections to view-only) and just \"Screen Sharing\" is on. Once they've enabled it, call screen_broadcast again.";
           break;
         }
         const screenTitle = typeof args.title === 'string' ? args.title : undefined;
@@ -4620,7 +4555,7 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         // Drop an "Open screen" chip on this reply so the user can re-open the
         // viewer after closing the canvas.
         queueScreenChip(agentId);
-        content = "A LIVE view of this Mac's screen is now open in the user's canvas. This is NOT a file, document, or attachment, it is your actual screen, streaming in real time. When you reply, say something like \"I've put my screen up for you\" or \"my screen is open, go ahead and take control to click what you need.\" Do NOT call it files/a document, and do NOT say things like \"here are the files.\"\n\nThe user enters the screen-sharing (VNC) password to start it (their second factor) and clicks \"Take control\" to use the mouse and keyboard. This all happens on the user's end, you will NOT get any confirmation here that it connected, and you cannot see the screen yourself this way. Do NOT call screen_share again (it's already open) and do NOT use screen_read to 'check', just tell the user it's open and wait for them to say what they see or need.";
+        content = "A LIVE view of this Mac's screen is now open in the user's canvas. This is NOT a file, document, or attachment, it is your actual screen, streaming in real time. When you reply, say something like \"I've put my screen up for you\" or \"my screen is open, go ahead and take control to click what you need.\" Do NOT call it files/a document, and do NOT say things like \"here are the files.\"\n\nThe user enters the screen-sharing (VNC) password to start it (their second factor) and clicks \"Take control\" to use the mouse and keyboard. This all happens on the user's end, you will NOT get any confirmation here that it connected, and you cannot see the screen yourself this way. Do NOT call screen_broadcast again (it's already open) and do NOT use screen_screenshot to 'check', just tell the user it's open and wait for them to say what they see or need.";
         break;
       }
       case 'open_browser': {
@@ -4662,8 +4597,10 @@ export async function executeTool(agentId: string, toolCall: ToolCall): Promise<
         }
         break;
       }
-      case 'view_canvas':
-        content = await viewCanvas(agentId, args);
+      case 'canvas_read':
+        // C27: canvas_read reads ONLY the current canvas; the path/url/html
+        // targets were dropped (open it first with canvas_render/open_browser).
+        content = await viewCanvas(agentId, { prompt: args.prompt });
         isError = content.startsWith('Error');
         break;
 
@@ -5367,30 +5304,8 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         isError = content.startsWith('Error');
         break;
       }
-      case 'tracker_edit_notes': {
-        const editNotesErr = checkRequired([
-          { name: 'task_id', value: args.task_id, type: 'string' },
-          { name: 'notes', value: args.notes, type: 'string', allowEmpty: true },
-        ]);
-        if (editNotesErr) { content = editNotesErr; isError = true; break; }
-        content = trackerEditNotes(agentId, {
-          taskId: args.task_id as string,
-          notes: args.notes as string,
-        });
-        isError = content.startsWith('Error');
-        break;
-      }
-      case 'tracker_clear_notes': {
-        const clearNotesErr = checkRequired([
-          { name: 'task_id', value: args.task_id, type: 'string' },
-        ]);
-        if (clearNotesErr) { content = clearNotesErr; isError = true; break; }
-        content = trackerClearNotes(agentId, {
-          taskId: args.task_id as string,
-        });
-        isError = content.startsWith('Error');
-        break;
-      }
+      // C27: tracker_edit_notes + tracker_clear_notes deleted (dead v2.8.0 stubs);
+      // now tombstone aliases. Append via tracker_add_notes; replace via tracker_edit_task({notes}).
       case 'tracker_edit_task': {
         const editErr = checkRequired([
           { name: 'task_id', value: args.task_id, type: 'string' },
@@ -5494,19 +5409,29 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         isError = content.startsWith('Error');
         break;
       }
-      case 'tracker_validate_pause': {
-        const tvpErr = checkRequired([
+      // C27: tracker_validate_{pause,complete,blocked} merged into tracker_validate({kind}).
+      case 'tracker_validate': {
+        const vkind = args.kind as 'pause' | 'complete' | 'blocked' | undefined;
+        if (!vkind || !['pause', 'complete', 'blocked'].includes(vkind)) {
+          content = 'Error: tracker_validate requires kind to be one of: pause, complete, blocked.';
+          isError = true;
+          break;
+        }
+        const tvErr = checkRequired([
           { name: 'task_id', value: args.task_id, type: 'string' },
           { name: 'valid', value: args.valid, type: 'boolean' },
         ]);
-        if (tvpErr) { content = tvpErr; isError = true; break; }
-        const { trackerValidatePause } = await import('../tracker/tools.js');
-        content = await trackerValidatePause(agentId, {
+        if (tvErr) { content = tvErr; isError = true; break; }
+        const vp = {
           task_id: args.task_id as string,
           valid: args.valid as boolean,
           reject_reason: args.reject_reason as string | undefined,
           target_status: args.target_status as string | undefined,
-        });
+        };
+        const trackerMod = await import('../tracker/tools.js');
+        if (vkind === 'pause') content = await trackerMod.trackerValidatePause(agentId, vp);
+        else if (vkind === 'complete') content = await trackerMod.trackerValidateComplete(agentId, vp);
+        else content = await trackerMod.trackerValidateBlocked(agentId, vp);
         break;
       }
       case 'tracker_retask': {
@@ -5524,36 +5449,8 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         isError = content.startsWith('Error');
         break;
       }
-      case 'tracker_validate_complete': {
-        const tvcErr = checkRequired([
-          { name: 'task_id', value: args.task_id, type: 'string' },
-          { name: 'valid', value: args.valid, type: 'boolean' },
-        ]);
-        if (tvcErr) { content = tvcErr; isError = true; break; }
-        const { trackerValidateComplete } = await import('../tracker/tools.js');
-        content = await trackerValidateComplete(agentId, {
-          task_id: args.task_id as string,
-          valid: args.valid as boolean,
-          reject_reason: args.reject_reason as string | undefined,
-          target_status: args.target_status as string | undefined,
-        });
-        break;
-      }
-      case 'tracker_validate_blocked': {
-        const tvbErr = checkRequired([
-          { name: 'task_id', value: args.task_id, type: 'string' },
-          { name: 'valid', value: args.valid, type: 'boolean' },
-        ]);
-        if (tvbErr) { content = tvbErr; isError = true; break; }
-        const { trackerValidateBlocked } = await import('../tracker/tools.js');
-        content = await trackerValidateBlocked(agentId, {
-          task_id: args.task_id as string,
-          valid: args.valid as boolean,
-          reject_reason: args.reject_reason as string | undefined,
-          target_status: args.target_status as string | undefined,
-        });
-        break;
-      }
+      // C27: tracker_validate_complete + tracker_validate_blocked folded into
+      // the tracker_validate({kind}) case above.
       case 'tracker_request_override': {
         const troErr = checkRequired([
           { name: 'task_id', value: args.task_id, type: 'string' },
@@ -5967,88 +5864,68 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
 
       // ── Presence ──
       // ── Tunnel ──
-      case 'tunnel_status': {
+      // C27: tunnel_{status,start,stop,restart} merged into tunnel({action}).
+      case 'tunnel': {
+        const action = args.action as 'status' | 'start' | 'stop' | 'restart' | undefined;
+        if (!action || !['status', 'start', 'stop', 'restart'].includes(action)) {
+          content = 'Error: tunnel requires action to be one of: status, start, stop, restart.';
+          isError = true;
+          break;
+        }
+        // C27: mutating actions stay primary-only (pre-merge, only tunnel_status
+        // was available to non-primary agents); status is open to all.
+        if (action !== 'status' && !isPrimaryAgent(agentId)) {
+          content = `Permission denied: only the primary agent can ${action} the tunnel. You can still use tunnel({action:"status"}).`;
+          isError = true;
+          break;
+        }
         try {
-          const { getTunnelStatus } = await import('../services/tunnel.js');
-          const status = getTunnelStatus();
-          if (!status.cloudflaredInstalled) {
-            content = 'cloudflared is not installed. Install with: brew install cloudflare/cloudflare/cloudflared';
-          } else if (status.status === 'active' && status.url) {
-            content = `Tunnel is running. Public URL: ${status.url} (mode: ${status.mode})`;
-          } else if (status.status === 'starting') {
-            content = 'Tunnel is starting up. Check back in a few seconds for the URL.';
-          } else if (status.status === 'error') {
-            content = `Tunnel error: ${status.error ?? 'unknown'}`;
+          const { getTunnelStatus, startTunnel, stopTunnel } = await import('../services/tunnel.js');
+          if (action === 'status') {
+            const status = getTunnelStatus();
+            if (!status.cloudflaredInstalled) {
+              content = 'cloudflared is not installed. Install with: brew install cloudflare/cloudflare/cloudflared';
+            } else if (status.status === 'active' && status.url) {
+              content = `Tunnel is running. Public URL: ${status.url} (mode: ${status.mode})`;
+            } else if (status.status === 'starting') {
+              content = 'Tunnel is starting up. Check back in a few seconds for the URL.';
+            } else if (status.status === 'error') {
+              content = `Tunnel error: ${status.error ?? 'unknown'}`;
+            } else {
+              content = 'Tunnel is not running.';
+            }
+          } else if (action === 'stop') {
+            stopTunnel();
+            content = 'Tunnel stopped.';
           } else {
-            content = 'Tunnel is not running.';
+            // start or restart share the poll-for-URL tail; restart stops first.
+            const restarting = action === 'restart';
+            if (restarting) {
+              stopTunnel();
+              await new Promise(r => setTimeout(r, 1500));
+            }
+            const mode = restarting ? undefined : (args.mode as 'quick' | 'named' | undefined);
+            const result = startTunnel(mode);
+            if (!result.ok) {
+              content = `Error ${restarting ? 'restarting' : 'starting'} tunnel: ${result.error ?? 'unknown'}`;
+              isError = true;
+              break;
+            }
+            let url: string | null = null;
+            for (let i = 0; i < 10; i++) {
+              await new Promise(r => setTimeout(r, 1000));
+              const s = getTunnelStatus();
+              if (s.status === 'active' && s.url) { url = s.url; break; }
+              if (s.status === 'error') { content = `Tunnel failed to ${restarting ? 'restart' : 'start'}: ${s.error ?? 'unknown'}`; isError = true; break; }
+            }
+            if (!isError) {
+              content = url
+                ? `Tunnel ${restarting ? 'restarted. New public' : 'started. Public'} URL: ${url}`
+                : `Tunnel is ${restarting ? 'restarting' : 'starting'}. Check tunnel({action:"status"}) in a moment for the URL.`;
+            }
           }
         } catch (err) {
-          content = `Error getting tunnel status: ${err instanceof Error ? err.message : String(err)}`;
-          isError = true;
-        }
-        break;
-      }
-      case 'tunnel_start': {
-        try {
-          const { startTunnel, getTunnelStatus } = await import('../services/tunnel.js');
-          const mode = (args.mode as 'quick' | 'named' | undefined);
-          const result = startTunnel(mode);
-          if (!result.ok) {
-            content = `Error starting tunnel: ${result.error ?? 'unknown'}`;
-            isError = true;
-            break;
-          }
-          // Poll briefly for the URL to appear
-          let url: string | null = null;
-          for (let i = 0; i < 10; i++) {
-            await new Promise(r => setTimeout(r, 1000));
-            const s = getTunnelStatus();
-            if (s.status === 'active' && s.url) { url = s.url; break; }
-            if (s.status === 'error') { content = `Tunnel failed to start: ${s.error ?? 'unknown'}`; isError = true; break; }
-          }
-          if (!isError) {
-            content = url ? `Tunnel started. Public URL: ${url}` : 'Tunnel is starting. Check tunnel_status in a moment for the URL.';
-          }
-        } catch (err) {
-          content = `Error starting tunnel: ${err instanceof Error ? err.message : String(err)}`;
-          isError = true;
-        }
-        break;
-      }
-      case 'tunnel_stop': {
-        try {
-          const { stopTunnel } = await import('../services/tunnel.js');
-          stopTunnel();
-          content = 'Tunnel stopped.';
-        } catch (err) {
-          content = `Error stopping tunnel: ${err instanceof Error ? err.message : String(err)}`;
-          isError = true;
-        }
-        break;
-      }
-      case 'tunnel_restart': {
-        try {
-          const { stopTunnel, startTunnel, getTunnelStatus } = await import('../services/tunnel.js');
-          stopTunnel();
-          await new Promise(r => setTimeout(r, 1500));
-          const result = startTunnel();
-          if (!result.ok) {
-            content = `Error restarting tunnel: ${result.error ?? 'unknown'}`;
-            isError = true;
-            break;
-          }
-          let url: string | null = null;
-          for (let i = 0; i < 10; i++) {
-            await new Promise(r => setTimeout(r, 1000));
-            const s = getTunnelStatus();
-            if (s.status === 'active' && s.url) { url = s.url; break; }
-            if (s.status === 'error') { content = `Tunnel failed to restart: ${s.error ?? 'unknown'}`; isError = true; break; }
-          }
-          if (!isError) {
-            content = url ? `Tunnel restarted. New public URL: ${url}` : 'Tunnel is restarting. Check tunnel_status in a moment for the URL.';
-          }
-        } catch (err) {
-          content = `Error restarting tunnel: ${err instanceof Error ? err.message : String(err)}`;
+          content = `Error on tunnel ${action}: ${err instanceof Error ? err.message : String(err)}`;
           isError = true;
         }
         break;
@@ -6170,108 +6047,103 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
 
-      case 'update_agent_model': {
+      // C27: update_agent_{model,profile,permissions} merged into update_agent({...}).
+      // Applies each provided field in one call; mirrors spawn_agent's param set and
+      // restores read/write symmetry against get_agent_profile.
+      case 'update_agent': {
         try {
-          const uamErr = checkRequired([
-            { name: 'agent_id', value: args.agent_id, type: 'string' },
-            { name: 'model_id', value: args.model_id, type: 'string' },
-          ]);
-          if (uamErr) { content = uamErr; isError = true; break; }
-          const db = getDb();
-          const newModelId = args.model_id as string;
-          const uamResolved = resolveAgentRef(args.agent_id as string, 'update_agent_model');
-          if (!uamResolved.ok) { content = uamResolved.error; isError = true; break; }
-          const agent = db.prepare('SELECT id, name, model_id FROM agents WHERE id = ?').get(uamResolved.id) as { id: string; name: string; model_id: string | null };
-
-          if (newModelId === 'auto') {
-            db.prepare("UPDATE agents SET model_id = 'auto', updated_at = datetime('now') WHERE id = ?").run(agent.id);
-            const { sanitizeMessagesOnModelChange } = await import('./model-switch.js');
-            sanitizeMessagesOnModelChange(agent.id);
-            content = `${agent.name} switched to auto-routing. The router will select the best model per query.`;
-          } else {
-            // Verify model exists and is enabled
-            const model = db.prepare('SELECT id, name, is_enabled FROM models WHERE id = ?').get(newModelId) as { id: string; name: string; is_enabled: number } | undefined;
-            if (!model) {
-              content = `Error: Model "${newModelId}" not found. Use a valid model ID.`;
-              isError = true;
-              break;
-            }
-            if (!model.is_enabled) {
-              content = `Error: Model "${model.name}" is disabled. Enable it in Settings > Models first.`;
-              isError = true;
-              break;
-            }
-
-            db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?").run(newModelId, agent.id);
-            // Sanitize tool call messages so the new model doesn't choke on old IDs
-            const { sanitizeMessagesOnModelChange } = await import('./model-switch.js');
-            const { collapsed } = sanitizeMessagesOnModelChange(agent.id);
-            content = `${agent.name}'s model changed from ${agent.model_id ?? 'auto'} to ${model.name} (${newModelId}).${collapsed > 0 ? ` ${collapsed} tool call message(s) were sanitized for compatibility.` : ''}`;
-          }
-
-          logger.info('Agent model updated via tool', { callerAgentId: agentId, targetAgentId: agent.id, newModelId }, agentId);
-        } catch (err) {
-          content = `Error updating agent model: ${err instanceof Error ? err.message : String(err)}`;
-          isError = true;
-        }
-        break;
-      }
-
-      case 'update_agent_profile': {
-        try {
-          const uapErr = checkRequired([{ name: 'agent_id', value: args.agent_id, type: 'string' }]);
-          if (uapErr) { content = uapErr; isError = true; break; }
-          const db = getDb();
+          const uaErr = checkRequired([{ name: 'agent_id', value: args.agent_id, type: 'string' }]);
+          if (uaErr) { content = uaErr; isError = true; break; }
           const newName = args.name as string | undefined;
           const newPrompt = args.system_prompt as string | undefined;
-          if (newName === undefined && newPrompt === undefined) {
-            content = 'Error: provide at least one of `name` or `system_prompt` to update.';
+          const newModelId = args.model_id as string | undefined;
+          const newPerms = args.permissions as Record<string, unknown> | undefined;
+          const newTools = args.tools as Record<string, unknown> | undefined;
+          if (newName === undefined && newPrompt === undefined && newModelId === undefined && newPerms === undefined && newTools === undefined) {
+            content = 'Error: provide at least one of name, system_prompt, model_id, permissions, or tools to update.';
             isError = true;
             break;
           }
-          const uapResolved = resolveAgentRef(args.agent_id as string, 'update_agent_profile');
-          if (!uapResolved.ok) { content = uapResolved.error; isError = true; break; }
-          const target = db.prepare('SELECT id, name FROM agents WHERE id = ?').get(uapResolved.id) as { id: string; name: string };
-
-          // Primary agent's identity lives in SOUL.md on disk, not in the messages table.
-          // Changing it via this tool would get out-of-sync with the assembler's prompt loader.
-          if (isPrimaryAgent(target.id)) {
-            content = 'Error: Cannot edit the primary agent via this tool. Edit its SOUL.md in Settings > Soul instead.';
-            isError = true;
-            break;
-          }
-
+          const db = getDb();
+          const uaResolved = resolveAgentRef(args.agent_id as string, 'update_agent');
+          if (!uaResolved.ok) { content = uaResolved.error; isError = true; break; }
+          const target = db.prepare('SELECT id, name, model_id FROM agents WHERE id = ?').get(uaResolved.id) as { id: string; name: string; model_id: string | null };
           const changes: string[] = [];
           let finalName = target.name;
 
-          if (typeof newName === 'string' && newName.trim() && newName.trim() !== target.name) {
-            const trimmedName = newName.trim();
-            db.prepare("UPDATE agents SET name = ?, updated_at = datetime('now') WHERE id = ?").run(trimmedName, target.id);
-            changes.push(`name: "${target.name}" → "${trimmedName}"`);
-            finalName = trimmedName;
+          // Identity (name / system_prompt): forbidden on the primary agent.
+          if (newName !== undefined || newPrompt !== undefined) {
+            if (isPrimaryAgent(target.id)) {
+              content = 'Error: cannot edit the primary agent via this tool. Edit its SOUL.md in Settings > Soul instead.';
+              isError = true;
+              break;
+            }
+            if (typeof newName === 'string' && newName.trim() && newName.trim() !== target.name) {
+              const trimmedName = newName.trim();
+              db.prepare("UPDATE agents SET name = ?, updated_at = datetime('now') WHERE id = ?").run(trimmedName, target.id);
+              changes.push(`name: "${target.name}" → "${trimmedName}"`);
+              finalName = trimmedName;
+            }
+            if (typeof newPrompt === 'string') {
+              const existingMsg = db.prepare("SELECT id FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY rowid ASC LIMIT 1").get(target.id) as { id: string } | undefined;
+              if (existingMsg) {
+                db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(newPrompt, existingMsg.id);
+              } else {
+                db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(uuidv4(), target.id, newPrompt);
+              }
+              db.prepare("UPDATE agents SET updated_at = datetime('now') WHERE id = ?").run(target.id);
+              changes.push(`system prompt rewritten (${newPrompt.length} chars)`);
+            }
           }
 
-          if (typeof newPrompt === 'string') {
-            // The system prompt is stored as the first system-role message on the
-            // agent. Mirror the behavior of PUT /api/agents/:id in gateway/routes/agents.ts.
-            const existingMsg = db.prepare("SELECT id FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY rowid ASC LIMIT 1").get(target.id) as { id: string } | undefined;
-            if (existingMsg) {
-              db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(newPrompt, existingMsg.id);
+          // Model.
+          if (typeof newModelId === 'string') {
+            if (newModelId === 'auto') {
+              db.prepare("UPDATE agents SET model_id = 'auto', updated_at = datetime('now') WHERE id = ?").run(target.id);
+              const { sanitizeMessagesOnModelChange } = await import('./model-switch.js');
+              sanitizeMessagesOnModelChange(target.id);
+              changes.push('model → auto-routing');
             } else {
-              db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(uuidv4(), target.id, newPrompt);
+              const model = db.prepare('SELECT id, name, is_enabled FROM models WHERE id = ?').get(newModelId) as { id: string; name: string; is_enabled: number } | undefined;
+              if (!model) { content = `Error: Model "${newModelId}" not found. Use a valid model ID.`; isError = true; break; }
+              if (!model.is_enabled) { content = `Error: Model "${model.name}" is disabled. Enable it in Settings > Models first.`; isError = true; break; }
+              db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?").run(newModelId, target.id);
+              const { sanitizeMessagesOnModelChange } = await import('./model-switch.js');
+              const { collapsed } = sanitizeMessagesOnModelChange(target.id);
+              changes.push(`model: ${target.model_id ?? 'auto'} → ${model.name}${collapsed > 0 ? ` (${collapsed} tool msg(s) sanitized)` : ''}`);
             }
-            db.prepare("UPDATE agents SET updated_at = datetime('now') WHERE id = ?").run(target.id);
-            changes.push(`system prompt rewritten (${newPrompt.length} chars)`);
+          }
+
+          // Permissions and tools policy (access control): gated by can_assign_permissions.
+          if (newPerms !== undefined || newTools !== undefined) {
+            const callerPerms = getAgentPermissions(agentId);
+            if (!callerPerms.can_assign_permissions) {
+              content = 'Permission denied: you do not have permission to change other agents\' permissions or tool policy.';
+              isError = true;
+              break;
+            }
+            if (newPerms !== undefined) {
+              const existingPermsRow = db.prepare('SELECT permissions FROM agents WHERE id = ?').get(target.id) as { permissions: string };
+              const merged = { ...JSON.parse(existingPermsRow.permissions || '{}'), ...newPerms };
+              db.prepare("UPDATE agents SET permissions = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(merged), target.id);
+              changes.push(`permissions: ${Object.keys(newPerms).join(', ')}`);
+            }
+            if (newTools !== undefined) {
+              const existingToolsRow = db.prepare('SELECT tools_policy FROM agents WHERE id = ?').get(target.id) as { tools_policy: string | null };
+              const mergedTools = { ...JSON.parse(existingToolsRow.tools_policy || '{}'), ...newTools };
+              db.prepare("UPDATE agents SET tools_policy = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(mergedTools), target.id);
+              changes.push(`tools policy: ${Object.keys(newTools).join(', ')}`);
+            }
           }
 
           if (changes.length === 0) {
             content = `No changes: ${target.name} already matches the requested values.`;
           } else {
             content = `Updated ${finalName}: ${changes.join('; ')}`;
-            logger.info('Agent profile updated via tool', { callerAgentId: agentId, targetAgentId: target.id, changes }, agentId);
+            logger.info('Agent updated via update_agent', { callerAgentId: agentId, targetAgentId: target.id, changes }, agentId);
           }
         } catch (err) {
-          content = `Error updating agent profile: ${err instanceof Error ? err.message : String(err)}`;
+          content = `Error updating agent: ${err instanceof Error ? err.message : String(err)}`;
           isError = true;
         }
         break;
@@ -6304,7 +6176,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
             FROM agents WHERE id = ?
           `).get(gapResolved.id) as AgentProfileRow;
 
-          // System prompt = first system-role message (mirrors update_agent_profile)
+          // System prompt = first system-role message (mirrors update_agent)
           const promptRow = db.prepare(
             "SELECT content FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY rowid ASC LIMIT 1"
           ).get(target.id) as { content: string } | undefined;
@@ -6760,32 +6632,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
 
-      case 'update_agent_permissions': {
-        // Check if caller has can_assign_permissions
-        const callerPerms = getAgentPermissions(agentId);
-        if (!callerPerms.can_assign_permissions) {
-          content = 'Permission denied: you do not have permission to change other agents\' permissions.';
-          isError = true;
-          break;
-        }
-        const upErr = checkRequired([
-          { name: 'agent_id', value: args.agent_id, type: 'string' },
-          { name: 'permissions', value: args.permissions, type: 'object' },
-        ]);
-        if (upErr) { content = upErr; isError = true; break; }
-        const upResolved = resolveAgentRef(args.agent_id as string, 'update_agent_permissions');
-        if (!upResolved.ok) { content = upResolved.error; isError = true; break; }
-        const targetAgentId = upResolved.id;
-        const newPerms = args.permissions as Record<string, unknown>;
-        const permDb = getDb();
-        const existingPermsRow = permDb.prepare('SELECT permissions FROM agents WHERE id = ?').get(targetAgentId) as { permissions: string };
-        const existingPerms = JSON.parse(existingPermsRow.permissions || '{}');
-        const merged = { ...existingPerms, ...newPerms };
-        permDb.prepare("UPDATE agents SET permissions = ?, updated_at = datetime('now') WHERE id = ?").run(JSON.stringify(merged), targetAgentId);
-        const agentNameRow = permDb.prepare('SELECT name FROM agents WHERE id = ?').get(targetAgentId) as { name: string } | undefined;
-        content = `Permissions updated for ${agentNameRow?.name ?? targetAgentId}. Changed: ${Object.keys(newPerms).join(', ')}`;
-        break;
-      }
+      // C27: update_agent_permissions folded into update_agent({permissions}) above.
 
       // ── System Control Tools (Phase 5A) ──
       case 'mouse_click': {
@@ -6828,7 +6675,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         isError = content.startsWith('Error');
         break;
       }
-      case 'screen_read':
+      case 'screen_screenshot':
         content = await screenRead(agentId, {
           region: args.region as { x: number; y: number; width: number; height: number } | undefined,
           query: args.query as string | undefined,
@@ -6947,7 +6794,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
             // surfaces are routinely confused by weaker models; reject documents
             // here and point at the canvas so the agent can't pick the wrong one.
             if (category === 'pdf' || category === 'text' || category === 'office' || category === 'unknown') {
-              content = `Error: "${filename}" is a document, not an image, show_to_user is for images (and short audio/video clips) shown inline in the chat. Documents render in the CANVAS: a canvas-renderable file auto-opens the moment you write it (file_write, or creating a Word/Excel/PDF), or call show_canvas({ path: "${srcPath}" }) to (re)open it. Using show_to_user here would give the user a useless download chip instead of a readable preview.`;
+              content = `Error: "${filename}" is a document, not an image, show_to_user is for images (and short audio/video clips) shown inline in the chat. Documents render in the CANVAS: a canvas-renderable file auto-opens the moment you write it (file_write, or creating a Word/Excel/PDF), or call canvas_render({ path: "${srcPath}" }) to (re)open it. Using show_to_user here would give the user a useless download chip instead of a readable preview.`;
               isError = true;
               break;
             }
@@ -7431,6 +7278,12 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           auditDetailParts.push('proactive');
         }
         auditLog(agentId, 'imessage_send', recipient, 'success', auditDetailParts.join(' | '));
+        // C26 tier 3: iMessage is honestly UNVERIFIABLE (only an AppleScript /
+        // imsg exit code, no provider id exists). Write an exit-code receipt so
+        // PM and the user-facing story never pretend it was confirmed. This
+        // imposes NO new gate requirement (tier-3-only turns are unchanged).
+        // skipAudit: the rich over-share audit row above is the provenance row.
+        writeToolReceipt({ agentId, tool: 'imessage_send', tier: 3, verified: false, basis: 'exit-code', recipient, detail: { textSent: result.textSent, attachmentsSent: result.sentFiles.length }, skipAudit: true });
         content = `iMessage sent to ${recipientLabel}${attachSummary}.${switchNote}`;
         break;
       }
@@ -7506,12 +7359,17 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         // Mark explicit sms send so the auto-route at end-of-turn
         // doesn't ALSO send the agent's terminal text.
         if (result.ok) {
-          try {
-            // state isn't directly accessible from here; the loop's
-            // explicitSendThisTurn.sms flag is set by the v2 dispatcher
-            // wrapper instead. Audit log captures the explicit send.
-            auditLog(agentId, 'sms_send', args.to as string, 'success', `sid=${result.sid ?? '(none)'}`);
-          } catch { /* best effort */ }
+          // C26: the receipt writer emits the single provenance audit row
+          // (target=sms_send, detail=receipt=<id>) and captures the Twilio
+          // SID as the provider id, so we no longer double-write an audit row.
+          // A 2xx with no SID cannot be confirmed: fail the turn.
+          if (!result.sid) {
+            writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: false, basis: 'http-status', recipient: args.to as string, detail: { anomaly: 'sms send ok but no Twilio SID' } });
+            content = `Error: the SMS to ${args.to} was accepted but Twilio returned no message SID, so it could not be verified. It may still have been delivered: verify whether it went out (check the thread/recipient) BEFORE any re-send; do not blindly retry.`;
+            isError = true;
+          } else {
+            writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: true, basis: 'provider-id', providerId: result.sid, recipient: args.to as string, detail: { status: 'sent' } });
+          }
         } else {
           auditLog(agentId, 'sms_send', args.to as string, 'error', result.message.slice(0, 200));
         }
@@ -7537,7 +7395,19 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         });
         content = result.message;
         isError = !result.ok;
-        auditLog(agentId, 'voice_call', args.to as string, result.ok ? 'success' : 'error', result.callSid ?? '(no sid)');
+        if (result.ok) {
+          // C26: fold the audit row into the receipt writer and capture the
+          // Twilio call SID as the provider id. No SID = unverifiable, fail.
+          if (!result.callSid) {
+            writeToolReceipt({ agentId, tool: 'voice_call', tier: 1, verified: false, basis: 'http-status', recipient: args.to as string, detail: { anomaly: 'voice call ok but no Twilio call SID' } });
+            content = `Error: the call to ${args.to} was accepted but Twilio returned no call SID, so it could not be verified. The call may still have been placed: verify it did not go through BEFORE dialing again; do not blindly retry.`;
+            isError = true;
+          } else {
+            writeToolReceipt({ agentId, tool: 'voice_call', tier: 1, verified: true, basis: 'provider-id', providerId: result.callSid, recipient: args.to as string, detail: { status: 'placed' } });
+          }
+        } else {
+          auditLog(agentId, 'voice_call', args.to as string, 'error', result.callSid ?? '(no sid)');
+        }
         break;
       }
       case 'voice_call_end': {
@@ -8625,7 +8495,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         isError = content.startsWith('Error');
         break;
       }
-      case 'vault_expand': {
+      case 'vault_get': {
         const veErr = checkRequired([{ name: 'entry_id', value: args.entry_id, type: 'string' }]);
         if (veErr) { content = veErr; isError = true; break; }
         content = executeVaultExpand(agentId, args);
@@ -8770,7 +8640,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         isError = content.startsWith('Error');
         break;
       }
-      case 'contact_describe': {
+      case 'contacts_overview': {
         const { executeContactDescribe } = await import('../contacts/tools.js');
         content = executeContactDescribe();
         isError = false;
@@ -8826,7 +8696,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         const lines = matches.map((m) => {
           const author = m.agentName ?? m.agentId;
           const tagStr = m.tags.length > 0 ? ` [${m.tags.join(', ')}]` : '';
-          return `- ${author} (${m.createdAt}): ${m.snippet}${tagStr}\n  ID: ${m.id} | Length: ${m.fullLength} chars (use vault_expand to read full).`;
+          return `- ${author} (${m.createdAt}): ${m.snippet}${tagStr}\n  ID: ${m.id} | Length: ${m.fullLength} chars (use vault_get to read full).`;
         });
         content = `Squad memory (${matches.length} match${matches.length === 1 ? '' : 'es'} in ${namespace}):\n\n${lines.join('\n\n')}`;
         isError = false;
@@ -8884,7 +8754,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
 
-      case 'open_page': {
+      case 'dashboard_navigate': {
         const page = typeof args.page === 'string' ? args.page : '';
         const pagePaths: Record<string, string> = {
           chat: '/', agents: '/agents', techniques: '/techniques',
@@ -9320,7 +9190,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           const localPath = localOfficePathFromResult(content);
           if (localPath && openFileInCanvas(agentId, localPath).opened) {
             const verb = name === 'office_create_word_document' || name === 'office_create_spreadsheet' ? 'is now open' : 'has been updated';
-            content += `\n\nThis document ${verb} in the canvas, the user can see it as a formatted preview. No need to call show_canvas, show_to_user, or share_file; just tell them it is on the canvas (share the download link only if they ask to save it).`;
+            content += `\n\nThis document ${verb} in the canvas, the user can see it as a formatted preview. No need to call canvas_render, show_to_user, or share_file; just tell them it is on the canvas (share the download link only if they ask to save it).`;
           }
         }
         break;
@@ -9373,7 +9243,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
   // The v1 pattern (`shouldIntercept` + `interceptLargeFile`) replaced
   // oversized content with an "exploration summary" stub that had no path
   // back to the actual content, agents trying to read a 35K-token HTML
-  // file got stuck because the recovery tools (memory_describe / memory_expand)
+  // file got stuck because the recovery tools (history_get / history_expand)
   // returned metadata, not the real content. The new model is per-tool
   // `maxResultTokens` (Phase 3) + offset/limit pagination on `file_read`
   // (Phase 3.5). The `large_files` table stays for backfill of pre-existing

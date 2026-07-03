@@ -122,7 +122,7 @@ function runEngineMaintenance(): { pruned: number; decayed: number; unpinned: nu
   // ── Pinning audit ──
   // Auto-unpin entries that have been pinned for 60+ days but haven't been
   // retrieved in the last 60 days. Pinning is supposed to mean "I keep
-  // reaching for this" — if the agent's not reaching for it, it shouldn't
+  // reaching for this", if the agent's not reaching for it, it shouldn't
   // be earning premium context space. Permanent entries are exempt
   // (USER.md-grade facts that should always be top-of-context).
   const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
@@ -135,9 +135,9 @@ function runEngineMaintenance(): { pruned: number; decayed: number; unpinned: nu
 
   // ── Age-out for cold entries ──
   // Mark obsolete: not pinned, not permanent, never retrieved, older than
-  // 180 days. The vault should not be a dumping ground — entries that the
+  // 180 days. The vault should not be a dumping ground, entries that the
   // agent never reached for in 6 months are noise. They stay in the DB
-  // (is_obsolete = 1) so they're still searchable via memory_grep if a
+  // (is_obsolete = 1) so they're still searchable via history_search if a
   // future agent needs them, but they don't burn vault retrieval slots.
   const oneEightyDaysAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
   const agedOutResult = db.prepare(`
@@ -168,7 +168,7 @@ const CHARS_PER_TOKEN = 3;
 // Reserve this much of the context window for system prompt, tool definitions
 // (Dreamer has ~15 tools, ~20K tokens of schemas), vault retrieval injection,
 // active task injection, continuity brief, and other context the assembler
-// adds before the cycle message. Was 8K — way too low.
+// adds before the cycle message. Was 8K, way too low.
 const CONTEXT_OVERHEAD_TOKENS = 50000;
 
 // Multiplier for batch text growth during processing. As the Dreamer extracts
@@ -180,7 +180,7 @@ const CONTEXT_OVERHEAD_TOKENS = 50000;
 const PROCESSING_GROWTH_FACTOR = 1.5;
 
 // Per-message char cap. The Dreamer doesn't need the full prose of any
-// single message — the gist is enough. Aggressively low; if a single
+// single message, the gist is enough. Aggressively low; if a single
 // message has more than this much signal, it almost always belongs in a
 // vault entry of its own (which the Dreamer will create from the truncated
 // version anyway).
@@ -199,7 +199,7 @@ const MAX_ARCHIVE_BODY_CHARS = 8000;
 // for legacy code paths.
 const MAX_TOOL_RESULT_CHARS = 200;
 
-// Hard ceiling on per-batch text regardless of context window — never exceed
+// Hard ceiling on per-batch text regardless of context window, never exceed
 // 35% of the model's window for raw archive text. Leaves 65% for system
 // prompt, tools, and turn-by-turn tool-call accumulation.
 const BATCH_BUDGET_CAP_RATIO = 0.35;
@@ -213,7 +213,7 @@ const BATCH_BUDGET_CAP_RATIO = 0.35;
 // dumps, web_fetch HTML, vault_search hit lists). None of that is
 // memory-worthy. We pre-process archives in pure code before they reach
 // the model, slashing the token cost of every cycle while keeping the
-// signal — what the agent and user actually said and decided.
+// signal, what the agent and user actually said and decided.
 
 // Platform-noise taxonomy (sub-agent completions, PM/scheduler/healer pokes,
 // session dividers, embedded SOUL prompts, synthetic acks) now lives in the
@@ -221,13 +221,13 @@ const BATCH_BUDGET_CAP_RATIO = 0.35;
 // agree on what is plumbing vs. conversation. Imported below; the local
 // isPlatformNoise wrapper is kept so callers here are unchanged.
 
-// Conversational filler — acknowledgments and process narration. Drop the
+// Conversational filler, acknowledgments and process narration. Drop the
 // whole message if its trimmed content matches. Length-bounded so prose
 // containing "got it" doesn't get false-positived.
 const FILLER_PATTERNS: RegExp[] = [
   /^(sure|got it|okay|ok|alright|understood|will do|on it|working on it now?|let me think( about (this|that))?|let me check|one moment|hmm|hmmm|right|yep|yes|no problem|sounds good|makes sense|of course)[.!]?$/i,
   /^(thanks|thank you)[.!]?$/i,
-  // Process narration the agent emits between tool calls — pure scaffolding.
+  // Process narration the agent emits between tool calls, pure scaffolding.
   /^(let me |i'?ll |i'?m going to |now i'?ll |first,? |next,? |then,? )/i,
   /^(checking|searching|reading|writing|looking at|analyzing|processing|continuing|proceeding)\b/i,
   /^(i found|i see|i notice|i can see|i'?ve found)\b/i,
@@ -250,7 +250,7 @@ function isFiller(content: string): boolean {
 }
 
 // Extract just the text portion from an assistant content-block array.
-// Drops tool_use blocks entirely — the Dreamer doesn't need to know
+// Drops tool_use blocks entirely, the Dreamer doesn't need to know
 // which tools the agent called, only what it said. Pre-2026-04-30 we
 // summarized tool_use blocks as one-liners (`[tool_use file_read path=…]`)
 // which still added significant token cost across long conversations.
@@ -259,7 +259,7 @@ function isFiller(content: string): boolean {
 function extractAssistantText(content: string): string {
   if (!content) return '';
   const trimmed = content.trim();
-  // Plain text — return as-is.
+  // Plain text, return as-is.
   if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return content;
   let parsed: unknown;
   try { parsed = JSON.parse(trimmed); } catch { return content; }
@@ -269,13 +269,13 @@ function extractAssistantText(content: string): string {
     if (blk?.type === 'text' && typeof blk.text === 'string' && blk.text.trim().length > 0) {
       parts.push(blk.text);
     }
-    // tool_use, image, document, etc. — silently dropped.
+    // tool_use, image, document, etc., silently dropped.
   }
   return parts.join('\n');
 }
 
 // Compress a tool_use / tool_result payload into a one-liner. The model
-// doesn't need the full file content / HTML / search hits — it needs to
+// doesn't need the full file content / HTML / search hits, it needs to
 // know what the agent did. "[file_read /path → 2,341 chars, 'export function …']"
 // preserves the action and a tiny shape hint at ~95% token savings.
 function summarizeToolBlock(block: Record<string, unknown>): string | null {
@@ -346,7 +346,7 @@ function truncateMessageContent(content: string): string {
   if (content.length <= MAX_MESSAGE_CHARS) return content;
   const head = content.slice(0, MAX_MESSAGE_CHARS);
   const truncatedChars = content.length - MAX_MESSAGE_CHARS;
-  return `${head}\n…[truncated ${truncatedChars} chars from this message — original was ${content.length} chars]`;
+  return `${head}\n…[truncated ${truncatedChars} chars from this message, original was ${content.length} chars]`;
 }
 
 interface ParsedArchiveMessage {
@@ -364,13 +364,13 @@ function parseArchiveMessages(conv: VaultConversation): ParsedArchiveMessage[] |
   }
 }
 
-// Aggressive pre-LLM trimming. The Dreamer needs the conversation —
+// Aggressive pre-LLM trimming. The Dreamer needs the conversation, 
 // what the user wanted, what the agent decided. Everything else is
 // process scaffolding the model doesn't need.
 //
 // Rules (most aggressive at the top):
 //   1. Drop role='tool' messages entirely. Tool results carry no memory
-//      signal — file content, HTML, search hits.
+//      signal, file content, HTML, search hits.
 //   2. From assistant messages that are JSON content-block arrays,
 //      keep ONLY text blocks. Drop tool_use entirely.
 //   3. From user messages whose content is purely tool_result blocks
@@ -378,7 +378,7 @@ function parseArchiveMessages(conv: VaultConversation): ParsedArchiveMessage[] |
 //   4. Drop platform-noise messages (system nudges, cycle markers, etc.).
 //   5. Drop conversational filler and process narration ("let me check…",
 //      "now I'll search…").
-//   6. Drop messages with < 30 chars after compression — almost always
+//   6. Drop messages with < 30 chars after compression, almost always
 //      acks, single words, or unhelpful fragments.
 function preprocessMessages(messages: ParsedArchiveMessage[]): ParsedArchiveMessage[] {
   const filtered: ParsedArchiveMessage[] = [];
@@ -395,7 +395,7 @@ function preprocessMessages(messages: ParsedArchiveMessage[]): ParsedArchiveMess
     } else if (role === 'user') {
       // User messages are usually plain text. But a "user" message can
       // also be a tool_result wrapper (sub-agent replies, model API
-      // shape). Detect and drop those — they have no prose value.
+      // shape). Detect and drop those, they have no prose value.
       const trimmed = content.trim();
       if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
         try {
@@ -404,7 +404,7 @@ function preprocessMessages(messages: ParsedArchiveMessage[]): ParsedArchiveMess
             const blocks = parsed as Array<Record<string, unknown>>;
             const allToolResults = blocks.length > 0 && blocks.every(b => b.type === 'tool_result');
             if (allToolResults) continue; // drop entirely
-            // Mixed — keep text portions only.
+            // Mixed, keep text portions only.
             const textParts = blocks
               .filter(b => b.type === 'text' && typeof b.text === 'string')
               .map(b => b.text as string);
@@ -436,7 +436,7 @@ function formatArchiveMessage(m: ParsedArchiveMessage): string {
 }
 
 function wrapArchive(conv: VaultConversation, body: string, partLabel?: string): string {
-  const partTag = partLabel ? ` — ${partLabel}` : '';
+  const partTag = partLabel ? `, ${partLabel}` : '';
   return `=== ARCHIVE: ${conv.agentName ?? conv.agentId} (ID: ${conv.id})${partTag} ===
 ${conv.messageCount} messages, ${conv.earliestAt} to ${conv.latestAt}
 
@@ -453,7 +453,7 @@ function formatArchive(conv: VaultConversation): string | null {
   let body = messages.map(formatArchiveMessage).join('\n\n');
 
   // Per-archive hard cap. After preprocessing, if an archive is still
-  // bigger than MAX_ARCHIVE_BODY_CHARS, the middle is the boring part —
+  // bigger than MAX_ARCHIVE_BODY_CHARS, the middle is the boring part, 
   // exploration, false starts, intermediate reasoning. Keep the head
   // (what the user wanted) and the tail (what was decided / delivered)
   // and elide the middle. A sub-agent that did a 200-message build
@@ -513,7 +513,7 @@ function estimateTokens(text: string): number {
 /**
  * Split a single oversized archive into multiple batches at message boundaries.
  * Each part includes the archive header so the Dreamer knows it's a continuation.
- * Returns array of {text} objects — caller maps the same archive ID to all parts.
+ * Returns array of {text} objects, caller maps the same archive ID to all parts.
  */
 function splitArchive(conv: VaultConversation, perBatchBudget: number): Array<{ text: string }> {
   const messages = parseArchiveMessages(conv);
@@ -622,7 +622,7 @@ function batchArchives(unprocessed: VaultConversation[], contextWindow: number):
       const parts = splitArchive(conv, budgetTokens);
       if (parts.length === 0) continue;
 
-      logger.warn('Archive too large for single batch — splitting', {
+      logger.warn('Archive too large for single batch, splitting', {
         archiveId: conv.id,
         originalTokens: archiveTokens,
         budgetTokens,
@@ -675,7 +675,7 @@ Begin by creating a tracker project, then process each archive systematically.`;
 
 /**
  * Build the cycle message sent to the permanent Dreamer agent.
- * This replaces the old dynamic system prompt — vault state and archive data
+ * This replaces the old dynamic system prompt, vault state and archive data
  * go in the user message since the system prompt is now fixed.
  */
 function buildDreamerCycleMessage(
@@ -694,7 +694,7 @@ function buildDreamerCycleMessage(
 
   // Queue overview. Pre-2026-04-30 we enumerated the first N archives in
   // a numbered list, which (a) wasted tokens and (b) misled the Dreamer
-  // into thinking only the listed ones were in scope — its complete_task
+  // into thinking only the listed ones were in scope, its complete_task
   // summaries kept saying "Processed N archives" matching the preview
   // count, not the actual batch size. Now we just state the total. The
   // batch text below contains every archive's content; that's what the
@@ -711,11 +711,11 @@ function buildDreamerCycleMessage(
   void profilePath; void soulPath;
 
   return `═══ DREAM CYCLE ═══
-Vault state: ${stats.totalEntries} entries (${stats.pinnedCount} pinned, ${stats.permanentCount} permanent). Pin cap: ${MAX_PINNED_ENTRIES}${stats.pinnedCount > MAX_PINNED_ENTRIES ? ' — OVER CAP, prune now' : ''}.${archiveSummary}${batchNote}
+Vault state: ${stats.totalEntries} entries (${stats.pinnedCount} pinned, ${stats.permanentCount} permanent). Pin cap: ${MAX_PINNED_ENTRIES}${stats.pinnedCount > MAX_PINNED_ENTRIES ? ', OVER CAP, prune now' : ''}.${archiveSummary}${batchNote}
 
 Process the archives below. Extract durable memories and route each to the right store per your SOUL: vault_remember for general knowledge, contact_remember for person-as-entity facts (who someone is, role/company, relationships, channel preferences, a new email/phone), and credential_add ONLY when an archive contains the actual value of a service credential (follow your SOUL's cautions: never guess, skip anything personal-financial). Discard junk archives. Only update USER.md if an archive has a clear, explicit, FUNDAMENTAL profile change you can quote (see your SOUL). Never edit SOUL.md. Then call complete_task.
 
-Conversation attribution: the archive messages are tagged with the party each is from ([USER · Sam], [USER · Alex Chen (imessage)], [USER · priya@… (email)], [USER · Nova (agent)]). When a memory is a request, preference, or pending item that belongs to a SPECIFIC person or channel, say so in the memory text ("Sam asked to…", "Priya (email) is waiting on…"), and prefer contact_remember for who-someone-is facts. A memory that records one person's request must never read as if it were everyone's — keeping whose-is-whose is what lets the agent act on the right conversation later.
+Conversation attribution: the archive messages are tagged with the party each is from ([USER · Sam], [USER · Alex Chen (imessage)], [USER · priya@… (email)], [USER · Nova (agent)]). When a memory is a request, preference, or pending item that belongs to a SPECIFIC person or channel, say so in the memory text ("Sam asked to…", "Priya (email) is waiting on…"), and prefer contact_remember for who-someone-is facts. A memory that records one person's request must never read as if it were everyone's, keeping whose-is-whose is what lets the agent act on the right conversation later.
 
 ${batchText}`;
 }
@@ -735,7 +735,7 @@ const DREAMER_TOOLS_POLICY = JSON.stringify({
   allow: [
     'vault_remember', 'vault_search', 'vault_forget',
     'vault_discard_archives',
-    'memory_grep', 'memory_search', 'memory_describe',
+    'history_search', 'history_get',
     // Person-as-entity records: the SOUL routes "who someone is" facts here
     // (role/company, relationships, channel prefs, a new email/phone) instead
     // of the vault. contact_remember upserts, so re-running each cycle keeps
@@ -801,7 +801,7 @@ export function ensureDreamerAgentRunning(): void {
 
   const primaryExists = db.prepare('SELECT id FROM agents WHERE id = ?').get(primaryId);
   if (!primaryExists) {
-    logger.warn('Primary agent not yet created — deferring Dreamer spawn', { primaryId });
+    logger.warn('Primary agent not yet created, deferring Dreamer spawn', { primaryId });
     setTimeout(() => ensureDreamerAgentRunning(), 5000);
     return;
   }
@@ -835,7 +835,7 @@ export function ensureDreamerAgentRunning(): void {
           logger.info('Dreamer SOUL.md refreshed in messages table', { dreamerId });
         }
       } else {
-        // No system message yet — insert one.
+        // No system message yet, insert one.
         db.prepare(
           "INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))"
         ).run(uuidv4(), dreamerId, freshPrompt);
@@ -915,7 +915,7 @@ function wakeupDreamer(cycleMessage: string): void {
   // Clear accumulated compaction summaries (context items)
   db.prepare('DELETE FROM context_items WHERE agent_id = ?').run(dreamerId);
 
-  // Clear session-loaded tool docs (fire-and-forget — best effort)
+  // Clear session-loaded tool docs (fire-and-forget, best effort)
   import('../tools/tool-docs.js')
     .then(({ clearSessionLoadedTools }) => clearSessionLoadedTools(dreamerId))
     .catch(() => { /* ignore */ });
@@ -963,7 +963,7 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
   }
 
   // Remediation Phase 5: the technique-distillation engine pass rides the
-  // same nightly cadence (batched by design — the v1.15.96 constraints live
+  // same nightly cadence (batched by design, the v1.15.96 constraints live
   // in techniques/distillation.ts). Deliberately NOT a Dreamer handoff: the
   // Dreamer stays strictly memory curation; distillation candidates come
   // from the tracker's outcome record and go straight to the Trainer.
@@ -1004,7 +1004,7 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
     return { dreamerId: null };
   }
 
-  // Step 2.5: Engine-side triage — auto-skip archives that are clearly not
+  // Step 2.5: Engine-side triage, auto-skip archives that are clearly not
   // worth a model token (tiny conversations, platform-noise-only, etc.).
   // This is the biggest single token win in the Dreamer rewrite: most
   // sub-agent sessions are 5-message question/answer exchanges with
@@ -1026,7 +1026,7 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
     logger.info(`Engine triage: auto-skipped ${autoSkipped} trivial archives, ${unprocessed.length} remain for the Dreamer`);
   }
   if (unprocessed.length === 0) {
-    logger.info('No archives left after engine triage — Dreamer cycle skipped');
+    logger.info('No archives left after engine triage, Dreamer cycle skipped');
     broadcast({ type: 'dream:complete', data: { skipped: true, reason: 'all_trivial', autoSkipped, ...maintenance } } as never);
     return { dreamerId: null };
   }
@@ -1050,7 +1050,7 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
 
   const stats = getVaultStats();
 
-  // Step 3: Process batches — wake Dreamer for the first batch
+  // Step 3: Process batches, wake Dreamer for the first batch
   // Subsequent batches are handled after each complete_task via markDreamerArchivesProcessed
   const firstBatch = batches[0];
   if (!firstBatch) {
@@ -1065,11 +1065,11 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
   const dreamerState = db.prepare('SELECT status FROM agents WHERE id = ?').get(dreamerId) as { status: string } | undefined;
 
   if (dreamerState?.status === 'working') {
-    logger.warn('Dreamer is already running — skipping cycle');
+    logger.warn('Dreamer is already running, skipping cycle');
     return { dreamerId };
   }
 
-  // Store remaining batches for sequential processing — plus the cycle-
+  // Store remaining batches for sequential processing, plus the cycle-
   // reporting state used to write a single dream_reports row when the
   // final batch completes.
   pendingBatches.set(primaryId, {
@@ -1125,11 +1125,11 @@ interface PendingBatchState {
   stats: ReturnType<typeof getVaultStats>;
   // Number of context-overflow recoveries applied to the current batch.
   // Reset to 0 when advancing to the next batch (spawnNextDreamerBatch).
-  // Capped at MAX_RECOVERY_DEPTH — beyond that, splitting further is
+  // Capped at MAX_RECOVERY_DEPTH, beyond that, splitting further is
   // unlikely to help and we let the error propagate.
   recoveryDepth?: number;
 
-  // Cycle-level reporting state — used by writeDreamReportForCycle when
+  // Cycle-level reporting state, used by writeDreamReportForCycle when
   // the final batch completes. Pre-2026-04-30 createDreamReport was defined
   // but never called, so the dashboard's "Dreams" tab was permanently
   // empty no matter how long the platform had been running.
@@ -1160,7 +1160,7 @@ function writeDreamReportForCycle(state: PendingBatchState, outcome: 'complete' 
     const durationMs = Date.now() - state.cycleStartedAtMs;
 
     const reportText = [
-      `Dream cycle ${outcome} — ${state.archivesProcessedThisCycle}/${state.totalArchivesAtStart} archives processed by the Dreamer (${state.autoSkippedThisCycle} auto-skipped as trivial before the model was involved).`,
+      `Dream cycle ${outcome}, ${state.archivesProcessedThisCycle}/${state.totalArchivesAtStart} archives processed by the Dreamer (${state.autoSkippedThisCycle} auto-skipped as trivial before the model was involved).`,
       `Vault entries: ${before.totalEntries} → ${after.totalEntries} (${memoriesExtracted >= 0 ? '+' : ''}${memoriesExtracted}).`,
       `Pinned: ${before.pinnedCount} → ${after.pinnedCount}. Permanent: ${before.permanentCount} → ${after.permanentCount}.`,
       `Engine maintenance: pruned ${state.maintenanceAtStart.pruned}, decayed ${state.maintenanceAtStart.decayed}, unpinned ${state.maintenanceAtStart.unpinned}, aged-out ${state.maintenanceAtStart.agedOut}.`,
@@ -1205,13 +1205,13 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
 
   const nextIndex = state.currentIndex + 1;
   if (nextIndex >= state.batches.length) {
-    // All batches done — write the cycle's dream report so the dashboard's
+    // All batches done, write the cycle's dream report so the dashboard's
     // Dreams tab actually has something to show. Pre-2026-04-30 the cycle
     // ended silently with no record; the tab was empty even after months
     // of dreaming.
     writeDreamReportForCycle(state, 'complete');
     // ONE consolidated per-CYCLE notice to the primary (owner request: the Dreamer
-    // messages once per cycle, not once per batch — the per-batch note is suppressed in
+    // messages once per cycle, not once per batch, the per-batch note is suppressed in
     // completeAgent). Brief + self-attributed → awareness lane; full detail is in the
     // Dreams tab / dream_reports. Best-effort: never let the notice break cycle teardown.
     try {
@@ -1222,7 +1222,7 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
       postAgentNotice({
         toAgentId: primaryId,
         fromName: 'Dreamer',
-        brief: `Tidied up memory tonight — processed ${archives} archive${archives === 1 ? '' : 's'} into ${gained} new vault ${gained === 1 ? 'entry' : 'entries'}. Nothing needs your attention.`,
+        brief: `Tidied up memory tonight, processed ${archives} archive${archives === 1 ? '' : 's'} into ${gained} new vault ${gained === 1 ? 'entry' : 'entries'}. Nothing needs your attention.`,
         intent: 'dreamer_cycle',
       });
     } catch (err) {
@@ -1235,7 +1235,7 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
   }
 
   state.currentIndex = nextIndex;
-  state.recoveryDepth = 0; // fresh batch — reset overflow-recovery counter
+  state.recoveryDepth = 0; // fresh batch, reset overflow-recovery counter
   const batch = state.batches[nextIndex];
 
   logger.info(`Injecting next Dreamer batch ${nextIndex + 1}/${state.batches.length}`, {
@@ -1253,7 +1253,7 @@ export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
 
     // Update archive IDs on the permanent Dreamer record for this batch.
     // json(?) is required so SQLite stores the array AS JSON, not as a
-    // quoted string — see the matching note in runDreamingCycle.
+    // quoted string, see the matching note in runDreamingCycle.
     db.prepare(`
       UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', json(?))
       WHERE id = ?
@@ -1316,20 +1316,20 @@ export function markDreamerArchivesProcessed(dreamerAgentId: string): void {
     // wrapping the parameter in json(). If we encounter that legacy shape,
     // parse it back into an array. Without this, we'd iterate the string's
     // characters and "Mark N archives" would log a character count while
-    // updating zero rows — exactly the symptom that left users stuck with
+    // updating zero rows, exactly the symptom that left users stuck with
     // a backlog that never decreased.
     if (typeof archiveIds === 'string') {
       try {
         const parsed = JSON.parse(archiveIds);
         if (Array.isArray(parsed)) {
           archiveIds = parsed as string[];
-          logger.warn('Recovered legacy string-encoded dreamerArchiveIds — parsing as JSON', { dreamerAgentId, count: archiveIds.length });
+          logger.warn('Recovered legacy string-encoded dreamerArchiveIds, parsing as JSON', { dreamerAgentId, count: archiveIds.length });
         } else {
-          logger.error('dreamerArchiveIds is a string but not a JSON array — refusing to iterate as chars', { dreamerAgentId });
+          logger.error('dreamerArchiveIds is a string but not a JSON array, refusing to iterate as chars', { dreamerAgentId });
           return;
         }
       } catch {
-        logger.error('dreamerArchiveIds is a string but not valid JSON — refusing to iterate as chars', { dreamerAgentId });
+        logger.error('dreamerArchiveIds is a string but not valid JSON, refusing to iterate as chars', { dreamerAgentId });
         return;
       }
     }
@@ -1410,7 +1410,7 @@ export async function recoverDreamerFromContextOverflow(
 
   const state = pendingBatches.get(primaryId);
   if (!state) {
-    logger.warn('Context overflow detected but no pending batches — cannot recover', { dreamerAgentId });
+    logger.warn('Context overflow detected but no pending batches, cannot recover', { dreamerAgentId });
     return false;
   }
 
@@ -1419,7 +1419,7 @@ export async function recoverDreamerFromContextOverflow(
 
   const depth = state.recoveryDepth ?? 0;
   if (depth >= MAX_RECOVERY_DEPTH) {
-    logger.error('Context overflow recovery exhausted retries — giving up', {
+    logger.error('Context overflow recovery exhausted retries, giving up', {
       dreamerAgentId,
       depth,
       maxDepth: MAX_RECOVERY_DEPTH,
@@ -1470,7 +1470,7 @@ export async function recoverDreamerFromContextOverflow(
   state.recoveryDepth = depth + 1;
 
   // Replace the failed batch with the new sub-batches. currentIndex stays
-  // the same — it now points at the first sub-batch.
+  // the same, it now points at the first sub-batch.
   state.batches.splice(state.currentIndex, 1, ...newBatches);
 
   logger.warn('Dreamer batch split for context overflow recovery', {
@@ -1487,7 +1487,7 @@ export async function recoverDreamerFromContextOverflow(
   if (!nextBatch) return false;
 
   // Update archive IDs on the dreamer agent record so completion handler
-  // marks the right archives as processed. json(?) required — see note
+  // marks the right archives as processed. json(?) required, see note
   // in runDreamingCycle.
   db.prepare(`
     UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', json(?))

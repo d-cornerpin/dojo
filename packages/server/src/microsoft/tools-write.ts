@@ -5,6 +5,7 @@
 
 import type { ToolDefinition } from '../agent/tools.js';
 import { msGraphRead, msGraphWrite, calendarPrefix, drivePrefix } from './client.js';
+import { writeToolReceipt } from '../receipts/store.js';
 import { getPrimaryAgentName } from '../config/platform.js';
 import {
   type LocalAttachment,
@@ -21,7 +22,7 @@ import type { AccountSlot } from './auth.js';
 export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_send',
-    description: 'Send an email from the connected Microsoft account (Outlook). Supports attachments — pass an array of absolute local file paths. Files ≤3MB attach inline; anything larger auto-uploads to OneDrive (folder "DOJO Email Attachments/<YYYY-MM>") and the recipient gets a shareable link appended to the body.',
+    description: 'Send an email from the connected Microsoft account (Outlook). Supports attachments, pass an array of absolute local file paths. Files ≤3MB attach inline; anything larger auto-uploads to OneDrive (folder "DOJO Email Attachments/<YYYY-MM>") and the recipient gets a shareable link appended to the body.',
     input_schema: {
       type: 'object',
       properties: {
@@ -36,7 +37,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'outlook_reply',
-    description: 'Reply to an existing Outlook email thread. **As of v2.7.24, in-thread replies to "Re:" messages from known correspondents auto-route via the engine — you do NOT need to call this tool for those.** Just write your reply text; the engine sends it on the same thread. Call this tool when: replying to a DIFFERENT thread than the inbound, replying to a notification that the engine did NOT auto-route (e.g., a new email rather than a "Re:"), or when you need attachments / reply_all behavior. Supports attachments — same rules as outlook_send (3MB inline threshold per file, overflow to OneDrive link).',
+    description: 'Reply to an existing Outlook email thread. **As of v2.7.24, in-thread replies to "Re:" messages from known correspondents auto-route via the engine, you do NOT need to call this tool for those.** Just write your reply text; the engine sends it on the same thread. Call this tool when: replying to a DIFFERENT thread than the inbound, replying to a notification that the engine did NOT auto-route (e.g., a new email rather than a "Re:"), or when you need attachments / reply_all behavior. Supports attachments, same rules as outlook_send (3MB inline threshold per file, overflow to OneDrive link).',
     input_schema: {
       type: 'object',
       properties: {
@@ -159,7 +160,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'teams_send_message',
-    description: 'Send a message to a Teams chat. **As of v2.7.24, replies to inbound Teams DMs auto-route via the engine — you do NOT need to call this tool to reply.** Just write your reply text; the engine sends it back to the inbound chat.\n\n**HARD RULE — When the primary user is actively talking to you on dashboard, DO NOT call this tool to message them.** Their reply belongs in the dashboard. Calling teams_send_message to "also share this on Teams" while they\'re in dashboard is wrong; the engine will refuse.\n\nCall this tool only when:\n\n- **Starting a new chat** with someone (use teams_create_chat first if you don\'t have a chat_id)\n- **Replying to a DIFFERENT chat** than the inbound that triggered this turn\n- **Sending in a group chat** where you\'ve decided to participate proactively\n- **PROACTIVE outreach** where the turn was NOT triggered by a user message at all (scheduled task, watchdog event, etc.) — "proactive" does NOT mean "I am choosing to additionally send via another channel"\n\nRequires a Microsoft work/school account (Entra ID). Not available on personal Microsoft accounts.',
+    description: 'Send a message to a Teams chat. **As of v2.7.24, replies to inbound Teams DMs auto-route via the engine, you do NOT need to call this tool to reply.** Just write your reply text; the engine sends it back to the inbound chat.\n\n**HARD RULE, When the primary user is actively talking to you on dashboard, DO NOT call this tool to message them.** Their reply belongs in the dashboard. Calling teams_send_message to "also share this on Teams" while they\'re in dashboard is wrong; the engine will refuse.\n\nCall this tool only when:\n\n- **Starting a new chat** with someone (use teams_create_chat first if you don\'t have a chat_id)\n- **Replying to a DIFFERENT chat** than the inbound that triggered this turn\n- **Sending in a group chat** where you\'ve decided to participate proactively\n- **PROACTIVE outreach** where the turn was NOT triggered by a user message at all (scheduled task, watchdog event, etc.), "proactive" does NOT mean "I am choosing to additionally send via another channel"\n\nRequires a Microsoft work/school account (Entra ID). Not available on personal Microsoft accounts.',
     input_schema: {
       type: 'object',
       properties: {
@@ -249,7 +250,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'calendar_accept_share_ms',
-    description: "Accept a pending calendar-sharing invitation email (someone shared their calendar with you). Use calendar_share_invites_ms first to find the message_id of the pending invite. After accepting, the shared calendar appears in calendar_list_ms and can be operated on via the calendar_id parameter on the other Microsoft calendar tools. Microsoft Graph's programmatic acceptance support is limited — if this tool returns an unsupported error, the user will need to accept via the Outlook web/desktop UI; once accepted there, the calendar is accessible via the same tools.",
+    description: "Accept a pending calendar-sharing invitation email (someone shared their calendar with you). Use calendar_share_invites_ms first to find the message_id of the pending invite. After accepting, the shared calendar appears in calendar_list_ms and can be operated on via the calendar_id parameter on the other Microsoft calendar tools. Microsoft Graph's programmatic acceptance support is limited, if this tool returns an unsupported error, the user will need to accept via the Outlook web/desktop UI; once accepted there, the calendar is accessible via the same tools.",
     input_schema: {
       type: 'object',
       properties: {
@@ -303,7 +304,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'online_meeting_create',
-    description: "Create a Teams online meeting and get a join URL. Use this when you need to give someone a Teams link — typically right before calendar_create_ms so the meeting URL can be added to the event description. Subject, start, and end are required.",
+    description: "Create a Teams online meeting and get a join URL. Use this when you need to give someone a Teams link, typically right before calendar_create_ms so the meeting URL can be added to the event description. Subject, start, and end are required.",
     input_schema: {
       type: 'object',
       properties: {
@@ -570,7 +571,7 @@ for (const canonical of USER_SLOT_SEND_TOOLS) {
   microsoftWriteToolDefinitions.push({
     ...baseDef,
     name: `user_${canonical}`,
-    description: `[USER'S Microsoft account variant of \`${canonical}\`] ${baseDef.description}\n\nSends from the user's connected Microsoft account (Settings → Microsoft → User slot). Disabled by default — the user must turn on "Allow sending email" on the User slot card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,
+    description: `[USER'S Microsoft account variant of \`${canonical}\`] ${baseDef.description}\n\nSends from the user's connected Microsoft account (Settings → Microsoft → User slot). Disabled by default, the user must turn on "Allow sending email" on the User slot card. If the toggle is off or the slot isn't connected, the tool returns a friendly error.`,
   });
 }
 
@@ -656,7 +657,7 @@ async function getOrCreateOneDriveFolder(
       if (existing?.id) return { ok: true, id: existing.id };
     }
   } catch (err) {
-    // Fall through to create attempt — lookup is best-effort.
+    // Fall through to create attempt, lookup is best-effort.
     void err;
   }
 
@@ -803,7 +804,7 @@ async function prepareOutlookAttachments(
   for (const att of overflow) {
     const up = await uploadAttachmentToOneDrive(att, slot);
     if (!up.ok) return { ok: false, error: `Error uploading attachment "${att.name}" to OneDrive: ${up.error}` };
-    overflowLines.push(`  • ${up.name} (${formatSize(att.size)}) — ${up.url}`);
+    overflowLines.push(`  • ${up.name} (${formatSize(att.size)}), ${up.url}`);
   }
 
   const bodySuffix = overflowLines.length > 0
@@ -834,6 +835,44 @@ for (const def of microsoftWriteToolDefinitions) {
 }
 
 const microsoftWriteToolDefByName = new Map(microsoftWriteToolDefinitions.map(t => [t.name, t]));
+
+// C26 tier 2: read-only Sent-Items re-fetch to verify an Outlook send.
+// Graph's sendMail returns 202 with no body, so no message id exists at send
+// time. This does a PLAIN GET (it NEVER re-POSTs / re-sends under any branch)
+// against Sent Items and matches the freshly-sent message by recipient (+ an
+// optional exact subject) within a 120s window. Two attempts, immediately then
+// +3s, because Graph indexes the Sent folder asynchronously. Returns the Graph
+// message id on a confident match, else null (D-4: accepted but unverified, the
+// turn does NOT fail).
+async function refetchOutlookSentId(params: {
+  agentId: string; agentName: string; slot: string;
+  recipientAddresses: string[];
+  subjectExact?: string;
+}): Promise<string | null> {
+  const { agentId, agentName, slot, recipientAddresses, subjectExact } = params;
+  const wantRecipients = recipientAddresses.map(a => a.toLowerCase()).filter(Boolean);
+  const windowStartMs = Date.now() - 120_000;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, 3000));
+    const res = await msGraphRead(
+      `me/mailFolders/sentitems/messages?$top=20&$orderby=sentDateTime desc&$select=id,subject,toRecipients,sentDateTime`,
+      agentId, agentName, 'outlook_send_verify', { recipients: recipientAddresses.length }, slot,
+    );
+    if (!res.ok) continue;
+    const value = (res.data as { value?: Array<{ id?: string; subject?: string; sentDateTime?: string; toRecipients?: Array<{ emailAddress?: { address?: string } }> }> } | null)?.value ?? [];
+    for (const m of value) {
+      if (!m.id) continue;
+      const sentMs = m.sentDateTime ? new Date(m.sentDateTime).getTime() : NaN;
+      if (!Number.isFinite(sentMs) || sentMs < windowStartMs) continue;
+      if (subjectExact && (m.subject ?? '').trim() !== subjectExact.trim()) continue;
+      const addrs = (m.toRecipients ?? []).map(r => (r.emailAddress?.address ?? '').toLowerCase());
+      const recipientMatch = wantRecipients.length === 0 || wantRecipients.some(w => addrs.includes(w));
+      if (!recipientMatch) continue;
+      return m.id;
+    }
+  }
+  return null;
+}
 
 export async function executeMicrosoftWriteTool(
   name: string,
@@ -899,6 +938,19 @@ export async function executeMicrosoftWriteTool(
       }, slot);
       if (!result.ok) return `Error sending email: ${result.error}`;
 
+      // C26 tier 2: sendMail is 202 no-body. Verify by a read-only Sent-Items
+      // re-fetch (never re-sends). Hit = verified; miss = accepted-but-unverified
+      // (Graph indexes Sent asynchronously; the turn does NOT fail, D-4).
+      {
+        const recips = parseRecipients(args.to as string).map(r => r.emailAddress.address);
+        const foundId = await refetchOutlookSentId({ agentId, agentName, slot, recipientAddresses: recips, subjectExact: args.subject as string });
+        if (foundId) {
+          writeToolReceipt({ agentId, tool: 'outlook_send', tier: 2, verified: true, basis: 'refetch', providerId: foundId, recipient: args.to as string, detail: { status: 'sent' } });
+        } else {
+          writeToolReceipt({ agentId, tool: 'outlook_send', tier: 2, verified: false, basis: 'http-status', recipient: args.to as string, detail: { status: 202, accepted: true } });
+        }
+      }
+
       const attachSummary = (prepared.inlineCount + prepared.overflowCount) === 0 ? '' :
         ` with ${prepared.inlineCount} inline attachment(s)${prepared.overflowCount > 0 ? ` and ${prepared.overflowCount} OneDrive link(s)` : ''}`;
       return `Email sent to ${args.to} with subject "${args.subject}"${attachSummary}`;
@@ -931,6 +983,14 @@ export async function executeMicrosoftWriteTool(
         messageId: args.message_id, replyAll, slot, inlineAttachments: prepared.inlineCount, onedriveAttachments: prepared.overflowCount,
       }, slot);
       if (!result.ok) return `Error replying to email: ${result.error}`;
+
+      // C26 tier 2: reply/replyAll is 202 no-body. The recipient (original
+      // sender) and the resulting "RE:" subject are not known at the tool
+      // without an extra original-message GET, so we cannot re-fetch-verify
+      // cheaply. Write an accepted-but-unverified receipt (D-4): the turn does
+      // NOT fail and the gate passes on accepted=true, but it is honestly not
+      // marked verified. See the DONE record for the stated limitation.
+      writeToolReceipt({ agentId, tool: 'outlook_reply', tier: 2, verified: false, basis: 'http-status', recipient: args.message_id as string, detail: { status: 202, accepted: true, note: 'reply target subject/recipient not re-fetched' } });
 
       const attachSummary = (prepared.inlineCount + prepared.overflowCount) === 0 ? '' :
         ` with ${prepared.inlineCount} inline attachment(s)${prepared.overflowCount > 0 ? ` and ${prepared.overflowCount} OneDrive link(s)` : ''}`;
@@ -966,6 +1026,20 @@ export async function executeMicrosoftWriteTool(
         messageId: args.message_id, to: args.to, slot, inlineAttachments: prepared.inlineCount, onedriveAttachments: prepared.overflowCount,
       }, slot);
       if (!result.ok) return `Error forwarding email: ${result.error}`;
+
+      // C26 tier 2: forward is 202 no-body. The recipient (args.to) IS known, so
+      // re-fetch Sent Items by recipient + window (the "FW:" subject is not known
+      // without an original-message GET, so subject is not matched). Hit =
+      // verified; miss = accepted-but-unverified (D-4, turn does not fail).
+      {
+        const recips = parseRecipients(args.to as string).map(r => r.emailAddress.address);
+        const foundId = await refetchOutlookSentId({ agentId, agentName, slot, recipientAddresses: recips });
+        if (foundId) {
+          writeToolReceipt({ agentId, tool: 'outlook_forward', tier: 2, verified: true, basis: 'refetch', providerId: foundId, recipient: args.to as string, detail: { status: 'sent' } });
+        } else {
+          writeToolReceipt({ agentId, tool: 'outlook_forward', tier: 2, verified: false, basis: 'http-status', recipient: args.to as string, detail: { status: 202, accepted: true } });
+        }
+      }
 
       const attachSummary = (prepared.inlineCount + prepared.overflowCount) === 0 ? '' :
         ` with ${prepared.inlineCount} new inline attachment(s)${prepared.overflowCount > 0 ? ` and ${prepared.overflowCount} OneDrive link(s)` : ''} (original attachments preserved automatically)`;
@@ -1160,7 +1234,7 @@ export async function executeMicrosoftWriteTool(
 
       const chatType = memberEmails.length === 1 ? 'oneOnOne' : 'group';
 
-      // Pass UPNs (emails) directly in the bind URL — no directory lookup needed.
+      // Pass UPNs (emails) directly in the bind URL, no directory lookup needed.
       // The signed-in user is included automatically by Graph when using /chats,
       // but we add them explicitly as owner to satisfy the API requirement.
       const meResult = await msGraphRead('me?$select=id', agentId, agentName, 'teams_create_chat_me', {}, slot);
@@ -1205,6 +1279,14 @@ export async function executeMicrosoftWriteTool(
       }, agentId, agentName, 'teams_send_message', { chatId: args.chat_id }, slot);
 
       if (!result.ok) return `Error sending Teams message: ${result.error}`;
+      // C26: Graph returns the created chatMessage resource with its id; capture
+      // it (was discarded). No id on a 2xx = unverifiable, fail the turn.
+      const tmData = result.data as { id?: string } | null;
+      if (!tmData?.id) {
+        writeToolReceipt({ agentId, tool: 'teams_send_message', tier: 1, verified: false, basis: 'http-status', recipient: args.chat_id as string, detail: { anomaly: 'teams message 2xx but no message id' } });
+        return `Error: Graph accepted the Teams message but returned no message id, so the send to chat ${args.chat_id} could not be verified. It may still have posted: check the chat FIRST, and re-send only if it is not there.`;
+      }
+      writeToolReceipt({ agentId, tool: 'teams_send_message', tier: 1, verified: true, basis: 'provider-id', providerId: tmData.id, recipient: args.chat_id as string, detail: { status: 'sent' } });
       return `Teams message sent to chat ${args.chat_id}`;
     }
 
@@ -1350,7 +1432,7 @@ export async function executeMicrosoftWriteTool(
       if (isAudio || isVideo) {
         hint = `Use transcribe_audio with path="${outPath}" to get the spoken content as text.`;
       } else if (isImage) {
-        hint = `Use show_to_user with this path to attach the image to your reply, or screen_read / vision tools to interpret it.`;
+        hint = `Use show_to_user with this path to attach the image to your reply, or screen_screenshot / vision tools to interpret it.`;
       } else {
         hint = `Use file_read or show_to_user with this path.`;
       }
@@ -1428,7 +1510,7 @@ export async function executeMicrosoftWriteTool(
           }
           bytes = Buffer.from(await resp.arrayBuffer());
         } else {
-          // Non-SharePoint attachment — try a direct GET with the auth
+          // Non-SharePoint attachment, try a direct GET with the auth
           // header. Inline message cards usually live at a Graph URL
           // that accepts the token.
           const resp = await fetch(att.contentUrl, {
@@ -1463,7 +1545,7 @@ export async function executeMicrosoftWriteTool(
       if (isAudio || isVideo) {
         hint = `Use transcribe_audio with path="${outPath}" to get the spoken content as text.`;
       } else if (isImage) {
-        hint = `Use show_to_user with this path to attach the image to your reply, or screen_read / vision tools to interpret it.`;
+        hint = `Use show_to_user with this path to attach the image to your reply, or screen_screenshot / vision tools to interpret it.`;
       } else {
         hint = `Use file_read or show_to_user with this path.`;
       }
@@ -1500,7 +1582,7 @@ export async function executeMicrosoftWriteTool(
       // endpoint, but the share itself was already granted server-side
       // when the owner sent it. With Calendars.ReadWrite.Shared scope we
       // can directly access the owner's calendar via /users/{email}/...
-      // — no UI acceptance required. So "accepting" reduces to verifying
+      //, no UI acceptance required. So "accepting" reduces to verifying
       // delegate access works and handing the agent the owner's email
       // to use as calendar_id on subsequent calls.
       const msg = await msGraphRead(
@@ -1531,7 +1613,7 @@ export async function executeMicrosoftWriteTool(
 
       // Step 3: try the experimental Graph endpoint to add it to the
       // user's calendar list (so it shows up in calendar_list_ms too).
-      // Best-effort — failure here doesn't affect direct access.
+      // Best-effort, failure here doesn't affect direct access.
       const addResult = await msGraphWrite(
         'POST',
         `me/messages/${messageId}/microsoft.graph.calendarSharingMessage/accept`,
@@ -1545,7 +1627,7 @@ export async function executeMicrosoftWriteTool(
         `Calendar name: "${cal.name ?? 'Calendar'}". ` +
         `Use calendar_id="${ownerEmail}" with calendar_agenda_ms / calendar_create_ms / etc. to operate on it. ` +
         (addedToList
-          ? 'Also added to your personal calendar list — calendar_list_ms will show it.'
+          ? 'Also added to your personal calendar list, calendar_list_ms will show it.'
           : 'Note: could not add to your personal calendar list (Microsoft Graph limitation). Direct access via the email above still works.');
     }
 
@@ -1697,6 +1779,13 @@ export async function executeMicrosoftWriteTool(
       }, agentId, agentName, 'teams_send_channel_message', { teamId: args.team_id, channelId: args.channel_id }, slot);
 
       if (!result.ok) return `Error sending channel message: ${result.error}`;
+      // C26: capture the returned message resource id (was discarded).
+      const tcmData = result.data as { id?: string } | null;
+      if (!tcmData?.id) {
+        writeToolReceipt({ agentId, tool: 'teams_send_channel_message', tier: 1, verified: false, basis: 'http-status', recipient: args.channel_id as string, detail: { anomaly: 'teams channel message 2xx but no message id', teamId: args.team_id } });
+        return `Error: Graph accepted the channel message but returned no message id, so it could not be verified as posted. It may still have posted: check the channel FIRST, and re-post only if it is not there.`;
+      }
+      writeToolReceipt({ agentId, tool: 'teams_send_channel_message', tier: 1, verified: true, basis: 'provider-id', providerId: tcmData.id, recipient: args.channel_id as string, detail: { status: 'posted', teamId: args.team_id } });
       return `Message posted to channel`;
     }
 

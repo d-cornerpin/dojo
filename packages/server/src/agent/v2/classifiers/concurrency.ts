@@ -1,5 +1,5 @@
 // ════════════════════════════════════════
-// Phase 1A — partitionTools classifier
+// Phase 1A, partitionTools classifier
 //
 // Groups consecutive same-category tool calls into batches so the
 // executor can run safe (read-only) batches concurrently via
@@ -25,10 +25,10 @@ export interface ToolBatch {
  * cornerpin-platform/packages/server/src/agent/tools.ts as of v2 plan.
  *
  * Categories:
- *   safe    — pure read, no side effects, parallelizable
- *   serial  — has side effects, must run in order
- *   agent   — coordinates with other agents, sequential
- *   special — one-of-a-kind semantics, sequential
+ *   safe, pure read, no side effects, parallelizable
+ *   serial, has side effects, must run in order
+ *   agent, coordinates with other agents, sequential
+ *   special, one-of-a-kind semantics, sequential
  *
  * Unknown tools default to 'special' (safest serial behavior).
  */
@@ -38,17 +38,15 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   file_read: 'safe',
   file_list: 'safe',
   share_file: 'safe',
-  memory_grep: 'safe',
-  memory_describe: 'safe',
-  memory_expand: 'safe',
-  memory_search: 'safe',
+  history_search: 'safe',
+  history_get: 'safe',
+  history_expand: 'safe',
   web_search: 'safe',
   web_fetch: 'safe',
   vault_search: 'safe',
   tracker_get_status: 'safe',
   tracker_list_active: 'safe',
   get_current_time: 'safe',
-  tunnel_status: 'safe',
   list_agents: 'safe',
   list_models: 'safe',
   list_groups: 'safe',
@@ -93,9 +91,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   healer_log_action: 'serial',
   healer_propose: 'serial',
   set_user_presence: 'serial',
-  tunnel_start: 'serial',
-  tunnel_stop: 'serial',
-  tunnel_restart: 'serial',
+  tunnel: 'serial',
   // Google writes
   gmail_send: 'serial',
   gmail_reply: 'serial',
@@ -128,11 +124,11 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   onedrive_delete: 'serial',
   teams_send_message: 'serial',
   teams_create_chat: 'serial',
-  // Slides — write-shaped (each call mutates the deck)
+  // Slides, write-shaped (each call mutates the deck)
   slides_create_deck: 'serial',
   slides_add_slide: 'serial',
   slides_set_style: 'serial',
-  // Forms — write-shaped (each call mutates the form). Reads are 'safe'
+  // Forms, write-shaped (each call mutates the form). Reads are 'safe'
   // and don't need entries here (default).
   forms_create_form: 'serial',
   forms_add_text_question: 'serial',
@@ -188,9 +184,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   update_group: 'agent',
   delete_group: 'agent',
   assign_to_group: 'agent',
-  update_agent_model: 'agent',
-  update_agent_profile: 'agent',
-  update_agent_permissions: 'agent',
+  update_agent: 'agent',
   reset_session: 'agent',
 
   // ── special (one-of-a-kind semantics) ──
@@ -198,12 +192,12 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   image_create: 'special',
   show_to_user: 'special',
   imessage_send: 'special',
-  // System control (mouse/keyboard/screen — sequential, side effects, but not "agent" or "serial write")
+  // System control (mouse/keyboard/screen, sequential, side effects, but not "agent" or "serial write")
   mouse_click: 'special',
   mouse_move: 'special',
   keyboard_type: 'special',
-  screen_read: 'special',
-  // Browser (stateful, single instance — must be serial)
+  screen_screenshot: 'special',
+  // Browser (stateful, single instance, must be serial)
   web_browse: 'special',
 };
 
