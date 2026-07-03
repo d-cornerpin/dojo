@@ -2603,7 +2603,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'use_technique',
-    description: 'Activate and load a technique. Prefer technique_read for browsing/searching, use_technique now returns an outline (sections + supporting files + sizes), and you call technique_read action="section" to read specific parts. Big techniques no longer truncate.\n\n**Engine acknowledgement gate (v2.7.6), IMPORTANT:** this call engages an acknowledgement gate. Until you call technique_acknowledge(name, summary) with a ≥100-char paraphrase of what the technique says, EVERY OTHER tool will be refused. Only technique_read, use_technique, list_techniques, and technique_acknowledge are allowed while the gate is on. The acknowledgement forces engagement so you don\'t skip past the technique into memory-driven work.',
+    description: 'Activate and load a technique. Prefer technique_read for browsing/searching, use_technique now returns an outline (sections + supporting files + sizes), and you call technique_read action="section" to read specific parts. Big techniques no longer truncate.\n\nWhen you load a technique, apply its actual steps rather than skipping back to cached memory. You MAY optionally call technique_acknowledge(name, summary) to record that you engaged with it, but it is not required and no tools are blocked either way.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2614,7 +2614,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'technique_acknowledge',
-    description: 'Clear the engine\'s technique-acknowledgement gate after reading a technique. REQUIRED after every successful technique_read / use_technique call before any other tool can run. Pass the technique\'s slug (or display name) and a paraphrase summary of what the technique says (minimum 100 characters, engine policy, validated mechanically). The point is engagement, not a tutorial: a sentence or two on the workflow / key steps is fine. Once the engine accepts your acknowledgement, the gate clears and all tools work again. If you re-read the technique later, the gate re-engages and a fresh acknowledgement is required.',
+    description: 'OPTIONAL. Note that you have engaged with a technique after reading it. This is not required and nothing is blocked without it (the old acknowledgement gate was removed). Pass the technique\'s slug (or display name) and a short paraphrase of its key steps. Use it only when you want to record that you processed the material before applying it; otherwise just go straight to the work.',
     input_schema: {
       type: 'object',
       properties: {
@@ -2626,7 +2626,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'technique_read',
-    description: 'Read a technique with surgical precision instead of slurping the whole thing. Five actions: (1) outline [default], returns headings, line ranges, char counts, and supporting files; never truncates; ALWAYS your first call when consulting a technique. (2) section, read one section by section_name="<title>" (case-insensitive substring match) or lines="start-end"; oversize sections require explicit line ranges. (3) search, query="<term>" greps TECHNIQUE.md AND all supporting files, returns matches with file + line number + surrounding context; best path through a huge technique. (4) list_files, list the technique\'s supporting files. (5) read_file, read one supporting file by file="<path>", optional lines="start-end".\n\n**Engine acknowledgement gate (v2.7.6), IMPORTANT:** every successful call to this tool engages an acknowledgement gate. Until you call technique_acknowledge(name, summary) with a ≥100-char paraphrase of what you read, EVERY OTHER tool (file_read, exec, tracker_*, send_to_agent, etc.) will be REFUSED. Only this tool, use_technique, list_techniques, and technique_acknowledge are allowed while the gate is on. Reason: agents kept reading techniques and then ignoring them in favor of cached memory. The gate forces engagement. So the right pattern is: technique_read (one or more times to load what you need) → technique_acknowledge → then do your work. The acknowledgement does NOT need to be exhaustive, just enough to show you processed the content.',
+    description: 'Read a technique with surgical precision instead of slurping the whole thing. Five actions: (1) outline [default], returns headings, line ranges, char counts, and supporting files; never truncates; ALWAYS your first call when consulting a technique. (2) section, read one section by section_name="<title>" (case-insensitive substring match) or lines="start-end"; oversize sections require explicit line ranges. (3) search, query="<term>" greps TECHNIQUE.md AND all supporting files, returns matches with file + line number + surrounding context; best path through a huge technique. (4) list_files, list the technique\'s supporting files. (5) read_file, read one supporting file by file="<path>", optional lines="start-end".\n\nWhen you read a technique, apply what it says rather than falling back to cached memory (agents used to read techniques and then ignore them). You MAY optionally call technique_acknowledge afterward to record that you engaged, but it is not required and no tools are blocked. Pattern: technique_read (one or more times to load what you need), then do the work.',
     input_schema: {
       type: 'object',
       properties: {
@@ -5365,6 +5365,13 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'tracker_get_status': {
+        // F6 (harness finding): sibling tools take task_id / project_id, so weak
+        // models naturally pass those here too. Accept them as aliases for id
+        // instead of warning-and-ignoring (which left the call id-less).
+        if (typeof args.id !== 'string') {
+          const alias = args.task_id ?? args.project_id;
+          if (typeof alias === 'string') args.id = alias;
+        }
         const getErr = checkRequired([
           { name: 'id', value: args.id, type: 'string' },
         ]);

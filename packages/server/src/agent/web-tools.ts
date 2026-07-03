@@ -95,6 +95,19 @@ export async function webSearch(
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => '');
+      // F5 (harness finding): a 429 is the provider's rate/quota limit, an
+      // environmental condition, not an agent error. Retrying just burns more
+      // quota (observed: a research turn retried into three consecutive 429s).
+      // Tell the agent plainly to proceed without more searches, and log WARN.
+      if (response.status === 429) {
+        logger.warn('Brave Search rate/quota limit hit (429)', {
+          body: errorText.slice(0, 200),
+        }, agentId);
+        return (
+          'Web search is rate/quota limited right now (HTTP 429). Do NOT retry web_search this turn. ' +
+          'Proceed with the sources you already have, or use web_fetch on URLs you already know.'
+        );
+      }
       logger.error('Brave Search API error', {
         status: response.status,
         body: errorText.slice(0, 500),
@@ -275,6 +288,13 @@ export async function webFetch(
             },
           ],
           tools: false,
+          // F3 (harness finding): this is a best-effort utility call with a raw-fetch
+          // fallback right below. A busy local extractor model was stalling real turns
+          // for minutes against the provider's default 5-minute timeout, then logging
+          // at ERROR even though the failure is fully handled here. Fail fast to the
+          // fallback instead; 45s is generous for a bounded extraction.
+          abortSignal: AbortSignal.timeout(45_000),
+          bestEffort: true,
         });
         const extract = result.content?.trim();
         if (extract && extract.length > 0) {

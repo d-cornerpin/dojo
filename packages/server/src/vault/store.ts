@@ -256,17 +256,25 @@ export async function createEntry(params: {
   if (embeddingBuf) {
     const duplicate = await findSemanticDuplicate(content, embeddingBuf, 0.92);
     if (duplicate) {
-      // New entry is more recent -- check if it's more detailed
-      if (content.length > duplicate.content.length) {
-        // Supersede old entry
-        db.prepare('UPDATE vault_entries SET is_obsolete = 1, superseded_by = ?, updated_at = datetime(\'now\') WHERE id = ?')
-          .run(id, duplicate.id);
-        logger.info('Superseding older vault entry', { oldId: duplicate.id, newId: id });
-      } else {
-        // Old entry is better or same -- skip
+      // Compare the substance (date prefix + whitespace/case normalized away).
+      const norm = (s: string) =>
+        s.replace(/^\[\d{4}-\d{2}-\d{2}\]\s*/, '').replace(/\s+/g, ' ').trim().toLowerCase();
+      if (norm(content) === norm(duplicate.content)) {
+        // Same statement re-saved -- keep the existing entry.
         logger.debug('Skipping duplicate vault entry', { existingId: duplicate.id, similarity: 'high' });
         return rowToEntry(db.prepare('SELECT * FROM vault_entries WHERE id = ?').get(duplicate.id) as VaultEntryRow);
       }
+      // 2026-07-03: >= 0.92 similarity with DIFFERENT substance is a
+      // correction/update of the same fact, and the NEW statement is the more
+      // recent one -- it must win. The old "keep whichever is longer" heuristic
+      // silently discarded equal-length corrections (observed live: a
+      // membership code correction deduped INTO the stale entry, and the tool
+      // reported the OLD content as 'Remembered'; the update was lost unless
+      // the agent noticed and manually ran vault_update). Recency is user
+      // authority; the superseded entry stays recoverable via superseded_by.
+      db.prepare('UPDATE vault_entries SET is_obsolete = 1, superseded_by = ?, updated_at = datetime(\'now\') WHERE id = ?')
+        .run(id, duplicate.id);
+      logger.info('Superseding older vault entry', { oldId: duplicate.id, newId: id });
     }
   }
 

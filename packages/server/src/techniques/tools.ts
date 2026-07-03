@@ -796,23 +796,31 @@ export function executeTechniqueAcknowledge(
   if (!name) {
     return { ok: false, content: 'Error: name (technique slug/id) is required.' };
   }
+  // D6 removed the hard acknowledgement GATE; acking is now an OPTIONAL affordance
+  // and the turn loop tracks the pending state itself (v2/loop.ts). This executor
+  // is dispatched from executeTool, which has no turn state, so it can legitimately
+  // see pendingAck=null even right after a read. Erroring in that case (the old
+  // "no pending acknowledgement on file" wall) broke every technique flow, because
+  // the tool descriptions still nudge the model to acknowledge. Treat a missing or
+  // unmatched pending as a friendly no-op success: there is nothing to gate, so the
+  // agent should just keep working. We only enforce the paraphrase-length nudge when
+  // there is a genuine pending ack to clear.
+  if (!pendingAck) {
+    return {
+      ok: true,
+      clearedAck: true,
+      content:
+        `Noted. Acknowledging a technique is optional; nothing was pending to clear, so go ahead and apply "${name}".`,
+    };
+  }
   if (!summary || summary.trim().length < TECHNIQUE_ACK_MIN_SUMMARY_CHARS) {
     return {
       ok: false,
       content:
         `Error: summary must be at least ${TECHNIQUE_ACK_MIN_SUMMARY_CHARS} characters. ` +
-        `Engine policy: the acknowledgement is what forces you to process what you read instead of skipping past it. ` +
-        `Briefly paraphrase the technique's key steps in your own words (no need to be exhaustive — just enough to show you engaged). ` +
+        `The acknowledgement is what shows you processed what you read instead of skipping past it. ` +
+        `Briefly paraphrase the technique's key steps in your own words (no need to be exhaustive, just enough to show you engaged). ` +
         `Current summary length: ${(summary?.trim().length ?? 0)} chars.`,
-    };
-  }
-  if (!pendingAck) {
-    return {
-      ok: false,
-      content:
-        `Error: no pending technique acknowledgement on file. ` +
-        `technique_acknowledge is only meaningful right after a technique_read or use_technique call. ` +
-        `If you meant to read a technique, call technique_read(name="${name}", action="outline") or use_technique(name="${name}") first.`,
     };
   }
   // Match by slug (techniqueId) or display name (techniqueName). LLMs

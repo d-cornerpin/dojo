@@ -94,6 +94,7 @@ const ACTION_VERBS = new Set([
   'create', 'make', 'build', 'generate', 'draft', 'write', 'compose',
   'summarize', 'summarise', 'compile', 'aggregate', 'gather',
   'find', 'search', 'look', 'lookup', 'investigate', 'check',
+  'research', 'compare', 'contrast', 'weigh',
   'update', 'edit', 'change', 'modify', 'fix', 'patch',
   'delete', 'remove', 'clear', 'archive',
   'schedule', 'plan', 'organize', 'organise',

@@ -192,6 +192,28 @@ step "Cacheable-prefix determinism gate (C28)"
     node "$SCRIPT_DIR/check-prefix-determinism.mjs" "$SMOKE_PLATFORM/packages/server/dist" ) \
   || fail "Cacheable-prefix determinism gate: a cache-breaker is in the system prefix. NOT publishing."
 
+# ── Behavioral suite gate (wave-2 fix loop, 2026-07-03) ──
+# Real-model behavioral runs are slow (~25 min) and cannot run inline here, so
+# the gate checks for a RECENT full-suite green MARKER written only when every
+# scenario passed with zero blocking findings (dev-test-tools/behavioral/
+# results/last-green.json). Tradeoff stated plainly: the marker's git SHA is
+# logged for the human but not hard-matched, because the release commit itself
+# (and the instrument uninstall) legitimately change the SHA after the green
+# run. Freshness is the enforced bar: a marker older than 24h means the suite
+# was not run against this change set. Run it with:
+#   (cd ../dev-test-tools && node behavioral/runner.mjs)
+step "Behavioral suite gate (full-suite green marker, <24h)"
+BEHAV_MARKER="$SCRIPT_DIR/../../dev-test-tools/behavioral/results/last-green.json"
+if [ ! -f "$BEHAV_MARKER" ]; then
+  fail "Behavioral gate: no last-green marker. Run the behavioral suite to green first. NOT publishing."
+fi
+BEHAV_AGE_H=$(node -e "const s=require('fs').statSync('$BEHAV_MARKER');console.log(((Date.now()-s.mtimeMs)/3600000).toFixed(1))")
+BEHAV_SHA=$(node -e "try{console.log(require('$BEHAV_MARKER').gitSha||'unknown')}catch{console.log('unreadable')}")
+if [ "$(node -e "console.log($BEHAV_AGE_H > 24 ? 1 : 0)")" = "1" ]; then
+  fail "Behavioral gate: last-green marker is ${BEHAV_AGE_H}h old (>24h). Re-run the suite to green. NOT publishing."
+fi
+echo "  ✓ behavioral suite green ${BEHAV_AGE_H}h ago (marker sha ${BEHAV_SHA:0:8}; verify it reflects this change set)"
+
 # ── Dev-instrument ship-gate (C23) ──
 # The dev-test-tools harness injects sim-outbound send-capture + /api/dev routes into
 # source (tools.ts, model.ts, imessage-bridge.ts, gateway/server.ts). uninstall.mjs

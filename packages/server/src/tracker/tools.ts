@@ -455,6 +455,29 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     const dependsOn = args.dependsOn as string[] | undefined;
     const phase = args.phase as number | undefined;
 
+    // 2026-07-03: schedule timestamps must be parseable, checked BEFORE the
+    // row is created. An unparseable scheduled_start used to be kept verbatim
+    // ("keep original if parse fails") and written into scheduled_start AND
+    // next_run_at; the scheduler's `next_run_at <= <now ISO>` string
+    // comparison then never matches, so the task sits schedule_status=
+    // 'waiting' forever and SILENTLY never fires (observed live via the
+    // behavioral harness: reminder_create when="in 2 minutes" produced a
+    // reminder that never fired). The engine rejects it at the boundary with
+    // a corrective hint; resolving relative phrases is the model's job
+    // (get_current_time + offset), per the tool docs it already has.
+    for (const field of ['scheduled_start', 'anchor_time']) {
+      const value = args[field];
+      if (value === undefined || value === null || value === '') continue;
+      if (typeof value !== 'string' || isNaN(new Date(value).getTime())) {
+        return (
+          `Error: ${field}="${String(value)}" is not a parseable datetime, so the scheduler could never ` +
+          `fire this task (it would wait forever). Resolve relative times yourself: call get_current_time, ` +
+          `add the offset (e.g. "in 2 minutes" = current UTC + 2 minutes), and re-call with an ISO 8601 ` +
+          `UTC timestamp, e.g. ${field}="2026-07-03T16:38:00Z".`
+        );
+      }
+    }
+
     // Near-duplicate guard (2026-06-02 bug fix). Without this, a hoarding-
     // gate error on file_read/exec can put the agent into a loop where
     // every iteration calls tracker_create_task with the same title, 27
@@ -550,12 +573,10 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     // schedule justifies it.
     let scheduledStart = args.scheduled_start as string | undefined;
     if (scheduledStart) {
-      try {
-        const parsed = new Date(scheduledStart);
-        if (!isNaN(parsed.getTime())) {
-          scheduledStart = parsed.toISOString();
-        }
-      } catch { /* keep original if parse fails */ }
+      // Parseability was validated before the row was created (above); this
+      // just normalizes to ISO so every downstream comparison is consistent.
+      const parsed = new Date(scheduledStart);
+      if (!isNaN(parsed.getTime())) scheduledStart = parsed.toISOString();
     }
     // hasFutureSchedule is true only when scheduled_start is in the
     // future (past-dated scheduled_start counts as "fire ASAP" and lands
@@ -596,10 +617,9 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       // creating this at 14:23").
       let anchorTime = args.anchor_time as string | undefined;
       if (anchorTime) {
-        try {
-          const parsed = new Date(anchorTime);
-          if (!isNaN(parsed.getTime())) anchorTime = parsed.toISOString();
-        } catch { /* keep original */ }
+        // Validated parseable at the top of this function; normalize to ISO.
+        const parsed = new Date(anchorTime);
+        if (!isNaN(parsed.getTime())) anchorTime = parsed.toISOString();
       } else if (repeatInterval) {
         anchorTime = scheduledStart;
       }
@@ -694,6 +714,19 @@ export function reminderCreate(agentId: string, args: Record<string, unknown>): 
       'Once they answer, call get_current_time to anchor relative times, then re-call ' +
       'reminder_create with `when` set to the resolved ISO 8601 datetime. ' +
       'Do NOT create the reminder yet.'
+    );
+  }
+
+  // 2026-07-03: same boundary validation trackerCreateTask enforces, but with
+  // a `when`-flavored message (that is the arg the caller actually used). An
+  // unparseable `when` used to flow into next_run_at verbatim and the reminder
+  // silently never fired (behavioral harness caught when="in 2 minutes").
+  if (isNaN(new Date(when).getTime())) {
+    return (
+      `Error: when="${when}" is not a parseable datetime, so this reminder would never fire. ` +
+      `Resolve the relative time yourself: call get_current_time, add the offset ` +
+      `(e.g. "in 2 minutes" = current UTC + 2 minutes), then re-call reminder_create with an ` +
+      `ISO 8601 UTC timestamp, e.g. when="2026-07-03T16:38:00Z".`
     );
   }
 

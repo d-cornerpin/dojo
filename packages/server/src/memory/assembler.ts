@@ -1515,6 +1515,9 @@ async function buildRelevantMemoryBlock(agentId: string, includeVault: boolean):
       msgHits = ftsMessageHits(queryText, agentId, 8);
     }
     let usedMsg = 0;
+    // Selection stays similarity-ranked (best hits win the budget), but
+    // presentation is CHRONOLOGICAL, see the sort below.
+    const msgCandidates: Array<{ createdAt: string; line: string }> = [];
     for (const hit of msgHits) {
       if (tailIds.has(hit.sourceId)) continue;
       const row = db.prepare('SELECT role, content, created_at FROM messages WHERE id = ?')
@@ -1526,10 +1529,18 @@ async function buildRelevantMemoryBlock(agentId: string, includeVault: boolean):
       const line = `- [${row.created_at}] ${row.role}: ${snippet}`;
       const lineTokens = estimateTokens(line);
       if (usedMsg + lineTokens > RELEVANT_MEMORY_BUDGET_TOKENS) break;
-      msgLines.push(line);
+      msgCandidates.push({ createdAt: row.created_at, line });
       usedMsg += lineTokens;
-      if (msgLines.length >= 5) break;
+      if (msgCandidates.length >= 5) break;
     }
+    // 2026-07-03: present recalled lines oldest → newest, newest LAST (the
+    // recency-salient slot for LLMs). Similarity ordering put a stale
+    // statement of a since-corrected fact FIRST and the weakest floor model
+    // echoed it (observed live: an old membership code recited over the
+    // corrected one told minutes before). Conflict arbitration is the
+    // engine's job, not the model's (correctness-floor rule).
+    msgCandidates.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    msgLines.push(...msgCandidates.map((c) => c.line));
 
     // --- long-term vault by meaning (D4 step 3) ---
     // Only on non-scaffolding turns; scaffolding (session-start / post-compaction)
@@ -1565,7 +1576,9 @@ async function buildRelevantMemoryBlock(agentId: string, includeVault: boolean):
   let block: string | null = null;
   if (msgLines.length > 0 || vaultLines.length > 0) {
     const parts: string[] = [];
-    if (msgLines.length > 0) parts.push(`Older messages retrieved by meaning:\n${msgLines.join('\n')}`);
+    // Framing states the precedence deterministically: entries are dated and
+    // ordered, and the newest statement supersedes older ones on conflict.
+    if (msgLines.length > 0) parts.push(`Older messages retrieved by meaning (ordered oldest → newest; when they conflict, the NEWEST line supersedes the older ones):\n${msgLines.join('\n')}`);
     if (vaultLines.length > 0) parts.push(`From your long-term vault (retrieved by meaning):\n${vaultLines.join('\n')}`);
     block = `═══ RELEVANT MEMORY (retrieved by meaning, context only, not live conversation) ═══\n${parts.join('\n\n')}\n═══ END RELEVANT MEMORY ═══`;
   }

@@ -108,7 +108,7 @@ import { trackerEnforcer } from './classifiers/tracker.js';
 import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD } from '../../memory/compaction.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
-import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, type TurnCounterparty } from './counterparty.js';
+import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, claimAssembledSiblings, type TurnCounterparty } from './counterparty.js';
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
 import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout } from './classifiers/output.js';
 import { detectUngroundedDeliveryClaim } from './classifiers/grounding.js';
@@ -533,6 +533,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
   continuationContext.delete(agentId);
   const isHumanContinuation = waitingConvs.length === 0 && !!continuation;
   const chosenConvKey = isHumanContinuation ? continuation!.convKey : (waitingConvs[0]?.key ?? null);
+  // F9: timestamp of the turn's most recent context assembly; sibling user rows
+  // of the same conversation created before this instant were IN the assembled
+  // context and are claimed at teardown (see claimAssembledSiblings).
+  let lastAssembledAtIso: string | null = null;
   // E-C1: publish the conversation this turn serves so recall_recent_thread scopes
   // to it. null on engine/A2A turns (no waiting human) so recall doesn't latch the
   // last human conversation. Cleared when the agent goes idle.
@@ -1595,6 +1599,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // are not recomputed).
       const sharedTurnContext = { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn };
       const ctx = await assembleContext(agentId, contextModelId, sharedTurnContext);
+      lastAssembledAtIso = new Date().toISOString(); // F9: see claimAssembledSiblings
       let systemPrompt = ctx.systemPrompt;
       const messages = ctx.messages;
 
@@ -1824,7 +1829,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
               LIMIT 1
             `).get(agentId) as { id: string } | undefined;
 
-            if (!existingTask) {
+            // F12 (harness finding, wave 2): agent CREATION stores the new agent's
+            // system prompt as both a role='system' row AND a role='user' bootstrap
+            // message (gateway/routes/agents.ts), so this classifier treated every
+            // creation prompt as a user ask and auto-created a junk project, which
+            // the PM then burned turns renaming, and which suppressed legitimate
+            // auto-scaffolding later (existingTask). A bootstrap prompt is exactly
+            // identifiable: the "user" text is byte-identical to a system row.
+            const bootstrapTwin = db.prepare(
+              `SELECT 1 FROM messages WHERE agent_id = ? AND role = 'system' AND content = ? LIMIT 1`,
+            ).get(agentId, lastUserMessageContent);
+            if (!existingTask && !bootstrapTwin) {
               const decision = await detectMultistep(lastUserMessageContent, agentId, cfg);
               logger.info('v2 multistep classifier ran', {
                 agentId,
@@ -2515,6 +2530,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // Weak models emit literal `\n` and over-pad blank lines.
       result.content = sanitizeAssistantText(result.content ?? null) ?? '';
 
+      // Deliberate engine surface (scheduler digest / reminder / completion
+      // report): text meant to REACH THE USER, exempt from both dedup guards
+      // below (2026-07-03, see the G-SUP-3 note). E-A2: read from the PENDING
+      // engine event too, in the race case mostRecentInbound is the human that
+      // out-raced the event, so checking only mostRecentInbound would wrongly
+      // suppress a reminder's text on the engine turn. (Declared here, above
+      // the dedup guards, all inputs are turn-invariant.)
+      const deliberateSurfaceTurn =
+        mostRecentInbound?.origin_intent === 'scheduler' || mostRecentInbound?.origin_intent === 'completion_report' ||
+        (isEngineTurn && (pendingEngineEvent?.originIntent === 'scheduler' || pendingEngineEvent?.originIntent === 'completion_report'));
+
       // Dedup check (#40, v1 runtime.ts:1221-1232). If the model produced
       // the exact same text as the most recent assistant message AND there
       // are no tool calls, break the loop without persisting. Catches the
@@ -2529,7 +2555,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // re-ask got no reply at all. Restrict the dedup to non-user turns (a genuine
       // mid-stall regeneration with no one waiting); a fresh user ask is always
       // answered. A tool-less reply ends the turn, so this cannot loop.
-      if (result.content && result.toolCalls.length === 0 && !triggerRow) {
+      //
+      // 2026-07-03: same rule extends to DELIBERATE ENGINE SURFACES (scheduler /
+      // reminder / completion-report turns). Their user-facing text is repeated
+      // near-identical BY DESIGN ("Time to stretch!" every day), and the surface
+      // IS the point of the turn. The behavioral harness caught both dedup
+      // guards eating a reminder delivery entirely (run bmr5637ptnc: two model
+      // attempts suppressed as cross-turn near-duplicates, turn ended silent,
+      // the user never got the reminder). deliberateSurfaceTurn is computed
+      // above from structured origin (origin_intent / pending engine event),
+      // exactly the signal E-A2 already anticipated for this failure shape.
+      if (result.content && result.toolCalls.length === 0 && !triggerRow && !deliberateSurfaceTurn) {
         const lastAssistant = db
           .prepare(
             "SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' ORDER BY created_at DESC, rowid DESC LIMIT 1",
@@ -2583,13 +2619,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // Pure background/wakeup turn: no user waiting, no fresh trigger, not A2A, not a
       // deliberate engine surface (scheduler digest / completion report). The agent's
       // text here ("3 AM, you're asleep, let me make progress…") is internal, suppress.
-      // E-A2: a deliberate surface (scheduler/reminder/completion report) is meant to
-      // reach the user. Read it from the PENDING engine event too, in the race case
-      // mostRecentInbound is the human that out-raced the event, so checking only
-      // mostRecentInbound would wrongly suppress a reminder's text on the engine turn.
-      const deliberateSurfaceTurn =
-        mostRecentInbound?.origin_intent === 'scheduler' || mostRecentInbound?.origin_intent === 'completion_report' ||
-        (isEngineTurn && (pendingEngineEvent?.originIntent === 'scheduler' || pendingEngineEvent?.originIntent === 'completion_report'));
+      // (deliberateSurfaceTurn is declared above the dedup guards, 2026-07-03.)
       // C3: a human-task continuation (auto-continued after MAX_TOOL_LOOPS / budget /
       // compaction) has no waiting human but IS finishing a human's ask, its final
       // answer must be delivered + routed to the restored counterparty, never suppressed
@@ -2736,7 +2766,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // ("what's on my calendar?" twice), the reply is a genuine answer and must be
       // delivered, never eaten as a "duplicate." Cross-turn dedup is ONLY for the
       // agent spontaneously RE-POSTING with no new user ask driving the turn.
-      if (persistedContent && persistedContent.trim().length > 0 && !triggerRow) {
+      // 2026-07-03: a DELIBERATE ENGINE SURFACE (scheduler/reminder/completion
+      // report) is likewise a new external event driving the turn, and its text is
+      // repeated near-identical BY DESIGN, so it is exempt too (run bmr5637ptnc:
+      // this guard ate a reminder delivery twice and the turn ended silent).
+      if (persistedContent && persistedContent.trim().length > 0 && !triggerRow && !deliberateSurfaceTurn) {
         try {
           const recentReplies = db
             .prepare(
@@ -4851,11 +4885,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
           trackerStatusUpdatedThisTurn: state.trackerStatusUpdatedThisTurn || trackerStatusInThisIter,
         });
       }
-      const TRACKER_NUDGE_THRESHOLD = 8;
+      // F2 (post-D3): the deleted anti-hoarding gate was ALSO the thing that forced
+      // task scaffolding at the 6th load; deleting it removed all engine pressure to
+      // scaffold multi-step work (observed: a 7-call research job created no tracker
+      // task, drifted, and the PM had nothing to monitor). Re-homed as two tiers:
+      //   nudge at >3 real work calls (model-choice assist, one-shot, non-blocking),
+      //   ENGINE FLOOR at >=6: the engine auto-creates the task itself via the same
+      //   ENGINE_AUTO_MARKER machinery the turn-start classifier uses, so on the
+      //   weakest model the work is tracked regardless of what the model chooses.
+      const TRACKER_NUDGE_THRESHOLD = 3;
+      const TRACKER_AUTO_SCAFFOLD_AT = 6;
       if (
-        !state.nudgedForTrackerThisTurn &&
         !state.trackerToolCalledThisTurn &&
-        state.nonTrackerToolCalls > TRACKER_NUDGE_THRESHOLD
+        ((!state.nudgedForTrackerThisTurn && state.nonTrackerToolCalls > TRACKER_NUDGE_THRESHOLD) ||
+          state.nonTrackerToolCalls >= TRACKER_AUTO_SCAFFOLD_AT)
       ) {
         // Secondary check: agent may have an active task from a previous
         // turn that they're just continuing. Don't nudge them either.
@@ -4877,7 +4920,62 @@ export async function runV2Turn(agentId: string): Promise<void> {
             agentId, err: err instanceof Error ? err.message : String(err),
           }, agentId);
         }
-        if (!hasActiveTask) {
+        if (
+          !hasActiveTask &&
+          state.nonTrackerToolCalls >= TRACKER_AUTO_SCAFFOLD_AT &&
+          state.lastUserMessageContent &&
+          !isPMAgent(agentId)
+        ) {
+          // ENGINE FLOOR: the model has done 6+ real work calls with no tracker
+          // engagement (the exact point where the old anti-hoarding gate used to
+          // force scaffolding). Stop asking; create the task ourselves via the
+          // same ENGINE_AUTO_MARKER path the turn-start classifier uses, so the
+          // work is tracked on the weakest model regardless of what it chooses.
+          try {
+            const { createProject } = await import('../../tracker/schema.js');
+            const { ENGINE_AUTO_MARKER } = await import('./classifiers/multistep.js');
+            const scaffoldName = state.lastUserMessageContent
+              .split('\n')[0]
+              .slice(0, 50)
+              .trim()
+              .replace(/[.!?]+$/, '') || 'Multi-step task';
+            const created = createProject({
+              title: scaffoldName,
+              description: ENGINE_AUTO_MARKER + state.lastUserMessageContent.slice(0, 2000),
+              level: 1,
+              tasks: [{ title: scaffoldName, assignedTo: agentId }],
+              createdBy: agentId,
+            });
+            const autoNoteText = (
+              `[System: the engine opened tracker task "${scaffoldName}" (task_id: ${created.taskIds?.[0] ?? created.projectId}) for this work ` +
+              `(you made ${state.nonTrackerToolCalls} work calls with no tracker entry; untracked multi-step work drifts and the PM cannot monitor it). ` +
+              `Keep working; update it with tracker_add_notes as you go and close it with tracker_update_status(complete) plus result/evidence when done.]`
+            );
+            const autoNoteId = uuidv4();
+            db.prepare(`
+              INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+              VALUES (?, ?, 'system', ?, ?, datetime('now'))
+            `).run(autoNoteId, agentId, autoNoteText, turnNumber);
+            broadcast({
+              type: 'chat:message',
+              agentId,
+              message: {
+                id: autoNoteId, agentId, role: 'system' as const,
+                content: autoNoteText,
+                tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                createdAt: new Date().toISOString(),
+              },
+            });
+            state = advance(state, { trackerToolCalledThisTurn: true, nudgedForTrackerThisTurn: true });
+            logger.info('v2: tracker auto-scaffold fired (engine floor)', {
+              agentId, nonTrackerToolCalls: state.nonTrackerToolCalls, projectId: created.projectId,
+            }, agentId);
+          } catch (err) {
+            logger.warn('Tracker auto-scaffold failed (non-fatal, falling back to nudge)', {
+              agentId, err: err instanceof Error ? err.message : String(err),
+            }, agentId);
+          }
+        } else if (!hasActiveTask && !state.nudgedForTrackerThisTurn) {
           const nudgeText = (
             `[System: you've made ${state.nonTrackerToolCalls} non-tracker tool calls this turn without an active tracker task assigned to you. ` +
             `This is the failure shape we want to catch, multi-step work without a tracker entry drifts and stalls (the PM agent can't intervene because there's nothing to monitor) and your context is filling up which means compaction is coming and you'll lose source detail you've already read. ` +
@@ -5905,6 +6003,29 @@ export async function runV2Turn(agentId: string): Promise<void> {
           `UPDATE messages SET conv_key = ? WHERE agent_id = ? AND turn_number = ? AND role IN ('assistant','tool') AND conv_key IS NULL`,
         ).run(chosenConvKey, agentId, turnNumber);
       } catch { /* best effort, turn teardown must not throw */ }
+      // F9: claim same-conversation sibling user rows that were inside this
+      // turn's final assembled context (they got answered by this reply); a
+      // burst's second message no longer earns a duplicate answer. Human
+      // conversations only, never engine/park sentinels.
+      if (
+        lastAssembledAtIso &&
+        chosenConvKey !== 'engine' &&
+        !chosenConvKey.startsWith('park:') &&
+        !chosenConvKey.startsWith('relayed:')
+      ) {
+        try {
+          // Abort-safety: only claim siblings when this turn actually persisted
+          // an ANSWER for this conversation. A no-answer abort must leave them
+          // NULL so the drain re-serves them (never silently dropped).
+          const answered = db.prepare(
+            `SELECT 1 FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'assistant' AND conv_key = ? LIMIT 1`,
+          ).get(agentId, turnNumber, chosenConvKey);
+          const claimed = answered ? claimAssembledSiblings(agentId, chosenConvKey, lastAssembledAtIso) : 0;
+          if (claimed > 0) {
+            logger.info('F9 batch-claim: claimed sibling rows answered by this turn', { agentId, convKey: chosenConvKey, claimed }, agentId);
+          }
+        } catch { /* best effort, turn teardown must not throw */ }
+      }
     }
   }
 }

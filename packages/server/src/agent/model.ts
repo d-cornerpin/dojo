@@ -47,6 +47,11 @@ export interface ModelCallParams {
   // cancel in-flight calls (vs. v1's pre-fix behavior where stop only
   // affected the runtime loop, not the underlying fetch).
   abortSignal?: AbortSignal;
+  // F3: set by best-effort utility calls whose caller fully handles failure
+  // with a fallback (e.g. web_fetch page extraction falls back to raw fetch).
+  // Downgrades the provider-failure log from ERROR to WARN so a handled,
+  // recoverable failure doesn't read as an agent-level error in the log.
+  bestEffort?: boolean;
 }
 
 export interface ModelCallResult {
@@ -783,10 +788,13 @@ async function callOllamaModel(
     const latencyMs = Date.now() - startTime;
     const message = err instanceof Error ? err.message : String(err);
     recordProviderError(modelInfo.providerId);
-    logger.error(`Ollama call failed: ${message}`, {
+    // F3: best-effort utility calls (caller has a fallback) log at WARN, a
+    // handled recoverable failure is not an agent-level error.
+    logger[params.bestEffort ? 'warn' : 'error'](`Ollama call failed: ${message}`, {
       model: ollamaModelName,
       baseUrl,
       latencyMs,
+      bestEffort: params.bestEffort ?? false,
     }, agentId);
     throw err instanceof AgentError ? err : new AgentError(`Ollama call failed: ${message}`, agentId, {
       code: 'MODEL_CALL_FAILED',

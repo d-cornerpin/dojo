@@ -74,19 +74,37 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
   const params: unknown[] = [agentId];
   if (sessionStartedAt) { clauses.push(`created_at >= ?`); params.push(sessionStartedAt); }
   if (maxAgeMinutes != null) { clauses.push(`created_at >= datetime('now', ?)`); params.push(`-${maxAgeMinutes} minutes`); }
-  const sql = `SELECT id, content, created_at FROM messages
+  const sql = `SELECT id, content, created_at, source_agent_id, a2a_thread_id, a2a_intent FROM messages
                    WHERE ${clauses.join(' AND ')}
                    ORDER BY created_at DESC, rowid DESC LIMIT ?`;
   params.push(lookback);
 
   const rows = db
     .prepare(sql)
-    .all(...params) as Array<{ id: string; content: string; created_at: string }>;
+    .all(...params) as Array<{ id: string; content: string; created_at: string; source_agent_id: string | null; a2a_thread_id: string | null; a2a_intent: string | null }>;
 
   for (const row of rows) {
-    const match = row.content?.match(/^\[A2A:([A-Z]+)\s+thread:([0-9a-f]{8})\s+from:([^\]]+)\]/);
-    if (!match) continue;
-    const intent = match[1];
+    // F7 (harness finding, wave 2): trust the STRUCTURAL columns first. The
+    // prose regex required an 8-hex thread id, so any envelope/thread-format
+    // drift made this return null and an unreplied QUESTION was silently
+    // dropped (no dedicated A2A retry turn ever fired). The columns are the
+    // authoritative store; the prose parse stays only for legacy rows that
+    // predate them.
+    let intent: string;
+    let threadShort: string;
+    let fromName: string;
+    if (row.a2a_intent && row.a2a_thread_id && row.source_agent_id) {
+      intent = row.a2a_intent;
+      threadShort = row.a2a_thread_id.slice(0, 8);
+      const senderRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(row.source_agent_id) as { name?: string } | undefined;
+      fromName = senderRow?.name ?? row.source_agent_id;
+    } else {
+      const match = row.content?.match(/^\[A2A:([A-Z]+)\s+thread:([0-9a-f]{8})\s+from:([^\]]+)\]/);
+      if (!match) continue;
+      intent = match[1];
+      threadShort = match[2];
+      fromName = match[3].trim();
+    }
     if (!REPLY_NEEDED_INTENTS.has(intent)) continue;
     // Is it already replied to?
     const replied = db
@@ -99,9 +117,9 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
     }
     return {
       messageId: row.id,
-      threadShort: match[2],
+      threadShort,
       intent,
-      fromName: match[3].trim(),
+      fromName,
       content: row.content,
       createdAt: row.created_at,
     };
@@ -119,7 +137,28 @@ export function findInboundAssignByThread(agentId: string, threadId: string): { 
   if (!threadId || threadId.length < 8) return null;
   const threadShort = threadId.slice(0, 8);
   const db = getDb();
-  // Most recent inbound A2A message for this agent on this thread.
+  // F13 (harness finding, wave 2): STRUCTURAL columns first, matching the F7
+  // fix on the detection side. This was the other prose-bound end of the pipe:
+  // the reply was SENT but never recorded (the hex-only regex missed the
+  // thread), so the engine thought the reply was still owed, fired retry turns,
+  // and the send-dedup guard refused each one (observed: 26 "already sent"
+  // refusals in one scenario run). Detection and recording must read the SAME
+  // store or the loop never closes.
+  const structural = db
+    .prepare(
+      `SELECT id, a2a_intent FROM messages
+       WHERE agent_id = ? AND role = 'user'
+         AND a2a_thread_id IS NOT NULL
+         AND (a2a_thread_id = ? OR substr(a2a_thread_id, 1, 8) = ?)
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 1`,
+    )
+    .get(agentId, threadId, threadShort) as { id: string; a2a_intent: string | null } | undefined;
+  if (structural && structural.a2a_intent && REPLY_NEEDED_INTENTS.has(structural.a2a_intent)) {
+    return { messageId: structural.id, intent: structural.a2a_intent };
+  }
+
+  // Legacy prose fallback for rows predating the structural columns.
   const rows = db
     .prepare(
       `SELECT id, content FROM messages
