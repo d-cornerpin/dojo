@@ -113,7 +113,8 @@ export async function retrieveForContext(
 
   // Get pinned entries, capped at MAX_PINNED_ENTRIES.
   // Permanent entries get priority, then sort by recency.
-  let pinned = getPinnedEntries();
+  // W3-4: scoped to the requesting agent's own vault (per-agent by design).
+  let pinned = getPinnedEntries(agentId);
   if (pinned.length > MAX_PINNED_ENTRIES) {
     pinned.sort((a, b) => {
       // Permanent first
@@ -123,13 +124,13 @@ export async function retrieveForContext(
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
     pinned = pinned.slice(0, MAX_PINNED_ENTRIES);
-    logger.info(`Pinned entries exceed cap (${pinned.length + (getPinnedEntries().length - MAX_PINNED_ENTRIES)} total), capped at ${MAX_PINNED_ENTRIES}`);
+    logger.info(`Pinned entries exceed cap (${pinned.length + (getPinnedEntries(agentId).length - MAX_PINNED_ENTRIES)} total), capped at ${MAX_PINNED_ENTRIES}`);
   }
 
   // Semantic search for relevant entries
   let relevant: Array<VaultEntry & { similarity: number }> = [];
   try {
-    relevant = await semanticSearch(query, { limit: budget.maxEntries + 5 }); // extra for filtering
+    relevant = await semanticSearch(query, { limit: budget.maxEntries + 5, agentId }); // extra for filtering
   } catch (err) {
     logger.warn('Vault semantic search failed, using pinned entries only', {
       error: err instanceof Error ? err.message : String(err),

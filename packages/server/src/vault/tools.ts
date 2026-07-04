@@ -5,7 +5,7 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { createEntry, semanticSearch, markObsolete, getEntry, updateEntry, listEntries } from './store.js';
+import { createEntry, semanticSearch, markObsolete, getEntry, updateEntry, listEntries, OWNER_VAULT_AGENT_ID } from './store.js';
 
 const logger = createLogger('vault-tools');
 
@@ -189,7 +189,7 @@ export async function executeVaultRemember(
     // toward dedup without us forcing it.
     let nearDupNote = '';
     try {
-      const hits = await semanticSearch(content, { limit: 3 });
+      const hits = await semanticSearch(content, { limit: 3, agentId });
       const sameSubject = hits.filter(h => h.id !== entry.id && h.similarity >= 0.78 && h.similarity < 0.92);
       if (sameSubject.length > 0) {
         const top = sameSubject[0];
@@ -236,7 +236,10 @@ export async function executeVaultSearch(
     const SNIPPET_CHARS = 200;
 
     if (mode === 'exact') {
-      const rows = listEntries({ search: query, type, limit });
+      // W3-4: scoped to the calling agent's own vault plus the owner scope
+      // (per-agent by design; squad namespaces + owner-authored dashboard
+      // entries are the deliberate sharing mechanisms).
+      const rows = listEntries({ search: query, type, limit, agentId, includeOwnerScope: true });
       if (rows.length === 0) {
         return `No vault entries contain the exact substring "${query}".`;
       }
@@ -257,7 +260,8 @@ export async function executeVaultSearch(
       return `Found ${rows.length} vault entr${rows.length === 1 ? 'y' : 'ies'} containing "${query}" (exact match):\n\n${lines.join('\n\n')}\n\nUse vault_get(entry_id="…") for full content, vault_update to correct, vault_forget to mark obsolete.`;
     }
 
-    const results = await semanticSearch(query, { limit, type });
+    // W3-4: scoped to the calling agent's own vault (see exact mode above).
+    const results = await semanticSearch(query, { limit, type, agentId });
 
     if (results.length === 0) {
       return 'No matching memories found in the vault. If you are looking for a specific literal string (e.g. an exact name or typo), retry with mode: "exact".';
@@ -293,6 +297,16 @@ export async function executeVaultSearch(
   }
 }
 
+// W3-4: by-id access guard. The personal vault is per-agent; an entry id
+// leaked across agents (pre-fix search was unscoped) must not grant read,
+// update, or forget access to another agent's private entry. Namespaced
+// (squad-shared) and owner-authored (dashboard, OWNER_VAULT_AGENT_ID)
+// entries remain accessible, that sharing is deliberate.
+// Reads as "not found" so the guard does not leak the entry's existence.
+function ownedByOtherAgent(entry: { agentId: string; namespace: string | null }, callerAgentId: string): boolean {
+  return entry.agentId !== callerAgentId && entry.namespace === null && entry.agentId !== OWNER_VAULT_AGENT_ID;
+}
+
 // ── vault_update ──
 // v2.7.2, atomic content replacement for an existing vault entry. Pre-
 // existing flow required vault_forget + vault_remember which (a) lost the
@@ -313,7 +327,7 @@ export async function executeVaultUpdate(
   if (!reason) return 'Error: reason is required (explain what changed and why).';
 
   const existing = getEntry(entryId);
-  if (!existing) return `Error: Vault entry "${entryId}" not found.`;
+  if (!existing || ownedByOtherAgent(existing, agentId)) return `Error: Vault entry "${entryId}" not found.`;
   if (existing.isObsolete) {
     return `Error: Entry "${entryId}" is already marked obsolete. Use vault_remember to create a fresh entry instead.`;
   }
@@ -335,7 +349,7 @@ export function executeVaultExpand(
   const entryId = args.entry_id as string | undefined;
   if (!entryId) return 'Error: entry_id is required.';
   const entry = getEntry(entryId);
-  if (!entry) return `Error: Vault entry "${entryId}" not found.`;
+  if (!entry || ownedByOtherAgent(entry, agentId)) return `Error: Vault entry "${entryId}" not found.`;
 
   const flags: string[] = [];
   if (entry.isPinned) flags.push('pinned');
@@ -372,7 +386,7 @@ export function executeVaultForget(
   }
 
   const entry = getEntry(entryId);
-  if (!entry) return `Error: Vault entry "${entryId}" not found.`;
+  if (!entry || ownedByOtherAgent(entry, agentId)) return `Error: Vault entry "${entryId}" not found.`;
   if (entry.isObsolete) return `Entry "${entryId}" is already marked as obsolete.`;
 
   markObsolete(entryId, reason);

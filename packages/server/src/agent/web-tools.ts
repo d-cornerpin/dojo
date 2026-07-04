@@ -217,7 +217,24 @@ export async function webFetch(
     });
 
     if (!response.ok) {
-      return `Fetch failed (HTTP ${response.status}): ${response.statusText}`;
+      // A non-2xx from an EXTERNAL url (404/410 gone, 403 gated, 5xx server
+      // erroring, etc.) is an environmental condition about that page, not a
+      // tool malfunction or an agent mistake, exactly like the web_search 429
+      // path above. Retrying the same dead URL just wastes a turn. Return a
+      // CLEAR, actionable NON-error result: the dispatcher flags is_error only
+      // on the "Fetch failed"/"Permission denied" prefixes, so avoiding that
+      // prefix keeps a handled HTTP failure from surfacing as a BLOCKING tool
+      // error. Genuine tool-arg errors (missing prompt, invalid url) and
+      // permission denials are still is_error at the dispatcher. (harness
+      // finding, 2026-07-03: an external 404 during a research turn was
+      // failing the run's NO_UNEXPECTED_TOOL_ERROR invariant.)
+      logger.warn('Web fetch got a non-OK HTTP status', {
+        url, status: response.status, statusText: response.statusText,
+      }, agentId);
+      return (
+        `That URL returned HTTP ${response.status} (${response.statusText || 'no status text'}), so there is no page content to read. ` +
+        `The link is likely moved, wrong, or temporarily down. Do NOT retry this exact URL; try a different source or URL instead.`
+      );
     }
 
     const contentType = response.headers.get('content-type') ?? '';
@@ -230,7 +247,12 @@ export async function webFetch(
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    logger.error('Web fetch failed', { error: msg, url }, agentId);
+    // A network-layer fetch failure (timeout / DNS / refused / TLS) to an EXTERNAL
+    // url is environmental, and this branch already HANDLES it: it returns actionable
+    // guidance to the agent (below), not an is_error. Log at WARN, matching the
+    // sibling non-2xx branch. Logging at ERROR mislabels a handled external failure
+    // as an agent-level error (it red-ed research turns on a transient remote timeout).
+    logger.warn('Web fetch failed (handled, returned actionable guidance to the agent)', { error: msg, url }, agentId);
     // v2.3.19 — translate the raw Node fetch error into something
     // actionable. Pre-spec the agent got "Web fetch failed: fetch
     // failed" which is doubled-up and unhelpful — the doubled "fetch

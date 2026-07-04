@@ -240,6 +240,10 @@ ${bundleForModel}`;
       systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
       tools: false,
+      // W3-1: fully handled, the catch below falls back to the deterministic
+      // README builder. Fail fast and log at WARN instead of ERROR.
+      abortSignal: AbortSignal.timeout(60_000),
+      bestEffort: true,
     });
 
     const text = result.content || '';

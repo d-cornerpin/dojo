@@ -3567,6 +3567,21 @@ async function executeFileRead(
   }
 }
 
+// Correctness-floor: the weak model sometimes hands file_write a DIRECTORY path
+// where a file path is expected (the workspace folder, no filename). Writing to
+// a directory throws EISDIR. Build the corrective, NON-crashing guidance that
+// tells the model to include a filename, used both by the up-front check and
+// the EISDIR catch fallback so a raw EISDIR is never surfaced as an is_error.
+function directoryTargetGuidance(dirPath: string): string {
+  const base = dirPath.replace(/[/\\]+$/, '');
+  const example = path.join(base, 'brief.md');
+  return (
+    `That path is a directory, not a file, so nothing was written. ` +
+    `Pass a full file path that includes a filename and extension, for example: ${example} ` +
+    `(pick a name and extension that fit what you are saving), then call file_write again with that path.`
+  );
+}
+
 async function executeFileWrite(agentId: string, args: Record<string, unknown>): Promise<string> {
   const filePath = resolvePath(args.path as string);
   const content = args.content as string;
@@ -3574,6 +3589,18 @@ async function executeFileWrite(agentId: string, args: Record<string, unknown>):
   if (!path.isAbsolute(filePath)) {
     auditLog(agentId, 'file_write', filePath, 'error', 'Path must be absolute (use ~ for home directory)');
     return 'Error: Path must be absolute. Use ~ for home directory or provide a full path.';
+  }
+
+  // Directory target detection: an existing directory, or a trailing-separator
+  // path that signals directory intent before the folder even exists. Return
+  // corrective guidance (not an is_error) rather than letting writeFile throw
+  // EISDIR at the weak model.
+  const trailingSep = /[/\\]\s*$/.test(String(args.path ?? '')) || /[/\\]$/.test(filePath);
+  let existingDir = false;
+  try { existingDir = (await fs.promises.stat(filePath)).isDirectory(); } catch { /* not present yet */ }
+  if (existingDir || trailingSep) {
+    auditLog(agentId, 'file_write', filePath, 'error', 'target is a directory, not a file (no filename supplied)');
+    return directoryTargetGuidance(filePath);
   }
 
   try {
@@ -3592,6 +3619,12 @@ async function executeFileWrite(agentId: string, args: Record<string, unknown>):
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     auditLog(agentId, 'file_write', filePath, 'error', msg);
+    // Belt-and-suspenders: if a directory (or dir-valued path component) slipped
+    // past the pre-check, translate the raw EISDIR into the same corrective
+    // guidance instead of a bare is_error crash the weak model can't recover from.
+    if ((err as NodeJS.ErrnoException)?.code === 'EISDIR') {
+      return directoryTargetGuidance(filePath);
+    }
     return `Error writing file: ${msg}`;
   }
 }
@@ -3604,6 +3637,16 @@ async function executeFileAppend(agentId: string, args: Record<string, unknown>)
   if (!path.isAbsolute(filePath)) {
     auditLog(agentId, 'file_write', filePath, 'error', 'Path must be absolute (use ~ for home directory)');
     return 'Error: Path must be absolute. Use ~ for home directory or provide a full path.';
+  }
+
+  // Same directory-target guard as file_write: a directory path has no filename
+  // to append to and would throw EISDIR. Return corrective guidance, not a crash.
+  const trailingSep = /[/\\]\s*$/.test(String(args.path ?? '')) || /[/\\]$/.test(filePath);
+  let existingDir = false;
+  try { existingDir = (await fs.promises.stat(filePath)).isDirectory(); } catch { /* not present yet */ }
+  if (existingDir || trailingSep) {
+    auditLog(agentId, 'file_write', filePath, 'error', 'target is a directory, not a file (no filename supplied)');
+    return directoryTargetGuidance(filePath);
   }
 
   try {
@@ -3637,11 +3680,22 @@ async function executeFileAppend(agentId: string, args: Record<string, unknown>)
     auditLog(agentId, 'file_write', filePath, 'success', `${payload.length} bytes appended (total ${stat.size})`);
 
     const downloadUrl = registerSharedFile(agentId, filePath);
-    broadcastCanvasUpdate(filePath);
-    return `Appended ${payload.length} bytes to ${filePath}. Total size: ${stat.size} bytes.${downloadUrl ? `\nDownload: ${downloadUrl}\nWhen you give this file to the user (or hand it to another agent), share the Download link above by default; mention the local path only if asked where it is on disk.` : ''}`;
+    // W3 fix loop (run bmr5bymntm5): same refresh-or-AUTO-OPEN treatment as
+    // file_write. Pre-fix this only pinged an already-open canvas, so "edit
+    // this doc and show me" surfaced or not depending on whether the model
+    // happened to pick file_write (auto-open) or file_append (nothing), the
+    // canvas outcome must not hinge on the model's tool choice.
+    const canvas = syncCanvasAfterWrite(agentId, filePath, downloadUrl);
+    const canvasNote = canvas.opened
+      ? '\nThis document is now open in the canvas, the user can see it. No need to call canvas_render; just tell them what you did.'
+      : '';
+    return `Appended ${payload.length} bytes to ${filePath}. Total size: ${stat.size} bytes.${canvasNote}${downloadUrl ? `\nDownload: ${downloadUrl}\nWhen you give this file to the user (or hand it to another agent), share the Download link above by default; mention the local path only if asked where it is on disk.` : ''}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     auditLog(agentId, 'file_write', filePath, 'error', msg);
+    if ((err as NodeJS.ErrnoException)?.code === 'EISDIR') {
+      return directoryTargetGuidance(filePath);
+    }
     return `Error appending to file: ${msg}`;
   }
 }
@@ -3788,10 +3842,15 @@ export async function executeFilePatch(
   const afterBytes = Buffer.byteLength(working, 'utf-8');
   const totalReplacements = counts.reduce((a, b) => a + b, 0);
   auditLog(agentId, 'file_patch', filePath, 'success', `${totalReplacements} replacements across ${patches.length} patches`);
-  registerSharedFile(agentId, filePath);
-  broadcastCanvasUpdate(filePath);
+  const patchDownloadUrl = registerSharedFile(agentId, filePath);
+  // W3 fix loop: refresh-or-AUTO-OPEN, same rationale as file_append above,
+  // the canvas outcome must not depend on which write tool the model picked.
+  const patchCanvas = syncCanvasAfterWrite(agentId, filePath, patchDownloadUrl);
+  const patchCanvasNote = patchCanvas.opened
+    ? '\nThis document is now open in the canvas, the user can see it. No need to call canvas_render; just tell them what you did.'
+    : '';
   return (
-    `Patched ${filePath} (${beforeBytes} → ${afterBytes} bytes, ${totalReplacements} total replacements)\n${summary}`
+    `Patched ${filePath} (${beforeBytes} → ${afterBytes} bytes, ${totalReplacements} total replacements)${patchCanvasNote}\n${summary}`
   );
 }
 
@@ -4885,7 +4944,15 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
                 content = `Thread ${result.threadId.slice(0, 8)} has reached the maximum of 8 messages. Start a new thread (omit thread_id) if you need to continue.`;
                 break;
               case 'SEMANTIC_DUPLICATE':
-                content = 'Message not sent, your last few messages on this thread are too similar to this one. The platform thinks you are repeating yourself. Options: (a) if you are reporting work completion, use intent="ANSWER" or intent="DELIVERABLE", those bypass dedup because completion notices need to land regardless of phrasing; (b) rephrase substantively (not just word swaps); (c) start a fresh thread by omitting thread_id.';
+                // W3-4 follow-up: an ASSIGN dropped as a duplicate means the
+                // work is ALREADY assigned (possibly via cross-thread reuse of
+                // an omitted thread_id). Re-sending spawns nothing and does
+                // not speed the reply up; say so instead of the generic copy,
+                // and do NOT advise starting a fresh thread (that is the
+                // duplicate-task vector this guard exists to close).
+                content = intent === 'ASSIGN'
+                  ? `Assignment not re-sent: you already assigned essentially this same work to "${agentRef}" moments ago (thread ${result.threadId.slice(0, 8)}). The engine tracks it as a tracker task and you will be woken when they reply or complete it. Do not re-assign; end your turn and wait.`
+                  : 'Message not sent, your last few messages on this thread are too similar to this one. The platform thinks you are repeating yourself. Options: (a) if you are reporting work completion, use intent="ANSWER" or intent="DELIVERABLE", those bypass dedup because completion notices need to land regardless of phrasing; (b) rephrase substantively (not just word swaps); (c) start a fresh thread by omitting thread_id.';
                 break;
               case 'AGENT_NOT_FOUND':
                 content = `No agent found with ID or name "${agentRef}".`;
@@ -8513,9 +8580,10 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         // Phase 4 §C, return the snapshot the assembler would have injected
         // at session start (pinned + session_context-tagged entries).
         try {
+          // W3-4: scoped to the calling agent's own vault (per-agent design).
           const { getPinnedEntries, getSessionContextEntries } = await import('../vault/store.js');
-          const pinned = getPinnedEntries();
-          const sessionCtx = getSessionContextEntries();
+          const pinned = getPinnedEntries(agentId);
+          const sessionCtx = getSessionContextEntries(agentId);
           // Dedupe (a pinned entry might also be tagged session_context).
           const seen = new Set<string>();
           const merged: typeof pinned = [];
@@ -9172,10 +9240,56 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
       case 'office_replace_in_presentation':
       case 'office_insert_slide':
       case 'office_delete_slide': {
-        if (!isPrimaryAgent(agentId)) {
-          content = 'Permission denied: only the primary agent can create or edit Office documents.';
-          isError = true;
-          break;
+        // ── Local vs Microsoft-account office split (owner decision 2026-07-03) ──
+        // The office_* tools are DUAL-destination. A create writes to the agent's
+        // LOCAL uploads dir when Microsoft is NOT connected, but UPLOADS to the
+        // owner's OneDrive when it is (saveOfficeBuffer → isMicrosoftConnected).
+        // An edit/read works on a LOCAL `path` or, when handed a `file_id`, on
+        // the OneDrive item; the presentation edit/read tools are file_id-only
+        // (always the Microsoft account).
+        //   • Anything that writes/edits the connected MICROSOFT account stays
+        //     PRIMARY-ONLY: the owner's cloud is the owner's; a sub-agent must
+        //     not mutate it.
+        //   • A LOCAL office doc is just a file on disk: allowed for ANY agent,
+        //     governed by its permission manifest (file_write), exactly like the
+        //     file_write tool. No hard primary-only gate (that was the defect the
+        //     manifest now enforces after the spawn_depth fix).
+        const OFFICE_CREATE_TOOLS = new Set([
+          'office_create_word_document', 'office_create_spreadsheet', 'office_create_presentation',
+        ]);
+        // OneDrive/Graph-only ops with no local mode (they operate on a file_id).
+        const OFFICE_MS_ACCOUNT_ONLY_TOOLS = new Set([
+          'office_get_presentation_outline', 'office_read_presentation',
+          'office_replace_in_presentation', 'office_insert_slide', 'office_delete_slide',
+        ]);
+        const usesOneDriveFileId = typeof args.file_id === 'string' && (args.file_id as string).trim().length > 0;
+        const createGoesToOneDrive = OFFICE_CREATE_TOOLS.has(name) && isMicrosoftConnected('agent');
+        const targetsMicrosoftAccount = OFFICE_MS_ACCOUNT_ONLY_TOOLS.has(name) || usesOneDriveFileId || createGoesToOneDrive;
+
+        if (targetsMicrosoftAccount) {
+          if (!isPrimaryAgent(agentId)) {
+            content = 'Permission denied: only the primary agent can create or edit Office documents on the connected Microsoft account.';
+            isError = true;
+            auditLog(agentId, name, null, 'denied', 'Microsoft-account office tool restricted to primary agent');
+            break;
+          }
+        } else {
+          // Local office document: enforce the agent's file_write manifest on the
+          // destination (an explicit local `path` for an edit, or the agent's
+          // uploads dir for a create), the same floor file_write itself enforces.
+          const localFilename = typeof args.filename === 'string' && (args.filename as string).trim().length > 0
+            ? (args.filename as string).trim()
+            : 'document';
+          const localDest = typeof args.path === 'string' && (args.path as string).trim().length > 0
+            ? (args.path as string).trim()
+            : path.join(os.homedir(), '.dojo', 'uploads', agentId, localFilename);
+          const perm = checkPermission(agentId, { type: 'file_write', path: localDest });
+          if (!perm.allowed) {
+            auditLog(agentId, name, localDest, 'denied', perm.reason);
+            content = permissionDeniedMessage(perm.reason);
+            isError = true;
+            break;
+          }
         }
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         content = await executeOfficeTool(name, args, agentId, agentRow?.name ?? agentId);

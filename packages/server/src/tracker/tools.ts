@@ -775,7 +775,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     const rawTaskId = args.taskId as string;
     if (!rawTaskId) return 'Error: taskId is required';
 
-    const resolved = resolveTaskId(rawTaskId);
+    const resolved = resolveTaskId(rawTaskId, agentId);
     if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
     const taskId = resolved.id;
 
@@ -934,29 +934,45 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
           breaker
         );
       }
-      // Each entry must be an object with non-empty `kind` and `claim`.
+      // Each entry must carry real evidence CONTENT (a non-empty `claim`); the
+      // `kind` is only a PM-readable LABEL. The correctness-floor model routinely
+      // mislabels the kind (e.g. kind="web_fetch", the tool it just called) while
+      // still handing over a valid claim. Forgive the LABEL, never the substance:
+      // an unrecognized kind is COERCED to the catch-all `claim` (the model's
+      // claim text is preserved, its attempted label noted) instead of failing
+      // the close. What stays HARD: (a) each entry must be a real object, (b) it
+      // must have a non-empty claim (THAT is the evidence-required rule,
+      // unchanged), and (c) the engine-reserved `verified_receipt` kind is still
+      // refused so an agent cannot fabricate a machine receipt.
+      const normEvidence: Array<Record<string, unknown>> = [];
       for (let i = 0; i < evidence.length; i++) {
         const e = evidence[i] as Record<string, unknown> | null;
         if (!e || typeof e !== 'object') {
           const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] is not an object`);
           return `Error: evidence[${i}] must be an object with {kind, claim, pointer?}, got ${typeof e}.${breaker}`;
         }
-        const kind = typeof e.kind === 'string' ? e.kind.trim() : '';
+        const rawKind = typeof e.kind === 'string' ? e.kind.trim() : '';
         const claim = typeof e.claim === 'string' ? e.claim.trim() : '';
-        if (!kind || !claim) {
-          const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] missing kind or claim`);
-          return `Error: evidence[${i}] must have both \`kind\` (string) and \`claim\` (string). Got kind="${kind}", claim length=${claim.length}.${breaker}`;
+        if (!claim) {
+          const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] missing claim`);
+          return `Error: evidence[${i}] must carry a non-empty \`claim\` string describing the concrete artifact (file path, count, id, what you did). The \`kind\` is only a label; the claim is the evidence.${breaker}`;
         }
         // C26: verified_receipt is engine-only; the engine appends it after the
         // gate passes. An agent supplying it is trying to fabricate a receipt.
-        if (kind === 'verified_receipt') {
+        if (rawKind === 'verified_receipt') {
           const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] used the reserved verified_receipt kind`);
           return `Error: evidence[${i}] kind "verified_receipt" is reserved for the engine and cannot be supplied by an agent. The engine writes verified receipts itself from the tool's provider response. Use one of: ${[...VALID_EVIDENCE_KINDS].join(', ')}.${breaker}`;
         }
-        // C26: enforce the published allowlist so an invented kind no longer passes.
-        if (!VALID_EVIDENCE_KINDS.has(kind)) {
-          const breaker = noteHardGateRejection(taskId, agentId, `evidence[${i}] has unrecognized kind "${kind}"`);
-          return `Error: evidence[${i}] kind "${kind}" is not a recognized evidence kind. Use one of: ${[...VALID_EVIDENCE_KINDS].join(', ')}.${breaker}`;
+        // C26 (softened, correctness-floor): a recognized kind passes through; an
+        // unrecognized/empty label is coerced to `claim` rather than rejected, so
+        // valid-shaped evidence with a wrong kind label is ACCEPTED. The claim
+        // text is kept verbatim and the attempted label appended so nothing is
+        // hidden and PM still sees exactly what the agent meant.
+        if (VALID_EVIDENCE_KINDS.has(rawKind)) {
+          normEvidence.push({ ...e, kind: rawKind, claim });
+        } else {
+          const note = rawKind ? ` [labeled "${rawKind}"]` : '';
+          normEvidence.push({ ...e, kind: 'claim', claim: `${claim}${note}` });
         }
       }
       // ── C26 receipt gate ──
@@ -988,7 +1004,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       // so PM's existing evidence-reading flow sees the machine receipts, then
       // stamps task_id on the consumed rows. Engine-authored, appended AFTER the
       // agent-supplied evidence was validated above.
-      const evidenceOut: unknown[] = [...evidence];
+      const evidenceOut: unknown[] = [...normEvidence];
       for (const r of receiptRows) {
         const label = r.verified === 1 ? 'verified' : 'unverified';
         const idPart = r.provider_id ? `, id ${r.provider_id}` : '';
@@ -1188,6 +1204,8 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         `Task "${task.title}" completed by ${task.assignedToName ?? task.assignedTo ?? agentId}.`, // comms-audit rank 5: dropped verbatim ` Notes: ${notes}` inline (full work-log firehose); notes live on the task row for deliberate pull
         agentId,
       );
+      // W3-4: ASSIGN hand-back guarantee (engine-side, weakest-model-proof).
+      relayAssignHandbackIfMissing(taskId);
       // Handle one-time scheduled task completion. Recurring tasks are
       // gated out, their per-run advance happens only after the PM
       // validates this run via tracker_validate. Calling
@@ -1235,6 +1253,90 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
   }
 }
 
+// ── W3-4: ASSIGN hand-back guarantee ──
+// When an agent delegates via send_to_agent(intent=ASSIGN), the engine
+// auto-creates a thread-linked tracker task (autoCreateAssignTask) and the
+// delivery footer promises the sender "gets the completion notice". Pre-fix
+// nothing enforced that promise: the assignee could close the task via
+// tracker_update_status WITHOUT ever sending the work product back on the
+// thread, and a non-primary assigner heard nothing (behavioral run
+// bmr59ix4lsg, multi-agent-project). Correctness is the engine's job, so at
+// complete-time: if the assigner has not received ANY on-thread message from
+// the assignee since the task was created, relay the tracker close-out
+// (result text, which the complete hard gate requires) to the assigner on the
+// SAME thread as intent=COMPLETE (terminal + wake; completion intents skip
+// semantic dedup by design). Respects the existing transport machinery, no
+// new lanes. Fire-and-forget: a relay failure never blocks the completion.
+function relayAssignHandbackIfMissing(taskId: string): void {
+  try {
+    const db = getDb();
+    const row = db.prepare(
+      'SELECT created_by, assigned_to, a2a_thread_id, created_at, title, result FROM tasks WHERE id = ?'
+    ).get(taskId) as {
+      created_by: string | null;
+      assigned_to: string | null;
+      a2a_thread_id: string | null;
+      created_at: string;
+      title: string;
+      result: string | null;
+    } | undefined;
+    if (!row?.a2a_thread_id || !row.created_by || !row.assigned_to) return;
+    if (row.created_by === row.assigned_to) return; // self-assignment, no counterparty owed a hand-back
+    // Did the assigner already hear from the assignee on this thread during
+    // this task's lifetime (ANSWER/DELIVERABLE/COMPLETE/anything)? Then the
+    // hand-back happened, nothing to relay.
+    const heardAlready = (): boolean => !!getDb().prepare(
+      `SELECT rowid FROM messages
+       WHERE agent_id = ? AND source_agent_id = ? AND a2a_thread_id = ? AND created_at >= ?
+       LIMIT 1`
+    ).get(row.created_by, row.assigned_to, row.a2a_thread_id, row.created_at);
+    if (heardAlready()) return;
+
+    const payload =
+      `${row.result?.trim() || `Task "${row.title}" was closed as complete (no result text recorded).`}\n\n` +
+      `[Engine relay: the assignee closed the assigned task "${row.title}" (${taskId.slice(0, 8)}) ` +
+      `without replying on this thread; the text above is the recorded close-out result.]`;
+
+    void (async () => {
+      // Grace period, then re-check. Models routinely batch
+      // tracker_update_status(complete) and the real send_to_agent hand-back
+      // in the SAME tool batch (either order); relaying immediately at
+      // complete-time double-delivers when the send lands milliseconds later
+      // (observed: primary agent completing a delegated office task). The
+      // relay exists for the assignee that never sends at all, so waiting a
+      // beat costs nothing.
+      await new Promise((resolve) => setTimeout(resolve, 20_000));
+      if (heardAlready()) return;
+      const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
+      const result = await deliverA2AMessage({
+        intent: 'COMPLETE',
+        threadId: row.a2a_thread_id as string,
+        requiresResponse: false,
+        payload,
+        toAgent: row.created_by as string,
+        fromAgent: row.assigned_to as string,
+      });
+      if (result.delivered) {
+        logger.info('ASSIGN hand-back relayed to assigner at complete-time', {
+          taskId, threadId: row.a2a_thread_id, assigner: row.created_by, assignee: row.assigned_to,
+        }, row.assigned_to as string);
+      } else {
+        logger.warn('ASSIGN hand-back relay was not delivered', {
+          taskId, threadId: row.a2a_thread_id, reason: result.reason,
+        }, row.assigned_to as string);
+      }
+    })().catch((err) => {
+      logger.warn('ASSIGN hand-back relay failed (non-fatal)', {
+        taskId, error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  } catch (err) {
+    logger.warn('ASSIGN hand-back check failed (non-fatal)', {
+      taskId, error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 // ── trackerAddNotes ──
 //
 // Phase B.0: writes an observation entry to task_log instead of appending to
@@ -1246,7 +1348,7 @@ export function trackerAddNotes(agentId: string, args: Record<string, unknown>):
     const rawTaskId = args.taskId as string;
     if (!rawTaskId) return 'Error: taskId is required';
 
-    const resolved = resolveTaskId(rawTaskId);
+    const resolved = resolveTaskId(rawTaskId, agentId);
     if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
     const taskId = resolved.id;
 
@@ -1290,7 +1392,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     const rawTaskId = args.taskId as string;
     if (!rawTaskId) return 'Error: taskId is required';
 
-    const resolved = resolveTaskId(rawTaskId);
+    const resolved = resolveTaskId(rawTaskId, agentId);
     if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
     const taskId = resolved.id;
 
@@ -1537,7 +1639,7 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
     // (but don't surface the task's not_found error if the project
     // resolves).
     if (rawTaskId) {
-      const taskResolved = resolveTaskId(rawTaskId);
+      const taskResolved = resolveTaskId(rawTaskId, agentId);
       if (taskResolved.ok) {
         const task = getTask(taskResolved.id);
         if (!task) return `Error: Task ${taskResolved.id} was deleted before it could be read.`;
@@ -1577,7 +1679,7 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
     }
 
     if (rawProjectId) {
-      const projectResolved = resolveProjectId(rawProjectId);
+      const projectResolved = resolveProjectId(rawProjectId, agentId);
       if (!projectResolved.ok) {
         return formatResolveError('project', rawProjectId, projectResolved);
       }
@@ -1732,7 +1834,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
     const rawTaskId = (args.taskId as string) ?? (args.task_id as string);
     if (!rawTaskId) return 'Error: task_id is required';
 
-    const resolved = resolveTaskId(rawTaskId);
+    const resolved = resolveTaskId(rawTaskId, agentId);
     if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
     const taskId = resolved.id;
 
@@ -1813,7 +1915,7 @@ export function trackerEditProject(agentId: string, args: Record<string, unknown
   const rawProjectId = (args.project_id ?? args.projectId) as string | undefined;
   if (!rawProjectId) return 'Error: project_id is required.';
 
-  const resolved = resolveProjectId(rawProjectId);
+  const resolved = resolveProjectId(rawProjectId, agentId);
   if (!resolved.ok) return formatResolveError('project', rawProjectId, resolved);
   const projectId = resolved.id;
 
@@ -1860,7 +1962,7 @@ export function trackerCloseProject(agentId: string, args: Record<string, unknow
   const rawProjectId = (args.project_id ?? args.projectId) as string | undefined;
   if (!rawProjectId) return 'Error: project_id is required.';
 
-  const resolved = resolveProjectId(rawProjectId);
+  const resolved = resolveProjectId(rawProjectId, agentId);
   if (!resolved.ok) return formatResolveError('project', rawProjectId, resolved);
   const projectId = resolved.id;
 
@@ -2153,7 +2255,7 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
   const rawTaskId = args.taskId as string;
   if (!rawTaskId) return 'Error: taskId is required';
 
-  const resolved = resolveTaskId(rawTaskId);
+  const resolved = resolveTaskId(rawTaskId, agentId);
   if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
   const taskId = resolved.id;
 
@@ -2196,7 +2298,7 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
   const rawTaskId = args.taskId as string;
   if (!rawTaskId) return 'Error: taskId is required';
 
-  const resolved = resolveTaskId(rawTaskId);
+  const resolved = resolveTaskId(rawTaskId, agentId);
   if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
   const taskId = resolved.id;
 
@@ -2244,7 +2346,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
     return 'Error: action must be one of: "run_now", "skip", "pause".';
   }
 
-  const resolved = resolveTaskId(rawTaskId);
+  const resolved = resolveTaskId(rawTaskId, agentId);
   if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
   const taskId = resolved.id;
 

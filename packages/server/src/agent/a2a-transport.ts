@@ -158,6 +158,52 @@ async function checkSemanticDedup(payload: string, threadId: string, fromAgent: 
   }
 }
 
+// W3-4 follow-up (behavioral run bmr59ix4lsg): per-thread dedup could not see
+// an impatient sender re-ASSIGNing the same work with thread_id OMITTED, each
+// re-send opened a FRESH thread and auto-created another tracker task (three
+// near-identical ASSIGNs -> three threads -> three tasks in one turn, while
+// the tool result had already told the sender the reply is asynchronous).
+// Before minting a new thread for an ASSIGN, check the receiver's recent
+// inbound ASSIGNs from this sender across ALL threads; a semantic duplicate
+// resolves to the existing thread so the normal dedup/reuse machinery (and
+// autoCreateAssignTask's per-thread reuse) applies. Same 10-minute window and
+// threshold as checkSemanticDedup; a deliberate re-ask later is a legit wake.
+async function findRecentDuplicateAssignThread(
+  senderId: string,
+  receiverId: string,
+  payload: string,
+): Promise<string | null> {
+  try {
+    const db = getDb();
+    const recent = db.prepare(`
+      SELECT content, a2a_thread_id FROM messages
+      WHERE agent_id = ? AND source_agent_id = ? AND a2a_intent = 'ASSIGN'
+        AND a2a_thread_id IS NOT NULL
+        AND created_at >= datetime('now', '-10 minutes')
+      ORDER BY created_at DESC, rowid DESC
+      LIMIT ?
+    `).all(receiverId, senderId, DEDUP_LOOKBACK) as Array<{ content: string; a2a_thread_id: string }>;
+    if (recent.length === 0) return null;
+
+    const { generateEmbedding } = await import('../memory/embeddings.js');
+    const newEmbedding = await generateEmbedding(payload);
+    for (const msg of recent) {
+      const msgPayload = extractPayloadFromA2AMessage(msg.content);
+      if (!msgPayload || msgPayload.length < 10) continue;
+      const existingEmbedding = await generateEmbedding(msgPayload);
+      if (cosineSimilarity(newEmbedding, existingEmbedding) > DEDUP_SIMILARITY_THRESHOLD) {
+        return msg.a2a_thread_id;
+      }
+    }
+    return null;
+  } catch (err) {
+    logger.debug('Cross-thread ASSIGN dedup skipped (embedding unavailable)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
 function extractPayloadFromA2AMessage(content: string): string | null {
   // New format: [A2A:INTENT thread:xxx from:Name] payload
   const a2aMatch = content.match(/^\[A2A:\w+ thread:\S+ from:[^\]]+\]\s*([\s\S]*?)(\n\n\[Thread|$)/);
@@ -344,7 +390,22 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   }
 
   // ── 4. Thread state checks ──
-  const threadId = envelope.threadId || uuidv4();
+  // W3-4 follow-up: an ASSIGN without a thread_id that semantically repeats a
+  // recent ASSIGN from the same sender to the same receiver is a re-send, not
+  // new work. Route it onto the existing thread instead of minting a new one
+  // (which would auto-create a duplicate tracker task); the per-thread dedup
+  // below then drops it and the sender gets the "you are repeating yourself"
+  // guidance with the original thread id.
+  let reusedAssignThreadId: string | null = null;
+  if (effectiveIntent === 'ASSIGN' && !envelope.threadId && envelope.fromAgent !== 'system') {
+    reusedAssignThreadId = await findRecentDuplicateAssignThread(envelope.fromAgent, target.id, envelope.payload);
+    if (reusedAssignThreadId) {
+      logger.info('A2A ASSIGN without thread_id matched a recent assignment, reusing its thread', {
+        from: envelope.fromAgent, to: target.id, threadId: reusedAssignThreadId,
+      }, envelope.fromAgent);
+    }
+  }
+  const threadId = envelope.threadId || reusedAssignThreadId || uuidv4();
   ensureThread(threadId, envelope.fromAgent);
 
   // v2.5.34, Removed the TERMINAL_THREAD_CLOSED rejection. Pre-fix, a

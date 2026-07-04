@@ -365,10 +365,27 @@ function stripA2AFromTail(tail: Message[]): Message[] {
  * structured origin (deriveOrigin), no marker regex.
  */
 function scopeToA2AThread(tail: Message[], threadId: string | null): Message[] {
-  // C-2 (comms-audit): match on the FULL thread id, not an 8-char prefix, so two
-  // distinct A2A threads sharing a prefix can't bleed into each other's scope.
-  const sameThread = (t?: string | null) =>
-    !!t && !!threadId && t === threadId;
+  // The message's origin.threadId is the FULL a2a_thread_id (36-char UUID from
+  // the column). The turn's counterparty.threadId (passed here as `threadId`) is
+  // the 8-char SHORT id parsed from the "[A2A:… thread:xxxxxxxx …]" marker
+  // (resolveTurnCounterparty → a2aThreadShort). C-2 hardened this to a FULL-id
+  // equality to stop two prefix-sharing threads bleeding, but exact-equality
+  // then NEVER matched short-vs-full, so scopeToA2AThread dropped THIS thread's
+  // own inbound task from every A2A turn. That left a tool-only tail the
+  // integrity pass consumed to zero, starving worker agents mid-delegation
+  // (behav-sig:ca67b479). Compare canonically: exact match stays the primary
+  // case (full==full / short==short, C-2's determinism preserved); otherwise
+  // treat the shorter id as an ≥8-char prefix of the longer (the short IS the
+  // full UUID's first 8 hex). Two genuinely distinct threads for one agent's
+  // live work colliding on 8 hex chars is the negligible case C-2 guarded, and
+  // exact-equality still wins whenever both ids are full.
+  const sameThread = (t?: string | null): boolean => {
+    if (!t || !threadId) return false;
+    if (t === threadId) return true;
+    const short = t.length <= threadId.length ? t : threadId;
+    const long = t.length <= threadId.length ? threadId : t;
+    return short.length >= 8 && long.startsWith(short);
+  };
   return tail.filter((m) => {
     const o = m.origin;
     if (!o) return true;                                  // unclassified, keep
@@ -605,7 +622,8 @@ async function assembleMessageContext(
       // already in the relevance result. Dedupe by entry ID.
       try {
         const { getSessionContextEntries } = await import('../vault/store.js');
-        const sessionCtx = getSessionContextEntries();
+        // W3-4: scoped to this agent's vault (per-agent design).
+        const sessionCtx = getSessionContextEntries(agentId);
         const alreadyIncluded = new Set(vaultResult.entryIds);
         const fresh = sessionCtx.filter((e) => !alreadyIncluded.has(e.id));
         if (fresh.length > 0) {
@@ -1547,13 +1565,15 @@ async function buildRelevantMemoryBlock(agentId: string, includeVault: boolean):
     // turns already inject the vault via retrieveForContext, so skip to avoid
     // double-injection. Dedupe against pinned entries (always injected).
     if (includeVault) {
+      // W3-4: all three lookups scoped to THIS agent's vault. Unscoped, every
+      // agent's assembled context could recall other agents' private entries.
       const { semanticSearch, getPinnedEntries, listEntries } = await import('../vault/store.js');
-      const pinnedIds = new Set(getPinnedEntries().map((e) => e.id));
+      const pinnedIds = new Set(getPinnedEntries(agentId).map((e) => e.id));
       let vhits: Array<{ id: string; type: string; content: string }>;
       if (queryEmbedding) {
-        vhits = await semanticSearch(queryText, { limit: 6, minSimilarity: 0.45, queryEmbedding });
+        vhits = await semanticSearch(queryText, { limit: 6, minSimilarity: 0.45, queryEmbedding, agentId });
       } else {
-        vhits = listEntries({ search: queryText, limit: 6 });
+        vhits = listEntries({ search: queryText, limit: 6, agentId, includeOwnerScope: true });
       }
       let usedVault = 0;
       for (const e of vhits) {

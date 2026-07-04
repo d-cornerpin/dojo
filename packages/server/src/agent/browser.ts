@@ -369,6 +369,12 @@ export async function executeWebBrowse(
                   { role: 'user', content: `Goal: ${goal}\n\nPage content:\n${snippet}` },
                 ],
                 tools: false,
+                // W3-1: same F3 pattern as web_fetch's extractor. The catch
+                // below falls back to returning the raw page, so this is a
+                // fully handled best-effort call. Fail fast to the fallback
+                // instead of stalling the turn on a busy extractor model.
+                abortSignal: AbortSignal.timeout(45_000),
+                bestEffort: true,
               });
               const extract = result.content?.trim();
               if (extract && extract.length > 0) {

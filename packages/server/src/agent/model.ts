@@ -1798,10 +1798,14 @@ async function callOpenAIModel(
     const message = err instanceof Error ? err.message : String(err);
     recordProviderError(modelInfo.providerId);
 
-    logger.error(`OpenAI call failed: ${message}`, {
+    // F3/W3-1: best-effort utility calls (caller fully handles failure with a
+    // fallback) log at WARN; genuine agent-turn calls stay at ERROR. Same
+    // severity rule as the Ollama path below.
+    logger[params.bestEffort ? 'warn' : 'error'](`OpenAI call failed: ${message}`, {
       model: modelInfo.apiModelId,
       providerId: modelInfo.providerId,
       latencyMs,
+      bestEffort: params.bestEffort ?? false,
     }, agentId);
 
     const isRateLimited = message.includes('rate_limit') || message.includes('429');
@@ -2311,9 +2315,12 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
       errorDetail.stack = err.stack?.split('\n').slice(0, 3).join(' | ');
     }
 
-    // Put the key info in the message itself so it's visible in the log viewer
+    // Put the key info in the message itself so it's visible in the log viewer.
+    // F3/W3-1: best-effort utility calls log at WARN (caller fully handles the
+    // failure); genuine agent-turn calls stay at ERROR.
     const statusStr = err instanceof Anthropic.APIError ? `[${err.status}] ` : '';
-    logger.error(`Model call failed: ${statusStr}${message}`, errorDetail, agentId);
+    errorDetail.bestEffort = params.bestEffort ?? false;
+    logger[params.bestEffort ? 'warn' : 'error'](`Model call failed: ${statusStr}${message}`, errorDetail, agentId);
 
     // Determine if retryable
     const isRateLimited = message.includes('rate_limit') || message.includes('429');

@@ -1190,6 +1190,9 @@ async function fireFastOpener(session: VoiceSession, transcript: string): Promis
       messages: [{ role: 'user', content: transcript }],
       tools: false,
       abortSignal: AbortSignal.timeout(OPENER_TIMEOUT_MS),
+      // W3-1: documented "fully best-effort, never throws" opener; a failure
+      // means silence, which the real reply covers. WARN, not ERROR.
+      bestEffort: true,
     });
     const text = sanitizeOpener(result.content ?? '');
     if (!text) return;

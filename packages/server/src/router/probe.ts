@@ -117,6 +117,10 @@ async function runProbe(params: ProbeParams, lower: Tier): Promise<void> {
       messages: params.messages as Array<{ role: 'user' | 'assistant'; content: string }>,
       systemPrompt: params.systemPrompt,
       tools: false,
+      // W3-1: background router probe, entirely best-effort (caller catches
+      // and logs at DEBUG). Never worth an ERROR log or a 5-minute stall.
+      abortSignal: AbortSignal.timeout(60_000),
+      bestEffort: true,
     });
     const probeAnswer = (result.content ?? '').trim();
     if (!probeAnswer) return;

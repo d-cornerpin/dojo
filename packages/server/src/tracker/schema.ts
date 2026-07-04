@@ -683,7 +683,7 @@ export type IdResolution =
   | { ok: true; id: string }
   | { ok: false; reason: 'empty' | 'too_short' | 'not_found' | 'ambiguous'; matches?: string[] };
 
-function resolveIdIn(table: 'tasks' | 'projects', idOrPrefix: string): IdResolution {
+function resolveIdIn(table: 'tasks' | 'projects', idOrPrefix: string, agentId?: string): IdResolution {
   if (!idOrPrefix || typeof idOrPrefix !== 'string') {
     return { ok: false, reason: 'empty' };
   }
@@ -704,19 +704,63 @@ function resolveIdIn(table: 'tasks' | 'projects', idOrPrefix: string): IdResolut
   const matches = db.prepare(`SELECT id FROM ${table} WHERE id LIKE ? LIMIT 5`)
     .all(`${input}%`) as Array<{ id: string }>;
 
-  if (matches.length === 0) return { ok: false, reason: 'not_found' };
   if (matches.length === 1) return { ok: true, id: matches[0].id };
-  return { ok: false, reason: 'ambiguous', matches: matches.map(m => m.id) };
+  if (matches.length > 1) return { ok: false, reason: 'ambiguous', matches: matches.map(m => m.id) };
+
+  // Correctness-floor: the weak model routinely passes the human-readable
+  // TITLE it saw in a tracker_list_active row where an id is expected
+  // ("Mechanical Keyboards Research"). Rather than hard-fail with not_found,
+  // fall back to resolving that string as a TITLE scoped to THIS agent's own
+  // task/project before erroring. Only runs when the id/prefix search found
+  // nothing, so it never competes with a real id and only helps a wrong-shape
+  // arg do the right thing. Requires an agentId to scope; unscoped callers
+  // (no agentId) keep the original id-only behavior.
+  if (agentId) {
+    const byTitle = resolveByTitleScoped(table, input, agentId);
+    if (byTitle) return byTitle;
+  }
+  return { ok: false, reason: 'not_found' };
 }
 
-/** Resolve a task id from a full UUID or ≥4-char prefix. */
-export function resolveTaskId(idOrPrefix: string): IdResolution {
-  return resolveIdIn('tasks', idOrPrefix);
+/**
+ * Resolve an id argument that turned out to be a TITLE, scoped to the calling
+ * agent's own rows (tasks: assigned_to OR created_by; projects: created_by).
+ * Tries an exact case-insensitive title match first, then a prefix match for
+ * light wording drift. Returns ok on a single hit, ambiguous on several, or
+ * null when nothing matched (caller then emits the normal not_found).
+ */
+function resolveByTitleScoped(table: 'tasks' | 'projects', title: string, agentId: string): IdResolution | null {
+  const db = getDb();
+  const scopeSql = table === 'tasks' ? '(assigned_to = ? OR created_by = ?)' : 'created_by = ?';
+  const scopeParams = table === 'tasks' ? [agentId, agentId] : [agentId];
+
+  // Exact, case-insensitive.
+  let rows = db.prepare(
+    `SELECT id FROM ${table} WHERE lower(title) = lower(?) AND ${scopeSql} LIMIT 5`,
+  ).all(title, ...scopeParams) as Array<{ id: string }>;
+
+  // Prefix, for trailing wording drift, only if exact found nothing. Escape
+  // LIKE wildcards in the model-supplied title so they match literally.
+  if (rows.length === 0) {
+    const escaped = title.replace(/[\\%_]/g, '\\$&');
+    rows = db.prepare(
+      `SELECT id FROM ${table} WHERE title LIKE ? ESCAPE '\\' AND ${scopeSql} LIMIT 5`,
+    ).all(`${escaped}%`, ...scopeParams) as Array<{ id: string }>;
+  }
+
+  if (rows.length === 1) return { ok: true, id: rows[0].id };
+  if (rows.length > 1) return { ok: false, reason: 'ambiguous', matches: rows.map(r => r.id) };
+  return null;
 }
 
-/** Resolve a project id from a full UUID or ≥4-char prefix. */
-export function resolveProjectId(idOrPrefix: string): IdResolution {
-  return resolveIdIn('projects', idOrPrefix);
+/** Resolve a task id from a full UUID, ≥4-char prefix, or (with agentId) a title. */
+export function resolveTaskId(idOrPrefix: string, agentId?: string): IdResolution {
+  return resolveIdIn('tasks', idOrPrefix, agentId);
+}
+
+/** Resolve a project id from a full UUID, ≥4-char prefix, or (with agentId) a title. */
+export function resolveProjectId(idOrPrefix: string, agentId?: string): IdResolution {
+  return resolveIdIn('projects', idOrPrefix, agentId);
 }
 
 /**

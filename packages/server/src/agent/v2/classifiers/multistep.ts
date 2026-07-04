@@ -296,6 +296,11 @@ export async function multistepLLMClassify(
       messages: [{ role: 'user', content: prompt }],
       tools: false,
       abortSignal: AbortSignal.timeout(timeoutMs),
+      // W3-1 (behavioral run bmr59ix4lsg): this call is fully handled, any
+      // failure falls back to the heuristic classifier in the catch below.
+      // Without bestEffort the provider layer logged the already-recovered
+      // timeout at ERROR and it read as an unhandled agent-level error.
+      bestEffort: true,
     });
 
     const parsed = parseClassifierJson(result.content);

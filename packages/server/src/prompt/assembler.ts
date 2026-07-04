@@ -112,6 +112,34 @@ export function getSoulContent(agentId: string): string {
     const agentName = agentRow?.name ?? 'Agent';
     const classification = agentRow?.classification ?? 'apprentice';
 
+    // Created (POST /api/agents) AND spawned sub-agents persist their creator-
+    // provided charter (identity + task instructions) as the earliest
+    // role='system' message row, NOT in any agents column and NOT in
+    // system_prompt_path (both NULL for a dashboard-created agent). Nothing read
+    // that row into the system prompt: the synthesized identity below carried
+    // only STRUCTURAL context (name, parent, squad, reporting rules), so a
+    // created agent's actual persona and instructions (a worker's codeword, its
+    // "reply only when asked" rule, whatever the creator wrote) had mere
+    // user-message authority. On an A2A turn the human-role charter row is
+    // scoped out of the tail entirely, so the agent went BLIND to its own
+    // charter and spun (vault_search x N for a codeword that was in its charter
+    // all along; behav-sig:ca67b479). Give the charter a REAL system-prompt
+    // slot: lead the identity with it, then append the dojo structural context +
+    // reporting rules as framing. Agents whose charter already lives in a
+    // <ID>-SOUL.md file are handled by the file branch above; agents with no
+    // charter row fall through to the synthesized identity unchanged.
+    let charter = '';
+    try {
+      const charterRow = db.prepare(
+        "SELECT content FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY rowid ASC LIMIT 1",
+      ).get(agentId) as { content: string } | undefined;
+      const c = charterRow?.content?.trim() ?? '';
+      // A real charter is substantive prose; never let an engine-coordination
+      // system row ('── New Session ──', a '[SOURCE: …]'/'[System: …]' notice)
+      // stand in for it.
+      if (c.length > 20 && !c.startsWith('──') && !c.startsWith('[')) charter = c;
+    } catch { /* no charter row: fall back to the synthesized identity below */ }
+
     // Get parent agent name
     let parentInfo = '';
     if (agentRow?.parent_agent) {
@@ -159,11 +187,15 @@ export function getSoulContent(agentId: string): string {
     // here, engine enforces A2A intent rules and prefetches vault context
     // at session start, so the prompt only carries structural identity /
     // parent / squad context.
-    return `# Identity
+    const identityBlock = charter
+      ? `${charter}${parentInfo ? `\n\n${parentInfo}` : ''}`
+      : `# Identity
 
 You are **${agentName}**, a ${classification} agent in the DOJO Agent Platform. Your agent ID is \`${agentId}\`.
 
-${parentInfo}
+${parentInfo}`;
+
+    return `${identityBlock}
 
 # The Dojo
 

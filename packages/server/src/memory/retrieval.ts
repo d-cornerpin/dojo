@@ -516,6 +516,12 @@ export async function memoryExpand(
       messages: [{ role: 'user', content: truncatedMessage }],
       systemPrompt,
       tools: false,
+      // W3-1: fully handled utility call, the catch below falls back to
+      // returning the raw expanded material, so the caller always gets the
+      // content. Fail fast instead of riding the provider's 5-minute default
+      // (this synthesis blocks a live tool result), and log at WARN.
+      abortSignal: AbortSignal.timeout(60_000),
+      bestEffort: true,
     });
 
     logger.info('Memory expand completed', {
@@ -525,7 +531,8 @@ export async function memoryExpand(
 
     return result.content;
   } catch (err) {
-    logger.error('Memory expand model call failed', {
+    // WARN, not ERROR: the raw-material fallback below fully handles this.
+    logger.warn('Memory expand model call failed, returning raw material', {
       error: err instanceof Error ? err.message : String(err),
     }, agentId);
 

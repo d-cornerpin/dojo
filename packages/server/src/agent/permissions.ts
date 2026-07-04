@@ -180,9 +180,10 @@ export function getAgentPermissions(agentId: string): PermissionManifest {
   }
 
   const db = getDb();
-  const agent = db.prepare('SELECT permissions, spawn_depth FROM agents WHERE id = ?').get(agentId) as {
+  const agent = db.prepare('SELECT permissions, spawn_depth, created_by FROM agents WHERE id = ?').get(agentId) as {
     permissions: string | null;
     spawn_depth: number | null;
+    created_by: string | null;
   } | undefined;
 
   if (!agent) {
@@ -190,8 +191,17 @@ export function getAgentPermissions(agentId: string): PermissionManifest {
     return DEFAULT_SUBAGENT_PERMISSIONS;
   }
 
-  // spawn_depth 0 agents (primary-level) get full permissions
-  if (agent.spawn_depth === 0) {
+  // The platform-seeded primary agent (created_by='system', spawn_depth 0,
+  // seeded without a manifest in index.ts) keeps full permissions even if the
+  // primary_agent_id config key is momentarily unset, that is the requirement
+  // the old `spawn_depth === 0` shortcut encoded. The shortcut itself was a
+  // security hole: POST /api/agents also writes spawn_depth 0 (meaning
+  // "top-level", not "trusted"), so EVERY dashboard/user-created agent was
+  // silently auto-promoted to PRIMARY_AGENT_PERMISSIONS and its stored
+  // manifest ignored (behavioral run bmr59ix4lsg: a restricted test agent
+  // pip-installed packages and wrote outside its allowlist). Created agents
+  // are now governed by their stored manifest below.
+  if (agent.spawn_depth === 0 && agent.created_by === 'system') {
     return PRIMARY_AGENT_PERMISSIONS;
   }
 

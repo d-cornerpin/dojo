@@ -13,6 +13,13 @@ const logger = createLogger('vault-store');
 
 const MAX_ENTRY_TOKENS = 500;
 
+// W3-4: agent_id used by the dashboard vault API (gateway/routes/vault.ts)
+// for owner-authored entries. These form a deliberate OWNER scope: visible to
+// every agent's recall (the owner writes facts FOR their agents), while
+// agent-authored personal entries stay private per agent. The cross-agent
+// privacy scoping must never hide the owner's own hand-written entries.
+export const OWNER_VAULT_AGENT_ID = 'manual';
+
 // ── Types ──
 
 export interface VaultEntry {
@@ -254,7 +261,7 @@ export async function createEntry(params: {
 
   // Check for semantic duplicates
   if (embeddingBuf) {
-    const duplicate = await findSemanticDuplicate(content, embeddingBuf, 0.92);
+    const duplicate = await findSemanticDuplicate(content, embeddingBuf, 0.92, params.agentId);
     if (duplicate) {
       // Compare the substance (date prefix + whitespace/case normalized away).
       const norm = (s: string) =>
@@ -380,6 +387,14 @@ export function listEntries(options?: {
    * overlap, personal-vault searches never see squad entries and vice versa.
    */
   namespace?: string | null;
+  /**
+   * W3-4: with agentId set, ALSO include owner-authored entries
+   * (agent_id = OWNER_VAULT_AGENT_ID, written via the dashboard vault API).
+   * Agent-recall paths pass true: the owner's hand-written facts are meant
+   * for their agents; the cross-agent privacy fix must not hide them.
+   * Owner-facing dashboard listing keeps strict equality (omit / false).
+   */
+  includeOwnerScope?: boolean;
 }): VaultEntry[] {
   const db = getDb();
   const conditions: string[] = [];
@@ -393,8 +408,13 @@ export function listEntries(options?: {
     params.push(options.type);
   }
   if (options?.agentId) {
-    conditions.push('agent_id = ?');
-    params.push(options.agentId);
+    if (options.includeOwnerScope) {
+      conditions.push('(agent_id = ? OR agent_id = ?)');
+      params.push(options.agentId, OWNER_VAULT_AGENT_ID);
+    } else {
+      conditions.push('agent_id = ?');
+      params.push(options.agentId);
+    }
   }
   if (options?.tag) {
     conditions.push('tags LIKE ?');
@@ -445,6 +465,14 @@ export async function semanticSearch(query: string, options?: {
   // exact-mode filter in listEntries. Squad-namespace entries are documented as
   // never overlapping personal scope and must not leak into personal recall.
   personalOnly?: boolean;
+  // W3-4 (behavioral run bmr59ix4lsg): scope to one agent's vault. The
+  // personal vault is per-agent by design (agent_id on every entry; squad
+  // namespaces are the deliberate sharing mechanism), but this search ran
+  // UNSCOPED, so any agent's vault_search / auto-recall surfaced every other
+  // agent's private entries (observed live: a fresh harness peer retrieved
+  // the primary agent's project codename and delivered it as its own work).
+  // Omit only for owner-level callers (dashboard API), never for agent recall.
+  agentId?: string;
 }): Promise<Array<VaultEntry & { similarity: number }>> {
   const limit = options?.limit ?? 10;
   const minSim = options?.minSimilarity ?? 0.3;
@@ -459,8 +487,8 @@ export async function semanticSearch(query: string, options?: {
       logger.warn('Failed to generate query embedding, falling back to text search', {
         error: err instanceof Error ? err.message : String(err),
       });
-      // Fallback to text search
-      const entries = listEntries({ search: query, limit });
+      // Fallback to text search (same agent + owner scoping as the semantic path)
+      const entries = listEntries({ search: query, limit, agentId: options?.agentId, includeOwnerScope: true });
       return entries.map(e => ({ ...e, similarity: 0.5 }));
     }
   }
@@ -475,6 +503,11 @@ export async function semanticSearch(query: string, options?: {
   }
   if (options?.personalOnly) {
     conditions.push('namespace IS NULL');
+  }
+  if (options?.agentId) {
+    // Agent recall always includes the owner scope (see OWNER_VAULT_AGENT_ID).
+    conditions.push('(agent_id = ? OR agent_id = ?)');
+    params.push(options.agentId, OWNER_VAULT_AGENT_ID);
   }
 
   const where = conditions.join(' AND ');
@@ -524,15 +557,19 @@ export async function reembedNullVaultEntries(limit = 200): Promise<number> {
 
 // ── Deduplication Helper ──
 
+// W3-4: dedupe/supersede is scoped to the SAME agent's vault. Unscoped, agent
+// A saving a near-identical statement could mark agent B's entry obsolete
+// (cross-agent data destruction via the 0.92 supersede path).
 async function findSemanticDuplicate(
   content: string,
   embeddingBuf: Buffer,
   threshold: number,
+  agentId: string,
 ): Promise<VaultEntry | null> {
   const db = getDb();
   const rows = db.prepare(
-    'SELECT * FROM vault_entries WHERE is_obsolete = 0 AND embedding IS NOT NULL'
-  ).all() as VaultEntryRow[];
+    'SELECT * FROM vault_entries WHERE is_obsolete = 0 AND embedding IS NOT NULL AND agent_id = ?'
+  ).all(agentId) as VaultEntryRow[];
 
   const newEmb = new Float32Array(
     embeddingBuf.buffer,
@@ -571,11 +608,19 @@ export function updateRetrievalStats(entryIds: string[]): void {
 
 // ── Pinned Entries ──
 
-export function getPinnedEntries(): VaultEntry[] {
+// W3-4: optional agentId scoping, same reason as semanticSearch. Pinned
+// entries are injected into EVERY assembled context; unscoped, one agent's
+// pins leaked into every other agent's system context. Owner-authored pins
+// (OWNER_VAULT_AGENT_ID) stay visible to all agents by design.
+export function getPinnedEntries(agentId?: string): VaultEntry[] {
   const db = getDb();
-  const rows = db.prepare(
-    'SELECT * FROM vault_entries WHERE is_pinned = 1 AND is_obsolete = 0 ORDER BY created_at DESC'
-  ).all() as VaultEntryRow[];
+  const rows = (agentId
+    ? db.prepare(
+        'SELECT * FROM vault_entries WHERE is_pinned = 1 AND is_obsolete = 0 AND (agent_id = ? OR agent_id = ?) ORDER BY created_at DESC'
+      ).all(agentId, OWNER_VAULT_AGENT_ID)
+    : db.prepare(
+        'SELECT * FROM vault_entries WHERE is_pinned = 1 AND is_obsolete = 0 ORDER BY created_at DESC'
+      ).all()) as VaultEntryRow[];
   return rows.map(rowToEntry);
 }
 
@@ -589,15 +634,21 @@ export function getPinnedEntries(): VaultEntry[] {
  * change. Users can write `vault_remember(content, tags=['session_context'])`
  * to mark something as session-load-on-start.
  */
-export function getSessionContextEntries(): VaultEntry[] {
+// W3-4: optional agentId scoping, same reason as getPinnedEntries above,
+// session-context entries are injected into assembled contexts and must not
+// leak across agents. Owner-authored entries stay visible to all agents.
+export function getSessionContextEntries(agentId?: string): VaultEntry[] {
   const db = getDb();
+  const agentCond = agentId ? 'AND (agent_id = ? OR agent_id = ?)' : '';
+  const params: unknown[] = agentId ? [agentId, OWNER_VAULT_AGENT_ID] : [];
   const rows = db.prepare(
     `SELECT * FROM vault_entries
      WHERE is_obsolete = 0
        AND tags IS NOT NULL
        AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'session_context')
+       ${agentCond}
      ORDER BY created_at DESC`
-  ).all() as VaultEntryRow[];
+  ).all(...params) as VaultEntryRow[];
   return rows.map(rowToEntry);
 }
 
