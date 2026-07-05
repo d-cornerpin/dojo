@@ -277,6 +277,82 @@ function logDrop(envelope: A2AEnvelope, reason: A2ADropReason): void {
   });
 }
 
+// ── ND-3: own-task evidence for validation QUESTIONs ──
+//
+// behav-sig: pm-validation-history-spin-floor. When the PM (or any agent)
+// cross-examines an agent about a task THAT AGENT completed, the floor model
+// otherwise spins through dozens of history searches trying to reconstruct
+// evidence it already recorded. Rendering that stored evidence (result +
+// evidence array + a compact verified-receipt summary) straight into the inbound
+// lets the model answer in 1-2 calls instead of re-mining its own history.
+//
+// Compose-time CONTENT enrichment ONLY: additive to the delivered string, never
+// a per-turn tool budget or a loop cap (the model may still search if it wants).
+// Fires narrowly: only for QUESTION intent (gated by the caller), only for the
+// 8-char task-id prefixes the question prose actually references, and only for
+// tasks assigned to THIS recipient (never another agent's record). The A2A wire
+// carries no structured task_id (A2AEnvelope has none, the messages table has no
+// task_id column), so the prefixes are parsed from the payload prose the way the
+// PM reject/retask questions emit them. Dynamic imports mirror the ASSIGN
+// auto-task path below (tracker/schema pulls a2a-transport transitively).
+async function renderOwnTaskEvidenceForQuestion(recipientId: string, payload: string): Promise<string> {
+  try {
+    const tokens = payload.match(/\b[0-9a-f]{8}\b/g);
+    if (!tokens || tokens.length === 0) return '';
+
+    const { resolveTaskId, getTask } = await import('../tracker/schema.js');
+    const { getReceiptsForTask } = await import('../receipts/store.js');
+
+    const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)}…` : s);
+    const PER_TASK_CAP = 700; // hard bound per task so the enriched inbound can't balloon
+    const MAX_TASKS = 3;
+
+    const seen = new Set<string>();
+    const blocks: string[] = [];
+
+    for (const token of tokens) {
+      if (blocks.length >= MAX_TASKS) break;
+      const resolved = resolveTaskId(token);
+      if (!resolved.ok || seen.has(resolved.id)) continue;
+      seen.add(resolved.id);
+      const task = getTask(resolved.id);
+      if (!task) continue;
+      // GATE: only the recipient's OWN task. A question about a task assigned to
+      // someone else carries no evidence this recipient can answer from, and
+      // rendering it would leak another agent's record onto this lane.
+      if (task.assignedTo !== recipientId) continue;
+
+      const lines: string[] = [`• ${task.title} (${task.id.slice(0, 8)}) | status: ${task.status}`];
+      if (task.result) lines.push(`  Result: ${clip(task.result, 300)}`);
+      if (task.evidence.length > 0) {
+        const ev = task.evidence.slice(0, 5).map((e, i) => {
+          const claim = typeof e.claim === 'string' ? e.claim : '';
+          const pointer = typeof e.pointer === 'string' ? e.pointer : '';
+          return `    ${i + 1}. [${e.kind ?? '?'}] ${claim}${pointer ? ` @ ${pointer}` : ''}`;
+        });
+        lines.push(`  Evidence:\n${ev.join('\n')}`);
+      }
+      const receipts = getReceiptsForTask(task.id).slice(0, 5);
+      if (receipts.length > 0) {
+        const rl = receipts.map((r) =>
+          `    - ${r.tool} ${r.verified ? 'verified' : 'unverified'} (${r.basis})` +
+          `${r.recipient ? ` → ${r.recipient}` : ''} @ ${r.created_at}`);
+        lines.push(`  Receipts:\n${rl.join('\n')}`);
+      }
+
+      blocks.push(clip(lines.join('\n'), PER_TASK_CAP));
+    }
+
+    if (blocks.length === 0) return '';
+    return `\n\n[Your record for the referenced task(s), so you can answer without re-mining history:]\n${blocks.join('\n')}`;
+  } catch (err) {
+    logger.debug('ND-3 own-task evidence render skipped', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return '';
+  }
+}
+
 // ── Core Delivery Function ──
 
 export interface A2ADeliveryResult {
@@ -584,7 +660,19 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   const promotionTag = autoPromotedFromFyi
     ? ` (auto-promoted from FYI by the engine, payload looked deliverable-shaped)`
     : '';
-  const contextMessage = `[A2A:${effectiveIntent} thread:${threadShort} from:${senderName}${promotionTag}] ${envelope.payload}${threadInfo}${primaryDeliverableHint}`;
+  let contextMessage = `[A2A:${effectiveIntent} thread:${threadShort} from:${senderName}${promotionTag}] ${envelope.payload}${threadInfo}${primaryDeliverableHint}`;
+
+  // ── ND-3: attach the recipient's OWN task evidence to a validation QUESTION ──
+  // A QUESTION cross-examining an agent about a task IT completed otherwise makes
+  // the floor model spin through dozens of history searches to reconstruct evidence
+  // it already recorded. We render that stored evidence into the inbound so it can
+  // answer in 1-2 calls. Purely additive to CONTENT, appended AFTER the [Thread ...]
+  // footer (see helper), so dedup's payload extractor and the [A2A:...] marker
+  // parsers, which read only the leading payload, are untouched. No tool budget, no
+  // loop cap; the model is still free to search.
+  if (effectiveIntent === 'QUESTION') {
+    contextMessage += await renderOwnTaskEvidenceForQuestion(target.id, envelope.payload);
+  }
 
   // ── Close-the-loop: ENGINE delivers the answer to the owner ──
   // When the recipient earlier asked someone on the owner's behalf, the owner's

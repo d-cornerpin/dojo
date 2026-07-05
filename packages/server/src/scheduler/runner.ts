@@ -555,8 +555,14 @@ export async function checkScheduledTasks(): Promise<void> {
           });
           if (incomplete.length > 0) {
             logger.info('Scheduler: task has unmet dependencies, skipping', { taskId, incomplete });
-            // Push next_run_at forward by 30 seconds so we re-check soon
-            db.prepare("UPDATE tasks SET next_run_at = datetime('now', '+30 seconds') WHERE id = ?").run(taskId);
+            // Push next_run_at forward by 30 seconds so we re-check soon.
+            // Write an explicit ISO instant, not datetime('now','+30 seconds'):
+            // SQLite's space-separated form (0x20) sorts BELOW the 'T' (0x54)
+            // in the ISO `now` this scheduler string-compares against, so a
+            // same-date space value reads as already due and the defer would
+            // collapse to "due again next tick". ISO keeps the defer honest.
+            db.prepare('UPDATE tasks SET next_run_at = ? WHERE id = ?')
+              .run(new Date(Date.now() + 30_000).toISOString(), taskId);
             continue;
           }
         }

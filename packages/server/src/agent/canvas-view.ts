@@ -40,35 +40,42 @@ export interface CanvasState {
   sourceUrl?: string;
 }
 
-// The dojo has a single dock surface, so a single "current canvas" matches the
-// UI. Updated whenever the agent opens something in the dock.
-let currentCanvas: CanvasState | null = null;
+// The canvas is PER AGENT: each agent owns its own dock slot, keyed by agentId.
+// A background agent finishing a delegated job opens ITS slot; the dashboard
+// shows only the slot of the agent the user is currently viewing (client-side,
+// off the agentId stamped on every dock event), so a background open can never
+// replace the viewed agent's canvas. Updated whenever an agent opens something.
+// (No GC of per-agent rows when an agent is deleted; that's an accepted choice
+// at this scale, one small config row per agent.)
+const currentCanvasByAgent = new Map<string, CanvasState>();
 
-// Live re-render: watch the file currently shown in the canvas and tell the
-// client to re-fetch whenever it changes on disk, NO MATTER how it was edited.
-// The proper edit tools (file_write/file_patch, office_*) already ping the
-// canvas, but weak models routinely reach for shell hacks instead (sed -i,
+// Live re-render: watch the file currently shown in an agent's canvas and tell
+// the client to re-fetch whenever it changes on disk, NO MATTER how it was
+// edited. The proper edit tools (file_write/file_patch, office_*) already ping
+// the canvas, but weak models routinely reach for shell hacks instead (sed -i,
 // python-docx, a heredoc redirect). Those bypass the in-tool ping, so without a
 // disk watcher the canvas would show stale content after such an edit. Polling
 // stat() (vs fs.watch) catches in-place writes AND atomic rename-replaces, on
-// every platform.
-let watchedPath: string | null = null;
-function stopCanvasWatch(): void {
-  if (watchedPath) {
-    try { fs.unwatchFile(watchedPath); } catch { /* best effort */ }
-    watchedPath = null;
+// every platform. One watcher PER AGENT, and the canvas:updated it emits carries
+// the agentId, so an edit to agent B's file can never refresh agent A's canvas.
+const watchedPathByAgent = new Map<string, string>();
+function stopCanvasWatch(agentId: string): void {
+  const watched = watchedPathByAgent.get(agentId);
+  if (watched) {
+    try { fs.unwatchFile(watched); } catch { /* best effort */ }
+    watchedPathByAgent.delete(agentId);
   }
 }
-function startCanvasWatch(filePath: string): void {
-  if (watchedPath === filePath) return;
-  stopCanvasWatch();
+function startCanvasWatch(agentId: string, filePath: string): void {
+  if (watchedPathByAgent.get(agentId) === filePath) return;
+  stopCanvasWatch(agentId);
   try {
     fs.watchFile(filePath, { interval: 700 }, (curr, prev) => {
       if (curr.mtimeMs !== prev.mtimeMs) {
-        try { broadcast({ type: 'canvas:updated', data: { path: filePath } }); } catch { /* best effort */ }
+        try { broadcast({ type: 'canvas:updated', agentId, data: { path: filePath } }); } catch { /* best effort */ }
       }
     });
-    watchedPath = filePath;
+    watchedPathByAgent.set(agentId, filePath);
   } catch { /* best effort, never let watching break a canvas open */ }
 }
 
@@ -76,67 +83,72 @@ function startCanvasWatch(filePath: string): void {
 // COLLAPSED (minimised to the edge handle; content retained). Persisted to the
 // DB so the canvas survives a browser refresh, a server restart, and follows the
 // user from one device to another (the dashboard reads GET /api/canvas on mount).
+// Per agent, like the canvas state itself.
 export type CanvasStatus = 'open' | 'collapsed';
-let canvasStatus: CanvasStatus = 'collapsed';
-let canvasHydrated = false;
-const CANVAS_CONFIG_KEY = 'current_canvas';
+const canvasStatusByAgent = new Map<string, CanvasStatus>();
+const hydratedAgents = new Set<string>();
+// One config row per agent: `current_canvas:<agentId>`.
+const canvasConfigKey = (agentId: string): string => `current_canvas:${agentId}`;
 
-function persistCanvas(): void {
+function persistCanvas(agentId: string): void {
   try {
-    const value = currentCanvas
-      ? JSON.stringify({ state: currentCanvas, status: canvasStatus })
+    const state = currentCanvasByAgent.get(agentId) ?? null;
+    const value = state
+      ? JSON.stringify({ state, status: canvasStatusByAgent.get(agentId) ?? 'collapsed' })
       : '';
     getDb().prepare(
       `INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
-    ).run(CANVAS_CONFIG_KEY, value);
+    ).run(canvasConfigKey(agentId), value);
   } catch { /* best effort, never let persistence break a canvas open */ }
 }
 
-// Lazily rehydrate the in-memory canvas from the DB on first access, so a server
-// restart doesn't drop an open canvas the user expects to still be there.
-function hydrateCanvas(): void {
-  if (canvasHydrated) return;
-  canvasHydrated = true;
+// Lazily rehydrate one agent's in-memory canvas from the DB on first access, so a
+// server restart doesn't drop an open canvas the user expects to still be there.
+function hydrateCanvas(agentId: string): void {
+  if (hydratedAgents.has(agentId)) return;
+  hydratedAgents.add(agentId);
   try {
     const row = getDb().prepare('SELECT value FROM config WHERE key = ?')
-      .get(CANVAS_CONFIG_KEY) as { value: string } | undefined;
+      .get(canvasConfigKey(agentId)) as { value: string } | undefined;
     if (row?.value) {
       const parsed = JSON.parse(row.value) as { state: CanvasState; status: CanvasStatus };
       if (parsed?.state) {
-        currentCanvas = parsed.state;
-        canvasStatus = parsed.status === 'open' ? 'open' : 'collapsed';
-        if (currentCanvas.kind === 'canvas' && currentCanvas.path) startCanvasWatch(currentCanvas.path);
+        currentCanvasByAgent.set(agentId, parsed.state);
+        canvasStatusByAgent.set(agentId, parsed.status === 'open' ? 'open' : 'collapsed');
+        if (parsed.state.kind === 'canvas' && parsed.state.path) startCanvasWatch(agentId, parsed.state.path);
       }
     }
   } catch { /* best effort */ }
 }
 
-export function setCurrentCanvas(state: CanvasState | null): void {
-  hydrateCanvas();
-  currentCanvas = state;
+export function setCurrentCanvas(agentId: string, state: CanvasState | null): void {
+  hydrateCanvas(agentId);
+  if (state) currentCanvasByAgent.set(agentId, state);
+  else currentCanvasByAgent.delete(agentId);
   // Opening a canvas always brings it to the OPEN state (the agent put something
   // there for the user to see). Clearing it resets to collapsed.
-  canvasStatus = state ? 'open' : 'collapsed';
-  if (state?.kind === 'canvas' && state.path) startCanvasWatch(state.path);
-  else stopCanvasWatch();
-  persistCanvas();
+  canvasStatusByAgent.set(agentId, state ? 'open' : 'collapsed');
+  if (state?.kind === 'canvas' && state.path) startCanvasWatch(agentId, state.path);
+  else stopCanvasWatch(agentId);
+  persistCanvas(agentId);
 }
-export function getCurrentCanvas(): CanvasState | null {
-  hydrateCanvas();
-  return currentCanvas;
+export function getCurrentCanvas(agentId: string): CanvasState | null {
+  hydrateCanvas(agentId);
+  return currentCanvasByAgent.get(agentId) ?? null;
 }
 /** Full persisted shape for the dashboard's load-on-mount (GET /api/canvas). */
-export function getPersistedCanvas(): { state: CanvasState; status: CanvasStatus } | null {
-  hydrateCanvas();
-  return currentCanvas ? { state: currentCanvas, status: canvasStatus } : null;
+export function getPersistedCanvas(agentId: string): { state: CanvasState; status: CanvasStatus } | null {
+  hydrateCanvas(agentId);
+  const state = currentCanvasByAgent.get(agentId);
+  return state ? { state, status: canvasStatusByAgent.get(agentId) ?? 'collapsed' } : null;
 }
 /** Update just the open/collapsed status (user collapsed or re-opened the dock). */
-export function setCanvasStatus(status: CanvasStatus): void {
-  hydrateCanvas();
-  if (!currentCanvas) return;
-  canvasStatus = status;
-  persistCanvas();
+export function setCanvasStatus(agentId: string, status: CanvasStatus): void {
+  hydrateCanvas(agentId);
+  if (!currentCanvasByAgent.has(agentId)) return;
+  canvasStatusByAgent.set(agentId, status);
+  persistCanvas(agentId);
 }
 
 const IMAGE_MIME: Record<string, string> = {
@@ -233,7 +245,7 @@ export async function viewCanvas(agentId: string, args: Record<string, unknown>)
   if (argHtml || argUrl || argPath) {
     target = { kind: 'canvas', html: argHtml, url: argUrl, path: argPath };
   } else {
-    target = currentCanvas;
+    target = getCurrentCanvas(agentId);
   }
   if (!target || (!target.html && !target.url && !target.path)) {
     return 'Error: nothing is open in the canvas. Show something first with canvas_render (or pass html / url / path to view a specific thing).';

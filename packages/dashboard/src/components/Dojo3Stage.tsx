@@ -69,10 +69,14 @@ export function Dojo3Stage({
   const { subscribe } = useWebSocket();
   const [resizing, setResizing] = useState(false);
 
-  // The agent opens a canvas/iframe in the dock by emitting `dock:open`.
+  // The agent opens a canvas/iframe in the dock by emitting `dock:open`. Canvas
+  // is per-agent: only open the dock when the event is for the agent the user is
+  // currently viewing, so a BACKGROUND agent's auto-open never replaces the
+  // viewed agent's canvas (it lands on its own slot, restored when you view it).
   useEffect(() => {
     const unsub = subscribe('dock:open', (e) => {
       if (e.type !== 'dock:open') return;
+      if (e.agentId !== activeAgent.agentId) return;
       const d = e.data;
       if (d.kind === 'iframe' && d.url) openDock({ kind: 'iframe', title: d.title, url: d.url });
       else if (d.kind === 'screenshot' && d.url && d.sourceUrl) openDock({ kind: 'screenshot', title: d.title, url: d.url, sourceUrl: d.sourceUrl });
@@ -80,16 +84,18 @@ export function Dojo3Stage({
       else if (d.kind === 'screen') openDock({ kind: 'screen', title: d.title });
     });
     return unsub;
-  }, [subscribe, openDock]);
+  }, [subscribe, openDock, activeAgent.agentId]);
 
-  // Another device collapsed the canvas — mirror it here (show the edge handle).
+  // Another device collapsed the canvas, mirror it here (show the edge handle),
+  // but only when it's the canvas of the agent this device is viewing.
   useEffect(() => {
     const unsub = subscribe('dock:collapse', (e) => {
       if (e.type !== 'dock:collapse') return;
+      if (e.agentId !== activeAgent.agentId) return;
       collapseRemote();
     });
     return unsub;
-  }, [subscribe, collapseRemote]);
+  }, [subscribe, collapseRemote, activeAgent.agentId]);
 
   // Drag the grabber between the chat and a media dock to resize (the chat
   // grows/shrinks inversely). Transition is disabled while dragging.

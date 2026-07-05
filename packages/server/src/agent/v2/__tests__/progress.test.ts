@@ -65,18 +65,26 @@ describe('progressClassifier', () => {
 
 describe('buildSpinningNudge', () => {
   it('includes turn count in the message', () => {
-    const nudge = buildSpinningNudge({ ...baseProgress, loopCount: 42 });
+    const nudge = buildSpinningNudge({ ...baseProgress, loopCount: 42 }, true);
     expect(nudge).toContain('42');
   });
 
-  it('mentions complete_task with status=blocked', () => {
-    const nudge = buildSpinningNudge(baseProgress);
+  it('mentions complete_task with status=blocked for a self-completable agent', () => {
+    const nudge = buildSpinningNudge(baseProgress, true);
     expect(nudge).toContain('complete_task');
     expect(nudge).toContain('blocked');
   });
 
+  it('does not name complete_task for a non-self-completable agent (FN-8)', () => {
+    const nudge = buildSpinningNudge(baseProgress, false);
+    expect(nudge).not.toContain('complete_task');
+    expect(nudge).toContain('blocking');
+    expect(nudge).toContain('tracker_update_status');
+  });
+
   it('starts with [System: marker', () => {
-    const nudge = buildSpinningNudge(baseProgress);
+    const nudge = buildSpinningNudge(baseProgress, true);
     expect(nudge.startsWith('[System:')).toBe(true);
+    expect(buildSpinningNudge(baseProgress, false).startsWith('[System:')).toBe(true);
   });
 });

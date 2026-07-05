@@ -703,6 +703,30 @@ export function getUnprocessedConversations(): VaultConversation[] {
   return rows.map(rowToConversation);
 }
 
+// FN-1 (behav-sig:wave3-memory-across-reset-race). A session reset archives the
+// just-finished conversation into vault_conversations with is_processed = 0, but
+// nothing files it into vault_entries until the nightly Dreamer cycle (default
+// 03:00). Every vault recall path reads ONLY vault_entries, so a fact told right
+// before a reset is invisible to recall for hours. This helper backs the
+// deterministic bridge that lets recall peek at the newest still-unfiled
+// archives in the meantime. It returns only the columns the bridge needs
+// (lighter than getUnprocessedConversations, which hydrates the full row).
+//
+// W3-4 scoping: filtered by agent_id exactly like every other recall path (the
+// personal vault is per-agent by design). is_processed = 0 is the self-disable
+// gate: the moment the Dreamer marks the archive processed, this stops
+// returning it and vault_entries becomes the sole store again.
+export function getUnfiledArchivesForAgent(
+  agentId: string,
+  limit = 3,
+): Array<{ id: string; messages: string; latestAt: string }> {
+  const db = getDb();
+  const rows = db.prepare(
+    'SELECT id, messages, latest_at FROM vault_conversations WHERE agent_id = ? AND is_processed = 0 ORDER BY created_at DESC LIMIT ?',
+  ).all(agentId, limit) as Array<{ id: string; messages: string; latest_at: string }>;
+  return rows.map(r => ({ id: r.id, messages: r.messages, latestAt: r.latest_at }));
+}
+
 export function markConversationProcessed(id: string): void {
   const db = getDb();
   db.prepare('UPDATE vault_conversations SET is_processed = 1, processed_at = datetime(\'now\') WHERE id = ?').run(id);

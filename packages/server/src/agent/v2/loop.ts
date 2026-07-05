@@ -44,7 +44,7 @@ import { deriveOrigin } from '@dojo/shared';
 import { assembleContext } from '../../memory/assembler.js';
 import { callModel, getContextWindow } from '../model.js';
 import { writeContextReceipt } from './receipt.js';
-import { executeTool } from '../tools.js';
+import { executeTool, agentCanSelfCompleteById } from '../tools.js';
 // recordError intentionally NOT imported, handleMessage's catch path calls
 // it. Calling here would double-count errors and trip the loop-detector
 // pause prematurely.
@@ -2465,6 +2465,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
             tier: routerTier,
             error: err instanceof Error ? err.message.slice(0, 100) : String(err),
           }, agentId);
+          // Phone streaming: this failed model's stream is discarded, so
+          // drop its un-flushed tail and clear the "already streamed"
+          // latch before the fallback attempt runs. The buffer only ever
+          // holds the CURRENT stream's unsent tail (the sent prefix is
+          // stripped in onChunk), and that stream is gone. The latch
+          // means "this turn's answer already streamed"; the fallback
+          // attempt re-latches it if IT streams. Resetting the latch here
+          // prefers a rare duplication (a partial already spoken plus the
+          // full answer spoken one-shot when the fallback does NOT stream)
+          // over ever leaving the caller without the final answer. Audio
+          // already handed to queueAgentSay stays committed by design;
+          // there is no dequeue and none should be added.
+          if (phoneStreamCallSid) { phoneStreamBuffer = ''; phoneStreamFlushedAny = false; }
           modelId = fallback.modelId;
           state = advance(state, { modelId });
         }
@@ -4815,7 +4828,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
               result: toolResult.content.slice(0, 500),
             });
           } catch { /* best effort */ }
-          if (tc.name === 'complete_task') calledCompleteTask = true;
+          // FN-8: only a SUCCESSFUL complete_task is a lifecycle exit. When the
+          // engine guard refuses the call (a persistent agent that shouldn't be
+          // able to self-terminate emitted it), the tool returns an error and the
+          // agent is NOT terminated, so the loop must keep running to let it act
+          // on the guidance (report the block / use tracker_update_status) rather
+          // than end the turn silently. Mirrors the fire-and-forget check below.
+          if (tc.name === 'complete_task' && !toolResult.isError) calledCompleteTask = true;
           // Only a SUCCESSFUL generator call is terminal (the job started and
           // the asset arrives later via async delivery). An error result, 
           // e.g. the param validator kicking the call back for a missing or
@@ -5231,9 +5250,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
           state = advance(state, {
             nudgedForRepetition: true,
             pendingNudge:
+              // FN-8: complete_task is not available to every agent, so don't
+              // name it here where the filtered tool list isn't in scope. Point
+              // at tracker_update_status (universally available) instead.
               '[System: You are repeating yourself, your last two responses were identical. ' +
-              'Try a different approach. If the task is complete, call complete_task or ' +
-              'tracker_update_status. If you need help, explain what you are stuck on.]',
+              'Try a different approach. If the task is complete, mark it done (e.g. tracker_update_status) and stop. ' +
+              'If you need help, explain what you are stuck on.]',
           });
           continue;
         }
@@ -5326,6 +5348,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
           break;
         }
         // Otherwise inject a nudge and continue once.
+        // FN-8: the nudge only names complete_task for agents that can actually
+        // self-complete; a persistent agent gets "explain the block in your
+        // reply" wording instead of being pointed at a tool the guard refuses.
         const nudgeText = buildSpinningNudge({
           toolCallsExecutedThisTurn: state.toolCallsExecutedThisTurn,
           consecutiveSmallDeltas: 0,
@@ -5333,7 +5358,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           consecutiveNoResultTools: 0,
           spinningNudgeCount: state.spinningNudgeCount,
           loopCount: state.loopCount,
-        });
+        }, agentCanSelfCompleteById(agentId));
         const nudgeId = uuidv4();
         db.prepare(`
           INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
@@ -5473,7 +5498,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // the split: channel delivery covers every undelivered URL; the
           // dashboard link bubble is suppressed for the doc currently on canvas.
           const { getCurrentCanvas } = await import('../canvas-view.js');
-          const currentCanvasPath = getCurrentCanvas()?.path ?? null;
+          const currentCanvasPath = getCurrentCanvas(agentId)?.path ?? null;
           const replyText = state.lastAssistantTextForIM;
           const undeliveredForChannel: string[] = [];
           const undeliveredForDashboard: string[] = [];

@@ -17,7 +17,7 @@ import {
 import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
 import { injectTaskAssignmentNotification } from './notify.js';
 import { writeTaskLog } from './task-log.js';
-import { calculateNextRun, type ScheduledTask } from '../scheduler/engine.js';
+import { calculateNextRun, normalizeDbTimestamp, type ScheduledTask } from '../scheduler/engine.js';
 import { onTaskRunComplete } from '../scheduler/runner.js';
 import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../gateway/ws.js';
@@ -883,10 +883,10 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       ).get(taskId) as { scheduled_start: string | null; repeat_interval: number | null; next_run_at: string | null } | undefined;
       const nowMs = Date.now();
       const futureScheduledStart = !!(
-        sched?.scheduled_start && new Date(sched.scheduled_start).getTime() > nowMs
+        sched?.scheduled_start && new Date(normalizeDbTimestamp(sched.scheduled_start)).getTime() > nowMs
       );
       const futureNextRun = !!(
-        sched?.next_run_at && new Date(sched.next_run_at).getTime() > nowMs
+        sched?.next_run_at && new Date(normalizeDbTimestamp(sched.next_run_at)).getTime() > nowMs
       );
       const isRecurring = !!sched?.repeat_interval;
       if (!futureScheduledStart && !futureNextRun && !isRecurring) {

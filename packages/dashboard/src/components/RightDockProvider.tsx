@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { getCanvas, setCanvasStatus, type CanvasPersisted } from '../lib/api';
+import { useActiveAgent } from './ActiveAgentProvider';
 
 // A persisted canvas only ever stores media kinds; map it back to a DockSpec.
 function persistedToDockSpec(s: CanvasPersisted['state']): DockSpec {
@@ -93,6 +94,12 @@ export function RightDockProvider({ children }: { children: ReactNode }) {
   const [width, setWidthState] = useState(DEFAULT_WIDTH);
   const [height, setHeightState] = useState(initialHeight);
 
+  // The canvas is per-agent: the dock shows the slot of the agent being viewed,
+  // and a collapse/re-open records against THAT agent's slot server-side.
+  const activeAgent = useActiveAgent();
+  const agentIdRef = useRef(activeAgent.agentId);
+  agentIdRef.current = activeAgent.agentId;
+
   // Live mirrors so the stable callbacks below read current state without
   // re-creating themselves (and without side effects inside a state updater).
   const dockRef = useRef<DockSpec | null>(null);
@@ -112,7 +119,7 @@ export function RightDockProvider({ children }: { children: ReactNode }) {
     const cur = dockRef.current;
     if (isCollapsibleDock(cur)) {
       setCollapsed(cur);
-      void setCanvasStatus('collapsed');
+      void setCanvasStatus(agentIdRef.current, 'collapsed');
     }
     setDock(null);
   }, []);
@@ -124,7 +131,7 @@ export function RightDockProvider({ children }: { children: ReactNode }) {
     if (c) {
       setDock(c);
       setCollapsed(null);
-      void setCanvasStatus('open');
+      void setCanvasStatus(agentIdRef.current, 'open');
     }
   }, []);
 
@@ -136,20 +143,28 @@ export function RightDockProvider({ children }: { children: ReactNode }) {
     setDock(null);
   }, []);
 
-  // Restore the persisted canvas on mount — this is what makes the canvas
+  // Restore the VIEWED agent's persisted canvas. This is what makes the canvas
   // survive a browser refresh, a server restart, and a move between devices.
+  // Re-runs when the viewed agent changes: switching to an agent whose canvas is
+  // different swaps to it, and switching to one with no canvas clears the dock so
+  // we never leave the previous agent's canvas on screen. A transient dock (live
+  // screen-share / arbitrary panel) is left alone: it isn't part of the per-agent
+  // canvas model, so an agent switch must not stomp it.
   useEffect(() => {
     let cancelled = false;
-    getCanvas()
+    getCanvas(activeAgent.agentId)
       .then((res) => {
-        if (cancelled || !res.ok || !res.data) return;
-        const spec = persistedToDockSpec(res.data.state);
-        if (res.data.status === 'open') { setDock(spec); setCollapsed(null); }
+        if (cancelled) return;
+        if (dockRef.current && !isCollapsibleDock(dockRef.current)) return;
+        const data = res.ok ? res.data : null;
+        if (!data) { setDock(null); setCollapsed(null); return; }
+        const spec = persistedToDockSpec(data.state);
+        if (data.status === 'open') { setDock(spec); setCollapsed(null); }
         else { setCollapsed(spec); setDock(null); }
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, []);
+  }, [activeAgent.agentId]);
 
   const setWidth = useCallback((w: number) => {
     const max = Math.max(MIN_WIDTH, window.innerWidth * 0.72);

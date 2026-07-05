@@ -1504,9 +1504,10 @@ export const forgetVncPassword = () =>
 
 
 // ── Canvas (right dock) ──
-// The current canvas is persisted server-side so it survives a refresh / server
-// restart and follows the user across devices. getCanvas restores it on mount;
-// setCanvasStatus records a collapse (close → edge handle) or a re-open.
+// The canvas is persisted server-side PER AGENT so it survives a refresh / server
+// restart and follows the user across devices. Both calls carry the viewed
+// agentId: getCanvas restores that agent's slot on mount / agent switch;
+// setCanvasStatus records a collapse (close → edge handle) or a re-open of it.
 export interface CanvasPersisted {
   state: {
     kind: 'canvas' | 'iframe' | 'screenshot';
@@ -1518,11 +1519,12 @@ export interface CanvasPersisted {
   };
   status: 'open' | 'collapsed';
 }
-export const getCanvas = () => request<CanvasPersisted | null>('/canvas');
-export const setCanvasStatus = (status: 'open' | 'collapsed') =>
+export const getCanvas = (agentId: string) =>
+  request<CanvasPersisted | null>(`/canvas?agentId=${encodeURIComponent(agentId)}`);
+export const setCanvasStatus = (agentId: string, status: 'open' | 'collapsed') =>
   request<CanvasPersisted | null>('/canvas/status', {
     method: 'POST',
-    body: JSON.stringify({ status }),
+    body: JSON.stringify({ agentId, status }),
   });
 
 

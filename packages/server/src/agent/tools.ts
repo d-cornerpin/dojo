@@ -22,7 +22,7 @@ import { checkRequired, friendlyDbError, resolveAgentRef, resolveGroupRef, compa
 // with `large_files` table records created before Phase 3.5; new tool calls
 // don't intercept.
 import { checkPermission, getAgentPermissions } from './permissions.js';
-import { isPrimaryAgent, isPMAgent, isImaginerAgent, getPrimaryAgentId } from '../config/platform.js';
+import { isPrimaryAgent, isPMAgent, isImaginerAgent, getPrimaryAgentId, isDreamerAgent, isHealerAgent } from '../config/platform.js';
 import { spawnAgent, terminateAgent, completeAgent } from './spawner.js';
 import { getAgentRuntime } from './runtime.js';
 import { isAwaitingIMResponse, clearIMResponseFlag } from '../services/imessage-bridge.js';
@@ -139,9 +139,9 @@ function registerSharedFile(agentId: string, filePath: string): string | null {
 // Tell any open canvas showing this file to re-fetch. The right dock matches on
 // absolute path, so editing a document the user is watching (file_write /
 // file_patch / file_append) refreshes the canvas with no manual step.
-function broadcastCanvasUpdate(filePath: string): void {
+function broadcastCanvasUpdate(agentId: string, filePath: string): void {
   try {
-    broadcast({ type: 'canvas:updated', data: { path: filePath } });
+    broadcast({ type: 'canvas:updated', agentId, data: { path: filePath } });
   } catch { /* best effort, never let a UI ping break a file write */ }
 }
 
@@ -201,14 +201,14 @@ function queueCanvasDocAttachment(agentId: string, filePath: string, downloadUrl
 // routinely don't, even when explicitly told to). Non-renderable writes only
 // ping (a no-op unless some canvas already watches that path).
 function syncCanvasAfterWrite(agentId: string, filePath: string, downloadUrl: string | null): { opened: boolean } {
-  const cur = getCurrentCanvas();
+  const cur = getCurrentCanvas(agentId);
   if (cur?.kind === 'canvas' && cur.path === filePath) {
-    broadcastCanvasUpdate(filePath);
+    broadcastCanvasUpdate(agentId, filePath);
     return { opened: false };
   }
   const ext = path.extname(filePath).toLowerCase();
   if (!CANVAS_VIEWABLE_EXTS.has(ext) || !downloadUrl) {
-    broadcastCanvasUpdate(filePath);
+    broadcastCanvasUpdate(agentId, filePath);
     return { opened: false };
   }
   let url = downloadUrl;
@@ -217,8 +217,8 @@ function syncCanvasAfterWrite(agentId: string, filePath: string, downloadUrl: st
   }
   const title = path.basename(filePath);
   try {
-    broadcast({ type: 'dock:open', data: { kind: 'canvas', url, title, path: filePath } });
-    setCurrentCanvas({ kind: 'canvas', url, path: filePath, title });
+    broadcast({ type: 'dock:open', agentId, data: { kind: 'canvas', url, title, path: filePath } });
+    setCurrentCanvas(agentId, { kind: 'canvas', url, path: filePath, title });
     queueCanvasDocAttachment(agentId, filePath, downloadUrl);
     return { opened: true };
   } catch {
@@ -237,9 +237,9 @@ function openFileInCanvas(agentId: string, filePath: string): { opened: boolean 
     if (!fs.existsSync(filePath)) return { opened: false };
     // Already showing this exact file (e.g. an in-place edit to the open doc)?
     // Just refresh it rather than re-opening, the canvas re-fetches/re-renders.
-    const cur = getCurrentCanvas();
+    const cur = getCurrentCanvas(agentId);
     if (cur?.kind === 'canvas' && cur.path === filePath) {
-      broadcastCanvasUpdate(filePath);
+      broadcastCanvasUpdate(agentId, filePath);
       return { opened: true };
     }
     const registered = registerSharedFile(agentId, filePath);
@@ -249,8 +249,8 @@ function openFileInCanvas(agentId: string, filePath: string): { opened: boolean 
       url += (url.includes('?') ? '&' : '?') + 'inline=1';
     }
     const title = path.basename(filePath);
-    broadcast({ type: 'dock:open', data: { kind: 'canvas', url, title, path: filePath } });
-    setCurrentCanvas({ kind: 'canvas', url, path: filePath, title });
+    broadcast({ type: 'dock:open', agentId, data: { kind: 'canvas', url, title, path: filePath } });
+    setCurrentCanvas(agentId, { kind: 'canvas', url, path: filePath, title });
     queueCanvasDocAttachment(agentId, filePath, registered);
     return { opened: true };
   } catch {
@@ -297,12 +297,57 @@ export function getAllToolDefinitions(): ToolDefinition[] {
   ];
 }
 
+/**
+ * FN-8: single source of truth for whether an agent may terminate its own
+ * lifecycle via complete_task. complete_task ends a SPAWNED agent's lifecycle;
+ * exposing it to a persistent agent (the primary, a role agent, a standalone
+ * agent) lets the engine terminate a long-lived agent the moment the model
+ * emits the tool, which violates the engine-enforces-correctness law.
+ *
+ * The rule: ordinary work spawns carry classification 'apprentice'; spawn-time
+ * task linkage is agents.task_id; and the Dreamer and Healer are the only
+ * PERSISTENT per-cycle consumers whose lifecycle legitimately ends in
+ * complete_task (batch/cycle filing keys off it). Deliberately NOT keyed on
+ * parent_agent: role agents spawned at setup with a parent (PM, trainer,
+ * imaginer) must not be able to self-terminate. An exotic non-apprentice spawn
+ * that loses self-completion degrades gracefully, the handler guard refuses
+ * with guidance, and the spawner's engine-initiated timeout/kill path (which
+ * bypasses the tool handler entirely) still reaps it.
+ *
+ * This predicate gates both the tool's availability (getFilteredTools) and the
+ * handler's actual termination path.
+ */
+export function agentCanSelfComplete(
+  agentId: string,
+  fields: { classification: string | null; task_id: string | null },
+): boolean {
+  return (
+    fields.classification === 'apprentice' ||
+    fields.task_id != null ||
+    isDreamerAgent(agentId) ||
+    isHealerAgent(agentId)
+  );
+}
+
+/**
+ * FN-8: convenience wrapper that reads the agent row fresh, for callers (the
+ * complete_task handler) that must re-check against current DB state rather than
+ * a filter-time snapshot.
+ */
+export function agentCanSelfCompleteById(agentId: string): boolean {
+  const row = getDb()
+    .prepare('SELECT classification, task_id FROM agents WHERE id = ?')
+    .get(agentId) as { classification: string | null; task_id: string | null } | undefined;
+  if (!row) return false;
+  return agentCanSelfComplete(agentId, row);
+}
+
 export function getFilteredTools(agentId: string): ToolDefinition[] {
   const manifest = getAgentPermissions(agentId);
 
   // Get tools policy from DB
   const db = getDb();
-  const agentRow = db.prepare('SELECT tools_policy, group_id FROM agents WHERE id = ?').get(agentId) as { tools_policy: string; group_id: string | null } | undefined;
+  const agentRow = db.prepare('SELECT tools_policy, group_id, classification, task_id FROM agents WHERE id = ?').get(agentId) as { tools_policy: string; group_id: string | null; classification: string | null; task_id: string | null } | undefined;
   let toolsPolicy: { allow: string[]; deny: string[] } = { allow: [], deny: [] };
   if (agentRow?.tools_policy) {
     try {
@@ -384,9 +429,19 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   }
 
   // Technique tools: only Sensei can save/publish/update, everyone can use/list
-  const agentClassification = (getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined)?.classification;
+  const agentClassification = agentRow?.classification ?? undefined;
   if (agentClassification !== 'sensei') {
     removeTools.push('save_technique', 'publish_technique', 'update_technique', 'submit_technique_for_review', 'delete_technique', 'technique_set_placeholder', 'technique_finalize');
+  }
+
+  // FN-8: complete_task terminates the calling agent. It is a SPAWNED-agent
+  // lifecycle tool, not a general "mark work done" tool. Remove it from any
+  // agent that must not self-terminate (the primary, standalone agents), so a
+  // weak floor model can't end a persistent agent by emitting the call. The
+  // handler re-checks this same predicate as the actual engine enforcement.
+  const canSelfComplete = agentRow ? agentCanSelfComplete(agentId, agentRow) : false;
+  if (!canSelfComplete) {
+    removeTools.push('complete_task');
   }
 
 
@@ -402,11 +457,17 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   // specifying which commands are allowed.
   if (hasExec && manifest.exec_allow[0] !== '*') {
     const allowedCmds = manifest.exec_allow.join(', ');
+    // FN-8: only suggest complete_task(status="blocked") to agents that can
+    // actually self-complete; others get a routing/escalation hint that does
+    // not name a tool they don't have.
+    const blockedHint = canSelfComplete
+      ? 'use send_to_agent to ask an agent with broader permissions, or call complete_task(status="blocked")'
+      : 'use send_to_agent to ask an agent with broader permissions, or tell the user you are blocked';
     filtered = filtered.map(t => {
       if (t.name !== 'exec') return t;
       return {
         ...t,
-        description: `Execute a shell command. You can ONLY run these commands: ${allowedCmds}. Any other command will be blocked. If you need a command that's not in this list, use send_to_agent to ask an agent with broader permissions, or call complete_task(status="blocked"). Has a 30-second timeout.`,
+        description: `Execute a shell command. You can ONLY run these commands: ${allowedCmds}. Any other command will be blocked. If you need a command that's not in this list, ${blockedHint}. Has a 30-second timeout.`,
       };
     });
   }
@@ -3401,6 +3462,80 @@ const IMAGE_MEDIA_TYPES: Record<string, string> = {
 // Max file size for vision injection (20MB)
 const MAX_VISION_FILE_SIZE = 20 * 1024 * 1024;
 
+// Shape of a persisted attachment row (messages.attachments JSON array).
+// See db/migrations/011_attachments.sql. All fields optional here because the
+// column is model/route-fed and we parse it defensively.
+interface StoredAttachment {
+  fileId?: string;
+  filename?: string;
+  mimeType?: string;
+  size?: number;
+  path?: string;
+}
+
+// FN-5 assist for a known model-floor miss. With an image attached, the
+// correctness-floor model sometimes calls file_read on a FABRICATED path, the
+// original filename WITHOUT the stored timestamp prefix, and hits a dead-end
+// "File not found". This looks back over the agent's recent attachments and,
+// on a name match, hands back the exact stored Path so the retry can correct
+// itself. It returns ONLY a path string that was already disclosed to the
+// model in the attachment pointer (chat.ts), never file content; a retry with
+// the corrected path still runs every permission check (absolute-path,
+// sensitive-path block, etc.). Uploads are stored as
+// <timestamp>_<sanitizedOriginalName> (gateway/routes/upload.ts).
+function findAttachmentByName(agentId: string, requested: string): StoredAttachment | null {
+  const wantBase = path.basename(requested).toLowerCase();
+  // Mirror the upload sanitizer (gateway/routes/upload.ts:100).
+  const sanitize = (s: string): string => s.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const wantSanitized = sanitize(path.basename(requested)).toLowerCase();
+
+  let rows: Array<{ attachments: string | null }>;
+  try {
+    rows = getDb().prepare(
+      `SELECT attachments FROM messages
+       WHERE agent_id = ? AND attachments IS NOT NULL AND attachments != '[]'
+       ORDER BY rowid DESC LIMIT 30`,
+    ).all(agentId) as Array<{ attachments: string | null }>;
+  } catch {
+    return null;
+  }
+
+  for (const row of rows) {
+    if (!row.attachments) continue;
+    let list: unknown;
+    try {
+      list = JSON.parse(row.attachments);
+    } catch {
+      continue; // skip unparseable rows
+    }
+    if (!Array.isArray(list)) continue;
+    for (const item of list) {
+      if (!item || typeof item !== 'object') continue;
+      const att = item as StoredAttachment;
+      if (typeof att.path !== 'string' || att.path === '') continue;
+      const attName = typeof att.filename === 'string' ? att.filename : '';
+      const attPathBase = path.basename(att.path);
+      const attNameLower = attName.toLowerCase();
+      const attPathBaseLower = attPathBase.toLowerCase();
+      const matches =
+        (attNameLower !== '' && attNameLower === wantBase) ||
+        (attPathBaseLower === wantBase) ||
+        (attNameLower !== '' && sanitize(attName).toLowerCase() === wantSanitized) ||
+        (attPathBaseLower === wantSanitized);
+      if (matches) return att;
+    }
+  }
+  return null;
+}
+
+// Tail appended to a file_read miss when findAttachmentByName hits. Carries the
+// already-disclosed stored Path plus the timestamp-prefix reminder; the vision
+// note discourages redundant re-reads of image attachments already provided
+// via vision or caption.
+function attachmentPathHint(att: StoredAttachment): string {
+  return ` A recent attachment matches this name. Its stored path is: ${att.path}. Attachments are stored with a timestamp prefix; use the exact Path from the attachment pointer. Note: image attachments are already provided to you via vision or caption; re-reading the image file is usually unnecessary.`;
+}
+
 async function executeFileRead(
   agentId: string,
   args: Record<string, unknown>,
@@ -3408,6 +3543,14 @@ async function executeFileRead(
   const filePath = resolvePath(args.path as string);
 
   if (!path.isAbsolute(filePath)) {
+    // The absolute-path requirement stays. But a non-absolute path is exactly
+    // the shape of the fabricated-filename miss (bare original name, no stored
+    // prefix), so try the attachment assist before the plain refusal.
+    const att = findAttachmentByName(agentId, filePath);
+    if (att) {
+      auditLog(agentId, 'file_read', filePath, 'error', 'Path must be absolute; attachment-name hint returned');
+      return `Error: Path must be absolute. Use ~ for home directory or provide a full path.${attachmentPathHint(att)}`;
+    }
     auditLog(agentId, 'file_read', filePath, 'error', 'Path must be absolute (use ~ for home directory)');
     return 'Error: Path must be absolute. Use ~ for home directory or provide a full path.';
   }
@@ -3423,6 +3566,15 @@ async function executeFileRead(
   try {
     const stat = await fs.promises.stat(filePath).catch(() => null);
     if (!stat) {
+      // Self-correcting assist: the model may have dropped the stored timestamp
+      // prefix off an attachment name. Hand back the exact stored Path if a
+      // recent attachment matches (the sensitive-path block above already ran;
+      // a retry with the corrected path re-runs every check).
+      const att = findAttachmentByName(agentId, filePath);
+      if (att) {
+        auditLog(agentId, 'file_read', filePath, 'error', 'File not found; attachment-name hint returned');
+        return `Error: File not found: ${filePath}.${attachmentPathHint(att)}`;
+      }
       auditLog(agentId, 'file_read', filePath, 'error', 'File not found');
       return `Error: File not found: ${filePath}`;
     }
@@ -3945,8 +4097,21 @@ function prependUserMailboxBanner(content: string, toolName: string): string {
   return banner + content;
 }
 
-function permissionDeniedMessage(reason: string | undefined): string {
-  return `[BLOCKED] Permission denied: ${reason ?? 'not allowed'}\n\nThis operation is permanently blocked by your permission settings. Retrying will fail every time.\n\nInstead, you should:\n1. Try an alternative approach that doesn't require this permission\n2. Call complete_task(result="blocked", notes="Need permission for: ${reason ?? 'this action'}") to report you are blocked\n3. Or use send_to_agent to ask another agent that has the required permissions`;
+function permissionDeniedMessage(reason: string | undefined, agentId: string): string {
+  // FN-8: complete_task terminates a spawned agent's lifecycle, so only invite
+  // it from agents that can actually self-complete. A persistent agent gets a
+  // "tell the user" hint instead of being pointed at a tool it does not have.
+  const canSelfComplete = agentCanSelfCompleteById(agentId);
+  const steps = ["Try an alternative approach that doesn't require this permission"];
+  if (canSelfComplete) {
+    steps.push(`Call complete_task(status="blocked", summary="Need permission for: ${reason ?? 'this action'}") to report you are blocked`);
+  }
+  steps.push('Use send_to_agent to ask another agent that has the required permissions');
+  if (!canSelfComplete) {
+    steps.push('Or tell the user you are blocked so they can act');
+  }
+  const numbered = steps.map((s, i) => `${i + 1}. ${s}`).join('\n');
+  return `[BLOCKED] Permission denied: ${reason ?? 'not allowed'}\n\nThis operation is permanently blocked by your permission settings. Retrying will fail every time.\n\nInstead, you should:\n${numbered}`;
 }
 
 // v2.5.3, shared by tracker_create_task and tracker_edit_task. Accepts an
@@ -4064,7 +4229,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
       const perm = checkPermission(agentId, { type: 'file_read', path: filePath });
       if (!perm.allowed) {
         auditLog(agentId, name, filePath, 'denied', perm.reason);
-        return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason), isError: true };
+        return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true };
       }
     }
   }
@@ -4075,7 +4240,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
       const perm = checkPermission(agentId, { type: 'file_write', path: filePath });
       if (!perm.allowed) {
         auditLog(agentId, name, filePath, 'denied', perm.reason);
-        return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason), isError: true };
+        return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true };
       }
     }
   }
@@ -4086,7 +4251,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
       const perm = checkPermission(agentId, { type: 'exec', command });
       if (!perm.allowed) {
         auditLog(agentId, 'exec', command, 'denied', perm.reason);
-        return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason), isError: true };
+        return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true };
       }
     }
   }
@@ -4095,7 +4260,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     const perm = checkPermission(agentId, { type: 'spawn' });
     if (!perm.allowed) {
       auditLog(agentId, 'spawn', null, 'denied', perm.reason);
-      return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason), isError: true };
+      return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true };
     }
   }
 
@@ -4107,7 +4272,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         const perm = checkPermission(agentId, { type: 'network', domain });
         if (!perm.allowed) {
           auditLog(agentId, 'web_fetch', url, 'denied', perm.reason);
-          return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason), isError: true };
+          return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true };
         }
       } catch {
         return { toolCallId: id, name, content: `Invalid URL: ${url}`, isError: true };
@@ -4119,7 +4284,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     const perm = checkPermission(agentId, { type: 'network', domain: 'api.search.brave.com' });
     if (!perm.allowed) {
       auditLog(agentId, 'web_search', null, 'denied', perm.reason);
-      return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason), isError: true };
+      return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true };
     }
   }
 
@@ -4180,7 +4345,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         const perm = checkPermission(agentId, { type: 'network', domain });
         if (!perm.allowed) {
           auditLog(agentId, 'web_browse', args.url as string, 'denied', perm.reason);
-          return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason), isError: true };
+          return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true };
         }
       } catch {
         return { toolCallId: id, name, content: `Invalid URL: ${args.url}`, isError: true };
@@ -4295,12 +4460,17 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         const filteredTools = canonicalRequested.filter(t => allowedToolNames.has(t));
         const blockedTools = canonicalRequested.filter(t => !allowedToolNames.has(t));
         if (filteredTools.length === 0) {
+          // FN-8: only point at complete_task when this agent actually has it
+          // (allowedToolNames already reflects the completability filter).
+          const blockedEscalation = allowedToolNames.has('complete_task')
+            ? `Ask the user to update this agent's permissions, or call complete_task(status="blocked").`
+            : `Ask the user to update this agent's permissions, use send_to_agent to reach an agent with broader permissions, or tell the user you are blocked.`;
           content =
             `Error: none of the requested tools are accessible to this agent. ` +
             `Requested: [${requestedTools.join(', ')}]. ` +
             `This is a permission issue, not a format issue, the tools may exist for other agents but are not on this agent's allow list, or the permission filter is stripping them ` +
             `(e.g. web_search/web_fetch require network_domains != "none", exec requires exec_allow non-empty, file_read requires file_read permission). ` +
-            `Ask the user to update this agent's permissions, or call complete_task(status="blocked").`;
+            blockedEscalation;
           isError = true;
           break;
         }
@@ -4609,8 +4779,8 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
           url += (url.includes('?') ? '&' : '?') + 'inline=1';
         }
         const title = typeof args.title === 'string' ? args.title : undefined;
-        broadcast({ type: 'dock:open', data: { kind: 'canvas', html, url, title, path: canvasPath } });
-        setCurrentCanvas({ kind: 'canvas', html, url, path: canvasPath, title });
+        broadcast({ type: 'dock:open', agentId, data: { kind: 'canvas', html, url, title, path: canvasPath } });
+        setCurrentCanvas(agentId, { kind: 'canvas', html, url, path: canvasPath, title });
         // Drop an "Open in canvas" chip on this reply for file-backed canvases.
         if (canvasPath) queueCanvasDocAttachment(agentId, canvasPath, url ?? null);
         content = `Canvas opened in the user's right dock${title ? ` ("${title}")` : ''}. The user can now see it.${canvasPath ? ' Edits you make to this file (file_write/file_patch/file_append) will refresh the canvas automatically.' : ''} Call canvas_read if you need to look at it yourself.`;
@@ -4627,7 +4797,10 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
           break;
         }
         const screenTitle = typeof args.title === 'string' ? args.title : undefined;
-        broadcast({ type: 'dock:open', data: { kind: 'screen', title: screenTitle } });
+        // A live screen share has NO persisted per-agent slot (it's a transient
+        // real-time view, not a canvas). Still stamp agentId so the dashboard's
+        // per-agent filter opens it only for whoever is viewing this agent.
+        broadcast({ type: 'dock:open', agentId, data: { kind: 'screen', title: screenTitle } });
         // Drop an "Open screen" chip on this reply so the user can re-open the
         // viewer after closing the canvas.
         queueScreenChip(agentId);
@@ -4644,8 +4817,8 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         // full-page screenshot server-side so SOMETHING always shows.
         const embeddable = await isEmbeddable(targetUrl);
         if (embeddable) {
-          broadcast({ type: 'dock:open', data: { kind: 'iframe', url: targetUrl, title } });
-          setCurrentCanvas({ kind: 'iframe', url: targetUrl, title });
+          broadcast({ type: 'dock:open', agentId, data: { kind: 'iframe', url: targetUrl, title } });
+          setCurrentCanvas(agentId, { kind: 'iframe', url: targetUrl, title });
           content = `Opened ${targetUrl} in the user's right dock.`;
           break;
         }
@@ -4661,14 +4834,14 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
           // or the tunnel, not just on the server's own machine.
           pngUrl = toDashboardPath(pngUrl);
           pngUrl += (pngUrl.includes('?') ? '&' : '?') + 'inline=1';
-          broadcast({ type: 'dock:open', data: { kind: 'screenshot', url: pngUrl, sourceUrl: targetUrl, title } });
-          setCurrentCanvas({ kind: 'screenshot', url: pngUrl, sourceUrl: targetUrl, title });
+          broadcast({ type: 'dock:open', agentId, data: { kind: 'screenshot', url: pngUrl, sourceUrl: targetUrl, title } });
+          setCurrentCanvas(agentId, { kind: 'screenshot', url: pngUrl, sourceUrl: targetUrl, title });
           content = `Note for you (relay this to the user): ${targetUrl} blocks being embedded in the dock (X-Frame-Options / CSP frame-ancestors), so a live, interactive view inside the canvas is not possible. Instead the tool captured a full-page screenshot and opened it in the user's right dock. That screenshot is a STATIC snapshot (links and buttons in it are not clickable), but the dock has an "Open in new window" button that opens the real, interactive site in a new browser tab. Tell the user it is a snapshot because the site can't be embedded, and that they can click "Open in new window" to use the live site.`;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           // Last resort: still hand the iframe over (may render partially).
-          broadcast({ type: 'dock:open', data: { kind: 'iframe', url: targetUrl, title } });
-          setCurrentCanvas({ kind: 'iframe', url: targetUrl, title });
+          broadcast({ type: 'dock:open', agentId, data: { kind: 'iframe', url: targetUrl, title } });
+          setCurrentCanvas(agentId, { kind: 'iframe', url: targetUrl, title });
           content = `Note for you (relay this to the user): ${targetUrl} blocks being embedded in the dock, and the screenshot fallback also failed (${msg}). The dock may show little or nothing. Tell the user the site can't be embedded and offer to open it directly in their browser instead.`;
         }
         break;
@@ -5122,6 +5295,21 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         const completeAgentRow = agentDb.prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status: string } | undefined;
         if (completeAgentRow?.status === 'terminated') {
           content = `Task completion was already recorded, you are terminated. No action taken.`;
+          break;
+        }
+        // FN-8: ENGINE ENFORCEMENT. complete_task terminates the calling agent,
+        // so it is gated to spawned agents (and the persistent per-cycle Dreamer
+        // and Healer, whose batch filing keys off complete_task).
+        // getFilteredTools already removes the tool for anyone else, but the model
+        // can still emit an unfiltered call, so re-check against fresh DB state
+        // here. Never rely on the model not calling it. A persistent agent that
+        // reaches this point must NOT be terminated.
+        if (!agentCanSelfCompleteById(agentId)) {
+          content =
+            `complete_task ends a spawned agent's lifecycle and is not available to a persistent agent. ` +
+            `To mark tracker work done use tracker_update_status(task_id=..., status="complete"). ` +
+            `If you are blocked, say so in your reply so the user can act.`;
+          isError = true;
           break;
         }
         try {
@@ -9363,7 +9551,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           const perm = checkPermission(agentId, { type: 'file_write', path: localDest });
           if (!perm.allowed) {
             auditLog(agentId, name, localDest, 'denied', perm.reason);
-            content = permissionDeniedMessage(perm.reason);
+            content = permissionDeniedMessage(perm.reason, agentId);
             isError = true;
             break;
           }

@@ -88,15 +88,25 @@ export function progressClassifier(input: ProgressInput): ProgressDecision {
  * Build the nudge text the engine injects when spinning is suspected.
  * Per Part XVIII §F — the model gets ONE chance to confirm progress
  * or signal blocked before the engine breaks unilaterally.
+ *
+ * FN-8: complete_task is only available to agents that may self-complete
+ * (see agentCanSelfComplete in agent/tools.ts), so the caller passes
+ * `canSelfComplete` and the wording branches. Naming complete_task to an
+ * agent that doesn't have it invites a call the engine guard will refuse.
  */
-export function buildSpinningNudge(input: ProgressInput): string {
+export function buildSpinningNudge(input: ProgressInput, canSelfComplete: boolean): string {
   const turns = input.loopCount;
+  const stuckAdvice = canSelfComplete
+    ? `If you're stuck, summarize what's blocking you and call complete_task with ` +
+      `status='blocked' and a clear explanation of what you need.]`
+    : `If you're stuck, stop and explain what's blocking you in your reply so ` +
+      `the user can act. If the work is actually done, mark it done ` +
+      `(e.g. tracker_update_status) and wrap up.]`;
   return (
     `[System: You've been working for ${turns} turn${turns === 1 ? '' : 's'} ` +
     `with little visible progress. ` +
     `If you're still making real progress on the original task, continue normally. ` +
-    `If you're stuck, summarize what's blocking you and call complete_task with ` +
-    `status='blocked' and a clear explanation of what you need.]`
+    stuckAdvice
   );
 }
 

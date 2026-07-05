@@ -3,6 +3,7 @@ import type { WsEvent } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useRightDock, type DockSpec } from './RightDockProvider';
+import { useActiveAgent } from './ActiveAgentProvider';
 import { CanvasMarkdown } from './CanvasMarkdown';
 import { CanvasCode } from './CanvasCode';
 
@@ -134,6 +135,7 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
 export function CanvasView({ dock }: { dock: Extract<DockSpec, { kind: 'canvas' }> }) {
   const { close } = useRightDock();
   const { subscribe } = useWebSocket();
+  const { agentId: viewedAgentId } = useActiveAgent();
   const [nonce, setNonce] = useState(0);
 
   const htmlInline = dock.html != null;
@@ -163,16 +165,19 @@ export function CanvasView({ dock }: { dock: Extract<DockSpec, { kind: 'canvas' 
     return () => { cancelled = true; };
   }, [fileBacked, fileId, nonce]);
 
-  // Auto-refresh when the backing file is edited on disk.
+  // Auto-refresh when the backing file is edited on disk. Canvas is per-agent, so
+  // only react to updates for the agent currently being viewed (the same agent
+  // whose canvas this dock is showing), never to a background agent's edit.
   const watchedPath = dock.path ?? meta?.path ?? null;
   useEffect(() => {
     if (!fileBacked || !watchedPath) return;
     const unsub = subscribe('canvas:updated', (e: WsEvent) => {
       if (e.type !== 'canvas:updated') return;
+      if (e.agentId !== viewedAgentId) return;
       if (e.data.path === watchedPath) setNonce((n) => n + 1);
     });
     return unsub;
-  }, [fileBacked, watchedPath, subscribe]);
+  }, [fileBacked, watchedPath, subscribe, viewedAgentId]);
 
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
 

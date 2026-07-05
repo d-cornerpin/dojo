@@ -10,6 +10,7 @@ import { loadSecrets } from './config/loader.js';
 import { createServer } from './gateway/server.js';
 import { broadcast } from './gateway/ws.js';
 import { checkTimeouts } from './agent/spawner.js';
+import { killTunnelSync } from './services/tunnel.js';
 import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, isPMEnabled } from './config/platform.js';
 
 const logger = createLogger('main');
@@ -25,6 +26,11 @@ process.on('uncaughtException', (err) => {
     error: err instanceof Error ? err.message : String(err),
     stack: err instanceof Error ? err.stack : undefined,
   });
+  // Best-effort: don't orphan cloudflared on the way out. This crash path
+  // skips the graceful SIGTERM shutdown (which stops the tunnel), so kill the
+  // child synchronously here. The pidfile reclaim on next boot is the primary
+  // safety net; this must never throw.
+  try { killTunnelSync(); } catch { /* never throw from the crash handler */ }
   setTimeout(() => process.exit(1), 100);
 });
 process.on('unhandledRejection', (reason) => {

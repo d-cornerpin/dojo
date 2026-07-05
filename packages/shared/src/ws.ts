@@ -338,10 +338,17 @@ export type WsEvent =
  */
 export interface DockCollapseEvent {
   type: 'dock:collapse';
+  /** Which agent's canvas slot was collapsed (canvas is per-agent). The dashboard
+   *  only mirrors the collapse when it matches the agent currently being viewed. */
+  agentId: string;
 }
 
 export interface DockOpenEvent {
   type: 'dock:open';
+  /** Which agent's canvas slot this open belongs to (canvas is per-agent). The
+   *  dashboard only opens the dock when this matches the agent being viewed, so a
+   *  background agent's auto-open can never replace the viewed agent's canvas. */
+  agentId: string;
   data: {
     // 'screen' = live VNC screen-share viewer (needs no extra data fields).
     kind: 'canvas' | 'iframe' | 'screenshot' | 'screen';
@@ -368,6 +375,9 @@ export interface DockOpenEvent {
  */
 export interface CanvasUpdatedEvent {
   type: 'canvas:updated';
+  /** Which agent's canvas slot changed (canvas is per-agent). The dashboard only
+   *  re-fetches when it matches the agent currently being viewed. */
+  agentId: string;
   data: {
     /** absolute path of the file that changed */
     path: string;

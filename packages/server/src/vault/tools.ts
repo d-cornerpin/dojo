@@ -6,6 +6,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { createEntry, semanticSearch, markObsolete, getEntry, updateEntry, listEntries, OWNER_VAULT_AGENT_ID } from './store.js';
+import { searchUnfiledArchives, UNFILED_ARCHIVE_LABEL, type UnfiledArchiveSnippet } from './retrieval.js';
 
 const logger = createLogger('vault-tools');
 
@@ -211,6 +212,16 @@ export async function executeVaultRemember(
 
 // ── vault_search ──
 
+// FN-1 bridge: format snippets from the just-archived-but-unfiled session for a
+// vault_search result. Same label as the context-injection path so the agent
+// always sees this content described the same way. These come from raw recent
+// conversation the Dreamer has not yet distilled into vault_entries, so no
+// entry IDs are shown (there is nothing to vault_get / vault_update yet).
+function formatUnfiledBridgeForSearch(snippets: UnfiledArchiveSnippet[]): string {
+  const lines = snippets.map((s, i) => `${i + 1}. [${s.latestAt}] ${s.text}`);
+  return `${UNFILED_ARCHIVE_LABEL}\n\n${lines.join('\n\n')}`;
+}
+
 export async function executeVaultSearch(
   agentId: string,
   args: Record<string, unknown>,
@@ -240,7 +251,15 @@ export async function executeVaultSearch(
       // (per-agent by design; squad namespaces + owner-authored dashboard
       // entries are the deliberate sharing mechanisms).
       const rows = listEntries({ search: query, type, limit, agentId, includeOwnerScope: true });
+      // FN-1: exact mode uses substring matching against still-unfiled archives.
+      const bridge = searchUnfiledArchives(agentId, query, { mode: 'substring' });
       if (rows.length === 0) {
+        // Nothing distilled yet, but the fact may sit in a just-archived
+        // session the Dreamer has not processed. Surface it (labeled) rather
+        // than reporting a bare miss.
+        if (bridge.length > 0) {
+          return `No distilled vault entries contain "${query}" yet, but the just-archived previous session does:\n\n${formatUnfiledBridgeForSearch(bridge)}`;
+        }
         return `No vault entries contain the exact substring "${query}".`;
       }
       const lines = rows.map((r, i) => {
@@ -257,13 +276,19 @@ export async function executeVaultSearch(
         const snippet = prefix + r.content.slice(start, end) + suffix;
         return `${i + 1}. [${r.type}]${flagStr} ${snippet}\n   ID: ${r.id} | Created: ${r.createdAt}`;
       });
-      return `Found ${rows.length} vault entr${rows.length === 1 ? 'y' : 'ies'} containing "${query}" (exact match):\n\n${lines.join('\n\n')}\n\nUse vault_get(entry_id="…") for full content, vault_update to correct, vault_forget to mark obsolete.`;
+      const bridgeSection = bridge.length > 0 ? `\n\n${formatUnfiledBridgeForSearch(bridge)}` : '';
+      return `Found ${rows.length} vault entr${rows.length === 1 ? 'y' : 'ies'} containing "${query}" (exact match):\n\n${lines.join('\n\n')}${bridgeSection}\n\nUse vault_get(entry_id="…") for full content, vault_update to correct, vault_forget to mark obsolete.`;
     }
 
     // W3-4: scoped to the calling agent's own vault (see exact mode above).
     const results = await semanticSearch(query, { limit, type, agentId });
+    // FN-1: semantic mode uses token-overlap matching against unfiled archives.
+    const bridge = searchUnfiledArchives(agentId, query, { mode: 'token' });
 
     if (results.length === 0) {
+      if (bridge.length > 0) {
+        return `No distilled vault entries matched yet, but the just-archived previous session does:\n\n${formatUnfiledBridgeForSearch(bridge)}`;
+      }
       return 'No matching memories found in the vault. If you are looking for a specific literal string (e.g. an exact name or typo), retry with mode: "exact".';
     }
 
@@ -289,7 +314,10 @@ export async function executeVaultSearch(
         ? `\n\n${truncatedCount} entry${truncatedCount === 1 ? '' : 'ies'} truncated. Use vault_get(entry_id="…") for the full content.`
         : '';
 
-    return `Found ${results.length} vault memor${results.length === 1 ? 'y' : 'ies'}:\n\n${lines.join('\n\n')}${expandHint}`;
+    // FN-1: append the unfiled-archive bridge after the distilled entries.
+    const bridgeSection = bridge.length > 0 ? `\n\n${formatUnfiledBridgeForSearch(bridge)}` : '';
+
+    return `Found ${results.length} vault memor${results.length === 1 ? 'y' : 'ies'}:\n\n${lines.join('\n\n')}${expandHint}${bridgeSection}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('vault_search failed', { error: msg }, agentId);
