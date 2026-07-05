@@ -175,6 +175,14 @@ export interface Message {
   latencyMs: number | null;
   createdAt: string;
   /**
+   * SQLite rowid of the message row. Optional because most `SELECT *` queries
+   * don't project it (rowid is excluded from `*`); only the paths that need a
+   * unique, monotonic, tie-free ordering key select it explicitly. Used as the
+   * archival high-water (vault/archive.ts) so an equal-second boundary row is
+   * never skipped by the Dreamer while still being compacted (silent loss).
+   */
+  rowid?: number;
+  /**
    * Per-agent monotonic outer-turn counter. Increments once per outer turn
    * (one user message → agent's complete response, possibly with many tool
    * calls). Stored on every message v2 persists. NULL for v1-era messages

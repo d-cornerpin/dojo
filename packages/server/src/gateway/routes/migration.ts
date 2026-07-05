@@ -23,7 +23,47 @@ import { createLogger } from '../../logger.js';
 
 const logger = createLogger('migration-routes');
 
+// This router is dual-mounted (see the middleware below): the authenticated
+// /api/migration/* and the PUBLIC /api/setup/migration/* reachable pre-auth. Raw
+// err.message from these handlers can leak internal error text and absolute
+// filesystem paths (fs ENOENT etc.). On the public mount return only a generic,
+// operator-supplied message; on the authenticated owner mount keep the precise
+// detail for real diagnostics. The full detail is always logged either way, so
+// the operator never loses information. (upload.ts strips absolute paths for its
+// own public surface; this is the equivalent gate for the migration routes.)
+function migrationErrorText(reqUrl: string, err: unknown, publicGeneric: string): string {
+  const detail = err instanceof Error ? err.message : String(err);
+  let viaPublicSetupMount = false;
+  try { viaPublicSetupMount = new URL(reqUrl).pathname.startsWith('/api/setup/'); } catch { /* keep false */ }
+  return viaPublicSetupMount ? publicGeneric : detail;
+}
+
 const migrationRouter = new Hono<AppEnv>();
+
+// This router is dual-mounted: the authenticated /api/migration/* and the
+// PUBLIC /api/setup/migration/* (the setup prefix skips auth, for first-run
+// OOBE import). The OOBE import wizard runs entirely on the public mount because
+// a fresh machine has no session yet, and it legitimately calls manifest /
+// preflight / import / run-dependency-setup pre-login (ImportWizard.tsx). So we
+// only keep /export off the public mount: exporting is done FROM an existing,
+// authenticated machine, never during a fresh-box import, so it has no reason
+// to be public and would otherwise be an unauthenticated exfil primitive. The
+// broader "should the whole public mount close once first-run is over" question
+// is deferred (import restores the setup_completed flag mid-wizard, so a naive
+// setup_completed gate would break run-dependency-setup, which runs after
+// import; needs a wizard-scoped token, decided with the owner).
+const PUBLIC_MOUNT_DENY = new Set(['/export']);
+migrationRouter.use('*', async (c, next) => {
+  const path = new URL(c.req.url).pathname;
+  const viaPublicSetupMount = path.startsWith('/api/setup/');
+  if (viaPublicSetupMount) {
+    const sub = path.slice('/api/setup/migration'.length) || '/';
+    if (PUBLIC_MOUNT_DENY.has(sub)) {
+      return c.json({ ok: false, error: 'Export is only available on the authenticated endpoint; log in first' }, 403);
+    }
+  }
+  return next();
+});
 
 // POST /api/migration/export — create encrypted export zip
 migrationRouter.post('/export', async (c) => {
@@ -68,7 +108,7 @@ migrationRouter.post('/export', async (c) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Export failed', { error: msg });
-    return c.json({ ok: false, error: msg }, 500);
+    return c.json({ ok: false, error: migrationErrorText(c.req.url, err, 'Export failed. Check the server logs for details.') }, 500);
   }
 });
 
@@ -94,7 +134,7 @@ migrationRouter.post('/manifest', async (c) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Manifest read failed', { error: msg });
-    return c.json({ ok: false, error: msg }, 400);
+    return c.json({ ok: false, error: migrationErrorText(c.req.url, err, 'Could not read that file. Make sure it is a valid, uncorrupted Dojo export.') }, 400);
   } finally {
     if (tmpPath) { try { fs.unlinkSync(tmpPath); } catch { /* ignore */ } }
   }
@@ -136,7 +176,7 @@ migrationRouter.post('/preflight', async (c) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Preflight failed', { error: msg });
-    return c.json({ ok: false, error: msg }, 400);
+    return c.json({ ok: false, error: migrationErrorText(c.req.url, err, 'Could not scan that file. Make sure it is a valid Dojo export and the password is correct.') }, 400);
   } finally {
     if (tmpPath) { try { fs.unlinkSync(tmpPath); } catch { /* ignore */ } }
   }
@@ -195,7 +235,7 @@ migrationRouter.post('/import', async (c) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('Import failed', { error: msg });
-    return c.json({ ok: false, error: msg }, 500);
+    return c.json({ ok: false, error: migrationErrorText(c.req.url, err, 'Import failed. Verify the export file and password, then try again. Check the server logs for details.') }, 500);
   } finally {
     if (tmpPath) { try { fs.unlinkSync(tmpPath); } catch { /* ignore */ } }
   }
@@ -226,7 +266,8 @@ migrationRouter.post('/import/recheck', async (c) => {
     const checks = await runPostMigrationChecks(manifest);
     return c.json({ ok: true, data: { checks } });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    logger.error('Post-migration re-check failed', { error: err instanceof Error ? err.message : String(err) });
+    return c.json({ ok: false, error: migrationErrorText(c.req.url, err, 'Re-check failed. Check the server logs for details.') }, 500);
   }
 });
 
@@ -271,7 +312,8 @@ migrationRouter.post('/run-dependency-setup', (c) => {
     logger.info('Dependency setup started');
     return c.json({ ok: true, data: { started: true } });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    logger.error('Dependency setup failed to launch', { error: err instanceof Error ? err.message : String(err) });
+    return c.json({ ok: false, error: migrationErrorText(c.req.url, err, 'Could not start dependency setup. Check the server logs for details.') }, 500);
   }
 });
 

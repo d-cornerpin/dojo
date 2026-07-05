@@ -479,7 +479,7 @@ configRouter.post('/providers', async (c) => {
     logger.info('Storing provider credential', {
       providerId: id,
       authType,
-      credentialPrefix: credential.slice(0, 10) + '...',
+      credentialLength: credential.length, // never log secret bytes (audit finding 8/21)
     });
     setProviderCredential(id, credential, authType as 'api_key' | 'oauth');
     clearClientCache(id);
@@ -665,7 +665,7 @@ configRouter.post('/providers/:id/validate', async (c) => {
     providerId: id,
     providerType: provider.type,
     hasCredential: !!credential,
-    credentialPrefix: credential ? credential.slice(0, 10) + '...' : 'none',
+    credentialLength: credential ? credential.length : 0, // never log secret bytes (audit finding 8/21)
   });
 
   if (!credential && provider.type !== 'ollama' && provider.authType !== 'agent-sdk') {

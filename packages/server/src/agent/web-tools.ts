@@ -207,14 +207,35 @@ export async function webFetch(
 
   let text: string;
   try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'DOJO/1.0 (agent-fetch)',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8',
-      },
-      signal: AbortSignal.timeout(15000),
-      redirect: 'follow',
-    });
+    // Follow redirects MANUALLY and re-run the network permission check on each
+    // hop. Checking only the initial URL lets an allowlisted host (or an open
+    // redirect on it) bounce a domain-restricted agent to a NON-allowlisted
+    // origin whose content is then returned. Wildcard ('*') agents pass every
+    // hop, so this only tightens restricted agents; the boundary now holds
+    // across redirects instead of just at the first request.
+    let response: Response = null as unknown as Response;
+    let currentUrl = url;
+    for (let hop = 0; hop < 5; hop++) {
+      const hopDomain = extractDomain(currentUrl);
+      const hopPerm = checkPermission(agentId, { type: 'network', domain: hopDomain });
+      if (!hopPerm.allowed) {
+        return `Permission denied: ${hopPerm.reason}`;
+      }
+      response = await fetch(currentUrl, {
+        headers: {
+          'User-Agent': 'DOJO/1.0 (agent-fetch)',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8',
+        },
+        signal: AbortSignal.timeout(15000),
+        redirect: 'manual',
+      });
+      const loc = response.status >= 300 && response.status < 400 ? response.headers.get('location') : null;
+      if (loc) {
+        currentUrl = new URL(loc, currentUrl).href;
+        continue;
+      }
+      break;
+    }
 
     if (!response.ok) {
       // A non-2xx from an EXTERNAL url (404/410 gone, 403 gated, 5xx server

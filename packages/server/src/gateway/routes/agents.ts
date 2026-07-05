@@ -409,6 +409,13 @@ agentsRouter.post('/:id/reset-session', async (c) => {
       "UPDATE agents SET session_started_at = ?, updated_at = ?, " +
       "config = json_remove(COALESCE(config, '{}'), '$.continuityBrief', '$.scratchpad') WHERE id = ?",
     ).run(boundary, boundary, id);
+    // Carry a fired-but-undelivered reminder/scheduler event across the reset
+    // boundary so it survives (engine-event queries gate created_at >=
+    // session_started_at). Unclaimed deliverable engine rows only.
+    try {
+      const { rehomeUnclaimedEngineEvents } = await import('../../agent/v2/counterparty.js');
+      rehomeUnclaimedEngineEvents(id, boundary);
+    } catch { /* best-effort carry-over, never block the reset */ }
     // Clear per-conversation served tracking on reset (turn-continuity state).
     try {
       const { clearServedConversations } = await import('../../agent/turn-state.js');

@@ -1,4 +1,5 @@
 import os from 'node:os';
+import path from 'node:path';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { isPrimaryAgent } from '../config/platform.js';
@@ -70,14 +71,14 @@ const GLOBAL_FILE_DELETE_DENY = [
 // could choke the Healer's prompt. Use healer_recent_actions /
 // healer_action_detail instead.
 //
-// secrets.yaml is also denied globally. The file is encrypted at rest
-// per CLAUDE.md's architecture rules ("Secrets never enter the DB or
-// the memory DAG"), so a read returns ciphertext anyway — but the
-// permission layer should reflect that intent so no future code path
-// has to think about whether reading it was OK. Even the Healer, whose
-// job is to dig into anything, should never need the contents: secrets
-// are loaded into process memory at startup and exposed only as the
-// runtime needs them.
+// secrets.yaml is also denied globally. NOTE: the file is stored as
+// PLAINTEXT on disk, protected only by 0600 file permissions (owner
+// decision 2026-07-04: keep plaintext for now). It is NOT encrypted at
+// rest, so this global read-deny is the actual protection, not a
+// fallback; do not weaken it on the assumption a read would return
+// ciphertext. Even the Healer, whose job is to dig into anything, should
+// never need the contents: secrets are loaded into process memory at
+// startup and exposed only as the runtime needs them.
 const GLOBAL_FILE_READ_DENY = [
   '~/.dojo/logs/healer.log',
   '~/.dojo/logs/healer-report.log',
@@ -109,6 +110,17 @@ function expandTilde(pattern: string): string {
   if (pattern === '~') return home;
   if (pattern.startsWith('~/')) return home + pattern.slice(1);
   return pattern;
+}
+
+// Canonicalize a FILE PATH (not a glob pattern) before any allow/deny match.
+// expandTilde only handles '~'; it does NOT collapse '..'. Without normalizing,
+// a traversal like '~/Projects/../.dojo/secrets.yaml' string-matches a
+// '~/Projects/**' allowlist yet the executor's own path.join resolves it to the
+// real protected target, so the check and the write disagree and the sandbox is
+// escaped. path.resolve expands to an absolute, normalized path with every '..'
+// collapsed, so the allowlist and every global-deny match the ACTUAL target.
+function canonicalizePath(filePath: string): string {
+  return path.resolve(expandTilde(filePath));
 }
 
 /**
@@ -233,7 +245,7 @@ export function getAgentPermissions(agentId: string): PermissionManifest {
 // ── Permission Checking ──
 
 function checkGlobalDenyFileWrite(filePath: string): PermissionResult {
-  const expanded = expandTilde(filePath);
+  const expanded = canonicalizePath(filePath);
   for (const pattern of GLOBAL_FILE_WRITE_DENY) {
     if (matchGlob(pattern, expanded)) {
       return { allowed: false, reason: `Global deny: writing to ${filePath} is prohibited` };
@@ -243,7 +255,7 @@ function checkGlobalDenyFileWrite(filePath: string): PermissionResult {
 }
 
 function checkGlobalDenyFileRead(filePath: string): PermissionResult {
-  const expanded = expandTilde(filePath);
+  const expanded = canonicalizePath(filePath);
   for (const pattern of GLOBAL_FILE_READ_DENY) {
     if (matchGlob(pattern, expanded)) {
       return {
@@ -256,7 +268,7 @@ function checkGlobalDenyFileRead(filePath: string): PermissionResult {
 }
 
 function checkGlobalDenyFileDelete(filePath: string): PermissionResult {
-  const expanded = expandTilde(filePath);
+  const expanded = canonicalizePath(filePath);
   for (const pattern of GLOBAL_FILE_DELETE_DENY) {
     if (matchGlob(pattern, expanded)) {
       return { allowed: false, reason: `Global deny: deleting ${filePath} is prohibited` };
@@ -300,7 +312,9 @@ function checkGlobalDenyExec(command: string): PermissionResult {
 }
 
 function checkFileAccess(manifest: PermissionManifest, filePath: string, accessType: 'file_read' | 'file_write' | 'file_delete'): PermissionResult {
-  const expanded = expandTilde(filePath);
+  // Canonicalize once (collapses '..') so the allowlist and the global-deny
+  // checks below all match the ACTUAL target the executor will resolve to.
+  const expanded = canonicalizePath(filePath);
 
   if (accessType === 'file_delete') {
     // Check global deny first

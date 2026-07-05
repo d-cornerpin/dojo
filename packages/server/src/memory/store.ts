@@ -45,6 +45,9 @@ interface MessageRow {
   origin_kind: string | null;
   origin_intent: string | null;
   conv_key: string | null;
+  // Only projected by queries that add `, rowid` to their SELECT (rowid is not
+  // part of `*`). Undefined elsewhere; consumers that need it opt in.
+  rowid?: number;
 }
 
 function rowToMessage(row: MessageRow): Message {
@@ -59,6 +62,8 @@ function rowToMessage(row: MessageRow): Message {
     cost: row.cost,
     latencyMs: row.latency_ms,
     createdAt: row.created_at,
+    // Present only when the source query projected `, rowid` (see MessageRow).
+    rowid: row.rowid,
     // Phase 4 §E (2026-05-04) — surface turn_number so the assembler's
     // stub-and-store pass can age out tool results from old turns.
     turnNumber: row.turn_number,
@@ -128,8 +133,10 @@ export function getMessagesOutsideFreshTail(agentId: string, freshTailCount: num
 
   // Get all messages except the last N, ordered by created_at ASC
   // Respects session boundary — only considers current session messages
+  // rowid is projected explicitly (not part of `*`) so the archival high-water
+  // in vault/archive.ts + memory/compaction.ts can filter tie-free by rowid.
   const rows = db.prepare(`
-    SELECT * FROM messages
+    SELECT *, rowid FROM messages
     WHERE agent_id = ? ${boundaryClause}
       AND id NOT IN (
         SELECT id FROM messages

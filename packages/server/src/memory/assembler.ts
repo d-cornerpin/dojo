@@ -971,8 +971,15 @@ async function assembleMessageContext(
   // notifications about the owner's inbox, unknown senders), things the agent should
   // be AWARE of but is NOT in conversation with. Authorized human inbound and the
   // current A2A counterparty stay in the live tail. (MESSAGE-ATTRIBUTION-REDESIGN §3, §4.4.)
+  // An action-required engine-origin A2A message (Healer QUESTION, PM escalation,
+  // destructive-gate approval token) is kept FULL in the live tail on its engine
+  // turn instead of being collapsed into the truncated awareness gist, so the
+  // receiver sees the whole directive it must act on. Everything else engine-origin
+  // still goes to the awareness lane.
+  const keepFullId = turnContext?.engineEventKeepFullId ?? null;
   const awarenessEvents = scopedTail.filter((m) =>
     m.role === 'user' &&
+    (keepFullId ? m.id !== keepFullId : true) &&
     (m.origin?.kind === 'engine' || (m.origin?.kind === 'user' && m.origin?.authorized === false)),
   );
   const awarenessIds = new Set(awarenessEvents.map((m) => m.id));

@@ -189,7 +189,7 @@ export function getSummariesByAgent(
     params.push(options.depth);
   }
 
-  let sql = `SELECT * FROM summaries WHERE ${conditions.join(' AND ')} ORDER BY earliest_at ASC`;
+  let sql = `SELECT * FROM summaries WHERE ${conditions.join(' AND ')} ORDER BY earliest_at ASC, id ASC`;
 
   if (options?.limit) {
     sql += ' LIMIT ?';
@@ -211,7 +211,7 @@ export function getLeafSummariesNotCondensed(agentId: string, depth: number): Su
       AND s.id NOT IN (
         SELECT parent_id FROM summary_parents
       )
-    ORDER BY s.earliest_at ASC
+    ORDER BY s.earliest_at ASC, s.id ASC
   `).all(agentId, depth) as SummaryRow[];
 
   return rows.map(rowToSummary);
@@ -223,7 +223,7 @@ export function getSummaryChildren(summaryId: string): Summary[] {
     SELECT s.* FROM summaries s
     INNER JOIN summary_parents sp ON s.id = sp.parent_id
     WHERE sp.summary_id = ?
-    ORDER BY s.earliest_at ASC
+    ORDER BY s.earliest_at ASC, s.id ASC
   `).all(summaryId) as SummaryRow[];
 
   return rows.map(rowToSummary);
@@ -301,7 +301,7 @@ export function getContextSummaries(agentId: string): Summary[] {
     SELECT s.* FROM summaries s
     INNER JOIN context_items ci ON s.id = ci.item_id
     WHERE ci.agent_id = ? AND ci.item_type = 'summary'
-    ORDER BY s.earliest_at ASC
+    ORDER BY s.earliest_at ASC, s.id ASC
   `).all(agentId) as SummaryRow[];
 
   return rows.map(rowToSummary);

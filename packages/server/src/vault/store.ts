@@ -662,13 +662,17 @@ export function archiveConversation(params: {
   tokenCount: number;
   earliestAt: string;
   latestAt: string;
+  // Migration 088: the highest message rowid in this archive, the tie-free
+  // archival high-water. Optional so older callers still compile; null when the
+  // batch carried no rowid.
+  latestRowid?: number | null;
 }): string {
   const db = getDb();
   const id = uuidv4();
 
   db.prepare(`
-    INSERT INTO vault_conversations (id, agent_id, agent_name, messages, message_count, token_count, earliest_at, latest_at, is_processed, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+    INSERT INTO vault_conversations (id, agent_id, agent_name, messages, message_count, token_count, earliest_at, latest_at, latest_rowid, is_processed, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
   `).run(
     id,
     params.agentId,
@@ -678,6 +682,7 @@ export function archiveConversation(params: {
     params.tokenCount,
     params.earliestAt,
     params.latestAt,
+    params.latestRowid ?? null,
   );
 
   logger.info('Conversation archived to vault', {

@@ -301,6 +301,50 @@ export function getNextEngineEventRetryAt(agentId: string): number | null {
 }
 
 /**
+ * Session-reset carry-over for FIRED-but-undelivered engine events.
+ *
+ * Every engine-event eligibility query gates on `created_at >= session_started_at`
+ * (getPendingEngineEvent, getNextEngineEventRetryAt, expireExhaustedEngineEvents's
+ * consumers). So a reminder / scheduler / tracker / healer row that FIRED, i.e. was
+ * queued as an engine row with its conv_key still NULL, moments before a session
+ * reset is stranded the instant the boundary is bumped past its created_at: it is
+ * unclaimed (never delivered) yet now permanently ineligible, a silent loss of a
+ * deliverable the owner is owed.
+ *
+ * Re-home each such row to the new boundary so it survives the reset and gets its
+ * turn in the fresh session. Scope is deliberately narrow so the reset-wipe
+ * semantics hold and nothing already-answered is resurfaced:
+ *   - only DELIVERABLE_ENGINE_EVENT_WHERE rows (origin_kind='engine', conv_key NULL,
+ *     unswept, not a thrash-gate / hint / system steer): an already-claimed event
+ *     (conv_key set, i.e. delivered) or ordinary human conversation (origin_kind
+ *     != 'engine') is never touched, so a reset still wipes the chat as intended;
+ *   - only rows still inside the delivery lifecycle (under max attempts) and inside
+ *     the 6-hour horizon, so an already-exhausted event is left to expire loudly,
+ *     never revived.
+ * created_at is bumped to exactly the new boundary; the `created_at < boundary`
+ * guard makes it idempotent (a re-run finds nothing left below the boundary).
+ * Best-effort: a reset must never fail on carry-over bookkeeping. Returns the count.
+ */
+export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string): number {
+  try {
+    const db = getDb();
+    const res = db.prepare(
+      `UPDATE messages SET created_at = ?
+         WHERE agent_id = ? AND ${DELIVERABLE_ENGINE_EVENT_WHERE}
+           AND created_at < ?
+           AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
+           AND created_at >= datetime('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours')`,
+    ).run(newBoundary, agentId, newBoundary);
+    if (res.changes > 0) {
+      logger.info('re-homed fired-but-undelivered engine event(s) across session reset', { agentId, count: res.changes }, agentId);
+    }
+    return res.changes;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * E-A2: the oldest UNPROCESSED engine event (a scheduler/reminder/tracker/healer
  * row, origin_kind='engine', conv_key still NULL) in this session, or null. The
  * loop stamps an engine event's conv_key when it processes it (mirroring the human

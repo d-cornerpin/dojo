@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createNodeWebSocket } from '@hono/node-ws';
+import { ZodError } from 'zod';
 import fs from 'node:fs';
 import path from 'node:path';
 import { authMiddleware } from './middleware/auth.js';
@@ -323,6 +324,18 @@ export function createServer() {
 
   // Global error handler
   app.onError((err, c) => {
+    // A failed body validation is a CLIENT error, not a server fault. Routes
+    // validate with throwing .parse(), and a non-JSON body throws SyntaxError;
+    // both landed here and returned 500, making bad input indistinguishable
+    // from an internal failure. Return 400 with the {ok:false} convention so
+    // callers can tell the difference. Handles every route centrally.
+    if (err instanceof ZodError) {
+      const detail = err.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`).join('; ');
+      return c.json({ ok: false, error: `Invalid request: ${detail}` }, 400);
+    }
+    if (err instanceof SyntaxError) {
+      return c.json({ ok: false, error: 'Invalid request: malformed JSON body' }, 400);
+    }
     logger.error('Unhandled error', {
       error: err.message,
       path: c.req.url,

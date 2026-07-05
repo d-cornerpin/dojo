@@ -321,6 +321,14 @@ chatRouter.post('/:agentId/new-session', async (c) => {
     // scratchpad (session-scoped per its tool docs). Matches agents.ts reset.
     db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief', '$.scratchpad') WHERE id = ?").run(boundary, boundary, agentId);
 
+    // Carry a fired-but-undelivered reminder/scheduler event across the reset
+    // boundary so it survives (engine-event queries gate created_at >=
+    // session_started_at). Unclaimed deliverable engine rows only.
+    try {
+      const { rehomeUnclaimedEngineEvents } = await import('../../agent/v2/counterparty.js');
+      rehomeUnclaimedEngineEvents(agentId, boundary);
+    } catch { /* best-effort carry-over, never block the reset */ }
+
     // 4. Insert session marker for the UI divider only
     const markerId = uuidv4();
 

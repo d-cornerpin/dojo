@@ -5,6 +5,7 @@
 // ════════════════════════════════════════
 
 import type { ToolDefinition } from '../agent/tools.js';
+import { CREDENTIAL_FRESH_SENTINEL } from '../memory/compaction.js';
 import {
   listCredentials,
   getCredentialByService,
@@ -107,7 +108,12 @@ export async function executeCredentialTool(
       const fields = Object.entries(record.credentials)
         .map(([k, v]) => `  ${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
         .join('\n');
+      // Lead with the engine sentinel so this secret-bearing result is stubbed
+      // deterministically if it ever ages into a compaction summary (Rule 6:
+      // secrets never enter the memory DAG). The sentinel is invisible guidance
+      // to the model; the fields below are what it uses this turn.
       return (
+        `${CREDENTIAL_FRESH_SENTINEL}\n` +
         `Credential "${serviceName}":\n${fields}\n\n` +
         `Use these values to authenticate your API call. Do not echo them back in chat or store them elsewhere - they live in the encrypted credentials store and that is the only authoritative copy.`
       );

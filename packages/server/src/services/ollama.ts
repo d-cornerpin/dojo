@@ -96,9 +96,13 @@ export async function listOllamaModels(baseUrl?: string): Promise<OllamaModel[]>
       };
     });
   } catch (err) {
-    logger.error('Failed to list Ollama models', {
-      error: err instanceof Error ? err.message : String(err),
-    });
+    const msg = err instanceof Error ? err.message : String(err);
+    // Ollama is optional; not running is the normal case and the sibling health
+    // check logs that at debug. Match it: a connection failure is debug, an
+    // unexpected error keeps warn/error. Either way we return [].
+    const notRunning = /ECONNREFUSED|fetch failed|aborted|timeout|ENOTFOUND|network/i.test(msg);
+    if (notRunning) logger.debug('Ollama not reachable while listing models', { error: msg });
+    else logger.error('Failed to list Ollama models', { error: msg });
     return [];
   }
 }

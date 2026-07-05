@@ -779,7 +779,41 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
     const taskId = resolved.id;
 
-    const status = args.status as string | undefined;
+    // Normalize the status at the tool boundary. Previously an unrecognized
+    // value (a weak model saying "done"/"in progress"/"todo") was written to
+    // the DB verbatim: only the exact string 'complete' sets completed_at and
+    // fires project-completion, so a task marked "done" looked like success yet
+    // was never actually completed and showed in no kanban column. Map the
+    // clear synonyms to the canonical six and REJECT anything else with
+    // guidance, so a mislabel is corrected or refused, never silently stored.
+    // The failure words map per owner decision 2026-07-04: "stuck" -> blocked
+    // (needs the owner), "failed"/"cancelled" -> fallen (give up, archive).
+    const rawStatus = args.status as string | undefined;
+    let status: string | undefined = rawStatus;
+    if (rawStatus !== undefined) {
+      const CANONICAL_STATUSES = ['on_deck', 'in_progress', 'paused', 'complete', 'blocked', 'fallen'];
+      const STATUS_SYNONYMS: Record<string, string> = {
+        done: 'complete', finished: 'complete', completed: 'complete', complete: 'complete',
+        in_progress: 'in_progress', inprogress: 'in_progress', working: 'in_progress',
+        active: 'in_progress', doing: 'in_progress', started: 'in_progress', wip: 'in_progress',
+        on_deck: 'on_deck', ondeck: 'on_deck', todo: 'on_deck', to_do: 'on_deck',
+        queued: 'on_deck', backlog: 'on_deck', pending: 'on_deck',
+        paused: 'paused', pause: 'paused', on_hold: 'paused', hold: 'paused', waiting: 'paused', parked: 'paused',
+        blocked: 'blocked', block: 'blocked', stuck: 'blocked', stalled: 'blocked',
+        fallen: 'fallen', failed: 'fallen', fail: 'fallen', cancelled: 'fallen',
+        canceled: 'fallen', abandoned: 'fallen', dropped: 'fallen', wontfix: 'fallen',
+      };
+      const key = rawStatus.trim().toLowerCase().replace(/[\s-]+/g, '_');
+      const mapped = CANONICAL_STATUSES.includes(key) ? key : STATUS_SYNONYMS[key];
+      if (!mapped) {
+        return (
+          `Error: "${rawStatus}" is not a recognized task status. Use one of: on_deck, in_progress, paused, complete, blocked, fallen. ` +
+          `Common words map automatically ("done"/"finished" to complete, "in progress" to in_progress, "todo" to on_deck, "on hold"/"waiting" to paused). ` +
+          `For a task that failed or is stuck, choose "fallen" (give up, archive) or "blocked" (needs the owner) explicitly.`
+        );
+      }
+      status = mapped;
+    }
     let assignedTo = args.assignedTo as string | undefined;
     if (assignedTo) {
       const r = resolveAgentName(assignedTo);
@@ -1831,8 +1865,26 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
 
 export function trackerCompleteStep(agentId: string, args: Record<string, unknown>): string {
   try {
-    const rawTaskId = (args.taskId as string) ?? (args.task_id as string);
-    if (!rawTaskId) return 'Error: task_id is required';
+    let rawTaskId = (args.taskId as string) ?? (args.task_id as string);
+    if (!rawTaskId) {
+      // task_id omitted. A single-task agent (the floor model working its one
+      // assigned step) routinely leaves it off, and hard-erroring here failed
+      // a behavioral run (sig a5307041). Resolve to the agent's ONE obvious
+      // in-progress task when exactly one exists; never auto-pick when there
+      // are multiple candidates (that would silently complete the wrong task).
+      const db0 = getDb();
+      const candidates = db0.prepare(
+        "SELECT id, title FROM tasks WHERE assigned_to = ? AND status = 'in_progress'",
+      ).all(agentId) as Array<{ id: string; title: string }>;
+      if (candidates.length === 1) {
+        rawTaskId = candidates[0].id;
+      } else if (candidates.length === 0) {
+        return 'Error: `task_id` is required, and you have no in-progress task to complete. Start a task first (tracker_update_status status="in_progress") or pass the task_id explicitly.';
+      } else {
+        const shown = candidates.map(c => `${c.id.slice(0, 8)} (${c.title})`).join(', ');
+        return `Error: \`task_id\` is required. You have ${candidates.length} in-progress tasks, so I cannot guess which one to complete. Pass the task_id explicitly. Candidates: ${shown}`;
+      }
+    }
 
     const resolved = resolveTaskId(rawTaskId, agentId);
     if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);

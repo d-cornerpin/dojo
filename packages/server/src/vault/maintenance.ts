@@ -14,6 +14,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { spawnAgent } from '../agent/spawner.js';
 import { getAgentRuntime } from '../agent/runtime.js';
+import { rehomeUnclaimedEngineEvents } from '../agent/v2/counterparty.js';
 import {
   getPrimaryAgentId,
   getDreamerAgentId, getDreamerAgentName,
@@ -911,6 +912,12 @@ function wakeupDreamer(cycleMessage: string): void {
   const boundary = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
   db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief', '$.scratchpad') WHERE id = ?")
     .run(boundary, boundary, dreamerId);
+
+  // Uniform with the other reset paths: carry any fired-but-undelivered engine
+  // event across the boundary. For the Dreamer this is a no-op (its cycle
+  // messages are not engine rows), but keeping every reset site consistent
+  // means a service agent that ever did hold a deliverable would not lose it.
+  rehomeUnclaimedEngineEvents(dreamerId, boundary);
 
   // Clear accumulated compaction summaries (context items)
   db.prepare('DELETE FROM context_items WHERE agent_id = ?').run(dreamerId);

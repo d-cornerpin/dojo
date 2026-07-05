@@ -395,7 +395,7 @@ uploadRouter.get('/download/:fileId', async (c) => {
   }
 
   if (!fs.existsSync(row.file_path)) {
-    return c.json({ ok: false, error: `File was registered but no longer exists on disk at: ${row.file_path}` }, 404);
+    return c.json({ ok: false, error: `File was registered but no longer exists on disk.` /* audit 26: do not leak the absolute file_path to the client */ }, 404);
   }
 
   // `?inline=1` serves the file for in-page rendering (Content-Disposition:

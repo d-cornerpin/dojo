@@ -108,27 +108,43 @@ export function setCapabilityModel(slot: CapabilitySlot, modelId: string): SetCa
     return { ok: true, message: `Set ${target.label} to the on-device engine "${id}".` };
   }
 
-  const row = getDb()
-    .prepare(`SELECT id, name, is_enabled FROM models WHERE id = ?`)
+  const db = getDb();
+  // Resolve the model reference forgivingly. The tool description primes model
+  // NAMES ("switch to Flux"), so a weak model often passes a name where a uuid
+  // id is expected and the exact-id lookup misses. Try exact id, then a
+  // case-insensitive name / api_model_id, then a unique name substring; fail
+  // only when nothing matches or a substring is ambiguous.
+  let row = db.prepare(`SELECT id, name, is_enabled FROM models WHERE id = ?`)
     .get(id) as { id: string; name: string; is_enabled: number } | undefined;
+  if (!row) {
+    const exact = db.prepare(
+      `SELECT id, name, is_enabled FROM models WHERE LOWER(name) = LOWER(?) OR LOWER(api_model_id) = LOWER(?)`,
+    ).all(id, id) as Array<{ id: string; name: string; is_enabled: number }>;
+    if (exact.length === 1) row = exact[0];
+    else if (exact.length === 0) {
+      const sub = db.prepare(`SELECT id, name, is_enabled FROM models WHERE LOWER(name) LIKE LOWER(?)`)
+        .all(`%${id}%`) as Array<{ id: string; name: string; is_enabled: number }>;
+      if (sub.length === 1) row = sub[0];
+    }
+  }
 
   const options = listModelsForCapability(slot);
   const optionList = options.length
     ? options.map(o => `- ${o.id} (${o.name}, ${o.providerName})`).join('\n')
-    : '(no enabled model currently has this capability — add/enable one in Settings → Models first)';
+    : '(no enabled model currently has this capability, add or enable one in Settings then Models first)';
 
   if (!row) {
-    return { ok: false, message: `No model with id "${id}" exists. Models that can do ${target.label}:\n${optionList}` };
+    return { ok: false, message: `No model matches "${id}". Models that can do ${target.label}:\n${optionList}` };
   }
   if (!row.is_enabled) {
-    return { ok: false, message: `Model "${row.name}" (${id}) is disabled. Enable it in Settings → Models first, or pick one that's already enabled:\n${optionList}` };
+    return { ok: false, message: `Model "${row.name}" (${row.id}) is disabled. Enable it in Settings then Models first, or pick one that's already enabled:\n${optionList}` };
   }
-  if (!getModelCapabilities(id).includes(target.capability)) {
-    return { ok: false, message: `Model "${row.name}" (${id}) isn't marked as ${target.label}-capable. Pick one of:\n${optionList}` };
+  if (!getModelCapabilities(row.id).includes(target.capability)) {
+    return { ok: false, message: `Model "${row.name}" (${row.id}) isn't marked as ${target.label}-capable. Pick one of:\n${optionList}` };
   }
 
-  target.set(id);
-  return { ok: true, message: `Set the ${target.label} model to "${row.name}" (${id}).` };
+  target.set(row.id);
+  return { ok: true, message: `Set the ${target.label} model to "${row.name}" (${row.id}).` };
 }
 
 // ── Voice ───────────────────────────────────────────────────────────────

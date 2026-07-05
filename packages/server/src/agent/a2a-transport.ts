@@ -774,11 +774,27 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   // is the ASSEMBLER's job, done structurally by origin.kind, not by rewriting the message
   // here. Visibility to the user is the dashboard's job: a2a is the 'agent-only' tier
   // (server-classified), hidden in regular chat, shown in wordy mode.
+  // Engine-origin stamping (interagent-separation): a message that ORIGINATES
+  // from the platform (Healer/PM/scheduler/destructive-gate/distillation, all via
+  // the reserved fromAgent='system' sentinel, or an explicit envelope.origin flag)
+  // is NOT a peer agent named "system". Stamp origin_kind='engine' so deriveOrigin
+  // (@dojo/shared) classifies it as an engine event: the dashboard treats it as an
+  // engine notice, the assembler lifts it into the EVENTS/awareness lane, and the
+  // receiver's turn is framed as an engine directive (act via the tool the payload
+  // names) instead of being told to "reply via send_to_agent" to a non-existent
+  // agent. origin_intent splits the two response modes: an action-required message
+  // (requiresResponse) carries a DELIVERABLE engine-intent ('a2a_request') so it can
+  // drive a dedicated engine turn and be answered; a no-wake notice carries the
+  // excluded 'system' intent so it stays pure awareness. Peer A2A (a real
+  // source_agent_id, no engine signal) is untouched: origin_kind stays NULL.
+  const engineOrigin = envelope.origin === 'engine' || envelope.fromAgent === 'system';
+  const originKind = engineOrigin ? 'engine' : null;
+  const originIntent = engineOrigin ? (requiresResponse ? 'a2a_request' : 'system') : null;
   const msgId = uuidv4();
   db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, attachments, created_at)
-    VALUES (?, ?, 'user', ?, ?, ?, ?, ?, ?, datetime('now'))
-  `).run(msgId, target.id, contextMessage, envelope.fromAgent, threadId, effectiveIntent, requiresResponse ? 1 : 0, attachmentsJson);
+    INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, attachments, origin_kind, origin_intent, created_at)
+    VALUES (?, ?, 'user', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+  `).run(msgId, target.id, contextMessage, envelope.fromAgent, threadId, effectiveIntent, requiresResponse ? 1 : 0, attachmentsJson, originKind, originIntent);
 
   // ── 12. Broadcast to dashboard (with attachments so the live UI shows the
   // image immediately, not just on page refresh). The a2a row is the 'agent-only'

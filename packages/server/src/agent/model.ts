@@ -119,7 +119,7 @@ function getClient(providerId: string): CachedClient {
   logger.info('Creating Anthropic client', {
     providerId,
     authType: useOAuth ? 'oauth' : 'api_key',
-    credentialPrefix: credential.slice(0, 14) + '...',
+    credentialLength: credential.length, // never log secret bytes (audit finding 8/21)
   });
 
   let client: Anthropic;

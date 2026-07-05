@@ -364,7 +364,7 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   const removeTools: string[] = [];
 
   if (!hasFileRead) removeTools.push('file_read', 'file_list');
-  if (!hasFileWrite) removeTools.push('file_write', 'file_append');
+  if (!hasFileWrite) removeTools.push('file_write', 'file_append', 'file_patch');
   if (!hasExec) removeTools.push('exec');
   if (!hasNetwork) removeTools.push('web_search', 'web_fetch');
   if (!hasSysControl) removeTools.push('mouse_click', 'mouse_move', 'keyboard_type', 'screen_screenshot', 'applescript_run');
@@ -4137,6 +4137,23 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     }
   }
 
+  // Dashboard/platform control tools act on the OWNER's behalf and are removed
+  // from non-primary agents' advertised toolsets. Registry filtering is only
+  // advisory (Architecture Rule 1: the engine enforces, the model follows), so
+  // gate them at execution too: an A2A relay, a synthetic call, or an injection
+  // that emits one of these names must not restart/update the platform or drive
+  // the owner's dashboard. (reset_session is deliberately NOT here: the healer
+  // legitimately resets wedged agents; its guard is a separate open decision.)
+  if (
+    name === 'apply_update' || name === 'set_capability_model' || name === 'set_voice' ||
+    name === 'set_channel' || name === 'open_settings' || name === 'dashboard_navigate'
+  ) {
+    if (!isPrimaryAgent(agentId)) {
+      auditLog(agentId, name, null, 'denied', `${name} is restricted to the primary agent only`);
+      return { toolCallId: id, name, content: `Permission denied: only the primary agent can call ${name}.`, isError: true };
+    }
+  }
+
   if (name === 'dreamer_run_now' || name === 'cost_summary') {
     if (!isPrimaryAgent(agentId)) {
       auditLog(agentId, name, null, 'denied', `${name} is restricted to the primary agent only`);
@@ -4754,7 +4771,9 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         ]);
         if (sendErr) { content = sendErr; isError = true; break; }
         const agentRef = args.agent as string;
-        const intent = args.intent as string | undefined;
+        // Normalize case/whitespace so a valid intent in the wrong case (a
+        // weak-model habit) is accepted, not rejected into a re-call loop.
+        const intent = (args.intent as string | undefined)?.trim().toUpperCase();
         const payload = (args.payload as string) ?? (args.message as string) ?? '';
         if (!payload || !payload.trim()) {
           content = 'Error: send_to_agent needs a non-empty `payload` (or `message`), what you want to say to the other agent.';
@@ -5011,7 +5030,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         if (!bcResolved.ok) { content = bcResolved.error; isError = true; break; }
         const groupId = bcResolved.id;
         const broadcastPayload = (args.payload as string) ?? (args.message as string) ?? '';
-        const bcIntent = args.intent as string | undefined;
+        const bcIntent = (args.intent as string | undefined)?.trim().toUpperCase();
         if (!broadcastPayload || !broadcastPayload.trim()) { content = 'Error: `payload` (or `message`) is required, what to send to the group.'; isError = true; break; }
 
         // Intent is REQUIRED, same rationale as send_to_agent.
@@ -5071,8 +5090,28 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           { name: 'summary', value: completeSummary, type: 'string' },
         ]);
         if (validationError) { content = validationError; isError = true; break; }
-        if (!['complete', 'fallen', 'blocked'].includes(completeStatus!)) {
-          content = `Error: \`status\` must be one of "complete", "fallen", "blocked" (got "${completeStatus}").`;
+        // Normalize case/synonyms at the tool boundary (mirrors the
+        // tracker_update_status STATUS_SYNONYMS fix). A weak floor model saying
+        // "done"/"failed"/"stuck" previously hard-errored here even though the
+        // intent was unambiguous. Map ONLY words whose intent is unambiguous so
+        // the divergent side effects are preserved: complete fires the dependency
+        // cascade, fallen archives silently, blocked notifies the owner. Anything
+        // that isn't clearly one of the three (e.g. "paused"/"waiting", which are
+        // not terminal completion states) is still rejected with guidance.
+        const COMPLETE_STATUSES = ['complete', 'fallen', 'blocked'];
+        const COMPLETE_SYNONYMS: Record<string, string> = {
+          complete: 'complete', completed: 'complete', done: 'complete', finished: 'complete',
+          fallen: 'fallen', failed: 'fallen', fail: 'fallen', cancelled: 'fallen', canceled: 'fallen',
+          abandoned: 'fallen', dropped: 'fallen', wontfix: 'fallen',
+          blocked: 'blocked', block: 'blocked', stuck: 'blocked', stalled: 'blocked',
+        };
+        const completeKey = completeStatus!.trim().toLowerCase().replace(/[\s-]+/g, '_');
+        const completeMapped = COMPLETE_STATUSES.includes(completeKey) ? completeKey : COMPLETE_SYNONYMS[completeKey];
+        if (!completeMapped) {
+          content =
+            `Error: \`status\` must be one of "complete", "fallen", "blocked" (got "${completeStatus}"). ` +
+            `Common words map automatically ("done"/"finished" to complete, "failed"/"cancelled" to fallen, "stuck"/"stalled" to blocked). ` +
+            `For work you are giving up on choose "fallen" (archived silently); for work that needs the owner's attention choose "blocked".`;
           isError = true;
           break;
         }
@@ -5088,11 +5127,11 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         try {
           await completeAgent(
             agentId,
-            completeStatus as 'complete' | 'fallen' | 'blocked',
+            completeMapped as 'complete' | 'fallen' | 'blocked',
             completeSummary!,
             args.results as string | undefined,
           );
-          content = `Task completion reported: ${completeStatus}. Agent will be terminated.`;
+          content = `Task completion reported: ${completeMapped}. Agent will be terminated.`;
         } catch (err) {
           content = friendlyDbError(err, 'complete_task');
           isError = true;
@@ -5463,10 +5502,13 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'tracker_complete_step': {
-        const tcsErr = checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
-        if (tcsErr) { content = tcsErr; isError = true; break; }
+        // task_id is intentionally NOT hard-required here: a single-task agent
+        // (the floor model working its one assigned step) routinely omits it.
+        // trackerCompleteStep resolves the obvious task when exactly one is in
+        // progress for this agent, and rejects-with-guidance otherwise, so we
+        // pass whatever the model sent (possibly undefined) straight through.
         content = trackerCompleteStep(agentId, {
-          taskId: args.task_id as string,
+          taskId: (args.task_id ?? args.taskId) as string | undefined,
           notes: args.notes as string | undefined,
         });
         isError = content.startsWith('Error');
@@ -6060,6 +6102,22 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
             break;
           }
 
+          // Mid-turn guard: never reset ANOTHER agent while it is genuinely in a
+          // live turn. A real in-process run is tracked in activeRuns; a STALE DB
+          // status='working' row (a wedged agent whose run is actually gone) is
+          // NOT in activeRuns, and healing exactly that wedged case is the whole
+          // point of this tool, so we gate on activeRuns, never on the DB status.
+          // Without this a genuinely-running target got reset underneath its own
+          // turn and its work leaked past the New Session divider. Self-reset is
+          // exempt: an agent resetting its OWN session mid-turn is intentional
+          // (the boundary + reorient take hold as its current turn winds down).
+          const { activeRuns } = await import('./shared-state.js');
+          if (resolvedId !== agentId && activeRuns.has(resolvedId)) {
+            content = `Agent "${agent.name}" is in the middle of a live turn right now. Resetting it would cut its work off mid-thought and leak that work past the new-session divider. Wait for it to go idle, then reset.`;
+            isError = true;
+            break;
+          }
+
           // Archive current conversation to vault. force=true so we always create
           // a new archive, without it, an existing unprocessed archive blocks the
           // re-archive and the post-reset conversation is silently lost.
@@ -6082,6 +6140,13 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           const now = new Date();
           const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
           db.prepare("UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief', '$.scratchpad') WHERE id = ?").run(boundary, boundary, resolvedId);
+
+          // Carry a fired-but-undelivered reminder/scheduler event across the
+          // reset boundary so it is not silently lost (all engine-event queries
+          // gate created_at >= session_started_at). Narrow scope: unclaimed
+          // deliverable engine rows only, never ordinary conversation.
+          const { rehomeUnclaimedEngineEvents } = await import('./v2/counterparty.js');
+          rehomeUnclaimedEngineEvents(resolvedId, boundary);
 
           // Insert UI divider
           const markerId = uuidv4();
@@ -6178,10 +6243,22 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
               sanitizeMessagesOnModelChange(target.id);
               changes.push('model → auto-routing');
             } else {
-              const model = db.prepare('SELECT id, name, is_enabled FROM models WHERE id = ?').get(newModelId) as { id: string; name: string; is_enabled: number } | undefined;
-              if (!model) { content = `Error: Model "${newModelId}" not found. Use a valid model ID.`; isError = true; break; }
+              // Resolve forgivingly: id, then case-insensitive name/api_model_id,
+              // then a unique name substring. The tool primes model NAMES, so a
+              // weak model passes a name where a uuid id is expected and an
+              // exact-id lookup misses.
+              let model = db.prepare('SELECT id, name, is_enabled FROM models WHERE id = ?').get(newModelId) as { id: string; name: string; is_enabled: number } | undefined;
+              if (!model) {
+                const exact = db.prepare('SELECT id, name, is_enabled FROM models WHERE LOWER(name) = LOWER(?) OR LOWER(api_model_id) = LOWER(?)').all(newModelId, newModelId) as Array<{ id: string; name: string; is_enabled: number }>;
+                if (exact.length === 1) model = exact[0];
+                else if (exact.length === 0) {
+                  const sub = db.prepare('SELECT id, name, is_enabled FROM models WHERE LOWER(name) LIKE LOWER(?)').all(`%${newModelId}%`) as Array<{ id: string; name: string; is_enabled: number }>;
+                  if (sub.length === 1) model = sub[0];
+                }
+              }
+              if (!model) { content = `Error: no model matches "${newModelId}". Call list_models for valid names and ids.`; isError = true; break; }
               if (!model.is_enabled) { content = `Error: Model "${model.name}" is disabled. Enable it in Settings > Models first.`; isError = true; break; }
-              db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?").run(newModelId, target.id);
+              db.prepare("UPDATE agents SET model_id = ?, updated_at = datetime('now') WHERE id = ?").run(model.id, target.id);
               const { sanitizeMessagesOnModelChange } = await import('./model-switch.js');
               const { collapsed } = sanitizeMessagesOnModelChange(target.id);
               changes.push(`model: ${target.model_id ?? 'auto'} → ${model.name}${collapsed > 0 ? ` (${collapsed} tool msg(s) sanitized)` : ''}`);

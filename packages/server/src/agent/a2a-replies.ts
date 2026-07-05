@@ -74,16 +74,24 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
   const params: unknown[] = [agentId];
   if (sessionStartedAt) { clauses.push(`created_at >= ?`); params.push(sessionStartedAt); }
   if (maxAgeMinutes != null) { clauses.push(`created_at >= datetime('now', ?)`); params.push(`-${maxAgeMinutes} minutes`); }
-  const sql = `SELECT id, content, created_at, source_agent_id, a2a_thread_id, a2a_intent FROM messages
+  const sql = `SELECT id, content, created_at, source_agent_id, a2a_thread_id, a2a_intent, origin_kind FROM messages
                    WHERE ${clauses.join(' AND ')}
                    ORDER BY created_at DESC, rowid DESC LIMIT ?`;
   params.push(lookback);
 
   const rows = db
     .prepare(sql)
-    .all(...params) as Array<{ id: string; content: string; created_at: string; source_agent_id: string | null; a2a_thread_id: string | null; a2a_intent: string | null }>;
+    .all(...params) as Array<{ id: string; content: string; created_at: string; source_agent_id: string | null; a2a_thread_id: string | null; a2a_intent: string | null; origin_kind: string | null }>;
 
   for (const row of rows) {
+    // Engine-origin rows (Healer/PM/gate/distillation via fromAgent='system') are
+    // NOT peer A2A: the receiver responds by acting on the directive (the tool the
+    // payload names), never by send_to_agent back to a non-existent "system" agent.
+    // Excluding them here disarms the missed-reply enforcer for those messages (it
+    // would otherwise nag the receiver to send_to_agent 'system') and lets them be
+    // classified as an engine turn instead of a mis-framed peer A2A turn. A genuine
+    // peer A2A row has origin_kind NULL and is still detected.
+    if (row.origin_kind === 'engine') continue;
     // F7 (harness finding, wave 2): trust the STRUCTURAL columns first. The
     // prose regex required an 8-hex thread id, so any envelope/thread-format
     // drift made this return null and an unreplied QUESTION was silently

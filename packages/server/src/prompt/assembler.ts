@@ -497,6 +497,15 @@ export interface PromptTurnContext {
    */
   isEngineTurn?: boolean;
   /**
+   * On an engine turn driven by an ACTION-REQUIRED engine-origin A2A message
+   * (Healer QUESTION, PM escalation, destructive-gate approval), the message id of
+   * that event. The assembler keeps it FULL in the live tail instead of collapsing
+   * it into the truncated EVENTS/awareness gist, so the receiver sees the whole
+   * directive (e.g. an approval token) it must act on. Undefined/null on every other
+   * turn (scheduler/reminder engine events keep the normal awareness-lane behavior).
+   */
+  engineEventKeepFullId?: string | null;
+  /**
    * The single counterparty this turn is addressing (attribution redesign,
    * Phase 3). The assembler renders an explicit "who you're talking to" header
    * from it (Phase 3) and scopes the live conversation to it (Phase 4), so the

@@ -142,13 +142,30 @@ const TECHNIQUE_FRESH_SENTINEL = '══ TECHNIQUE FRESH READ ══';
 const TECHNIQUE_SCRUB_STUB =
   '[technique read withheld from summary by engine policy, call technique_read for the current on-disk content; do not paraphrase from this summary]';
 
+// Same risk class, higher stakes: a credential_get result carries a raw secret
+// in its body. If it ages into a compaction chunk the summarizer would otherwise
+// see the value and could fold it into a persisted leaf summary, re-injected
+// across sessions (a Rule-6 leak that must NOT rest on the summarizer model's
+// discretion). credential_get prepends this sentinel; the summary scrub stubs it
+// deterministically at the engine, exactly like a fresh technique read.
+export const CREDENTIAL_FRESH_SENTINEL = '══ CREDENTIAL FRESH READ ══';
+const CREDENTIAL_SCRUB_STUB =
+  '[credential value withheld from summary by engine policy, call credential_get for the current value; never persist or paraphrase a secret]';
+
+// Return the deterministic stub for a sentinel-tagged body, or null if the body
+// carries no scrubbable sentinel.
+function scrubStubFor(content: string): string | null {
+  if (content.startsWith(TECHNIQUE_FRESH_SENTINEL)) return TECHNIQUE_SCRUB_STUB;
+  if (content.startsWith(CREDENTIAL_FRESH_SENTINEL)) return CREDENTIAL_SCRUB_STUB;
+  return null;
+}
+
 export function scrubTechniqueContentForSummary(messageContent: string): string {
-  // Fast path: plain string content that starts with the sentinel
+  // Fast path: plain string content that starts with a sentinel
   // (covers any flow where the runtime persists the raw tool string
   // rather than a JSON tool_result block).
-  if (messageContent.startsWith(TECHNIQUE_FRESH_SENTINEL)) {
-    return TECHNIQUE_SCRUB_STUB;
-  }
+  const fast = scrubStubFor(messageContent);
+  if (fast) return fast;
   // JSON path: walk tool_result blocks the way the assembler does.
   try {
     const parsed = JSON.parse(messageContent);
@@ -158,9 +175,10 @@ export function scrubTechniqueContentForSummary(messageContent: string): string 
       const b = block as { type?: string; content?: unknown };
       if (b.type !== 'tool_result') return block;
       if (typeof b.content !== 'string') return block;
-      if (!b.content.startsWith(TECHNIQUE_FRESH_SENTINEL)) return block;
+      const stub = scrubStubFor(b.content);
+      if (!stub) return block;
       changed = true;
-      return { ...b, content: TECHNIQUE_SCRUB_STUB };
+      return { ...b, content: stub };
     });
     return changed ? JSON.stringify(next) : messageContent;
   } catch {
@@ -531,9 +549,13 @@ export async function checkAndCompact(
     // messages without marking them compacted, so without the high-water bound a
     // later compaction would re-copy them (reintroducing the duplicate-blob bloat).
     // This bounds only the ARCHIVE input; compaction itself is unaffected.
+    // Migration 088: bound by rowid (tie-free) instead of the old second-granular
+    // created_at, which dropped an equal-second boundary row from the archive
+    // while it was still compacted (silent loss). A missing rowid falls to
+    // "include" so the safe direction is always to archive, never to skip.
     const archiveHighWater = getArchiveHighWaterMark(agentId);
     const uncompactedForArchive = messagesForArchive.filter(
-      m => !archiveCompactedIds.has(m.id) && (!archiveHighWater || m.createdAt > archiveHighWater),
+      m => !archiveCompactedIds.has(m.id) && (archiveHighWater == null || m.rowid == null || m.rowid > archiveHighWater),
     );
     // C11: service agents (Healer/Trainer/PM/Imaginer/Dreamer) are excluded from archival, 
     // archiveMessagesBeforeCompaction returns null for them (its own service-agent skip),
@@ -627,9 +649,10 @@ export async function checkAndCompact(
     // so context pressure is unchanged. A proactive compaction whose uncompacted
     // messages are all already archived simply skips the archive step (which is
     // correct, not a failure) and compacts normally.
+    // Migration 088: rowid high-water (tie-free); missing rowid → include (archive).
     const proactiveHighWater = getArchiveHighWaterMark(agentId);
     const messagesToArchive = uncompactedMessages.filter(
-      m => !proactiveHighWater || m.createdAt > proactiveHighWater,
+      m => proactiveHighWater == null || m.rowid == null || m.rowid > proactiveHighWater,
     );
     if (messagesToArchive.length > 0 && !isDreamerIgnored(agentId) && !isSystemServiceAgent(agentId)) {
       const archiveId = archiveMessagesBeforeCompaction(agentId, messagesToArchive);
@@ -886,7 +909,7 @@ export function rebuildContextItems(agentId: string): void {
       AND s.id NOT IN (
         SELECT parent_id FROM summary_parents
       )
-    ORDER BY s.earliest_at ASC
+    ORDER BY s.earliest_at ASC, s.id ASC
   `).all(agentId) as TopLevelRow[];
 
   // Fresh tail messages

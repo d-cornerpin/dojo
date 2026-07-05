@@ -20,6 +20,22 @@ const JWT_EXPIRY = '24h';
 
 const setupRouter = new Hono<AppEnv>();
 
+// The setup router is a PUBLIC prefix (first-run OOBE happens before any
+// credential exists). That means every state-changing route here MUST refuse
+// once first-run is over, or it becomes an unauthenticated admin surface: an
+// internet-reachable client (e.g. over the cloudflared tunnel) could otherwise
+// overwrite the dashboard password or mint an admin JWT with no credential.
+// `setup_completed` is written once at the end of POST /complete and never
+// unset. Read-only /status stays public (the dashboard polls it to decide
+// whether to show the wizard).
+function isSetupCompleted(): boolean {
+  const db = getDb();
+  const row = db
+    .prepare("SELECT value FROM config WHERE key = 'setup_completed'")
+    .get() as { value: string } | undefined;
+  return row?.value === 'true';
+}
+
 // GET /status
 setupRouter.get('/status', (c) => {
   const db = getDb();
@@ -58,8 +74,13 @@ setupRouter.get('/status', (c) => {
   return c.json({ ok: true, data: status });
 });
 
-// POST /password — set password during setup
+// POST /password: set password during setup (first-run only)
 setupRouter.post('/password', async (c) => {
+  if (isSetupCompleted()) {
+    // Not a first-run box: changing the password requires authentication via
+    // the authenticated change-password flow, not this public route.
+    return c.json({ ok: false, error: 'Setup is already complete' }, 403);
+  }
   const body = await c.req.json().catch(() => null);
   const parsed = LoginSchema.safeParse(body);
   if (!parsed.success) {
@@ -74,8 +95,13 @@ setupRouter.post('/password', async (c) => {
   return c.json({ ok: true, data: { message: 'Password set' } });
 });
 
-// POST /complete — finalize setup, return JWT
+// POST /complete: finalize setup, return JWT (first-run only)
 setupRouter.post('/complete', async (c) => {
+  if (isSetupCompleted()) {
+    // Already completed: this route must never mint an admin JWT again, or it
+    // is an unauthenticated auth-bypass. Real logins go through /api/auth/login.
+    return c.json({ ok: false, error: 'Setup is already complete' }, 403);
+  }
   const storedHash = getDashboardPasswordHash();
   if (!storedHash) {
     return c.json({ ok: false, error: 'Password must be set before completing setup' }, 400);

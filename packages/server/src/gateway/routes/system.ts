@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
 import os from 'node:os';
+import dns from 'node:dns/promises';
+import net from 'node:net';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { readLogEntries } from '../../logger.js';
@@ -98,19 +100,63 @@ systemRouter.get('/system/time', (c) => {
   });
 });
 
+// og-preview fetches a URL SERVER-SIDE and the client auto-fires it for every
+// http(s) link in any rendered message, including untrusted inbound email /
+// iMessage / agent output. Without validation that is an SSRF: a planted URL
+// could make the server probe 127.0.0.1, 169.254.169.254 (cloud metadata), or
+// LAN hosts. Block non-http(s) schemes and any host that resolves to a private,
+// loopback, or link-local address, and re-check on every redirect hop.
+function isPrivateAddr(ip: string): boolean {
+  if (net.isIPv4(ip)) {
+    const p = ip.split('.').map(Number);
+    if (p[0] === 10 || p[0] === 127 || p[0] === 0) return true;
+    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
+    if (p[0] === 192 && p[1] === 168) return true;
+    if (p[0] === 169 && p[1] === 254) return true; // link-local + cloud metadata
+    if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return true; // CGNAT
+    return false;
+  }
+  const v6 = ip.toLowerCase();
+  return v6 === '::1' || v6 === '::' || v6.startsWith('fe80') || v6.startsWith('fc') || v6.startsWith('fd') ||
+    v6.startsWith('::ffff:127.') || v6.startsWith('::ffff:10.') || v6.startsWith('::ffff:192.168.');
+}
+async function assertPublicHttpUrl(raw: string): Promise<void> {
+  const u = new URL(raw);
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('unsupported scheme');
+  const host = u.hostname;
+  if (net.isIP(host)) {
+    if (isPrivateAddr(host)) throw new Error('private address');
+    return;
+  }
+  const resolved = await dns.lookup(host, { all: true });
+  if (resolved.length === 0 || resolved.some((a) => isPrivateAddr(a.address))) throw new Error('private address');
+}
+
 // GET /og-preview?url=... — fetch Open Graph metadata for link previews
 systemRouter.get('/og-preview', async (c) => {
   const url = c.req.query('url');
   if (!url) return c.json({ ok: false, error: 'url parameter required' }, 400);
 
   try {
-    const resp = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; DojoBot/1.0)' },
-      signal: AbortSignal.timeout(8000),
-      redirect: 'follow',
-    });
+    // Follow redirects MANUALLY so each hop's target is re-validated (an open
+    // redirect on an allowed host could otherwise bounce us to a private one).
+    let current = url;
+    let resp: Response | null = null;
+    for (let hop = 0; hop < 4; hop++) {
+      await assertPublicHttpUrl(current);
+      resp = await fetch(current, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; DojoBot/1.0)' },
+        signal: AbortSignal.timeout(8000),
+        redirect: 'manual',
+      });
+      if (resp.status >= 300 && resp.status < 400 && resp.headers.get('location')) {
+        current = new URL(resp.headers.get('location') as string, current).href;
+        continue;
+      }
+      break;
+    }
 
-    if (!resp.ok) return c.json({ ok: true, data: { url, title: null, description: null, image: null } });
+    if (!resp || !resp.ok) return c.json({ ok: true, data: { url, title: null, description: null, image: null } });
 
     const html = await resp.text();
 
@@ -181,6 +227,14 @@ systemRouter.post('/system/reset-idle-sessions', async (c) => {
         // (matches agents.ts / reset_session so all reset paths behave alike).
         "UPDATE agents SET session_started_at = ?, updated_at = ?, config = json_remove(COALESCE(config, '{}'), '$.continuityBrief', '$.scratchpad') WHERE id = ?",
       ).run(boundary, boundary, agent.id);
+
+      // Carry a fired-but-undelivered reminder/scheduler event across the reset
+      // boundary so it survives (engine-event queries gate created_at >=
+      // session_started_at). Unclaimed deliverable engine rows only.
+      try {
+        const { rehomeUnclaimedEngineEvents } = await import('../../agent/v2/counterparty.js');
+        rehomeUnclaimedEngineEvents(agent.id, boundary);
+      } catch { /* best-effort carry-over, never block the reset */ }
 
       const markerId = uuidv4();
       db.prepare(

@@ -28,6 +28,20 @@ export interface A2AEnvelope {
   toAgent: string;
   fromAgent: string;
   attachPaths?: string[];
+  /**
+   * Explicit provenance signal. `'engine'` marks a message that ORIGINATES from
+   * the platform itself (Healer alerts, PM escalations, the destructive-action
+   * gate, distillation batches) rather than from a peer agent. The transport
+   * stamps such a row origin_kind='engine' so deriveOrigin classifies it as an
+   * engine event, NOT a peer agent literally named "system", and the receiver is
+   * framed to act on it (via the tool the payload names) instead of being told to
+   * "reply via send_to_agent" to a non-existent agent. Omitted (peer A2A) leaves
+   * the row a normal agent message. All existing engine senders use the reserved
+   * fromAgent='system' sentinel, which the transport treats as engine-origin too;
+   * this flag is the explicit alternative for a future engine sender that does not
+   * use that sentinel. NEVER set this for a genuine peer agent-to-agent message.
+   */
+  origin?: 'engine';
 }
 
 // Terminal intents CLOSE the thread (no further acknowledgements allowed).

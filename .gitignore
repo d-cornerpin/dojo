@@ -63,3 +63,6 @@ packages/dashboard/public/ort/
 /COMMS-AUDIT.md
 /MEMORY-GRAPH-DESIGN.md
 /MESSAGE-ATTRIBUTION-REDESIGN.md
+
+# Local audit reports (never commit)
+DOJO-AUDIT-*.md

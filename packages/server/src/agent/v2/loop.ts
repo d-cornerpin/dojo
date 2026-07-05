@@ -727,9 +727,50 @@ export async function runV2Turn(agentId: string): Promise<void> {
   const forcedA2ATurn = forceA2ATurn.has(agentId);
   forceA2ATurn.delete(agentId);
   const mostRecentInbound = db.prepare(
-    "SELECT content, origin_kind, origin_intent FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1",
-  ).get(agentId) as { content: string; origin_kind: string | null; origin_intent: string | null } | undefined;
-  const mostRecentIsA2A = parseA2ATrigger(mostRecentInbound?.content ?? null) !== null;
+    "SELECT rowid, content, origin_kind, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, conv_key FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+  ).get(agentId) as {
+    rowid: number; content: string; origin_kind: string | null; origin_intent: string | null;
+    source_agent_id: string | null; a2a_thread_id: string | null; a2a_intent: string | null;
+    a2a_requires_response: number | null; conv_key: string | null;
+  } | undefined;
+  // A reply-needed peer A2A (QUESTION/ASSIGN/BLOCK) is most-recent. Engine-origin
+  // rows (fromAgent='system') are NOT peer A2A, they drive an engine turn instead,
+  // so they never count here (else they'd mis-frame the receiver toward send_to_agent).
+  const mostRecentIsA2A =
+    mostRecentInbound?.origin_kind !== 'engine' &&
+    parseA2ATrigger(mostRecentInbound?.content ?? null) !== null;
+  // ── Terminal-wake A2A detection (interagent-separation) ──
+  // Terminal intents (DELIVERABLE/ANSWER/COMPLETE/FAIL) ALSO wake the receiver by
+  // design (a sub-agent handing back the thing that was asked for), but they are
+  // NOT reply-needed, so findUnrepliedAssignForAgent returns null and the old
+  // isA2ATurn was false. With no human waiting the turn then fell to owner/engine
+  // classification and scopeToHumanConversation->stripA2AFromTail REMOVED the very
+  // deliverable that woke the agent: it woke blind to what it was woken for, and
+  // could run a stale owner directive. Detect the wake structurally: the most-recent
+  // inbound is a PEER (not engine) terminal A2A intent that actually woke this agent
+  // (a2a_requires_response=1) and has not yet been claimed by a turn (conv_key NULL).
+  // Gated with !hasUnansweredUser below so a waiting human always wins (no hijack).
+  const TERMINAL_WAKE_INTENTS = new Set(['DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL']);
+  let terminalWakeA2A: { intent: string; threadShort: string; fromName: string; rowid: number } | null = null;
+  if (
+    mostRecentInbound &&
+    mostRecentInbound.origin_kind !== 'engine' &&
+    mostRecentInbound.a2a_thread_id &&
+    mostRecentInbound.a2a_intent &&
+    TERMINAL_WAKE_INTENTS.has(mostRecentInbound.a2a_intent) &&
+    mostRecentInbound.a2a_requires_response === 1 &&
+    mostRecentInbound.conv_key === null
+  ) {
+    const senderRow = mostRecentInbound.source_agent_id
+      ? (db.prepare('SELECT name FROM agents WHERE id = ?').get(mostRecentInbound.source_agent_id) as { name?: string } | undefined)
+      : undefined;
+    terminalWakeA2A = {
+      intent: mostRecentInbound.a2a_intent,
+      threadShort: mostRecentInbound.a2a_thread_id.slice(0, 8),
+      fromName: senderRow?.name ?? mostRecentInbound.source_agent_id ?? 'another agent',
+      rowid: mostRecentInbound.rowid,
+    };
+  }
   // The user always wins: if a real user-channel message is still unanswered
   // (newer than our last user-facing text reply), this is a user turn even if
   // an A2A is forced/pending, answer the user now, the A2A re-defers to its
@@ -743,8 +784,32 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // never make this true (the bug that forced isA2ATurn=false and leaked A2A
   // chatter to the dashboard).
   const hasUnansweredUser = waitingConvs.length > 0;
-  const isA2ATurn = unrepliedAssign !== null && !hasUnansweredUser && (mostRecentIsA2A || forcedA2ATurn);
+  // An A2A turn is either the reply-needed case (an unreplied QUESTION/ASSIGN/BLOCK,
+  // forced or most-recent) OR a terminal-wake (a peer handed back a DELIVERABLE/
+  // ANSWER/COMPLETE/FAIL that woke us). Both need the live tail scoped to the A2A
+  // thread (scopeToA2AThread) so the agent SEES the message instead of having it
+  // stripped. The waiting-human guard is shared: a real user always wins the turn.
+  const isA2ATurn =
+    !hasUnansweredUser &&
+    ((unrepliedAssign !== null && (mostRecentIsA2A || forcedA2ATurn)) || terminalWakeA2A !== null);
   if (isA2ATurn) lastTurnWasA2A.add(agentId); else lastTurnWasA2A.delete(agentId);
+  // The terminal wake DRIVES this turn only when there is no competing reply-needed
+  // obligation (an unreplied QUESTION/ASSIGN/BLOCK wins the counterparty + enforcer,
+  // and its own thread is scoped instead). Only then is the terminal message the one
+  // this turn scopes to and should claim.
+  const terminalWakeDrivesTurn = isA2ATurn && terminalWakeA2A !== null && unrepliedAssign === null;
+  // Claim the driving terminal-wake message so it drives exactly ONE turn: without a
+  // stamp it stays most-recent + conv_key NULL and any later spurious wake would
+  // re-detect it and (worst case) re-relay the deliverable to the owner. conv_key='a2a'
+  // is a non-human sentinel; scopeToA2AThread keys agent rows on origin.kind+thread
+  // (not conv_key), and the human waiting-set already ignores A2A rows, so the stamp is
+  // inert to every other consumer. Mirrors the human/engine pickup-claim above.
+  if (terminalWakeDrivesTurn && terminalWakeA2A) {
+    try {
+      db.prepare("UPDATE messages SET conv_key = 'a2a' WHERE agent_id = ? AND rowid = ? AND conv_key IS NULL")
+        .run(agentId, terminalWakeA2A.rowid);
+    } catch { /* best effort, exactly-once is a safety net, not a correctness gate */ }
+  }
 
   // ── Engine turn classification (OPEN-11) ──
   // A turn triggered by an engine event, a scheduler task or reminder firing
@@ -799,14 +864,28 @@ export async function runV2Turn(agentId: string): Promise<void> {
   clearTurnReceipts(agentId);
   broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: isA2ATurn ? 'a2a' : 'user' });
 
-  // Enforcer arms ONLY on A2A turns. On a user turn a pending/lingering A2A
-  // must not force a send_to_agent into the user-facing reply.
+  // Enforcer arms ONLY on A2A turns AND only for reply-needed intents. On a user
+  // turn a pending/lingering A2A must not force a send_to_agent into the user-facing
+  // reply. A terminal-wake turn is an A2A turn but is NOT reply-needed (the sender
+  // handed back a deliverable and closed the thread), so a2aReplyContext stays null
+  // and the missed-reply enforcer is not armed, exactly right: there is nothing to
+  // reply to, only a deliverable to act on.
   const a2aReplyContext = isA2ATurn
     ? (unrepliedAssign
         ? { intent: unrepliedAssign.intent, threadShort: unrepliedAssign.threadShort, fromName: unrepliedAssign.fromName }
         : parseA2ATrigger(lastUserMessageContent))
     : null;
   const a2aReplyAssignMessageId = isA2ATurn ? (unrepliedAssign?.messageId ?? null) : null;
+  // The A2A thread IDENTITY used to render the counterparty header and scope the
+  // live tail (scopeToA2AThread). For a terminal wake there is no reply context, so
+  // fall back to the terminal message's own thread/sender, without that, the
+  // counterparty carries a null thread and scopeToA2AThread would drop the very
+  // deliverable that woke the agent (the bug this fixes). Distinct from
+  // a2aReplyContext, which stays null so the enforcer does not arm.
+  const a2aCounterpartyIdentity = a2aReplyContext
+    ?? (terminalWakeA2A
+        ? { intent: terminalWakeA2A.intent, threadShort: terminalWakeA2A.threadShort, fromName: terminalWakeA2A.fromName }
+        : null);
 
   // ── Turn counterparty (attribution redesign, Phase 3) ──
   // The single entity this turn is addressing, resolved from structured origin.
@@ -819,8 +898,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
     ? continuation!.counterparty
     : resolveTurnCounterparty({
         isA2ATurn,
-        a2aFromName: a2aReplyContext?.fromName ?? null,
-        a2aThreadShort: a2aReplyContext?.threadShort ?? null,
+        a2aFromName: a2aCounterpartyIdentity?.fromName ?? null,
+        a2aThreadShort: a2aCounterpartyIdentity?.threadShort ?? null,
         triggerContent: lastUserMessageContent,
         triggerSource: triggerRow?.source ?? null,
         triggerInboundMeta: triggerRow?.inbound_meta ?? null,
@@ -1593,11 +1672,27 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // it directly. (Reuses the complexity classifier that was computed but unconsumed.)
       const conversationalTurn = counterparty.kind === 'user'
         && complexityClassifier(lastUserMessageContent ?? '').complexity === 'simple';
+      // Content-preservation for an ACTION-REQUIRED engine-origin A2A message
+      // (Healer QUESTION, PM escalation, destructive-gate approval, all origin_intent
+      // 'a2a_request'). It drives an engine turn, but the EVENTS/awareness lane
+      // truncates each notice to a gist, which would clip the very thing the receiver
+      // must act on (an approval token, the full escalation). Keep THIS event full in
+      // the live tail instead: the assembler leaves the id out of the truncated
+      // awareness block so scopeToEngineTurn's copy is what the model reads. Scoped to
+      // 'a2a_request' only, so scheduler/reminder engine turns are unchanged.
+      let engineEventKeepFullId: string | null = null;
+      if (isEngineTurn && pendingEngineEvent?.originIntent === 'a2a_request') {
+        try {
+          const idRow = db.prepare('SELECT id FROM messages WHERE agent_id = ? AND rowid = ?')
+            .get(agentId, pendingEngineEvent.rowid) as { id: string } | undefined;
+          engineEventKeepFullId = idRow?.id ?? null;
+        } catch { /* best effort, fall back to the truncated awareness gist */ }
+      }
       // C28 Part 1: one shared turn context, threaded into BOTH assembleContext
       // (system) AND the message-injection mctx, so the msg.turn-context entry can
       // read counterparty / othersWaiting / conversationalTurn / isEngineTurn (they
       // are not recomputed).
-      const sharedTurnContext = { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn };
+      const sharedTurnContext = { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn, engineEventKeepFullId };
       const ctx = await assembleContext(agentId, contextModelId, sharedTurnContext);
       lastAssembledAtIso = new Date().toISOString(); // F9: see claimAssembledSiblings
       let systemPrompt = ctx.systemPrompt;

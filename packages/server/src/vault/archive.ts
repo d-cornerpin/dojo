@@ -96,23 +96,31 @@ export function isDreamerIgnored(agentId: string): boolean {
 }
 
 /**
- * D1: the archival high-water mark for an agent, the newest message
- * timestamp already copied into vault_conversations. Archival must only ever
- * copy messages NEWER than this so a session reset (or a later compaction)
- * can never re-copy history that is already in the vault. This single signal
- * is what stops the "every reset re-archives all-time history" bloat: before
- * it, each reset wrote another full multi-MB copy of the whole conversation,
- * duplicate blobs that starved the Dreamer (it re-chewed the same history and
- * dedup-dropped it) and grew the DB ~1 GB/day. Returns null when the agent
- * has never been archived (archive everything the first time). Best-effort:
- * on any lookup error return null so archiving still proceeds.
+ * D1: the archival high-water mark for an agent, the highest message ROWID
+ * already copied into vault_conversations. Archival must only ever copy
+ * messages NEWER than this so a session reset (or a later compaction) can never
+ * re-copy history that is already in the vault. This single signal is what stops
+ * the "every reset re-archives all-time history" bloat: before it, each reset
+ * wrote another full multi-MB copy of the whole conversation, duplicate blobs
+ * that starved the Dreamer (it re-chewed the same history and dedup-dropped it)
+ * and grew the DB ~1 GB/day.
+ *
+ * The high-water is a rowid, not the old MAX(latest_at) whole-second TEXT
+ * timestamp (migration 088). messages.created_at is second-granular, so two
+ * messages in the same second tied on the old high-water and the strict
+ * `created_at > highWater` filter skipped the equal-second boundary row: it was
+ * never copied to the vault yet still got compacted, a silent loss. rowid is
+ * unique and monotonic, so callers filter `rowid > highWater` with no ties.
+ * Returns null when the agent has never been archived (archive everything the
+ * first time). Best-effort: on any lookup error return null so archiving still
+ * proceeds.
  */
-export function getArchiveHighWaterMark(agentId: string): string | null {
+export function getArchiveHighWaterMark(agentId: string): number | null {
   try {
     const db = getDb();
     const row = db.prepare(
-      'SELECT MAX(latest_at) AS hw FROM vault_conversations WHERE agent_id = ?',
-    ).get(agentId) as { hw: string | null } | undefined;
+      'SELECT MAX(latest_rowid) AS hw FROM vault_conversations WHERE agent_id = ?',
+    ).get(agentId) as { hw: number | null } | undefined;
     return row?.hw ?? null;
   } catch {
     return null;
@@ -159,13 +167,15 @@ export function archiveAgentConversation(agentId: string, force = false): string
   // this, reset (force=true) re-copied the ENTIRE all-time history every time,
   // producing duplicate multi-MB blobs. The high-water mark bounds each archive
   // to the genuinely-new tail; a reset with nothing new archives nothing.
+  // Migration 088: bound by rowid (unique, tie-free) instead of the old
+  // second-granular created_at, which skipped an equal-second boundary row.
   const highWater = getArchiveHighWaterMark(agentId);
-  const rows = (highWater
+  const rows = (highWater != null
     ? db.prepare(
-        'SELECT * FROM messages WHERE agent_id = ? AND created_at > ? ORDER BY created_at ASC',
+        'SELECT *, rowid FROM messages WHERE agent_id = ? AND rowid > ? ORDER BY created_at ASC, rowid ASC',
       ).all(agentId, highWater)
     : db.prepare(
-        'SELECT * FROM messages WHERE agent_id = ? ORDER BY created_at ASC',
+        'SELECT *, rowid FROM messages WHERE agent_id = ? ORDER BY created_at ASC, rowid ASC',
       ).all(agentId)) as Array<Record<string, unknown>>;
 
   if (rows.length === 0) return null;
@@ -181,6 +191,7 @@ export function archiveAgentConversation(agentId: string, force = false): string
     cost: r.cost as number | null ?? null,
     latencyMs: r.latency_ms as number | null ?? null,
     createdAt: r.created_at as string,
+    rowid: r.rowid as number | undefined,
     attachments: r.attachments ? JSON.parse(r.attachments as string) : undefined,
   }));
 
@@ -245,6 +256,12 @@ export function archiveMessagesBeforeCompaction(
 
     const earliestAt = messages[0].createdAt;
     const latestAt = messages[messages.length - 1].createdAt;
+    // Migration 088: persist the highest archived rowid as the tie-free
+    // high-water. Derive from the max over the batch (not positional) so it is
+    // correct even if a re-homed engine event left created_at and rowid out of
+    // lockstep. Null when the batch carried no rowid (defensive only).
+    const rowids = messages.map(m => m.rowid).filter((r): r is number => typeof r === 'number');
+    const latestRowid = rowids.length ? Math.max(...rowids) : null;
 
     const archiveId = archiveConversation({
       agentId,
@@ -254,6 +271,7 @@ export function archiveMessagesBeforeCompaction(
       tokenCount: totalTokens,
       earliestAt,
       latestAt,
+      latestRowid,
     });
 
     logger.info('Pre-compaction archive complete', {

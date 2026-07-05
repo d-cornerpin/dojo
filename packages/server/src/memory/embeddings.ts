@@ -170,8 +170,14 @@ export async function storeEmbedding(
 
     logger.debug('Embedding stored', { sourceType, sourceId, dimensions: embedding.length }, agentId ?? undefined);
   } catch (err) {
-    logger.error('Failed to store embedding', {
-      error: err instanceof Error ? err.message : String(err),
+    const msg = err instanceof Error ? err.message : String(err);
+    // The default embed backend (Ollama) is engine-optional and fires on every
+    // message/response/summary. A connection failure means it is simply absent,
+    // not a store fault, so log that at WARN (best-effort, not a dashboard-
+    // broadcast ERROR); reserve ERROR for a genuine DB write failure.
+    const backendUnavailable = /ECONNREFUSED|fetch failed|aborted|timeout|ENOTFOUND|network/i.test(msg);
+    logger[backendUnavailable ? 'warn' : 'error']('Failed to store embedding', {
+      error: msg,
       sourceType,
       sourceId,
     });
