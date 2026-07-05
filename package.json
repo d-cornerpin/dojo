@@ -1,6 +1,6 @@
 {
   "name": "dojo-platform",
-  "version": "3.1.10-preflight.22",
+  "version": "3.1.10-preflight.23",
   "private": true,
   "type": "module",
   "workspaces": [
