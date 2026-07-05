@@ -104,7 +104,6 @@ import {
 } from './classifiers/hoarding.js';
 // ackInjector intentionally NOT imported, engine ack disabled per invariant
 // review (see "Engine-injected ack, DISABLED" comment below).
-import { trackerEnforcer } from './classifiers/tracker.js';
 import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD } from '../../memory/compaction.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
@@ -233,6 +232,29 @@ const BOOKKEEPING_NUDGE_TOOLS = new Set([
 
 const BOOKKEEPING_NUDGE = `\n\n[Engine note: this was internal bookkeeping. If the user just asked you to do exactly this (e.g. "save my key", "remember that", "delete X"), reply with ONE short line confirming it is done (e.g. "Saved.", "Got it, stored your OpenWeather key.") so they get acknowledgment. If instead this was incidental to other work, something you did on your own initiative, or the user already has what they needed, end the turn with literal \`[no-reply]\` rather than a generic "Done." / "All set." / "Got it." closeout.]`;
 
+// v3.1.11 (FN-9): tracker MUTATION tools, creating, advancing, or closing
+// tracker state. A call to any of these disarms the multi-step enforcement
+// gate (state.trackerWriteThisTurn), because it means the agent is actually
+// tending its work. READS (tracker_get_status / tracker_list_active) are
+// deliberately absent so a bare status peek can't disarm enforcement. The
+// PM / validation-lane governance tools (tracker_validate, tracker_retask,
+// tracker_override, tracker_request_override, tracker_request_user_verdict,
+// tracker_apply_user_verdict, tracker_apply_user_validation,
+// tracker_pause_schedule, tracker_resume_schedule) are also absent: those are
+// override/governance actions, not a worker opening or advancing its own task.
+const TRACKER_MUTATION_TOOLS = new Set([
+  'tracker_create_project',
+  'tracker_create_task',
+  'tracker_update_status',
+  'tracker_add_notes',
+  'tracker_edit_task',
+  'tracker_complete_step',
+  'tracker_edit_project',
+  'tracker_close_project',
+  'tracker_reassign_task',
+  'tracker_resolve_missed_runs',
+]);
+
 function appendBookkeepingNudgeIfRelevant<T extends { name?: string; content?: string; isError?: boolean }>(toolResult: T): T {
   if (toolResult.isError) return toolResult;
   if (!toolResult.name || !BOOKKEEPING_NUDGE_TOOLS.has(toolResult.name)) return toolResult;
@@ -242,6 +264,14 @@ function appendBookkeepingNudgeIfRelevant<T extends { name?: string; content?: s
 }
 
 const STATUS_HEARTBEAT_INTERVAL_MS = 30_000;
+// v3.1.11 (FN-9): "recently tended" window shared by the turn-start multistep
+// guard and the runtime tracker floor. An assigned in_progress/on_deck task
+// suppresses auto-scaffolding ONLY when it was touched within this window; a
+// task that has gone quiet for longer is treated as stale and no longer
+// disarms enforcement, so genuinely new untracked multi-step work can't ride
+// in under an abandoned open task forever. Any tracker mutation bumps
+// updated_at, so active cross-turn work naturally stays inside the window.
+const STALE_TASK_WINDOW_MINUTES = 30;
 const MAX_TOOL_LOOPS = 75;                     // matches v1
 const TURN_TIME_BUDGET_MS = 15 * 60 * 1000;    // matches v1, 15 min/turn
 const MAX_TURN_AUTO_CONTINUATIONS = 3;         // matches v1
@@ -950,7 +980,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
     lastUserMessageContent,
     inboundChannel,
     inboundContext,
-    shouldNudgeTracker: false, // Phase 2.1 may compute this; baseline disabled
     pendingTechniqueAck: initialPendingTechniqueAck,
   });
 
@@ -1914,15 +1943,25 @@ export async function runV2Turn(agentId: string): Promise<void> {
           const { detectMultistep, getMultistepConfig } = await import('./classifiers/multistep.js');
           const cfg = getMultistepConfig();
           if (cfg.enabled) {
-            // Skip if there's already an active tracker task assigned to
-            // this agent, assume it's still being worked. This avoids
-            // creating a sibling project on a follow-up message.
+            // Skip if there's a RECENTLY-TENDED active tracker task assigned
+            // to this agent, assume it's still being worked. This avoids
+            // creating a sibling project on a quick follow-up message.
+            //
+            // v3.1.11 (FN-9): narrowed from "any open task" to "an open task
+            // touched within STALE_TASK_WINDOW_MINUTES". The guard exists to
+            // dodge sibling projects on quick follow-ups, and a quick follow-up
+            // lands minutes after the agent last touched the task it is
+            // continuing, so the window keeps that protection intact. But a
+            // STALE open task (abandoned long ago) must NOT suppress, or new
+            // untracked multi-step work rides in under the old task forever
+            // (one of the two disarm holes this fix closes).
             const db = getDb();
             const existingTask = db.prepare(`
               SELECT id FROM tasks
               WHERE assigned_to = ? AND status IN ('on_deck', 'in_progress', 'paused')
+                AND datetime(updated_at) >= datetime('now', ?)
               LIMIT 1
-            `).get(agentId) as { id: string } | undefined;
+            `).get(agentId, `-${STALE_TASK_WINDOW_MINUTES} minutes`) as { id: string } | undefined;
 
             // F12 (harness finding, wave 2): agent CREATION stores the new agent's
             // system prompt as both a role='system' row AND a role='user' bootstrap
@@ -4186,22 +4225,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // The `ackInjector` classifier (agent/v2/classifiers/ack.ts) and its
       // tests are kept for potential future use as a broadcast-only path.
 
-      // ── Tracker enforcer (engine-side insertion, Q22) ──
-      // Phase 2 baseline: classifier runs but engine-side task creation is
-      // deferred to Phase 4 (where it integrates cleanly with the assembler's
-      // session-start scaffolding). For now we just log the decision.
-      const trackerDecision = trackerEnforcer({
-        plannedTools: result.toolCalls,
-        agentHasTrackerTools: state.shouldNudgeTracker,
-        trackerToolCalledThisTurn: state.trackerToolCalledThisTurn,
-        agentHasInProgressTask: false, // Phase 4: query tracker
-      });
-      if (trackerDecision.decision === 'create') {
-        logger.debug('v2: trackerEnforcer wants to create task (deferred to Phase 4)', {
-          agentId,
-          reason: trackerDecision.reason,
-        }, agentId);
-      }
+      // Engine-side tracker enforcement lives in the runtime nudge + engine
+      // floor below (search "Runtime tracker nudge"); the v2.0.0-era classifier
+      // (agent/v2/classifiers/tracker.ts) was never wired to side effects and
+      // its intent is served there, so it was removed in v3.1.11 (FN-9).
 
       // ── Phase: execute tools (partitioned) ──
       state = advance(state, { phase: 'execute' });
@@ -4992,10 +5019,25 @@ export async function runV2Turn(agentId: string): Promise<void> {
       const trackerStatusInThisIter = result.toolCalls.some(
         (tc) => tc.name === 'tracker_update_status' || tc.name === 'tracker_complete_step' || tc.name === 'tracker_close_project',
       );
+      // v3.1.11 (FN-9): a call to any tracker MUTATION tool is the agent
+      // tending its work, and disarms the multi-step enforcement gate below.
+      // READS (tracker_get_status / tracker_list_active) are DELIBERATELY
+      // excluded: a bare status peek must not disarm enforcement, or an agent
+      // could dodge the floor forever by polling the tracker without ever
+      // opening a task. The remaining tracker_* tools are PM / validation-lane
+      // governance tools (tracker_validate, tracker_retask, tracker_override,
+      // tracker_request_override, tracker_request_user_verdict,
+      // tracker_apply_user_verdict, tracker_apply_user_validation,
+      // tracker_pause_schedule, tracker_resume_schedule) and are intentionally
+      // NOT counted as a worker tending its OWN multi-step work: a non-PM
+      // worker opening/advancing its task reaches for the create/advance tools
+      // in this set, not the override lane.
+      const trackerWriteInThisIter = result.toolCalls.some((tc) => TRACKER_MUTATION_TOOLS.has(tc.name));
       if (nonTrackerInThisIter > 0 || trackerInThisIter > 0) {
         state = advance(state, {
           nonTrackerToolCalls: state.nonTrackerToolCalls + nonTrackerInThisIter,
           trackerToolCalledThisTurn: state.trackerToolCalledThisTurn || trackerInThisIter > 0,
+          trackerWriteThisTurn: state.trackerWriteThisTurn || trackerWriteInThisIter,
           trackerStatusUpdatedThisTurn: state.trackerStatusUpdatedThisTurn || trackerStatusInThisIter,
         });
       }
@@ -5010,32 +5052,51 @@ export async function runV2Turn(agentId: string): Promise<void> {
       const TRACKER_NUDGE_THRESHOLD = 3;
       const TRACKER_AUTO_SCAFFOLD_AT = 6;
       if (
-        !state.trackerToolCalledThisTurn &&
+        !state.trackerWriteThisTurn &&
         ((!state.nudgedForTrackerThisTurn && state.nonTrackerToolCalls > TRACKER_NUDGE_THRESHOLD) ||
           state.nonTrackerToolCalls >= TRACKER_AUTO_SCAFFOLD_AT)
       ) {
-        // Secondary check: agent may have an active task from a previous
-        // turn that they're just continuing. Don't nudge them either.
+        // Secondary check: the agent may have a RECENTLY-TENDED task from a
+        // previous turn that they're just continuing. Don't nudge them either.
         // Widened to include on_deck (queued), the user said the v2.5.40
         // test fired a nudge right after the primary agent cleanly completed a 3-task
         // project, because by the moment the check ran every task was
-        // already `complete`. The fix is the trackerToolCalledThisTurn
-        // gate above, but keep this as belt+suspenders for cross-turn
+        // already `complete`. The gate above (trackerWriteThisTurn) is the
+        // primary defense; keep this as belt+suspenders for cross-turn
         // continuations and widen status so a queued task counts.
-        let hasActiveTask = false;
+        //
+        // v3.1.11 (FN-9): "recently tended", not "has any active task". A STALE
+        // open task (assigned but untouched for longer than
+        // STALE_TASK_WINDOW_MINUTES) no longer suppresses the tiers. That was
+        // the second disarm hole: an agent sitting on a long-dead in_progress
+        // task could do unlimited untracked multi-step work and never be
+        // nudged. Any tracker mutation bumps updated_at, so genuinely-active
+        // work stays inside the window. A stale open task (if any) is captured
+        // so the nudge can name it and offer "update it, or open a new one".
+        let hasRecentlyTendedTask = false;
+        let staleOpenTask: { id: string; title: string } | null = null;
         try {
           const { listTasks } = await import('../../tracker/schema.js');
-          const candidates = listTasks({ assignedTo: agentId });
-          hasActiveTask = candidates.some(
+          const { normalizeDbTimestamp } = await import('../../scheduler/engine.js');
+          const cutoffMs = Date.now() - STALE_TASK_WINDOW_MINUTES * 60_000;
+          const candidates = listTasks({ assignedTo: agentId }).filter(
             (t) => t.status === 'in_progress' || t.status === 'on_deck',
           );
+          for (const t of candidates) {
+            const tendedMs = new Date(normalizeDbTimestamp(t.updatedAt)).getTime();
+            if (tendedMs >= cutoffMs) {
+              hasRecentlyTendedTask = true;
+            } else if (!staleOpenTask) {
+              staleOpenTask = { id: t.id, title: t.title };
+            }
+          }
         } catch (err) {
-          logger.warn('Tracker nudge: listTasks failed (treating as no active task)', {
+          logger.warn('Tracker nudge: listTasks failed (treating as no recently-tended task)', {
             agentId, err: err instanceof Error ? err.message : String(err),
           }, agentId);
         }
         if (
-          !hasActiveTask &&
+          !hasRecentlyTendedTask &&
           state.nonTrackerToolCalls >= TRACKER_AUTO_SCAFFOLD_AT &&
           state.lastUserMessageContent &&
           !isPMAgent(agentId)
@@ -5080,7 +5141,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 createdAt: new Date().toISOString(),
               },
             });
-            state = advance(state, { trackerToolCalledThisTurn: true, nudgedForTrackerThisTurn: true });
+            // The floor just performed a tracker mutation (createProject), so
+            // set trackerWriteThisTurn to fully disarm the gate above and stop
+            // it re-entering on later iterations. trackerToolCalledThisTurn is
+            // kept for parity with the agent-engaged-tracker signal.
+            state = advance(state, { trackerToolCalledThisTurn: true, trackerWriteThisTurn: true, nudgedForTrackerThisTurn: true });
             logger.info('v2: tracker auto-scaffold fired (engine floor)', {
               agentId, nonTrackerToolCalls: state.nonTrackerToolCalls, projectId: created.projectId,
             }, agentId);
@@ -5089,14 +5154,27 @@ export async function runV2Turn(agentId: string): Promise<void> {
               agentId, err: err instanceof Error ? err.message : String(err),
             }, agentId);
           }
-        } else if (!hasActiveTask && !state.nudgedForTrackerThisTurn) {
-          const nudgeText = (
-            `[System: you've made ${state.nonTrackerToolCalls} non-tracker tool calls this turn without an active tracker task assigned to you. ` +
-            `This is the failure shape we want to catch, multi-step work without a tracker entry drifts and stalls (the PM agent can't intervene because there's nothing to monitor) and your context is filling up which means compaction is coming and you'll lose source detail you've already read. ` +
-            `STOP what you're doing right now and call tracker_create_project(title="<short name>", level=2, tasks=[…one task per discrete batch…]) describing the steps for what you've been doing and what's left. ` +
-            `Then update each task as you complete it via tracker_update_status, and use scratchpad_set to keep a running outline that survives compaction. ` +
-            `Resume the work after the project is opened.]`
-          );
+        } else if (!hasRecentlyTendedTask && !state.nudgedForTrackerThisTurn) {
+          // v3.1.11 (FN-9): two wordings. When the agent has a STALE open task
+          // (assigned but not recently tended), name it and give a fork: update
+          // that task if this is the same work, otherwise open a project for
+          // the new work. When there's no open task at all, keep the original
+          // create-a-project wording.
+          const nudgeText = staleOpenTask
+            ? (
+              `[System: you've made ${state.nonTrackerToolCalls} non-tracker tool calls this turn, but the only open tracker task assigned to you ("${staleOpenTask.title}", task_id ${staleOpenTask.id.slice(0, 8)}) hasn't been updated in a while. ` +
+              `Multi-step work that isn't reflected in a live tracker task drifts and stalls (the PM agent can't intervene because there's nothing current to monitor) and your context is filling up which means compaction is coming and you'll lose source detail you've already read. ` +
+              `Decide now: if what you've been doing IS that task, bring it current via tracker_update_status / tracker_add_notes; otherwise this is NEW work, so open a project for it with tracker_create_project(title="<short name>", level=2, tasks=[…one task per discrete batch…]). ` +
+              `Then keep each task current via tracker_update_status, and use scratchpad_set to keep a running outline that survives compaction. ` +
+              `Resume the work once the tracker reflects it.]`
+            )
+            : (
+              `[System: you've made ${state.nonTrackerToolCalls} non-tracker tool calls this turn without an active tracker task assigned to you. ` +
+              `This is the failure shape we want to catch, multi-step work without a tracker entry drifts and stalls (the PM agent can't intervene because there's nothing to monitor) and your context is filling up which means compaction is coming and you'll lose source detail you've already read. ` +
+              `STOP what you're doing right now and call tracker_create_project(title="<short name>", level=2, tasks=[…one task per discrete batch…]) describing the steps for what you've been doing and what's left. ` +
+              `Then update each task as you complete it via tracker_update_status, and use scratchpad_set to keep a running outline that survives compaction. ` +
+              `Resume the work after the project is opened.]`
+            );
           const nudgeId = uuidv4();
           db.prepare(`
             INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)

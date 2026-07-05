@@ -214,6 +214,16 @@ export interface AgentTurnState {
    */
   repliedToCounterpartyThisTurn: { imessage?: boolean; teams?: boolean; email?: boolean; sms?: boolean; phone?: boolean };
   trackerToolCalledThisTurn: boolean;
+  /**
+   * v3.1.11 (FN-9), set when the agent (or the engine floor) executes any
+   * tracker MUTATION tool this turn (create/advance/close/notes/edit/reassign,
+   * see TRACKER_MUTATION_TOOLS in loop.ts). Distinct from
+   * trackerToolCalledThisTurn, which fires on ANY tracker_* call INCLUDING
+   * reads (tracker_get_status / tracker_list_active). The multi-step
+   * enforcement gate keys on THIS field: a bare status peek must not disarm
+   * enforcement, only actually tending the work (a mutation) does.
+   */
+  trackerWriteThisTurn: boolean;
   nonTrackerToolCalls: number;
   /**
    * v2.5.31, message id of the most recent inbound ASSIGN/QUESTION/BLOCK
@@ -383,9 +393,6 @@ export interface AgentTurnState {
     fromTurnNumber: number;
   } | null;
 
-  // ── Pre-flight enforcement decisions ──
-  readonly shouldNudgeTracker: boolean;
-
   // ── Streaming state ──
   currentMessageId: string | null;        // active message ID for chat:chunk events
 }
@@ -405,7 +412,6 @@ export interface InitStateParams {
   // v2.7.23, structural inbound channel binding; see AgentTurnState fields
   inboundChannel: 'imessage' | 'teams' | 'email' | 'sms' | 'phone' | 'voice' | 'dashboard' | null;
   inboundContext: ChannelInboundContext | null;
-  shouldNudgeTracker: boolean;
   /**
    * D6: always null at turn start (cross-turn hydration from agents.config
    * removed with the hard gate); in-memory for the current turn only.
@@ -472,6 +478,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     explicitSendThisTurn: {},
     repliedToCounterpartyThisTurn: {},
     trackerToolCalledThisTurn: false,
+    trackerWriteThisTurn: false,
     nonTrackerToolCalls: 0,
     nudgedForMissedReplyOnAssignId: null,
     nudgedForTrackerThisTurn: false,
@@ -492,8 +499,6 @@ export function initState(params: InitStateParams): AgentTurnState {
     nudgedForPostCompactRecall: false,
     taskClosedWithTextThisTurn: false,
     pendingTechniqueAck: params.pendingTechniqueAck,
-
-    shouldNudgeTracker: params.shouldNudgeTracker,
 
     currentMessageId: null,
   };

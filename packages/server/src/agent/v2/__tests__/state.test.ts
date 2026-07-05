@@ -21,7 +21,6 @@ function freshState(): AgentTurnState {
     triggeredByA2AReplyIntent: null,
     imFlagSetAtRunStart: false,
     lastUserMessageContent: null,
-    shouldNudgeTracker: false,
   });
 }
 
@@ -44,7 +43,6 @@ describe('initState', () => {
       triggeredByA2AReplyIntent: null,
       imFlagSetAtRunStart: false,
       lastUserMessageContent: null,
-      shouldNudgeTracker: false,
     });
     expect(s.modelId).toBe('__auto__');
   });
