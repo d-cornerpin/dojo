@@ -45,6 +45,7 @@ import { assembleContext } from '../../memory/assembler.js';
 import { callModel, getContextWindow } from '../model.js';
 import { writeContextReceipt } from './receipt.js';
 import { executeTool, agentCanSelfCompleteById } from '../tools.js';
+import { hasHandedCredentialValues, redactHandedCredentials } from '../../credentials/tools.js';
 // recordError intentionally NOT imported, handleMessage's catch path calls
 // it. Calling here would double-count errors and trip the loop-detector
 // pause prematurely.
@@ -1165,6 +1166,69 @@ export async function runV2Turn(agentId: string): Promise<void> {
     if (chosenConvKey) continuationContext.set(agentId, { convKey: chosenConvKey, counterparty });
   };
 
+  // ── Engine-enforced human acknowledgment (NEXT-WAVE item 1) ──
+  // When the multistep classifier deems a user request tracker-project-worthy,
+  // the person who asked MUST hear "on it" when the work starts and "done" when
+  // it finishes, EVERY time, regardless of what the floor model chooses to emit
+  // (architecture rule 1: the engine enforces correctness, it never relies on
+  // the model obeying a prompt). The nudge-only path (BOOKKEEPING_NUDGE) failed
+  // in production: the floor model ignored it and ended the turn on a
+  // send_to_agent A2A, so the owner heard nothing on a real backup+reset job.
+  //
+  // This helper delivers ONE plain, user-voiced ack immediately to the person's
+  // ACTUAL channel: the dashboard broadcast is universal, and for a live
+  // iMessage / phone / SMS counterparty we also push it straight to that channel
+  // so an away user hears it now, not only when they open the dashboard. It is
+  // an assistant-role message (a real thing the agent said), NOT engine
+  // suppression of the model's own reply. Fires only for user counterparties;
+  // A2A / engine turns never reach the classifier that calls it.
+  let engineStartAckDeliveredThisTurn = false;
+  const deliverEngineUserAck = async (text: string): Promise<void> => {
+    const ackId = uuidv4();
+    try {
+      db.prepare(
+        `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at) VALUES (?, ?, 'assistant', ?, ?, datetime('now'))`,
+      ).run(ackId, agentId, text, turnNumber);
+      broadcast({
+        type: 'chat:message',
+        agentId,
+        message: {
+          id: ackId, agentId, role: 'assistant' as const,
+          content: text,
+          tokenCount: null, modelId: null, cost: null, latencyMs: null,
+          createdAt: new Date().toISOString(),
+        },
+      });
+    } catch (err) {
+      logger.warn('v2: engine user-ack persist/broadcast failed (non-fatal)', {
+        agentId, error: err instanceof Error ? err.message : String(err),
+      }, agentId);
+    }
+    // Immediate delivery to a non-dashboard counterparty's own channel. The
+    // dashboard already has it via the broadcast above; this reaches an away
+    // user on the channel they wrote in on. Best-effort: a channel failure still
+    // leaves the ack in chat + the store.
+    try {
+      if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
+        const { sendResponseViaIMessage } = await import('../../services/imessage-bridge.js');
+        sendResponseViaIMessage(text, agentId, counterparty.senderId, false);
+      } else if (counterparty.kind === 'user' && counterparty.channel === 'phone' && state.inboundContext?.phoneCallSid) {
+        const { getCallSession } = await import('../../twilio/call-session.js');
+        const session = getCallSession(state.inboundContext.phoneCallSid);
+        if (session && !session.isEnded()) await session.queueAgentSay(text);
+      } else if (counterparty.kind === 'user' && counterparty.channel === 'sms' && state.inboundContext?.smsFromNumber) {
+        const { sendSms } = await import('../../twilio/client.js');
+        const { getDefaultFromNumber } = await import('../../twilio/auth.js');
+        const fromNumber = state.inboundContext?.smsToNumber ?? getDefaultFromNumber();
+        if (fromNumber) await sendSms(state.inboundContext.smsFromNumber, text, fromNumber);
+      }
+    } catch (err) {
+      logger.warn('v2: engine user-ack channel delivery failed (non-fatal)', {
+        agentId, error: err instanceof Error ? err.message : String(err),
+      }, agentId);
+    }
+  };
+
   // ── v2.5.46: pre-turn close-out gate detection ──
   // Look up in_progress tasks the agent appears to have abandoned. Pre-
   // v2.7.17 this used `updated_at < turnStartedAt` (any task not touched
@@ -2269,6 +2333,24 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   if (notif.ok && notif.content) {
                     mctx.trackerNotif = notif.content;
                     injectRegistryMessage('msg.tracker-notif', messages, mctx);
+                  }
+
+                  // START ACK (NEXT-WAVE item 1): the engine just decided this
+                  // user request is project-worthy, so the person who asked hears
+                  // "on it" right now, before the model does anything. Guaranteed
+                  // here (not left to the model) so it survives the exact
+                  // production failure where the floor model ended the turn on an
+                  // A2A send and the owner heard nothing. One per turn.
+                  if (counterparty.kind === 'user' && !engineStartAckDeliveredThisTurn) {
+                    engineStartAckDeliveredThisTurn = true;
+                    // Do NOT splice the project title into the sentence: it is derived
+                    // from the raw, truncated user request and reads as broken grammar
+                    // ("...starting on Please do all three of these: write a short 4-line
+                    // now..."). A title-free ack is always clean; the person just sent
+                    // the request, so they know what it refers to.
+                    await deliverEngineUserAck(
+                      `On it. I've started, and I'll let you know when it's done.`,
+                    );
                   }
 
                   // ── PM rename handoff (async) ──
@@ -3573,7 +3655,31 @@ export async function runV2Turn(agentId: string): Promise<void> {
             input: tc.arguments,
           });
         }
-        const assistantContentJson = JSON.stringify(assistantContent);
+        // NEXT-WAVE item 5 (rule 6): scrub credential values this agent pulled via
+        // credential_get out of the PERSISTED + BROADCAST copy of its tool calls
+        // (the classic leak is `sshpass -p '<pw>'` landing inline in the exec
+        // tool_use). result.toolCalls is untouched, so the live command still runs
+        // with the real value; only the stored/shown copy is redacted. No-op (same
+        // reference) when the agent has pulled no credentials this process.
+        let assistantContentForStore = assistantContent;
+        if (hasHandedCredentialValues(agentId)) {
+          const scrubValue = (v: unknown): unknown => {
+            if (typeof v === 'string') return redactHandedCredentials(agentId, v);
+            if (Array.isArray(v)) return v.map(scrubValue);
+            if (v && typeof v === 'object') {
+              const o: Record<string, unknown> = {};
+              for (const [k, val] of Object.entries(v as Record<string, unknown>)) o[k] = scrubValue(val);
+              return o;
+            }
+            return v;
+          };
+          assistantContentForStore = assistantContent.map((block) => {
+            if (block.type === 'tool_use') return { ...block, input: scrubValue((block as { input: unknown }).input) };
+            if (block.type === 'text') return { ...block, text: redactHandedCredentials(agentId, (block as { text: string }).text) };
+            return block;
+          });
+        }
+        const assistantContentJson = JSON.stringify(assistantContentForStore);
         if (interAgentTurn) {
           // D-A step 8: the agent's OWN inter-agent-turn output goes to the physical
           // inter-agent store, never the `messages` chat table. Persisting it here
@@ -3616,7 +3722,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             id: messageId,
             agentId,
             role: 'assistant' as Message['role'],
-            content: JSON.stringify(assistantContent),
+            content: JSON.stringify(assistantContentForStore),
             tokenCount: null,
             modelId: effectiveModelIdForPersist,
             cost: null,
@@ -3958,13 +4064,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }
         }
 
-        // 2026-06-02 hardcap: if the going-idle-with-in_progress nudge
-        // already fired this turn and the model STILL produced a user-
-        // facing "Done" / "All set" message without calling
-        // tracker_update_status, AUTO-PAUSE the danglers AND suppress
-        // the misleading assistant text. The user must not see "Done"
-        // while the tracker still shows in_progress; that's the exact
-        // failure shape the owner reported on the iMessage profile run.
+        // Hardcap: if the going-idle-with-in_progress nudge already fired this
+        // turn and the model STILL produced a user-facing closeout ("Done" /
+        // "All set") without calling tracker_update_status, sync the tracker to
+        // what the user was shown. persistedContent is non-empty here, so the
+        // user HAS been shown a reply this turn, that reply is the delivery.
+        // C2 invariant: the artifact the user saw is the source of truth and is
+        // NEVER regenerated/overwritten by reconciliation. So the engine CLOSES
+        // the dangling one-shot task(s) complete against that delivered reply
+        // (engineCloseDeliveredTask), instead of the pre-fix pause + escalate
+        // whose PM retask verb re-drove the assignee to regenerate the
+        // deliverable and clobber the file the user was already shown (a
+        // divergent second version + a second "done"). The reply stays visible.
         if (
           state.nudgedForGoingIdleWithInProgressThisTurn &&
           !state.toolResults.some(
@@ -3982,86 +4093,53 @@ export async function runV2Turn(agentId: string): Promise<void> {
             LIMIT 10
           `).all(agentId) as Array<{ id: string; title: string }>;
           if (danglerRows.length > 0) {
-            // 2026-06-25: KEEP the agent's closeout visible to the user.
-            // Deleting it ate legitimate confirmations, the weaker model
-            // usually DID the work (created the project, wrote the file, set
-            // the reminders) and simply wrote its wrap-up without the separate,
-            // formal tracker_update_status call. Suppressing that helpful reply
-            // to protect an internal tracker-consistency invariant the user
-            // never actually sees (they read the chat, not the raw task table)
-            // was the wrong trade. We STILL reconcile the tracker below (pause
-            // the dangling one-shot task / reset the recurring schedule) and
-            // tell the agent to close tasks formally next time, but the user
-            // keeps the message the agent wrote them.
-
-            const note = `[${new Date().toISOString()}] Auto-paused by engine: agent "${agentId}" produced a closeout without calling tracker_update_status. The reply was left visible to the user; this task was paused so the tracker isn't left silently in_progress. User: reassign or resolve manually from the dashboard.`;
-            // v2.9.22, engine-initiated pause is authoritative; PM does
-            // not need to re-validate it via UNVALIDATED_PAUSE. The
-            // dedicated escalateCloseoutMissToPM A2A below already gives
-            // PM the verb menu (retask / override / validate). Pre-fix
-            // (pause_validated=0), PM would re-flag the auto-pause every
-            // tick, reject as "empty reason" (because PM read pause
-            // reasons from observation/legacy_note entries, not auto_sweep),
-            // revert to in_progress, and the cycle started over until
-            // someone killed the agent (production incident 2026-06-07).
-            const pauseStmt = db.prepare(`
-              UPDATE tasks
-              SET status = 'paused', is_paused = 1, status_before_pause = 'in_progress',
-                  pause_validated = 1,
-                  updated_at = datetime('now')
-              WHERE id = ? AND status = 'in_progress'
-                AND repeat_interval IS NULL
-            `);
-            // RECURRING TASKS CARVE-OUT.
-            // Pre-fix this UPDATE matched every in_progress task without
-            // checking repeat_interval, so a single missed close-out on
-            // a daily recurring task (Tomorrow Brief, the user's
-            // example) silently paused the WHOLE recurring schedule, 
-            // is_paused=1 makes the scheduler skip it forever. The
-            // right behavior for recurring tasks is: fail THIS run,
-            // recompute next_run_at, let the schedule fire normally
-            // tomorrow. forceResetStuckRecurringTask does exactly that.
+            // KEEP the agent's closeout visible to the user (never suppressed):
+            // the weaker model usually DID the work (wrote the file, set the
+            // reminders) and just wrote its wrap-up without the separate formal
+            // tracker_update_status call. The user reads the chat, not the task
+            // table, so the reply they already saw IS the delivery.
+            //
+            // C2 fix: because the user was already shown the deliverable this
+            // turn, the engine CLOSES the dangling one-shot task(s) complete
+            // against that delivered reply (engineCloseDeliveredTask, which sets
+            // complete_validated=1 so the close is engine-authoritative and the
+            // PM has nothing to chase). This replaces the pre-fix pause +
+            // escalateCloseoutMissToPM, whose retask verb re-drove the assignee
+            // to regenerate the deliverable and overwrite the file the user was
+            // already shown (a divergent version B + a second "done"). The
+            // invariant: a task whose deliverable was already shown is never
+            // regenerated by reconciliation.
+            //
+            // RECURRING TASKS CARVE-OUT (unchanged): a recurring schedule is
+            // never terminally completed here, a single missed close-out fails
+            // THIS run via forceResetStuckRecurringTask (recompute next_run_at,
+            // fire normally next time), never pausing/closing the whole schedule.
             const { forceResetStuckRecurringTask } = await import('../../scheduler/runner.js');
+            const { engineCloseDeliveredTask } = await import('../../tracker/tools.js');
             const recurringResetIds: string[] = [];
-            let pausedCount = 0;
-            const pausedIds: string[] = [];
+            const closedIds: string[] = [];
             for (const r of danglerRows) {
               const isRecurring = db.prepare(`SELECT repeat_interval FROM tasks WHERE id = ?`).get(r.id) as { repeat_interval: number | null } | undefined;
               if (isRecurring?.repeat_interval) {
                 try { forceResetStuckRecurringTask(r.id); recurringResetIds.push(r.id); } catch { /* best effort */ }
                 continue;
               }
-              const res = pauseStmt.run(r.id);
-              if (res.changes > 0) {
-                pausedCount++;
-                pausedIds.push(r.id);
-                // Phase B.0: audit the auto-pause as a transition entry.
-                try {
-                  const { writeTaskLog } = await import('../../tracker/task-log.js');
-                  writeTaskLog({
-                    taskId: r.id,
-                    fromEntity: 'engine',
-                    entryKind: 'auto_sweep',
-                    fromStatus: 'in_progress',
-                    toStatus: 'paused',
-                    actionTaken: 'idle-with-in_progress hardcap auto-pause',
-                    reason: 'agent produced closeout text without calling tracker_update_status after the nudge fired',
-                    note,
-                  });
-                } catch { /* best effort */ }
-              }
+              try {
+                const closed = await engineCloseDeliveredTask(agentId, r.id, persistedContent ?? '');
+                if (closed) closedIds.push(r.id);
+              } catch { /* best effort */ }
             }
 
             const parts: string[] = [];
-            if (pausedCount > 0) {
-              parts.push(`${pausedCount} one-shot dangling task${pausedCount === 1 ? '' : 's'} auto-paused (ids: ${pausedIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ')}${pausedIds.length > 5 ? '...' : ''})`);
+            if (closedIds.length > 0) {
+              parts.push(`${closedIds.length} task${closedIds.length === 1 ? '' : 's'} closed complete against the reply you just sent the user (ids: ${closedIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ')}${closedIds.length > 5 ? '...' : ''})`);
             }
             if (recurringResetIds.length > 0) {
               parts.push(`${recurringResetIds.length} recurring task${recurringResetIds.length === 1 ? '' : 's'} reset to fire on schedule (ids: ${recurringResetIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ')}${recurringResetIds.length > 5 ? '...' : ''}), your missed close-out failed THIS run, not the whole schedule`);
             }
             const escMsg = (
-              `[System: you produced user-facing text without first calling tracker_update_status. Your reply WAS shown to the user (it is no longer suppressed), but the tracker is now out of sync with what you told them. ${parts.join('; ')}. ` +
-              `Next time you finish a task, call tracker_update_status(status="complete", result="...", evidence=[...]) BEFORE your closeout so the tracker matches your reply.${pausedCount > 0 ? ' The paused one-shot task(s) are queued for PM review.' : ''}]`
+              `[System: you sent the user a closeout without first calling tracker_update_status. Your reply stands (the user saw it), and the engine has synced the tracker to match it: ${parts.join('; ')}. ` +
+              `Nothing you delivered was re-run or overwritten. Next time, call tracker_update_status(status="complete", result="...", evidence=[...]) BEFORE your closeout so the tracker matches your reply without the engine stepping in.]`
             );
             const escId = uuidv4();
             try {
@@ -4080,35 +4158,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 },
               });
             } catch { /* best effort */ }
-            try {
-              const { getTask } = await import('../../tracker/schema.js');
-              for (const id of pausedIds) {
-                const t = getTask(id);
-                if (t) broadcast({ type: 'tracker:task_updated', data: t });
-              }
-            } catch { /* best effort */ }
-            logger.warn('v2 idle-with-in_progress hardcap fired, auto-paused; reply KEPT (persisted + shown), task paused + escalated to PM', {
-              agentId, pausedCount, pausedIds, recurringResetCount: recurringResetIds.length, recurringResetIds,
+            logger.info('v2 idle-with-in_progress hardcap: engine-closed the delivered task(s) against the user-visible reply, no PM escalation, no redo', {
+              agentId, closedCount: closedIds.length, closedIds, recurringResetCount: recurringResetIds.length, recurringResetIds,
             }, agentId);
-            // v2.9.13: actively escalate to PM with full context (the
-            // suppressed text, the goals, the verb menu) so PM can
-            // retask the agent instead of rubber-stamping the pause
-            // via the next periodic situation report.
-            if (pausedIds.length > 0) {
-              try {
-                const { escalateCloseoutMissToPM } = await import('../../tracker/pm-agent.js');
-                await escalateCloseoutMissToPM({
-                  agentId,
-                  pausedTaskIds: pausedIds,
-                  suppressedText: persistedContent ?? '',
-                  source: 'idle-hardcap',
-                });
-              } catch (escErr) {
-                logger.warn('v2: idle hardcap closeout-miss escalation failed (non-fatal)', {
-                  agentId, error: escErr instanceof Error ? escErr.message : String(escErr),
-                }, agentId);
-              }
-            }
             setAgentStatus(agentId, 'idle');
             break;
           }
@@ -5250,7 +5302,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
             collapsedParts.push(`[Result${tr.isError ? ' ERROR' : ''}: ${tr.content}]`);
           }
         }
-        const collapsedText = collapsedParts.join('\n');
+        const collapsedTextRaw = collapsedParts.join('\n');
+        // NEXT-WAVE item 5 (rule 6): this is the DeepSeek/floor-model path (the very
+        // one that constructs `sshpass -p '<pw>'`), and collapsedText inlines the
+        // tool ARGS + RESULTS as plain text. Scrub any credential value the agent
+        // pulled via credential_get out of the persisted + broadcast copy. The live
+        // command already ran with the real value; only the stored/shown copy is
+        // redacted. No-op when the agent has pulled no credentials this process.
+        const collapsedText = hasHandedCredentialValues(agentId)
+          ? redactHandedCredentials(agentId, collapsedTextRaw)
+          : collapsedTextRaw;
         // Same messageId as the assistant first-persist, INSERT OR IGNORE
         // keeps the original text-only row intact.
         if (interAgentTurn) {
@@ -5406,6 +5467,24 @@ export async function runV2Turn(agentId: string): Promise<void> {
           trackerStatusUpdatedThisTurn: state.trackerStatusUpdatedThisTurn || trackerStatusInThisIter,
         });
       }
+      // START ACK (NEXT-WAVE item 1, agent-created path): the owner rule is that
+      // the user hears "on it" whenever their request is judged project-worthy.
+      // That judgment can come from the engine classifier (the two auto-scaffold
+      // sites below) OR from the AGENT proactively opening its own project. A
+      // diligent agent that self-organizes must not DEPRIVE the user of the ack,
+      // so fire it here too, deduped by the same one-per-turn flag and gated to
+      // user turns. If the engine auto-scaffold already fired this turn the flag
+      // is set, so there is never a double ack.
+      if (
+        counterparty.kind === 'user' &&
+        !engineStartAckDeliveredThisTurn &&
+        result.toolCalls.some((tc) => tc.name === 'tracker_create_project')
+      ) {
+        engineStartAckDeliveredThisTurn = true;
+        await deliverEngineUserAck(
+          `On it. I've started, and I'll let you know when it's done.`,
+        );
+      }
       // F2 (post-D3): the deleted anti-hoarding gate was ALSO the thing that forced
       // task scaffolding at the 6th load; deleting it removed all engine pressure to
       // scaffold multi-step work (observed: a 7-call research job created no tracker
@@ -5428,12 +5507,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
       ) {
         // Secondary check: the agent may have a RECENTLY-TENDED task from a
         // previous turn that they're just continuing. Don't nudge them either.
-        // Widened to include on_deck (queued), the user said the v2.5.40
-        // test fired a nudge right after the primary agent cleanly completed a 3-task
-        // project, because by the moment the check ran every task was
-        // already `complete`. The gate above (trackerWriteThisTurn) is the
-        // primary defense; keep this as belt+suspenders for cross-turn
-        // continuations and widen status so a queued task counts.
+        // The v2.5.40 concern (a nudge firing right after the agent cleanly
+        // completed a 3-task project, when every task was already `complete`) is
+        // covered by the trackerWriteThisTurn gate above: completing tasks is a
+        // tracker write, which disarms this whole block. on_deck was previously
+        // counted here as belt-and-suspenders, but is now EXCLUDED (NEXT-WAVE
+        // item 2, see the candidate filter below): a queued/scheduled task is not
+        // active work, so it must neither suppress this nudge nor be named by it.
         //
         // v3.1.11 (FN-9): "recently tended", not "has any active task". A STALE
         // open task (assigned but untouched for longer than
@@ -5444,15 +5524,26 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // work stays inside the window. A stale open task (if any) is captured
         // so the nudge can name it and offer "update it, or open a new one".
         let hasRecentlyTendedTask = false;
+        let hasAnyInProgressTask = false;
         let staleOpenTask: { id: string; title: string } | null = null;
         try {
           const { listTasks } = await import('../../tracker/schema.js');
           const { normalizeDbTimestamp } = await import('../../scheduler/engine.js');
           const cutoffMs = Date.now() - STALE_TASK_WINDOW_MINUTES * 60_000;
+          // NEXT-WAVE item 2 (verified misfire): candidates are in_progress ONLY.
+          // on_deck (queued / scheduled) tasks are NOT work the agent is
+          // neglecting, they are waiting their turn, and their naturally-old
+          // updatedAt made a queued task (e.g. a recurring scheduled brief) get
+          // named as "the only open tracker task... hasn't been updated in a
+          // while" while the agent was actively working a DIFFERENT in_progress
+          // task. A queued scheduled task coming due is a SCHEDULER concern and
+          // must never be cited by this nudge, so it can no longer be picked as
+          // staleOpenTask nor count toward the floor.
           const candidates = listTasks({ assignedTo: agentId }).filter(
-            (t) => t.status === 'in_progress' || t.status === 'on_deck',
+            (t) => t.status === 'in_progress',
           );
           for (const t of candidates) {
+            hasAnyInProgressTask = true;
             const tendedMs = new Date(normalizeDbTimestamp(t.updatedAt)).getTime();
             if (tendedMs >= cutoffMs) {
               hasRecentlyTendedTask = true;
@@ -5466,7 +5557,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }, agentId);
         }
         if (
-          !hasRecentlyTendedTask &&
+          // NEXT-WAVE item 2: never auto-scaffold a NEW project when an
+          // in_progress task already exists (worked or not). If it exists but is
+          // stale, the nudge branch below names it and asks the agent to bring it
+          // current, rather than opening a duplicate. Only genuinely-untracked
+          // work (zero in_progress tasks) reaches the engine floor here.
+          !hasAnyInProgressTask &&
           state.nonTrackerToolCalls >= TRACKER_AUTO_SCAFFOLD_AT &&
           state.lastUserMessageContent &&
           !isPMAgent(agentId)
@@ -5519,6 +5615,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
             logger.info('v2: tracker auto-scaffold fired (engine floor)', {
               agentId, nonTrackerToolCalls: state.nonTrackerToolCalls, projectId: created.projectId,
             }, agentId);
+            // START ACK (NEXT-WAVE item 1): second project-auto-creation site.
+            // The engine just decided this in-flight work is project-worthy, so
+            // the person who asked hears it is being tracked, once per turn.
+            if (counterparty.kind === 'user' && !engineStartAckDeliveredThisTurn) {
+              engineStartAckDeliveredThisTurn = true;
+              // Title-free (see the other start-ack site): scaffoldName is a raw
+              // truncated user request and reads as broken grammar if spliced in.
+              await deliverEngineUserAck(
+                `Quick note, I've got this in progress and I'll let you know when it's done.`,
+              );
+            }
           } catch (err) {
             logger.warn('Tracker auto-scaffold failed (non-fatal, falling back to nudge)', {
               agentId, err: err instanceof Error ? err.message : String(err),
@@ -5921,6 +6028,114 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }, agentId);
       } catch (err) {
         logger.warn('v2 G-SUP-2 recovery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
+      }
+    }
+
+    // ── COMPLETION ACK (NEXT-WAVE item 1, the hard part) ──
+    // A turn that served a human request and finished ENGINE-scaffolded work MUST
+    // tell the person it is done, before the turn can end on a background / A2A
+    // obligation. This runs on EVERY exit path (natural end, [no-reply], the
+    // delegation-send break, a gate/limit), so the owed human ack is delivered no
+    // matter how the turn ended, the exact production gap (owner heard nothing on
+    // a completed backup+reset because the floor model drifted into A2A). It is
+    // engine-composed and delivered directly, so it holds on the floor model
+    // regardless of what the model chose to emit.
+    //
+    // Dedup / prefer the model's own words: skip entirely if the model already
+    // produced a user-facing reply this turn (lastAssistantTextForIM set, or a
+    // reply surfaced). Scope: user counterparty only (A2A-turn completions are
+    // owned by the close-the-loop report below), and ONLY engine-scaffolded
+    // (ENGINE_AUTO_MARKER) tasks that completed THIS turn, so a plain reply, a
+    // trivial task, or a model-authored completion never triggers a canned line.
+    // [no-reply] is not a valid resolution here: if the model went silent on a
+    // completed user-requested task, the engine speaks for it.
+    if (
+      counterparty.kind === 'user' &&
+      !state.lastAssistantTextForIM &&
+      !state.surfacedReplyThisTurn
+    ) {
+      try {
+        const { ENGINE_AUTO_MARKER } = await import('./classifiers/multistep.js');
+        // The ENGINE_AUTO_MARKER lives on the PROJECT description (both scaffold
+        // sites set it there; the task carries the user content), so match it via
+        // the task's project, not the task's own description.
+        const justCompletedScaffold = db.prepare(`
+          SELECT t.title AS title, t.result AS result, t.created_at AS created_at FROM tasks t
+          JOIN projects p ON p.id = t.project_id
+          WHERE t.assigned_to = ?
+            AND t.status = 'complete'
+            AND t.completed_at >= ?
+            AND t.repeat_interval IS NULL
+            AND p.description LIKE ?
+          ORDER BY t.completed_at ASC
+          LIMIT 3
+        `).all(agentId, turnStartedAt, `${ENGINE_AUTO_MARKER}%`) as Array<{ title: string; result: string | null; created_at: string }>;
+        // CROSS-TURN DEDUP: the per-turn dedup on the outer gate
+        // (lastAssistantTextForIM / surfacedReplyThisTurn) misses the common case
+        // where the model DELIVERED the real answer on an earlier turn and the
+        // scaffolded task only reached 'complete' on a later, silent continuation
+        // turn (e.g. the turn continued past a tracker nudge). That produced a
+        // redundant "Done, I finished..." AFTER the user already had the answer.
+        // Suppress the ack when the user has ALREADY received a substantive,
+        // model-authored reply for this work since the earliest just-completed task
+        // was created. Exclude the engine's own start/completion ack lines and the
+        // tool_use/tool_result JSON rows so only a genuine model answer counts. The
+        // genuine silent case (did the work, never told the user, drifted to A2A)
+        // has no such reply, so the ack still fires there.
+        const earliestTaskCreatedAt = justCompletedScaffold
+          .map((t) => t.created_at)
+          .filter((c): c is string => !!c)
+          .sort()[0] ?? turnStartedAt;
+        const userAlreadyAnswered = justCompletedScaffold.length > 0 && !!db.prepare(`
+          SELECT 1 FROM messages
+          WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?
+            AND (source IS NULL OR source != 'a2a')
+            AND content NOT LIKE '[{%'
+            AND content NOT LIKE 'On it.%'
+            AND content NOT LIKE 'Quick note, I%'
+            AND content NOT LIKE 'Done, I finished what you asked for.%'
+            AND length(trim(content)) > 40
+          LIMIT 1
+        `).get(agentId, earliestTaskCreatedAt);
+        if (justCompletedScaffold.length > 0 && userAlreadyAnswered) {
+          logger.info('v2: completion ack skipped, user already received a substantive reply for this work (cross-turn dedup)', {
+            agentId, turnNumber,
+          }, agentId);
+        } else if (justCompletedScaffold.length > 0) {
+          // Do NOT splice the task title into the sentence: the auto-scaffold names
+          // the task from a raw, truncated user request, which reads as broken
+          // grammar. The task result (model-written) carries the specifics.
+          const firstResult = justCompletedScaffold.find((t) => t.result && t.result.trim())?.result ?? null;
+          const resultLine = firstResult ? ` ${firstResult.replace(/\s+/g, ' ').trim().slice(0, 200)}` : '';
+          const ackText = `Done, I finished what you asked for.${resultLine}`;
+          const ackId = uuidv4();
+          db.prepare(
+            `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at) VALUES (?, ?, 'assistant', ?, ?, datetime('now'))`,
+          ).run(ackId, agentId, ackText, turnNumber);
+          broadcast({
+            type: 'chat:message',
+            agentId,
+            message: {
+              id: ackId, agentId, role: 'assistant' as const,
+              content: ackText,
+              tokenCount: null, modelId: null, cost: null, latencyMs: null,
+              createdAt: new Date().toISOString(),
+            },
+          });
+          // Hand the ack to the reply-destination resolver below so an away user
+          // gets it on their real channel (iMessage / phone / SMS), not only the
+          // dashboard. This is the "human ack blocks turn-end ahead of background
+          // obligations" guarantee: the person hears "done" as part of ending the
+          // turn even when the model tried to end on a send_to_agent.
+          state = advance(state, { lastAssistantTextForIM: ackText });
+          logger.info('v2: engine-composed completion ack (owed human reply for engine-scaffolded work)', {
+            agentId, turnNumber, taskCount: justCompletedScaffold.length,
+          }, agentId);
+        }
+      } catch (err) {
+        logger.warn('v2: completion-ack composition failed (non-fatal)', {
+          agentId, error: err instanceof Error ? err.message : String(err),
+        }, agentId);
       }
     }
 

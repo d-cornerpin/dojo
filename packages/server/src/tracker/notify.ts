@@ -47,6 +47,48 @@ export interface AssignmentNotificationResult {
 }
 
 /**
+ * Neutralize a still-pending task-assignment engine event once its task has
+ * reached a terminal state (C2). The scaffold that creates a task from the
+ * current turn ALSO pushes the assignment notice inline into that same turn, so
+ * the assignee acts on it immediately; the persisted notice row is a record for
+ * compaction/display, not a second delivery. But it is stored conv_key=NULL, so
+ * once the turn ends the runtime drain / engine-event pickup re-delivers it as a
+ * fresh "begin working on this task" prompt on a NEW turn, and the floor model
+ * redoes the work, overwriting the artifact the user was already shown. Marking
+ * it claimed (conv_key='engine', the same sentinel the loop stamps when it
+ * actually serves an engine event) excludes it from getPendingEngineEvent
+ * without deleting it, so a task that is already done can never be re-driven.
+ *
+ * Only touches the pending (conv_key IS NULL) tracker assignment notice(s) for
+ * THIS task (matched on the full task-id in the notice body, which is unique),
+ * so unrelated engine events are never affected. Idempotent, best-effort;
+ * genuinely-open tasks are untouched, so the dangling-recovery machinery for
+ * unfinished work still fires as before.
+ */
+export function claimAssignmentNoticeForTerminalTask(assignedAgentId: string, taskId: string): void {
+  if (!assignedAgentId || !taskId) return;
+  const db = getDb();
+  const like = `%ID: ${taskId}%`;
+  try {
+    db.prepare(
+      `UPDATE inter_agent_messages SET conv_key = 'engine'
+         WHERE agent_id = ? AND origin_kind = 'engine' AND origin_intent = 'tracker'
+           AND conv_key IS NULL AND content LIKE ?`,
+    ).run(assignedAgentId, like);
+    // Belt-and-suspenders: legacy notices could still live in `messages`.
+    db.prepare(
+      `UPDATE messages SET conv_key = 'engine'
+         WHERE agent_id = ? AND origin_kind = 'engine' AND origin_intent = 'tracker'
+           AND conv_key IS NULL AND content LIKE ?`,
+    ).run(assignedAgentId, like);
+  } catch (err) {
+    logger.warn('Failed to claim assignment notice for terminal task (non-fatal)', {
+      taskId, assignedAgentId, error: err instanceof Error ? err.message : String(err),
+    }, assignedAgentId);
+  }
+}
+
+/**
  * Inject a task-assignment notification into the assignee's conversation.
  * Skips work and returns ok:false if the assignee is the same as the
  * creator (the agent already knows about the task it just created itself).

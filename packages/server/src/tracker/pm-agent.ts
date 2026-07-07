@@ -76,6 +76,26 @@ You are ${pmName}, the project manager for this agent platform. Your only job is
 - Keep messages short. You're a PM, not a novelist.`;
 }
 
+// ── PM permission manifest ──
+// The PM is a narrow-purpose oversight agent. It gets read-only artifact
+// verification (C2 sub-finding) so close-out validation confirms the actual
+// deliverable rather than trusting the agent's claim; file_read is the H4
+// evidence gate. Reads are still bounded by the engine's global read-deny
+// (secrets.yaml + Healer logs are refused regardless of this manifest). Every
+// other capability stays fully confined: no file_write, file_delete, exec,
+// network, or agent-spawning. Single source of truth for all three write sites
+// (create / reactivate / boot-sync) so they cannot drift.
+const PM_PERMISSIONS_JSON = JSON.stringify({
+  file_read: '*',
+  file_write: 'none',
+  file_delete: 'none',
+  exec_allow: [],
+  exec_deny: ['*'],
+  network_domains: 'none',
+  can_spawn_agents: false,
+  can_assign_permissions: false,
+});
+
 // ── Ensure PM Agent Running ──
 
 export function ensurePMAgentRunning(): void {
@@ -122,9 +142,15 @@ export function ensurePMAgentRunning(): void {
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
         'vault_search', 'vault_remember', 'history_search', 'history_get',
         'load_tool_docs', 'get_current_time',
+        // Read-only artifact verification for close-out validation (C2 sub-finding):
+        // confirm the actual deliverable instead of trusting the agent's claim.
+        // Read only, never file_write / file_delete / exec / network.
+        'file_read', 'file_list',
       ],
     });
-    db.prepare("UPDATE agents SET tools_policy = ?, updated_at = datetime('now') WHERE id = ?").run(syncToolsPolicy, pmId);
+    // Sync BOTH tools_policy and permissions on every boot so an already-running
+    // PM picks up the read-only file_read grant (C2) without needing a reactivate.
+    db.prepare("UPDATE agents SET tools_policy = ?, permissions = ?, updated_at = datetime('now') WHERE id = ?").run(syncToolsPolicy, PM_PERMISSIONS_JSON, pmId);
     // Phase B.1: also keep the PM-SOUL system message in sync with the
     // template on every boot. Without this, the skepticism block (and any
     // other prompt updates) never reach an already-running PM. We INSERT
@@ -164,16 +190,7 @@ export function ensurePMAgentRunning(): void {
 
   if (pm) {
     // PM exists but was terminated, reactivate with correct name, model, and permissions
-    const reactivatePermissions = JSON.stringify({
-      file_read: 'none',
-      file_write: 'none',
-      file_delete: 'none',
-      exec_allow: [],
-      exec_deny: ['*'],
-      network_domains: 'none',
-      can_spawn_agents: false,
-      can_assign_permissions: false,
-    });
+    const reactivatePermissions = PM_PERMISSIONS_JSON;
     const reactivateToolsPolicy = JSON.stringify({
       allow: [
         'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
@@ -186,6 +203,10 @@ export function ensurePMAgentRunning(): void {
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
         'vault_search', 'vault_remember', 'history_search', 'history_get',
         'load_tool_docs', 'get_current_time',
+        // Read-only artifact verification for close-out validation (C2 sub-finding):
+        // confirm the actual deliverable instead of trusting the agent's claim.
+        // Read only, never file_write / file_delete / exec / network.
+        'file_read', 'file_list',
       ],
     });
     db.prepare(`
@@ -207,16 +228,7 @@ export function ensurePMAgentRunning(): void {
     logger.info('PM agent reactivated', { pmId, pmName });
   } else {
     // Create PM agent with permissions for tracker, messaging, and monitoring
-    const pmPermissions = JSON.stringify({
-      file_read: 'none',
-      file_write: 'none',
-      file_delete: 'none',
-      exec_allow: [],
-      exec_deny: ['*'],
-      network_domains: 'none',
-      can_spawn_agents: false,
-      can_assign_permissions: false,
-    });
+    const pmPermissions = PM_PERMISSIONS_JSON;
     // Allow only the tools the PM needs
     const pmToolsPolicy = JSON.stringify({
       allow: [
@@ -230,6 +242,10 @@ export function ensurePMAgentRunning(): void {
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
         'vault_search', 'vault_remember', 'history_search', 'history_get',
         'load_tool_docs', 'get_current_time',
+        // Read-only artifact verification for close-out validation (C2 sub-finding):
+        // confirm the actual deliverable instead of trusting the agent's claim.
+        // Read only, never file_write / file_delete / exec / network.
+        'file_read', 'file_list',
       ],
     });
     db.prepare(`

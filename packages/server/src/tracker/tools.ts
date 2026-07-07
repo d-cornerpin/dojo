@@ -16,7 +16,7 @@ import {
   clearPokeLog,
 } from './schema.js';
 import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
-import { injectTaskAssignmentNotification } from './notify.js';
+import { injectTaskAssignmentNotification, claimAssignmentNoticeForTerminalTask } from './notify.js';
 import { writeTaskLog } from './task-log.js';
 import { calculateNextRun, normalizeDbTimestamp, parseDaysOfWeek, type ScheduledTask } from '../scheduler/engine.js';
 import { onTaskRunComplete } from '../scheduler/runner.js';
@@ -70,6 +70,98 @@ function notifyPrimaryAgent(message: string, callingAgentId: string, forceNotify
       },
     });
   } catch { /* best-effort */ }
+}
+
+// ── Engine close-out against a delivered reply (C2 invariant) ──
+//
+// Owner-intent invariant: the artifact the user was already shown is the
+// source of truth and is NEVER regenerated or overwritten by reconciliation.
+// When the assignee produced a user-facing closeout this turn but skipped the
+// formal tracker_update_status, the engine closes the dangling one-shot task
+// COMPLETE against the reply the user already saw, rather than pausing +
+// escalating to the project manager agent (whose retask verb would re-drive
+// the assignee to regenerate the deliverable and clobber the file the user
+// was shown, producing a divergent second version and a second "done").
+//
+// complete_validated=1 makes this an engine-authoritative terminal close,
+// mirroring the pause_validated=1 authority the sibling hardcap uses: the
+// user saw the result, so the PM has nothing to chase, no CLOSEOUT_MISS is
+// raised, and the redo path cannot start. One-shot, non-recurring only;
+// recurring schedules keep their own carve-out at the call site and must
+// never be terminally completed here. Returns true when a task was closed.
+export async function engineCloseDeliveredTask(
+  callingAgentId: string,
+  taskId: string,
+  deliveredReply: string,
+): Promise<boolean> {
+  const db = getDb();
+  const task = db.prepare(
+    `SELECT id, title, status, project_id, repeat_interval, assigned_to FROM tasks WHERE id = ?`,
+  ).get(taskId) as { id: string; title: string; status: string; project_id: string | null; repeat_interval: number | null; assigned_to: string | null } | undefined;
+  if (!task) return false;
+  // Only close a task that is genuinely open (in_progress) and one-shot.
+  if (task.status !== 'in_progress') return false;
+  if (task.repeat_interval !== null) return false;
+
+  const resultText = (deliveredReply.replace(/\s+/g, ' ').trim().slice(0, 2000))
+    || 'Delivered to the user in chat this turn (engine close-out).';
+  const evidenceJson = JSON.stringify([
+    {
+      kind: 'user_visible_reply',
+      claim: 'assignee delivered the result to the user in chat this turn; the engine closed the task against that delivered reply so the artifact the user saw is preserved',
+    },
+  ]);
+
+  const updated = updateTask(taskId, { status: 'complete' });
+  if (!updated) return false;
+  // complete_validated=1: engine-authoritative terminal close (see header).
+  // result/evidence set directly since updateTask does not carry them.
+  db.prepare(`
+    UPDATE tasks
+    SET complete_validated = 1,
+        result = ?,
+        evidence_json = ?,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(resultText, evidenceJson, taskId);
+
+  try {
+    writeTaskLog({
+      taskId,
+      fromEntity: 'engine',
+      entryKind: 'auto_sweep',
+      fromStatus: 'in_progress',
+      toStatus: 'complete',
+      actionTaken: 'engine close-out against delivered reply',
+      reason: 'assignee produced a user-facing closeout without tracker_update_status; the user was already shown the deliverable, so the engine closes the task against it rather than re-driving a regenerate that would overwrite what the user saw',
+      note: resultText,
+      evidenceJson,
+    });
+  } catch { /* best effort */ }
+
+  // Same terminal cascade the PM validate-complete path runs: dependency
+  // release + project rollup. Do NOT call noteTransitionForReview, the task
+  // is already complete_validated=1 so there is nothing for the PM to review.
+  try {
+    const { checkDependencies } = await import('./pm-agent.js');
+    checkDependencies(taskId);
+  } catch { /* best effort */ }
+  try {
+    checkProjectCompletion(task.project_id, callingAgentId);
+  } catch { /* best effort */ }
+
+  // Neutralize the still-pending assignment notice for this task so the runtime
+  // drain cannot re-deliver it as a fresh "begin working on this task" prompt and
+  // re-drive a redo that overwrites the delivered artifact (the surviving C2 redo
+  // vector). Runs BEFORE the turn's finally-block drain check.
+  claimAssignmentNoticeForTerminalTask(task.assigned_to ?? callingAgentId, taskId);
+
+  const fresh = getTask(taskId);
+  if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
+  logger.info('Engine closed a delivered task against the user-visible reply (no redo, no PM escalation)', {
+    callingAgentId, taskId,
+  }, callingAgentId);
+  return true;
 }
 
 // D-K (owner decision): a project auto-completes AS SUCCESS only when every
@@ -393,16 +485,20 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
           ? ` First open task: "${dup.firstOpenTask.title}" (id=${dup.firstOpenTask.id.slice(0, 8)}).`
           : '';
         if (dup.engineAutoCreated) {
-          // Engine just auto-opened this project for the user's current
-          // turn. Steer the agent toward editing/extending it rather than
-          // building a parallel project.
+          // NEXT-WAVE item 4 (absorb, don't refuse): the engine auto-opened this
+          // project for the CURRENT user turn (the multi-step classifier does this
+          // so the agent doesn't have to remember to call tracker_create_project),
+          // so the agent's own create is a duplicate of it. The old "Refused:" wall
+          // burned turns on rediscovery AND reads to the battery as an engine-
+          // refusal signature. Absorb it instead: an OK-shaped no-op that names the
+          // existing project + its first task, so the agent just continues in it
+          // without a scold.
           return (
-            `Refused: the engine already auto-opened project "${dup.title}" (id=${shortPid}) for this user turn, that's what the multi-step classifier does when a prompt looks like multi-step work, so you don't have to remember to call tracker_create_project yourself.${firstTaskHint} ` +
-            `Work WITHIN that project instead of creating a parallel one:\n` +
-            `  • tracker_edit_task(task_id=<id>, title=..., description=...), rename / re-scope the auto-created first task to fit what you'd actually do first.\n` +
-            `  • tracker_create_task(project_id="${shortPid}", title=..., step_number=..., assigned_to=...), add the additional steps.\n` +
-            `  • tracker_close_project(project_id="${shortPid}", status="cancelled", reason="..."), only if the classifier got it wrong and there's no useful project to do.\n` +
-            `If you genuinely need a separate, unrelated project right now, retry with allow_duplicate=true.`
+            `[OK] Already tracked, no new project created. The engine auto-opened project "${dup.title}" (id=${shortPid}) for this request, so you don't need to create one, keep going in it.${firstTaskHint} ` +
+            `Continue inside it: tracker_edit_task(task_id=<id>, title=..., description=...) to refine the first task, ` +
+            `tracker_create_task(project_id="${shortPid}", title=..., step_number=..., assigned_to=...) to add more steps, ` +
+            `and tracker_update_status / tracker_complete_step as you finish each. ` +
+            `(If you genuinely need a separate, unrelated project, retry with allow_duplicate=true.)`
           );
         }
         return (
@@ -1320,6 +1416,16 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
           actionTaken: status ? `notes attached to status=${status}` : 'notes attached',
         });
       }
+    }
+
+    // When a task reaches a terminal state, neutralize its still-pending
+    // assignment notice (C2): the scaffold pushed it inline this turn, so the
+    // persisted conv_key=NULL copy must not re-fire as a fresh "begin working"
+    // prompt after the task is already done and re-drive a redo. Only touches the
+    // notice for THIS task; genuinely-open tasks keep their pending notice so the
+    // dangling-recovery machinery still fires.
+    if ((status === 'complete' || status === 'fallen' || status === 'cancelled') && task.assignedTo) {
+      claimAssignmentNoticeForTerminalTask(task.assignedTo, taskId);
     }
 
     // Notify primary agent when a task completes
@@ -2345,12 +2451,21 @@ export async function trackerRetask(
 
   const db = getDb();
   const task = db.prepare(
-    "SELECT id, title, status, assigned_to, goal FROM tasks WHERE id = ?",
-  ).get(taskId) as { id: string; title: string; status: string; assigned_to: string | null; goal: string | null } | undefined;
+    "SELECT id, title, status, assigned_to, goal, complete_validated FROM tasks WHERE id = ?",
+  ).get(taskId) as { id: string; title: string; status: string; assigned_to: string | null; goal: string | null; complete_validated: number } | undefined;
 
   if (!task) return `Error: task ${taskId} not found.`;
   if (task.status === 'cancelled') {
     return `Error: task "${task.title}" (${taskId}) is cancelled. Cancelled tasks cannot be retasked. Create a new task instead.`;
+  }
+  // C2 structural backstop: a complete + complete_validated=1 task is a
+  // terminal, blessed delivered state (an engine close-out against a reply the
+  // user already saw, or a PM-validated complete). Re-driving the assignee on
+  // it would regenerate/overwrite work the user was already shown, the exact
+  // clobber the C2 fix removes. Never retask it; direct the PM to open a fresh
+  // task instead. This holds regardless of which path tried to retask.
+  if (task.status === 'complete' && task.complete_validated === 1) {
+    return `Error: task "${task.title}" (${taskId.slice(0, 8)}) is complete and validated, its deliverable was already accepted / shown to the user. Retasking it would regenerate and overwrite delivered work. If more is needed, create a NEW task with tracker_create_task instead.`;
   }
   if (!task.assigned_to) {
     return `Error: task "${task.title}" (${taskId}) has no assigned agent. Use tracker_reassign_task first, then retask.`;

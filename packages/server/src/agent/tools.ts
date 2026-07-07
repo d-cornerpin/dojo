@@ -1886,16 +1886,33 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'tracker_get_status',
-    description: 'Get the full details of a task or project, including description/instructions, notes, dependencies, step number, assigned agent, and timestamps. Use this to read the instructions for any task. Accepts a task ID or project ID (full UUID or 8+ char prefix from tracker_list_active).',
+    description: 'Get the full details of a task or project, including description/instructions, notes, dependencies, step number, assigned agent, and timestamps. Use this to read the instructions for any task. Accepts a task ID or project ID (full UUID or 8+ char prefix from tracker_list_active). Pass it as `id`, or as `task_id` / `project_id` (all accepted).',
     input_schema: {
       type: 'object',
       properties: {
+        // NEXT-WAVE item 3: get_status was the lone tracker tool taking `id` while
+        // its 13 siblings take `task_id`, so the floor model passed `task_id` here
+        // and tripped the unknown-arg schema warning even though the dispatcher
+        // already aliases it. Declaring task_id / project_id here silences the
+        // warning; the dispatch maps whichever one is set onto `id`.
         id: {
           type: 'string',
           description: 'Task ID or Project ID to look up',
         },
+        task_id: {
+          type: 'string',
+          description: 'Alias for id (a task ID). Accepted so this tool matches the other tracker tools.',
+        },
+        project_id: {
+          type: 'string',
+          description: 'Alias for id (a project ID).',
+        },
       },
-      required: ['id'],
+      // No hard `required`: any one of id / task_id / project_id resolves the
+      // lookup (the dispatcher maps whichever is set onto `id` and errors clearly
+      // if none was provided). Leaving all three optional is what stops the floor
+      // model's `task_id` call from tripping the unknown-arg schema warning.
+      required: [],
     },
     concurrency: 'safe',
     maxResultTokens: 3000,

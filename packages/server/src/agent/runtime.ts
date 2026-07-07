@@ -1217,16 +1217,28 @@ function repairOrphanedModelPointers(): void {
   }
 }
 
-// Start the stuck-agent recovery check
+// Start the stuck-agent recovery check + the orphaned model_id repair (v2.3.19,
+// catches a provider re-create nuking a model row and leaving agents on a dead
+// UUID). Both run on the same cadence.
 setInterval(recoverStuckAgents, STUCK_AGENT_CHECK_MS);
-// Also run immediately on startup to clean up after crashes
-recoverStuckAgents();
-
-// v2.3.19, orphaned model_id repair on the same cadence as stuck-agent
-// recovery. Catches the case where a provider re-create or some other
-// flow nukes a model row, leaving agents pointing at a dead UUID.
 setInterval(repairOrphanedModelPointers, STUCK_AGENT_CHECK_MS);
-repairOrphanedModelPointers();
+
+// Also run once immediately on startup to clean up after a crash, but ONLY once
+// the schema exists. This module is imported during boot BEFORE main() runs the
+// migrations that CREATE the agents table, so on a FRESH install these sweeps
+// would log a spurious "no such table: agents" error. A fresh install has no
+// agents to recover, so skipping the immediate pass there is correct; every
+// established box has the table and runs the real sweep. The intervals above
+// then cover both cases on their normal cadence.
+try {
+  const agentsTablePresent = getDb()
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agents'")
+    .get();
+  if (agentsTablePresent) {
+    recoverStuckAgents();
+    repairOrphanedModelPointers();
+  }
+} catch { /* best effort: the intervals still run once the schema is ready */ }
 
 // Singleton
 let runtimeInstance: AgentRuntime | null = null;

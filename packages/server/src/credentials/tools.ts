@@ -70,6 +70,52 @@ export const credentialsToolDefinitions: ToolDefinition[] = [
   },
 ];
 
+// ── Credential-value leak scrub (NEXT-WAVE item 5, architecture rule 6) ──
+// A secret handed to an agent by credential_get can end up inline in a shell
+// command (the classic `sshpass -p '<pw>'`), and that command string is
+// persisted in the agent's tool_use content in `messages` and broadcast to the
+// dashboard, which violates rule 6 (secrets never in message content). We can't
+// stop the model from constructing such a command, but we CAN keep the value out
+// of the persisted/broadcast copy: track every secret value credential_get hands
+// out (per agent, in-process only), then redact those values from the stored copy
+// of the command while the live command still runs with the real value.
+//
+// In-memory only (never persisted, matching where secrets are allowed to live).
+// Length-gated (>= 6 chars) so we never redact trivial values ("1", "on") that
+// would appear all over normal commands.
+const MIN_REDACTABLE_CREDENTIAL_LEN = 6;
+const handedCredentialValues = new Map<string, Set<string>>();
+
+/** Record the secret values credential_get just handed this agent, so they can
+ *  be scrubbed out of any persisted/broadcast tool call. In-process only. */
+export function noteHandedCredentialValues(agentId: string, values: string[]): void {
+  if (values.length === 0) return;
+  let set = handedCredentialValues.get(agentId);
+  if (!set) { set = new Set<string>(); handedCredentialValues.set(agentId, set); }
+  for (const v of values) {
+    if (typeof v === 'string' && v.length >= MIN_REDACTABLE_CREDENTIAL_LEN) set.add(v);
+  }
+}
+
+/** True if this agent has pulled any redactable credential value this process. */
+export function hasHandedCredentialValues(agentId: string): boolean {
+  const set = handedCredentialValues.get(agentId);
+  return !!set && set.size > 0;
+}
+
+/** Replace any credential value this agent pulled via credential_get with a
+ *  placeholder. Returns the input unchanged when nothing matches (the common
+ *  case), so it's cheap to call on every persisted string. */
+export function redactHandedCredentials(agentId: string, text: string): string {
+  const set = handedCredentialValues.get(agentId);
+  if (!set || set.size === 0 || !text) return text;
+  let out = text;
+  for (const secret of set) {
+    if (out.includes(secret)) out = out.split(secret).join('<redacted-credential>');
+  }
+  return out;
+}
+
 // ── Executor ──
 
 export async function executeCredentialTool(
@@ -108,6 +154,13 @@ export async function executeCredentialTool(
       const fields = Object.entries(record.credentials)
         .map(([k, v]) => `  ${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
         .join('\n');
+      // NEXT-WAVE item 5: remember these secret values so the engine can scrub
+      // them out of any persisted/broadcast tool_use command that inlines them
+      // (rule 6: secrets never in message content). In-process only.
+      noteHandedCredentialValues(
+        agentId,
+        Object.values(record.credentials).map((v) => (typeof v === 'string' ? v : JSON.stringify(v))),
+      );
       // Lead with the engine sentinel so this secret-bearing result is stubbed
       // deterministically if it ever ages into a compaction summary (Rule 6:
       // secrets never enter the memory DAG). The sentinel is invisible guidance
