@@ -201,7 +201,7 @@ export async function importTechnique(zipBuffer: Buffer): Promise<ImportResult> 
   `).run(uuidv4(), newId, instructions, `Imported from ${originalId} (export ${manifest.exported_at})`);
 
   logger.info('Technique imported', { newId, originalId, extractedCount, needsSetup, placeholders: manifest.placeholders?.length ?? 0 });
-  broadcast({ type: 'technique:created', data: { id: newId, name: manifest.technique.name, state: initialState } } as never);
+  broadcast({ type: 'technique:created', data: { id: newId, name: manifest.technique.name, state: initialState } });
 
   // ── 7. Hand off to the trainer agent ──
   // The trainer is the owner of techniques on this dojo, so importing
@@ -408,7 +408,7 @@ export function finalizeImportedTechnique(techniqueId: string): { ok: true } | {
   }
 
   db.prepare("UPDATE techniques SET state = 'draft', updated_at = datetime('now') WHERE id = ?").run(techniqueId);
-  broadcast({ type: 'technique:state_changed', data: { id: techniqueId, name: row.name, oldState: row.state, newState: 'draft' } } as never);
+  broadcast({ type: 'technique:state_changed', data: { id: techniqueId, name: row.name, oldState: row.state, newState: 'draft' } });
 
   return { ok: true };
 }

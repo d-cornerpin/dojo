@@ -8,6 +8,13 @@ import { ProviderHealth } from '../components/ProviderHealth';
 import { HealerVitals } from '../components/HealerVitals';
 import { WatcherCards } from '../components/WatcherCards';
 
+// FA-DB2: the Health page has no server-pushed health feed. The old
+// 'system:health' / 'provider:status' WS events were never emitted server-
+// side, so a provider going unhealthy or the DB erroring would sit on the
+// mount-time snapshot until a manual reload. We poll on this steady cadence
+// instead (one interval, no per-event reload storm).
+const HEALTH_POLL_INTERVAL_MS = 20_000;
+
 const formatBytes = (bytes: number): string => {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -269,6 +276,11 @@ export const Health = () => {
       setLoading(false);
     };
     load();
+    // FA-DB2: re-run the same load() on a steady interval so provider/DB
+    // status stays fresh while the page is mounted (replaces the dead WS
+    // subscriptions removed below). One interval, cleaned up on unmount.
+    const pollTimer = setInterval(load, HEALTH_POLL_INTERVAL_MS);
+    return () => clearInterval(pollTimer);
   }, []);
 
   // Subscribe to live log events
@@ -280,29 +292,21 @@ export const Health = () => {
     return unsub;
   }, [subscribe]);
 
-  // Subscribe to health updates
-  useEffect(() => {
-    const unsub = subscribe('system:health', (event: WsEvent) => {
-      const e = event as unknown as { type: string; data: HealthData };
-      setHealth(e.data);
-    });
-    return unsub;
-  }, [subscribe]);
+  // FA-DB2: the former 'system:health' and 'provider:status' WS subscriptions
+  // lived here. Neither event is ever emitted server-side, so they never fired
+  // and the page silently showed a stale snapshot. They were removed and the
+  // mount-effect poll above now keeps health + provider status fresh. (The
+  // 'system:health' / 'provider:status' members of the shared WsEvent union are
+  // now unreferenced; union cleanup is owned by FA-G6/FA-DB6, not this fix.)
 
-  // Subscribe to provider status and resource warning events
+  // Subscribe to resource warning events. Unlike the two removed above, this
+  // one IS emitted server-side (resource-monitor), so it stays as a live push.
   useEffect(() => {
-    const unsub1 = subscribe('provider:status' as string, async () => {
-      const result = await api.getProviderHealth();
-      if (result.ok) setProviderStatuses(result.data.providers);
-    });
-    const unsub2 = subscribe('resource:warning' as string, async () => {
+    const unsub = subscribe('resource:warning' as string, async () => {
       const result = await api.getResources();
       if (result.ok) setResources(result.data);
     });
-    return () => {
-      unsub1();
-      unsub2();
-    };
+    return unsub;
   }, [subscribe]);
 
   const refreshLogs = useCallback(async () => {

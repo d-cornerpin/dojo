@@ -273,7 +273,10 @@ const ConfigBody = ({ agent, onUpdated }: { agent: AgentDetailType; onUpdated: (
         <div className="srow">
           <select
             className="finput field--select"
-            style={{ flex: 1, width: 'auto' }}
+            // minWidth 0: a flex child refuses to shrink below its intrinsic
+            // min-content width, and long model names ("Vendor: Model (Provider)")
+            // made the select overflow the card's right edge and push Save out.
+            style={{ flex: 1, width: 'auto', minWidth: 0 }}
             value={selectedModelId}
             onChange={(e) => setSelectedModelId(e.target.value)}
           >

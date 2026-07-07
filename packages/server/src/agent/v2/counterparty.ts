@@ -208,6 +208,20 @@ const DELIVERABLE_ENGINE_EVENT_WHERE =
    AND swept_at IS NULL
    AND (origin_intent IS NULL OR origin_intent NOT IN ('thrash_gate', 'hint', 'system'))`;
 
+// D-A step 4: an engine event now lives in EITHER `messages` (legacy + the
+// still-in-messages completion_report/spawner writers) or `inter_agent_messages`
+// (the moved notice/scheduler/tracker/healer writers). Every lifecycle mutation
+// (claim, revert, attempt-bump, expiry, re-home) MUST target the row's ACTUAL home
+// table because rowid is per-table; a write against the wrong table silently misses.
+// The read side merges both tables and tags the source; the write side branches on
+// this tag. Both tables carry the identical lifecycle columns (mig 099 gave the store
+// swept_at/delivery_attempts/next_attempt_at), so DELIVERABLE_ENGINE_EVENT_WHERE and
+// the eligibility gates are valid verbatim against either.
+export type EngineEventSrc = 'm' | 'ia';
+function engineEventTable(src: EngineEventSrc): 'messages' | 'inter_agent_messages' {
+  return src === 'ia' ? 'inter_agent_messages' : 'messages';
+}
+
 /**
  * D8: expire engine events that exhausted their delivery lifecycle, LOUDLY.
  * An event is exhausted after ENGINE_EVENT_MAX_ATTEMPTS failed deliveries or
@@ -222,15 +236,23 @@ export function expireExhaustedEngineEvents(agentId: string): number {
   let expired = 0;
   try {
     const db = getDb();
+    // D-A step 4: exhausted events may live in either table. Read MERGED (tagging the
+    // source) and stamp swept_at in the row's ACTUAL home table so the once-guard
+    // (`swept_at IS NULL` + .changes) stays atomic per row.
+    const exhaustedTail =
+      `AND (delivery_attempts >= ${ENGINE_EVENT_MAX_ATTEMPTS}
+            OR created_at <= datetime('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours'))`;
     const rows = db.prepare(
-      `SELECT rowid, content FROM messages
-        WHERE agent_id = ? AND ${DELIVERABLE_ENGINE_EVENT_WHERE}
-          AND (delivery_attempts >= ${ENGINE_EVENT_MAX_ATTEMPTS}
-               OR created_at <= datetime('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours'))`,
-    ).all(agentId) as Array<{ rowid: number; content: string }>;
+      `SELECT rowid, content, 'm' AS _src FROM messages
+        WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${exhaustedTail}
+          AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
+       UNION ALL
+       SELECT rowid, content, 'ia' AS _src FROM inter_agent_messages
+        WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${exhaustedTail}`,
+    ).all({ agentId }) as Array<{ rowid: number; content: string; _src: EngineEventSrc }>;
     for (const r of rows) {
       const res = db.prepare(
-        "UPDATE messages SET swept_at = datetime('now') WHERE agent_id = ? AND rowid = ? AND swept_at IS NULL",
+        `UPDATE ${engineEventTable(r._src)} SET swept_at = datetime('now') WHERE agent_id = ? AND rowid = ? AND swept_at IS NULL`,
       ).run(agentId, r.rowid);
       if (res.changes === 0) continue; // another process expired it first; its notice already posted
       expired++;
@@ -258,16 +280,21 @@ export function expireExhaustedEngineEvents(agentId: string): number {
  * expired loudly right here so the owner notice never waits on a later
  * eligibility consult.
  */
-export function recordEngineEventDeliveryFailure(agentId: string, rowid: number): void {
+export function recordEngineEventDeliveryFailure(agentId: string, rowid: number, src: EngineEventSrc): void {
   try {
     const db = getDb();
-    const cur = db.prepare('SELECT delivery_attempts FROM messages WHERE agent_id = ? AND rowid = ?')
+    // D-A step 4: read + bump the attempt state in the row's ACTUAL home table
+    // (`src` was captured at pickup time from the merged getPendingEngineEvent read).
+    // A bump against the wrong table would leave the real row's attempts unbumped and
+    // its backoff unset, so it would re-deliver on the very next drain, forever.
+    const table = engineEventTable(src);
+    const cur = db.prepare(`SELECT delivery_attempts FROM ${table} WHERE agent_id = ? AND rowid = ?`)
       .get(agentId, rowid) as { delivery_attempts: number | null } | undefined;
     if (!cur) return;
     const attempts = (cur.delivery_attempts ?? 0) + 1;
     const backoffMin = ENGINE_EVENT_BACKOFF_MINUTES[Math.min(attempts, ENGINE_EVENT_BACKOFF_MINUTES.length) - 1];
     db.prepare(
-      "UPDATE messages SET delivery_attempts = ?, next_attempt_at = datetime('now', ?) WHERE agent_id = ? AND rowid = ?",
+      `UPDATE ${table} SET delivery_attempts = ?, next_attempt_at = datetime('now', ?) WHERE agent_id = ? AND rowid = ?`,
     ).run(attempts, `+${backoffMin} minutes`, agentId, rowid);
     logger.warn('engine event delivery failed; scheduled retry with backoff', { agentId, rowid, attempts, backoffMin }, agentId);
     if (attempts >= ENGINE_EVENT_MAX_ATTEMPTS) expireExhaustedEngineEvents(agentId);
@@ -284,14 +311,22 @@ export function getNextEngineEventRetryAt(agentId: string): number | null {
   try {
     const db = getDb();
     const sessionStart = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
+    // D-A step 4: parked-on-backoff events may live in either table; take the MIN
+    // across BOTH so the runtime's one-shot retry timer arms at the earliest of them.
+    const retryGates =
+      `AND created_at >= @sessionStart
+       AND created_at >= datetime('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours')
+       AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
+       AND next_attempt_at > datetime('now')`;
     const row = db.prepare(
-      `SELECT MIN(next_attempt_at) AS t FROM messages
-        WHERE agent_id = ? AND ${DELIVERABLE_ENGINE_EVENT_WHERE}
-          AND created_at >= ?
-          AND created_at >= datetime('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours')
-          AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
-          AND next_attempt_at > datetime('now')`,
-    ).get(agentId, sessionStart) as { t: string | null } | undefined;
+      `SELECT MIN(t) AS t FROM (
+         SELECT MIN(next_attempt_at) AS t FROM messages
+           WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${retryGates}
+         UNION ALL
+         SELECT MIN(next_attempt_at) AS t FROM inter_agent_messages
+           WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${retryGates}
+       )`,
+    ).get({ agentId, sessionStart }) as { t: string | null } | undefined;
     if (!row?.t) return null;
     const ms = Date.parse(row.t.replace(' ', 'T') + 'Z'); // SQLite datetime('now') is UTC
     return Number.isFinite(ms) ? ms : null;
@@ -328,17 +363,23 @@ export function getNextEngineEventRetryAt(agentId: string): number | null {
 export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string): number {
   try {
     const db = getDb();
-    const res = db.prepare(
-      `UPDATE messages SET created_at = ?
-         WHERE agent_id = ? AND ${DELIVERABLE_ENGINE_EVENT_WHERE}
-           AND created_at < ?
-           AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
-           AND created_at >= datetime('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours')`,
-    ).run(newBoundary, agentId, newBoundary);
-    if (res.changes > 0) {
-      logger.info('re-homed fired-but-undelivered engine event(s) across session reset', { agentId, count: res.changes }, agentId);
+    // D-A step 4: a fired-but-undelivered engine event may live in either table, so
+    // re-home BOTH. The `created_at < newBoundary` guard keeps each UPDATE idempotent
+    // (a re-run finds nothing left below the boundary) and confines it to the row's
+    // own table, so there is no per-table rowid hazard here.
+    const rehome = (table: 'messages' | 'inter_agent_messages'): number =>
+      db.prepare(
+        `UPDATE ${table} SET created_at = ?
+           WHERE agent_id = ? AND ${DELIVERABLE_ENGINE_EVENT_WHERE}
+             AND created_at < ?
+             AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
+             AND created_at >= datetime('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours')`,
+      ).run(newBoundary, agentId, newBoundary).changes;
+    const changed = rehome('messages') + rehome('inter_agent_messages');
+    if (changed > 0) {
+      logger.info('re-homed fired-but-undelivered engine event(s) across session reset', { agentId, count: changed }, agentId);
     }
-    return res.changes;
+    return changed;
   } catch {
     return 0;
   }
@@ -355,24 +396,36 @@ export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string
  * re-triggers while one is pending, so an engine event out-raced by a human still
  * gets its own turn after the human is served.
  */
-export function getPendingEngineEvent(agentId: string): { rowid: number; content: string; originIntent: string | null } | null {
+export function getPendingEngineEvent(agentId: string): { rowid: number; content: string; originIntent: string | null; src: EngineEventSrc } | null {
   const db = getDb();
   // D8: dispose exhausted/overdue events LOUDLY before answering "what's pending",
   // so every consumer of eligibility (loop pickup, runtime drain, boot owed-check)
   // also drives the once-per-event expiry notice deterministically.
   expireExhaustedEngineEvents(agentId);
   const sessionStart = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
+  // D-A step 4: engine events now live in EITHER table, `messages` (legacy rows +
+  // the still-in-messages completion_report/spawner writers) or inter_agent_messages
+  // (the moved notice/scheduler/tracker/healer writers). Read the MERGED source so a
+  // pending event is found wherever it lives, and TAG the source (_src) so the loop's
+  // claim UPDATE hits the row's ACTUAL home table, a claim against the wrong table
+  // silently misses (per-table rowid) and the event re-delivers forever. The messages
+  // arm dedups against store ids (idiom); an engine row is never double-homed, so this
+  // is a safety net. Cross-table order is created_at, then the stable _tag tiebreak,
+  // then rowid, oldest-first (matching the legacy ORDER BY created_at ASC, rowid ASC).
+  const engineGates =
+    `AND created_at >= @sessionStart
+     AND created_at >= datetime('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours')
+     AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
+     AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))`;
   const row = db.prepare(
-    `SELECT rowid, content, origin_intent FROM messages
-       WHERE agent_id = ? AND role = 'user' AND origin_kind = 'engine' AND conv_key IS NULL
-         AND swept_at IS NULL
-         AND (origin_intent IS NULL OR origin_intent NOT IN ('thrash_gate', 'hint', 'system'))
-         AND created_at >= ?
-         AND created_at >= datetime('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours')
-         AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
-         AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))
-       ORDER BY created_at ASC, rowid ASC LIMIT 1`,
-  ).get(agentId, sessionStart) as { rowid: number; content: string; origin_intent: string | null } | undefined;
+    `SELECT rowid, content, origin_intent, created_at, 0 AS _tag, 'm' AS _src FROM messages
+       WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${engineGates}
+         AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
+     UNION ALL
+     SELECT rowid, content, origin_intent, created_at, 1 AS _tag, 'ia' AS _src FROM inter_agent_messages
+       WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${engineGates}
+     ORDER BY created_at ASC, _tag ASC, rowid ASC LIMIT 1`,
+  ).get({ agentId, sessionStart }) as { rowid: number; content: string; origin_intent: string | null; _src: EngineEventSrc } | undefined;
   // C6: exclude non-deliverable engine intents (thrash-gate steers, hints, system chatter)
   // so they can never drive an engine turn, a deliverable event (scheduler/reminder/
   // tracker/healer/completion) still qualifies. Belt-and-suspenders on top of the conv_key
@@ -387,7 +440,7 @@ export function getPendingEngineEvent(agentId: string): { rowid: number; content
   // historical unstamped engine rows (migration 076 did not backfill conv_key)
   // can't replay as "pending events" (migration 078 backfilled those; this is the
   // runtime guard for anything the backfill missed).
-  return row ? { rowid: row.rowid, content: row.content, originIntent: row.origin_intent } : null;
+  return row ? { rowid: row.rowid, content: row.content, originIntent: row.origin_intent, src: row._src } : null;
 }
 
 export interface TurnCounterparty {

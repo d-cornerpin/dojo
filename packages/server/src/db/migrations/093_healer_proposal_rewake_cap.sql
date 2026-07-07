@@ -1,0 +1,12 @@
+-- 093 (FA-X7b): bound the approved-but-unapplied re-wake loop.
+--
+-- An approved proposal that the Healer never applies (applied_at stays NULL)
+-- re-wakes the Healer on EVERY cycle indefinitely. This counter lets the cycle
+-- runner stop re-presenting a proposal after a fixed number of tries and post
+-- one plain "this fix is stuck" notice to the primary agent instead of nagging
+-- the Healer forever.
+--
+--   rewake_count  number of cycles that have re-presented this approved-but-
+--                 unapplied proposal to the Healer. Once it reaches the cap the
+--                 cycle stops waking on it and the owner is told once.
+ALTER TABLE healer_proposals ADD COLUMN rewake_count INTEGER NOT NULL DEFAULT 0;

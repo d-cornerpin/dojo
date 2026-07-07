@@ -15,8 +15,24 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { v4 as uuidv4 } from 'uuid';
+import { getVaultStats, getPoisonedArchiveStats } from '../vault/store.js';
+import { getUpdateCheckHealth } from '../gateway/routes/update.js';
+import { readMarker } from '../update-state.js';
 
 const logger = createLogger('healer-diagnostic');
+
+// ── Vault dreaming health thresholds ──
+//
+// The Dreamer is the nightly memory distiller: it turns raw conversation
+// archives (vault_conversations, is_processed = 0) into long-term vault
+// entries. If it silently dies (a restart mid-cycle, a poison archive, or
+// model failures), unfiled archives pile up, no memories are distilled,
+// and the FN-1 recall bridge keeps serving the raw archives, so behaviour
+// looks normal while long-term memory silently stops being built. These
+// thresholds drive the diagnostic items that surface that.
+const DREAM_BACKLOG_INFO_THRESHOLD = 25;   // info: a fresh box's day-one backlog is expected; stay quiet
+const DREAM_BACKLOG_WARN_THRESHOLD = 200;  // warning: a backlog this deep means the Dreamer is not keeping up
+const DREAM_STALE_HOURS = 48;              // warning: an archive unfiled this long = >= 2 nightly cycles missed
 
 // Per-collector char caps. Source: docs/error-handling-spec.md "Healer
 // log access — Dreamer-pattern hardening". Each collector's items are
@@ -32,6 +48,9 @@ const COLLECTOR_CAPS = {
   nudge_stats: 500,
   budget: 500,
   context_health: 1500,
+  dream_health: 1500,
+  update_check: 800,
+  auto_rollback: 900,
 } as const;
 
 /**
@@ -373,14 +392,20 @@ function getTrackerHealth(): DiagnosticItem[] {
     });
   }
 
-  // Projects with all tasks complete but project still active
+  // Projects where EVERY task is complete but the project is still active.
+  // D-K (owner decision): a project that ran out of open tasks but has at
+  // least one FALLEN task is deliberately left open for attention, it is NOT
+  // an orphan to be closed. So the predicate is `status != 'complete'` (a
+  // fallen task counts as "not done"), matching fixOrphanedProject. This is
+  // what stops the Healer from re-detecting and re-offering to close a
+  // fallen-containing project on every cycle (no infinite re-detect loop).
   const orphanedProjects = db.prepare(`
     SELECT p.id, p.title
     FROM projects p
     WHERE p.status = 'active'
       AND NOT EXISTS (
         SELECT 1 FROM tasks t
-        WHERE t.project_id = p.id AND t.status NOT IN ('complete', 'fallen')
+        WHERE t.project_id = p.id AND t.status != 'complete'
       )
       AND EXISTS (SELECT 1 FROM tasks t2 WHERE t2.project_id = p.id)
   `).all() as Array<{ id: string; title: string }>;
@@ -390,7 +415,7 @@ function getTrackerHealth(): DiagnosticItem[] {
       severity: 'info',
       code: 'ORPHANED_PROJECT',
       title: `"${project.title}" is finished but wasn't closed out`,
-      detail: `All tasks in this project are done, but the project itself is still marked as active. It just needs to be marked complete.`,
+      detail: `Every task in this project is complete, but the project itself is still marked as active. It just needs to be marked complete.`,
     });
   }
 
@@ -504,18 +529,143 @@ function getBulletproofToolHealth(): DiagnosticItem[] {
     });
   }
 
-  // 4. Vault dreaming backlog. If unprocessed conversations pile up >25
-  //    the Dreamer isn't running. The primary agent can now trigger it on demand via
-  //    dreamer_run_now — surface this as an info-level item.
-  const backlog = db.prepare(`
-    SELECT COUNT(*) as cnt FROM vault_conversations WHERE is_processed = 0
-  `).get() as { cnt: number };
-  if (backlog.cnt >= 25) {
+  // Vault dreaming health (backlog + staleness) is its own collector,
+  // getDreamHealth, so it can key off archive age and the dreaming-enabled
+  // door rather than a bare count.
+
+  return items;
+}
+
+// ── Vault dreaming health ─────────────────────────────────────────────────
+//
+// Surfaces a silently-dead Dreamer. Two independent signals:
+//
+//   DREAM_BACKLOG, volume. Unprocessed archives past a count threshold.
+//                   info at >= 25 (a fresh box's day-one backlog is
+//                   expected, stay quiet), warning at >= 200 (a backlog
+//                   this deep means the Dreamer is not keeping up).
+//   DREAM_STALE  , age. The OLDEST unprocessed archive is older than
+//                   DREAM_STALE_HOURS. A healthy nightly Dreamer files
+//                   every archive within one cycle (< 24h), so an archive
+//                   still unfiled after 48h means >= 2 nightly cycles
+//                   failed. Keying off archive AGE (not a count, and not
+//                   lastDreamAt) is deliberate: it stays quiet on a
+//                   genuinely fresh box (all archives younger than the
+//                   threshold), trips on a box that has NEVER dreamed but
+//                   has old unfiled archives, and still catches a poison
+//                   archive that a recent, otherwise-successful cycle keeps
+//                   skipping (where lastDreamAt would look fresh).
+//
+// The Healer cannot start the Dreamer itself: dreamer_run_now is hard
+// primary-gated (tools.ts) and is not in the Healer's allow-list, so the
+// warning guidance steers the Healer to notify the owner in plain language
+// and ask the main agent to run it. It must NOT propose swapping the
+// Dreamer's model (HEALER-SOUL forbids "switch to a better model").
+function getDreamHealth(): DiagnosticItem[] {
+  const db = getDb();
+  const items: DiagnosticItem[] = [];
+
+  const stats = getVaultStats();
+  const backlog = stats.unprocessedArchives; // FA-V4: already excludes poisoned rows
+  // FA-V4: poisoned archives are the Dreamer's escalation surface, computed up
+  // front so their signal survives even when the (poison-excluding) backlog is 0.
+  const poison = getPoisonedArchiveStats();
+  if (backlog === 0 && poison.count === 0) return items; // nothing unfiled or parked, nothing to report
+
+  // Same 'dreaming_mode' config key getDreamingConfig() reads: default
+  // 'full', only 'off' disables dreaming. When dreaming is deliberately
+  // off, a backlog is expected, so the warning lanes stay silent (the
+  // info lane is preserved exactly, see below).
+  const dreamModeRow = db
+    .prepare("SELECT value FROM config WHERE key = 'dreaming_mode'")
+    .get() as { value: string } | undefined;
+  const dreamingEnabled = (dreamModeRow?.value ?? 'full') !== 'off';
+
+  // Age of the OLDEST still-unprocessed archive, in hours. julianday keeps
+  // both sides in UTC, so no Z-suffix parsing is needed.
+  // FA-V4: exclude poisoned archives from the age signal. A parked (poisoned)
+  // archive stays is_processed=0 forever by design (it was never distilled), so
+  // without this filter one poison archive would permanently trip DREAM_STALE.
+  // Poisoned archives are surfaced by DREAM_POISONED below instead.
+  const oldestRow = db.prepare(`
+    SELECT MAX((julianday('now') - julianday(created_at)) * 24.0) AS oldest_hours
+    FROM vault_conversations WHERE is_processed = 0 AND poisoned = 0
+  `).get() as { oldest_hours: number | null };
+  const oldestHours = oldestRow.oldest_hours ?? 0;
+
+  // Plain-language summary of when the Dreamer last completed a full cycle.
+  const lastDreamPhrase = stats.lastDreamAt
+    ? `about ${Math.max(1, Math.round(
+        (Date.now() - new Date(stats.lastDreamAt.includes('Z') ? stats.lastDreamAt : stats.lastDreamAt + 'Z').getTime()) / 3_600_000,
+      ))} hours ago`
+    : 'never (no completed cycle on record for this box)';
+
+  // ── DREAM_STALE (age signal), only when dreaming is enabled ──
+  if (dreamingEnabled && oldestHours >= DREAM_STALE_HOURS) {
+    const days = Math.floor(oldestHours / 24);
+    const ageStr = days >= 1 ? `${days} day${days > 1 ? 's' : ''}` : `${Math.round(oldestHours)} hours`;
+    items.push({
+      severity: 'warning',
+      code: 'DREAM_STALE',
+      title: `Nightly memory processing hasn't run in over ${Math.floor(DREAM_STALE_HOURS / 24)} days`,
+      detail:
+        `The dojo's nightly memory catch-up (the Dreamer) hasn't finished a cycle recently ` +
+        `(last successful run: ${lastDreamPhrase}), and unfiled conversation memory is piling up ` +
+        `(${backlog} conversation${backlog === 1 ? '' : 's'} waiting, the oldest ${ageStr} old). ` +
+        `Recent conversations are still remembered short-term but are NOT yet saved to long-term memory, ` +
+        `so everything can look normal while long-term memory quietly stops growing. ` +
+        `Let the owner know in plain language that the nightly memory save-up has stalled and recent ` +
+        `conversations aren't in long-term memory yet. You can't start the Dreamer yourself ` +
+        `(dreamer_run_now is the main agent's tool), so ask the main agent to run it, or leave it for ` +
+        `tonight's scheduled cycle. Do NOT change the Dreamer's model, the fix is getting the existing ` +
+        `cycle to complete, not swapping models.`,
+    });
+  }
+
+  // ── DREAM_BACKLOG (volume signal) ──
+  // Preserve the exact prior behaviour: info at >= 25 so a fresh box's
+  // day-one backlog stays quiet. Additive warning tier at >= 200, only
+  // when dreaming is enabled (a deliberately-off Dreamer shouldn't nag).
+  if (dreamingEnabled && backlog >= DREAM_BACKLOG_WARN_THRESHOLD) {
+    items.push({
+      severity: 'warning',
+      code: 'DREAM_BACKLOG',
+      title: `${backlog} conversations are stuck waiting to be saved to memory`,
+      detail:
+        `Unfiled conversation archives have piled up to ${backlog}, which means the Dreamer isn't ` +
+        `keeping up and long-term memory is falling behind. Let the owner know in plain language, and ` +
+        `ask the main agent to run dreamer_run_now to clear the backlog (you don't have that tool ` +
+        `yourself). Do NOT change the Dreamer's model, the goal is to get the existing cycle running again.`,
+    });
+  } else if (backlog >= DREAM_BACKLOG_INFO_THRESHOLD) {
     items.push({
       severity: 'info',
       code: 'DREAM_BACKLOG',
-      title: `${backlog.cnt} conversations are waiting to be dreamed`,
+      title: `${backlog} conversations are waiting to be dreamed`,
       detail: `The Dreamer hasn't processed these archives yet. Memories from these conversations aren't searchable until it runs. Trigger a cycle now with dreamer_run_now, or wait for the next scheduled run.`,
+    });
+  }
+
+  // ── DREAM_POISONED (FA-V4 escalation surface) ──
+  // An archive the Dreamer failed to distill after MAX_DREAM_ATTEMPTS terminal
+  // passes is parked (poisoned): excluded from the work queue, the backlog
+  // count, and the DREAM_STALE age signal above so it cannot retry forever nor
+  // permanently trip staleness. It is surfaced HERE instead so a human sees it.
+  // Ungated by the dreaming-enabled door: a parked archive is a discrete past
+  // failure worth flagging even if dreaming was later switched off.
+  if (poison.count > 0) {
+    items.push({
+      severity: 'warning',
+      code: 'DREAM_POISONED',
+      title: `${poison.count} conversation${poison.count === 1 ? '' : 's'} couldn't be saved to memory after repeated tries`,
+      detail:
+        `The nightly memory processor (the Dreamer) tried to file ${poison.count} conversation${poison.count === 1 ? '' : 's'} ` +
+        `several times and gave up, so ${poison.count === 1 ? 'it was' : 'they were'} set aside instead of retrying forever ` +
+        `(${poison.count === 1 ? 'it no longer counts' : 'they no longer count'} as backlog). This usually means a conversation ` +
+        `is malformed or too large for the current memory model to digest. Let the owner know in plain language that a few ` +
+        `conversations could not be saved to long-term memory and were parked. ` +
+        `${poison.latestReason ? `Most recent reason: ${poison.latestReason} ` : ''}` +
+        `Do NOT change the Dreamer's model on your own; flag it for the main agent to look at.`,
     });
   }
 
@@ -552,6 +702,26 @@ function getNudgeStats(): DiagnosticItem[] {
   return items;
 }
 
+// Shared transient-provider-error SQL predicate. This is a boolean fragment
+// that references the `a` alias (agents a) and matches the 5xx / overloaded /
+// network-reset last_error strings we treat as a provider (not per-agent)
+// fault. FA-X5: injury-recovery's provider-pattern dedup mirrors this EXACT
+// filter, so the canonical copy lives here next to the outage detector and
+// both import it. Keeping one source prevents the two provider-outage
+// predicates from drifting apart (they classified "transient" differently
+// before, so the dedup over-counted against a stricter detector).
+export const TRANSIENT_PROVIDER_ERROR_SQL = `(
+          a.last_error LIKE '%500%'
+          OR a.last_error LIKE '%502%'
+          OR a.last_error LIKE '%503%'
+          OR a.last_error LIKE '%504%'
+          OR a.last_error LIKE '%529%'
+          OR a.last_error LIKE '%overloaded%'
+          OR a.last_error LIKE '%fetch failed%'
+          OR a.last_error LIKE '%ECONNRESET%'
+          OR a.last_error LIKE '%ETIMEDOUT%'
+        )`;
+
 // v2.3.19 (error-handling-spec Phase 4) — provider-wide outage detector.
 //
 // When 3+ agents on the same provider hit errors classified as transient
@@ -573,17 +743,7 @@ function getProviderOutagePatterns(): DiagnosticItem[] {
       JOIN providers p ON p.id = m.provider_id
       WHERE a.last_error IS NOT NULL
         AND a.last_error_at > datetime('now', '-1 hours')
-        AND (
-          a.last_error LIKE '%500%'
-          OR a.last_error LIKE '%502%'
-          OR a.last_error LIKE '%503%'
-          OR a.last_error LIKE '%504%'
-          OR a.last_error LIKE '%529%'
-          OR a.last_error LIKE '%overloaded%'
-          OR a.last_error LIKE '%fetch failed%'
-          OR a.last_error LIKE '%ECONNRESET%'
-          OR a.last_error LIKE '%ETIMEDOUT%'
-        )
+        AND ${TRANSIENT_PROVIDER_ERROR_SQL}
       GROUP BY p.name
       HAVING agent_count >= 3
     `).all() as Array<{ provider_name: string; agent_count: number; agent_names: string }>;
@@ -634,6 +794,103 @@ function getBudgetStatus(): DiagnosticItem[] {
   return items;
 }
 
+// ── Update-check pipeline health (FA-D6) ─────────────────────────────────
+//
+// The daily update check never throws; a GitHub outage, a renamed repo, or a
+// sustained rate-limit just comes back as an error, so a box can silently
+// strand OFF updates (fixes included) for weeks. update.ts counts consecutive
+// failed checks and stamps a failing-since anchor once the pipeline crosses
+// UPDATE_CHECK_FAILURE_THRESHOLD; here we surface that as a notify-only warning
+// so the Healer can tell the owner in plain language. This is NOT an update
+// notification (we never push those), it is a health signal that the CHECK
+// itself is broken. The Healer must NOT try to force an update from this.
+function getUpdateCheckHealthItems(): DiagnosticItem[] {
+  const items: DiagnosticItem[] = [];
+  try {
+    const health = getUpdateCheckHealth();
+    if (!health.failing) return items;
+
+    let sincePhrase = 'recently';
+    if (health.failingSince) {
+      const ms = Date.now() - new Date(
+        health.failingSince.includes('Z') ? health.failingSince : health.failingSince + 'Z',
+      ).getTime();
+      const days = Math.floor(ms / 86_400_000);
+      sincePhrase = days >= 1 ? `for about ${days} day${days > 1 ? 's' : ''}` : 'since earlier today';
+    }
+
+    items.push({
+      severity: 'warning',
+      code: 'UPDATE_CHECK_FAILING',
+      title: `The dojo hasn't been able to check for updates ${sincePhrase}`,
+      detail:
+        `The daily check that looks for new dojo versions has failed ${health.consecutiveFailures} times in a row` +
+        `${health.lastError ? ` (last error: ${health.lastError.slice(0, 160)})` : ''}. ` +
+        `That usually means GitHub is unreachable from this box, the internet is down, or a rate limit is in effect. ` +
+        `Nothing is wrong with the running dojo and NO update will be installed automatically, but while this ` +
+        `keeps failing, the box can't see new versions, including fixes. Let the owner know in plain language that ` +
+        `automatic update checks are failing and it may be worth checking the box's internet connection. Do NOT try ` +
+        `to force an update; the fix is getting the check to reach GitHub again.`,
+    });
+  } catch (err) {
+    logger.warn('Update-check health collector failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return items;
+}
+
+// ── Self-update auto-rollback state (D-F) ────────────────────────────────
+//
+// The independent watchdog can auto-roll-back a self-update that fails to boot
+// (code only, owner decision 2026-07-06). The PRIMARY owner signal is the
+// watchdog's iMessage at the moment it acts; THIS is the durable, dashboard-
+// visible signal so the state is not lost if that text was missed. It reads the
+// same ~/.dojo/update-state.json marker the watchdog writes. Two phases matter:
+//   rolled-back        -> the box undid a bad update and is on the previous build
+//   failed-permanently -> a failed update could NOT be safely undone; needs a person
+// (A healthy/idle/pending marker produces no item; this is notify-only, the
+// Healer must NOT try to force an update from it.)
+function getUpdateRollbackItems(): DiagnosticItem[] {
+  const items: DiagnosticItem[] = [];
+  try {
+    const marker = readMarker();
+    if (!marker) return items;
+
+    if (marker.phase === 'failed-permanently') {
+      items.push({
+        severity: 'critical',
+        code: 'UPDATE_FAILED_PERMANENTLY',
+        title: 'A dojo update failed to start and could not be safely undone',
+        detail:
+          `A recent dojo update did not boot correctly, and the system did NOT automatically put the old version ` +
+          `back because doing so could have made things worse (for example, the update had already changed the ` +
+          `database). The box may keep restarting or stay on a version that will not run. This needs a person: open ` +
+          `the dojo dashboard and restore a previous version from the update screen, or get help. Let the owner know ` +
+          `in plain language that a dojo update failed and the box needs manual attention. Do NOT try to force ` +
+          `another update.`,
+      });
+    } else if (marker.phase === 'rolled-back') {
+      const toVer = marker.previousVersion ? ` (version ${marker.previousVersion})` : '';
+      items.push({
+        severity: 'warning',
+        code: 'UPDATE_ROLLED_BACK',
+        title: 'A failed dojo update was automatically undone',
+        detail:
+          `A recent dojo update did not start up correctly, so the system automatically put the previous version` +
+          `${toVer} back, and the box is running normally on it. No data was lost. The newer version still has a ` +
+          `problem on this box, so let the owner know in plain language that an update was rolled back and it may be ` +
+          `worth waiting for the next version before updating again. Do NOT re-apply the same update.`,
+      });
+    }
+  } catch (err) {
+    logger.warn('Update auto-rollback health collector failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  return items;
+}
+
 // ── Helpers ──
 
 function getAgentName(agentId: string): string {
@@ -665,9 +922,12 @@ export function compileDiagnosticReport(): DiagnosticReport {
     ...capItemsByText(getContextHealth(), COLLECTOR_CAPS.context_health, 'context_health'),
     ...capItemsByText(getTrackerHealth(), COLLECTOR_CAPS.tracker_health, 'tracker_health'),
     ...capItemsByText(getBulletproofToolHealth(), COLLECTOR_CAPS.bulletproof_health, 'bulletproof_health'),
+    ...capItemsByText(getDreamHealth(), COLLECTOR_CAPS.dream_health, 'dream_health'),
     ...capItemsByText(getNudgeStats(), COLLECTOR_CAPS.nudge_stats, 'nudge_stats'),
     ...capItemsByText(getProviderOutagePatterns(), 1500, 'provider_outage'),
     ...capItemsByText(getBudgetStatus(), COLLECTOR_CAPS.budget, 'budget'),
+    ...capItemsByText(getUpdateCheckHealthItems(), COLLECTOR_CAPS.update_check, 'update_check'),
+    ...capItemsByText(getUpdateRollbackItems(), COLLECTOR_CAPS.auto_rollback, 'auto_rollback'),
   ];
 
   // Sort: critical first, then warning, then info
@@ -744,5 +1004,32 @@ export function compileDiagnosticReport(): DiagnosticReport {
     criticalCount, warningCount, infoCount, totalItems: items.length,
   });
 
+  // Stash the structured items (with their codes + agent scope) so
+  // healer_propose can auto-fill provenance on the proposal it writes.
+  // The persisted healer_diagnostics row only stores the human report
+  // TEXT, not the codes, so this in-memory snapshot is the only place a
+  // later caller can read the current run's codes. healer_propose fires
+  // seconds after this during the same cycle, so the snapshot is fresh.
+  latestDiagnosticSnapshot = { id, items, at: Date.now() };
+
   return { id, timestamp: now, items, criticalCount, warningCount, infoCount, reportText };
+}
+
+// ── Latest-run snapshot (for proposal provenance auto-fill) ──
+// In-memory only; not persisted. Consumers must treat a missing/stale
+// snapshot as "no auto-fill available" and fall back to model-supplied
+// values.
+let latestDiagnosticSnapshot: { id: string; items: DiagnosticItem[]; at: number } | null = null;
+
+/**
+ * Return the most recently compiled diagnostic snapshot if it is fresh
+ * enough to trust for provenance auto-fill, otherwise null. Freshness
+ * guards against tagging a proposal with a code from a run that is no
+ * longer the current one (which could make the sweep auto-resolve it
+ * early).
+ */
+export function getFreshDiagnosticSnapshot(maxAgeMs = 10 * 60 * 1000): { id: string; items: DiagnosticItem[] } | null {
+  if (!latestDiagnosticSnapshot) return null;
+  if (Date.now() - latestDiagnosticSnapshot.at > maxAgeMs) return null;
+  return { id: latestDiagnosticSnapshot.id, items: latestDiagnosticSnapshot.items };
 }

@@ -45,6 +45,14 @@ export interface Model {
   // @deprecated since v2.11.0 — use costPerUnit instead. Kept for one
   // release as a fallback read path so older clients don't break.
   costPerMegapixel: number | null;
+  // True when the rate that applies to this model is NULL in the DB (not an
+  // explicit 0): a token row missing input or output $/M, or a non-token row
+  // missing costPerUnit. Derived at read time, no column. Per owner decision
+  // D-H the biller treats an unknown rate as $0 (phantom cost must not count
+  // toward the budget wall), so this flag keeps a genuinely-paid model with a
+  // failed price lookup visible instead of silently hidden at $0. The Settings
+  // model card renders a "price unknown, set a rate" hint off it.
+  priceUnknown: boolean;
   isEnabled: boolean;
   // Per-model thinking/reasoning toggle. Defaults to true. Only meaningful
   // when the capabilities array includes 'thinking'; for non-thinking

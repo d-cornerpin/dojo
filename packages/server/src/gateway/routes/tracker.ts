@@ -441,6 +441,14 @@ trackerRouter.post('/override-requests/:id/resolve', async (c) => {
         actionTaken: 'dashboard override(approve=true)',
         reason,
       });
+      // D-K: an approved override to 'fallen' can be the transition that
+      // empties the project of open tasks; run the fail-open check (idempotent).
+      if (req.requested_status === 'fallen') {
+        try {
+          const { checkProjectCompletion } = await import('../../tracker/tools.js');
+          checkProjectCompletion(updated.projectId, 'user:dashboard');
+        } catch { /* best-effort */ }
+      }
       logger.info('Override approved via dashboard', { taskId: req.task_id, requestId: id });
       return c.json({ ok: true, data: { approved: true } });
     }
@@ -510,6 +518,22 @@ trackerRouter.post('/tasks', async (c) => {
 
   if (!body || typeof body.title !== 'string') {
     return c.json({ ok: false, error: 'title (string) is required' }, 400);
+  }
+
+  // FA-S4: reject a specific_days schedule with an empty/invalid day allowlist
+  // BEFORE the row is created, so a config error fails loudly instead of
+  // silently degrading to a single fire then complete (the scheduler's
+  // specific_days walk can't advance with no allowed weekday). Only matters
+  // when a schedule is actually written (scheduled_start present). Mirrors the
+  // agent-side creator check in tracker_create_task.
+  if (body.scheduled_start && body.repeat_unit === 'specific_days') {
+    const { parseDaysOfWeek } = await import('../../scheduler/engine.js');
+    if (!parseDaysOfWeek((body.repeat_days_of_week ?? null) as string | null)) {
+      return c.json({
+        ok: false,
+        error: 'A "specific days" repeat needs at least one weekday selected (e.g. Mon and Wed). With no days selected the task would run once and then stop. Pick the days you want, or use a plain weekly repeat instead.',
+      }, 400);
+    }
   }
 
   try {
@@ -599,6 +623,22 @@ trackerRouter.put('/tasks/:id', async (c) => {
     return c.json({ ok: false, error: 'Task not found' }, 404);
   }
 
+  // FA-S4: this route fully overwrites the schedule from the body when
+  // scheduled_start is set, so the effective unit/days are exactly the body's.
+  // Reject a specific_days schedule with an empty/invalid day allowlist before
+  // touching the row, so it fails loudly instead of degrading to a single fire
+  // then complete. `!= null` covers both undefined (no schedule edit) and null
+  // (the remove-schedule branch), neither of which writes specific_days.
+  if (body.scheduled_start != null && body.repeat_unit === 'specific_days') {
+    const { parseDaysOfWeek } = await import('../../scheduler/engine.js');
+    if (!parseDaysOfWeek((body.repeat_days_of_week ?? null) as string | null)) {
+      return c.json({
+        ok: false,
+        error: 'A "specific days" repeat needs at least one weekday selected (e.g. Mon and Wed). With no days selected the task would run once and then stop. Pick the days you want, or use a plain weekly repeat instead.',
+      }, 400);
+    }
+  }
+
   try {
     const updates: Record<string, string> = {};
     if (body.status) updates.status = body.status;
@@ -647,6 +687,17 @@ trackerRouter.put('/tasks/:id', async (c) => {
               revert_count = 0
           WHERE id = ? AND awaiting_user_verdict = 0
         `).run(body.status, body.status, body.status, id);
+        // D-K: a dashboard drag to 'fallen' can be the transition that empties
+        // the project of open tasks; run the fail-open check (idempotent).
+        // All-complete projects left active still have the Healer's
+        // ORPHANED_PROJECT backstop; fallen-containing ones have no backstop,
+        // so the needs-attention label must land at transition time.
+        if (body.status === 'fallen') {
+          try {
+            const { checkProjectCompletion } = await import('../../tracker/tools.js');
+            checkProjectCompletion(existing.projectId, 'user:dashboard');
+          } catch { /* best-effort */ }
+        }
       }
     }
 

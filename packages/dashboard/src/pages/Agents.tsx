@@ -322,6 +322,7 @@ const TerminatedAgentRow = ({
 // ── Main Component ──
 
 export const Agents = () => {
+  const navigate = useNavigate();
   const [agents, setAgents] = useState<AgentDetail[]>([]);
   const [models, setModels] = useState<Model[]>([]);
   const [providerNameById, setProviderNameById] = useState<Record<string, string>>({});
@@ -446,6 +447,7 @@ export const Agents = () => {
         <h2 className="phead__title">Agents</h2>
         <span className="phead__meta">{activeAgents.length} agent{activeAgents.length !== 1 ? 's' : ''}</span>
         <div className="phead__actions">
+          <button type="button" className="btn" onClick={() => navigate('/interagent')}>Agent Threads</button>
           <button type="button" className="btn" onClick={() => setShowCreateGroup(true)}>+ Form Squad</button>
           <button type="button" className="btn btn--primary" onClick={() => setShowCreate(true)}>+ Recruit Agent</button>
         </div>

@@ -97,7 +97,7 @@ describe('channel parsers — real marker shapes', () => {
     expect(parseInboundChannel('[SOURCE: SMS FROM +15551234567] hi')).toMatchObject({ channel: 'sms', sender: '+15551234567' });
     expect(parseInboundChannel('[SOURCE: TEAMS MESSAGE FROM Alice Smith] hi')).toMatchObject({ channel: 'teams', sender: 'Alice Smith' });
     expect(parseInboundChannel('[SOURCE: GMAIL NOTIFICATION - user@example.com (user)] hi')?.channel).toBe('email');
-    expect(parseInboundChannel('[SOURCE: AGENT MESSAGE FROM DAVEJR (agent ID: x)]')).toBeNull();
+    expect(parseInboundChannel('[SOURCE: AGENT MESSAGE FROM TESTUSER (agent ID: x)]')).toBeNull();
     expect(parseInboundChannel('just a normal message')).toBeNull();
   });
 

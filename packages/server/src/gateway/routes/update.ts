@@ -11,6 +11,7 @@ import os from 'node:os';
 import type { AppEnv } from '../server.js';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
+import { markPendingUpdate, markBootingNew } from '../../update-state.js';
 
 const execAsync = promisify(exec);
 const logger = createLogger('updater');
@@ -30,12 +31,20 @@ const DOJO_DIR = path.join(os.homedir(), '.dojo');
 // after each update (1 = the one we just made + nothing else; 2 gives
 // us a second deeper rollback option). Default 2.
 const BACKUP_PREFIX = 'platform.backup-';
+// A build that failed to boot and was set aside by rollback.sh for diagnosis
+// (`platform.failed-<version>-<YYYYMMDD>-<HHMMSS>`). These are also 100-200MB
+// each and, before FA-D5, nothing ever deleted them, so a box that hit a few
+// bad updates slowly filled its disk with dead trees. They now age out on the
+// SAME prune schedule as backups (keep the newest MAX_BACKUPS_TO_KEEP).
+const FAILED_PREFIX = 'platform.failed-';
 const MAX_BACKUPS_TO_KEEP = 2;
 
 interface BackupInfo {
   name: string;
   path: string;
   mtimeMs: number;
+  /** Version parsed from the dir NAME (not mtime). See FA-D5. */
+  version: string;
 }
 
 // Fast listing: stat each backup dir's mtime (single syscall per entry).
@@ -43,23 +52,51 @@ interface BackupInfo {
 // host with many backups stalled the settings page for minutes and burst
 // past Cloudflare's 100s timeout. Sizes are no longer reported in the
 // listing - the dashboard just shows count.
-function listPlatformBackups(): BackupInfo[] {
+// Parse the version encoded in a directory name.
+//   platform.backup-<version>                      → <version>
+//   platform.failed-<version>-<YYYYMMDD>-<HHMMSS>  → <version>
+// (<version> itself may carry a `-preflight.N` suffix, so strip only the
+// trailing 8-digit + 6-digit timestamp rollback.sh stamps on failed builds.)
+function backupVersionFromName(name: string): string {
+  return name.slice(BACKUP_PREFIX.length);
+}
+function failedVersionFromName(name: string): string {
+  return name.slice(FAILED_PREFIX.length).replace(/-\d{8}-\d{6}$/, '');
+}
+
+function listDirsWithPrefix(prefix: string, versionOf: (name: string) => string): BackupInfo[] {
   if (!fs.existsSync(DOJO_DIR)) return [];
-  const entries = fs.readdirSync(DOJO_DIR);
-  const backups: BackupInfo[] = [];
-  for (const name of entries) {
-    if (!name.startsWith(BACKUP_PREFIX)) continue;
+  const out: BackupInfo[] = [];
+  for (const name of fs.readdirSync(DOJO_DIR)) {
+    if (!name.startsWith(prefix)) continue;
     const fullPath = path.join(DOJO_DIR, name);
     let stat;
     try { stat = fs.statSync(fullPath); } catch { continue; }
     if (!stat.isDirectory()) continue;
-    backups.push({
-      name,
-      path: fullPath,
-      mtimeMs: stat.mtimeMs,
-    });
+    out.push({ name, path: fullPath, mtimeMs: stat.mtimeMs, version: versionOf(name) });
   }
-  return backups;
+  return out;
+}
+
+function listPlatformBackups(): BackupInfo[] {
+  return listDirsWithPrefix(BACKUP_PREFIX, backupVersionFromName);
+}
+
+function listFailedBuilds(): BackupInfo[] {
+  return listDirsWithPrefix(FAILED_PREFIX, failedVersionFromName);
+}
+
+// Newest first, BY PARSED VERSION (FA-D5). The dir mtime only breaks ties
+// between two dirs that parse to the same version, so a touched mtime, or a
+// prune interrupted by process.exit, can no longer restore the wrong build
+// while deleting the right one. This is the ordering both the prune (what to
+// delete) and a rollback (what to keep as the newest target) must use.
+function sortNewestFirst(list: BackupInfo[]): BackupInfo[] {
+  return [...list].sort((a, b) => {
+    const v = compareVersions(b.version, a.version);
+    if (v !== 0) return v;
+    return b.mtimeMs - a.mtimeMs;
+  });
 }
 
 // Async pruning: shell out to `rm -rf` (much faster than fs.rmSync since
@@ -67,9 +104,16 @@ function listPlatformBackups(): BackupInfo[] {
 // parallel. Returns a promise that resolves when all deletions complete.
 // Caller decides whether to await or fire-and-forget.
 async function pruneOldBackupsAsync(keep: number = MAX_BACKUPS_TO_KEEP): Promise<{ deleted: string[]; failed: Array<{ name: string; error: string }> }> {
-  const backups = listPlatformBackups();
-  backups.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  const toDelete = backups.slice(keep);
+  // Two independent pools, each capped to `keep` newest BY VERSION (FA-D5):
+  //   platform.backup-* , real rollback targets (keep >= 1 always, so a box
+  //                        never prunes itself out of a recovery option).
+  //   platform.failed-* , broken builds rollback.sh set aside for diagnosis;
+  //                        before FA-D5 nothing deleted these and they filled
+  //                        the disk. Same schedule, same keep count.
+  const toDelete = [
+    ...sortNewestFirst(listPlatformBackups()).slice(keep),
+    ...sortNewestFirst(listFailedBuilds()).slice(keep),
+  ];
   const deleted: string[] = [];
   const failed: Array<{ name: string; error: string }> = [];
 
@@ -93,12 +137,19 @@ async function pruneOldBackupsAsync(keep: number = MAX_BACKUPS_TO_KEEP): Promise
   }
 
   if (deleted.length > 0) {
-    logger.info('Pruned old platform backups', { deleted, keep });
+    logger.info('Pruned old platform backups + failed builds', { deleted, keep });
   }
   if (failed.length > 0) {
-    logger.warn('Some backup deletions failed', { failed });
+    logger.warn('Some backup/failed-build deletions failed', { failed });
   }
   return { deleted, failed };
+}
+
+// Boot-time entry point (FA-D5): bound both backup pools on every startup so a
+// prune the post-update fire-and-forget didn't finish (it races the scheduled
+// process.exit) still completes on the next launch. Awaitable + best-effort.
+export async function pruneOldBackupsAsyncAtBoot(): Promise<void> {
+  await pruneOldBackupsAsync();
 }
 
 // Module-level cleanup state. Single in-flight cleanup at a time; status
@@ -160,13 +211,28 @@ function parseVersion(v: string): { base: number[]; pre: number | null } {
   const dash = s.indexOf('-');
   const basePart = dash === -1 ? s : s.slice(0, dash);
   const preTag = dash === -1 ? '' : s.slice(dash + 1);
-  const base = basePart.split('.').map(Number);
+  // Clamp non-numeric segments to 0 (FA-D7). A malformed base ("3.x.1", a
+  // hand-edited tag) would otherwise yield NaN, which BOTH scrambles the
+  // preflight sort (NaN comparisons are never < or >) AND slips past
+  // applyUpdate's downgrade guard, since `NaN <= 0` is false.
+  const base = basePart.split('.').map(seg => {
+    const n = Number(seg);
+    return Number.isFinite(n) ? n : 0;
+  });
   let pre: number | null = null;
   if (preTag) {
     const m = preTag.match(/(\d+)\s*$/);
     pre = m ? Number(m[1]) : 0;
   }
   return { base, pre };
+}
+
+// A well-formed release tag: vX.Y.Z with an optional pre-release suffix.
+// Junk tags (a hand-created "nightly", a mis-typed tag) are filtered out
+// BEFORE sorting so a NaN-parsed non-semver tag can never win the preflight
+// selection and shadow the real latest release (FA-D7).
+export function isValidVersionTag(tag: string): boolean {
+  return /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(tag.trim());
 }
 
 // Semver-with-prerelease precedence. Same base version: a stable release
@@ -240,7 +306,8 @@ async function resolveLatestRelease(channel: UpdateChannel): Promise<GhRelease |
   });
   if (!res.ok) throw new Error(`GitHub API: ${res.status}`);
   const all = await res.json() as GhRelease[];
-  const candidates = all.filter(r => !r.draft);
+  // Filter out drafts AND any non-semver tag (FA-D7) so junk can't win the sort.
+  const candidates = all.filter(r => !r.draft && isValidVersionTag(r.tag_name));
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => compareVersions(b.tag_name, a.tag_name));
   return candidates[0];
@@ -311,12 +378,105 @@ const UPDATE_CACHE_KEY = 'update_check_cache';
 export interface UpdateCacheEntry extends UpdateCheckResult {
   /** When this snapshot was taken (ISO). */
   checkedAt: string;
+  /** Consecutive failed daily checks; 0 when the last check succeeded (FA-D6). */
+  consecutiveCheckFailures?: number;
+  /** True once the check pipeline has failed UPDATE_CHECK_FAILURE_THRESHOLD times running. */
+  checkPipelineFailing?: boolean;
+}
+
+// ── Update-check pipeline health (FA-D6) ──
+// The daily check never throws, a GitHub outage, a renamed repo, or a
+// sustained rate-limit comes back as `error` with updateAvailable:false.
+// Left unobserved, a box can silently strand OFF updates (fixes included) for
+// weeks. We count CONSECUTIVE failed checks; once they cross the threshold we
+// raise a notify-only health signal (Healer diagnostic + owner-visible line).
+// This is a signal about the CHECK PIPELINE, not an update notification: the
+// no-push design is intact, we never auto-update and never nudge "update
+// available" on our own.
+export const UPDATE_CHECK_FAILURE_THRESHOLD = 7;
+
+const FAIL_COUNT_KEY = 'update_check_consecutive_failures';
+const FAILING_SINCE_KEY = 'update_check_failing_since'; // stamped once when we cross the bar; cleared on recovery
+const LAST_ERROR_KEY = 'update_check_last_error';
+
+function readConfigStr(key: string): string | null {
+  try {
+    const row = getDb().prepare('SELECT value FROM config WHERE key = ?').get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  } catch { return null; }
+}
+function writeConfigStr(key: string, value: string): void {
+  getDb().prepare(`
+    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
+  `).run(key, value, value);
+}
+function clearConfig(key: string): void {
+  try { getDb().prepare('DELETE FROM config WHERE key = ?').run(key); } catch { /* best effort */ }
+}
+
+export interface UpdateCheckHealth {
+  consecutiveFailures: number;
+  /** consecutiveFailures >= UPDATE_CHECK_FAILURE_THRESHOLD */
+  failing: boolean;
+  threshold: number;
+  /** When the pipeline first crossed the threshold (ISO), or null if healthy. */
+  failingSince: string | null;
+  lastError: string | null;
+}
+
+/** Current update-check pipeline health, read from config. Never throws. */
+export function getUpdateCheckHealth(): UpdateCheckHealth {
+  const consecutiveFailures = Number(readConfigStr(FAIL_COUNT_KEY) ?? '0') || 0;
+  return {
+    consecutiveFailures,
+    failing: consecutiveFailures >= UPDATE_CHECK_FAILURE_THRESHOLD,
+    threshold: UPDATE_CHECK_FAILURE_THRESHOLD,
+    failingSince: readConfigStr(FAILING_SINCE_KEY),
+    lastError: readConfigStr(LAST_ERROR_KEY),
+  };
+}
+
+// Fold one check outcome into the counter. A successful check resets the whole
+// failure state (the reset rule: cleared on the first success); a failed one
+// bumps the count and, the FIRST time it crosses the threshold, stamps
+// failingSince exactly once (alert-once, mirroring FA-W4/FA-X1). Never throws.
+function recordUpdateCheckOutcome(result: UpdateCheckResult): UpdateCheckHealth {
+  try {
+    if (!result.error) {
+      const prev = Number(readConfigStr(FAIL_COUNT_KEY) ?? '0') || 0;
+      if (prev !== 0) writeConfigStr(FAIL_COUNT_KEY, '0');
+      clearConfig(FAILING_SINCE_KEY);
+      clearConfig(LAST_ERROR_KEY);
+    } else {
+      const next = (Number(readConfigStr(FAIL_COUNT_KEY) ?? '0') || 0) + 1;
+      writeConfigStr(FAIL_COUNT_KEY, String(next));
+      writeConfigStr(LAST_ERROR_KEY, result.error);
+      if (next >= UPDATE_CHECK_FAILURE_THRESHOLD && !readConfigStr(FAILING_SINCE_KEY)) {
+        writeConfigStr(FAILING_SINCE_KEY, new Date().toISOString());
+        logger.warn('Update check has failed repeatedly; raising a health signal', {
+          consecutiveFailures: next, threshold: UPDATE_CHECK_FAILURE_THRESHOLD, lastError: result.error,
+        });
+      }
+    }
+  } catch (err) {
+    logger.warn('Failed to record update-check outcome', { error: err instanceof Error ? err.message : String(err) });
+  }
+  return getUpdateCheckHealth();
 }
 
 /** Hit GitHub, write the result to the DB cache, and return it. */
 export async function refreshUpdateCache(): Promise<UpdateCacheEntry> {
   const result = await checkForUpdate();
-  const entry: UpdateCacheEntry = { ...result, checkedAt: new Date().toISOString() };
+  // Fold the outcome into the consecutive-failure counter (FA-D6) before we
+  // build the cache entry, so the entry carries the current pipeline health.
+  const health = recordUpdateCheckOutcome(result);
+  const entry: UpdateCacheEntry = {
+    ...result,
+    checkedAt: new Date().toISOString(),
+    consecutiveCheckFailures: health.consecutiveFailures,
+    checkPipelineFailing: health.failing,
+  };
   try {
     const json = JSON.stringify(entry);
     getDb().prepare(`
@@ -421,6 +581,10 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
     }
     logger.info('Backing up current platform', { from: PLATFORM_DIR, to: backupDir });
     await execAsync(`cp -R "${PLATFORM_DIR}" "${backupDir}"`, { timeout: 30000 });
+    // D-F: the update episode begins the moment a restorable backup exists.
+    // The watchdog only ever auto-rolls-back when this marker proves a
+    // self-update is in flight and failing, never on a generic outage.
+    markPendingUpdate({ targetVersion: latestVersion, previousVersion: currentVersion, backupDir });
 
     // 6. Copy new files over (preserve node_modules, data, secrets)
     // Use rsync to properly overwrite existing directories
@@ -482,6 +646,9 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
 
     // 9. Schedule the restart. Small delay so the caller's response (HTTP
     // body or tool result) flushes first; launchd restarts us.
+    // D-F: flip the marker to booting-new right before the exit; the boot
+    // sentinel + watchdog take the episode from here.
+    markBootingNew();
     setTimeout(() => {
       logger.info('Restarting server after update');
       process.exit(0); // launchd will restart us
@@ -635,6 +802,9 @@ updateRouter.post('/rollback', async (c) => {
     if (fs.existsSync(backupDir)) fs.rmSync(backupDir, { recursive: true });
     logger.info('Backing up current platform for rollback', { from: PLATFORM_DIR, to: backupDir });
     await execAsync(`cp -R "${PLATFORM_DIR}" "${backupDir}"`, { timeout: 30000 });
+    // D-F: a manual rollback is an update episode too (the restored build must
+    // come up healthy or the watchdog escalates); same marker discipline.
+    markPendingUpdate({ targetVersion, previousVersion: currentVersion, backupDir });
 
     // Copy files (same logic as apply)
     const env = { ...process.env, PATH: `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH}` };
@@ -662,6 +832,8 @@ updateRouter.post('/rollback', async (c) => {
 
     logger.info('Rollback complete', { from: currentVersion, to: targetVersion });
 
+    // D-F: same booting-new flip as the update path.
+    markBootingNew();
     setTimeout(() => {
       logger.info('Restarting server after rollback');
       process.exit(0);
@@ -737,16 +909,18 @@ updateRouter.post('/backups/cleanup', async (c) => {
 
   // Snapshot the target count up front so the dashboard can show progress
   // ("Cleaning up 8 backups...") even before the first deletion completes.
-  const allBackups = listPlatformBackups();
-  allBackups.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  const targetCount = Math.max(0, allBackups.length - keep);
+  // The prune deletes all-but-`keep` of BOTH pools (backups AND failed
+  // builds, FA-D5), so count both or the progress number under-reports.
+  const backupCount = listPlatformBackups().length;
+  const failedCount = listFailedBuilds().length;
+  const targetCount = Math.max(0, backupCount - keep) + Math.max(0, failedCount - keep);
 
   if (targetCount === 0) {
     return c.json({
       ok: true,
       data: {
         status: 'noop',
-        message: `No old backups to delete (${allBackups.length} on disk, keeping ${keep}).`,
+        message: `No old backups or failed builds to delete (${backupCount} backup(s), ${failedCount} failed build(s) on disk, keeping ${keep} of each).`,
         kept: keep,
       },
     });

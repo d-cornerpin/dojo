@@ -120,6 +120,36 @@ function findRetirementCandidates(): RetireCandidate[] {
 }
 
 /**
+ * FA-TS6: persist the retirement signal durably on the technique row so it
+ * survives the cycle and any dashboard reading the table sees it. Set
+ * retire_flagged_at on current candidates that aren't already flagged (the first
+ * flag time is preserved while a technique stays a candidate), and clear it back
+ * to NULL on any still-flagged technique that is NOT a candidate this cycle,
+ * i.e. it became healthy again (success rate recovered) or its usage fell below
+ * the retirement floor. Retirement itself stays owner-manual; this only tracks
+ * the suggestion.
+ */
+function persistRetirementFlags(candidates: RetireCandidate[]): void {
+  const db = getDb();
+  const flaggedIds = new Set(candidates.map((c) => c.id));
+
+  const setStmt = db.prepare(
+    "UPDATE techniques SET retire_flagged_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND retire_flagged_at IS NULL",
+  );
+  for (const c of candidates) setStmt.run(c.id);
+
+  const stillFlagged = db.prepare(
+    'SELECT id FROM techniques WHERE retire_flagged_at IS NOT NULL',
+  ).all() as Array<{ id: string }>;
+  const clearStmt = db.prepare(
+    "UPDATE techniques SET retire_flagged_at = NULL, updated_at = datetime('now') WHERE id = ?",
+  );
+  for (const row of stillFlagged) {
+    if (!flaggedIds.has(row.id)) clearStmt.run(row.id);
+  }
+}
+
+/**
  * One engine pass per dreaming cycle. Never spawns agents itself; it sends
  * at most one batched A2A to the Trainer (draft authoring) and one to the
  * primary (owner-approval relay + retirement flags).
@@ -146,6 +176,10 @@ export async function runDistillationCycle(): Promise<void> {
 
   // ── 5d: failing published techniques → retirement flags ──
   const retireFlags = findRetirementCandidates();
+  // FA-TS6: persist the flag durably (and clear healthy-again techniques) EVERY
+  // cycle, before the early-return, so a cycle with zero current candidates
+  // still un-flags anything that recovered.
+  persistRetirementFlags(retireFlags);
 
   if (candidates.length === 0 && retireFlags.length === 0) {
     logger.debug('distillation: nothing to do this cycle');
@@ -187,16 +221,39 @@ export async function runDistillationCycle(): Promise<void> {
   // candidate + retirement enumeration already goes to the Trainer's ASSIGN thread
   // (above) and the technique/tracker tables the owner reads when acting. The primary
   // only needs a brief, actionable heads-up in its awareness lane.
-  const bits: string[] = [];
-  if (candidates.length > 0) bits.push(`drafted ${candidates.length} technique${candidates.length === 1 ? '' : 's'} from repeated task patterns`);
-  if (retireFlags.length > 0) bits.push(`flagged ${retireFlags.length} technique${retireFlags.length === 1 ? '' : 's'} for possible retirement`);
-  if (bits.length > 0) {
+  //
+  // FA-TS6: the retirement half now NAMES the flagged techniques (name + uses +
+  // success%) so the owner knows which ones to look at, and says plainly they
+  // are suggestions, nothing is auto-retired. Kept compact for the floor model:
+  // the named list is capped, with an overflow count.
+  const RETIRE_NAME_CAP = 6;
+  if (candidates.length > 0 || retireFlags.length > 0) {
+    const lines: string[] = ['Nightly learning pass:'];
+    if (candidates.length > 0) {
+      lines.push(
+        `• Drafted ${candidates.length} technique${candidates.length === 1 ? '' : 's'} from repeated task patterns (inert drafts until you promote them).`,
+      );
+    }
+    if (retireFlags.length > 0) {
+      const named = retireFlags
+        .slice(0, RETIRE_NAME_CAP)
+        .map((r) => `   - "${r.name}": ${r.uses} uses, ${Math.round(r.successRate * 100)}% success`)
+        .join('\n');
+      const overflow = retireFlags.length > RETIRE_NAME_CAP
+        ? `\n   - …and ${retireFlags.length - RETIRE_NAME_CAP} more`
+        : '';
+      lines.push(
+        `• Flagged ${retireFlags.length} published technique${retireFlags.length === 1 ? '' : 's'} for you to review (low success rate lately). ` +
+        `These are suggestions only, nothing was auto-retired:\n${named}${overflow}`,
+      );
+    }
+    lines.push('Want me to promote any drafts or archive any flagged ones? Say the word; otherwise nothing changes.');
     postAgentNotice({
       toAgentId: getPrimaryAgentId(),
       fromName: 'Learning loop',
       selfIntro: false,
       intent: 'learning_loop',
-      brief: `Nightly pass: I ${bits.join(' and ')}. Want to review whether to promote or archive them? The drafts are inert until you approve.`,
+      brief: lines.join('\n'),
     });
   }
 }

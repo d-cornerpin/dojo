@@ -110,12 +110,110 @@ export function formatToolResultsForPrompt(results: Array<{ toolCallId: string; 
 
 // ── Conversation Formatting ──
 
+// Placeholders substituted for attachment blocks in HISTORY. This transport
+// packs history into a plain-text system prompt (query() takes a string prompt,
+// options.systemPrompt is a string), so historical image/document blocks cannot
+// be re-sent as real attachments. We keep a short marker so turn count and
+// context alignment survive instead of the block silently vanishing (FA-PC4).
+const HISTORY_IMAGE_PLACEHOLDER = '[image omitted by this connection]';
+const HISTORY_DOCUMENT_PLACEHOLDER = '[document omitted by this connection]';
+
+/**
+ * Thrown when the CURRENT user message carries an image this transport cannot
+ * forward. The SDK's query() prompt is text in the shape we use (a string, with
+ * history folded into options.systemPrompt), so rather than answer blind we
+ * surface loudly (FA-PC4). The wording is chosen to hit the provider
+ * classifier's vision_mismatch branch (agent/v2/classifiers/provider.ts), so
+ * the recovery cascade hands the agent a plain "this model can't see images"
+ * note instead of injuring it.
+ */
+export class AgentSdkVisionUnsupportedError extends Error {
+  constructor() {
+    super(
+      'This model connection does not support image input (vision). ' +
+      'The image was NOT read. To send pictures, pin a vision-capable model or use the auto-router.',
+    );
+    this.name = 'AgentSdkVisionUnsupportedError';
+  }
+}
+
+type SdkContentBlock = { type?: string; text?: string; [k: string]: unknown };
+
+/** True when a message's content carries at least one top-level image block. */
+function contentHasTopLevelImage(content: string | object[]): boolean {
+  if (typeof content === 'string') return false;
+  return (content as SdkContentBlock[]).some(b => b.type === 'image');
+}
+
+/**
+ * Render one message's content to plain text for the transport. Faithfully
+ * preserves tool_use / tool_result blocks using this transport's OWN
+ * <tool_call> / <tool_result> convention (the same shapes formatToolsForPrompt
+ * teaches the model and parseToolCallsFromText reads back), mirroring how the
+ * OpenAI-compat translator folds tool_result -> role:'tool' and tool_use ->
+ * tool_calls. Image/document blocks become a short placeholder so nothing
+ * silently vanishes. Exported for unit tests.
+ */
+export function renderContentToText(content: string | object[]): string {
+  if (typeof content === 'string') return content;
+  const parts: string[] = [];
+  for (const b of content as SdkContentBlock[]) {
+    switch (b.type) {
+      case 'text':
+        if (b.text) parts.push(b.text);
+        break;
+      case 'tool_use': {
+        const name = (b.name as string) ?? 'tool';
+        const args = JSON.stringify((b.input as unknown) ?? {});
+        parts.push(`<tool_call>\n<name>${name}</name>\n<arguments>\n${args}\n</arguments>\n</tool_call>`);
+        break;
+      }
+      case 'tool_result': {
+        const inner = b.content;
+        let text: string;
+        if (typeof inner === 'string') {
+          text = inner;
+        } else if (Array.isArray(inner)) {
+          text = (inner as SdkContentBlock[])
+            .map(ib => (ib.type === 'text' ? (ib.text ?? '')
+              : ib.type === 'image' ? HISTORY_IMAGE_PLACEHOLDER
+              : ''))
+            .filter(Boolean)
+            .join('\n');
+        } else {
+          text = inner == null ? '' : JSON.stringify(inner);
+        }
+        const err = b.is_error ? ' error="true"' : '';
+        parts.push(`<tool_result>\n<result${err}>${text}</result>\n</tool_result>`);
+        break;
+      }
+      case 'image':
+        parts.push(HISTORY_IMAGE_PLACEHOLDER);
+        break;
+      case 'document':
+        parts.push(HISTORY_DOCUMENT_PLACEHOLDER);
+        break;
+      default:
+        // Unknown block shape: keep any text-ish field, else skip.
+        if (b.text) parts.push(b.text);
+        break;
+    }
+  }
+  return parts.join('\n');
+}
+
 /**
  * Format conversation history into the system prompt.
- * The SDK's query() takes a single prompt string, so we pack history into the system prompt
- * and use the latest user message as the prompt.
+ * The SDK's query() takes a single prompt string, so we pack history into the
+ * system prompt and use the latest user message as the prompt. Roles map
+ * faithfully to Human/Assistant (the two the text form supports); tool_use /
+ * tool_result blocks are folded to their <tool_call>/<tool_result> text (no
+ * longer relabeled or dropped), and image blocks are stubbed (FA-PC4).
+ * Throws AgentSdkVisionUnsupportedError when the CURRENT user message carries an
+ * image, since the string prompt cannot forward it and answering blind is worse.
+ * Exported for unit tests.
  */
-function formatHistoryForSystemPrompt(
+export function formatHistoryForSystemPrompt(
   messages: Array<{ role: string; content: string | object[] }>,
 ): { historySection: string; lastUserMessage: string } {
   let lastUserMessage = '';
@@ -126,25 +224,29 @@ function formatHistoryForSystemPrompt(
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
-    const content = typeof msg.content === 'string'
-      ? msg.content
-      : (msg.content as Array<{ type?: string; text?: string }>)
-          .filter(b => b.type === 'text')
-          .map(b => b.text ?? '')
-          .join('');
+    const isLast = i === messages.length - 1;
 
-    if (i === messages.length - 1 && msg.role === 'user') {
-      lastUserMessage = content;
+    if (isLast && msg.role === 'user') {
+      // The current message becomes the SDK prompt (a plain string). A
+      // user-attached image cannot ride a string prompt, so refuse loudly
+      // rather than let the model answer blind (FA-PC4). Tool-result images
+      // mid-loop are top-level tool_result blocks (not 'image'), so they fall
+      // through to renderContentToText and are stubbed, not refused.
+      if (contentHasTopLevelImage(msg.content)) {
+        throw new AgentSdkVisionUnsupportedError();
+      }
+      lastUserMessage = renderContentToText(msg.content);
     } else {
-      historyMessages.push({ role: msg.role, content });
+      historyMessages.push({ role: msg.role, content: renderContentToText(msg.content) });
     }
   }
 
-  if (historyMessages.length === 0) {
+  const nonEmpty = historyMessages.filter(m => m.content.trim().length > 0);
+  if (nonEmpty.length === 0) {
     return { historySection: '', lastUserMessage };
   }
 
-  const formatted = historyMessages.map(m => {
+  const formatted = nonEmpty.map(m => {
     const label = m.role === 'user' ? 'Human' : 'Assistant';
     return `${label}: ${m.content}`;
   }).join('\n\n');

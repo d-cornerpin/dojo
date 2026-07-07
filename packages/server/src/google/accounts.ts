@@ -19,6 +19,7 @@
 import crypto from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+import { bumpToolConfigGeneration } from '../agent/tool-config-generation.js';
 
 const logger = createLogger('google-accounts');
 
@@ -82,7 +83,17 @@ function rowToAccount(r: GoogleAccountRow): GoogleAccount {
 
 // ── Reads ──
 
+// FA-TS1 diagnostics: count google_accounts scans so the perf fix can be
+// verified from dev. Before the fix a multi-tool turn drove ~185 scans per
+// callModel; after tier 1 + the memo a whole turn should show a small constant.
+// Zero cost in the hot path (an integer increment); read via the exported
+// getter from a dev route or REPL, reset between measurements.
+let googleAccountScanCount = 0;
+export function __getGoogleAccountScanCount(): number { return googleAccountScanCount; }
+export function __resetGoogleAccountScanCount(): void { googleAccountScanCount = 0; }
+
 export function listGoogleAccounts(kind?: GoogleAccountKind): GoogleAccount[] {
+  googleAccountScanCount++;
   const db = getDb();
   const rows = (kind
     ? db.prepare('SELECT * FROM google_accounts WHERE kind = ? ORDER BY position').all(kind)
@@ -126,7 +137,13 @@ export function resolveGoogleAccountForTool(
   email?: string | null,
 ): { account: GoogleAccount } | { error: string } {
   const account = resolveGoogleAccount(kind, email);
-  if (account) return { account };
+  // FA-TS5: resolveGoogleAccount hands back a lone DISCONNECTED account via its
+  // single-account back-compat branch. Running a tool against it dead-ends in a
+  // confusing auth failure or, worse, succeeds against a stale refresh_token that
+  // disconnect-on-refresh-failure cleared `connected` on but never wiped. The
+  // tool-facing resolver is authoritative on `.connected`: only a genuinely
+  // connected account counts as resolved.
+  if (account && account.connected) return { account };
   const connected = listGoogleAccounts(kind).filter(a => a.connected);
   if (connected.length === 0) {
     return { error: `No ${kind} Google account is connected. Connect one in Settings → Google.` };
@@ -186,6 +203,7 @@ export function insertGoogleAccount(acc: NewGoogleAccount): GoogleAccount {
     acc.grantedScopes ?? null, acc.enabledServices ?? null,
     acc.watchEmail ? 1 : 0, acc.sendEmail ? 1 : 0, acc.lastVerifiedAt ?? null,
   );
+  bumpToolConfigGeneration(); // FA-TS1: connect/add widens the tool surface
   return getGoogleAccount(id)!;
 }
 
@@ -234,10 +252,12 @@ export function updateGoogleAccount(id: string, patch: Partial<Omit<GoogleAccoun
   sets.push("updated_at = datetime('now')");
   values.push(id);
   getDb().prepare(`UPDATE google_accounts SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  bumpToolConfigGeneration(); // FA-TS1: connected flag / enabledServices edits change the surface
 }
 
 export function deleteGoogleAccount(id: string): void {
   getDb().prepare('DELETE FROM google_accounts WHERE id = ?').run(id);
+  bumpToolConfigGeneration(); // FA-TS1: removing an account narrows the surface
 }
 
 // ── One-time seed from legacy config keys ──

@@ -145,6 +145,12 @@ agentsRouter.post('/', async (c) => {
       VALUES (?, ?, 'system', ?, datetime('now'))
     `).run(uuidv4(), agentId, body.systemPrompt);
 
+    // FA-PT6: persist the charter durably (migration 096) so getSoulContent
+    // reads it directly instead of sniffing the earliest role='system' row.
+    try {
+      db.prepare('UPDATE agents SET charter = ? WHERE id = ?').run(body.systemPrompt, agentId);
+    } catch { /* charter column may not exist on a very old database */ }
+
     // Store initial user message — just the task, no IMPORTANT INSTRUCTIONS
     const initMsgId = uuidv4();
     db.prepare(`
@@ -268,6 +274,11 @@ agentsRouter.put('/:id', async (c) => {
       } else {
         db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(uuidv4(), id, body.systemPrompt);
       }
+      // FA-PT6: keep the durable charter column (migration 096) in sync with the
+      // edited system prompt, so getSoulContent reflects the update immediately.
+      try {
+        db.prepare('UPDATE agents SET charter = ? WHERE id = ?').run(body.systemPrompt, id);
+      } catch { /* charter column may not exist on a very old database */ }
     }
   }
 
@@ -564,8 +575,13 @@ agentsRouter.get('/:id/messages', (c) => {
   const limit = parseInt(c.req.query('limit') ?? '100', 10);
   const offset = parseInt(c.req.query('offset') ?? '0', 10);
 
+  // D-A step 7 (history retire): exclude legacy pre-cutover inter-agent rows
+  // (stamped retired_at by migration 102) from this dashboard projection, exactly
+  // as the chat history route does. New inter-agent traffic lives in the
+  // inter_agent_messages store, so this origin-projected feed only ever carries
+  // human chat + the agent's own turns now.
   const rows = db.prepare(`
-    SELECT * FROM messages WHERE agent_id = ?
+    SELECT * FROM messages WHERE agent_id = ? AND retired_at IS NULL
     ORDER BY created_at ASC
     LIMIT ? OFFSET ?
   `).all(id, limit, offset) as Array<Record<string, unknown>>;
@@ -672,6 +688,17 @@ function rowToAgentDetail(row: Record<string, unknown>): AgentDetail {
         costPerMegapixel: modelRow.pricing_unit === 'megapixel' && typeof modelRow.cost_per_megapixel === 'number'
           ? modelRow.cost_per_megapixel
           : null,
+        // priceUnknown (derived, no column): the applicable rate is NULL rather
+        // than an explicit 0. Token rows check input/output $/M; recognized
+        // non-token rows check cost_per_unit (with the megapixel legacy
+        // fallback). Per D-H an unknown rate bills as $0, so this keeps the
+        // "price unknown" state visible instead of silently hidden.
+        priceUnknown: (modelRow.pricing_unit === 'megapixel' || modelRow.pricing_unit === 'second' ||
+                       modelRow.pricing_unit === 'character' || modelRow.pricing_unit === 'minute')
+          ? !(typeof modelRow.cost_per_unit === 'number' ||
+              (modelRow.pricing_unit === 'megapixel' && typeof modelRow.cost_per_megapixel === 'number'))
+          : (modelRow.input_cost_per_m === null || modelRow.input_cost_per_m === undefined ||
+             modelRow.output_cost_per_m === null || modelRow.output_cost_per_m === undefined),
         generationParams: (() => {
           if (typeof modelRow.generation_params !== 'string' || !modelRow.generation_params) return null;
           try { return JSON.parse(modelRow.generation_params) as Model['generationParams']; }

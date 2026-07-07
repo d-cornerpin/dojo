@@ -3,6 +3,9 @@
 // ════════════════════════════════════════
 
 import { Hono } from 'hono';
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { getIMBridgeStatus, sendIMessage, startIMBridge } from '../../services/imessage-bridge.js';
@@ -36,27 +39,40 @@ const servicesRouter = new Hono();
 
 // GET /watchdog — watchdog status
 servicesRouter.get('/watchdog', (c) => {
-  // Watchdog is a separate process; check if it recently reported in
+  // FA-W5: the watchdog now owns its own liveness store (a JSON file under
+  // ~/.dojo) instead of writing its heartbeat/last-alert into the platform DB
+  // read-write every cycle. That restores the watchdog's read-only discipline
+  // over the platform DB (a DB lock can no longer drop a heartbeat and show a
+  // false "watchdog down"). We just read that file here; missing/unreadable
+  // means the watchdog has never reported in, so running:false.
   try {
-    const db = getDb();
-    const lastHeartbeat = db.prepare(`
-      SELECT value FROM config WHERE key = 'watchdog_last_heartbeat'
-    `).get() as { value: string } | undefined;
-
-    const lastAlert = db.prepare(`
-      SELECT value FROM config WHERE key = 'watchdog_last_alert'
-    `).get() as { value: string } | undefined;
+    const statePath = path.join(os.homedir(), '.dojo', 'watchdog-state.json');
+    let lastHeartbeat: string | null = null;
+    let lastAlert: string | null = null;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(statePath, 'utf-8')) as {
+        lastHeartbeat?: unknown;
+        lastAlert?: { message?: unknown } | null;
+      };
+      if (typeof parsed.lastHeartbeat === 'string') lastHeartbeat = parsed.lastHeartbeat;
+      if (parsed.lastAlert && typeof parsed.lastAlert.message === 'string') {
+        lastAlert = parsed.lastAlert.message;
+      }
+    } catch {
+      // File absent or unreadable (watchdog not running yet, or crash mid-boot).
+      // Fall through with nulls → running:false, the truthful state.
+    }
 
     const isRecent = lastHeartbeat
-      ? (Date.now() - new Date(lastHeartbeat.value).getTime()) < 300000 // 5 minutes
+      ? (Date.now() - new Date(lastHeartbeat).getTime()) < 300000 // 5 minutes
       : false;
 
     return c.json({
       ok: true,
       data: {
         running: isRecent,
-        lastHeartbeat: lastHeartbeat?.value ?? null,
-        lastAlert: lastAlert?.value ?? null,
+        lastHeartbeat,
+        lastAlert,
       },
     });
   } catch (err) {

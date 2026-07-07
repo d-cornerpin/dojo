@@ -78,7 +78,7 @@ export async function runBackfill(): Promise<{ completed: number; failed: number
     broadcast({
       type: 'backfill:progress',
       data: { ...backfillProgress, status: 'running' },
-    } as never);
+    });
 
     // Process in batches
     const batchSize = 10;
@@ -105,7 +105,7 @@ export async function runBackfill(): Promise<{ completed: number; failed: number
         broadcast({
           type: 'backfill:progress',
           data: { ...backfillProgress, status: 'running' },
-        } as never);
+        });
         logger.info(`Backfill progress: ${backfillProgress.completed}/${backfillProgress.total} (${backfillProgress.failed} failed)`);
       }
     }
@@ -115,7 +115,7 @@ export async function runBackfill(): Promise<{ completed: number; failed: number
     broadcast({
       type: 'backfill:progress',
       data: { ...backfillProgress, status: 'complete' },
-    } as never);
+    });
 
     return { ...backfillProgress };
   } finally {

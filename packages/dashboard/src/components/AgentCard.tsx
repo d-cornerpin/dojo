@@ -193,10 +193,10 @@ export const AgentCard = ({ agent, models, providerNameById, onModelChanged, ind
             )}
           </div>
         )}
-        <div className="agent-card__id">
-          <div className="agent-card__name">
-            <span className={`badge ${badge.cls}`}>{badge.label}</span>
-            {agent.name}
+        <div className="agent-card__id min-w-0">
+          <div className="agent-card__name min-w-0">
+            <span className={`badge ${badge.cls} shrink-0`}>{badge.label}</span>
+            <span className="truncate" title={agent.name}>{agent.name}</span>
           </div>
           {senseiRole && <div className="agent-card__role">{senseiRole}</div>}
         </div>

@@ -31,6 +31,11 @@ const REPLY_NEEDED_INTENTS = new Set(['QUESTION', 'ASSIGN', 'BLOCK']);
 export interface UnrepliedAssign {
   messageId: string;
   threadShort: string;   // 8-char prefix from the [A2A:... thread:XXXXXXXX ...] tag
+  // FA-C2: the FULL thread id when it is known (structural a2a_thread_id column),
+  // null for legacy prose-parsed rows that only carry the 8-char short token. Callers
+  // that need to disambiguate colliding-prefix threads (hasPriorReplyOnThread) use this
+  // full id for an authoritative match and fall back to the short token only when null.
+  threadId: string | null;
   intent: string;
   fromName: string;
   content: string;
@@ -70,18 +75,32 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
     .get(agentId) as { session_started_at: string | null } | undefined;
   const sessionStartedAt = sessionRow?.session_started_at ?? null;
 
-  const clauses: string[] = [`agent_id = ?`, `role = 'user'`];
-  const params: unknown[] = [agentId];
-  if (sessionStartedAt) { clauses.push(`created_at >= ?`); params.push(sessionStartedAt); }
-  if (maxAgeMinutes != null) { clauses.push(`created_at >= datetime('now', ?)`); params.push(`-${maxAgeMinutes} minutes`); }
-  const sql = `SELECT id, content, created_at, source_agent_id, a2a_thread_id, a2a_intent, origin_kind FROM messages
-                   WHERE ${clauses.join(' AND ')}
-                   ORDER BY created_at DESC, rowid DESC LIMIT ?`;
-  params.push(lookback);
+  // D-A: peer A2A inbound now lives in inter_agent_messages, not `messages`. Read
+  // the MERGED source (both tables) so the reply-owed machinery keeps working across
+  // the cutover: NEW peer ASSIGNs come from the store, pre-cutover ones from
+  // `messages`; the messages arm excludes ids that exist in the store so a
+  // live-edge backfilled row is never scanned twice. Cross-table tiebreak
+  // (_tag: store=1 first on a created_at tie) keeps "most recent" causally correct.
+  const clauses: string[] = [`agent_id = @agentId`, `role = 'user'`];
+  const params: Record<string, unknown> = { agentId, lookback };
+  if (sessionStartedAt) { clauses.push(`created_at >= @boundary`); params.boundary = sessionStartedAt; }
+  if (maxAgeMinutes != null) { clauses.push(`created_at >= datetime('now', @maxAge)`); params.maxAge = `-${maxAgeMinutes} minutes`; }
+  const where = clauses.join(' AND ');
+  const sql = `
+    SELECT id, content, created_at, source_agent_id, a2a_thread_id, a2a_intent, origin_kind, rowid AS _rowid, 0 AS _tag
+      FROM messages
+     WHERE ${where}
+       AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
+    UNION ALL
+    SELECT id, content, created_at, source_agent_id, a2a_thread_id, a2a_intent, origin_kind, rowid AS _rowid, 1 AS _tag
+      FROM inter_agent_messages
+     WHERE ${where}
+    ORDER BY created_at DESC, _tag DESC, _rowid DESC
+    LIMIT @lookback`;
 
   const rows = db
     .prepare(sql)
-    .all(...params) as Array<{ id: string; content: string; created_at: string; source_agent_id: string | null; a2a_thread_id: string | null; a2a_intent: string | null; origin_kind: string | null }>;
+    .all(params) as Array<{ id: string; content: string; created_at: string; source_agent_id: string | null; a2a_thread_id: string | null; a2a_intent: string | null; origin_kind: string | null }>;
 
   for (const row of rows) {
     // Engine-origin rows (Healer/PM/gate/distillation via fromAgent='system') are
@@ -100,10 +119,12 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
     // predate them.
     let intent: string;
     let threadShort: string;
+    let threadIdFull: string | null;
     let fromName: string;
     if (row.a2a_intent && row.a2a_thread_id && row.source_agent_id) {
       intent = row.a2a_intent;
       threadShort = row.a2a_thread_id.slice(0, 8);
+      threadIdFull = row.a2a_thread_id;   // FA-C2: full id available from the structural column
       const senderRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(row.source_agent_id) as { name?: string } | undefined;
       fromName = senderRow?.name ?? row.source_agent_id;
     } else {
@@ -111,6 +132,7 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
       if (!match) continue;
       intent = match[1];
       threadShort = match[2];
+      threadIdFull = null;   // FA-C2: legacy prose row carries only the 8-char short token
       fromName = match[3].trim();
     }
     if (!REPLY_NEEDED_INTENTS.has(intent)) continue;
@@ -126,6 +148,7 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
     return {
       messageId: row.id,
       threadShort,
+      threadId: threadIdFull,
       intent,
       fromName,
       content: row.content,
@@ -152,29 +175,71 @@ export function findInboundAssignByThread(agentId: string, threadId: string): { 
   // and the send-dedup guard refused each one (observed: 26 "already sent"
   // refusals in one scenario run). Detection and recording must read the SAME
   // store or the loop never closes.
-  const structural = db
+  //
+  // FA-C2: the EXACT full-id match is AUTHORITATIVE. The prior single query OR'd in
+  // `substr(a2a_thread_id, 1, 8) = ?`, but for makeThreadId ids ('thread-<base36>-<seed>')
+  // the first 8 chars are almost all the shared 'thread-' prefix (plus one hash char), so
+  // that broad prefix match collides across unrelated threads, and under ORDER BY
+  // created_at DESC a NEWER colliding-prefix row could beat the exact match and bind the
+  // reply to the WRONG thread. Same collision class already fixed in conversationKey (C-2).
+  // The wire footer and send_to_agent both carry the full id, so a modern reply always has
+  // the full thread id in hand and hits this exact match.
+  // D-A: read the MERGED source (messages ∪ inter_agent_messages). The store is the
+  // new home for peer A2A inbound, so detection and recording must read the SAME
+  // store or the reply loop never closes (F13). messages arm dedups against store ids.
+  const exact = db
     .prepare(
-      `SELECT id, a2a_intent FROM messages
-       WHERE agent_id = ? AND role = 'user'
-         AND a2a_thread_id IS NOT NULL
-         AND (a2a_thread_id = ? OR substr(a2a_thread_id, 1, 8) = ?)
-       ORDER BY created_at DESC, rowid DESC
+      `SELECT id, a2a_intent, created_at, rowid AS _rowid, 0 AS _tag FROM messages
+       WHERE agent_id = @agentId AND role = 'user' AND a2a_thread_id = @threadId
+         AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
+       UNION ALL
+       SELECT id, a2a_intent, created_at, rowid AS _rowid, 1 AS _tag FROM inter_agent_messages
+       WHERE agent_id = @agentId AND role = 'user' AND a2a_thread_id = @threadId
+       ORDER BY created_at DESC, _tag DESC, _rowid DESC
        LIMIT 1`,
     )
-    .get(agentId, threadId, threadShort) as { id: string; a2a_intent: string | null } | undefined;
-  if (structural && structural.a2a_intent && REPLY_NEEDED_INTENTS.has(structural.a2a_intent)) {
-    return { messageId: structural.id, intent: structural.a2a_intent };
+    .get({ agentId, threadId }) as { id: string; a2a_intent: string | null } | undefined;
+  if (exact && exact.a2a_intent && REPLY_NEEDED_INTENTS.has(exact.a2a_intent)) {
+    return { messageId: exact.id, intent: exact.a2a_intent };
+  }
+
+  // Fall back to a legacy short-token row ONLY when no full-id row exists. Legacy
+  // predicate: a stored a2a_thread_id that is itself a pre-makeThreadId 8-char token
+  // (length = 8), matched EXACTLY to the thread's 8-char short form, never a prefix over
+  // modern full ids (which are all longer than 8 chars and start with 'thread-'). This is
+  // the same authoritative-then-short shape as parkThreadCondition; it preserves resolution
+  // for genuinely-short legacy rows (the reason the substr existed) without the collision.
+  const legacyShort = db
+    .prepare(
+      `SELECT id, a2a_intent, created_at, rowid AS _rowid, 0 AS _tag FROM messages
+       WHERE agent_id = @agentId AND role = 'user'
+         AND a2a_thread_id IS NOT NULL AND length(a2a_thread_id) = 8 AND a2a_thread_id = @threadShort
+         AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
+       UNION ALL
+       SELECT id, a2a_intent, created_at, rowid AS _rowid, 1 AS _tag FROM inter_agent_messages
+       WHERE agent_id = @agentId AND role = 'user'
+         AND a2a_thread_id IS NOT NULL AND length(a2a_thread_id) = 8 AND a2a_thread_id = @threadShort
+       ORDER BY created_at DESC, _tag DESC, _rowid DESC
+       LIMIT 1`,
+    )
+    .get({ agentId, threadShort }) as { id: string; a2a_intent: string | null } | undefined;
+  if (legacyShort && legacyShort.a2a_intent && REPLY_NEEDED_INTENTS.has(legacyShort.a2a_intent)) {
+    return { messageId: legacyShort.id, intent: legacyShort.a2a_intent };
   }
 
   // Legacy prose fallback for rows predating the structural columns.
   const rows = db
     .prepare(
-      `SELECT id, content FROM messages
-       WHERE agent_id = ? AND role = 'user'
-       ORDER BY created_at DESC, rowid DESC
+      `SELECT id, content, created_at, rowid AS _rowid, 0 AS _tag FROM messages
+       WHERE agent_id = @agentId AND role = 'user'
+         AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
+       UNION ALL
+       SELECT id, content, created_at, rowid AS _rowid, 1 AS _tag FROM inter_agent_messages
+       WHERE agent_id = @agentId AND role = 'user'
+       ORDER BY created_at DESC, _tag DESC, _rowid DESC
        LIMIT 30`,
     )
-    .all(agentId) as Array<{ id: string; content: string }>;
+    .all({ agentId }) as Array<{ id: string; content: string }>;
 
   for (const row of rows) {
     const match = row.content?.match(/^\[A2A:([A-Z]+)\s+thread:([0-9a-f]{8})\s+from:([^\]]+)\]/);
@@ -218,12 +283,29 @@ export function recordA2AReply(params: {
  * given thread? Used to decide which nudge text to show — "you replied
  * earlier, just end your turn" vs. "the receiver got nothing, retry now."
  */
-export function hasPriorReplyOnThread(agentId: string, threadShort: string): boolean {
+export function hasPriorReplyOnThread(agentId: string, threadShort: string, fullThreadId: string | null = null): boolean {
   if (!threadShort || threadShort.length < 8) return false;
   const db = getDb();
-  // Match by the leading 8 chars to align with the [A2A:... thread:XXXXXXXX]
-  // wire format that's stored in the a2a_replies.thread_id column (which
-  // is a full UUID — its first 8 chars are the threadShort).
+  // FA-C2: a2a_replies.thread_id stores the FULL thread id (recordA2AReply writes the
+  // send_to_agent thread id verbatim). When the caller knows that full id, an EXACT match
+  // is AUTHORITATIVE, the leading-8 substr below is a broad collision magnet for
+  // makeThreadId ids (first 8 chars are almost all the shared 'thread-' prefix), so a reply
+  // on a DIFFERENT colliding thread would otherwise falsely soften THIS thread's nudge.
+  if (fullThreadId) {
+    const exact = db
+      .prepare('SELECT 1 FROM a2a_replies WHERE agent_id = ? AND thread_id = ? LIMIT 1')
+      .get(agentId, fullThreadId);
+    if (exact) return true;
+    // Only when no full-id row exists, accept a genuinely-short legacy row (thread_id
+    // exactly 8 chars) matched exactly to the short form, never a prefix over full ids.
+    const legacy = db
+      .prepare('SELECT 1 FROM a2a_replies WHERE agent_id = ? AND length(thread_id) = 8 AND thread_id = ? LIMIT 1')
+      .get(agentId, threadShort);
+    return !!legacy;
+  }
+  // Legacy caller path: only the 8-char short token is available (prose-parsed wire
+  // header, no structural full id). Prefix match against the stored full id is the only
+  // resolution possible here; accepted residual, same as parkThreadCondition's short case.
   const row = db
     .prepare(
       `SELECT 1 FROM a2a_replies

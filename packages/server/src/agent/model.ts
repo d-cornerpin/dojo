@@ -1487,7 +1487,11 @@ async function callOpenAIModel(
     // Pass the external abort signal so stop-button aborts cancel the
     // in-flight fetch (instead of letting it complete in the background).
     const requestOptions = params.abortSignal ? { signal: params.abortSignal } : undefined;
-    const stream = await client.chat.completions.create(requestParams, requestOptions);
+    // .withResponse() hands back both the parsed stream and the raw Response so
+    // we can feed rate-limit headers into the proactive tracker (FA-R2). It does
+    // not consume the SSE body; `stream` is iterated below exactly as before.
+    const { data: stream, response: rawResponse } =
+      await client.chat.completions.create(requestParams, requestOptions).withResponse();
 
     let fullText = '';
     let fullReasoning = '';
@@ -1785,6 +1789,18 @@ async function callOpenAIModel(
       reasoningChars: fullReasoning.length,
     }, agentId);
 
+    // FA-R2: feed the proactive rate-limit tracker from the response headers,
+    // mirroring the Anthropic path. OpenAI sends x-ratelimit-remaining-requests
+    // / x-ratelimit-reset-requests, which updateRateLimits already understands;
+    // DeepSeek and OpenRouter vary and may send none, so this is best-effort and
+    // no-ops when no rate-limit headers are present. Lets selectModel skip a
+    // model that has run its window down on the NEXT turn.
+    try {
+      const rlHeaders: Record<string, string> = {};
+      rawResponse?.headers?.forEach?.((value: string, key: string) => { rlHeaders[key] = value; });
+      updateRateLimits(modelId, rlHeaders);
+    } catch { /* rate limit header extraction is best-effort */ }
+
     return {
       content: fullText,
       toolCalls,
@@ -1810,6 +1826,31 @@ async function callOpenAIModel(
 
     const isRateLimited = message.includes('rate_limit') || message.includes('429');
     const isOverloaded = message.includes('overloaded') || message.includes('529') || message.includes('503');
+
+    // FA-R2: record the rate limit in the proactive tracker regardless of routing
+    // mode, mirroring the Anthropic path (see callAnthropicSdkModel). This lets
+    // selectModel skip this model on the NEXT turn without hitting the 429 again.
+    // OpenAI-compatible providers (DeepSeek, OpenRouter, OpenAI) don't reliably
+    // surface usable rate-limit headers here, so synthesize remaining=0 and set
+    // the reset from retry-after when present (else a 60s default). Control flow
+    // is unchanged; the error still propagates below exactly as before.
+    if (isRateLimited || isOverloaded) {
+      try {
+        const rlHeaders: Record<string, string> = { 'x-ratelimit-remaining': '0' };
+        let retryAfterSecs: number | null = null;
+        if (err instanceof OpenAI.APIError && err.headers) {
+          const retryAfter = err.headers['retry-after'];
+          if (retryAfter) {
+            const secs = parseInt(retryAfter, 10);
+            if (!isNaN(secs)) retryAfterSecs = secs;
+          }
+        }
+        rlHeaders['x-ratelimit-reset'] = new Date(
+          Date.now() + (retryAfterSecs !== null ? retryAfterSecs * 1000 : 60000),
+        ).toISOString();
+        updateRateLimits(modelId, rlHeaders);
+      } catch { /* best effort */ }
+    }
 
     // Schedule background retry for rate limits, skip for auto-routed agents
     // (the auto-router's fallback chain handles model switching)
@@ -1871,7 +1912,7 @@ async function callAnthropicSdkModel(
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
 
   // Dynamic import, gracefully fail if SDK not installed
-  const { callAnthropicViaSdk } = await import('../providers/anthropic-sdk.js');
+  const { callAnthropicViaSdk, AgentSdkVisionUnsupportedError } = await import('../providers/anthropic-sdk.js');
 
   // Get tools for prompt-based formatting (two-phase loading)
   let toolDefs: ToolDefinition[] = [];
@@ -1885,51 +1926,146 @@ async function callAnthropicSdkModel(
   const startTime = Date.now();
   const streamedChunks: string[] = [];
 
-  const result = await callAnthropicViaSdk({
-    agentId,
-    apiModelId: modelInfo.apiModelId,
-    systemPrompt,
-    messages: messages as Array<{ role: string; content: string | object[] }>,
-    tools: toolDefs,
-    onChunk: (chunk) => {
-      streamedChunks.push(chunk);
-      onChunk?.(chunk);
-    },
-  });
-
-  const latencyMs = Date.now() - startTime;
-
-  // Record cost (estimated for subscription)
   try {
-    const { recordCost } = await import('../costs/tracker.js');
-    recordCost({
+    const result = await callAnthropicViaSdk({
       agentId,
-      modelId,
-      providerId: modelInfo.providerId,
+      apiModelId: modelInfo.apiModelId,
+      systemPrompt,
+      messages: messages as Array<{ role: string; content: string | object[] }>,
+      tools: toolDefs,
+      onChunk: (chunk) => {
+        streamedChunks.push(chunk);
+        onChunk?.(chunk);
+      },
+    });
+
+    const latencyMs = Date.now() - startTime;
+    recordProviderSuccess(modelInfo.providerId);
+
+    // Record cost (estimated for subscription)
+    try {
+      const { recordCost } = await import('../costs/tracker.js');
+      recordCost({
+        agentId,
+        modelId,
+        providerId: modelInfo.providerId,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+        latencyMs,
+        requestType: routerTier ?? 'agent-sdk',
+        cacheReadTokens: result.cacheReadTokens,
+        cacheCreationTokens: result.cacheCreationTokens,
+      });
+    } catch { /* cost tracking is best-effort */ }
+
+    // Map SDK tool calls to our format
+    const toolCalls = result.toolCalls.map(tc => ({
+      id: tc.id,
+      name: tc.name,
+      arguments: tc.arguments,
+    }));
+
+    return {
+      content: result.content,
+      toolCalls,
       inputTokens: result.inputTokens,
       outputTokens: result.outputTokens,
+      stopReason: result.stopReason,
+    };
+  } catch (err) {
+    const latencyMs = Date.now() - startTime;
+    const message = err instanceof Error ? err.message : String(err);
+
+    // A pre-flight vision refusal (FA-PC4) is NOT a provider fault: don't mark
+    // the provider unhealthy and don't log at error. Re-throw so the recovery
+    // cascade's vision_mismatch branch gives the agent a plain "this model can't
+    // see images" note. The message wording is what that classifier keys on.
+    if (err instanceof AgentSdkVisionUnsupportedError) {
+      logger.warn(`Agent SDK call refused an image: ${message}`, { model: modelInfo.apiModelId, agentId }, agentId);
+      throw new AgentError(message, agentId, {
+        code: 'MODEL_CALL_FAILED',
+        retryable: false,
+        cause: err,
+      });
+    }
+
+    recordProviderError(modelInfo.providerId);
+
+    logger[params.bestEffort ? 'warn' : 'error'](`Agent SDK call failed: ${message}`, {
+      model: modelInfo.apiModelId,
+      providerId: modelInfo.providerId,
       latencyMs,
-      requestType: routerTier ?? 'agent-sdk',
-      cacheReadTokens: result.cacheReadTokens,
-      cacheCreationTokens: result.cacheCreationTokens,
+      bestEffort: params.bestEffort ?? false,
+    }, agentId);
+
+    // Classify with the SHARED recovery classifier so the SDK path, the direct
+    // Anthropic path, and the FA-A1 step-0 passthrough all agree on what counts
+    // as a rate limit (recovery.ts classifyError, reused rather than a fourth
+    // hand-rolled substring set). classifyError also recognizes subscription
+    // "usage limit" wording. Known drift, still: the direct/OpenAI catches and
+    // rate-limit-retry.ts keep their own substring sets (FA-A1 3-classifier note).
+    const { classifyError } = await import('./v2/recovery.js');
+    const kind = classifyError(err instanceof Error ? err : new Error(message)).kind;
+    const isRateLimited = kind === 'rate_limit';
+    const isOverloaded = kind === 'overloaded';
+
+    // Retry-after: the SDK usually throws generic errors with no headers, so
+    // this stays null and the reset falls back to 60s, mirroring the direct
+    // path's no-header branch. Kept for the rare Anthropic.APIError shape.
+    let retryAfterSeconds: number | null = null;
+    if (err instanceof Anthropic.APIError && err.headers) {
+      const retryAfter = err.headers['retry-after'];
+      if (retryAfter) {
+        const parsed = parseInt(retryAfter, 10);
+        if (!isNaN(parsed)) retryAfterSeconds = parsed;
+      }
+    }
+
+    // (a) Feed the proactive next-turn tracker exactly like the FA-R2 / direct
+    // sites: synthesize remaining=0 + a reset from retry-after (else 60s). Lets
+    // selectModel skip a rate-limited pinned model on the NEXT turn.
+    if (isRateLimited || isOverloaded) {
+      try {
+        const rlHeaders: Record<string, string> = { 'x-ratelimit-remaining': '0' };
+        rlHeaders['x-ratelimit-reset'] = new Date(
+          Date.now() + (retryAfterSeconds !== null ? retryAfterSeconds * 1000 : 60000),
+        ).toISOString();
+        updateRateLimits(modelId, rlHeaders);
+      } catch { /* best effort */ }
+    }
+
+    // (b) Pinned-model 429/overload -> arm the background decay retry, same as
+    // the direct path. NOT for auto-routed agents (routerTier set): the router's
+    // fallback chain owns those. Once armed, hasActiveRateLimitRetry is true, so
+    // the FA-A1 step-0 passthrough owns recovery and the agent is never injured.
+    if ((isRateLimited || isOverloaded) && !params.routerTier) {
+      const lastMsg = (() => {
+        try {
+          const db = getDb();
+          const row = db.prepare(
+            "SELECT content FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1"
+          ).get(agentId) as { content: string } | undefined;
+          return row?.content ?? null;
+        } catch { return null; }
+      })();
+
+      scheduleRateLimitRetry(agentId, retryAfterSeconds, lastMsg);
+    }
+
+    // Re-throw so control flow stays identical to the other transports.
+    throw new AgentError(`Agent SDK call failed: ${message}`, agentId, {
+      code: 'MODEL_CALL_FAILED',
+      retryable: isRateLimited || isOverloaded,
+      cause: err instanceof Error ? err : undefined,
     });
-  } catch { /* cost tracking is best-effort */ }
-
-  // Map SDK tool calls to our format
-  const toolCalls = result.toolCalls.map(tc => ({
-    id: tc.id,
-    name: tc.name,
-    arguments: tc.arguments,
-  }));
-
-  return {
-    content: result.content,
-    toolCalls,
-    inputTokens: result.inputTokens,
-    outputTokens: result.outputTokens,
-    stopReason: result.stopReason,
-  };
+  }
 }
+
+// FA-PC5 (D-I): provider types whose inference is genuinely free + local. They
+// are exempt from the daily paid-spend wall BY TYPE, not by where they sit in
+// the transport dispatch ladder, so a local model never trips a spend cap.
+// Ollama is the only local type today; a future local type goes here.
+const FREE_LOCAL_PROVIDER_TYPES = new Set(['ollama', 'local']);
 
 export async function callModel(params: ModelCallParams): Promise<ModelCallResult> {
   const { agentId, modelId, messages, systemPrompt, tools = true, onChunk, routerTier } = params;
@@ -1946,6 +2082,85 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
   sanitizeOrphanToolBlocks(messages, agentId);
 
   const modelInfo = getModelInfo(modelId);
+
+  // The 'auto' sentinel (provider '__system__') is a router pointer, not a
+  // callable model. On the normal path the router resolves it BEFORE callModel
+  // (v2/loop decideTier + selectModel), so a sentinel reaching here is always a
+  // caller bug. Fail fast with a named error instead of dying downstream with
+  // the opaque "No credential found for provider __system__".
+  if (modelInfo.providerId === '__system__') {
+    throw new AgentError(
+      `Model '${modelId}' is a router sentinel, not a callable model; resolve it through the router before callModel`,
+      agentId,
+      { code: 'SENTINEL_MODEL_DISPATCH', retryable: false },
+    );
+  }
+
+  // FA-PC5 (D-I): apply the daily cap to ALL paid transports. This wall runs
+  // ABOVE the transport dispatch so OpenAI / openai-compatible / Agent-SDK calls
+  // are guarded identically to Anthropic-direct (previously only the latter saw
+  // it, since the others early-return below before the old wall). Genuinely-free
+  // local providers are exempt BY PROVIDER TYPE, not by dispatch order. The
+  // budget_fallback recursion is also skipped: the outer call already made the
+  // budget decision and the redirect target is a $0 model, so re-running the
+  // wall here would loop (and would needlessly re-notify).
+  if (!FREE_LOCAL_PROVIDER_TYPES.has(modelInfo.providerType) && routerTier !== 'budget_fallback') {
+    const budgetCheck = checkBudget(agentId, 0.01);
+    if (!budgetCheck.allowed) {
+      if (budgetCheck.freeModelFallback) {
+        // Budget exceeded but free model available, redirect to it
+        const fb = budgetCheck.freeModelFallback;
+        logger.warn(`Budget exceeded, falling back to free model: ${fb.modelName}`, {
+          agentId,
+          dailySpend: budgetCheck.dailySpend,
+          dailyLimit: budgetCheck.dailyLimit,
+          freeModel: fb.modelName,
+        }, agentId);
+
+        // Notify the agent's chat
+        const notifyMsg = `[SOURCE: SYSTEM, not a message from the user] Daily budget reached ($${budgetCheck.dailySpend?.toFixed(2)} of $${budgetCheck.dailyLimit?.toFixed(2)}). Using ${fb.modelName} (free) instead.`;
+        try {
+          const db = getDb();
+          const msgId = uuidv4();
+          db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(msgId, agentId, notifyMsg);
+          broadcast({
+            type: 'chat:message',
+            agentId,
+            message: { id: msgId, agentId, role: 'system' as const, content: notifyMsg, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
+          });
+
+          // Also notify primary agent if this is a sub-agent
+          const primaryId = getPrimaryAgentId();
+          if (!isPrimaryAgent(agentId)) {
+            const primaryMsgId = uuidv4();
+            const primaryNotify = `[SOURCE: SYSTEM, not a message from the user] Agent "${agentId}" switched to free model (${fb.modelName}) due to budget limits.`;
+            db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(primaryMsgId, primaryId, primaryNotify);
+            broadcast({
+              type: 'chat:message',
+              agentId: primaryId,
+              message: { id: primaryMsgId, agentId: primaryId, role: 'system' as const, content: primaryNotify, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
+            });
+          }
+        } catch { /* notification is best-effort */ }
+
+        // Recursively call with the free model. The redirect target may itself be
+        // an ollama transport (exempt above) or a paid $0 model (skipped via the
+        // budget_fallback tier), either way it dispatches without re-walling.
+        return callModel({
+          ...params,
+          modelId: fb.modelId,
+          routerTier: 'budget_fallback',
+        });
+      }
+
+      // No free models, block the call with clear message
+      const blockMsg = budgetCheck.reason ?? `Daily budget limit reached ($${budgetCheck.dailySpend?.toFixed(2)} spent of $${budgetCheck.dailyLimit?.toFixed(2)} limit). No free models available.`;
+      throw new AgentError(blockMsg, agentId, {
+        code: 'BUDGET_EXCEEDED',
+        retryable: false,
+      });
+    }
+  }
 
   // Ollama uses OpenAI-compatible API, not Anthropic SDK
   if (modelInfo.providerType === 'ollama') {
@@ -2088,60 +2303,10 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     })) } : {}),
   };
 
-  // Budget check before making the API call
-  const budgetCheck = checkBudget(agentId, 0.01);
-  if (!budgetCheck.allowed) {
-    if (budgetCheck.freeModelFallback) {
-      // Budget exceeded but free model available, redirect to it
-      const fb = budgetCheck.freeModelFallback;
-      logger.warn(`Budget exceeded, falling back to free model: ${fb.modelName}`, {
-        agentId,
-        dailySpend: budgetCheck.dailySpend,
-        dailyLimit: budgetCheck.dailyLimit,
-        freeModel: fb.modelName,
-      }, agentId);
-
-      // Notify the agent's chat
-      const notifyMsg = `[SOURCE: SYSTEM, not a message from the user] Daily budget reached ($${budgetCheck.dailySpend?.toFixed(2)} of $${budgetCheck.dailyLimit?.toFixed(2)}). Using ${fb.modelName} (free) instead.`;
-      try {
-        const db = getDb();
-        const msgId = uuidv4();
-        db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(msgId, agentId, notifyMsg);
-        broadcast({
-          type: 'chat:message',
-          agentId,
-          message: { id: msgId, agentId, role: 'system' as const, content: notifyMsg, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
-        });
-
-        // Also notify primary agent if this is a sub-agent
-        const primaryId = getPrimaryAgentId();
-        if (!isPrimaryAgent(agentId)) {
-          const primaryMsgId = uuidv4();
-          const primaryNotify = `[SOURCE: SYSTEM, not a message from the user] Agent "${agentId}" switched to free model (${fb.modelName}) due to budget limits.`;
-          db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(primaryMsgId, primaryId, primaryNotify);
-          broadcast({
-            type: 'chat:message',
-            agentId: primaryId,
-            message: { id: primaryMsgId, agentId: primaryId, role: 'system' as const, content: primaryNotify, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
-          });
-        }
-      } catch { /* notification is best-effort */ }
-
-      // Recursively call with the free model
-      return callModel({
-        ...params,
-        modelId: fb.modelId,
-        routerTier: 'budget_fallback',
-      });
-    }
-
-    // No free models, block the call with clear message
-    const blockMsg = budgetCheck.reason ?? `Daily budget limit reached ($${budgetCheck.dailySpend?.toFixed(2)} spent of $${budgetCheck.dailyLimit?.toFixed(2)} limit). No free models available.`;
-    throw new AgentError(blockMsg, agentId, {
-      code: 'BUDGET_EXCEEDED',
-      retryable: false,
-    });
-  }
+  // FA-PC5: the budget wall (and free-model redirect) now runs above the
+  // transport dispatch at the top of callModel, covering every paid transport
+  // uniformly. The Anthropic-direct path is guarded there, so no separate wall
+  // is needed here.
 
   // Log request details for debugging
   const msgPreview = anthropicMessages.map((m, i) => ({

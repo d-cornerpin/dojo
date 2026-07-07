@@ -416,8 +416,10 @@ export async function transcribeBuffer(
   const result = await engineAtStart.transcribeBuffer(audio, { language: options.language, mime: options.mime });
   // Phase 1.4 swap guard — if another caller swapped engines while this
   // transcribe was in flight, the result belongs to the old engine and we
-  // refuse to surface it under the new active model. voice-ws catches this
-  // and stays in 'listening' rather than emitting a stale partial.
+  // refuse to surface it under the new active model. On a PARTIAL, voice-ws
+  // drops it and stays 'listening' rather than emit a stale partial; on the
+  // FINAL transcribe it retries once against the now-active engine (FA-VO6b)
+  // so the real utterance isn't lost.
   if (activeEngine !== engineAtStart) {
     throw new Error('stt_engine_swapped');
   }

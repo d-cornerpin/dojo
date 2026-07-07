@@ -9,6 +9,7 @@
 // ════════════════════════════════════════
 
 import { makeCapabilityModelResolver, type CapabilityModelChoice } from './capability-model.js';
+import { bumpToolConfigGeneration } from '../agent/tool-config-generation.js';
 
 export const AUDIO_GEN_MODEL_CONFIG_KEY = 'dojo_audio_gen_model_id';
 
@@ -22,7 +23,11 @@ const resolver = makeCapabilityModelResolver({
 
 export const getConfiguredAudioGenModelId = (): string | null => resolver.getConfiguredModelId();
 
-export const setConfiguredAudioGenModelId = (modelId: string | null): void =>
+export const setConfiguredAudioGenModelId = (modelId: string | null): void => {
   resolver.setConfiguredModelId(modelId);
+  // FA-TS1: the tts_create description embeds the effective audio model's voice
+  // catalog, so changing the model changes the advertised tool surface.
+  bumpToolConfigGeneration();
+};
 
 export const getEffectiveAudioGenModel = (): AudioGenModelChoice | null => resolver.getEffectiveModel();

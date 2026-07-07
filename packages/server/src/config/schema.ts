@@ -59,15 +59,20 @@ export const ChangePasswordSchema = z.object({
 });
 
 // ── Send Message Schema ──
+// The attachment shape is validated (not just Array.isArray'd) because these
+// pointers are persisted into the immutable message store and handed to the
+// model's file_read: a missing path/filename/size used to interpolate a literal
+// "Path: undefined" the model then dutifully tried to read (FA-G1). `category`
+// is the closed upload set (matches AttachmentCategory in chat.ts).
 export const SendMessageSchema = z.object({
   content: z.string().min(1),
   attachments: z.array(z.object({
-    fileId: z.string(),
-    filename: z.string(),
+    fileId: z.string().min(1),
+    filename: z.string().min(1),
     mimeType: z.string(),
     size: z.number(),
-    path: z.string(),
-    category: z.string(),
+    path: z.string().min(1),
+    category: z.enum(['unknown', 'text', 'image', 'pdf', 'office', 'audio', 'video']),
   })).optional(),
 });
 

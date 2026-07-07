@@ -210,9 +210,17 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
     // Resolve before_id → timestamp cursor. If invalid, fall back to "newest first".
     let beforeTimestamp: string | null = null;
     if (opts.beforeId) {
+      // D-A: the merged recall below can surface a store row's id in its
+      // before_id/history_get pointers, so resolve the cursor from the MERGED source
+      // (id is a globally unique uuid, so at most one row matches across the two tables).
       const cursorRow = db
-        .prepare('SELECT created_at FROM messages WHERE id = ? AND agent_id = ?')
-        .get(opts.beforeId, agentId) as { created_at: string } | undefined;
+        .prepare(
+          `SELECT created_at FROM messages WHERE id = ? AND agent_id = ?
+           UNION ALL
+           SELECT created_at FROM inter_agent_messages WHERE id = ? AND agent_id = ?
+           LIMIT 1`,
+        )
+        .get(opts.beforeId, agentId, opts.beforeId, agentId) as { created_at: string } | undefined;
       if (cursorRow) {
         beforeTimestamp = cursorRow.created_at;
       }
@@ -283,13 +291,28 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
       clauses.push('created_at < ?');
       params.push(beforeTimestamp);
     }
-    const sql = `SELECT id, role, content, created_at, attachments
-                 FROM messages
-                 WHERE ${clauses.join(' AND ')} AND ${rolesClause}
-                 ORDER BY created_at DESC, rowid DESC
-                 LIMIT ?`;
-    params.push(fetchLimit);
-    const rows = db.prepare(sql).all(...params) as MessageRow[];
+    // D-A: peer A2A inbound now lives in inter_agent_messages, not `messages`. Recall
+    // is RE-SOURCED to the MERGED (messages ∪ inter_agent_messages) set so the A2A rows
+    // the scope clauses keep (source_agent_id IS NOT NULL) still appear, exactly as they
+    // did when they lived in `messages`. The partition logic (the WHERE clauses above) is
+    // UNCHANGED; only the source is merged. A pure-messages agent's output is byte-
+    // identical: the store arm is empty for it, and the messages arm dedups against store
+    // ids so a live-edge-backfilled row is never double-counted. Cross-table order is
+    // created_at, then a stable _tag tiebreak, then rowid, matching the merged tail
+    // loaders in memory/store.ts.
+    const whereSql = `${clauses.join(' AND ')} AND ${rolesClause}`;
+    const sql = `
+      SELECT id, role, content, created_at, attachments, rowid AS _rowid, 0 AS _tag
+        FROM messages
+       WHERE ${whereSql}
+         AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = ?)
+      UNION ALL
+      SELECT id, role, content, created_at, attachments, rowid AS _rowid, 1 AS _tag
+        FROM inter_agent_messages
+       WHERE ${whereSql}
+      ORDER BY created_at DESC, _tag DESC, _rowid DESC
+      LIMIT ?`;
+    const rows = db.prepare(sql).all(...params, agentId, ...params, fetchLimit) as MessageRow[];
 
     if (rows.length === 0) {
       if (beforeTimestamp) {

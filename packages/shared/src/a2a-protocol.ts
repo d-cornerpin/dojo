@@ -83,4 +83,8 @@ export type A2ADropReason =
   | 'SEMANTIC_DUPLICATE'
   | 'HOP_LIMIT_EXCEEDED'
   | 'MALFORMED_ENVELOPE'
-  | 'AGENT_NOT_FOUND';
+  | 'AGENT_NOT_FOUND'
+  // FA-C4: the receiver's message row is the SOLE delivery vehicle; if the
+  // INSERT persisted nothing (0 changes) there is no message to deliver, so
+  // the transport reports a drop instead of a false delivered:true.
+  | 'PERSIST_SKIPPED';

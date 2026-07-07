@@ -5,7 +5,8 @@
 // background and, if its answer is adequate, record a 'probe_down' label.
 //
 // Strictly bounded:
-//   - OFF by default (config 'router_probe_enabled'); opt-in.
+//   - OFF by default (config 'router_probe_enabled', default false + seeded
+//     'false' by migration 095); opt-in. Header, code default, and seed agree.
 //   - only fires on low-confidence decisions, and never for the lowest tier.
 //   - capped per maintenance window (budget), plus a sampling gate.
 //   - runs after the real answer is produced; NEVER delays or is shown to the
@@ -23,7 +24,13 @@ import type { Tier } from './exemplars.js';
 
 const logger = createLogger('router-probe');
 
-const PROBE_BAND = 0.05;        // only probe when the top-2 margin is below this
+// FA-R5: on the normalized confidence scale (semantic.ts rank(): 0 = top/second
+// tied, 1 = top dominates), one band means the same "this decision was uncertain"
+// in BOTH centroid (cosine) and head (softmax) modes, so probe rates no longer
+// swing by mode. Probe only when the normalized top-2 separation is below this.
+// Starting value; validate against the router_log.confidence distribution via
+// /api/dev and tune if probe volume is off.
+const PROBE_BAND = 0.2;         // only probe when the normalized top-2 separation is below this
 const DEFAULT_SAMPLE = 0.5;     // of eligible decisions, probe this fraction
 const DEFAULT_ADEQUATE = 0.9;   // cosine(realAnswer, probeAnswer) to call it adequate
 const DEFAULT_BUDGET = 20;      // max probes per maintenance window
@@ -61,10 +68,13 @@ function getConfigNum(key: string, def: number): number {
 }
 
 export function isProbeEnabled(): boolean {
-  // On by default: self-training needs a label source, and probing is the only
-  // one wired. Sparse, budget-capped, and gated on auto-router being in use, so
-  // it stays quiet. Set config 'router_probe_enabled'='false' to disable.
-  return getConfigBool('router_probe_enabled', true);
+  // OFF by default, opt-in (FA-R5). Probing spends real lower-tier completions
+  // plus embeddings in the background, so it stays off until the owner turns it
+  // on. Migration 095 also seeds 'router_probe_enabled'='false' for existing
+  // boxes that never had a row (previously an implicit-ON default). Consequence:
+  // router label collection (the FA-R1 self-training feeder) only accrues once
+  // the owner opts in via config 'router_probe_enabled'='true'.
+  return getConfigBool('router_probe_enabled', false);
 }
 
 function cosine(a: Float32Array, b: Float32Array): number {

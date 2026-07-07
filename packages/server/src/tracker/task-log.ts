@@ -120,7 +120,7 @@ export function writeTaskLog(input: TaskLogEntryInput): string | null {
     broadcast({
       type: 'tracker:task_log',
       data: { taskId: input.taskId, entryKind: input.entryKind, fromEntity: input.fromEntity },
-    } as never);
+    });
 
     return id;
   } catch (err) {

@@ -113,6 +113,51 @@ function parseMessageContent(raw: string): { text: string; blocks?: ContentBlock
   return { text: raw };
 }
 
+// ── Owner-alert system notes ──
+//
+// Default (non-wordy) chat hides generic role='system' rows by design. A small
+// allowlist is the exception: deliberate, plain-language heads-ups the engine
+// posts into the primary chat FOR THE OWNER (a scheduled item failed for good,
+// an approval request expired, a project fell short). These render even in
+// default mode; everything else non-allowlisted stays hidden.
+//
+// CONTRACT: each server write site prefixes its note with one of these exact
+// strings. Keep the prefix if you reword the note (matching contract comments
+// live at the three write sites: scheduler/runner.ts failed-final-run heads-up,
+// agent/destructive-gate.ts approval-expiry note, tracker/tools.ts fail-open
+// project_needs_attention notice). The tracker notice reaches the feed wrapped
+// by notifyPrimaryAgent's "[SOURCE: TRACKER TASK UPDATE ...]" envelope, so the
+// match strips a leading SOURCE envelope before the start-anchored prefix test.
+// (The validation-escalation "[VALIDATION CHECK]" sweep is intentionally NOT
+// allowlisted: it embeds raw task ids + a "**Primary agent**: call ..." tool
+// instruction, and FA-S3 documents it currently mis-fires on engine-owned
+// pauses. It stays wordy-mode-only until that is fixed and the copy is split.)
+const OWNER_ALERT_SYSTEM_PREFIXES = [
+  'Heads up:',                         // scheduler failed-final-run + approval-expiry notes
+  '[tracker:project_needs_attention]', // project fell short (fail-open notice)
+] as const;
+
+// Strip notifyPrimaryAgent's automated-update envelope so the owner-alert
+// marker is start-anchored. Only tracker system notes carry it; the completion
+// (success) lines it also wraps do not start with an allowlisted prefix, so
+// they still stay hidden.
+const stripSourceEnvelope = (content: string): string =>
+  content.replace(/^\[SOURCE:[^\]]*\]\s*/, '');
+
+const isOwnerAlertSystemNote = (content: string): boolean => {
+  const body = stripSourceEnvelope(content.trim());
+  return OWNER_ALERT_SYSTEM_PREFIXES.some((prefix) => body.startsWith(prefix));
+};
+
+// Clean owner-facing text: drop the SOURCE envelope and the internal
+// [tracker:project_needs_attention] tag (jargon a non-technical owner should
+// not see). The plain-language "Heads up:" notes carry no such framing and are
+// returned unchanged.
+const ownerAlertDisplayText = (content: string): string =>
+  stripSourceEnvelope(content.trim())
+    .replace(/^\[tracker:project_needs_attention\]\s*/, '')
+    .trim();
+
 // ── Message Bubble Renderers ──
 
 // Inbound channel framing (the [SOURCE: IMESSAGE/PHONE/SMS/TEAMS/EMAIL ...]
@@ -743,10 +788,39 @@ export const Chat = ({ panel = null }: ChatProps) => {
         setModelNames(lookup);
       }
 
-      const result = await api.getChatHistory(AGENT_ID, 200);
+      const result = await api.getChatHistory(AGENT_ID, 200, undefined, wordyMode);
       if (result.ok) {
+        let loaded: Message[] = result.data;
+        // AUTO-BACKFILL (incident 2026-07-06, the blank-chat guarantee): the
+        // serving contract stays raw pages + client-side visibility, but a page
+        // can legitimately contain ZERO renderable rows when machine traffic
+        // (agent coordination) sits on top of the conversation. In that case do
+        // exactly what a user scrolling up would do, keep fetching older pages
+        // until real conversation renders (or history ends). Wordy mode renders
+        // every row, so its first page always satisfies the floor immediately.
+        // Bounded: 60 extra pages of 200 covers a pathological 12k-row pileup
+        // in a few seconds of background fetches; past that, the scroll-up path
+        // continues as always. After a user updates, this makes "open the chat,
+        // see nothing" impossible, their conversation is always dug up.
+        const rendersInRegular = (m: Message) =>
+          m.role === 'system'
+            ? false
+            : (m.role !== 'user' && m.role !== 'assistant')
+              ? false
+              : classifyMessageForDisplay(m).tier === 'user-visible';
+        const renderableCount = () =>
+          wordyMode ? loaded.length : loaded.filter(rendersInRegular).length;
+        let backfills = 0;
+        while (renderableCount() < 15 && loaded.length > 0 && backfills < 60) {
+          const oldest = loaded[0]?.id;
+          if (!oldest) break;
+          const older = await api.getChatHistory(AGENT_ID, 200, oldest, wordyMode);
+          if (!older.ok || older.data.length === 0) break;
+          loaded = [...older.data, ...loaded];
+          backfills++;
+        }
         setMessages(
-          result.data.map((m: Message) => ({
+          loaded.map((m: Message) => ({
             id: m.id,
             role: m.role,
             content: m.content,
@@ -776,8 +850,11 @@ export const Chat = ({ panel = null }: ChatProps) => {
       setLoading(false);
     };
     loadHistory();
+    // wordyMode is a dep: the two modes are now different SERVER queries (wordy
+    // adds the store's own-output rows), so toggling wordy must refetch history
+    // rather than re-filter a single feed client-side.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [AGENT_ID, techSession.active, techSession.ready]);
+  }, [AGENT_ID, techSession.active, techSession.ready, wordyMode]);
 
   // Load older messages when scrolling to top
   const loadOlderMessages = useCallback(async () => {
@@ -789,7 +866,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const container = messagesContainerRef.current;
     const prevScrollHeight = container?.scrollHeight ?? 0;
 
-    const result = await api.getChatHistory(AGENT_ID, 50, oldestId);
+    const result = await api.getChatHistory(AGENT_ID, 50, oldestId, wordyMode);
     if (result.ok && result.data.length > 0) {
       const older = result.data.map((m: Message) => ({
         id: m.id,
@@ -813,7 +890,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
       setHasMore(false);
     }
     setLoadingMore(false);
-  }, [loadingMore, hasMore, messages, AGENT_ID]);
+  }, [loadingMore, hasMore, messages, AGENT_ID, wordyMode]);
 
   // Detect scroll to top
   useEffect(() => {
@@ -980,6 +1057,12 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const unsubToolCall = subscribe('chat:tool_call', (event: WsEvent) => {
       const e = event as ChatToolCallEvent;
       if (e.agentId !== agentIdRef.current) return;
+      // LIVE = RELOAD (incident 2026-07-06): tool badges from an inter-agent turn
+      // must obey the same suppression the text stream does. Without this, an
+      // agent-coordination turn painted a wall of EXEC/FILE_READ pills into
+      // regular-mode chat live, which then vanished on refresh (the persisted
+      // rows are source='a2a' and reload hides them).
+      if (suppressStreamForTurn()) return;
       currentToolCallsRef.current.push({
         name: e.tool,
         args: e.args,
@@ -989,6 +1072,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     const unsubToolResult = subscribe('chat:tool_result', (event: WsEvent) => {
       const e = event as ChatToolResultEvent;
       if (e.agentId !== agentIdRef.current) return;
+      if (suppressStreamForTurn()) return;
       const tc = currentToolCallsRef.current.find((t) => t.name === e.tool && !t.result);
       if (tc) {
         tc.result = e.result;
@@ -1444,7 +1528,10 @@ export const Chat = ({ panel = null }: ChatProps) => {
   const startNewSession = async () => {
     const res = await api.request<{ archiveId: string; sessionStartedAt: string }>(`/chat/${AGENT_ID}/new-session`, { method: 'POST' });
     if (res.ok) {
-      const result = await api.getChatHistory(AGENT_ID, 200);
+      // wordyMode rides along: the two modes are different server queries, and
+      // this refetch replaces the whole pane (a wordy-blind fetch here would
+      // drop the store's own-output rows until the next natural reload).
+      const result = await api.getChatHistory(AGENT_ID, 200, undefined, wordyMode);
       if (result.ok) {
         setMessages(result.data.map((m: Message) => ({ ...m, isStreaming: false })));
       }
@@ -1569,6 +1656,20 @@ export const Chat = ({ panel = null }: ChatProps) => {
                   <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono">
                     <span className="text-ui/40">{badge.emoji}</span>
                     <span>{badge.label}</span>
+                  </div>
+                </div>
+              );
+            }
+            // Owner-alert system notes (see OWNER_ALERT_SYSTEM_PREFIXES) are the
+            // one class of system rows that render in default mode: a muted
+            // system-note bubble so the owner sees the heads-up without turning
+            // on wordy mode. Wordy mode is unchanged (these fall through below to
+            // the same rendering every other system row gets there).
+            if (!wordyMode && isOwnerAlertSystemNote(trimmedSys)) {
+              return (
+                <div key={msg.id} className="flex justify-start my-1">
+                  <div className="max-w-[92%] sm:max-w-[75%] rounded-lg border border-ui/[0.06] bg-ui/[0.03] px-3 py-2 text-[11px] sm:text-xs text-ui/55 whitespace-pre-wrap leading-relaxed">
+                    {ownerAlertDisplayText(trimmedSys)}
                   </div>
                 </div>
               );

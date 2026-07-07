@@ -15,15 +15,64 @@ PLATFORM_DIR="$DOJO_DIR/platform"
 LAUNCH_DIR="$HOME/Library/LaunchAgents"
 BACKUP_PREFIX="platform.backup-"
 
-# 1. Find the newest platform.backup-* directory. The updater stamps one with
-#    the outgoing version right before each update, so newest == the version we
-#    were on before the update that just broke things — exactly the target.
+# ── Mutual exclusion (D-F) ──
+# The menu-bar MANUAL rollback and the watchdog's AUTOMATIC rollback both shell
+# THIS same script; they must never run at the same time (two concurrent platform
+# moves would race and could lose the build). Putting the lock in the script
+# itself means both callers inherit it. `mkdir` is an atomic lock on POSIX:
+# exactly one caller can create the directory; a second caller fails fast. The
+# lock is released on ANY exit (success, error, or signal) via the trap.
+mkdir -p "$DOJO_DIR" 2>/dev/null || true
+LOCK_DIR="$DOJO_DIR/rollback.lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo "ERROR: another rollback is already in progress ($LOCK_DIR). Aborting to avoid a concurrent restore."
+    exit 1
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+
+# Emit a fixed-width, lexically-sortable key for a version string so a plain
+# string comparison orders versions correctly. Mirrors the engine's
+# compareVersions precedence: higher base wins; a stable release outranks any
+# pre-release of the SAME base; two pre-releases compare by ordinal. Malformed
+# segments clamp to 0 so a hand-made dir name can never crash the recovery path.
+version_sort_key() {
+    local v="$1" base pre maj min pat prerank pren
+    base="${v%%-*}"
+    if [ "$v" = "$base" ]; then
+        prerank=1; pren=0            # stable: outranks any pre-release of this base
+    else
+        prerank=0
+        pre="${v#*-}"
+        pren="$(printf '%s' "$pre" | tr -cd '0-9')"   # trailing/embedded digits, e.g. preflight.2 -> 2
+    fi
+    IFS='.' read -r maj min pat _ <<< "$base"
+    maj="$(printf '%s' "${maj:-0}" | tr -cd '0-9')"
+    min="$(printf '%s' "${min:-0}" | tr -cd '0-9')"
+    pat="$(printf '%s' "${pat:-0}" | tr -cd '0-9')"
+    printf '%04d%04d%04d%d%04d' \
+        "$((10#${maj:-0}))" "$((10#${min:-0}))" "$((10#${pat:-0}))" \
+        "$prerank" "$((10#${pren:-0}))"
+}
+
+# 1. Find the backup to restore. Each update stamps platform.backup-<version>
+#    with the OUTGOING version right before overwriting, so the HIGHEST-version
+#    backup is the most recent good build we left, exactly the rollback target.
+#    Order by the version parsed from the NAME, not the directory mtime (FA-D5):
+#    a touched mtime, a Time-Machine-restored copy, or a prune interrupted
+#    mid-run must not make us restore the wrong build. mtime only breaks ties
+#    between two dirs that parse to the same version.
 newest_backup=""
+newest_key=""
 newest_mtime=0
 for d in "$DOJO_DIR/$BACKUP_PREFIX"*; do
     [ -d "$d" ] || continue
+    ver="$(basename "$d" | sed "s/^${BACKUP_PREFIX}//")"
+    key="$(version_sort_key "$ver")"
     m="$(stat -f %m "$d" 2>/dev/null || echo 0)"
-    if [ "$m" -gt "$newest_mtime" ]; then
+    if [ -z "$newest_backup" ] \
+       || [[ "$key" > "$newest_key" ]] \
+       || { [ "$key" = "$newest_key" ] && [ "$m" -gt "$newest_mtime" ]; }; then
+        newest_key="$key"
         newest_mtime="$m"
         newest_backup="$d"
     fi

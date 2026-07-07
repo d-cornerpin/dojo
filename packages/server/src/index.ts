@@ -11,10 +11,56 @@ import { createServer } from './gateway/server.js';
 import { broadcast } from './gateway/ws.js';
 import { checkTimeouts } from './agent/spawner.js';
 import { killTunnelSync } from './services/tunnel.js';
-import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, isPMEnabled } from './config/platform.js';
+import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, isPMEnabled, setPlatformConfig, HOUSEHOLD_AGENT_IDS_KEY } from './config/platform.js';
+import { recordBootAttempt, markMigrationsRan, confirmHealthy, readMarker } from './update-state.js';
 
 const logger = createLogger('main');
 const PORT = parseInt(process.env.DOJO_PORT ?? '3001', 10);
+
+// D-F health-confirm: how long a self-update boot must stay continuously up
+// before we flip its update-state marker to healthy (matches the plan's ~90s).
+const HEALTH_CONFIRM_DELAY_MS = 90_000;
+
+// Count applied SQL migrations (the _migrations tracking table). Guarded: on a
+// brand-new box the table may not exist yet, which reads as 0. Used ONLY by the
+// D-F boot sentinel to detect whether a self-update boot changed the schema
+// (owner decision 2026-07-06: if it did, the watchdog escalates instead of
+// trusting a code-only rollback). Reading the count needs no migrations.ts edit.
+function countAppliedMigrations(): number {
+  try {
+    const row = getDb().prepare('SELECT COUNT(*) AS c FROM _migrations').get() as { c: number } | undefined;
+    return row?.c ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+// D-F health-confirm: when this boot is part of a self-update episode, wait for
+// ~90s of continuous uptime, then re-check the DB is serving (the same
+// db !== 'error' contract /api/health and the watchdog use) and flip the marker
+// to healthy, which clears the episode. If the process crashes before the timer
+// fires, it never confirms and the watchdog's boot-attempt / wall-clock gate
+// takes over. No-op on a normal (non-update) boot.
+function scheduleUpdateHealthConfirm(): void {
+  const marker = readMarker();
+  if (!marker) return;
+  if (marker.phase !== 'booting-new' && marker.phase !== 'rolled-back') return;
+  if (marker.confirmedHealthyAt) return;
+  setTimeout(() => {
+    try {
+      // Same contract the watchdog trusts: a serving DB (SELECT 1 does not throw).
+      getDb().prepare('SELECT 1').get();
+    } catch (err) {
+      logger.warn('D-F health-confirm: DB self-check failed, leaving the update episode open for the watchdog', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    if (confirmHealthy()) {
+      logger.info('D-F health-confirm: self-update boot confirmed healthy, update episode cleared');
+    }
+  }, HEALTH_CONFIRM_DELAY_MS);
+}
 
 // Surface uncaught crashes to the structured log instead of silently
 // exiting. Without this, a throw inside a third-party WebSocket event
@@ -76,9 +122,32 @@ function ensurePrimaryAgent(): void {
     return;
   }
 
-  const enabledModel = db.prepare(
-    "SELECT id FROM models WHERE is_enabled = 1 ORDER BY name ASC LIMIT 1"
+  // FA-PC6: prefer the 'auto' sentinel so the smart router picks a working,
+  // chat-capable model at call time (the same recovery the runtime uses when it
+  // finds a broken agent). The old fallback took the first enabled model by
+  // display-name alphabetical order with NO capability filter, so an
+  // embedding/media-generation model (which bills $0 and sorts early) could win
+  // and leave the primary with a dead brain. Only if 'auto' is missing or
+  // disabled do we pin a concrete model, and then we require a chat-capable one:
+  // capabilities NOT LIKE generation/embedding, excluding the '__system__'
+  // sentinel provider, ordered by display name ASC (unchanged tiebreak). This
+  // mirrors the text-capable filter used by the healer and summary writer.
+  const autoModel = db.prepare(
+    "SELECT id FROM models WHERE id = 'auto' AND is_enabled = 1"
   ).get() as { id: string } | undefined;
+
+  const fallbackModelId = autoModel
+    ? autoModel.id
+    : (db.prepare(`
+        SELECT m.id FROM models m
+          JOIN providers p ON p.id = m.provider_id
+         WHERE m.is_enabled = 1
+           AND p.id != '__system__'
+           AND m.capabilities NOT LIKE '%generation%'
+           AND m.capabilities NOT LIKE '%embedding%'
+         ORDER BY m.name ASC
+         LIMIT 1
+      `).get() as { id: string } | undefined)?.id ?? null;
 
   db.prepare(`
     INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by,
@@ -87,10 +156,37 @@ function ensurePrimaryAgent(): void {
   `).run(
     primaryId,
     primaryName,
-    enabledModel?.id ?? null,
+    fallbackModelId,
   );
 
-  logger.info('Created primary agent', { id: primaryId, name: primaryName, modelId: enabledModel?.id ?? 'none' });
+  logger.info('Created primary agent', { id: primaryId, name: primaryName, modelId: fallbackModelId ?? 'none' });
+}
+
+// D-A household vault-sharing: seed the `household_agent_ids` allow-list with the
+// primary agent id when the config key is absent. Fresh installs get it after
+// OOBE (this runs on every boot); EXISTING boxes, where the key predates the
+// feature, get it on the next boot (the upgrade path). Idempotent: it only seeds
+// when the row is missing, so an onboarded second primary's list is never
+// overwritten. No-op until setup completes (the primary id is not authoritative
+// before then). Even before this runs, getHouseholdAgentIds() falls back to
+// [primary], so recall is correct on the very first boot too; this just persists
+// the row so a future second-primary onboarding has a home to append to.
+function ensureHouseholdConfig(): void {
+  const db = getDb();
+
+  const setupDone = db.prepare("SELECT value FROM config WHERE key = 'setup_completed'").get() as { value: string } | undefined;
+  if (!setupDone || setupDone.value !== 'true') {
+    return;
+  }
+
+  const existing = db.prepare('SELECT value FROM config WHERE key = ?').get(HOUSEHOLD_AGENT_IDS_KEY) as { value: string } | undefined;
+  if (existing) {
+    return;
+  }
+
+  const primaryId = getPrimaryAgentId();
+  setPlatformConfig(HOUSEHOLD_AGENT_IDS_KEY, JSON.stringify([primaryId]));
+  logger.info('Seeded household_agent_ids allow-list', { members: [primaryId] });
 }
 
 async function main(): Promise<void> {
@@ -152,7 +248,20 @@ async function main(): Promise<void> {
   loadSecrets();
 
   // 3. Run database migrations
+  // D-F boot sentinel: if this boot is part of a self-update episode, count the
+  // attempt BEFORE migrations run (a crash mid-migration still increments the
+  // tally the watchdog reads). Then, if a migration APPLIED during the episode,
+  // flag it so the watchdog escalates loudly instead of trusting a code-only
+  // rollback (owner decision 2026-07-06): the restored old build could choke on
+  // the new schema. On a normal (non-update) boot, recordBootAttempt returns null
+  // and this is all inert.
+  const bootEpisode = recordBootAttempt();
+  const migCountBefore = bootEpisode ? countAppliedMigrations() : 0;
   runMigrations();
+  if (bootEpisode && countAppliedMigrations() > migCountBefore) {
+    markMigrationsRan();
+    logger.warn('D-F: a database migration ran during a self-update boot; a failed boot will escalate, not auto-rollback');
+  }
 
   // 3a0. Seed Workspace account rows from legacy per-key config (Path B,
   //      layer 1). Idempotent: only copies existing gws_*/gws_user_* into
@@ -187,6 +296,9 @@ async function main(): Promise<void> {
 
   // 4. Ensure primary agent exists (skips if OOBE hasn't completed yet)
   ensurePrimaryAgent();
+
+  // 4'. Seed the D-A household vault-sharing allow-list (upgrade + fresh path).
+  ensureHouseholdConfig();
 
   // 4a. Ensure system group exists and permanent agents are assigned
   try {
@@ -280,8 +392,23 @@ async function main(): Promise<void> {
                           OR (m.delivery_attempts > 0 AND m.delivery_attempts < 5)))
             ${heldAgents.length > 0 ? `AND NOT (${SERVABLE} AND m.agent_id IN (${heldIdList}))` : ''}`,
       ).run();
-      if (swept.changes > 0 || heldTotal > 0) {
-        logger.info(`Boot staleness sweep: drain-suppressed ${swept.changes} stale (>30m) row(s) via swept_at (conv_key preserved for recall)${heldTotal > 0 ? `; HELD ${heldTotal} genuine human ask(s) across ${heldAgents.length} agent(s) for the re-drain` : ''} (tracker untouched)`);
+      // D-A step 4: engine events (scheduler/tracker/healer/notice) now persist to
+      // inter_agent_messages, so the same >30-min attempts=0 backlog disposal must
+      // cover the store arm or a stale store engine event survives the restart and
+      // re-fires via the merged boot re-drain. ENGINE rows only: peer A2A rows in
+      // the store never participate in swept_at semantics (no reader consults it),
+      // and they are governed by the reply-owed/park machinery instead. No
+      // held-agents guard needed, store rows are never genuine human asks.
+      const sweptStore = db.prepare(
+        `UPDATE inter_agent_messages AS m SET swept_at = datetime('now')
+          WHERE m.role = 'user' AND m.conv_key IS NULL AND m.swept_at IS NULL
+            AND m.origin_kind = 'engine'
+            AND m.created_at < datetime('now', '-30 minutes')
+            AND NOT ((m.next_attempt_at IS NOT NULL AND m.next_attempt_at > datetime('now'))
+                     OR (m.delivery_attempts > 0 AND m.delivery_attempts < 5))`,
+      ).run();
+      if (swept.changes > 0 || sweptStore.changes > 0 || heldTotal > 0) {
+        logger.info(`Boot staleness sweep: drain-suppressed ${swept.changes} stale (>30m) row(s) + ${sweptStore.changes} store engine event(s) via swept_at (conv_key preserved for recall)${heldTotal > 0 ? `; HELD ${heldTotal} genuine human ask(s) across ${heldAgents.length} agent(s) for the re-drain` : ''} (tracker untouched)`);
       }
     } catch (err) {
       logger.warn('Boot staleness sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
@@ -617,6 +744,25 @@ async function main(): Promise<void> {
     }
   }
 
+  // 4i-3. Prune old platform backups + set-aside failed builds at boot (FA-D5).
+  // The post-update/rollback prune is fire-and-forget and can be cut short by
+  // the scheduled process.exit that restarts us, so a next-boot sweep is the
+  // durable guarantee that both pools stay bounded (each capped to the newest
+  // few, keeping at least one real rollback target). Best-effort: a prune
+  // failure must never block boot.
+  {
+    void (async () => {
+      try {
+        const { pruneOldBackupsAsyncAtBoot } = await import('./gateway/routes/update.js');
+        await pruneOldBackupsAsyncAtBoot();
+      } catch (err) {
+        logger.warn('Boot-time backup prune failed (non-fatal)', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    })();
+  }
+
   // 4j. Backfill model capabilities for any model whose capabilities array is
   // empty. Runs in the background so HTTP boot isn't blocked by Ollama
   // /api/show latency or OpenRouter catalog fetches.
@@ -776,6 +922,11 @@ async function main(): Promise<void> {
 
   injectWebSocket(server);
 
+  // D-F health-confirm: the server is now listening. If this boot is part of a
+  // self-update episode, arm the ~90s uptime timer that flips the update-state
+  // marker to healthy once the DB is confirmed serving. No-op otherwise.
+  scheduleUpdateHealthConfirm();
+
   // Clean up old uploads every 24 hours
   const { cleanupOldUploads } = await import('./gateway/routes/upload.js');
   setInterval(cleanupOldUploads, 24 * 60 * 60 * 1000);
@@ -914,10 +1065,26 @@ async function main(): Promise<void> {
     logger.warn('Failed to rehydrate injured agents', { error: err instanceof Error ? err.message : String(err) });
   }
 
+  // FA-P1: sweep stale destructive-approval requests on boot, then on the same
+  // 30s cadence as the agent reaper below. Bounded/idempotent: re-wakes the
+  // primary at most once per request, then loudly expires anything still undecided
+  // at the TTL. Reuses this existing maintenance home rather than a new timer.
+  try {
+    const { sweepStaleApprovals } = await import('./agent/destructive-gate.js');
+    sweepStaleApprovals().catch((err) => {
+      logger.warn('Destructive-approval boot sweep failed', { error: err instanceof Error ? err.message : String(err) });
+    });
+  } catch (err) {
+    logger.warn('Destructive-approval boot sweep import failed', { error: err instanceof Error ? err.message : String(err) });
+  }
+
   const timeoutInterval = setInterval(() => {
     try { checkTimeouts(); } catch (err) {
       logger.error('Timeout checker failed', { error: err instanceof Error ? err.message : String(err) });
     }
+    import('./agent/destructive-gate.js')
+      .then(({ sweepStaleApprovals }) => sweepStaleApprovals())
+      .catch((err) => logger.warn('Destructive-approval sweep failed', { error: err instanceof Error ? err.message : String(err) }));
   }, 30_000);
 
   const shutdown = (): void => {

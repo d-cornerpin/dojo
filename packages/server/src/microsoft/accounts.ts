@@ -13,6 +13,7 @@
 import crypto from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+import { bumpToolConfigGeneration } from '../agent/tool-config-generation.js';
 
 const logger = createLogger('microsoft-accounts');
 
@@ -79,7 +80,14 @@ function rowToAccount(r: MicrosoftAccountRow): MicrosoftAccount {
 
 // ── Reads ──
 
+// FA-TS1 diagnostics: mirrors google/accounts.ts: count microsoft_accounts
+// scans to verify the per-tool scan collapse from dev. Reset between measures.
+let microsoftAccountScanCount = 0;
+export function __getMicrosoftAccountScanCount(): number { return microsoftAccountScanCount; }
+export function __resetMicrosoftAccountScanCount(): void { microsoftAccountScanCount = 0; }
+
 export function listMicrosoftAccounts(kind?: MicrosoftAccountKind): MicrosoftAccount[] {
+  microsoftAccountScanCount++;
   const db = getDb();
   const rows = (kind
     ? db.prepare('SELECT * FROM microsoft_accounts WHERE kind = ? ORDER BY position').all(kind)
@@ -117,7 +125,11 @@ export function resolveMicrosoftAccountForTool(
   email?: string | null,
 ): { account: MicrosoftAccount } | { error: string } {
   const account = resolveMicrosoftAccount(kind, email);
-  if (account) return { account };
+  // FA-TS5: mirror google/accounts.ts. resolveMicrosoftAccount hands back a lone
+  // DISCONNECTED account via its single-account back-compat branch. The tool-facing
+  // resolver is authoritative on `.connected`; a disconnected-only resolution is
+  // not a success (avoids a confusing auth failure or a run against stale tokens).
+  if (account && account.connected) return { account };
   const connected = listMicrosoftAccounts(kind).filter(a => a.connected);
   if (connected.length === 0) {
     return { error: `No ${kind} Microsoft account is connected. Connect one in Settings → Microsoft.` };
@@ -174,6 +186,7 @@ export function insertMicrosoftAccount(acc: NewMicrosoftAccount): MicrosoftAccou
     acc.grantedScopes ?? null, acc.enabledServices ?? null,
     acc.watchEmail ? 1 : 0, acc.sendEmail ? 1 : 0, acc.lastVerifiedAt ?? null,
   );
+  bumpToolConfigGeneration(); // FA-TS1: connect/add widens the tool surface
   return getMicrosoftAccount(id)!;
 }
 
@@ -214,10 +227,12 @@ export function updateMicrosoftAccount(id: string, patch: Partial<Omit<Microsoft
   sets.push("updated_at = datetime('now')");
   values.push(id);
   getDb().prepare(`UPDATE microsoft_accounts SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  bumpToolConfigGeneration(); // FA-TS1: connected flag / enabledServices edits change the surface
 }
 
 export function deleteMicrosoftAccount(id: string): void {
   getDb().prepare('DELETE FROM microsoft_accounts WHERE id = ?').run(id);
+  bumpToolConfigGeneration(); // FA-TS1: removing an account narrows the surface
 }
 
 // ── One-time seed from legacy config keys ──

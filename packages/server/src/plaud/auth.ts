@@ -12,6 +12,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { runPlaudCommand, runPlaudJson } from './client.js';
+import { bumpToolConfigGeneration } from '../agent/tool-config-generation.js';
 
 const logger = createLogger('plaud-auth');
 
@@ -47,10 +48,15 @@ function writeConfigValue(key: string, value: string): void {
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
     `)
     .run(key, value);
+  // FA-TS1: connect/disconnect flips isPlaudConnected(), which gates the Plaud
+  // tool block in getFilteredTools. All connect/disconnect paths funnel the
+  // connected flag through here, so one guard covers them.
+  if (key === CONFIG_KEY_CONNECTED) bumpToolConfigGeneration();
 }
 
 function deleteConfigValue(key: string): void {
   getDb().prepare('DELETE FROM config WHERE key = ?').run(key);
+  if (key === CONFIG_KEY_CONNECTED) bumpToolConfigGeneration();
 }
 
 export function isPlaudConnected(): boolean {
@@ -197,7 +203,7 @@ export async function startPlaudLogin(): Promise<{ started: boolean; alreadyRunn
       if (match) {
         pendingLoginUrl = match[1];
         logger.info('Plaud auth URL captured', { url: pendingLoginUrl });
-        broadcast({ type: 'plaud:auth_url', url: pendingLoginUrl } as never);
+        broadcast({ type: 'plaud:auth_url', url: pendingLoginUrl });
       }
     }
   };
@@ -219,12 +225,12 @@ export async function startPlaudLogin(): Promise<{ started: boolean; alreadyRunn
       writeConfigValue(CONFIG_KEY_CONNECTED, 'true');
       writeConfigValue(CONFIG_KEY_CONNECTED_AT, new Date().toISOString());
       const info = await refreshPlaudAccountInfo();
-      broadcast({ type: 'plaud:connected', email: info.email } as never);
+      broadcast({ type: 'plaud:connected', email: info.email });
     } else {
       broadcast({
         type: 'plaud:login_failed',
         error: `Plaud CLI exited with code ${code ?? signal ?? 'unknown'}.`,
-      } as never);
+      });
     }
   });
 
@@ -232,7 +238,7 @@ export async function startPlaudLogin(): Promise<{ started: boolean; alreadyRunn
     logger.error('Plaud login subprocess error', { error: err.message });
     loginProcess = null;
     pendingLoginUrl = null;
-    broadcast({ type: 'plaud:login_failed', error: err.message } as never);
+    broadcast({ type: 'plaud:login_failed', error: err.message });
   });
 
   return { started: true };
@@ -264,7 +270,7 @@ export async function plaudLogout(): Promise<{ ok: boolean; error?: string }> {
   writeConfigValue(CONFIG_KEY_CONNECTED, 'false');
   deleteConfigValue(CONFIG_KEY_EMAIL);
   deleteConfigValue(CONFIG_KEY_CONNECTED_AT);
-  broadcast({ type: 'plaud:disconnected' } as never);
+  broadcast({ type: 'plaud:disconnected' });
   if (!result.ok && !/not.{0,5}logged in|no session/i.test(result.stderr + result.stdout)) {
     return { ok: false, error: result.error ?? 'Plaud logout failed.' };
   }

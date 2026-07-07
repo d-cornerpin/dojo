@@ -2694,6 +2694,16 @@ const ModelRow = ({
         {saved && <span className="text-xs text-cp-teal">Saved</span>}
       </div>
 
+      {/* Price-unknown hint: this model has no rate on file (NULL, not an
+          explicit 0), so per owner decision D-H its usage is billed at $0 and
+          never counts toward the budget. Surfaced so a genuinely-paid model
+          with a failed price lookup isn't silently hidden at $0. */}
+      {model.priceUnknown && (
+        <p className="mt-1.5 text-[11px] text-cp-coral">
+          Price unknown, set a rate above. Until then this model is billed at $0 and does not count toward your budget.
+        </p>
+      )}
+
       {isOllama && (
         <div className="mt-3 flex items-center gap-4">
           <div className="flex items-center gap-2">
@@ -5453,6 +5463,26 @@ const VoiceTab = () => {
           });
         }, 1500);
       }
+    });
+    return unsub;
+  }, [ws]);
+
+  // FA-DB3: a failed download/install broadcasts voice:model_install_error.
+  // Without handling it the progress row stalls at its last fraction forever.
+  // Surface the error, clear the stuck progress row, and drop the installing
+  // state for that model so the Download button comes back.
+  useEffect(() => {
+    const unsub = ws.subscribe('voice:model_install_error', (event) => {
+      if (event.type !== 'voice:model_install_error') return;
+      const { kind, modelId, error: reason } = event.data;
+      const key = `${kind}/${modelId}`;
+      setInstallError(`${kind} download failed: ${reason}`);
+      setInstalling((cur) => (cur === key ? null : cur));
+      setDownloads((prev) => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
     });
     return unsub;
   }, [ws]);

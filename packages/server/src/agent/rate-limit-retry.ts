@@ -185,7 +185,7 @@ function scheduleNextAttempt(
               code: 'RATE_LIMITED',
               severity: 'warning',
               retryable: true,
-            } as never);
+            });
           }
         } catch { /* best effort */ }
 
@@ -200,6 +200,19 @@ function scheduleNextAttempt(
   }, waitSeconds * 1000);
 
   retryStates.set(agentId, { agentId, timer, strike, startedAt, lastMessageContent, alerted });
+}
+
+/**
+ * True when a background decay retry currently owns this agent's rate-limit
+ * recovery. The v2 recovery cascade (recoverFromError) reads this to skip its
+ * injury path for a 429/529 that scheduleRateLimitRetry is already handling on
+ * a pinned-model agent, so the same rate limit is not handled twice (FA-A1).
+ * A state exists from the moment scheduleRateLimitRetry arms the first timer
+ * (synchronously, before the model layer re-throws) until cleanupRetry clears
+ * it on success, exhaustion, or a non-rate-limit error during a retry.
+ */
+export function hasActiveRateLimitRetry(agentId: string): boolean {
+  return retryStates.has(agentId);
 }
 
 // ── Helpers ──

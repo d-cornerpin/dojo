@@ -1079,3 +1079,18 @@ export function getLastPoke(taskId: string): PokeEntry | null {
   if (!row) return null;
   return mapPokeRow(row);
 }
+
+/**
+ * Clear the poke log for a task. INVARIANT: this is the DELETE that re-arms
+ * the escalation ladder. Call it ONLY at a remediation event (reassign,
+ * retask, auto-reset), never mid-cycle. Each remediation starts a genuinely
+ * new escalation cycle, so wiping the rows here is what lets the deterministic
+ * ladder start fresh from nudge(1) the next time the task stalls. Because
+ * nothing else clears these rows, the cross-restart poke dedup (never re-send
+ * the same poke within a cycle) stays intact.
+ */
+export function clearPokeLog(taskId: string): void {
+  const db = getDb();
+  db.prepare('DELETE FROM poke_log WHERE task_id = ?').run(taskId);
+  logger.info('Poke log cleared (remediation, new escalation cycle)', { taskId });
+}

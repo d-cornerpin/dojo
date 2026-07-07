@@ -21,6 +21,7 @@ import { createLogger } from '../../logger.js';
 import { broadcast } from '../../gateway/ws.js';
 import { getDb } from '../../db/connection.js';
 import { recordError, AgentError } from '../errors.js';
+import { hasActiveRateLimitRetry } from '../rate-limit-retry.js';
 import { classifyRecoverableProviderError, classifyPlatformError } from './classifiers/provider.js';
 import {
   pendingWakeups,
@@ -36,6 +37,14 @@ import {
 } from './error-format.js';
 
 const logger = createLogger('v2-recovery');
+
+// Informational chat note for a rate limit whose recovery the background
+// retry manager owns. Shared by the step-0 passthrough (retry active) and the
+// auto-router-exhausted loud path in recordInjury (no retry scheduled) so the
+// wording lives in one place.
+const RATE_LIMIT_RETRY_NOTE =
+  `[System: The model provider returned a rate limit error. The platform is retrying ` +
+  `automatically. Give it a moment, and tell the user there is a short delay if they are waiting.]`;
 
 // ── Public API ──
 
@@ -76,6 +85,35 @@ export async function recoverFromError(
   const code = error instanceof AgentError ? error.code : undefined;
   const fullErrText = cause ? `${message} ${cause}` : message;
   const agentId = state.agentId;
+
+  // 0. Rate limit / overloaded that the background decay retry manager already
+  //    owns (FA-A1). When the model layer hit a 429/529 on a PINNED model (not
+  //    auto-routed), it called scheduleRateLimitRetry BEFORE re-throwing; that
+  //    manager owns recovery end to end (silent retries, status 'rate_limited'
+  //    at strike 3, re-wake when the provider window resets). Running the
+  //    injury cascade for the SAME error double-handles it: it bumps the
+  //    error-loop counter (5 in 2min pauses even the primary), thrashes status
+  //    between error/working/rate_limited, and wakes the Healer for an infra
+  //    condition it is forbidden to fix by switching a pinned model.
+  //
+  //    Gated on an ACTIVE retry state, NEVER on the error text alone. The
+  //    auto-router all-fallbacks-exhausted case set routerTier, so the model
+  //    layer did NOT schedule a retry, hasActiveRateLimitRetry is false, and
+  //    that case still degrades loudly through the cascade below. Reuses
+  //    classifyError's regex so the match stays in one place.
+  const rlKind = classifyError(new Error(fullErrText)).kind;
+  if ((rlKind === 'rate_limit' || rlKind === 'overloaded') && hasActiveRateLimitRetry(agentId)) {
+    logger.info(
+      'v2: rate limit owned by background retry manager, skipping injury cascade',
+      { agentId, kind: rlKind },
+      agentId,
+    );
+    // Persist the informational note only (no recordError, no status='error',
+    // no last_error write, no onAgentInjured). The retry manager drives status
+    // and the eventual back-online notice.
+    persistAndBroadcastSystemNote(agentId, RATE_LIMIT_RETRY_NOTE);
+    return;
+  }
 
   // 1. Context overflow — provider rejected because prompt too big.
   //    Dreamer gets batch-resize; everyone else gets force-compact + wakeup.
@@ -147,7 +185,10 @@ export function computeInputsFingerprint(state: AgentTurnState): string {
  */
 export function classifyError(error: Error): ClassifiedError {
   const msg = error.message.toLowerCase();
-  if (/rate.?limit|429/.test(msg)) return { kind: 'rate_limit' };
+  // "usage limit" is the Claude subscription (agent-sdk) phrasing for a rate
+  // limit; treating it as rate_limit keeps the FA-A1 passthrough owning SDK
+  // usage-limit errors on pinned models instead of injuring the agent (FA-PC4).
+  if (/rate.?limit|429|usage limit/.test(msg)) return { kind: 'rate_limit' };
   if (/overloaded|529/.test(msg)) return { kind: 'overloaded' };
   if (/context.*overflow|prompt.*too.?long/.test(msg)) return { kind: 'context_overflow' };
   if (/output.*token.*(limit|exceed|max)|max_output_tokens|truncat/.test(msg))
@@ -458,10 +499,7 @@ async function recordInjury(
   // sees something it can act on (apologize to user, try a different
   // approach next session, etc.) rather than just going silent.
   if (isRateLimit) {
-    persistAndBroadcastSystemNote(
-      agentId,
-      `[System: The model provider returned a rate limit error. The platform is retrying automatically — give it a moment. Tell the user there is a short delay if they are waiting.]`,
-    );
+    persistAndBroadcastSystemNote(agentId, RATE_LIMIT_RETRY_NOTE);
   } else {
     persistAndBroadcastSystemNote(
       agentId,

@@ -74,7 +74,7 @@ export function createGroup(name: string, description: string | null, createdBy:
 
   logger.info('Group created', { id, name, createdBy });
 
-  broadcast({ type: 'group:created', data: { id, name } } as never);
+  broadcast({ type: 'group:created', data: { id, name } });
 
   return { id, name, description, createdBy, color, memberCount: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 }
@@ -154,7 +154,7 @@ export function deleteGroup(id: string): boolean {
 
   if (result.changes > 0) {
     logger.info('Group deleted', { id });
-    broadcast({ type: 'group:deleted', data: { id } } as never);
+    broadcast({ type: 'group:deleted', data: { id } });
   }
 
   return result.changes > 0;

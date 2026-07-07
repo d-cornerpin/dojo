@@ -11,6 +11,7 @@ import {
   getPinnedEntries,
   updateRetrievalStats,
   getUnfiledArchivesForAgent,
+  formatCitationSuffix,
   type VaultEntry,
 } from './store.js';
 
@@ -38,7 +39,10 @@ function formatEntryForPrompt(entry: VaultEntry): string {
   if (entry.isPermanent) label = 'permanent';
   // Include creation date so agents can judge temporal relevance
   const dateStr = entry.createdAt ? entry.createdAt.split('T')[0]?.split(' ')[0] ?? '' : '';
-  return dateStr ? `- [${label}, ${dateStr}] ${entry.content}` : `- [${label}] ${entry.content}`;
+  // FU-2: append the compact source suffix when the entry carries a citation, so
+  // the agent can cite it in-context. Empty string when there is none.
+  const cite = formatCitationSuffix(entry.citation);
+  return dateStr ? `- [${label}, ${dateStr}] ${entry.content}${cite}` : `- [${label}] ${entry.content}${cite}`;
 }
 
 // ── Retrieve Relevant Vault Entries ──
@@ -298,7 +302,15 @@ export async function retrieveForContext(
   // Semantic search for relevant entries
   let relevant: Array<VaultEntry & { similarity: number }> = [];
   try {
-    relevant = await semanticSearch(query, { limit: budget.maxEntries + 5, agentId }); // extra for filtering
+    // FA-V6: personalOnly:true so semantic personal recall matches exact mode's
+    // existing contract (listEntries defaults to namespace IS NULL). Without it,
+    // an agent's own squad-namespaced entries leaked into PERSONAL recall while
+    // exact mode filtered them out. Squad recall still flows via squad_recall.
+    // Still correct under D-A: household sharing is BUILT and LIVE (resolveRecallScope
+    // in vault/store.js), but it is a separate AXIS, it widens which author ids are in
+    // scope, not which namespaces. Squad namespaces stay opt-in, so keeping them out
+    // of personal recall is the right default regardless of the household flip.
+    relevant = await semanticSearch(query, { limit: budget.maxEntries + 5, agentId, personalOnly: true }); // extra for filtering
   } catch (err) {
     logger.warn('Vault semantic search failed, using pinned entries only', {
       error: err instanceof Error ? err.message : String(err),

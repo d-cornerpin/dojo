@@ -216,8 +216,12 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     slot: SystemSlot.IntegrationReconnect,
     reason:
       'Honesty (Inv I): a configured-but-disconnected integration shows a reconnect ' +
-      'breadcrumb instead of vanishing (so the agent does not claim the capability is unsupported). 0+ parts.',
-    render: (ctx) => renderIntegrationReconnect(ctx.agentId),
+      'breadcrumb instead of vanishing (so the agent does not claim the capability is ' +
+      'unsupported). 0+ parts. FA-PT1 (C28): MOVED to the msg.turn-context tail message; ' +
+      'the breadcrumb flips in/out of the prefix on live connection health, so keeping it ' +
+      'in the cached system block busted the cache on every reconnect/expire. The render ' +
+      'fn is called from renderTurnContext. This entry now emits nothing.',
+    render: () => null,
   },
   {
     id: 'sys.techniques-equipped',
@@ -268,8 +272,13 @@ const SYSTEM_ENTRIES: SystemInjection[] = [
     precedenceTier: 6,
     reason:
       'Generic voice-mode conduct on a voice (non-phone) turn; TTS-conditional ' +
-      'filler advice (C6). Mutually exclusive with phone-conduct.',
-    render: (ctx) => renderVoiceConduct(ctx.inboundChannel, ctx.turnContext),
+      'filler advice (C6). Mutually exclusive with phone-conduct. FA-PT1 (C28): MOVED ' +
+      'to the msg.turn-context tail message (present only on voice turns, so it is ' +
+      'volatile); leaving it in the prefix meant every voice/text modality switch and ' +
+      'every non-voice turn interleaved into a voice conversation busted the cached ' +
+      'system prefix. The render fn is called from renderTurnContext. This entry now ' +
+      'emits nothing.',
+    render: () => null,
   },
 ];
 
@@ -306,6 +315,19 @@ function renderTurnContext(ctx: AssemblyContext): EngineMessage | null {
   if (cl) parts.push(cl);
   const pc = renderPhoneConduct(ctx.inboundChannel, ctx.lastUserContent, ctx.turnContext);
   if (pc) parts.push(pc);
+  // FA-PT1: generic voice-mode conduct (C6), mutually exclusive with phone conduct.
+  // Moved here from the cached system prefix (slot 2300) so a voice/text modality
+  // switch (or a non-voice turn interleaved into a live voice conversation) no
+  // longer busts the primary's whole system cache. Present only on voice turns, so
+  // it lives on the volatile tail exactly like phone conduct (C28).
+  const vc = renderVoiceConduct(ctx.inboundChannel, ctx.turnContext);
+  if (vc) parts.push(vc);
+  // FA-PT1: integration-reconnect honesty breadcrumb(s) (Inv I), 0+ parts. Moved
+  // here from the system prefix (slot 1700): they flip in/out of the prefix on live
+  // connection health (the same cache-busting class), so they ride the volatile tail
+  // instead. Content identical; renderIntegrationReconnect keeps its own non-PM gate
+  // and name-sorted determinism.
+  for (const ir of renderIntegrationReconnect(ctx.agentId)) parts.push(ir);
   // P-5: live iMessage bridge state (the slot-700 tool guidance now carries only a
   // stable union sentence and points here). Primary only, matching where the tool
   // guidance describes the bridge.

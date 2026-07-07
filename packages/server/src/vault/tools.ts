@@ -5,7 +5,7 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { createEntry, semanticSearch, markObsolete, getEntry, updateEntry, listEntries, OWNER_VAULT_AGENT_ID } from './store.js';
+import { createEntry, semanticSearch, markObsolete, getEntry, updateEntry, listEntries, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
 import { searchUnfiledArchives, UNFILED_ARCHIVE_LABEL, type UnfiledArchiveSnippet } from './retrieval.js';
 
 const logger = createLogger('vault-tools');
@@ -89,6 +89,82 @@ function detectCredentialContent(content: string): string | null {
   return null;
 }
 
+// ── FA-V5 (D-C): vault entry compression enforcement ──
+//
+// The DREAMER-SOUL documents hard per-type length caps and a prose-shape bounce.
+// This is the ONE shared source of truth for those caps (the SOUL wording is
+// kept in sync). Enforced only on the vault_remember TOOL path
+// (executeVaultRemember) so the model gets a corrective "compress and retry"
+// error; direct engine writers (the dashboard vault API's createEntry) are not
+// gated. The cap is measured on CONTENT only, so future citation metadata rides
+// free (FU-2), and the engine date prefix is added AFTER this gate.
+const VAULT_ENTRY_CHAR_CAPS: Record<string, number> = {
+  fact: 150,
+  preference: 150,
+  note: 150,
+  relationship: 150,
+  decision: 250,
+  event: 250,
+  procedure: 250,
+};
+const DEFAULT_ENTRY_CHAR_CAP = 150;
+
+// Exemption (b): the SOUL's EXCEPTION class. User-explicit standing instructions
+// ("remember that ...", "always ...", "never ...", "from now on ...") are saved
+// as-is, never bounced for length or shape. Matched conservatively on the SOUL's
+// own trigger phrases; worst case a borderline entry that mentions "always"
+// saves uncompressed, which is the safe direction for a user directive.
+const STANDING_INSTRUCTION_RE =
+  /\b(?:remember (?:that|to|this)|i want you to remember|make sure you (?:remember|always|never)|always|never|from now on|going forward|from this point on|do not ever)\b/i;
+
+function isStandingInstruction(content: string): boolean {
+  return STANDING_INSTRUCTION_RE.test(content);
+}
+
+// Sentence terminators: a '.', '!' or '?' followed by whitespace or end of
+// string. Telegraphic entries ("Tunnel: X. Why: Y.") have few; a multi-sentence
+// narrative has many.
+function countSentenceTerminators(content: string): number {
+  return (content.match(/[.!?](?:\s|$)/g) ?? []).length;
+}
+
+// Prose-shape bounce (conservative, length-dominant per the finding's caution
+// that shape detection is floor-fragile). Bounce ONLY when BOTH hold: the entry
+// is over half its type cap AND it has 3+ sentence terminators. Short entries
+// and 1-2 sentence telegraphic lines are never bounced. Deliberately does NOT
+// use a subject-verb-start heuristic (too eager to false-positive telegraphic
+// lines that begin with a pronoun).
+function isProseShaped(content: string, cap: number, terminators: number): boolean {
+  if (content.length <= cap / 2) return false;
+  return terminators >= 3;
+}
+
+// ── FU-2: source citation ──
+// Build the compact citation JSON from the tool's flat citation params. Flat
+// scalars (source_ref + optional source_page/source_section) are used instead of
+// a nested object because the floor model (DeepSeek V4 Flash) fills flat string
+// params far more reliably than it fills a nested {kind, ref, page} object. The
+// engine derives `kind` here (deterministic), so the model never has to. Returns
+// null when no source_ref was given, so citation stays optional everywhere. This
+// is METADATA: it never touches `content`, so it rides free past the FA-V5 caps.
+function buildCitationJson(args: Record<string, unknown>): string | null {
+  const rawRef = typeof args.source_ref === 'string' ? args.source_ref.trim() : '';
+  if (!rawRef) return null;
+  const kind: 'url' | 'file' = /^https?:\/\//i.test(rawRef) ? 'url' : 'file';
+  const citation: { kind: 'url' | 'file'; ref: string; page?: number; section?: string } = { kind, ref: rawRef };
+  // Floor models sometimes send numbers as strings; coerce defensively.
+  let page: number | undefined;
+  if (typeof args.source_page === 'number') page = args.source_page;
+  else if (typeof args.source_page === 'string' && args.source_page.trim() !== '') {
+    const n = Number(args.source_page);
+    if (Number.isFinite(n)) page = n;
+  }
+  if (page !== undefined && Number.isFinite(page)) citation.page = Math.trunc(page);
+  const section = typeof args.source_section === 'string' ? args.source_section.trim() : '';
+  if (section) citation.section = section;
+  return JSON.stringify(citation);
+}
+
 export async function executeVaultRemember(
   agentId: string,
   args: Record<string, unknown>,
@@ -149,18 +225,59 @@ export async function executeVaultRemember(
   // The point of the entry is to capture the user's words faithfully.
   let charsRemoved = 0;
   if (!verbatim) {
-    // Strip common narrative cruft silently.
+    // Strip common narrative cruft silently (the SOUL notes the engine strips
+    // bloat before measuring length, so this runs before the cap gate below).
     const result = stripBloatPhrases(content);
     content = result.stripped;
     charsRemoved = result.charsRemoved;
+  }
 
-    // Auto-prepend today's date if the content doesn't already start with a
-    // date stamp. Keeps every entry temporally anchored.
-    if (!/^\[?\d{4}-\d{2}/.test(content)) {
-      const dateStr = new Date().toISOString().split('T')[0];
-      content = `[${dateStr}] ${content}`;
+  // ── FA-V5 (D-C): enforce the compression contract on the tool path ──
+  // The SOUL documents hard per-type length caps and a prose-shape bounce;
+  // nothing used to enforce them (createEntry just truncated at 500 tokens, so
+  // over-length prose saved silently). Enforce here so the model gets a
+  // corrective error and retries. Three exemptions bypass BOTH checks:
+  //   (a) verbatim:true         - the user's exact words, never bounced
+  //   (b) standing-instruction  - the SOUL's "remember that / always / never"
+  //                               EXCEPTION class, detected on the content
+  //   (c) owner-authored        - agent_id === OWNER_VAULT_AGENT_ID
+  // Measured on CONTENT only (the engine date prefix is added AFTER this gate,
+  // and future citation metadata rides free - FU-2).
+  const exemptFromCompression =
+    verbatim || agentId === OWNER_VAULT_AGENT_ID || isStandingInstruction(content);
+  if (!exemptFromCompression) {
+    const cap = VAULT_ENTRY_CHAR_CAPS[type] ?? DEFAULT_ENTRY_CHAR_CAP;
+    if (content.length > cap) {
+      return (
+        `Too long for a [${type}] vault entry: ${content.length} chars, cap is ${cap}. ` +
+        `Vault entries are compressed shorthand, not prose. Rewrite it shorter: lead with the noun, ` +
+        `cut filler words, keep only the durable fact (example shape: "Tunnel: Cloudflare named. Reason: self-hosted integration."), ` +
+        `then call vault_remember again. (If the user told you to remember something word-for-word, pass verbatim: true to save it exactly.)`
+      );
+    }
+    const terminators = countSentenceTerminators(content);
+    if (isProseShaped(content, cap, terminators)) {
+      return (
+        `Reads like narrative prose for a [${type}] vault entry (${terminators} sentences). ` +
+        `Vault entries are one telegraphic line, not a story. Rewrite it as a single compressed line: lead with the noun, ` +
+        `drop the "the user/we/I did X" framing, keep only the durable fact under ${cap} chars, ` +
+        `then call vault_remember again. (If the user told you to remember something word-for-word, pass verbatim: true to save it exactly.)`
+      );
     }
   }
+
+  // Auto-prepend today's date if the content doesn't already start with a date
+  // stamp. Keeps every entry temporally anchored. Non-verbatim only, and after
+  // the cap gate so the engine-added stamp never counts against the user.
+  if (!verbatim && !/^\[?\d{4}-\d{2}/.test(content)) {
+    const dateStr = new Date().toISOString().split('T')[0];
+    content = `[${dateStr}] ${content}`;
+  }
+
+  // FU-2: capture the source citation (URL / file / doc + optional page/section)
+  // if the caller provided one. Built from CONTENT-free params, so it never
+  // affected the cap gate above.
+  const citation = buildCitationJson(args);
 
   // Get agent name
   const db = getDb();
@@ -176,6 +293,7 @@ export async function executeVaultRemember(
       isPinned: pin,
       isPermanent: permanent,
       source: 'agent',
+      citation,
     });
 
     const flags: string[] = [];
@@ -202,7 +320,10 @@ export async function executeVaultRemember(
       ? `\n(Engine stripped ${charsRemoved} chars of narrative filler before saving.)`
       : '';
 
-    return `Remembered [${type}]${flagStr}: "${entry.content.slice(0, 120)}${entry.content.length > 120 ? '…' : ''}"\nEntry ID: ${entry.id}${nearDupNote}${compressionNote}`;
+    // FU-2: echo the captured source so the agent can confirm it stuck.
+    const citationSuffix = formatCitationSuffix(entry.citation);
+
+    return `Remembered [${type}]${flagStr}: "${entry.content.slice(0, 120)}${entry.content.length > 120 ? '…' : ''}"${citationSuffix}\nEntry ID: ${entry.id}${nearDupNote}${compressionNote}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('vault_remember failed', { error: msg }, agentId);
@@ -274,14 +395,20 @@ export async function executeVaultSearch(
         const prefix = start > 0 ? '…' : '';
         const suffix = end < r.content.length ? '…' : '';
         const snippet = prefix + r.content.slice(start, end) + suffix;
-        return `${i + 1}. [${r.type}]${flagStr} ${snippet}\n   ID: ${r.id} | Created: ${r.createdAt}`;
+        return `${i + 1}. [${r.type}]${flagStr} ${snippet}${formatCitationSuffix(r.citation)}\n   ID: ${r.id} | Created: ${r.createdAt}`;
       });
       const bridgeSection = bridge.length > 0 ? `\n\n${formatUnfiledBridgeForSearch(bridge)}` : '';
       return `Found ${rows.length} vault entr${rows.length === 1 ? 'y' : 'ies'} containing "${query}" (exact match):\n\n${lines.join('\n\n')}${bridgeSection}\n\nUse vault_get(entry_id="…") for full content, vault_update to correct, vault_forget to mark obsolete.`;
     }
 
-    // W3-4: scoped to the calling agent's own vault (see exact mode above).
-    const results = await semanticSearch(query, { limit, type, agentId });
+    // W3-4/D-A: recall author scope is resolveRecallScope(agentId) (vault/store.js),
+    // household-shared for members, self+owner otherwise.
+    // FA-V6: personalOnly:true so semantic mode matches exact mode's contract
+    // (listEntries above defaults to namespace IS NULL). Squad-namespaced entries
+    // stay OUT of personal recall and flow via squad_recall instead. This remains
+    // correct under D-A: household sharing is BUILT and LIVE, but it is a separate
+    // AXIS (which author ids are in scope), not namespaces; squad namespaces stay opt-in.
+    const results = await semanticSearch(query, { limit, type, agentId, personalOnly: true });
     // FN-1: semantic mode uses token-overlap matching against unfiled archives.
     const bridge = searchUnfiledArchives(agentId, query, { mode: 'token' });
 
@@ -305,7 +432,7 @@ export async function executeVaultSearch(
         r.content.length > SNIPPET_CHARS
           ? r.content.slice(0, SNIPPET_CHARS) + '…'
           : r.content;
-      return `${i + 1}. [${r.type}]${flagStr}${conf} ${snippet}\n   ID: ${r.id} | Similarity: ${r.similarity.toFixed(2)} | Created: ${r.createdAt}`;
+      return `${i + 1}. [${r.type}]${flagStr}${conf} ${snippet}${formatCitationSuffix(r.citation)}\n   ID: ${r.id} | Similarity: ${r.similarity.toFixed(2)} | Created: ${r.createdAt}`;
     });
 
     const truncatedCount = results.filter((r) => r.content.length > SNIPPET_CHARS).length;
@@ -331,8 +458,28 @@ export async function executeVaultSearch(
 // (squad-shared) and owner-authored (dashboard, OWNER_VAULT_AGENT_ID)
 // entries remain accessible, that sharing is deliberate.
 // Reads as "not found" so the guard does not leak the entry's existence.
+//
+// AUTHOR-restricted gate: kept for vault_update / vault_forget (a destructive
+// edit across two different humans' agents must go through the owner via the
+// dashboard, not one member mutating another member's memory).
 function ownedByOtherAgent(entry: { agentId: string; namespace: string | null }, callerAgentId: string): boolean {
   return entry.agentId !== callerAgentId && entry.namespace === null && entry.agentId !== OWNER_VAULT_AGENT_ID;
+}
+
+// D-A: READ gate for vault_get / executeVaultExpand. Relaxed from author-only to
+// household: a member can open a search hit authored by ANOTHER member (household
+// recall surfaces the snippet, so the agent must be able to expand it). A
+// non-member (probe, spawned worker, legacy service agent) still gets "not found"
+// for a member's entry. Squad-namespaced and owner-authored entries stay readable
+// (that sharing is deliberate). resolveRecallScope encodes the member-vs-nonmember
+// logic once: for a member caller it returns the full household set; for a
+// non-member it returns [self, OWNER]. So "not household" == the author is not in
+// the caller's recall scope, exactly the set the caller may have surfaced.
+function ownedByNonHouseholdAgent(entry: { agentId: string; namespace: string | null }, callerAgentId: string): boolean {
+  if (entry.namespace !== null) return false;                 // squad-shared: readable
+  if (entry.agentId === OWNER_VAULT_AGENT_ID) return false;   // owner-authored: readable
+  if (entry.agentId === callerAgentId) return false;          // own entry
+  return !resolveRecallScope(callerAgentId).includes(entry.agentId);
 }
 
 // ── vault_update ──
@@ -377,7 +524,8 @@ export function executeVaultExpand(
   const entryId = args.entry_id as string | undefined;
   if (!entryId) return 'Error: entry_id is required.';
   const entry = getEntry(entryId);
-  if (!entry || ownedByOtherAgent(entry, agentId)) return `Error: Vault entry "${entryId}" not found.`;
+  // D-A: household-relaxed read gate (a member may expand another member's hit).
+  if (!entry || ownedByNonHouseholdAgent(entry, agentId)) return `Error: Vault entry "${entryId}" not found.`;
 
   const flags: string[] = [];
   if (entry.isPinned) flags.push('pinned');
@@ -385,11 +533,27 @@ export function executeVaultExpand(
   if (entry.isObsolete) flags.push('obsolete');
   const flagStr = flags.length > 0 ? ` {${flags.join(',')}}` : '';
 
+  // FU-2: show the FULL source here (unlike search/recall, which shorten file
+  // paths to a basename) so the agent can re-open the original from vault_get.
+  let sourceLine = '';
+  if (entry.citation) {
+    try {
+      const c = JSON.parse(entry.citation) as { ref?: string; page?: number; section?: string };
+      if (c && typeof c.ref === 'string' && c.ref.length > 0) {
+        let s = c.ref;
+        if (typeof c.page === 'number' && Number.isFinite(c.page)) s += ` p.${c.page}`;
+        if (typeof c.section === 'string' && c.section.trim().length > 0) s += ` (${c.section.trim()})`;
+        sourceLine = `Source: ${s}\n`;
+      }
+    } catch { /* malformed citation, skip the line */ }
+  }
+
   return (
     `[${entry.type}]${flagStr}\n` +
     `ID: ${entry.id}\n` +
     `Created: ${entry.createdAt}\n` +
     (entry.tags && entry.tags.length > 0 ? `Tags: ${entry.tags.join(', ')}\n` : '') +
+    sourceLine +
     `\n${entry.content}`
   );
 }

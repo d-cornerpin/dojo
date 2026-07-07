@@ -76,8 +76,11 @@ export enum SystemSlot {
   TechniquesEquipped = 2100,
   Runtime = 2200,
   VoiceConduct = 2300,
-  /** Weak technique hint, raw-appended to the END (rawAppend), not slot-walked. */
-  TechniqueWeakHint = 2400,
+  // FA-PT3: SystemSlot.TechniqueWeakHint (2400) was deleted. It was dead
+  // scaffolding for a raw-append weak-hint that never lived on the system side:
+  // the only live weak-technique injection is the message entry
+  // msg.technique-weak (MessageSlot.TechniqueWeak). No entry was ever registered
+  // at 2400 and appendSystemHint had zero callers.
 }
 
 /**
@@ -249,13 +252,6 @@ export interface SystemInjection extends BaseInjection {
   target: 'system';
   slot: SystemSlot;
   render: (ctx: AssemblyContext) => SystemRenderResult;
-  /**
-   * If true, this entry is NOT slot-walked into the joined system prompt; it is
-   * raw-appended to the END of the assembled prompt via appendSystemHint (no
-   * `---` separator), for content the legacy code appended raw (the weak
-   * technique hint). The system walker skips rawAppend entries.
-   */
-  rawAppend?: boolean;
 }
 
 export interface MessageInjection extends BaseInjection {

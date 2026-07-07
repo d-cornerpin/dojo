@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import type { WsEvent } from '@dojo/shared';
 import * as api from '../lib/api';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { formatDate } from '../lib/dates';
@@ -528,12 +529,23 @@ export const Costs = () => {
     loadData();
   }, [loadData]);
 
-  // Refresh on cost-related WS events
+  // Refresh on cost-related WS events (FA-DB7). chat:message is the highest-
+  // frequency broadcast; the old handler fired a fresh setTimeout per message,
+  // so a burst kicked off a thundering herd of full triple-reloads (each of
+  // which re-aggregates cost tables). Two changes: (1) gate on assistant
+  // messages, the only role that carries billed token usage, since user text
+  // and other roles can't move the totals; (2) coalesce to ONE trailing timer, so
+  // a burst collapses into a single reload after it settles. Budget-wall alerts
+  // still surface independently via cost:alert, so no urgency is lost here.
   useEffect(() => {
-    const unsub = subscribe('chat:message', () => {
-      setTimeout(loadData, 1000);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsub = subscribe('chat:message', (event: WsEvent) => {
+      if (event.type !== 'chat:message') return;
+      if (event.message.role !== 'assistant') return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { timer = null; void loadData(); }, 2000);
     });
-    return unsub;
+    return () => { if (timer) clearTimeout(timer); unsub(); };
   }, [subscribe, loadData]);
 
   const mostExpensiveModel = summary?.byModel?.length

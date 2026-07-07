@@ -224,7 +224,7 @@ export function createTechnique(params: CreateTechniqueParams): TechniqueMetadat
 
   embedTechniqueIntent(id);
 
-  broadcast({ type: 'technique:created', data: { id, name: params.displayName, state } } as never);
+  broadcast({ type: 'technique:created', data: { id, name: params.displayName, state } });
 
   return getTechnique(id)!;
 }
@@ -389,13 +389,13 @@ export function updateTechnique(id: string, updates: Partial<{
   if (updates.state) {
     const technique = getTechnique(id);
     if (technique) {
-      broadcast({ type: 'technique:state_changed', data: { id, name: technique.name, oldState: undefined, newState: updates.state } } as never);
+      broadcast({ type: 'technique:state_changed', data: { id, name: technique.name, oldState: undefined, newState: updates.state } });
     }
   }
   if (updates.name !== undefined || updates.description !== undefined) {
     const technique = getTechnique(id);
     if (technique) {
-      broadcast({ type: 'technique:updated', data: { id, name: technique.name, version: technique.version } } as never);
+      broadcast({ type: 'technique:updated', data: { id, name: technique.name, version: technique.version } });
     }
   }
 
@@ -452,7 +452,7 @@ export function updateTechniqueInstructions(
 
   logger.info('Technique instructions updated', { id, version: newVersion, changedBy });
 
-  broadcast({ type: 'technique:updated', data: { id, name: technique.name, version: newVersion } } as never);
+  broadcast({ type: 'technique:updated', data: { id, name: technique.name, version: newVersion } });
 
   return getTechnique(id);
 }
@@ -480,7 +480,7 @@ export function updateTechniqueDependencies(id: string, manifest: DependencyMani
   db.prepare("UPDATE techniques SET updated_at = datetime('now') WHERE id = ?").run(id);
 
   logger.info('Technique dependency manifest updated', { id });
-  broadcast({ type: 'technique:updated', data: { id, name: technique.name, version: technique.version } } as never);
+  broadcast({ type: 'technique:updated', data: { id, name: technique.name, version: technique.version } });
   return getTechnique(id);
 }
 
@@ -512,7 +512,7 @@ export function publishTechnique(id: string): TechniqueMetadata | null {
 
   logger.info('Technique published', { id, name: technique.name });
   embedTechniqueIntent(id);
-  broadcast({ type: 'technique:published', data: { id, name: technique.name } } as never);
+  broadcast({ type: 'technique:published', data: { id, name: technique.name } });
 
   return getTechnique(id);
 }
@@ -549,7 +549,7 @@ export function recordTechniqueUsage(techniqueId: string, agentId: string, agent
 
   db.prepare("UPDATE techniques SET usage_count = usage_count + 1, last_used_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(techniqueId);
 
-  broadcast({ type: 'technique:used', data: { id: techniqueId, name: '', agentId, agentName: agentName ?? '' } } as never);
+  broadcast({ type: 'technique:used', data: { id: techniqueId, name: '', agentId, agentName: agentName ?? '' } });
 }
 
 // ── Helpers ──

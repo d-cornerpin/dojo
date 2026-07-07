@@ -1,6 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import type { WsEvent } from '@dojo/shared';
 import * as api from '../lib/api';
 import { parseUtc } from '../lib/dates';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 interface TaskRunHistoryProps {
   taskId: string;
@@ -33,18 +35,32 @@ const formatTime = (iso: string | null): string => {
 };
 
 export const TaskRunHistory = ({ taskId }: TaskRunHistoryProps) => {
+  const { subscribe } = useWebSocket();
   const [runs, setRuns] = useState<api.TaskRun[]>([]);
   const [loading, setLoading] = useState(true);
   const [expandedRun, setExpandedRun] = useState<string | null>(null);
 
-  useEffect(() => {
-    const load = async () => {
-      const result = await api.getTaskRuns(taskId);
-      if (result.ok) setRuns(result.data);
-      setLoading(false);
-    };
-    load();
+  const load = useCallback(async () => {
+    const result = await api.getTaskRuns(taskId);
+    if (result.ok) setRuns(result.data);
+    setLoading(false);
   }, [taskId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  // Live-update when THIS task starts or finishes a scheduled run. Previously
+  // task:run_started/run_complete were emitted but consumed nowhere, so the
+  // history froze at page-open until a manual refresh (FA-DB7). Filter to the
+  // viewed task so an unrelated task's run doesn't refetch this one.
+  useEffect(() => {
+    const onRun = (event: WsEvent) => {
+      if (event.type !== 'task:run_started' && event.type !== 'task:run_complete') return;
+      if (event.data.taskId === taskId) void load();
+    };
+    const unsubStarted = subscribe('task:run_started', onRun);
+    const unsubComplete = subscribe('task:run_complete', onRun);
+    return () => { unsubStarted(); unsubComplete(); };
+  }, [subscribe, taskId, load]);
 
   if (loading) return <p className="text-sm text-ui/40 py-4">Loading run history...</p>;
   if (runs.length === 0) return <p className="text-sm text-ui/25 py-4">No runs yet</p>;

@@ -11,29 +11,24 @@ import { sendAlert } from '../services/imessage-bridge.js';
 
 const logger = createLogger('budget');
 
-// ── Alert tracking (resets daily) ──
-
-let lastAlertResetDate = '';
-
-function resetAlertsIfNewDay(): void {
-  const today = new Date().toISOString().slice(0, 10);
-  if (today !== lastAlertResetDate) {
-    lastAlertResetDate = today;
-    try {
-      const db = getDb();
-      db.prepare(`
-        UPDATE budgets SET alert_50_sent = 0, alert_75_sent = 0, alert_90_sent = 0,
-                           updated_at = datetime('now')
-        WHERE period = 'daily'
-      `).run();
-      logger.info('Daily budget alert flags reset');
-    } catch (err) {
-      logger.error('Failed to reset alert flags', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-}
+// ── Alert tracking (edge-triggered with hysteresis, restart-safe) ──
+//
+// FA-PC3: alerts used to reset on every UTC calendar-day boundary via a
+// resetAlertsIfNewDay() call plus an in-memory lastAlertResetDate. But daily
+// spend is a ROLLING 24h sum (getDailySpend / created_at >= now-1day), not a
+// calendar-day sum, so at midnight the flags reset while rolling spend was
+// still high and the alert immediately re-fired, and on restart the in-memory
+// date reinitialized and re-alerted. Both are gone. A threshold's sent-flag is
+// now cleared ONLY when rolling spend falls back below that threshold by more
+// than a hysteresis margin, and the flags live in the budgets row (persisted),
+// so a restart never re-alerts. Result: exactly one alert per genuine crossing,
+// and a real re-crossing after spend genuinely dropped re-alerts.
+//
+// Hysteresis margin: 2% of the limit. The 90% flag re-arms only once rolling
+// spend drops below 88% of the cap (75% below 73%, 50% below 48%). This keeps a
+// record aging out of the 24h window from flapping a flag that is hovering at
+// exactly the threshold, without hiding a genuine sustained drop-and-recross.
+const ALERT_HYSTERESIS = 0.02;
 
 function checkAndSendAlerts(scope: string, currentSpend: number, limitUsd: number): void {
   const db = getDb();
@@ -44,7 +39,7 @@ function checkAndSendAlerts(scope: string, currentSpend: number, limitUsd: numbe
 
   if (!row) return;
 
-  const ratio = currentSpend / limitUsd;
+  const ratio = limitUsd > 0 ? currentSpend / limitUsd : 0;
   const thresholds: Array<{ pct: number; field: 'alert_50_sent' | 'alert_75_sent' | 'alert_90_sent' }> = [
     { pct: 0.90, field: 'alert_90_sent' },
     { pct: 0.75, field: 'alert_75_sent' },
@@ -52,6 +47,7 @@ function checkAndSendAlerts(scope: string, currentSpend: number, limitUsd: numbe
   ];
 
   for (const { pct, field } of thresholds) {
+    // Rising edge: crossed the threshold and not yet alerted -> fire + latch.
     if (ratio >= pct && row[field] === 0) {
       db.prepare(`UPDATE budgets SET ${field} = 1, updated_at = datetime('now') WHERE id = ?`).run(budgetId);
 
@@ -76,12 +72,22 @@ function checkAndSendAlerts(scope: string, currentSpend: number, limitUsd: numbe
           currentSpend,
           limitUsd,
         },
-      } as never);
+      });
 
       // Send iMessage alert at 90% threshold
       if (pct === 0.90) {
         sendAlert(`Budget alert: 90% of daily budget consumed ($${currentSpend.toFixed(2)} of $${limitUsd.toFixed(2)})`, 'warning');
       }
+    // Falling edge: rolling spend dropped genuinely below the threshold (by the
+    // hysteresis margin) -> re-arm so a real re-crossing alerts again.
+    } else if (ratio < pct - ALERT_HYSTERESIS && row[field] === 1) {
+      db.prepare(`UPDATE budgets SET ${field} = 0, updated_at = datetime('now') WHERE id = ?`).run(budgetId);
+      logger.info(`Budget alert re-armed: ${scope} fell below ${Math.round(pct * 100)}%`, {
+        scope,
+        currentSpend: currentSpend.toFixed(4),
+        limitUsd,
+        percentage: Math.round(pct * 100),
+      });
     }
   }
 }
@@ -90,8 +96,6 @@ function checkAndSendAlerts(scope: string, currentSpend: number, limitUsd: numbe
 // Called AFTER a cost record is inserted to fire alerts immediately when thresholds are crossed
 
 export function checkAlertsAfterCost(agentId: string): void {
-  resetAlertsIfNewDay();
-
   const db = getDb();
 
   // Check global daily budget
@@ -143,16 +147,37 @@ export interface BudgetCheckResult {
 }
 
 /**
- * Find a free model (input AND output cost = 0) to fall back to when budget is exceeded.
+ * Find a free model (input AND output cost EXPLICITLY 0) to fall back to when
+ * budget is exceeded. Per D-H the price must be a real 0, not NULL: a NULL
+ * ("price unknown") row is billed as $0 by the biller, but offering it as the
+ * free lifeline would cross the paid boundary without consent when the true
+ * rate simply failed to sync. So require `= 0` (NULL fails the comparison and
+ * is excluded), NOT COALESCE(...,0)=0.
  */
 function findFreeModel(): { modelId: string; modelName: string; providerId: string } | null {
   const db = getDb();
+  // p.id != '__system__': the 'auto' sentinel is a router pointer, not a
+  // callable model; the lifeline must return a genuinely callable $0 model.
+  // Capability filter: media-generation/embedding models can't hold a chat
+  // (empty/unknown capabilities are allowed through, same idiom as the
+  // primary-agent fallback). Per-unit filter: media models list 0/0 TOKEN
+  // prices while their real billing is per-unit (cost_per_unit, plus the
+  // legacy cost_per_megapixel kept from v2.10.4), so the lifeline must be
+  // genuinely $0 on EVERY pricing axis AND able to hold a chat. NULL per-unit
+  // is fine here: that is the normal state for a token-priced chat model,
+  // whose real axis is already required to be an explicit 0 (D-H).
   const row = db.prepare(`
     SELECT m.id, m.name, m.provider_id
     FROM models m
+    JOIN providers p ON p.id = m.provider_id
     WHERE m.is_enabled = 1
-      AND COALESCE(m.input_cost_per_m, 0) = 0
-      AND COALESCE(m.output_cost_per_m, 0) = 0
+      AND p.id != '__system__'
+      AND m.capabilities NOT LIKE '%generation%'
+      AND m.capabilities NOT LIKE '%embedding%'
+      AND m.input_cost_per_m = 0
+      AND m.output_cost_per_m = 0
+      AND (m.cost_per_unit IS NULL OR m.cost_per_unit = 0)
+      AND (m.cost_per_megapixel IS NULL OR m.cost_per_megapixel = 0)
     ORDER BY m.name ASC
     LIMIT 1
   `).get() as { id: string; name: string; provider_id: string } | undefined;
@@ -161,8 +186,6 @@ function findFreeModel(): { modelId: string; modelName: string; providerId: stri
 }
 
 export function checkBudget(agentId: string, estimatedCost: number): BudgetCheckResult {
-  resetAlertsIfNewDay();
-
   const db = getDb();
 
   // Check global daily budget

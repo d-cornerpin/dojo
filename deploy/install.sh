@@ -203,8 +203,16 @@ fi
 if [[ -d "$SCRIPT_DIR/DOJO.app" ]]; then
     echo ""
     echo "🥋 Installing DOJO menu bar app..."
+    # Idempotent (FA-D7): remove any existing bundle FIRST. `cp -r src dest`
+    # when dest is an existing directory copies src INSIDE it
+    # (/Applications/DOJO.app/DOJO.app), which nests the bundle and breaks both
+    # the app and the rollback UI. rm -rf guarantees a clean top-level install
+    # on a re-run or upgrade.
+    rm -rf /Applications/DOJO.app
     cp -r "$SCRIPT_DIR/DOJO.app" /Applications/DOJO.app
-    # Add to login items so it starts on boot
+    # Add to login items so it starts on boot. Delete any existing "DOJO" entry
+    # FIRST so a re-run doesn't stack duplicate login items.
+    osascript -e 'tell application "System Events" to delete (every login item whose name is "DOJO")' 2>/dev/null || true
     osascript -e 'tell application "System Events" to make login item at end with properties {path:"/Applications/DOJO.app", hidden:false}' 2>/dev/null || true
     echo "✅ Menu bar app installed"
 fi
@@ -295,6 +303,12 @@ PLISTEOF
 echo ""
 echo "🚀 Starting the DOJO..."
 
+# Idempotent (FA-D7): a `launchctl load` of an already-loaded label is a no-op,
+# so on a re-run/upgrade the freshly-written plists above would NOT take effect
+# until a reboot. Unload any existing jobs first so the new plists apply now.
+# Unloading a not-loaded job is harmless (hence 2>/dev/null || true).
+launchctl unload "$LAUNCH_DIR/com.dojo.platform.plist" 2>/dev/null || true
+launchctl unload "$LAUNCH_DIR/com.dojo.watchdog.plist" 2>/dev/null || true
 launchctl load "$LAUNCH_DIR/com.dojo.platform.plist"
 launchctl load "$LAUNCH_DIR/com.dojo.watchdog.plist"
 

@@ -194,6 +194,24 @@ export function isGoogleServiceEnabledForKind(
   return listGoogleAccounts(slot).some(a => a.connected && parseServices(a.enabledServices)[service]);
 }
 
+/**
+ * FA-TS1: every service-enabled flag for a kind, computed from ONE account-list
+ * read. Equivalent to calling isGoogleServiceEnabledForKind(slot, service) for
+ * each service, but reads google_accounts once instead of once per service/tool
+ * (getFilteredTools consulted it ~109 times per call). Same fact door
+ * (listGoogleAccounts + parseServices), so the results are byte-identical.
+ */
+export function getGoogleServiceFlagsForKind(
+  slot: AccountSlot,
+): Record<keyof GoogleWorkspaceConfig['enabledServices'], boolean> {
+  const connected = listGoogleAccounts(slot).filter(a => a.connected);
+  const flags = {} as Record<keyof GoogleWorkspaceConfig['enabledServices'], boolean>;
+  for (const service of Object.keys(DEFAULT_SERVICES) as Array<keyof GoogleWorkspaceConfig['enabledServices']>) {
+    flags[service] = connected.some(a => parseServices(a.enabledServices)[service]);
+  }
+  return flags;
+}
+
 // ── Per-account setters (dashboard manages individual accounts by id) ──
 
 export function setEnabledServicesForAccount(
@@ -293,9 +311,9 @@ export function setGoogleConnected(connected: boolean, email?: string, slot: Acc
   if (connected) patch.lastVerifiedAt = new Date().toISOString();
   updateGoogleAccount(ensureSlotAccount(slot).id, patch);
   if (connected) {
-    broadcast({ type: 'google:connected', data: { email: email ?? '', slot } } as never);
+    broadcast({ type: 'google:connected', data: { email: email ?? '', slot } });
   } else {
-    broadcast({ type: 'google:disconnected', data: { slot } } as never);
+    broadcast({ type: 'google:disconnected', data: { slot } });
   }
 }
 
@@ -403,7 +421,7 @@ async function refreshAccessTokenForAccount(accountId: string): Promise<string |
       logger.error('Google token refresh failed', { accountId, status: resp.status, error: err });
       if (resp.status === 400 || resp.status === 401) {
         updateGoogleAccount(accountId, { connected: false });
-        broadcast({ type: 'google:disconnected', data: { slot: acc?.kind ?? 'agent' } } as never);
+        broadcast({ type: 'google:disconnected', data: { slot: acc?.kind ?? 'agent' } });
         // v2.3.19 — OAuth expiry is a true blocker. Critical.
         const label = acc?.kind === 'user' ? "user's" : "agent's";
         const who = acc?.email ? ` (${acc.email})` : '';
@@ -572,7 +590,7 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
       enabled: true,
       lastVerifiedAt: new Date().toISOString(),
     });
-    broadcast({ type: 'google:connected', data: { email, slot } } as never);
+    broadcast({ type: 'google:connected', data: { email, slot } });
 
     // Soft warning if the same email is connected as both an agent and a user
     // account. Not a hard refusal — legitimate reasons exist (testing, recovery)
@@ -648,7 +666,7 @@ export function disconnectGoogle(slot: AccountSlot = 'agent'): void {
       grantedScopes: null,
     });
   }
-  broadcast({ type: 'google:disconnected', data: { slot } } as never);
+  broadcast({ type: 'google:disconnected', data: { slot } });
   logger.info('Google Workspace disconnected', { slot });
 }
 
@@ -669,7 +687,7 @@ export function disconnectGoogleAccount(accountId: string): void {
   } else {
     deleteGoogleAccount(acc.id);
   }
-  broadcast({ type: 'google:disconnected', data: { slot: acc.kind } } as never);
+  broadcast({ type: 'google:disconnected', data: { slot: acc.kind } });
   logger.info('Google account disconnected', { accountId, kind: acc.kind, position: acc.position });
 }
 

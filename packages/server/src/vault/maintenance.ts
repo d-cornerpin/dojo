@@ -28,6 +28,8 @@ import {
   getUnprocessedConversations,
   getVaultStats,
   createDreamReport,
+  incrementArchiveAttempt,
+  markArchivePoisoned,
   type VaultConversation,
 } from './store.js';
 import { MAX_PINNED_ENTRIES } from './retrieval.js';
@@ -1007,7 +1009,7 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
   const allUnprocessed = getUnprocessedConversations();
   if (allUnprocessed.length === 0) {
     logger.info('No unprocessed conversation archives, skipping Dreamer spawn');
-    broadcast({ type: 'dream:complete', data: { skipped: true, reason: 'no_archives', ...maintenance } } as never);
+    broadcast({ type: 'dream:complete', data: { skipped: true, reason: 'no_archives', ...maintenance } });
     return { dreamerId: null };
   }
 
@@ -1034,7 +1036,7 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
   }
   if (unprocessed.length === 0) {
     logger.info('No archives left after engine triage, Dreamer cycle skipped');
-    broadcast({ type: 'dream:complete', data: { skipped: true, reason: 'all_trivial', autoSkipped, ...maintenance } } as never);
+    broadcast({ type: 'dream:complete', data: { skipped: true, reason: 'all_trivial', autoSkipped, ...maintenance } });
     return { dreamerId: null };
   }
 
@@ -1053,7 +1055,7 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
     batches: batches.length,
   });
 
-  broadcast({ type: 'dream:started', data: { mode: config.dreamMode, archives: unprocessed.length, batches: batches.length } } as never);
+  broadcast({ type: 'dream:started', data: { mode: config.dreamMode, archives: unprocessed.length, batches: batches.length } });
 
   const stats = getVaultStats();
 
@@ -1150,6 +1152,13 @@ interface PendingBatchState {
 
 const MAX_RECOVERY_DEPTH = 3;
 
+// FA-V4: how many terminal-but-not-'complete' Dreamer passes an archive may
+// take before it is poisoned (parked + escalated) instead of retried forever.
+// Context-overflow has its own recovery path (recoverDreamerFromContextOverflow);
+// this counter is for genuine 'blocked'/'fallen' completions where the model
+// keeps giving up on the same archive. Bounded and loud, not a blind retry.
+const MAX_DREAM_ATTEMPTS = 3;
+
 const pendingBatches = new Map<string, PendingBatchState>();
 
 /**
@@ -1203,104 +1212,261 @@ function writeDreamReportForCycle(state: PendingBatchState, outcome: 'complete' 
 }
 
 /**
- * After the Dreamer completes a batch, check if there are more batches to process.
- * If so, inject the next batch message and wake the permanent Dreamer again.
+ * Finalize a dream cycle: write the report, post the single per-cycle notice to
+ * the primary, tear down the in-memory state, and broadcast completion. `state`
+ * may be null when the in-memory cycle counters were lost to a mid-cycle restart
+ * and the stateless DB-driven continuation finished the remaining archives, in
+ * which case a minimal (labeled) report is written instead of the rich one.
+ */
+async function finalizeDreamCycle(primaryId: string, state: PendingBatchState | null): Promise<void> {
+  if (state) {
+    // Pre-2026-04-30 the cycle ended silently with no record; the Dreams tab
+    // was empty even after months of dreaming. This writes the missing row.
+    writeDreamReportForCycle(state, 'complete');
+  } else {
+    writeResumedDreamReport();
+  }
+
+  // D-A step 4, Dreamer rule (owner decision, repeated): the Dreamer's output is the
+  // VAULT (recall/retrieval injection) and it must NEVER message the primary agent.
+  // The old per-cycle "Tidied up memory tonight... Nothing needs your attention."
+  // notice was exactly that, a message injected into the primary's context/EVENTS
+  // lane, and it is removed here. The REASON it existed (record that a cycle ran, and
+  // surface it to the owner) is fully preserved WITHOUT touching the primary: the
+  // cycle is recorded to dream_reports via writeDreamReportForCycle/writeResumedDream-
+  // Report above (the Dreams tab), and the owner-facing completion signal is the
+  // dream:complete broadcast below. No signal, waking OR awareness, is emitted to the
+  // primary. Distilled memories reached the vault during the cycle via the Dreamer's
+  // own tools; that IS the injection path the primary reads.
+
+  pendingBatches.delete(primaryId);
+  logger.info('All Dreamer batches complete', { totalBatches: state?.batches.length ?? 'resumed' });
+  broadcast({ type: 'dream:complete', data: { batches: state?.batches.length ?? 0 } });
+}
+
+/**
+ * FA-V4: minimal dream report for the case where a mid-cycle restart wiped the
+ * in-memory cycle counters but the stateless continuation still finished the
+ * remaining archives. Per-archive totals are unknown, so they are recorded as 0
+ * and the reportText says so, rather than fabricating a number.
+ */
+function writeResumedDreamReport(): void {
+  try {
+    const after = getVaultStats();
+    const config = getDreamingConfig();
+    createDreamReport({
+      archivesProcessed: 0,
+      memoriesExtracted: 0,
+      techniquesFound: 0,
+      duplicatesMerged: 0,
+      contradictionsResolved: 0,
+      entriesPruned: 0,
+      entriesConsolidated: 0,
+      totalEntries: after.totalEntries,
+      pinnedCount: after.pinnedCount,
+      permanentCount: after.permanentCount,
+      reportText:
+        'Dream cycle finished after a mid-cycle restart. The in-memory cycle counters were lost, so per-archive totals are not available; the remaining archives were filed by the stateless DB-driven continuation.',
+      dreamMode: config.dreamMode,
+      modelId: config.modelId ?? undefined,
+    });
+    logger.info('Resumed dream report written (post-restart continuation)');
+  } catch (err) {
+    logger.warn('Failed to write resumed dream report', { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+/**
+ * FA-V4 stateless continuation. Re-derive the next Dreamer batch straight from
+ * the DB (remaining is_processed=0 AND poisoned=0 archives) instead of trusting
+ * the in-memory pendingBatches map, so a lost/empty map (tsx reload, crash,
+ * self-update restart) never abandons a multi-batch cycle. Returns true if a
+ * batch was woken, false if nothing remains (caller finalizes).
+ */
+async function wakeNextBatchFromDb(primaryId: string, state: PendingBatchState | null): Promise<boolean> {
+  const db = getDb();
+
+  // Remaining, non-poisoned archives. getUnprocessedConversations already
+  // excludes poisoned rows (see store.ts).
+  const allRemaining = getUnprocessedConversations();
+  if (allRemaining.length === 0) return false;
+
+  // Same engine triage as runDreamingCycle: auto-skip trivial archives (mark
+  // them processed) so the Dreamer is not woken merely to discard junk.
+  const { markConversationProcessed } = await import('./store.js');
+  const remaining: VaultConversation[] = [];
+  for (const conv of allRemaining) {
+    const reason = classifyTrivial(conv);
+    if (reason) {
+      markConversationProcessed(conv.id);
+      logger.debug('Auto-skipped trivial archive during continuation', { archiveId: conv.id, reason });
+    } else {
+      remaining.push(conv);
+    }
+  }
+  if (remaining.length === 0) return false;
+
+  const modelId = state?.modelId ?? getDreamingConfig().modelId ?? getDefaultDreamModel();
+  if (!modelId) {
+    logger.warn('No model available to continue dream cycle from DB');
+    return false;
+  }
+  const modelRow = db.prepare('SELECT context_window FROM models WHERE id = ?').get(modelId) as
+    | { context_window: number } | undefined;
+  const contextWindow = modelRow?.context_window ?? 32000;
+
+  const batches = batchArchives(remaining, contextWindow);
+  const batch = batches[0];
+  if (!batch) return false;
+
+  const dreamerId = getDreamerAgentId();
+  // json(?) required so SQLite stores the array AS JSON, not as a quoted
+  // string, see the matching note in runDreamingCycle.
+  db.prepare(`
+    UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', json(?))
+    WHERE id = ?
+  `).run(JSON.stringify(batch.ids), dreamerId);
+
+  const stats = state?.stats ?? getVaultStats();
+
+  // Keep the in-memory state coherent so reporting + any later in-memory
+  // sequencing still work. When state was present but its precomputed batches
+  // were exhausted, append the freshly-derived batch and point at it (the next
+  // completion re-enters this DB path). When state was lost (restart), rebuild a
+  // minimal one; the report it eventually writes is the labeled partial above.
+  if (state) {
+    state.batches.push(batch);
+    state.currentIndex = state.batches.length - 1;
+    state.recoveryDepth = 0;
+  } else {
+    const config = getDreamingConfig();
+    pendingBatches.set(primaryId, {
+      batches: [batch],
+      currentIndex: 0,
+      config,
+      primaryId,
+      modelId,
+      stats,
+      recoveryDepth: 0,
+      cycleStartedAtMs: Date.now(),
+      archivesProcessedThisCycle: 0,
+      autoSkippedThisCycle: 0,
+      totalArchivesAtStart: remaining.length,
+      maintenanceAtStart: { pruned: 0, decayed: 0, unpinned: 0, agedOut: 0 },
+      vaultStatsBefore: stats,
+    });
+  }
+
+  const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
+  const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
+  // batchIndex 0 / totalBatches 1 keeps the "batch X of N" note off (N is not
+  // known statelessly). The batch text carries every archive anyway.
+  const cycleMessage = buildDreamerCycleMessage(
+    batch.text, 0, 1, stats, profilePath, soulPath, (state?.config ?? getDreamingConfig()).dreamMode, [],
+  );
+  wakeupDreamer(cycleMessage);
+  logger.info('Dreamer woken for next batch (stateless DB continuation)', {
+    dreamerId, archivesInBatch: batch.ids.length, remaining: remaining.length, resumedAfterRestart: !state,
+  });
+  return true;
+}
+
+/**
+ * After the Dreamer completes a batch, advance the cycle. Two paths:
+ *   1. Precomputed batches remain in the in-memory state (normal multi-batch
+ *      flow AND the context-overflow recovery's shrunk sub-batch sequencing,
+ *      which relies on state.batches): advance through them as before.
+ *   2. Precomputed batches exhausted OR the in-memory map was lost to a restart:
+ *      re-derive the next batch from the DB so the cycle is never abandoned
+ *      (FA-V4 stateless continuation). Finalize only when the DB says nothing
+ *      remains.
  */
 export async function spawnNextDreamerBatch(primaryId: string): Promise<void> {
   const state = pendingBatches.get(primaryId);
-  if (!state) return;
 
-  const nextIndex = state.currentIndex + 1;
-  if (nextIndex >= state.batches.length) {
-    // All batches done, write the cycle's dream report so the dashboard's
-    // Dreams tab actually has something to show. Pre-2026-04-30 the cycle
-    // ended silently with no record; the tab was empty even after months
-    // of dreaming.
-    writeDreamReportForCycle(state, 'complete');
-    // ONE consolidated per-CYCLE notice to the primary (owner request: the Dreamer
-    // messages once per cycle, not once per batch, the per-batch note is suppressed in
-    // completeAgent). Brief + self-attributed → awareness lane; full detail is in the
-    // Dreams tab / dream_reports. Best-effort: never let the notice break cycle teardown.
+  // Path 1: in-memory fast path.
+  if (state && state.currentIndex + 1 < state.batches.length) {
+    const nextIndex = state.currentIndex + 1;
+    state.currentIndex = nextIndex;
+    state.recoveryDepth = 0; // fresh batch, reset overflow-recovery counter
+    const batch = state.batches[nextIndex];
+
+    logger.info(`Injecting next Dreamer batch ${nextIndex + 1}/${state.batches.length}`, {
+      archivesInBatch: batch.ids.length,
+    });
+
+    const profilePath = path.join(os.homedir(), '.dojo', 'prompts', 'USER.md');
+    const soulPath = path.join(os.homedir(), '.dojo', 'prompts', 'SOUL.md');
+
     try {
-      const after = getVaultStats();
-      const gained = Math.max(0, after.totalEntries - state.vaultStatsBefore.totalEntries);
-      const archives = state.archivesProcessedThisCycle;
-      const { postAgentNotice } = await import('../agent/agent-notice.js');
-      postAgentNotice({
-        toAgentId: primaryId,
-        fromName: 'Dreamer',
-        brief: `Tidied up memory tonight, processed ${archives} archive${archives === 1 ? '' : 's'} into ${gained} new vault ${gained === 1 ? 'entry' : 'entries'}. Nothing needs your attention.`,
-        intent: 'dreamer_cycle',
+      const dreamerId = getDreamerAgentId();
+      const db = getDb();
+
+      // Update archive IDs on the permanent Dreamer record for this batch.
+      // json(?) is required so SQLite stores the array AS JSON, not as a
+      // quoted string, see the matching note in runDreamingCycle.
+      db.prepare(`
+        UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', json(?))
+        WHERE id = ?
+      `).run(JSON.stringify(batch.ids), dreamerId);
+
+      const nextCycleMessage = buildDreamerCycleMessage(
+        batch.text,
+        nextIndex,
+        state.batches.length,
+        state.stats,
+        profilePath,
+        soulPath,
+        state.config.dreamMode,
+        [],
+      );
+
+      wakeupDreamer(nextCycleMessage);
+
+      logger.info('Dreamer woken for next batch', {
+        dreamerId,
+        batch: `${nextIndex + 1}/${state.batches.length}`,
       });
     } catch (err) {
-      logger.warn('Dreamer cycle-complete notice failed', { error: err instanceof Error ? err.message : String(err) });
+      logger.error('Failed to wake Dreamer for next batch', {
+        error: err instanceof Error ? err.message : String(err),
+        batch: `${nextIndex + 1}/${state.batches.length}`,
+      });
+      pendingBatches.delete(primaryId);
     }
-    pendingBatches.delete(primaryId);
-    logger.info('All Dreamer batches complete', { totalBatches: state.batches.length });
-    broadcast({ type: 'dream:complete', data: { batches: state.batches.length } } as never);
     return;
   }
 
-  state.currentIndex = nextIndex;
-  state.recoveryDepth = 0; // fresh batch, reset overflow-recovery counter
-  const batch = state.batches[nextIndex];
-
-  logger.info(`Injecting next Dreamer batch ${nextIndex + 1}/${state.batches.length}`, {
-    archivesInBatch: batch.ids.length,
-  });
-
-  const osModule = await import('node:os');
-  const pathModule = await import('node:path');
-  const profilePath = pathModule.join(osModule.homedir(), '.dojo', 'prompts', 'USER.md');
-  const soulPath = pathModule.join(osModule.homedir(), '.dojo', 'prompts', 'SOUL.md');
-
-  try {
-    const dreamerId = getDreamerAgentId();
-    const db = getDb();
-
-    // Update archive IDs on the permanent Dreamer record for this batch.
-    // json(?) is required so SQLite stores the array AS JSON, not as a
-    // quoted string, see the matching note in runDreamingCycle.
-    db.prepare(`
-      UPDATE agents SET config = json_set(COALESCE(config, '{}'), '$.dreamerArchiveIds', json(?))
-      WHERE id = ?
-    `).run(JSON.stringify(batch.ids), dreamerId);
-
-    const nextCycleMessage = buildDreamerCycleMessage(
-      batch.text,
-      nextIndex,
-      state.batches.length,
-      state.stats,
-      profilePath,
-      soulPath,
-      state.config.dreamMode,
-      [],
-    );
-
-    wakeupDreamer(nextCycleMessage);
-
-    logger.info('Dreamer woken for next batch', {
-      dreamerId,
-      batch: `${nextIndex + 1}/${state.batches.length}`,
-    });
-  } catch (err) {
-    logger.error('Failed to wake Dreamer for next batch', {
-      error: err instanceof Error ? err.message : String(err),
-      batch: `${nextIndex + 1}/${state.batches.length}`,
-    });
-    pendingBatches.delete(primaryId);
+  // Path 2: precomputed batches exhausted, or the map was lost (restart).
+  const woke = await wakeNextBatchFromDb(primaryId, state ?? null);
+  if (!woke) {
+    await finalizeDreamCycle(primaryId, state ?? null);
   }
 }
 
 // ── Mark Dreamer Archives as Processed ──
 
 /**
- * Called when the Dreamer agent completes a batch. Marks all assigned archives as
- * processed, then wakes the Dreamer for the next batch if there are more.
+ * Called when the Dreamer agent ends a batch on ANY terminal status (FA-V4).
+ *
+ *   'complete'          -> the Dreamer reviewed the whole batch: mark every
+ *                          assigned archive processed (existing behavior).
+ *   'blocked'/'fallen'  -> the batch was NOT distilled: do NOT mark it processed
+ *                          (never mark an archive the Dreamer did not distill).
+ *                          Bump each archive's attempt counter and poison any
+ *                          that have now failed MAX_DREAM_ATTEMPTS times so the
+ *                          engine stops retrying it forever and surfaces it via
+ *                          the DREAM_POISONED diagnostic.
+ *
+ * Either way, advance the cycle (spawnNextDreamerBatch) so a non-complete batch
+ * no longer stalls the whole night (pre-fix the chain advanced only on 'complete').
  *
  * dreamerAgentId may be either the permanent 'dreamer' ID or a legacy temporary agent ID.
  */
-export function markDreamerArchivesProcessed(dreamerAgentId: string): void {
+export function markDreamerArchivesProcessed(
+  dreamerAgentId: string,
+  status: 'complete' | 'fallen' | 'blocked' = 'complete',
+): void {
   const db = getDb();
 
   // For the permanent Dreamer, archive IDs are always on the fixed Dreamer agent record.
@@ -1341,25 +1507,65 @@ export function markDreamerArchivesProcessed(dreamerAgentId: string): void {
       }
     }
 
-    if (!Array.isArray(archiveIds) || archiveIds.length === 0) return;
+    const primaryId = agent.parent_agent;
 
-    for (const id of archiveIds) {
-      if (typeof id !== 'string' || id.length < 8) continue; // sanity: archive IDs are uuids
-      db.prepare("UPDATE vault_conversations SET is_processed = 1, processed_at = datetime('now') WHERE id = ?").run(id);
+    if (!Array.isArray(archiveIds) || archiveIds.length === 0) {
+      // No batch attribution on the record (a restart may have cleared config
+      // before the map was rebuilt). Still try to continue the cycle from the
+      // DB so it is not abandoned.
+      if (primaryId) {
+        spawnNextDreamerBatch(primaryId).catch(err => {
+          logger.error('Failed to advance Dreamer to next batch', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
+      return;
     }
 
-    logger.info(`Marked ${archiveIds.length} archives as processed after Dreamer completion`, { dreamerAgentId });
+    let distilled = 0;
+    if (status === 'complete') {
+      for (const id of archiveIds) {
+        if (typeof id !== 'string' || id.length < 8) continue; // sanity: archive IDs are uuids
+        db.prepare("UPDATE vault_conversations SET is_processed = 1, processed_at = datetime('now') WHERE id = ?").run(id);
+        distilled++;
+      }
+      logger.info(`Marked ${distilled} archives as processed after Dreamer completion`, { dreamerAgentId });
+    } else {
+      // FA-V4: a non-'complete' terminal pass did NOT distill this batch. Do not
+      // mark it processed. Bump each archive's attempt counter and poison any
+      // that have crossed MAX_DREAM_ATTEMPTS so we stop retrying it forever.
+      let poisonedNow = 0;
+      for (const id of archiveIds) {
+        if (typeof id !== 'string' || id.length < 8) continue;
+        const attempts = incrementArchiveAttempt(id);
+        if (attempts >= MAX_DREAM_ATTEMPTS) {
+          markArchivePoisoned(
+            id,
+            `The Dreamer ended ${MAX_DREAM_ATTEMPTS} passes without filing this conversation (last outcome: ${status}).`,
+          );
+          poisonedNow++;
+          logger.warn('Dreamer archive poisoned after repeated non-completion', {
+            archiveId: id, attempts, status, dreamerAgentId,
+          });
+        }
+      }
+      logger.warn(
+        `Dreamer batch ended '${status}' without completion; bumped attempts on ${archiveIds.length} archive(s), poisoned ${poisonedNow}`,
+        { dreamerAgentId },
+      );
+    }
 
     // Bump the per-cycle counter so the eventual dream report reflects the
-    // total archives the Dreamer actually processed end-to-end.
-    const primaryId = agent.parent_agent;
+    // archives the Dreamer actually distilled end-to-end (only 'complete'
+    // passes distill; a blocked/fallen pass contributes 0).
     if (primaryId) {
       const state = pendingBatches.get(primaryId);
-      if (state) {
-        state.archivesProcessedThisCycle += archiveIds.length;
+      if (state && distilled > 0) {
+        state.archivesProcessedThisCycle += distilled;
       }
       spawnNextDreamerBatch(primaryId).catch(err => {
-        logger.error('Failed to wake Dreamer for next batch', {
+        logger.error('Failed to advance Dreamer to next batch', {
           error: err instanceof Error ? err.message : String(err),
         });
       });
@@ -1527,7 +1733,7 @@ export async function recoverDreamerFromContextOverflow(
       currentIndex: state.currentIndex,
       totalBatches: state.batches.length,
     },
-  } as never);
+  });
 
   return true;
 }

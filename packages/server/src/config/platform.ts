@@ -10,10 +10,15 @@ import { getDb } from '../db/connection.js';
 let cache: Record<string, string> = {};
 let cacheLoaded = false;
 
+// D-A household vault-sharing: memoized union(stored household ids, dreamer id).
+// Invalidated alongside the main config cache (clearPlatformConfigCache), so a
+// setPlatformConfig write to household_agent_ids is picked up on the next read.
+let householdCache: string[] | null = null;
+
 function loadCache(): void {
   try {
     const db = getDb();
-    const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'pm_agent_enabled', 'trainer_agent_id', 'trainer_agent_name', 'trainer_agent_enabled', 'imaginer_agent_id', 'imaginer_agent_name', 'imaginer_enabled', 'healer_agent_id', 'healer_agent_name', 'dreamer_agent_id', 'dreamer_agent_name', 'setup_completed')").all() as Array<{ key: string; value: string }>;
+    const rows = db.prepare("SELECT key, value FROM config WHERE key IN ('platform_name', 'owner_name', 'primary_agent_id', 'primary_agent_name', 'pm_agent_id', 'pm_agent_name', 'pm_agent_enabled', 'trainer_agent_id', 'trainer_agent_name', 'trainer_agent_enabled', 'imaginer_agent_id', 'imaginer_agent_name', 'imaginer_enabled', 'healer_agent_id', 'healer_agent_name', 'dreamer_agent_id', 'dreamer_agent_name', 'household_agent_ids', 'setup_completed')").all() as Array<{ key: string; value: string }>;
     cache = {};
     for (const row of rows) {
       cache[row.key] = row.value;
@@ -32,6 +37,7 @@ function get(key: string, fallback: string): string {
 export function clearPlatformConfigCache(): void {
   cache = {};
   cacheLoaded = false;
+  householdCache = null;
 }
 
 // ── Platform ──
@@ -166,6 +172,53 @@ export function getDreamerAgentName(): string {
 
 export function isDreamerAgent(agentId: string): boolean {
   return agentId === getDreamerAgentId();
+}
+
+// ── Household (D-A vault-sharing allow-list) ──
+
+export const HOUSEHOLD_AGENT_IDS_KEY = 'household_agent_ids';
+
+/**
+ * The allow-list of agent ids whose DISTILLED vault memory is shared across the
+ * household (decision D-A: sharing wins). Union of:
+ *   - the stored `household_agent_ids` JSON array (the primary user-facing agent,
+ *     plus any second household user's primary once onboarding appends it), and
+ *   - the Dreamer id (it authors the distilled long-term memory ON BEHALF of the
+ *     primaries, so a member must be able to recall what the Dreamer filed).
+ *
+ * Falls back to [primary] when the config row is absent/empty/unparseable, so a
+ * box that predates the seed still resolves correctly (recall stays right on the
+ * boot before the seed-ensure runs). Every OTHER agent (spawned worker, harness
+ * probe, legacy duplicate service agent) is simply never in this set, which is
+ * how the W3-4 harness-peer leak stays closed by EXCLUSION.
+ *
+ * Cached; invalidated on any platform-config set via clearPlatformConfigCache.
+ * Note: OWNER_VAULT_AGENT_ID ('manual') is NOT in this set. Owner-authored
+ * entries are appended separately by the recall scope (visible to every agent),
+ * so folding them in here would wrongly make a non-member's own scope household.
+ */
+export function getHouseholdAgentIds(): string[] {
+  if (householdCache) return householdCache;
+  const ids = new Set<string>();
+  const raw = get(HOUSEHOLD_AGENT_IDS_KEY, '');
+  if (raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const v of parsed) {
+          if (typeof v === 'string' && v.trim().length > 0) ids.add(v);
+        }
+      }
+    } catch {
+      /* malformed row -> fall back to the primary below */
+    }
+  }
+  // No stored list (or empty/invalid): the primary alone is the household.
+  if (ids.size === 0) ids.add(getPrimaryAgentId());
+  // The Dreamer files distilled memory on behalf of the primaries; always in.
+  ids.add(getDreamerAgentId());
+  householdCache = [...ids];
+  return householdCache;
 }
 
 export function isPermanentAgent(agentId: string): boolean {

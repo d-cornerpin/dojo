@@ -272,6 +272,14 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     VALUES (?, ?, 'system', ?, datetime('now'))
   `).run(uuidv4(), agentId, enhancedPrompt);
 
+  // FA-PT6: persist the charter durably so getSoulContent reads it directly
+  // (migration 096), instead of sniffing the earliest role='system' row (which
+  // false-rejected terse / bracket-prefixed charters). Same content as the
+  // system row above.
+  try {
+    db.prepare('UPDATE agents SET charter = ? WHERE id = ?').run(enhancedPrompt, agentId);
+  } catch { /* charter column may not exist on a very old database */ }
+
   // Build the Agent data for broadcast
   const agentData: Agent = {
     id: agentId,
@@ -406,9 +414,13 @@ export function terminateAgent(agentId: string, reason?: string): void {
     return;
   }
 
-  // Archive conversation for the Dreamer before terminating
+  // Archive conversation for the Dreamer before terminating.
+  // force=true: this agent is being torn down, so its final tail (usually the
+  // conclusions/deliverables) must be archived even if an earlier unprocessed
+  // archive exists, or the Dreamer never sees it (FA-V1). The rowid high-water
+  // still bounds the archive to the genuinely-new tail, so no re-copy bloat.
   try {
-    archiveAgentConversation(agentId);
+    archiveAgentConversation(agentId, true);
   } catch (err) {
     logger.warn('Failed to archive agent conversation on termination', {
       agentId,
@@ -552,9 +564,13 @@ export async function completeAgent(
     } catch {}
   }
 
-  // Archive conversation for the Dreamer before changing status
+  // Archive conversation for the Dreamer before changing status.
+  // force=!isPersistent (FA-V1): a NON-persistent agent terminates below, so its
+  // final tail must be archived even if an earlier unprocessed archive exists.
+  // A persistent agent (sensei / agent_type='persistent') stays alive and idle,
+  // so keep force=false there to dedup repeated archives for a chatty resident.
   try {
-    archiveAgentConversation(agentId);
+    archiveAgentConversation(agentId, !isPersistent);
   } catch (err) {
     logger.warn('Failed to archive agent conversation on completion', {
       agentId,
@@ -657,6 +673,13 @@ export async function completeAgent(
     if (fallbackTask) resolvedTaskId = fallbackTask.id;
   }
 
+  // D-K: when this completion fells tasks (status='fallen'), collect the
+  // affected project ids so the success-vs-fail-open check can run after all
+  // rows have landed. Complete transitions are deliberately NOT collected
+  // here: their project check fires downstream when the PM validates
+  // (tracker_validate), fallen has no validation flag so this is its only hook.
+  const fallenProjectIds = new Set<string>();
+
   // If task_id: update task status
   if (resolvedTaskId) {
     const taskStatus = status === 'complete' ? 'complete' : status === 'fallen' ? 'fallen' : 'blocked';
@@ -665,7 +688,8 @@ export async function completeAgent(
     // touching the notes column. completion_summary stays as the
     // canonical "result" home for apprentice flows (also reused by
     // Phase B.1 evidence plumbing).
-    const priorRow = db.prepare('SELECT status FROM tasks WHERE id = ?').get(resolvedTaskId) as { status: string } | undefined;
+    const priorRow = db.prepare('SELECT status, project_id FROM tasks WHERE id = ?').get(resolvedTaskId) as { status: string; project_id: string | null } | undefined;
+    if (taskStatus === 'fallen' && priorRow?.project_id) fallenProjectIds.add(priorRow.project_id);
 
     // Phase B.1: plumb result + evidence_json from the apprentice's summary
     // so PM has structured input to validate against (instead of just prose).
@@ -746,12 +770,12 @@ export async function completeAgent(
   try {
     const bulkStatus = status === 'complete' ? 'complete' : status === 'fallen' ? 'fallen' : 'blocked';
     const otherDanglers = db.prepare(`
-      SELECT id, title FROM tasks
+      SELECT id, title, project_id FROM tasks
       WHERE assigned_to = ?
         AND status = 'in_progress'
         AND is_paused = 0
         AND id != COALESCE(?, '')
-    `).all(agentId, resolvedTaskId ?? null) as Array<{ id: string; title: string }>;
+    `).all(agentId, resolvedTaskId ?? null) as Array<{ id: string; title: string; project_id: string | null }>;
     const danglerLog = await import('../tracker/task-log.js');
     for (const dt of otherDanglers) {
       db.prepare(`
@@ -759,6 +783,7 @@ export async function completeAgent(
           completed_at = CASE WHEN ? = 'complete' THEN datetime('now') ELSE completed_at END
         WHERE id = ?
       `).run(bulkStatus, bulkStatus, dt.id);
+      if (bulkStatus === 'fallen' && dt.project_id) fallenProjectIds.add(dt.project_id);
 
       void danglerLog.writeTaskLog({
         taskId: dt.id,
@@ -780,6 +805,25 @@ export async function completeAgent(
     logger.warn('completeAgent: bulk auto-close failed (non-fatal)', {
       agentId, error: autocloseErr instanceof Error ? autocloseErr.message : String(autocloseErr),
     }, agentId);
+  }
+
+  // D-K: a complete_task(status="fallen") can be the transition that empties a
+  // project of open tasks (fall-last ordering). Run the success-vs-fail-open
+  // check per affected project so it gets its needs-attention label + primary
+  // notice instead of staying silently active. Idempotent, extra calls are
+  // harmless. Dynamic import matches this file's cross-module style and avoids
+  // pulling the tracker tool module into the static graph.
+  if (fallenProjectIds.size > 0) {
+    try {
+      const { checkProjectCompletion } = await import('../tracker/tools.js');
+      for (const projectId of fallenProjectIds) {
+        checkProjectCompletion(projectId, agentId);
+      }
+    } catch (err) {
+      logger.warn('completeAgent: checkProjectCompletion after fallen close failed (non-fatal)', {
+        agentId, error: err instanceof Error ? err.message : String(err),
+      }, agentId);
+    }
   }
 
   // The Dreamer never links its batches to tracker tasks, so this "you forgot to link a
@@ -814,16 +858,22 @@ export async function completeAgent(
     });
   }
 
-  // If this is the Dreamer completing, mark its archives as processed.
-  // Pre-2026-04-30 the catch here swallowed all errors silently, hiding
-  // the v1.15.100 json_set bug for who-knows-how-long. Log them instead.
+  // If this is the Dreamer ending a batch, advance the dream chain.
+  // FA-V4: fire on ANY terminal status, not just 'complete'. On 'complete' the
+  // batch's archives are marked processed; on 'blocked'/'fallen' they are NOT
+  // (never mark an archive the Dreamer did not distill), instead the archive's
+  // bounded attempt counter is bumped and it is poisoned after repeated
+  // failures. Either way the cycle continues instead of stalling on a
+  // non-complete batch (pre-fix it advanced only on 'complete').
+  // Pre-2026-04-30 the catch here swallowed all errors silently, hiding the
+  // v1.15.100 json_set bug for who-knows-how-long. Log them instead.
   const { isDreamerAgent } = await import('../config/platform.js');
-  if ((agent.name === 'Dreamer' || isDreamerAgent(agentId)) && status === 'complete') {
+  if (agent.name === 'Dreamer' || isDreamerAgent(agentId)) {
     try {
       const { markDreamerArchivesProcessed } = await import('../vault/maintenance.js');
-      markDreamerArchivesProcessed(agentId);
+      markDreamerArchivesProcessed(agentId, status);
     } catch (err) {
-      logger.error('markDreamerArchivesProcessed threw, archives may not be marked processed', {
+      logger.error('markDreamerArchivesProcessed threw, dream chain may not advance', {
         agentId,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -867,6 +917,80 @@ export async function completeAgent(
       },
     },
   });
+}
+
+// ── Extend a held agent's timeout (destructive-gate FA-A3) ──
+//
+// The destructive-gate HOLDS a non-primary worker's call pending the primary's
+// approval, then wakes the worker to retry. That wait must not let the reaper
+// kill the worker mid-approval. Extending only the DB row (the pre-fix raw
+// UPDATE in destructive-gate) was INERT: apprentice reaping is driven by the
+// per-agent in-memory setTimeout armed at spawn, which the DB write never
+// rescheduled, so the worker still died at its ORIGINAL timeout. This reschedules
+// BOTH the in-memory timer AND the DB row, keeping them coherent with the
+// checkTimeouts DB sweep.
+//
+// Preserves normal reaping for everyone else: only stretches the specific held
+// worker's life, never shortens a longer timeout, leaves ronin (timeout_at NULL,
+// never reaped) untouched, and re-arms with the SAME semantics the worker had at
+// spawn (persist agents clear their timeout and stay alive; everyone else is
+// terminated).
+export function extendAgentTimeout(agentId: string, newTimeoutAtIso: string): void {
+  const db = getDb();
+  const agent = db.prepare('SELECT id, name, status, config, timeout_at FROM agents WHERE id = ?').get(agentId) as {
+    id: string; name: string; status: string; config: string; timeout_at: string | null;
+  } | undefined;
+  if (!agent) {
+    logger.warn('extendAgentTimeout: agent not found', { agentId });
+    return;
+  }
+  if (agent.status === 'terminated') return;
+  // Ronin / no-timeout workers are never reaped, so there is nothing to extend.
+  if (agent.timeout_at === null) return;
+
+  const newAtMs = new Date(newTimeoutAtIso).getTime();
+  if (Number.isNaN(newAtMs)) {
+    logger.warn('extendAgentTimeout: invalid timeout ISO', { agentId, newTimeoutAtIso });
+    return;
+  }
+
+  // Never shorten a longer existing timeout. timeout_at is stored as a SQLite
+  // datetime string (space-separated, UTC, no trailing Z), so normalize to ISO.
+  const currentMs = new Date(agent.timeout_at.replace(' ', 'T') + (agent.timeout_at.includes('Z') ? '' : 'Z')).getTime();
+  if (!Number.isNaN(currentMs) && currentMs >= newAtMs) return;
+
+  // Same shape spawnAgent writes (space-separated, no Z) so the DB sweep compares cleanly.
+  const dbTimeoutAt = newTimeoutAtIso.replace('T', ' ').replace('Z', '');
+  db.prepare(`UPDATE agents SET timeout_at = ?, updated_at = datetime('now') WHERE id = ?`).run(dbTimeoutAt, agentId);
+
+  // Re-arm the in-memory timer.
+  const existing = timeoutTimers.get(agentId);
+  if (existing) {
+    clearTimeout(existing);
+    timeoutTimers.delete(agentId);
+  }
+  let isPersist = false;
+  try { isPersist = JSON.parse(agent.config || '{}').persist === true; } catch { /* default false */ }
+
+  const delayMs = Math.max(0, newAtMs - Date.now());
+  if (isPersist) {
+    const timer = setTimeout(() => {
+      logger.info('Persist agent extended-timeout reached -- clearing timeout, agent stays alive', { agentId, name: agent.name }, agentId);
+      db.prepare(`UPDATE agents SET timeout_at = NULL, updated_at = datetime('now') WHERE id = ?`).run(agentId);
+      timeoutTimers.delete(agentId);
+    }, delayMs);
+    timeoutTimers.set(agentId, timer);
+  } else {
+    const timer = setTimeout(() => {
+      logger.warn('Held agent extended timeout reached, terminating', { agentId, name: agent.name }, agentId);
+      terminateAgent(agentId, 'Timeout reached');
+    }, delayMs);
+    timeoutTimers.set(agentId, timer);
+  }
+
+  logger.info('extendAgentTimeout: reap rescheduled for held worker', {
+    agentId, name: agent.name, newTimeoutAt: dbTimeoutAt, delayMs,
+  }, agentId);
 }
 
 // ── Timeout Checker ──

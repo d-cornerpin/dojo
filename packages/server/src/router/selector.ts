@@ -63,9 +63,14 @@ export function getSystemModel(): string | null {
 }
 
 function estimateRequestCost(model: TierModelRow): number {
-  // Rough estimate: 2k input, 1k output per request
-  const inputCost = ((model.input_cost_per_m ?? 3.0) / 1_000_000) * 2000;
-  const outputCost = ((model.output_cost_per_m ?? 15.0) / 1_000_000) * 1000;
+  // Rough estimate: 2k input, 1k output per request.
+  // D-H: an unknown (NULL) price estimates as $0, matching how the biller
+  // records it, so near the budget wall an unpriced model is not over-gated as
+  // if it were the Sonnet premium. The "price unknown" state stays visible via
+  // the per-model dashboard flag and the biller's once-per-model warn; this is
+  // only the pre-call estimate side. Explicit prices are used as-is.
+  const inputCost = ((model.input_cost_per_m ?? 0) / 1_000_000) * 2000;
+  const outputCost = ((model.output_cost_per_m ?? 0) / 1_000_000) * 1000;
   return inputCost + outputCost;
 }
 

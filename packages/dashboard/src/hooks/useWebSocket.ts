@@ -134,8 +134,12 @@ export const WebSocketProvider = ({ children }: { children: ReactNode }) => {
           if (wildcardCallbacks) {
             wildcardCallbacks.forEach((cb) => cb(wsEvent));
           }
-        } catch {
-          // Ignore non-JSON messages
+        } catch (err) {
+          // A non-JSON frame or a throwing subscriber lands here. The dispatch
+          // stays isolated (a bad message must not kill the socket), but no
+          // longer swallows silently: surface it so payload drift or a broken
+          // subscriber is at least visible in the console.
+          console.error('[useWebSocket] dropped a WS message during dispatch', err);
         }
       };
 

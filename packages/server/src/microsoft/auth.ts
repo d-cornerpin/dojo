@@ -144,6 +144,23 @@ export function isMsServiceEnabledForKind(
   return listMicrosoftAccounts(slot).some(a => a.connected && parseServices(a.enabledServices)[service]);
 }
 
+/**
+ * FA-TS1: every service-enabled flag for a kind, computed from ONE account-list
+ * read (mirrors getGoogleServiceFlagsForKind). Replaces ~76 per-tool
+ * listMicrosoftAccounts scans in getFilteredTools with a single read per kind.
+ * Same fact door (listMicrosoftAccounts + parseServices), byte-identical results.
+ */
+export function getMsServiceFlagsForKind(
+  slot: AccountSlot,
+): Record<keyof MicrosoftWorkspaceConfig['enabledServices'], boolean> {
+  const connected = listMicrosoftAccounts(slot).filter(a => a.connected);
+  const flags = {} as Record<keyof MicrosoftWorkspaceConfig['enabledServices'], boolean>;
+  for (const service of Object.keys(DEFAULT_SERVICES) as Array<keyof MicrosoftWorkspaceConfig['enabledServices']>) {
+    flags[service] = connected.some(a => parseServices(a.enabledServices)[service]);
+  }
+  return flags;
+}
+
 export function isMsEmailMonitoringEnabled(slot: AccountSlot = 'agent'): boolean {
   const acc = slotAccount(slot);
   if (acc) return acc.watchEmail;
@@ -173,9 +190,9 @@ export function setMicrosoftConnected(connected: boolean, email?: string, accoun
   if (connected) patch.lastVerifiedAt = new Date().toISOString();
   updateMicrosoftAccount(ensureSlotAccount(slot).id, patch);
   if (connected) {
-    broadcast({ type: 'microsoft:connected', data: { email: email ?? '', slot } } as never);
+    broadcast({ type: 'microsoft:connected', data: { email: email ?? '', slot } });
   } else {
-    broadcast({ type: 'microsoft:disconnected', data: { slot } } as never);
+    broadcast({ type: 'microsoft:disconnected', data: { slot } });
   }
 }
 
@@ -285,7 +302,7 @@ async function refreshAccessTokenForAccount(accountId: string): Promise<string |
       logger.error('Token refresh failed', { accountId, status: resp.status, error: err });
       if (resp.status === 400 || resp.status === 401) {
         updateMicrosoftAccount(accountId, { connected: false });
-        broadcast({ type: 'microsoft:disconnected', data: { slot: acc?.kind ?? 'agent' } } as never);
+        broadcast({ type: 'microsoft:disconnected', data: { slot: acc?.kind ?? 'agent' } });
         const label = acc?.kind === 'user' ? "user's" : "agent's";
         const who = acc?.email ? ` (${acc.email})` : '';
         try { sendAlert(`Microsoft 365 ${label} account${who} connection expired. Re-authenticate in Settings > Microsoft.`, 'critical'); } catch {}
@@ -446,7 +463,7 @@ export async function exchangeCodeForTokens(code: string, redirectUri: string, c
       lastVerifiedAt: new Date().toISOString(),
     });
     if (accountType === 'msa') setEnabledMsServicesForAccount(accountId, { teams: false });
-    broadcast({ type: 'microsoft:connected', data: { email, slot } } as never);
+    broadcast({ type: 'microsoft:connected', data: { email, slot } });
 
     // Same-email soft warning across kinds.
     if (email) {
@@ -507,7 +524,7 @@ export function disconnectMicrosoft(slot: AccountSlot = 'agent'): void {
       lastVerifiedAt: null, enabledServices: null,
     });
   }
-  broadcast({ type: 'microsoft:disconnected', data: { slot } } as never);
+  broadcast({ type: 'microsoft:disconnected', data: { slot } });
   logger.info('Microsoft 365 disconnected', { slot });
 }
 
@@ -523,7 +540,7 @@ export function disconnectMicrosoftAccount(accountId: string): void {
   } else {
     deleteMicrosoftAccount(acc.id);
   }
-  broadcast({ type: 'microsoft:disconnected', data: { slot: acc.kind } } as never);
+  broadcast({ type: 'microsoft:disconnected', data: { slot: acc.kind } });
   logger.info('Microsoft account disconnected', { accountId, kind: acc.kind, position: acc.position });
 }
 

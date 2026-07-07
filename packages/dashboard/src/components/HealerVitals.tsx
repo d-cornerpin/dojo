@@ -1,8 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import * as api from '../lib/api';
 import { formatDate } from '../lib/dates';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 export const HealerVitals = () => {
+  const { subscribe } = useWebSocket();
   const [proposals, setProposals] = useState<api.HealerProposal[]>([]);
   const [actions, setActions] = useState<api.HealerAction[]>([]);
   const [loading, setLoading] = useState(true);
@@ -11,18 +13,32 @@ export const HealerVitals = () => {
   const [denyNote, setDenyNote] = useState('');
   const [resolving, setResolving] = useState<string | null>(null);
 
-  useEffect(() => {
-    const load = async () => {
-      const [proposalsResult, actionsResult] = await Promise.all([
-        api.getHealerProposals(),
-        api.getHealerActions(),
-      ]);
-      if (proposalsResult.ok) setProposals(proposalsResult.data);
-      if (actionsResult.ok) setActions(actionsResult.data);
-      setLoading(false);
-    };
-    load();
+  const load = useCallback(async () => {
+    const [proposalsResult, actionsResult] = await Promise.all([
+      api.getHealerProposals(),
+      api.getHealerActions(),
+    ]);
+    if (proposalsResult.ok) setProposals(proposalsResult.data);
+    if (actionsResult.ok) setActions(actionsResult.data);
+    setLoading(false);
   }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  // FA-DB4: a freshly-filed Healer proposal (or one just marked applied) is
+  // broadcast as healer:proposal, but the card only loaded on mount, so a new
+  // consent decision didn't appear until reload. Re-run the full load() on the
+  // event: it is rare, so an authoritative refetch is cheap and avoids merging
+  // partial payloads (mirrors ActiveJobsIndicator's refetch-on-event idiom).
+  useEffect(() => {
+    const unsub = subscribe('healer:proposal', (event) => {
+      if (event.type !== 'healer:proposal') return;
+      void load();
+    });
+    return () => { unsub(); };
+  }, [subscribe, load]);
 
   const handleApprove = async (id: string) => {
     setResolving(id);
@@ -95,9 +111,23 @@ export const HealerVitals = () => {
                         <span className="text-sm font-medium text-ui/90">{p.title}</span>
                       </div>
                       <p className="text-xs text-ui/55 mb-1">{p.description}</p>
-                      <p className="text-xs text-ui/70">
-                        <span className="text-cp-amber">Suggested fix:</span> {p.proposed_fix}
-                      </p>
+                      {/* D-B v2: a destructive-action consent shows plain language
+                          above; the raw command/path is tucked behind a details
+                          expander so a non-technical owner is never shown a raw
+                          path as the question. Other proposals keep the inline
+                          suggested-fix line. */}
+                      {p.category === 'destructive_action' ? (
+                        <details className="mt-0.5">
+                          <summary className="text-[11px] text-ui/40 cursor-pointer hover:text-ui/60 select-none">
+                            Show the exact command
+                          </summary>
+                          <pre className="mt-1 text-[11px] text-ui/70 whitespace-pre-wrap break-all bg-ui/[0.04] rounded p-2 border border-ui/[0.06]">{p.proposed_fix}</pre>
+                        </details>
+                      ) : (
+                        <p className="text-xs text-ui/70">
+                          <span className="text-cp-amber">Suggested fix:</span> {p.proposed_fix}
+                        </p>
+                      )}
                       {(() => {
                         if (!p.evidence_json) return null;
                         let bullets: string[] = [];

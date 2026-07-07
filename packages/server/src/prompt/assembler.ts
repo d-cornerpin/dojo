@@ -108,37 +108,49 @@ export function getSoulContent(agentId: string): string {
   // Sub-agents: comprehensive dojo onboarding, NOT the primary agent's SOUL.md
   try {
     const db = getDb();
-    const agentRow = db.prepare('SELECT name, group_id, parent_agent, classification FROM agents WHERE id = ?').get(agentId) as { name: string; group_id: string | null; parent_agent: string | null; classification: string } | undefined;
+    const agentRow = db.prepare('SELECT name, group_id, parent_agent, classification, charter FROM agents WHERE id = ?').get(agentId) as { name: string; group_id: string | null; parent_agent: string | null; classification: string; charter: string | null } | undefined;
     const agentName = agentRow?.name ?? 'Agent';
     const classification = agentRow?.classification ?? 'apprentice';
 
     // Created (POST /api/agents) AND spawned sub-agents persist their creator-
-    // provided charter (identity + task instructions) as the earliest
-    // role='system' message row, NOT in any agents column and NOT in
-    // system_prompt_path (both NULL for a dashboard-created agent). Nothing read
-    // that row into the system prompt: the synthesized identity below carried
-    // only STRUCTURAL context (name, parent, squad, reporting rules), so a
-    // created agent's actual persona and instructions (a worker's codeword, its
-    // "reply only when asked" rule, whatever the creator wrote) had mere
-    // user-message authority. On an A2A turn the human-role charter row is
-    // scoped out of the tail entirely, so the agent went BLIND to its own
-    // charter and spun (vault_search x N for a codeword that was in its charter
-    // all along; behav-sig:ca67b479). Give the charter a REAL system-prompt
-    // slot: lead the identity with it, then append the dojo structural context +
-    // reporting rules as framing. Agents whose charter already lives in a
-    // <ID>-SOUL.md file are handled by the file branch above; agents with no
-    // charter row fall through to the synthesized identity unchanged.
-    let charter = '';
-    try {
-      const charterRow = db.prepare(
-        "SELECT content FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY rowid ASC LIMIT 1",
-      ).get(agentId) as { content: string } | undefined;
-      const c = charterRow?.content?.trim() ?? '';
-      // A real charter is substantive prose; never let an engine-coordination
-      // system row ('── New Session ──', a '[SOURCE: …]'/'[System: …]' notice)
-      // stand in for it.
-      if (c.length > 20 && !c.startsWith('──') && !c.startsWith('[')) charter = c;
-    } catch { /* no charter row: fall back to the synthesized identity below */ }
+    // provided charter (identity + task instructions). Nothing structural read
+    // it into the system prompt: the synthesized identity below carries only
+    // STRUCTURAL context (name, parent, squad, reporting rules), so a created
+    // agent's actual persona and instructions (a worker's codeword, its "reply
+    // only when asked" rule, whatever the creator wrote) had mere user-message
+    // authority. On an A2A turn the human-role charter row is scoped out of the
+    // tail entirely, so the agent went BLIND to its own charter and spun
+    // (vault_search x N for a codeword that was in its charter all along;
+    // behav-sig:ca67b479). Give the charter a REAL system-prompt slot: lead the
+    // identity with it, then append the dojo structural context + reporting
+    // rules as framing.
+    //
+    // FA-PT6: the charter is now persisted DURABLY in agents.charter (migration
+    // 096), written at spawn / create / prompt-update time, and read directly
+    // here, so a terse or bracket-prefixed charter ("[Mission] ...") is never
+    // false-rejected and a preceding non-charter system row can never latch. For
+    // agents spawned BEFORE the column existed (charter IS NULL) we fall back to
+    // a tightened sniff: the earliest role='system' row that is NOT an
+    // engine-coordination marker. The old sniff dropped short and '['-prefixed
+    // charters (length>20 AND not startsWith('['/'──')); that false-reject is
+    // gone. We still reject engine-coordination rows by their exact prefixes so
+    // one can never stand in for a charter: '[SOURCE:' (source-tagged engine
+    // events), '[System:' (session-reset reorient prompts), and '──' (chat
+    // dividers / reauth notices). A creator charter like '[Mission] ...' does
+    // not match any of these and passes. Agents whose charter lives in a
+    // <ID>-SOUL.md file are handled by the file branch above.
+    let charter = (agentRow?.charter ?? '').trim();
+    if (!charter) {
+      try {
+        const charterRow = db.prepare(
+          "SELECT content FROM messages WHERE agent_id = ? AND role = 'system' " +
+            "AND content NOT LIKE '[SOURCE:%' AND content NOT LIKE '[System:%' AND content NOT LIKE '──%' " +
+            "ORDER BY rowid ASC LIMIT 1",
+        ).get(agentId) as { content: string } | undefined;
+        const c = charterRow?.content?.trim() ?? '';
+        if (c) charter = c;
+      } catch { /* no charter row: fall back to the synthesized identity below */ }
+    }
 
     // Get parent agent name
     let parentInfo = '';
@@ -1072,10 +1084,18 @@ export function renderIntegrationReconnect(agentId: string): string[] {
   const out: string[] = [];
   try {
     if (!isPMAgent(agentId)) {
+      // The microsoft line must scope to the CLOUD (Graph) tools only: the local
+      // office document tools (office_create_* and the Word edit set) run on this
+      // machine with no Microsoft account, and naming Word/Excel/PowerPoint here
+      // taught the floor model to refuse local document requests whenever the
+      // connection was down (battery scenario document-creation-office, 2026-07-06).
       const familyText: Record<string, string> = {
         google: 'Google tools (Gmail/Calendar/Drive/Docs/Sheets/Slides)',
-        microsoft: 'Microsoft tools (Outlook/Calendar/Word/Excel/PowerPoint/OneDrive)',
+        microsoft: 'Microsoft cloud tools (Outlook mail and calendar, OneDrive, Teams, and editing documents that live in OneDrive)',
         plaud: 'Plaud recording tools',
+      };
+      const localCarveOut: Record<string, string> = {
+        microsoft: ' Creating and editing Word/Excel/PowerPoint documents LOCALLY still works: the office document tools (office_create_word_document and friends) run on this machine and need no Microsoft account, so use them for document requests as normal.',
       };
       const displayName: Record<string, string> = {
         google: 'Google Workspace', microsoft: 'Microsoft 365', plaud: 'Plaud',
@@ -1086,7 +1106,7 @@ export function renderIntegrationReconnect(agentId: string): string[] {
       for (const s of integrationStatuses) {
         if (!s.configured || s.connected) continue;
         out.push(
-          `## ${displayName[s.name]} (disconnected)\n\n${displayName[s.name]} is set up but its connection has expired, so ${familyText[s.name]} are unavailable right now. If a task needs them, tell the user to reconnect in Dashboard -> Integrations. Do not say the capability is unsupported; it only needs a reconnect.`,
+          `## ${displayName[s.name]} (disconnected)\n\n${displayName[s.name]} is set up but its connection has expired, so ${familyText[s.name]} are unavailable right now. If a task needs them, tell the user to reconnect in Dashboard -> Integrations. Do not say the capability is unsupported; it only needs a reconnect.${localCarveOut[s.name] ?? ''}`,
         );
       }
     }

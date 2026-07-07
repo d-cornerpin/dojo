@@ -83,18 +83,17 @@ export interface RegistrySystemResult {
 
 /**
  * Produce the system prompt from the registry. Entry-only walk: every system
- * slot is a registered entry (R4 migrated all 23), so there is no legacy
- * fallback. getSystemEntries() returns them slot-sorted (canonical order);
- * rawAppend entries (the weak technique hint) are appended post-walk via
- * appendSystemHint, skipped here. A render that throws is contained (skipped) so
- * one bad entry can't fail the whole assembly — matching the legacy per-block
- * try/catch.
+ * slot is a registered entry, so there is no legacy fallback. getSystemEntries()
+ * returns them slot-sorted (canonical order). A render that throws is contained
+ * (skipped) so one bad entry can't fail the whole assembly, matching the legacy
+ * per-block try/catch. (FA-PT3: the raw-append weak-hint path was deleted; the
+ * weak technique hint is a message entry, msg.technique-weak, not a system
+ * append, so there is no longer a rawAppend branch to skip.)
  */
 export function assembleSystemFromRegistry(ctx: AssemblyContext): RegistrySystemResult {
   const outParts: string[] = [];
   const outIds: (string | null)[] = [];
   for (const entry of getSystemEntries()) {
-    if (entry.rawAppend) continue;
     let r: string | string[] | null = null;
     try {
       r = (entry.when?.(ctx) ?? true) ? entry.render(ctx) : null;
@@ -152,19 +151,4 @@ export function injectRegistryMessage(id: string, messages: EngineMessage[], ctx
   const msg = renderMessageEntry(id, ctx);
   if (!msg || typeof msg.content !== 'string') return false;
   return pushEngineMessage(messages, msg.content);
-}
-
-/**
- * Render a raw-append system entry by id and append its text to the END of the
- * system prompt (no `---` separator) — matches the legacy `systemPrompt += hint`
- * for the weak technique hint. The `+=` lives HERE (registry module), so the
- * loop has no raw systemPrompt+= (R8 guard). Returns the new system prompt.
- */
-export function appendSystemHint(systemPrompt: string, id: string, ctx: AssemblyContext): string {
-  const entry = getSystemEntries().find((e) => e.id === id);
-  if (!entry) return systemPrompt;
-  if (entry.when && !entry.when(ctx)) return systemPrompt;
-  const r = entry.render(ctx);
-  const text = r == null ? '' : Array.isArray(r) ? r.join(PART_JOINER) : r;
-  return text ? systemPrompt + text : systemPrompt;
 }

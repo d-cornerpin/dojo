@@ -323,15 +323,24 @@ export function classifyMessageForDisplay(msg: DisplayMessageInput): DisplayClas
 
   if (msg.role === 'user') {
     // ── Structured path (Phase 6): the message's origin decides visibility,
-    // not a regex over its content. A2A (kind='agent') and engine events
-    // (kind='engine') are agent-only; a human on a real inbound channel is a
-    // user-visible badge; the owner on dashboard/voice is plain user text.
-    // This is the same call the row mapper makes (deriveOrigin), so legacy
-    // rows still attribute correctly via the read-shim there.
+    // not a regex over its content. Engine events (kind='engine') are
+    // agent-only; a human on a real inbound channel is a user-visible badge;
+    // the owner on dashboard/voice is plain user text. This is the same call
+    // the row mapper makes (deriveOrigin), so legacy rows still attribute
+    // correctly via the read-shim there.
+    //
+    // D-A step 7 (history retire): the user-role A2A branch (origin.kind ===
+    // 'agent' -> agent-only 'a2a') is REMOVED. Requirement it encoded: hide
+    // inbound peer-A2A rows that used to live in this chat table from human
+    // chat. What satisfies it now: (1) the store separation, ALL new
+    // inter-agent traffic lands in inter_agent_messages, never in `messages`;
+    // (2) the retire migration (102) marks the legacy pre-cutover A2A rows
+    // retired_at, and the dashboard serving paths (chat history route +
+    // agents.ts projection) filter retired_at IS NULL, so no user-role A2A row
+    // is ever served to this classifier. The overlay is dead. (The ASSISTANT
+    // A2A-turn branch below is KEPT: the agent's OWN A2A-turn output stays in
+    // `messages` by design and is still hidden in regular mode.)
     if (origin) {
-      if (origin.kind === 'agent') {
-        return { tier: 'agent-only', kind: 'a2a' };
-      }
       if (origin.kind === 'engine') {
         // tracker assignments kept their 'engine-injection' render kind; every
         // other engine event is 'system-other'. Both are agent-only — the kind

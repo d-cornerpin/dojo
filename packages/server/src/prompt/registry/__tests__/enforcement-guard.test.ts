@@ -66,8 +66,8 @@ describe('R8 — engine injection only via the registry (enforcement guard)', ()
     }
 
     // If this fails: route the injection through the registry
-    // (injectRegistryMessage / appendSystemHint), or add the file to the
-    // allow-list with a documented reason. See DOJO-PROMPT-REGISTRY-CONTRACT.md.
+    // (injectRegistryMessage), or add the file to the allow-list with a
+    // documented reason. See DOJO-PROMPT-REGISTRY-CONTRACT.md.
     expect(violations).toEqual([]);
   });
 });

@@ -364,9 +364,18 @@ export function memoryDescribe(agentId: string, params: { id: string }): string 
   // this is the canonical path for getting full content of a search hit.
   try {
     const db = getDb();
+    // D-A: peer A2A inbound now lives in inter_agent_messages, and recall_recent_thread
+    // (re-sourced to the merged set) can hand the agent a store row's id in its
+    // "call history_get(id=...)" pointers. Resolve from the MERGED source so those
+    // pointers still fetch a full body (id is a globally unique uuid, so at most one row
+    // matches across the two tables; the messages arm wins a live-edge backfill tie, and
+    // its content is byte-identical to the store copy anyway).
     const row = db.prepare(
-      'SELECT id, agent_id, role, content, created_at, attachments FROM messages WHERE id = ?',
-    ).get(id) as
+      `SELECT id, agent_id, role, content, created_at, attachments FROM messages WHERE id = ?
+       UNION ALL
+       SELECT id, agent_id, role, content, created_at, attachments FROM inter_agent_messages WHERE id = ?
+       LIMIT 1`,
+    ).get(id, id) as
       | { id: string; agent_id: string; role: string; content: string; created_at: string; attachments: string | null }
       | undefined;
     if (row) {

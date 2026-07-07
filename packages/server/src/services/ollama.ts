@@ -132,6 +132,11 @@ export async function getOllamaModelInfo(modelName: string, baseUrl?: string): P
     // Extract context length from model_info or parameters
     let contextWindow = 128000; // default
     let maxOutputTokens = 8192; // default
+    // FA-PC7: track whether num_predict was actually parsed so the ctx/4
+    // heuristic below applies ONLY to genuinely-unset models. Without this, a
+    // model whose real num_predict is 8192 was indistinguishable from the unset
+    // default and got its cap silently overwritten by the heuristic.
+    let maxOutputExplicit = false;
 
     // model_info often has context_length or num_ctx
     if (data.model_info) {
@@ -149,11 +154,16 @@ export async function getOllamaModelInfo(modelName: string, baseUrl?: string): P
       if (ctxMatch) contextWindow = parseInt(ctxMatch[1], 10);
 
       const predictMatch = data.parameters.match(/num_predict\s+(\d+)/);
-      if (predictMatch) maxOutputTokens = parseInt(predictMatch[1], 10);
+      if (predictMatch) {
+        maxOutputTokens = parseInt(predictMatch[1], 10);
+        maxOutputExplicit = true;
+      }
     }
 
-    // max output is typically a fraction of context window if not explicitly set
-    if (maxOutputTokens === 8192 && contextWindow > 32000) {
+    // max output is typically a fraction of context window if not explicitly set.
+    // FA-PC7: gate on the parsed flag, not on the 8192 sentinel value, so a real
+    // num_predict of 8192 (with a large ctx) is respected rather than overwritten.
+    if (!maxOutputExplicit && contextWindow > 32000) {
       maxOutputTokens = Math.min(Math.floor(contextWindow / 4), 32768);
     }
 

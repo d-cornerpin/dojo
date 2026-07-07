@@ -18,6 +18,7 @@ import { createLogger } from '../logger.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 import { broadcast } from '../gateway/ws.js';
+import { TRANSIENT_PROVIDER_ERROR_SQL } from './diagnostic.js';
 
 const logger = createLogger('injury-recovery');
 
@@ -224,6 +225,14 @@ function maybeRecordProviderPattern(agentId: string): string | null {
     `).get(agentId) as { provider_name: string } | undefined;
     if (!row?.provider_name) return null;
 
+    // FA-X5: mirror the outage detector's transient-error filter AND require
+    // the peer to be currently injured (status IN 'error'/'paused'). Pre-fix
+    // this counted ANY same-provider agent with a non-null last_error in the
+    // last hour, with no error-type filter and no status check, so agents that
+    // had already RECOVERED (last_error is not cleared on every recovery path)
+    // inflated the count and a genuinely distinct injury got deduped as part
+    // of a "pattern" that no longer existed. The shared predicate keeps this
+    // in lockstep with getProviderOutagePatterns so the two never drift.
     const lookbackSec = Math.floor(PROVIDER_PATTERN_LOOKBACK_MS / 1000);
     const peers = db.prepare(`
       SELECT COUNT(*) AS cnt FROM agents a
@@ -231,8 +240,10 @@ function maybeRecordProviderPattern(agentId: string): string | null {
       JOIN providers p ON p.id = m.provider_id
       WHERE p.name = ?
         AND a.id != ?
+        AND a.status IN ('error', 'paused')
         AND a.last_error IS NOT NULL
         AND a.last_error_at > datetime('now', '-${lookbackSec} seconds')
+        AND ${TRANSIENT_PROVIDER_ERROR_SQL}
     `).get(row.provider_name, agentId) as { cnt: number };
 
     if (peers.cnt < PROVIDER_PATTERN_PEER_THRESHOLD) return null;
@@ -490,6 +501,18 @@ export function onAgentRecovered(agentId: string): void {
   // If it errors again later, the counter starts fresh. Persisted to DB
   // so a future restart sees a clean state.
   setAttempts(agentId, 0);
+
+  // FA-A2: this is the deliberate-recovery chokepoint (a clean turn end with
+  // prior attempts, and the Tier-1 auto-fix reset which flips status via a raw
+  // UPDATE that does NOT route through setAgentStatus). last_error now survives
+  // the 'working' transition, so clear it HERE too, otherwise an auto-fixed agent
+  // would carry a stale diagnostic that re-trips the injury readers. Not called
+  // on mid-turn retries, so "diagnostic survives retries" is preserved.
+  try {
+    getDb().prepare(
+      "UPDATE agents SET last_error = NULL, last_error_at = NULL, updated_at = datetime('now') WHERE id = ?",
+    ).run(agentId);
+  } catch { /* best effort */ }
 
   // v2.3.19, also clear the Healer backoff window so the next injury
   // gets full attention again (don't carry a "muted Healer" state across

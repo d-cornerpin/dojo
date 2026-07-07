@@ -38,6 +38,20 @@ const logger = createLogger('voice-custom');
  */
 export const EXPECTED_VOICE_BYTES = 522_240;
 
+/**
+ * FA-VO3, the exact Kokoro model id the custom-voicepack geometry is pinned
+ * to. EXPECTED_VOICE_BYTES above AND the 256-dim / 510-bucket slice math in
+ * installCustomVoicePatch below are both derived from THIS model's style
+ * tensors. A KOKORO_MODEL_ID bump can leave a pack byte-valid but
+ * dimensionally wrong (a different style dim or bucket count), which would
+ * make Kokoro throw for every custom-voice user at once. The runtime gate in
+ * checkCustomVoiceUsable disables custom voices whenever the live model id no
+ * longer matches this pin: a clean degrade to the default voice instead of a
+ * per-clause throw. Bump this (and re-derive EXPECTED_VOICE_BYTES + the slice
+ * math) only after re-validating the geometry against the new model.
+ */
+export const PINNED_KOKORO_MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
+
 export const CUSTOM_VOICE_DIR = path.join(VOICE_ROOT, 'custom');
 
 const VOICE_ID_RE = /^[ab][fm]_[a-z0-9](?:[a-z0-9_-]{0,30}[a-z0-9])?$/;
@@ -196,6 +210,44 @@ function loadStyleVector(id: string): Float32Array {
   const f = new Float32Array(ab);
   styleCache.set(id, f);
   return f;
+}
+
+/**
+ * FA-VO3, decide whether a voice can be synthesized RIGHT NOW, so callers can
+ * fall back to a built-in default instead of letting Kokoro's patched
+ * generate_from_ids throw on every clause (a corrupt/missing pack, or a
+ * byte-valid pack whose geometry no longer matches the live Kokoro model).
+ *
+ *   - Built-in ids: always ok, nothing custom to check.
+ *   - Custom ids: ok only when BOTH
+ *       (a) the live Kokoro model still matches the geometry pin
+ *           (PINNED_KOKORO_MODEL_ID), and
+ *       (b) the .bin loads to a valid style vector.
+ *
+ * The version gate (a) is a pure comparison and short-circuits BEFORE any disk
+ * I/O, so it is assertable in isolation. Only a matching-model custom id
+ * touches disk (via loadStyleVector) to confirm the pack is intact. Never
+ * throws: a failure is returned as { ok: false, reason }. Install-time
+ * rejection of malformed packs (installCustomVoice → validateVoiceBuffer) is
+ * unchanged; this is purely the runtime read-path degrade.
+ */
+export function checkCustomVoiceUsable(
+  voiceId: string,
+  liveModelId: string,
+): { ok: true } | { ok: false; reason: string } {
+  if (!isValidCustomVoiceId(voiceId)) return { ok: true };
+  if (liveModelId !== PINNED_KOKORO_MODEL_ID) {
+    return {
+      ok: false,
+      reason: `custom voicepack geometry is pinned to Kokoro model ${PINNED_KOKORO_MODEL_ID}, but the live model is ${liveModelId}, disabling custom voices until the geometry is re-derived`,
+    };
+  }
+  try {
+    loadStyleVector(voiceId);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 /**

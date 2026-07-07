@@ -67,6 +67,25 @@ export const VoiceFirstRunModal = ({ whisperModelId, onComplete, onCancel }: Voi
     return unsub;
   }, [ws]);
 
+  // FA-DB3: a failed download/install would otherwise leave the progress bar
+  // and "Downloading…" state stuck forever (the auto-close effect only fires on
+  // all-complete). Surface the error, stop the installing state, and drop that
+  // model's progress so the bar clears.
+  useEffect(() => {
+    const unsub = ws.subscribe('voice:model_install_error', (event) => {
+      if (event.type !== 'voice:model_install_error') return;
+      const { kind, modelId, error: reason } = event.data;
+      setError(`${kind} download failed: ${reason}`);
+      setInstalling(false);
+      setDownloads((prev) => {
+        const next = { ...prev };
+        delete next[`${kind}/${modelId}`];
+        return next;
+      });
+    });
+    return unsub;
+  }, [ws]);
+
   // Figure out what actually needs to download.
   const missing = useMemo(() => {
     if (!models) return null;

@@ -1,5 +1,5 @@
 import { Routes, Route, Navigate, useNavigate, useLocation, Outlet } from 'react-router-dom';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { WebSocketProvider, useWebSocket } from './hooks/useWebSocket';
 import { ToastProvider, useToast } from './hooks/useToast';
@@ -7,6 +7,7 @@ import type { WsEvent } from '@dojo/shared';
 import { Login } from './pages/Login';
 import { Setup } from './pages/Setup';
 import { Chat } from './pages/Chat';
+import { InterAgentLane } from './pages/InterAgentLane';
 import { Agents } from './pages/Agents';
 import { AgentConfigPanel } from './pages/AgentConfigPanel';
 import { Tracker } from './pages/Tracker';
@@ -96,9 +97,78 @@ const DashboardChrome = () => (
   // notification cards (Dojo3Notifications), while the full-page chrome below
   // keeps the classic corner ToastContainer — same queue, two surfaces.
   <ToastProvider>
+    <SystemRestartOverlay />
     <Outlet />
   </ToastProvider>
 );
+
+// ── Server-restart overlay (FA-G5) ──
+//
+// The server broadcasts system:restart right before it exits to restart under
+// launchd. Without a consumer, every OTHER connected device (and any restart
+// not triggered from the local Settings button, e.g. agent-controls or remote) just
+// saw the socket drop and churned through raw reconnect attempts. This mounts
+// ONE overlay at the chrome level (inside WebSocketShell, above every routed
+// page) so any device rides out the ~1-2s gap with a plain "Restarting…" screen
+// instead of connection noise, then clears itself once the socket reconnects.
+// The local Settings inline note stays; this covers the cases it can't.
+const SystemRestartOverlay = () => {
+  const { subscribe, connectionStatus } = useWebSocket();
+  const [restarting, setRestarting] = useState(false);
+  // We must not clear on the FIRST 'connected' (the socket is still up at the
+  // instant the marker arrives (the server exits a beat later). Only clear
+  // once we've actually observed the socket drop and come back.
+  const sawDropRef = useRef(false);
+
+  useEffect(() => {
+    const unsub = subscribe('system:restart', (event: WsEvent) => {
+      if (event.type !== 'system:restart') return;
+      sawDropRef.current = false;
+      setRestarting(true);
+    });
+    return unsub;
+  }, [subscribe]);
+
+  useEffect(() => {
+    if (!restarting) return;
+    if (connectionStatus !== 'connected') {
+      sawDropRef.current = true; // socket dropped during the restart gap
+      return;
+    }
+    if (sawDropRef.current) {
+      // Reconnected, so let the fresh server settle a beat, then reveal the app.
+      const t = setTimeout(() => { setRestarting(false); sawDropRef.current = false; }, 600);
+      return () => clearTimeout(t);
+    }
+  }, [restarting, connectionStatus]);
+
+  // Safety net: never wedge the overlay if a reconnect never lands (dev server
+  // killed for good). The socket layer already redirects to /login after
+  // repeated failures; this is a belt-and-suspenders clear.
+  useEffect(() => {
+    if (!restarting) return;
+    const t = setTimeout(() => setRestarting(false), 60_000);
+    return () => clearTimeout(t);
+  }, [restarting]);
+
+  if (!restarting) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[9999] flex flex-col items-center justify-center gap-4"
+      style={{ background: 'var(--overlay-dark)' }}
+    >
+      <div className="glass-panel rounded-2xl px-8 py-6 flex flex-col items-center gap-3">
+        <svg width="28" height="28" className="animate-spin text-ui/70" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2.5" />
+          <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+        </svg>
+        <div className="text-sm font-medium text-ui/90">Restarting…</div>
+        <div className="text-xs text-ui/55">The dashboard will reconnect automatically once it's back up.</div>
+      </div>
+    </div>
+  );
+};
 
 // The PERSISTENT dojo3 shell: one Chat (stage + orb) that stays mounted
 // across all panel surfaces, so the orb never reloads on navigation. The
@@ -155,6 +225,7 @@ const AppRoutes = () => {
               {/* Persistent orb stage; routed pages become panel content */}
               <Route element={<Dojo3Shell />}>
                 <Route index element={null} />
+                <Route path="interagent" element={<InterAgentLane />} />
                 <Route path="agents" element={<Agents />} />
                 <Route path="agents/:id" element={<AgentConfigPanel />} />
                 <Route path="techniques" element={<Techniques />} />
@@ -189,6 +260,14 @@ const GlobalAlerts = () => {
   const { subscribe } = useWebSocket();
   const toast = useToast();
 
+  // D-B v2 (owner-directed): the Healer's consent asks no longer toast. They queue
+  // in the Healer section of Vitals (HealerVitals) in plain language, and the only
+  // out-of-band lane is a text for a critical diagnostic while the owner is away.
+  // The urgent-approval toast wiring (present-on-frame + re-present-on-load/reconnect
+  // + orb reddening) is retired here. The generic action-toast capability stays in
+  // useToast for other features; this consumer is removed. HealerVitals keeps its
+  // own healer:proposal subscription, so the WS frames are still emitted.
+
   useEffect(() => {
     const unsub = subscribe('cost:alert', (event: WsEvent) => {
       const e = event as { type: string; data: { scope: string; percentage: number; currentSpend: number; limitUsd: number } };
@@ -218,6 +297,10 @@ const GlobalAlerts = () => {
         toast.error(`Failed to install system dependency: ${e.data.pkg}`);
       }
     });
+
+    // D-B v2: the Healer's consent asks are no longer toasted here (retired). They
+    // live in the Healer section of Vitals; HealerVitals owns the healer:proposal
+    // subscription for its live refresh.
 
     return () => { unsub(); unsub2(); unsub3(); };
   }, [subscribe, toast]);

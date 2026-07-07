@@ -77,7 +77,7 @@ export function Dojo3Composer({
 
   const voice = useVoiceMode({ agentId });
   const dojoOrb = useDojoOrb();
-  const { warning: toastWarning } = useToast();
+  const { warning: toastWarning, info: toastInfo } = useToast();
   const { presence, isAway, toggle: togglePresence } = usePresence();
 
   /* ---- voice session timing + wave ---- */
@@ -227,6 +227,17 @@ export function Dojo3Composer({
     lastVoiceErr.current = voice.error;
     toastWarning(voice.error.replace(/^[a-z_]+:\s*/, ''));
   }, [voice.error, toastWarning]);
+
+  /* Surface non-fatal voice notices (e.g. cloud voice fell back to local for a
+     reply) as a plain info toast. Ref-deduped like the error path so React
+     StrictMode's double-invoke in dev doesn't double-toast. */
+  const lastVoiceNotice = useRef<string | null>(null);
+  useEffect(() => {
+    if (!voice.notice) { lastVoiceNotice.current = null; return; }
+    if (voice.notice === lastVoiceNotice.current) return;
+    lastVoiceNotice.current = voice.notice;
+    toastInfo(voice.notice);
+  }, [voice.notice, toastInfo]);
 
   /* ---- file handling ---- */
   const addFiles = useCallback((files: FileList | File[]) => {

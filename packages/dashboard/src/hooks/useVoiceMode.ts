@@ -20,6 +20,13 @@ export interface UseVoiceModeResult {
   enabled: boolean;
   state: VoiceState;
   error: string | null;
+  /**
+   * Transient, non-fatal server notice (e.g. the cloud voice fell back to the
+   * local voice for a reply). Distinct from `error`: the session stays live.
+   * Set when the server sends one, cleared when the session ends. The consumer
+   * renders it as an info toast.
+   */
+  notice: string | null;
   /** Most recently FINALIZED transcript (after speech-end). */
   lastTranscript: string | null;
   /** Live in-progress transcript while user is still speaking. Null once speech ends. */
@@ -116,6 +123,7 @@ async function loadSavedVoiceSettings(): Promise<SavedVoiceSettings> {
 export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, wakeWordEnabled, wakePhrase, sleepPhrase, bargeInEnabled, soundEffectsEnabled }: UseVoiceModeOptions): UseVoiceModeResult {
   const [state, setState] = useState<VoiceState>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [lastTranscript, setLastTranscript] = useState<string | null>(null);
   const [setupNeeded, setSetupNeeded] = useState<{ whisperModelId: string } | null>(null);
   const [audioLevel, setAudioLevel] = useState(0);
@@ -190,9 +198,13 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
           setMutedState(false);
           setPartialTranscript(null);
           setLastTranscript(null);
+          // Clear any stale fallback notice so a fresh session starts clean
+          // (and the server's once-per-session notice can re-fire next time).
+          setNotice(null);
         }
       });
       client.on('error', (msg) => setError(msg));
+      client.on('notice', (msg) => setNotice(msg));
       client.on('partial-transcript', (text) => setPartialTranscript(text));
       client.on('final-transcript', (text) => {
         setLastTranscript(text);
@@ -260,7 +272,7 @@ export function useVoiceMode({ agentId, voice, speed, sttModel, vadSensitivity, 
 
   const enabled = state !== 'idle' && state !== 'error';
   return {
-    enabled, state, error, lastTranscript, partialTranscript, audioLevel,
+    enabled, state, error, notice, lastTranscript, partialTranscript, audioLevel,
     muted, setMuted, toggleMute,
     wakeWordEnabled: resolvedWakeWordEnabled,
     wakePhrase: resolvedWakePhrase,

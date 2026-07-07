@@ -1,8 +1,16 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WsEvent, ChatErrorEvent } from '@dojo/shared';
-import { useToast } from '../hooks/useToast';
+import { useToast, type ToastAction } from '../hooks/useToast';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useDojoOrb } from './orb/OrbProvider';
+
+// Button classes reused from the Vitals card (HealerVitals.tsx) so a decision
+// toast's Approve / Decline match the Healer surface's approve / deny exactly.
+const ACTION_BTN_CLASS: Record<ToastAction['variant'], string> = {
+  primary: 'px-3 py-1 text-xs rounded glass-btn-primary disabled:opacity-50',
+  secondary:
+    'px-3 py-1 text-xs rounded bg-ui/[0.08] text-ui/55 hover:text-ui/70 border border-ui/[0.10] hover:border-ui/[0.15] transition-colors disabled:opacity-50',
+};
 
 /*
  * The dojo3 notification surface: tiered glass cards that drop in UNDER the orb
@@ -16,12 +24,37 @@ import { useDojoOrb } from './orb/OrbProvider';
  *   error          -> coral -> orb startles AND holds a red alert tint; the
  *                              card is pinned until dismissed OR the engine
  *                              signals recovery (AGENT_RECOVERED).
+ *
+ * A toast can also carry a headline + Approve/Decline buttons (a "decision toast",
+ * flagged alertOrb): a generic capability any feature may post via useToast. Here
+ * we render the buttons and let the alertOrb-based tint hold the orb red until the
+ * last one is acted on. (The Healer's consent asks no longer use this lane; they
+ * live in the Healer section of Vitals.)
  */
 
 export function Dojo3Notifications() {
   const { toasts, removeToast } = useToast();
   const { subscribe } = useWebSocket();
   const dojoOrb = useDojoOrb();
+
+  // Per-toast in-flight guard for decision-toast buttons (D-B step 4): stops a
+  // double-fire and shows a disabled state while the approve/deny request runs.
+  const [busy, setBusy] = useState<Record<number, boolean>>({});
+  const runAction = useCallback(async (toastId: number, action: ToastAction) => {
+    setBusy(prev => {
+      if (prev[toastId]) return prev;
+      return { ...prev, [toastId]: true };
+    });
+    try {
+      await action.onClick();
+    } finally {
+      setBusy(prev => {
+        const next = { ...prev };
+        delete next[toastId];
+        return next;
+      });
+    }
+  }, []);
 
   // Orb reaction on each NEWLY-arrived toast.
   const seen = useRef<Set<number>>(new Set());
@@ -36,11 +69,14 @@ export function Dojo3Notifications() {
     for (const id of [...seen.current]) if (!present.has(id)) seen.current.delete(id);
   }, [toasts, dojoOrb]);
 
-  // Held red alert tint while any blocking (error) toast is active.
-  const hasError = toasts.some((t) => t.level === 'error');
+  // Held red alert tint while any blocking (error) toast OR any pending
+  // decision toast (alertOrb) is active. `.some` naturally handles stacking: the
+  // tint stays until none remain, and clears the instant the last one is acted
+  // on or dismissed.
+  const needsAlert = toasts.some((t) => t.level === 'error' || t.alertOrb);
   useEffect(() => {
-    dojoOrb.setAlert(hasError ? 1 : 0);
-  }, [hasError, dojoOrb]);
+    dojoOrb.setAlert(needsAlert ? 1 : 0);
+  }, [needsAlert, dojoOrb]);
 
   // The orb shows the notification icon INSIDE the glass (like the task glyphs):
   // exclamation for warnings/errors, a check for info/success, reflecting the
@@ -78,10 +114,38 @@ export function Dojo3Notifications() {
     <div className="dojo3-notes" role="region" aria-label="Notifications">
       {toasts.map((t) => {
         const tier = t.level === 'success' ? 'info' : t.level;
+        const hasActions = !!t.actions && t.actions.length > 0;
         return (
-          <div key={t.id} className={`dojo3-note dojo3-note--${tier}`} role={t.level === 'error' ? 'alert' : 'status'}>
-            <span className="dojo3-note__dot" aria-hidden="true" />
-            <span className="dojo3-note__msg">{t.message}</span>
+          <div
+            key={t.id}
+            className={`dojo3-note dojo3-note--${tier}`}
+            role={t.level === 'error' ? 'alert' : 'status'}
+            // A decision toast is a multi-line card (headline + body + buttons),
+            // so top-align the dot/x against the content column. The base
+            // .dojo3-note rule wins over a Tailwind items-start on specificity,
+            // so this one dynamic override goes inline.
+            style={hasActions ? { alignItems: 'flex-start' } : undefined}
+          >
+            <span className="dojo3-note__dot" aria-hidden="true" style={hasActions ? { marginTop: '6px' } : undefined} />
+            <div className="dojo3-note__msg">
+              {t.title && <div className="font-semibold mb-0.5">{t.title}</div>}
+              <span>{t.message}</span>
+              {hasActions && (
+                <div className="flex gap-2 mt-2">
+                  {t.actions!.map((a, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => void runAction(t.id, a)}
+                      disabled={!!busy[t.id]}
+                      className={ACTION_BTN_CLASS[a.variant]}
+                    >
+                      {a.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <button
               type="button"
               className="dojo3-note__x"

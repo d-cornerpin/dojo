@@ -13,11 +13,12 @@ import {
   resolveProjectId,
   formatResolveError,
   closeProjectAndOpenTasks,
+  clearPokeLog,
 } from './schema.js';
 import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
 import { injectTaskAssignmentNotification } from './notify.js';
 import { writeTaskLog } from './task-log.js';
-import { calculateNextRun, normalizeDbTimestamp, type ScheduledTask } from '../scheduler/engine.js';
+import { calculateNextRun, normalizeDbTimestamp, parseDaysOfWeek, type ScheduledTask } from '../scheduler/engine.js';
 import { onTaskRunComplete } from '../scheduler/runner.js';
 import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../gateway/ws.js';
@@ -71,61 +72,134 @@ function notifyPrimaryAgent(message: string, callingAgentId: string, forceNotify
   } catch { /* best-effort */ }
 }
 
-function checkProjectCompletion(projectId: string | null, callingAgentId: string): void {
-  if (!projectId) return;
+// D-K (owner decision): a project auto-completes AS SUCCESS only when every
+// task is 'complete'. When it runs out of open tasks but at least one task
+// FELL, we do NOT close it as a success. We leave it OPEN (status stays
+// 'active', so it stays in the working view) and stamp this marker into its
+// description so the owner sees it needs attention. The marker doubles as the
+// idempotence guard: it lets the failure notice fire exactly once, when the
+// project first ENTERS the all-terminal-with-fallen state, mirroring the
+// flip-once discipline the success path gets from its status check.
+const NEEDS_ATTENTION_MARKER = '[needs-attention]';
+
+// checkProjectCompletion is the SINGLE authority for the success-vs-fail-open
+// call. Every completion path funnels through it, callers that want to react
+// to the outcome (e.g. the tool result text) read this return value.
+// Exported for the paths OUTSIDE this module that can put a task into a
+// terminal state (PM stale-task sweeper, scheduler failed-final-run); those
+// import it dynamically because this module statically imports pm-agent.
+export type ProjectCompletionOutcome =
+  | 'completed'        // every task complete: umbrella auto-closed as success
+  | 'needs_attention'  // no open tasks left but >=1 fell: left open + labelled
+  | 'still_open'       // at least one task is still genuinely open
+  | 'noop';            // no project, already handled, or an error
+
+export function checkProjectCompletion(projectId: string | null, callingAgentId: string): ProjectCompletionOutcome {
+  if (!projectId) return 'noop';
   try {
     const db = getDb();
-    const remaining = db.prepare(`
+
+    // Any task still genuinely open (not in a terminal state)? If so the
+    // project keeps running, there's nothing to decide yet.
+    const open = db.prepare(`
       SELECT COUNT(*) as count FROM tasks
       WHERE project_id = ? AND status NOT IN ('complete', 'fallen')
     `).get(projectId) as { count: number };
+    if (open.count > 0) return 'still_open';
 
-    if (remaining.count === 0) {
-      const project = db.prepare('SELECT title, status FROM projects WHERE id = ?').get(projectId) as { title: string; status: string } | undefined;
-      if (project && project.status !== 'complete') {
-        // Mark project as complete
-        db.prepare("UPDATE projects SET status = 'complete', updated_at = datetime('now') WHERE id = ?").run(projectId);
+    const project = db.prepare('SELECT title, description, status FROM projects WHERE id = ?')
+      .get(projectId) as { title: string; description: string | null; status: string } | undefined;
+    if (!project) return 'noop';
+    if (project.status === 'complete') return 'noop';
 
-        // Count the tasks for the brief completion line. comms-audit rank 5: the old
-        // code enumerated EVERY task ("- title: status, last-notes-line") into the notice
-        //, a firehose duplicating the kanban board. The board already shows the per-task
-        // detail; the notice only needs the count.
-        const tasks = db.prepare(`
-          SELECT COUNT(*) AS count FROM tasks WHERE project_id = ?
-        `).get(projectId) as { count: number };
+    // No open tasks remain. Distinguish a genuine success (EVERY task
+    // complete) from a project that ran out of work with at least one task
+    // fallen. Only the former auto-closes.
+    const fallen = db.prepare(`
+      SELECT title FROM tasks
+      WHERE project_id = ? AND status = 'fallen'
+      ORDER BY step_number ASC, created_at ASC
+    `).all(projectId) as Array<{ title: string }>;
 
-        // v2.7.2, fixes the duplicate-final-answer failure shape:
-        //
-        //   1. forceNotify dropped from true → the default false. When the
-        //      PRIMARY agent itself completes the final task, they don't
-        //      need a separate "project complete!" message, they just made
-        //      the action that completed it and their own response wraps
-        //      up the work. The notification was firing mid-turn, getting
-        //      pulled into their next context iteration, and prompting a
-        //      duplicate tracker_update_status + redundant "Done" wrap-up.
-        //
-        //      Sub-agent completing the last task still notifies primary,
-        //      because callingAgentId != primaryId and the function's
-        //      built-in isPrimaryAgent check lets it through.
-        //
-        //   2. Text rewritten to be a pure status record, not an
-        //      instruction. The old text said "Please review the results
-        //      and let the owner know" which the model interpreted as a fresh
-        //      assignment and kept working. The new text contains no
-        //      verbs aimed at the reader, it's just the completion fact.
-        const completionLine = `[tracker:project_complete] "${project.title}", ${tasks.count} task${tasks.count === 1 ? '' : 's'} closed.`;
-        notifyPrimaryAgent(completionLine, callingAgentId);
+    if (fallen.length === 0) {
+      // ── Genuine success: auto-close the umbrella (the reason auto-complete
+      //    exists). completed_at is stamped here so every path that closes a
+      //    project through this helper records the close time consistently.
+      db.prepare("UPDATE projects SET status = 'complete', completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(projectId);
 
-        logger.info('Project completed', { projectId, title: project.title, taskCount: tasks.count });
+      // Count the tasks for the brief completion line. comms-audit rank 5: the old
+      // code enumerated EVERY task ("- title: status, last-notes-line") into the notice
+      //, a firehose duplicating the kanban board. The board already shows the per-task
+      // detail; the notice only needs the count.
+      const tasks = db.prepare(`
+        SELECT COUNT(*) AS count FROM tasks WHERE project_id = ?
+      `).get(projectId) as { count: number };
 
-        broadcast({
-          type: 'tracker:project_updated',
-          data: { id: projectId, title: project.title, status: 'complete' },
-        } as never);
+      // v2.7.2, fixes the duplicate-final-answer failure shape:
+      //
+      //   1. forceNotify dropped from true → the default false. When the
+      //      PRIMARY agent itself completes the final task, they don't
+      //      need a separate "project complete!" message, they just made
+      //      the action that completed it and their own response wraps
+      //      up the work. The notification was firing mid-turn, getting
+      //      pulled into their next context iteration, and prompting a
+      //      duplicate tracker_update_status + redundant "Done" wrap-up.
+      //
+      //      Sub-agent completing the last task still notifies primary,
+      //      because callingAgentId != primaryId and the function's
+      //      built-in isPrimaryAgent check lets it through.
+      //
+      //   2. Text rewritten to be a pure status record, not an
+      //      instruction. The old text said "Please review the results
+      //      and let the owner know" which the model interpreted as a fresh
+      //      assignment and kept working. The new text contains no
+      //      verbs aimed at the reader, it's just the completion fact.
+      const completionLine = `[tracker:project_complete] "${project.title}", ${tasks.count} task${tasks.count === 1 ? '' : 's'} closed.`;
+      notifyPrimaryAgent(completionLine, callingAgentId);
+
+      logger.info('Project completed', { projectId, title: project.title, taskCount: tasks.count });
+
+      // Re-select the FULL project row so the board doesn't blank other fields
+      // (a 3-field partial under `data:` would wipe the rest of the card on a
+      // still-active project; harmless here since it leaves the active list, but
+      // we match the canonical full-row idiom to keep the wire contract honest).
+      const completedProject = getProject(projectId);
+      if (completedProject) {
+        broadcast({ type: 'tracker:project_updated', data: completedProject });
       }
+      return 'completed';
     }
+
+    // ── D-K fail-open: no open tasks left but >=1 fell. Leave the project
+    //    OPEN and labelled instead of announcing success. Idempotence: the
+    //    description marker is the "already fired" guard, so the failure
+    //    notice is sent once, when the project first ENTERS this state.
+    if ((project.description ?? '').includes(NEEDS_ATTENTION_MARKER)) return 'noop';
+
+    const fallenTitles = fallen.map(t => `"${t.title}"`).join(', ');
+    const markerLine = `${NEEDS_ATTENTION_MARKER} ${fallen.length} task${fallen.length === 1 ? '' : 's'} fell (${fallenTitles}); project left open for attention.`;
+    const newDescription = project.description ? `${project.description}\n\n${markerLine}` : markerLine;
+    // updateProject persists the label AND broadcasts the full project row so
+    // the dashboard repaints. Status stays 'active', so the project stays in
+    // the working view (the owner's "still open" signal) instead of dropping
+    // into completed history. The primary notice names WHICH tasks fell in
+    // plain language, as a pure status record (no verbs aimed at the reader,
+    // same v2.7.2 discipline as the success line above).
+    updateProject(projectId, { description: newDescription });
+
+    // The "[tracker:project_needs_attention]" prefix is load-bearing: it makes
+    // this fail-open notice render in the owner's DEFAULT (non-wordy) chat, not
+    // just wordy mode (dashboard OWNER_ALERT_SYSTEM_PREFIXES; the dashboard
+    // strips this tag + notifyPrimaryAgent's [SOURCE: ...] envelope for display).
+    // Keep the prefix if you reword the message.
+    const failureLine = `[tracker:project_needs_attention] "${project.title}" is NOT complete: ${fallen.length} task${fallen.length === 1 ? '' : 's'} fell (${fallenTitles}). The project is left open and flagged for attention.`;
+    notifyPrimaryAgent(failureLine, callingAgentId);
+
+    logger.info('Project left open with fallen tasks', { projectId, title: project.title, fallenCount: fallen.length });
+    return 'needs_attention';
   } catch (err) {
     logger.error('checkProjectCompletion failed', { projectId, error: err instanceof Error ? err.message : String(err) });
+    return 'noop';
   }
 }
 
@@ -476,6 +550,23 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
           `UTC timestamp, e.g. ${field}="2026-07-03T16:38:00Z".`
         );
       }
+    }
+
+    // FA-S4: a specific_days schedule needs at least one weekday. An empty or
+    // invalid repeat_days_of_week allowlist silently degrades the recurrence
+    // into a single fire then complete (calculateNextRun's specific_days walk
+    // makes no progress with no allowed day, so next_run_at resolves once and
+    // then never again). Reject at the boundary, before the row is created,
+    // same fail-loud contract the parseability check above enforces. Only
+    // matters when a schedule is actually being written (scheduled_start set).
+    if (args.scheduled_start && args.repeat_unit === 'specific_days'
+        && !parseDaysOfWeek((args.repeat_days_of_week as string | undefined) ?? null)) {
+      return (
+        'Error: repeat_unit="specific_days" needs at least one weekday in repeat_days_of_week ' +
+        '(comma-separated 0=Sun..6=Sat, e.g. "1,3" for Mon+Wed). With no valid days the task would ' +
+        'fire once and then never repeat. Either pass repeat_days_of_week with the days you want, or ' +
+        'use repeat_unit="weeks" with repeat_interval=1 for a plain weekly cadence.'
+      );
     }
 
     // Near-duplicate guard (2026-06-02 bug fix). Without this, a hoarding-
@@ -1253,6 +1344,13 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       checkProjectCompletion(task.projectId, agentId);
     }
 
+    // D-K: a 'fallen' transition can be the one that empties the project of open
+    // tasks (fall-last ordering), so the fail-open check must run here too, not
+    // only on completions. Idempotent: still_open/noop guards make extra calls harmless.
+    if (status === 'fallen') {
+      checkProjectCompletion(task.projectId, agentId);
+    }
+
     const parts = [
       `[OK] task_id=${task.id} | status=${task.status}`,
       ``,
@@ -1497,6 +1595,31 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       }
       if ((effHasInterval || effHasUnit) && !effScheduledStart) {
         return 'Error: this edit would leave the task with recurring fields set but no scheduled_start. The scheduler has no anchor for the first run. Either set scheduled_start to an ISO 8601 timestamp, or clear repeat_interval and repeat_unit to turn off recurrence.';
+      }
+    }
+
+    // FA-S4: reject an effective specific_days schedule with an empty
+    // day-of-week allowlist. specific_days + no valid days silently degrades
+    // to a single fire then complete (calculateNextRun's specific_days walk
+    // can't advance without an allowed day). This runs whenever the edit could
+    // change the effective unit OR the day list, including the days-only edit
+    // (repeat_days_of_week -> [] / null) the schedule-integrity gate above does
+    // not cover because it only triggers on scheduled_start/interval/unit
+    // changes. Mirrors the fail-loud creator check in trackerCreateTask.
+    if (repeatUnit !== undefined || repeatDaysOfWeek !== undefined) {
+      const cur = getDb().prepare(
+        'SELECT repeat_unit, repeat_days_of_week FROM tasks WHERE id = ?',
+      ).get(taskId) as { repeat_unit: string | null; repeat_days_of_week: string | null } | undefined;
+      const effUnit = repeatUnit === undefined ? (cur?.repeat_unit ?? null) : (repeatUnit ?? null);
+      const effDays = repeatDaysOfWeek === undefined ? (cur?.repeat_days_of_week ?? null) : (repeatDaysOfWeek ?? null);
+      if (effUnit === 'specific_days' && !parseDaysOfWeek(effDays)) {
+        return (
+          'Error: repeat_unit="specific_days" needs at least one weekday in repeat_days_of_week ' +
+          '(comma-separated 0=Sun..6=Sat, e.g. "1,3" for Mon+Wed). This edit would leave it with no ' +
+          'valid days, so the task would fire once and then never repeat. Either pass repeat_days_of_week ' +
+          'with the days you want, or switch repeat_unit (e.g. "weeks" with repeat_interval=1 for a plain ' +
+          'weekly cadence).'
+        );
       }
     }
 
@@ -1919,22 +2042,28 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
       if (nextStep) {
         updateTask(nextStep.id, { status: 'in_progress' });
         nextTaskInfo = `\nNext step started: "${nextStep.title}" (${nextStep.id}), step ${nextStep.step_number}, now in_progress.`;
-      } else {
-        // Check if all tasks in this project are now complete
+      }
+    }
+
+    // Project-level completion is decided in ONE place: checkProjectCompletion.
+    // It is the sole authority for the success-vs-fail-open call (D-K), so the
+    // inline "mark complete" shortcut that used to live here is gone, it would
+    // have flipped a project with fallen tasks straight to complete behind this
+    // helper's back. Run it AFTER the next-step advance so an in_progress
+    // successor keeps the project open, then turn the outcome into the tool's
+    // status line (only when this completion did not itself start a next step).
+    const projectOutcome = checkProjectCompletion(task.projectId, agentId);
+    if (!nextTaskInfo && task.projectId) {
+      if (projectOutcome === 'completed') {
+        nextTaskInfo = '\nAll steps complete, project marked as complete!';
+      } else if (projectOutcome === 'needs_attention') {
+        nextTaskInfo = '\nAll remaining steps are closed, but at least one task fell. The project is left open and flagged for attention.';
+      } else if (projectOutcome === 'still_open') {
         const remaining = db.prepare(`
           SELECT COUNT(*) as count FROM tasks
           WHERE project_id = ? AND status NOT IN ('complete', 'fallen')
         `).get(task.projectId) as { count: number };
-
-        if (remaining.count === 0) {
-          db.prepare(`
-            UPDATE projects SET status = 'complete', completed_at = datetime('now'), updated_at = datetime('now')
-            WHERE id = ?
-          `).run(task.projectId);
-          nextTaskInfo = '\nAll steps complete, project marked as complete!';
-        } else {
-          nextTaskInfo = `\nNo next sequential step found. ${remaining.count} task(s) remaining in project.`;
-        }
+        nextTaskInfo = `\nNo next sequential step found. ${remaining.count} task(s) remaining in project.`;
       }
     }
 
@@ -1943,8 +2072,6 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
       `Step completed: "${task.title}"${nextTaskInfo}`,
       agentId,
     );
-    // Check project-level completion
-    checkProjectCompletion(task.projectId, agentId);
 
     logger.info('Step completed', { taskId, nextTaskInfo: nextTaskInfo.trim() }, agentId);
     return `[OK] task_id=${taskId} | status=complete\n\nStep completed: "${task.title}".${nextTaskInfo}`;
@@ -2252,6 +2379,13 @@ export async function trackerRetask(
         updated_at = datetime('now')
     WHERE id = ?
   `).run(taskId);
+
+  // Retask is a remediation: the PM is sending the agent back to redo the
+  // work, which starts a fresh escalation cycle. Clear the poke_log so the
+  // deterministic ladder re-arms from nudge(1) if this task stalls again.
+  // Clearing at a remediation event (never mid-cycle) keeps the cross-restart
+  // poke dedup intact.
+  clearPokeLog(taskId);
 
   const fresh = getTask(taskId);
   if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
@@ -3204,6 +3338,14 @@ export async function trackerOverride(
       reason,
     });
 
+    // D-K: an approved override to 'fallen' can be the transition that empties
+    // the project of open tasks; run the fail-open check (idempotent).
+    if (req.requested_status === 'fallen') {
+      try {
+        checkProjectCompletion(freshOverride?.projectId ?? null, pmAgentId);
+      } catch { /* best-effort */ }
+    }
+
     logger.info('Override approved by PM', { taskId: req.task_id, pmAgentId, requestId: req.id }, pmAgentId);
     return `[OK] override approved. Task ${req.task_id.slice(0, 8)} forced to "${req.requested_status}". Reason: ${reason}.`;
   }
@@ -3393,6 +3535,14 @@ export async function trackerApplyUserVerdict(
       const { checkDependencies } = await import('./pm-agent.js');
       checkDependencies(taskId);
     } catch { /* best-effort */ }
+    try {
+      checkProjectCompletion(task.project_id, agentId);
+    } catch { /* best-effort */ }
+  }
+
+  // D-K: a user verdict of 'fallen' can likewise be the transition that
+  // empties the project of open tasks; run the fail-open check (idempotent).
+  if (status === 'fallen') {
     try {
       checkProjectCompletion(task.project_id, agentId);
     } catch { /* best-effort */ }

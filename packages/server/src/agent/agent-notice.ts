@@ -28,9 +28,9 @@
 // ════════════════════════════════════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
-import { getDb } from '../db/connection.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
+import { insertInterAgentEngineRow } from '../memory/interagent.js';
 
 const logger = createLogger('agent-notice');
 
@@ -68,24 +68,48 @@ export function postAgentNotice(opts: AgentNoticeOpts): string | null {
   const content = `[SOURCE: AGENT NOTICE from ${fromName}] ${intro}${trimmed}`;
   const id = uuidv4();
   try {
-    const db = getDb();
+    // D-A step 4: an engine notice is inter-agent traffic (origin_kind='engine'),
+    // so it now lands in the physical inter-agent store, not the primary's `messages`
+    // chat table where a forgetful downstream filter could leak it into human chat.
+    // The merged tail loaders + assembler classify it into the EVENTS/awareness lane
+    // byte-identically to the old `messages` row.
     // conv_key sentinel 'engine-notice' (C6): a notice is role='user' origin_kind='engine',
     // which is exactly the shape getPendingEngineEvent selects (conv_key-NULL engine rows) —
     // without a non-NULL conv_key every awareness notice would be mistaken for a pending
     // engine EVENT and drive a spurious engine turn. The sentinel keeps it out of the
     // pending-event and human-waiting pools while it still surfaces in the EVENTS/awareness
     // lane (which filters on origin_kind, not conv_key) and is excluded from compaction.
-    db.prepare(
-      `INSERT OR IGNORE INTO messages (id, agent_id, role, content, conv_key, origin_kind, origin_intent, created_at)
-       VALUES (?, ?, 'user', ?, 'engine-notice', 'engine', ?, datetime('now'))`,
-    ).run(id, toAgentId, content, opts.intent ?? 'agent_notice');
+    insertInterAgentEngineRow({
+      id,
+      agentId: toAgentId,
+      content,
+      sourceAgentId: null,             // a subsystem/service name, not a peer agent id
+      originIntent: opts.intent ?? 'agent_notice',
+      convKey: 'engine-notice',
+    });
+    // D-A step 5: an engine notice is inter-agent traffic (origin_kind='engine'),
+    // so it broadcasts on the dedicated `interagent:message` lane, NOT chat:message.
+    // Before D-A it rode chat:message and the dashboard hid it in regular mode /
+    // surfaced it only in wordy-mode chat (as an EVENTS/awareness item); it now
+    // lives in the Inter-Agent lane instead. Regular-mode chat is unaffected (it
+    // never showed there). recipientName is left null; the lane is scoped to the
+    // viewed agent and fills it from the name it already knows.
     broadcast({
-      type: 'chat:message',
+      type: 'interagent:message',
       agentId: toAgentId,
       message: {
-        id, agentId: toAgentId, role: 'user' as const, content,
-        tokenCount: null, modelId: null, cost: null, latencyMs: null,
+        id,
+        agentId: toAgentId,
+        role: 'user',
+        content,
         createdAt: new Date().toISOString(),
+        sourceAgentId: null,
+        senderName: fromName,
+        recipientName: null,
+        threadId: null,
+        intent: opts.intent ?? 'agent_notice',
+        requiresResponse: false,
+        originKind: 'engine',
       },
     });
     return id;

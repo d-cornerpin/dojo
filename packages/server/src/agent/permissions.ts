@@ -1,8 +1,10 @@
 import os from 'node:os';
 import path from 'node:path';
+import fs from 'node:fs';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { isPrimaryAgent } from '../config/platform.js';
+import { isPrimaryAgent, isTrainerAgent } from '../config/platform.js';
+import { PROTECTED_IDENTITY_PATHS } from './sensei-policy.js';
 import type { PermissionManifest } from '@dojo/shared';
 
 const logger = createLogger('permissions');
@@ -121,6 +123,85 @@ function expandTilde(pattern: string): string {
 // collapsed, so the allowlist and every global-deny match the ACTUAL target.
 function canonicalizePath(filePath: string): string {
   return path.resolve(expandTilde(filePath));
+}
+
+// N3: canonicalizePath (path.resolve) is LEXICAL, it does not follow symlinks. The
+// Trainer now holds exec + file_write '*', so it could plant a symlink under an
+// allowed dir that points INTO a protected file and defeat the lexical prefix
+// match. Resolve the DEEPEST EXISTING ancestor's real path (fs.realpathSync
+// follows symlinks; fs.existsSync also follows them, so the walk stops at the
+// nearest node that truly resolves), then re-append the non-existent tail. A
+// symlinked file resolves in full; a symlinked directory in the middle resolves
+// and the remaining tail rides on the real target. Never throws: realpath errors
+// return { resolved:false } so callers pick their own posture (fail-closed for the
+// identity tier, best-effort-additive for the globals). Cheap enough for the
+// file-write path (a few stat syscalls, no I/O on the common lexical-hit fast path).
+function realResolveDeepest(lexicalAbs: string, depth = 0): { path: string; resolved: boolean } {
+  // Link-loop guard: a chain of broken links re-enters this function per hop.
+  if (depth > 8) return { path: lexicalAbs, resolved: false };
+  let existing = lexicalAbs;
+  const tail: string[] = [];
+  while (!fs.existsSync(existing)) {
+    // existsSync FOLLOWS symlinks, so a BROKEN link (target does not exist yet)
+    // reads as non-existent and the walk would otherwise step past it, resolving
+    // the link's own path instead of its target. A write through that link CREATES
+    // the target, so a planted broken link pointing at a not-yet-existing file
+    // under a protected dir would slip the prefix match, and the link itself can
+    // live anywhere writable, so failing closed on the link's own path is not
+    // enough. lstat (no follow) detects the link; follow its TARGET (relative
+    // targets resolve against the link's dir) and continue resolving from there
+    // with the remaining tail. readlink errors report unresolvable.
+    try {
+      if (fs.lstatSync(existing, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        const target = path.resolve(path.dirname(existing), fs.readlinkSync(existing));
+        return realResolveDeepest(path.join(target, ...tail), depth + 1);
+      }
+    } catch {
+      return { path: lexicalAbs, resolved: false };
+    }
+    const parent = path.dirname(existing);
+    if (parent === existing) return { path: lexicalAbs, resolved: true }; // nothing exists to resolve
+    tail.unshift(path.basename(existing));
+    existing = parent;
+  }
+  try {
+    const real = fs.realpathSync(existing);
+    return { path: tail.length > 0 ? path.join(real, ...tail) : real, resolved: true };
+  } catch {
+    return { path: lexicalAbs, resolved: false };
+  }
+}
+
+// Hardened canonicalizer for callers OUTSIDE this module (the Healer scratch-zone
+// auto-approve gate): expandTilde + collapse '..' (canonicalizePath) THEN resolve
+// symlinks / broken links (realResolveDeepest), the exact pipeline
+// isProtectedIdentityPath uses. { resolved:false } means resolution failed and the
+// caller MUST fail closed (treat the target as out-of-zone / protected).
+export function resolveRealPathHardened(filePath: string): { path: string; resolved: boolean } {
+  return realResolveDeepest(canonicalizePath(filePath));
+}
+
+// The protected-identity tier lives entirely under ~/.dojo; a candidate under that
+// root whose symlinks cannot be resolved is treated as protected (fail-closed).
+function isUnderProtectedRoot(lexicalAbs: string): boolean {
+  const root = canonicalizePath('~/.dojo');
+  return lexicalAbs === root || lexicalAbs.startsWith(root + path.sep);
+}
+
+// FU-4 + N3: is this write target one of the owner's identity/config files
+// (PROTECTED_IDENTITY_PATHS)? Canonicalize FIRST (collapse '..') so a traversal
+// such as '~/.dojo/techniques/../prompts/USER.md' resolves before the prefix
+// match, then re-check through symlinks so a planted link into a protected path is
+// caught (see realResolveDeepest). FAIL-CLOSED: if symlink resolution errors for a
+// candidate under the protected root, treat it as protected. Consumed two ways: a
+// hard write-deny for the Trainer (below) and a destructive-classify signal for the
+// Healer (destructive-gate.ts).
+export function isProtectedIdentityPath(filePath: string): boolean {
+  const lexical = canonicalizePath(filePath);
+  if (PROTECTED_IDENTITY_PATHS.some(pattern => matchGlob(pattern, lexical))) return true;
+  const { path: real, resolved } = realResolveDeepest(lexical);
+  if (!resolved) return isUnderProtectedRoot(lexical);
+  return PROTECTED_IDENTITY_PATHS.some(pattern => matchGlob(pattern, real));
 }
 
 /**
@@ -246,8 +327,16 @@ export function getAgentPermissions(agentId: string): PermissionManifest {
 
 function checkGlobalDenyFileWrite(filePath: string): PermissionResult {
   const expanded = canonicalizePath(filePath);
+  // N3: also test the symlink-resolved target so a link planted under a writable
+  // dir cannot smuggle a write into a globally-denied file (secrets.yaml, the DBs,
+  // SOUL.md). Additive + best-effort: on a realpath error realResolveDeepest hands
+  // back the lexical path, so this never over-denies a benign write (it only ever
+  // ADDS a second target to match against). The FAIL-CLOSED posture belongs to the
+  // owner-identity tier (isProtectedIdentityPath); the SOUL/secrets globals stay
+  // best-effort because a hard fail-closed here would ride on every agent's write.
+  const real = realResolveDeepest(expanded).path;
   for (const pattern of GLOBAL_FILE_WRITE_DENY) {
-    if (matchGlob(pattern, expanded)) {
+    if (matchGlob(pattern, expanded) || matchGlob(pattern, real)) {
       return { allowed: false, reason: `Global deny: writing to ${filePath} is prohibited` };
     }
   }
@@ -445,10 +534,19 @@ function hasSquadWorkspaceAccess(agentId: string, filePath: string): boolean {
 
   if (!technique) return false;
 
-  // Check if the file path is within the technique's directory
-  const expandedPath = expandTilde(filePath);
-  const expandedDir = expandTilde(technique.directory_path);
-  return expandedPath.startsWith(expandedDir);
+  // FA-P5: canonicalize BOTH sides exactly as the main file check does
+  // (canonicalizePath = path.resolve(expandTilde), which collapses '..' and
+  // resolves a relative path to absolute). The old expandTilde + startsWith left a
+  // squad member using a relative or '..'-form path inside its OWN technique dir
+  // wrongly denied, because the un-normalized string did not match the (also
+  // un-normalized) dir even though the main file check had already normalized the
+  // same path. NOTE: path.resolve is LEXICAL, it does not follow symlinks, which
+  // matches canonicalizePath's own semantics, so this stays consistent with the
+  // main check rather than introducing a new resolution mode. Compare on a
+  // path-segment boundary so /a/b matches /a/b/file but not a sibling /a/bc.
+  const canonicalPath = canonicalizePath(filePath);
+  const canonicalDir = canonicalizePath(technique.directory_path);
+  return canonicalPath === canonicalDir || canonicalPath.startsWith(canonicalDir + path.sep);
 }
 
 // ── Main Entry Point ──
@@ -466,7 +564,11 @@ export function checkPermission(agentId: string, action: PermissionAction): Perm
         result = checkFileAccess(manifest, action.path, 'file_read');
         // Fall back to squad workspace access if normal permissions denied
         if (!result.allowed && hasSquadWorkspaceAccess(agentId, action.path)) {
-          result = { allowed: true };
+          // FA-P5: global deny still applies before any allow. Mirror the
+          // file_write squad branch so a globally-denied read (healer logs,
+          // secrets.yaml) can never be re-opened by squad workspace access.
+          const globalCheck = checkGlobalDenyFileRead(action.path);
+          result = globalCheck.allowed ? { allowed: true } : globalCheck;
         }
       }
       break;
@@ -474,6 +576,15 @@ export function checkPermission(agentId: string, action: PermissionAction): Perm
     case 'file_write':
       if (!action.path) {
         result = { allowed: false, reason: 'No path specified for file_write' };
+      } else if (isTrainerAgent(agentId) && isProtectedIdentityPath(action.path)) {
+        // FU-4: the technique trainer holds broad file_write ('*') for technique
+        // work, but the owner's identity/profile (USER.md) and platform config
+        // stay protected. The manifest schema has no per-agent write deny-list,
+        // so this hard-deny lives here, AHEAD of the manifest allow AND the squad
+        // fallback below, so neither can re-open it. (file_write/file_patch/
+        // file_append all reach checkPermission as type 'file_write', so this one
+        // check covers all three write tools.)
+        result = { allowed: false, reason: `Global deny: writing to ${action.path} is not permitted (owner identity/config files are protected from the technique trainer)` };
       } else {
         result = checkFileAccess(manifest, action.path, 'file_write');
         // Fall back to squad workspace access if normal permissions denied
@@ -486,6 +597,12 @@ export function checkPermission(agentId: string, action: PermissionAction): Perm
       break;
 
     case 'file_delete':
+      // FA-P4 (option B): the file_delete manifest field and this case are live
+      // and correct, but currently UNREACHED, no agent-callable file_delete tool
+      // calls checkPermission with this type yet (deletion rides the exec/rm path,
+      // which the destructive gate + exec allowlist now handle coherently). The
+      // field and case are kept because FU-4's possible scoped-delete tool will
+      // gate on exactly this. Do not read the field's existence as a live tool.
       if (!action.path) {
         result = { allowed: false, reason: 'No path specified for file_delete' };
       } else {

@@ -14,6 +14,14 @@ import { TIERS, type Tier } from './exemplars.js';
 
 const logger = createLogger('router-head');
 
+// FA-X7(a): saveHead INSERTs a row on EVERY weekly train, promoted or not, and
+// nothing ever pruned them, so challenger (is_active = 0) rows grew without
+// bound. After each save, keep only the most-recent HEAD_HISTORY_KEEP inactive
+// rows; every active/promoted row is kept regardless (the DELETE only ever
+// touches is_active = 0). getActiveHead / getActiveHeadEval only ever read
+// is_active = 1, so a pruned challenger can never be loaded.
+const HEAD_HISTORY_KEEP = 8;
+
 export interface ActiveHead {
   version: string;
   dimensions: number;
@@ -114,6 +122,20 @@ export function saveHead(params: {
       params.evalScore,
       params.activate ? 1 : 0,
     );
+    // FA-X7(a): prune old challenger heads. Delete every inactive row except
+    // the HEAD_HISTORY_KEEP most-recently-trained ones. Active rows are never
+    // eligible (is_active = 0 guard), so the live head and any promoted
+    // history survive.
+    db.prepare(`
+      DELETE FROM router_head
+      WHERE is_active = 0
+        AND id NOT IN (
+          SELECT id FROM router_head
+          WHERE is_active = 0
+          ORDER BY trained_at DESC
+          LIMIT ?
+        )
+    `).run(HEAD_HISTORY_KEEP);
   });
   tx();
   clearHeadCache();

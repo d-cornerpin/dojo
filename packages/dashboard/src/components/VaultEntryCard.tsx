@@ -17,6 +17,28 @@ const TBADGE_BY_TYPE: Record<string, string> = {
   event: 'tbadge--event',
 };
 
+// FU-2: render an entry's source citation compactly for the meta row. Returns
+// null for a missing/malformed citation so the row shows nothing. File paths
+// collapse to the file name; URLs show as-is.
+function formatCitation(citation: string | null): string | null {
+  if (!citation) return null;
+  try {
+    const c = JSON.parse(citation) as { kind?: string; ref?: string; page?: number; section?: string };
+    if (!c || typeof c.ref !== 'string' || c.ref.length === 0) return null;
+    let ref = c.ref;
+    if (c.kind === 'file') {
+      const seg = ref.split(/[\\/]/).filter(Boolean).pop();
+      if (seg) ref = seg;
+    }
+    let s = ref;
+    if (typeof c.page === 'number' && Number.isFinite(c.page)) s += ` p.${c.page}`;
+    if (typeof c.section === 'string' && c.section.trim().length > 0) s += ` (${c.section.trim()})`;
+    return s;
+  } catch {
+    return null;
+  }
+}
+
 interface VaultEntryCardProps {
   entry: VaultEntry;
   // Stagger index for the entrance animation (--ci on .anim).
@@ -54,6 +76,7 @@ export const VaultEntryCard = ({ entry, index = 0, onUpdated, onDeleted }: Vault
 
   const tbadge = TBADGE_BY_TYPE[entry.type] ?? 'tbadge--fact';
   const ago = formatRelative(entry.createdAt);
+  const citation = formatCitation(entry.citation);
   // Pinned and permanent rows get the trailing Perm pill and the matching
   // padding reservation (.vrow--pinned).
   const flagged = entry.isPinned || entry.isPermanent;
@@ -80,6 +103,7 @@ export const VaultEntryCard = ({ entry, index = 0, onUpdated, onDeleted }: Vault
           <span>conf: {(entry.confidence * 100).toFixed(0)}%</span>
           {entry.retrievalCount > 0 && <span>used {entry.retrievalCount}x</span>}
           <span>{entry.source}</span>
+          {citation && <span title={entry.citation ?? undefined}>source: {citation}</span>}
         </div>
 
         {entry.tags.length > 0 && (

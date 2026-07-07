@@ -219,7 +219,9 @@ systemRouter.post('/system/reset-idle-sessions', async (c) => {
 
   for (const agent of idle) {
     try {
-      try { archiveAgentConversation(agent.id); } catch { /* archive is best-effort */ }
+      // force=true (FA-V1): this is a session-boundary reset like reset_session, so
+      // always archive the pre-reset tail even if an earlier unprocessed archive exists.
+      try { archiveAgentConversation(agent.id, true); } catch { /* archive is best-effort */ }
       const now = new Date();
       const boundary = now.toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
       db.prepare(
@@ -310,7 +312,7 @@ systemRouter.post('/system/restart', async (c) => {
     type: 'system:restart',
     initiatedAt: new Date().toISOString(),
     mode: isDev ? 'dev' : 'production',
-  } as never);
+  });
 
   // Defer the exit so this response can flush. 300ms is plenty even on
   // a loaded server.

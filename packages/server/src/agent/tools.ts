@@ -51,18 +51,19 @@ import { googleWriteToolDefinitions, executeGoogleWriteTool } from '../google/to
 import { slidesToolDefinitions, slidesToolNames, executeGoogleSlidesTool } from '../google/tools-slides.js';
 import { pdfToolDefinitions, pdfToolNames, executePdfTool } from './pdf-tools.js';
 import { formsToolDefinitions, formsToolNames, executeGoogleFormsTool } from '../google/tools-forms.js';
-import { getAgentGoogleAccessLevel, getEnabledServices, isGoogleConnected, getGoogleWorkspaceConfig, isAnyGoogleAccountConnected, isGoogleServiceEnabledForKind } from '../google/auth.js';
+import { getAgentGoogleAccessLevel, getEnabledServices, isGoogleConnected, getGoogleWorkspaceConfig, isAnyGoogleAccountConnected, isGoogleServiceEnabledForKind, getGoogleServiceFlagsForKind } from '../google/auth.js';
 import { microsoftReadToolDefinitions, executeMicrosoftReadTool } from '../microsoft/tools-read.js';
 import { plaudReadToolDefinitions, executePlaudTool } from '../plaud/tools-read.js';
 import { isPlaudConnected } from '../plaud/auth.js';
 import { credentialsToolDefinitions, executeCredentialTool } from '../credentials/tools.js';
 import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../microsoft/tools-write.js';
 import { officeCreateToolDefinitions, officeWordEditToolDefinitions, officeEditToolDefinitions, executeOfficeTool } from '../microsoft/tools-office.js';
-import { getAgentMicrosoftAccessLevel, isMicrosoftConnected, getMicrosoftWorkspaceConfig, isAnyMicrosoftAccountConnected, isMsServiceEnabledForKind } from '../microsoft/auth.js';
+import { getAgentMicrosoftAccessLevel, isMicrosoftConnected, getMicrosoftWorkspaceConfig, isAnyMicrosoftAccountConnected, isMsServiceEnabledForKind, getMsServiceFlagsForKind } from '../microsoft/auth.js';
 import { areOfficePackagesInstalled } from '../microsoft/office-packages.js';
 import { getTunnelStatus } from '../services/tunnel.js';
 import { getModelCapabilities } from '../services/capabilities.js';
 import { getEffectiveAudioGenModel } from '../services/audio-gen-model.js';
+import { getToolConfigGeneration } from './tool-config-generation.js';
 import { getModelVoiceCatalog, defaultVoiceCatalogFor, formatVoiceCatalog } from '../services/voice-catalog.js';
 import type { ToolCall, ToolResult } from '@dojo/shared';
 
@@ -342,29 +343,190 @@ export function agentCanSelfCompleteById(agentId: string): boolean {
   return agentCanSelfComplete(agentId, row);
 }
 
+/**
+ * FA-TS2: owner-facing platform, session, and group management controls. Each
+ * acts on the OWNER's behalf or on other agents: install+restart the platform,
+ * rewrite a capability's model, enable/disable a whole channel, change voice or
+ * presence (which reroutes the owner's comms), drive the owner's dashboard, and
+ * inspect/edit or group other agents' identities. getFilteredTools strips these
+ * from every non-primary agent's advertised toolset (below), but that strip is
+ * only advisory: Architecture Rule 1 is "the engine enforces, the model
+ * follows". The floor model parses tool calls from FREE TEXT, so any non-primary
+ * agent (a spawned worker, a role/service agent, an A2A relay, an injection) can
+ * emit one of these names and reach the executor. executeToolInner re-checks
+ * this SAME set before dispatch, turning the surface hint into enforcement. One
+ * constant backs both sites so the strip and the gate can never drift.
+ *
+ * reset_session is deliberately NOT in this set: the Healer (a non-primary
+ * service agent) legitimately calls the reset_session TOOL to clear a wedged
+ * agent's corrupted context. It stays surface-stripped but stays executable, so
+ * it is pushed onto the strip separately below rather than through this set.
+ */
+const PRIMARY_ONLY_TOOLS = new Set<string>([
+  // Platform / update control
+  'apply_update', 'check_for_update',
+  // Capability, channel, voice, and presence configuration
+  'set_capability_model', 'set_channel', 'set_voice', 'set_user_presence',
+  // Dashboard drive
+  'open_settings', 'dashboard_navigate',
+  // Agent identity + group management
+  'update_agent', 'get_agent_profile',
+  'create_agent_group', 'update_group', 'assign_to_group', 'delete_group',
+]);
+
+// ── Tool-eligibility memo (FA-TS1) ──
+// callModel calls getFilteredTools once per tool-loop iteration; a 20-tool-call
+// turn used to rebuild the list ~20 times, each rebuild running ~185 synchronous
+// google_accounts / microsoft_accounts scans that CANNOT change mid-turn. The
+// memo caches the computed list per agent, validated by two cheap keys:
+//   - the module-level tool-config generation (bumped by every GLOBAL write that
+//     changes the surface: account connect/disconnect/service-toggle, plaud,
+//     office packages, audio-gen model), and
+//   - a per-agent fingerprint (a single SELECT of the agent's own
+//     eligibility-relevant columns plus its primary/PM identity).
+// The generation covers global state; the fingerprint covers the agent's own row
+// by construction, so the diffuse set of agents-row write sites needs no manual
+// bump. On a hit the whole call costs ONE fingerprint SELECT (vs ~185 scans);
+// on a miss it recomputes and re-caches. Keyed by agentId with the gen +
+// fingerprint stored in the entry, so the map holds at most one entry per agent.
+interface FilteredToolsCacheEntry {
+  generation: number;
+  fingerprint: string;
+  tools: ToolDefinition[];
+}
+const filteredToolsCache = new Map<string, FilteredToolsCacheEntry>();
+// Bound the map so a long-lived server that spawns many ephemeral agents can't
+// leak one entry per agent id forever. FIFO eviction (Map preserves insertion
+// order); an evicted agent just recomputes on its next call. Comfortably above
+// the count of concurrently-active agents on any real box.
+const FILTERED_TOOLS_CACHE_MAX = 512;
+
+/**
+ * FA-TS1: single SELECT of everything AGENT-SPECIFIC that getFilteredTools
+ * consumes: the permission manifest source (`permissions`, `spawn_depth`,
+ * `created_by`), the tools-policy / group / lifecycle fields, and the agent's
+ * primary/PM identity (which flips the FA-TS2 strip and the Google/MS access
+ * level). Any change to these flips the fingerprint, so the memo self-invalidates
+ * on a per-agent row change without hunting the diffuse agents-table write sites.
+ */
+function computeAgentToolFingerprint(agentId: string): string {
+  const primary = isPrimaryAgent(agentId) ? '1' : '0';
+  const pm = isPMAgent(agentId) ? '1' : '0';
+  const row = getDb()
+    .prepare('SELECT permissions, spawn_depth, created_by, tools_policy, group_id, classification, task_id FROM agents WHERE id = ?')
+    .get(agentId) as {
+      permissions: string | null;
+      spawn_depth: number | null;
+      created_by: string | null;
+      tools_policy: string | null;
+      group_id: string | null;
+      classification: string | null;
+      task_id: string | null;
+    } | undefined;
+  if (!row) return `none ${primary} ${pm}`;
+  return [
+    primary,
+    pm,
+    row.permissions ?? '',
+    row.spawn_depth ?? '',
+    row.created_by ?? '',
+    row.tools_policy ?? '',
+    row.group_id ?? '',
+    row.classification ?? '',
+    row.task_id ?? '',
+  ].join(' ');
+}
+
 export function getFilteredTools(agentId: string): ToolDefinition[] {
+  const generation = getToolConfigGeneration();
+  const fingerprint = computeAgentToolFingerprint(agentId);
+  const cached = filteredToolsCache.get(agentId);
+  if (cached && cached.generation === generation && cached.fingerprint === fingerprint) {
+    return cached.tools;
+  }
+  const tools = computeFilteredTools(agentId);
+  // Callers treat the list as read-only (filter/map/some/find, audited); freeze
+  // the container outside production so a future in-place mutation of the shared
+  // cached array trips loudly instead of silently corrupting every agent's cache.
+  if (process.env.NODE_ENV !== 'production') Object.freeze(tools);
+  filteredToolsCache.delete(agentId); // re-insert at the tail so FIFO stays honest
+  filteredToolsCache.set(agentId, { generation, fingerprint, tools });
+  if (filteredToolsCache.size > FILTERED_TOOLS_CACHE_MAX) {
+    const oldest = filteredToolsCache.keys().next().value;
+    if (oldest !== undefined) filteredToolsCache.delete(oldest);
+  }
+  return tools;
+}
+
+/**
+ * FU-4: the SINGLE parser for a stored tools_policy, used by BOTH the
+ * advertised-surface strip (computeFilteredTools) and the executor-side deny
+ * re-check (getAgentDenySet / executeToolInner), so the two cannot drift.
+ * Alias-maps old/renamed names to canonical (C27 hook 4) so allow/deny still bind
+ * to the new tool after a rename; tombstoned names are left as-is (match nothing).
+ */
+function parseToolsPolicy(rawToolsPolicy: string | null | undefined): { allow: string[]; deny: string[] } {
+  let allow: string[] = [];
+  let deny: string[] = [];
+  if (rawToolsPolicy) {
+    try {
+      const parsed = JSON.parse(rawToolsPolicy);
+      if (Array.isArray(parsed.allow)) allow = parsed.allow;
+      if (Array.isArray(parsed.deny)) deny = parsed.deny;
+    } catch { /* ignore malformed policy */ }
+  }
+  const canon = (n: string): string => {
+    const r = resolveToolAlias(n, {});
+    return r.tombstone ? n : r.name;
+  };
+  return { allow: allow.map(canon), deny: deny.map(canon) };
+}
+
+// ── Executor-side tools_policy.deny memo (FU-4) ──
+// computeFilteredTools strips a denied tool from the ADVERTISED surface, but per
+// Architecture Rule 1 that strip is only advice: the floor model can emit a
+// denied tool name from free text and reach the executor. executeToolInner
+// re-checks this deny set before dispatch (the same surface-strip/executor-
+// recheck pairing PRIMARY_ONLY_TOOLS uses). Kept O(1) per call by mirroring the
+// FA-TS1 filtered-tools memo shape: keyed by agentId, validated by the SAME
+// (generation, fingerprint) keys. The fingerprint already includes tools_policy,
+// so any policy edit self-invalidates without hunting the agents-table write sites.
+interface DenySetCacheEntry {
+  generation: number;
+  fingerprint: string;
+  deny: Set<string>;
+}
+const agentDenySetCache = new Map<string, DenySetCacheEntry>();
+
+function getAgentDenySet(agentId: string): Set<string> {
+  const generation = getToolConfigGeneration();
+  const fingerprint = computeAgentToolFingerprint(agentId);
+  const cached = agentDenySetCache.get(agentId);
+  if (cached && cached.generation === generation && cached.fingerprint === fingerprint) {
+    return cached.deny;
+  }
+  const row = getDb()
+    .prepare('SELECT tools_policy FROM agents WHERE id = ?')
+    .get(agentId) as { tools_policy: string | null } | undefined;
+  const deny = new Set(parseToolsPolicy(row?.tools_policy).deny);
+  agentDenySetCache.delete(agentId); // re-insert at the tail so FIFO stays honest
+  agentDenySetCache.set(agentId, { generation, fingerprint, deny });
+  if (agentDenySetCache.size > FILTERED_TOOLS_CACHE_MAX) {
+    const oldest = agentDenySetCache.keys().next().value;
+    if (oldest !== undefined) agentDenySetCache.delete(oldest);
+  }
+  return deny;
+}
+
+function computeFilteredTools(agentId: string): ToolDefinition[] {
   const manifest = getAgentPermissions(agentId);
 
   // Get tools policy from DB
   const db = getDb();
   const agentRow = db.prepare('SELECT tools_policy, group_id, classification, task_id FROM agents WHERE id = ?').get(agentId) as { tools_policy: string; group_id: string | null; classification: string | null; task_id: string | null } | undefined;
-  let toolsPolicy: { allow: string[]; deny: string[] } = { allow: [], deny: [] };
-  if (agentRow?.tools_policy) {
-    try {
-      const parsed = JSON.parse(agentRow.tools_policy);
-      if (parsed.allow) toolsPolicy.allow = parsed.allow;
-      if (parsed.deny) toolsPolicy.deny = parsed.deny;
-    } catch { /* ignore */ }
-  }
-  // C27 hook 4: a stored tools_policy may reference OLD (renamed) tool names.
-  // Map them to canonical so allow/deny still applies to the new tool (no data
-  // migration needed). Tombstoned names are left as-is (they match nothing).
-  const canonPolicyName = (n: string): string => {
-    const r = resolveToolAlias(n, {});
-    return r.tombstone ? n : r.name;
-  };
-  toolsPolicy.allow = toolsPolicy.allow.map(canonPolicyName);
-  toolsPolicy.deny = toolsPolicy.deny.map(canonPolicyName);
+  // FU-4: one shared parser (also used by the executor deny re-check) so the
+  // surface strip and the executor gate read the SAME canonicalized allow/deny.
+  const toolsPolicy = parseToolsPolicy(agentRow?.tools_policy);
 
   // Base toolkit includes the static `toolDefinitions` plus the PDF
   // creation/manipulation tools, which require no external auth and
@@ -424,8 +586,11 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   // C27: update_agent replaces update_agent_{model,profile}; tunnel replaces the
   // tunnel_* quartet but self-gates mutating actions (start/stop/restart) to the
   // primary inside the handler, so non-primary agents keep tunnel({action:"status"}).
+  // FA-TS2: the set here is PRIMARY_ONLY_TOOLS, the SAME constant executeToolInner
+  // enforces, so the surface strip and the executor gate cannot drift. reset_session
+  // is stripped here too but is intentionally not in that set (the Healer executes it).
   if (!isPrimaryAgent(agentId)) {
-    removeTools.push('create_agent_group', 'update_group', 'assign_to_group', 'delete_group', 'reset_session', 'set_user_presence', 'update_agent', 'get_agent_profile', 'open_settings', 'dashboard_navigate', 'set_capability_model', 'check_for_update', 'apply_update', 'set_voice', 'set_channel');
+    removeTools.push(...PRIMARY_ONLY_TOOLS, 'reset_session');
   }
 
   // Technique tools: only Sensei can save/publish/update, everyone can use/list
@@ -532,6 +697,15 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   const agentKindConnected = isAnyGoogleAccountConnected('agent');
   const userKindConnected = isAnyGoogleAccountConnected('user');
 
+  // FA-TS1 (tier 1): precompute per-(kind, service) enabled flags ONCE, one
+  // google_accounts read per kind, instead of a full SELECT per tool inside
+  // isToolEnabledByService (which ran ~109 times). Same fact door, identical
+  // results; the memo above then reuses this across the whole tool loop.
+  const googleServiceFlags = {
+    agent: getGoogleServiceFlagsForKind('agent'),
+    user: getGoogleServiceFlagsForKind('user'),
+  } as const;
+
   // Service-to-tool-prefix mapping for filtering by enabled service.
   const serviceToolPrefixes: Record<string, string[]> = {
     gmail: ['gmail_'],
@@ -560,7 +734,7 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
     if (!(isUserKind ? userKindConnected : agentKindConnected)) return false;
     for (const [service, prefixes] of Object.entries(serviceToolPrefixes)) {
       if (prefixes.some(p => canonical.startsWith(p))) {
-        return isGoogleServiceEnabledForKind(kind, service as Parameters<typeof isGoogleServiceEnabledForKind>[1]);
+        return googleServiceFlags[kind][service as Parameters<typeof isGoogleServiceEnabledForKind>[1]];
       }
     }
     return true; // tools not matching any service are always enabled when the kind is connected
@@ -605,6 +779,14 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
   const agentSlotMsConnected = isAnyMicrosoftAccountConnected('agent');
   const userSlotMsConnected = isAnyMicrosoftAccountConnected('user');
 
+  // FA-TS1 (tier 1): precompute per-(kind, service) MS flags ONCE (one
+  // microsoft_accounts read per kind) instead of a full SELECT per tool inside
+  // isMsToolEnabledByService (which ran ~76 times). Same fact door.
+  const msServiceFlags = {
+    agent: getMsServiceFlagsForKind('agent'),
+    user: getMsServiceFlagsForKind('user'),
+  } as const;
+
   const msServiceToolPrefixes: Record<string, string[]> = {
     outlook: ['outlook_'],
     calendar: ['calendar_agenda_ms', 'calendar_search_ms', 'calendar_list_ms', 'calendar_create_ms', 'calendar_update_ms', 'calendar_delete_ms', 'calendar_respond_invite_ms', 'calendar_share_invites_ms', 'calendar_accept_share_ms', 'calendar_freebusy_ms'],
@@ -625,7 +807,7 @@ export function getFilteredTools(agentId: string): ToolDefinition[] {
     if (!(isUserKind ? userSlotMsConnected : agentSlotMsConnected)) return false;
     for (const [service, patterns] of Object.entries(msServiceToolPrefixes)) {
       if (patterns.some(p => canonical.startsWith(p) || canonical === p)) {
-        return isMsServiceEnabledForKind(kind, service as Parameters<typeof isMsServiceEnabledForKind>[1]);
+        return msServiceFlags[kind][service as Parameters<typeof isMsServiceEnabledForKind>[1]];
       }
     }
     return true;
@@ -1260,7 +1442,7 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         timeout: {
           type: 'number',
-          description: 'Auto-termination timeout in seconds. The agent will be killed after this many seconds. Default is 900 (15 min). Set this longer than the expected task duration, if the agent has a scheduled task 10 minutes from now that takes 5 minutes, set timeout to at least 1200 (20 min). Set to 0 or omit for the default. For long-running or scheduled tasks, consider using classification="freelance" instead, which has no timeout.',
+          description: 'Auto-termination timeout in seconds. The agent will be killed after this many seconds. Default is 900 (15 min). Set this longer than the expected task duration, if the agent has a scheduled task 10 minutes from now that takes 5 minutes, set timeout to at least 1200 (20 min). Set to 0 or omit for the default. For long-running or scheduled tasks, consider using classification="ronin" instead, which has no timeout.',
         },
         task_id: {
           type: 'string',
@@ -1282,7 +1464,7 @@ export const toolDefinitions: ToolDefinition[] = [
         classification: {
           type: 'string',
           enum: ['apprentice', 'ronin'],
-          description: 'Agent classification. "apprentice" (default): can be terminated by other agents, subject to timeouts. "ronin": persists across restarts, only the owner can terminate from the dashboard.',
+          description: 'How this agent is managed over its life. Choose deliberately:\n  - "apprentice" (default): short, throwaway sub-work that finishes in one push. It dies at its timeout (default 15 min), is cascade-killed when its parent stops, and can be terminated by other agents. This is the right, safe pick for ordinary work.\n  - "ronin": long-running, persistent, or scheduled work. It has NO timeout, survives its parent, and only the owner can dismiss it from the dashboard. Pick this deliberately when the job should outlive the 15-minute reap (a scheduled task, a long build, an agent that waits for future events). Do NOT set a timeout to work around a reap; use ronin instead.\n  - "sensei" is reserved platform staff and is not spawnable here.\nWhen in doubt, leave it as apprentice.',
         },
         share_user_profile: {
           type: 'boolean',
@@ -1933,7 +2115,8 @@ export const toolDefinitions: ToolDefinition[] = [
         confidence: { type: 'number', description: 'Your confidence in this fix (0-100). If your evidence list is thin, your confidence should be too.' },
         severity: { type: 'string', enum: ['critical', 'warning', 'info'], description: 'How urgent is this?' },
         category: { type: 'string', description: 'Category (model_switch, config_change, permission_grant, etc.)' },
-        agent_id: { type: 'string', description: 'Which agent this concerns (if applicable). Required if the proposal targets a specific agent.' },
+        agent_id: { type: 'string', description: 'Which agent this concerns (if applicable). Required if the proposal targets a specific agent. This is how the stale-proposal sweep knows the proposal is still relevant, so always include it when the fix is about one agent.' },
+        diagnostic_code: { type: 'string', description: 'The diagnostic CODE of the anomaly this proposal addresses, exactly as it appears in the diagnostic (e.g. AGENT_PAUSED, TRACKER_STALE, HIGH_ERROR_RATE, BUDGET_HIGH). Supply it when the fix responds to a specific diagnostic finding. It is how a future cycle knows the underlying issue has (or has not) cleared, without it, and without an agent_id, the proposal can only be closed by an age cap. If you leave it blank but set agent_id, the engine will fill it from the current diagnostic when it can.' },
       },
       required: ['title', 'description', 'proposed_fix', 'evidence', 'confidence', 'severity', 'category'],
     },
@@ -2820,7 +3003,7 @@ export const toolDefinitions: ToolDefinition[] = [
 
   {
     name: 'vault_remember',
-    description: 'Save an important piece of knowledge to the dojo\'s long-term memory vault. Saved immediately and visible to all agents.\n\n**NEVER store credentials, API keys, tokens, passwords, secrets, or any other authentication material in the vault.** Those go in `credential_add`, they live in a separate encrypted store that never decays, never appears in vault_search or Dreamer summaries, and is read on-demand at API-call time via `credential_get`. The engine will refuse vault entries that look like credentials.\n\nWHEN THE USER EXPLICITLY ASKS YOU TO REMEMBER SOMETHING, phrases like "remember that…", "I want you to remember…", "always do X", "never do Y", "from now on, …", "make sure you always…", call this tool with `verbatim: true` and `pin: true`. Pass the user\'s instruction word-for-word in `content`. Do NOT paraphrase or compress; the user\'s exact wording is the point.\n\nFor everything else (facts you observed, decisions made, preferences inferred), write a tight summary and let the DOJO handle filler-stripping.\n\nExample (user-explicit): vault_remember({ content: "Always confirm with the user before pushing to main.", type: "preference", verbatim: true, pin: true }).\nExample (observed): vault_remember({ content: "Tunnel: Cloudflare named.", type: "fact" }).',
+    description: 'Save an important piece of knowledge to the dojo\'s long-term memory vault. Saved immediately and visible to all agents.\n\n**NEVER store credentials, API keys, tokens, passwords, secrets, or any other authentication material in the vault.** Those go in `credential_add`, they live in a separate encrypted store that never decays, never appears in vault_search or Dreamer summaries, and is read on-demand at API-call time via `credential_get`. The engine will refuse vault entries that look like credentials.\n\nWHEN THE USER EXPLICITLY ASKS YOU TO REMEMBER SOMETHING, phrases like "remember that…", "I want you to remember…", "always do X", "never do Y", "from now on, …", "make sure you always…", call this tool with `verbatim: true` and `pin: true`. Pass the user\'s instruction word-for-word in `content`. Do NOT paraphrase or compress; the user\'s exact wording is the point.\n\nFor everything else (facts you observed, decisions made, preferences inferred), write a tight summary and let the DOJO handle filler-stripping.\n\nExample (user-explicit): vault_remember({ content: "Always confirm with the user before pushing to main.", type: "preference", verbatim: true, pin: true }).\nExample (observed): vault_remember({ content: "Tunnel: Cloudflare named.", type: "fact" }).\n\nWhen a fact came from a URL, a file, or a document, pass its location in source_ref (and source_page / source_section when you know them) so you can cite it and re-open the original later. Example (with source): vault_remember({ content: "Cardiologist cleared patient for surgery.", type: "fact", source_ref: "doctor-report-2026.pdf", source_page: 3 }).',
     input_schema: {
       type: 'object',
       properties: {
@@ -2830,6 +3013,9 @@ export const toolDefinitions: ToolDefinition[] = [
         pin: { type: 'boolean', description: 'If true, this memory is always included in context regardless of relevance. Set true when the user explicitly tells you to remember something.' },
         permanent: { type: 'boolean', description: 'If true, this fact never decays over time (use for definitionally stable truths like names, relationships, birth dates).' },
         verbatim: { type: 'boolean', description: 'If true, the DOJO preserves your content exactly, no bloat-phrase stripping, no date prefix, no compression. Use when capturing the user\'s explicit memory instruction word-for-word ("remember that…", "always X", "never Y", "from now on…").' },
+        source_ref: { type: 'string', description: 'Optional. Where this fact came from: a URL (https://...) or a file / document path (e.g. "doctor-report-2026.pdf"). Pass it whenever the fact was read from a specific source, so it can be cited and reopened later. Does not count against entry length.' },
+        source_page: { type: 'number', description: 'Optional. Page number within source_ref, when the fact came from a specific page of a document (e.g. 3).' },
+        source_section: { type: 'string', description: 'Optional. Section or heading within source_ref, when known (e.g. "Assessment").' },
       },
       required: ['content', 'type'],
     },
@@ -4182,6 +4368,27 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
 
   logger.info('Executing tool', { tool: name, args }, agentId);
 
+  // ── FU-4: executor-side tools_policy.deny enforcement ──
+  // computeFilteredTools strips a denied tool from the advertised surface, but
+  // that strip is only advisory (Architecture Rule 1: the engine enforces, the
+  // model follows). The floor model parses tool calls from free text, so a
+  // deny-listed agent (e.g. the technique trainer for the comms-to-people set)
+  // can still emit a denied name and reach here. Re-check the SAME deny set (one
+  // parser, parseToolsPolicy, backs both the strip and this gate) ahead of any
+  // outbound-capture instrumentation, so a denied comms send is never even recorded as
+  // captured. `name` is already alias-canonical (executeTool resolves it), and
+  // parseToolsPolicy canonicalizes the deny entries, so both sides match.
+  if (getAgentDenySet(agentId).has(name)) {
+    auditLog(agentId, name, null, 'denied', `${name} is denied by this agent's tools_policy`);
+    logger.warn('Blocked tools_policy-denied tool call', { tool: name }, agentId);
+    return {
+      toolCallId: id,
+      name,
+      content: `[BLOCKED by engine] ${name} is not available to this agent (denied by policy). The request was not performed. If this needs to happen, escalate to the primary agent with send_to_agent.`,
+      isError: true,
+    };
+  }
+
   let content: string = '';
   let isError = false;
 
@@ -4202,9 +4409,19 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         (k) => !k.startsWith('__') && !declared.has(k),
       );
       if (extras.length > 0) {
-        const declaredList = [...declared].join(', ') || '(none)';
-        unknownArgsWarning =
-          `[Engine warning: "${name}" was called with arg(s) not in its schema, ${extras.map((e) => `"${e}"`).join(', ')}. These were silently ignored. Declared args: ${declaredList}. If you meant a different param, check the spelling with load_tool_docs(tools=["${name}"]).]`;
+        // A tool the handler is ABOUT to refuse as not-available must not lead
+        // with schema advice: the warning's "check the spelling with
+        // load_tool_docs" reads to a floor model as "this tool exists for you,
+        // fix the args and retry", which directly contradicts the refusal's
+        // steering (observed: a persistent agent ping-ponged complete_task ->
+        // schema warning -> load_tool_docs -> permission error). The FN-8
+        // availability refusal carries its own redirect; let it speak alone.
+        const refusalWillSpeak = name === 'complete_task' && !agentCanSelfCompleteById(agentId);
+        if (!refusalWillSpeak) {
+          const declaredList = [...declared].join(', ') || '(none)';
+          unknownArgsWarning =
+            `[Engine warning: "${name}" was called with arg(s) not in its schema, ${extras.map((e) => `"${e}"`).join(', ')}. These were silently ignored. Declared args: ${declaredList}. If you meant a different param, check the spelling with load_tool_docs(tools=["${name}"]).]`;
+        }
         logger.warn('Unknown tool args ignored', {
           tool: name, extras, declared: [...declared],
         }, agentId);
@@ -4302,21 +4519,44 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     }
   }
 
-  // Dashboard/platform control tools act on the OWNER's behalf and are removed
-  // from non-primary agents' advertised toolsets. Registry filtering is only
-  // advisory (Architecture Rule 1: the engine enforces, the model follows), so
-  // gate them at execution too: an A2A relay, a synthetic call, or an injection
-  // that emits one of these names must not restart/update the platform or drive
-  // the owner's dashboard. (reset_session is deliberately NOT here: the healer
-  // legitimately resets wedged agents; its guard is a separate open decision.)
-  if (
-    name === 'apply_update' || name === 'set_capability_model' || name === 'set_voice' ||
-    name === 'set_channel' || name === 'open_settings' || name === 'dashboard_navigate'
-  ) {
-    if (!isPrimaryAgent(agentId)) {
-      auditLog(agentId, name, null, 'denied', `${name} is restricted to the primary agent only`);
-      return { toolCallId: id, name, content: `Permission denied: only the primary agent can call ${name}.`, isError: true };
-    }
+  // FA-TS2: owner-facing platform / session / group controls (PRIMARY_ONLY_TOOLS)
+  // are stripped from a non-primary agent's advertised set by getFilteredTools,
+  // but that strip is only advisory (Architecture Rule 1: the engine enforces,
+  // the model follows). The floor model parses tool calls from free text, so a
+  // non-primary agent (a spawned worker, a role/service agent, an A2A relay, or a
+  // prompt injection) can still emit one of these names and reach here. Re-check
+  // the SAME set before the dispatch switch, this is the actual enforcement.
+  // (reset_session is intentionally absent from the set: the Healer legitimately
+  // executes it to clear a wedged agent, so it stays surface-stripped instead.)
+  if (PRIMARY_ONLY_TOOLS.has(name) && !isPrimaryAgent(agentId)) {
+    auditLog(agentId, name, null, 'denied', `${name} is restricted to the primary agent only`);
+    logger.warn('Blocked primary-only tool from non-primary agent', { tool: name }, agentId);
+    return {
+      toolCallId: id,
+      name,
+      content: `Permission denied: ${name} is an owner-facing control reserved for the primary agent. The request was not performed. Escalate to the primary agent if this needs to happen.`,
+      isError: true,
+    };
+  }
+
+  // FA-TS2 (reset_session): reset_session archives+wipes ANY agent's session,
+  // including the primary's, so it must not be reachable by an arbitrary
+  // non-primary agent via text-mode emission either. It is kept OUT of
+  // PRIMARY_ONLY_TOOLS because the Healer (a non-primary service agent)
+  // legitimately calls this TOOL to clear a wedged agent's corrupted context
+  // (HEALER_TOOLS_POLICY allow-list + Healer prompt), so gate it to the primary
+  // OR the Healer. That closes it for every other agent (spawned workers, PM,
+  // Trainer, Dreamer, Imaginer, A2A relays, injections). Engine-side DIRECT
+  // session-reset function calls never pass through here and are unaffected.
+  if (name === 'reset_session' && !isPrimaryAgent(agentId) && !isHealerAgent(agentId)) {
+    auditLog(agentId, name, null, 'denied', 'reset_session is restricted to the primary agent and the Healer');
+    logger.warn('Blocked reset_session from non-primary non-Healer agent', { tool: name }, agentId);
+    return {
+      toolCallId: id,
+      name,
+      content: `Permission denied: reset_session is reserved for the primary agent and the platform Healer. The request was not performed.`,
+      isError: true,
+    };
   }
 
   if (name === 'dreamer_run_now' || name === 'cost_summary') {
@@ -5929,24 +6169,64 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           break;
         }
 
+        // Provenance capture. The stale-proposal sweep matches a pending
+        // proposal back to the diagnostic anomaly that produced it, so it
+        // needs a stable key: the agent it concerns (agent_id) and/or the
+        // diagnostic code. The model supplies these when it can; we also
+        // auto-fill the diagnostic_id and (when the model left it blank)
+        // the diagnostic_code from the current run's snapshot, matching on
+        // the agent. Without any of this, the proposal is only ever closed
+        // by the age-cap backstop, never by issue-matching.
+        const proposalAgentId = (args.agent_id as string) ?? null;
+        let diagnosticCode = typeof args.diagnostic_code === 'string' && args.diagnostic_code.trim().length > 0
+          ? (args.diagnostic_code as string).trim()
+          : null;
+        let diagnosticId: string | null = null;
+        try {
+          const { getFreshDiagnosticSnapshot } = await import('../healer/diagnostic.js');
+          const snapshot = getFreshDiagnosticSnapshot();
+          if (snapshot) {
+            diagnosticId = snapshot.id;
+            if (!diagnosticCode && proposalAgentId) {
+              // Auto-fill the code from the current run: if the agent this
+              // proposal targets has exactly one anomaly code open, adopt
+              // it. If it has several, leave the code blank (the sweep
+              // will fall back to agent-scope matching, which is correct).
+              const codesForAgent = [...new Set(
+                snapshot.items.filter((it) => it.agentId === proposalAgentId).map((it) => it.code),
+              )];
+              if (codesForAgent.length === 1) diagnosticCode = codesForAgent[0];
+            }
+          }
+        } catch {
+          // Snapshot unavailable (e.g. no cycle has run this process).
+          // Fall back to whatever the model supplied; provenance may be
+          // partial, which is fine, the sweep degrades safely.
+        }
+
         const propDb = getDb();
         const propId = uuidv4();
         try {
           propDb.prepare(`
-            INSERT INTO healer_proposals (id, diagnostic_id, category, severity, title, description, proposed_fix, confidence, status, agent_id, evidence_json, created_at)
-            VALUES (?, NULL, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'))
+            INSERT INTO healer_proposals (id, diagnostic_id, diagnostic_code, category, severity, title, description, proposed_fix, confidence, status, agent_id, evidence_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'))
           `).run(
             propId,
+            diagnosticId,
+            diagnosticCode,
             args.category as string,
             args.severity as string,
             args.title as string,
             args.description as string,
             args.proposed_fix as string,
             args.confidence as number,
-            (args.agent_id as string) ?? null,
+            proposalAgentId,
             JSON.stringify(evidenceList),
           );
-          broadcast({ type: 'healer:proposal', data: { id: propId, title: args.title, severity: args.severity } } as never);
+          // FA-DB4: typed via HealerProposalEvent (shared ws.ts) so the cast is gone;
+          // title/severity are validated strings above (checkRequired + the DB insert
+          // casts them as string), so the same cast is faithful here.
+          broadcast({ type: 'healer:proposal', data: { id: propId, title: args.title as string, severity: args.severity as string } });
           content = `[OK] proposal_id=${propId}\n\nProposal created: "${args.title}". The user will see this in the dashboard vitals panel and can approve or deny it.`;
         } catch (err) {
           content = friendlyDbError(err, 'healer_propose');
@@ -6105,10 +6385,11 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           // "approved" to "applied" in real time.
           try {
             const { broadcast } = await import('../gateway/ws.js');
+            // FA-DB4: typed via HealerProposalEvent (shared ws.ts); cast removed.
             broadcast({
               type: 'healer:proposal',
               data: { id: row.id, status: 'applied' },
-            } as never);
+            });
           } catch { /* best effort */ }
           content = `Proposal ${row.id.slice(0, 8)} marked applied.${notes ? ' Notes recorded.' : ''}`;
         } catch (err) {
@@ -6924,7 +7205,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         // Resolve task id prefix to the full UUID so this tool accepts
         // the 8-char ids emitted by tracker_list_active, same pattern as
         // the other tracker_* tools.
-        const { resolveTaskId, formatResolveError } = await import('../tracker/schema.js');
+        const { resolveTaskId, formatResolveError, clearPokeLog } = await import('../tracker/schema.js');
         const reassignResolved = resolveTaskId(rawReassignTaskId);
         if (!reassignResolved.ok) {
           content = formatResolveError('task', rawReassignTaskId, reassignResolved);
@@ -6968,6 +7249,14 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           content = 'Error: Provide either assigned_to (agent ID) or assigned_to_group (group ID)';
           isError = true;
         }
+        // Reassign is a remediation: the task is moving to a new assignee (or
+        // back to a group for the PM to pick), which starts a fresh escalation
+        // cycle. Clear the poke_log so the deterministic ladder re-arms from
+        // nudge(1) against the new owner instead of staying stuck at the old
+        // assignee's rung. Clearing at a remediation event (never mid-cycle)
+        // keeps the cross-restart poke dedup intact. Skip on the error path so
+        // a rejected reassign doesn't wipe a live escalation cycle.
+        if (!isError) clearPokeLog(reassignTaskId);
         break;
       }
 
@@ -7410,7 +7699,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         // and use the dashboard chat instead.
         const {
           getIMBridgeStatus, getSafeSenders, findSafeSenderByAddress,
-          getInboundSenderFor, sendIMessageWithAttachments,
+          getTurnScopedImRecipient, sendIMessageWithAttachments,
         } = await import('../services/imessage-bridge.js');
         const bridgeStatus = getIMBridgeStatus();
         if (!bridgeStatus.running) {
@@ -7439,21 +7728,42 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           break;
         }
 
-        const inboundSender = getInboundSenderFor(agentId);
+        // FA-C1: the omitted-recipient default resolves from the TURN-scoped
+        // iMessage counterparty ONLY. The legacy pendingIMResponseMap (what
+        // getInboundSenderFor falls back to) holds whoever texted this agent most
+        // recently at INGEST time, decoupled from turn execution, so on a
+        // proactive/scheduled turn, or the owner on the dashboard saying "text me
+        // X", it could deliver the owner's message to a contact who happened to
+        // text moments earlier (third-party delivery of owner-directed content).
+        // A genuine iMessage-reply turn always publishes its counterparty to
+        // currentTurnImRecipient, so turn-scoped resolution keeps every real reply
+        // working while refusing to guess on a proactive send.
+        const inboundSender = getTurnScopedImRecipient(agentId);
         let switchedFromInbound: string | null = null;
 
         if (!recipient) {
-          // No explicit recipient. Reply context wins over the starred
-          // default - if this turn was triggered by an iMessage, default
-          // to the actual sender of that inbound, not the household
-          // primary. Falls back to the starred primary only for
-          // proactive (non-reply) sends.
+          // No explicit recipient. If this turn is replying to an inbound
+          // iMessage, default to the actual sender of that inbound.
           if (inboundSender) {
             const match = findSafeSenderByAddress(safeRecords, inboundSender);
             recipient = match?.address ?? inboundSender;
           } else {
-            const primary = safeRecords.find(s => s.is_primary) ?? safeRecords[0];
-            recipient = primary.address;
+            // No explicit recipient AND this turn is not replying to an inbound
+            // iMessage (proactive / scheduled / dashboard-initiated). There is no
+            // one to safely default to, so do NOT guess: make the model name a
+            // recipient explicitly.
+            const valid = safeRecords
+              .map(s => `${s.name} <${s.address}>`)
+              .join(', ');
+            content =
+              `iMessage NOT sent - no recipient was specified and this turn is not replying to an inbound iMessage, ` +
+              `so there is no one to default to. Re-call imessage_send with an explicit recipient: pass ` +
+              `recipient="+1XXXXXXXXXX" (the full number in +country-code form) or recipient="<contact name>" ` +
+              `exactly as it appears in Settings → Channels (iMessage card). ` +
+              `Valid recipients on this server: ${valid}.`;
+            isError = true;
+            auditLog(agentId, 'imessage_send', '(no recipient)', 'error', 'no recipient and no turn-scoped inbound sender');
+            break;
           }
         } else {
           const match = findSafeSenderByAddress(safeRecords, recipient);
@@ -7856,24 +8166,30 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         // runtime clears the flag after sending the ack. The background task
         // needs this to know whether to send the finished image back via
         // iMessage when it's done, the flag will be long gone by then.
-        // D10: turn-anchored check first, currentTurnImRecipient is set iff
-        // THIS turn's counterparty is a human iMessage sender (derived from
-        // the persisted inbound_meta), which stays correct even when the
-        // pending map was already consumed or was overwritten by a newer
-        // inbound (the bridge no longer serializes ingest behind the running
-        // turn). The map check remains as the legacy fallback for rows
-        // without inbound_meta.
-        const { currentTurnImRecipient } = await import('./turn-state.js');
-        const triggeredByIMessage = currentTurnImRecipient.has(agentId) || isAwaitingIMResponse(agentId);
-        // C13: capture the requester's iMessage address NOW, at tool-CALL time. The delivery
-        // IIFE waits for the agent to go idle before sending the finished image, and idle
-        // wipes currentTurnImRecipient + consumes pendingIMResponseMap, so re-reading
-        // getInboundSenderFor at delivery time returned null and the image fell to the owner
-        // (getDefaultSender), or to a third party if a concurrent iMessage turn ran during
-        // generation. This const is closed over by the deferred IIFE and unaffected by idle.
-        const requesterIMessage = triggeredByIMessage
-          ? (await import('../services/imessage-bridge.js')).getInboundSenderFor(agentId)
-          : null;
+        // D10: turn-anchored check. currentTurnImRecipient is set iff THIS turn's
+        // counterparty is a human iMessage sender (derived from the persisted
+        // inbound_meta), which stays correct even when the pending map was already
+        // consumed or was overwritten by a newer inbound (the bridge no longer
+        // serializes ingest behind the running turn).
+        //
+        // FA-C1: turn-scoped ONLY - the legacy pendingIMResponseMap fallback
+        // (isAwaitingIMResponse / getInboundSenderFor's map branch) is deliberately
+        // gone here. That map holds whoever texted this agent most recently at
+        // ingest time, decoupled from the turn, so on a proactive/dashboard image
+        // request a contact who texted mid-generation could receive the finished
+        // image (third-party delivery of owner-directed content). Null here means
+        // "not an iMessage reply", so the image just shows in the dashboard, or
+        // goes to the owner (getDefaultSender) on the away-forward branch below,
+        // never to a guessed contact.
+        //
+        // C13: capture at tool-CALL time. The delivery IIFE waits for the agent to
+        // go idle before sending, and idle wipes currentTurnImRecipient, so a
+        // delivery-time re-read would return null and the image would fall to the
+        // owner (or a third party under concurrency). This const is closed over by
+        // the deferred IIFE and unaffected by idle.
+        const { getTurnScopedImRecipient } = await import('../services/imessage-bridge.js');
+        const requesterIMessage = getTurnScopedImRecipient(agentId);
+        const triggeredByIMessage = requesterIMessage !== null;
 
         auditLog(agentId, 'image_create', null, 'success',
           `Request ${requestId} queued (aspect ${aspectRatio}${styleHint ? `, style ${styleHint}` : ''})`,
@@ -8709,7 +9025,8 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         const sfrErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
         if (sfrErr) { content = sfrErr; isError = true; break; }
         const { executeSubmitForReview } = await import('../techniques/tools.js');
-        content = executeSubmitForReview(agentId, args);
+        const sfrRow = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
+        content = executeSubmitForReview(agentId, sfrRow?.classification ?? 'apprentice', args);
         isError = content.startsWith('Error');
         break;
       }
@@ -8770,7 +9087,8 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         ]);
         if (tspErr) { content = tspErr; isError = true; break; }
         const { executeTechniqueSetPlaceholder } = await import('../techniques/tools.js');
-        content = executeTechniqueSetPlaceholder(agentId, args);
+        const tspRow = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
+        content = executeTechniqueSetPlaceholder(agentId, tspRow?.classification ?? 'apprentice', args);
         isError = content.startsWith('Error');
         break;
       }
@@ -8778,7 +9096,8 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         const tfErr = checkRequired([{ name: 'technique', value: args.technique, type: 'string' }]);
         if (tfErr) { content = tfErr; isError = true; break; }
         const { executeTechniqueFinalize } = await import('../techniques/tools.js');
-        content = executeTechniqueFinalize(agentId, args);
+        const tfRow = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
+        content = executeTechniqueFinalize(agentId, tfRow?.classification ?? 'apprentice', args);
         isError = content.startsWith('Error');
         break;
       }

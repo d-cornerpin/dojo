@@ -57,11 +57,19 @@ export function setEmbeddingConfig(config: Partial<EmbeddingConfig>): void {
 
 // ── Embedding Generation ──
 
+// Default per-request embed deadline. Background memory embeds (summaries,
+// message backfill) can tolerate a cold GPU load, so they keep the generous
+// 30s. Latency-sensitive callers on a turn's critical path (the router, FA-R4)
+// pass a short timeoutMs so a slow or cold embedder degrades to the fallback
+// instead of stalling first token.
+const DEFAULT_EMBED_TIMEOUT_MS = 30000;
+
 export async function generateEmbedding(
   text: string,
-  opts?: { keepAlive?: string | number },
+  opts?: { keepAlive?: string | number; timeoutMs?: number },
 ): Promise<Float32Array> {
   const config = getEmbeddingConfig();
+  const timeoutMs = opts?.timeoutMs ?? DEFAULT_EMBED_TIMEOUT_MS;
 
   // D17: cap raised 2000 -> 7000. The C12 fix over-corrected: a flat 2000-char cap
   // embedded only the first 20-45% of a typical summary (avg ~4.7k chars, depth-2 ~12k),
@@ -89,7 +97,7 @@ export async function generateEmbedding(
           // auto-router is in use (no cold ~300ms reloads per route).
           ...(opts?.keepAlive !== undefined ? { keep_alive: opts.keepAlive } : {}),
         }),
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
       if (response.ok) {
         const data = await response.json() as { embedding: number[] };

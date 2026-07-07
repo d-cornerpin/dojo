@@ -77,6 +77,13 @@ export interface VoiceClientEvents {
   'sleep': (info: { phrase: string }) => void;
   /** Mic mute state changed (user-driven via setMuted). */
   'muted-change': (muted: boolean) => void;
+  /**
+   * Transient, non-fatal server notice (e.g. the cloud voice hit a hiccup and
+   * this reply is playing in the local voice instead). Unlike `error`, this
+   * does NOT move the session into the error state: voice keeps working. The
+   * consumer renders it as an info toast.
+   */
+  notice: (message: string) => void;
   error: (message: string) => void;
 }
 
@@ -586,6 +593,14 @@ export class VoiceClient {
         break;
       case 'voice:stt_partial':
         if (typeof msg.text === 'string') this.emit('partial-transcript', msg.text);
+        break;
+      case 'voice:notice':
+        // Non-fatal heads-up from the server (e.g. cloud-voice fell back to
+        // local for this reply). Surfaced as an info toast; the session stays
+        // live, so unlike an error this must NOT touch state.
+        if (typeof msg.message === 'string' && msg.message.length > 0) {
+          this.emit('notice', msg.message);
+        }
         break;
       case 'voice:wake_detected': {
         const remainder = typeof msg.remainder === 'string' ? msg.remainder : null;

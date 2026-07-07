@@ -46,22 +46,33 @@ export interface RecordCostParams {
 
 interface ModelPricing {
   unit: PricingUnit;
-  inputCostPerM: number;     // token mode, defaults to Sonnet rate when null
-  outputCostPerM: number;    // token mode, defaults to Sonnet rate when null
+  inputCostPerM: number;     // token mode; a NULL price bills as $0 (D-H)
+  outputCostPerM: number;    // token mode; a NULL price bills as $0 (D-H)
   costPerUnit: number | null; // any non-token unit; null when unknown or token-priced
+  // True when the rate that applies to this model is NULL in the DB (not an
+  // explicit 0): a token row missing input/output $/M, or a non-token row
+  // missing cost_per_unit. Billed as $0 per D-H; drives the once-per-model warn.
+  priceUnknown: boolean;
+  providerType: string;      // parent provider type; 'ollama'/'local' are unpaid
 }
 
 function getModelPricing(modelId: string): ModelPricing {
   const db = getDb();
+  // LEFT JOIN so an orphaned model (provider deleted) still bills rather than
+  // dropping the record; providerType then falls back to '' (treated as paid).
   const row = db.prepare(`
-    SELECT input_cost_per_m, output_cost_per_m, pricing_unit, cost_per_unit, cost_per_megapixel
-    FROM models WHERE id = ?
+    SELECT m.input_cost_per_m, m.output_cost_per_m, m.pricing_unit, m.cost_per_unit, m.cost_per_megapixel,
+           p.type AS provider_type
+    FROM models m
+    LEFT JOIN providers p ON p.id = m.provider_id
+    WHERE m.id = ?
   `).get(modelId) as {
     input_cost_per_m: number | null;
     output_cost_per_m: number | null;
     pricing_unit: string | null;
     cost_per_unit: number | null;
     cost_per_megapixel: number | null;
+    provider_type: string | null;
   } | undefined;
 
   const rawUnit = row?.pricing_unit;
@@ -81,13 +92,32 @@ function getModelPricing(modelId: string): ModelPricing {
         ? row.cost_per_megapixel
         : null;
 
+  // D-H: NULL means "price unknown", billed as $0 (both directions), NOT the
+  // old Sonnet premium (3/15). Explicit prices pass through unchanged. The
+  // priceUnknown flag preserves the protection the 3/15 default gave: a paid
+  // row with a missing rate is surfaced (per-model UI flag + once-per-model
+  // warn) rather than silently hidden at $0.
+  const inputNull = row?.input_cost_per_m === null || row?.input_cost_per_m === undefined;
+  const outputNull = row?.output_cost_per_m === null || row?.output_cost_per_m === undefined;
+  const priceUnknown = unit === 'token' ? (inputNull || outputNull) : costPerUnit === null;
+
   return {
     unit,
-    inputCostPerM: row?.input_cost_per_m ?? 3.0,
-    outputCostPerM: row?.output_cost_per_m ?? 15.0,
+    inputCostPerM: row?.input_cost_per_m ?? 0,
+    outputCostPerM: row?.output_cost_per_m ?? 0,
     costPerUnit,
+    priceUnknown,
+    providerType: row?.provider_type ?? '',
   };
 }
+
+// Models we've already warned about billing at $0 due to a NULL (unknown)
+// price on a PAID provider. One warn per model per process keeps the
+// condition visible server-side without flooding the log on every call. Per
+// D-H the old 3/15 premium default is gone; the persistent per-model UI flag
+// (priceUnknown) plus this warn are the replacement protection so a
+// misconfigured paid row is never SILENTLY hidden at $0.
+const warnedUnknownPriceModels = new Set<string>();
 
 export function recordCost(params: RecordCostParams): void {
   const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType, imageWidth, imageHeight, units, cacheReadTokens, cacheCreationTokens } = params;
@@ -159,6 +189,25 @@ export function recordCost(params: RecordCostParams): void {
 
     // Invalidate daily spend cache so next budget check gets fresh data
     invalidateDailySpendCache();
+
+    // D-H visibility: an unknown (NULL) price now bills as $0 rather than the
+    // old Sonnet premium, so a genuinely-paid model whose price lookup failed
+    // would bill silently at $0. Warn once per model per process for a
+    // paid-type provider (ollama/local are legitimately free) so the condition
+    // is visible server-side too. The persistent per-model UI flag carries it
+    // in the dashboard.
+    const paidProvider = pricing.providerType !== 'ollama' && pricing.providerType !== 'local';
+    if (pricing.priceUnknown && paidProvider && !warnedUnknownPriceModels.has(modelId)) {
+      warnedUnknownPriceModels.add(modelId);
+      logger.warn('Recorded cost for a paid-provider model with an unknown (NULL) price; the missing rate billed as $0 (set a rate in Settings > Models)', {
+        agentId,
+        modelId,
+        providerId,
+        providerType: pricing.providerType,
+        costMode,
+        costUsd: costUsd.toFixed(6),
+      }, agentId);
+    }
 
     logger.info(`Cost recorded: $${costUsd.toFixed(4)} for agent ${agentId} (${costMode})`, {
       agentId,

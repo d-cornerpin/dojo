@@ -57,7 +57,7 @@ import {
 import { resolveInbound } from './inbound-channel.js';
 // recordCost intentionally NOT imported, callModel records cost internally.
 import { queueEmbedding } from '../../memory/embeddings.js';
-import { isPrimaryAgent, isTrainerAgent, isPMAgent } from '../../config/platform.js';
+import { isPrimaryAgent, isTrainerAgent, isPMAgent, isHealerAgent } from '../../config/platform.js';
 import os from 'node:os';
 import path from 'node:path';
 import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, continuationContext, clearTurnReceipts } from '../turn-state.js';
@@ -92,11 +92,12 @@ import { complexityClassifier } from './classifiers/complexity.js';
 import { loopDetector, RECENT_TOOL_WINDOW, canonicalToolSignature, isNearDuplicateText, isMutatingTool } from './classifiers/loop.js';
 import { recordToolOutcome, crossTurnFailureNote } from './attempt-record.js';
 // Engine message-injection now flows exclusively through the registry channel
-// (injectRegistryMessage / appendSystemHint); the legacy pushEngineMessage,
-// detectContextGap, and getPromptAssemblerMode call sites were removed at R7b.
+// (injectRegistryMessage); the legacy pushEngineMessage, detectContextGap, and
+// getPromptAssemblerMode call sites were removed at R7b.
 import { injectRegistryMessage, buildAssemblyContext } from '../../prompt/registry/assembler.js';
 import type { AssemblyContext } from '../../prompt/registry/types.js';
-import { isDestructiveCall, consumeApproval, requestApproval } from '../destructive-gate.js';
+import { isDestructiveCall, manifestPermitsDestructiveCall, consumeApproval, requestApproval } from '../destructive-gate.js';
+import { fileHealerApprovalProposal, markHealerProposalAppliedBySignature, maybeAutoApproveHealerScratch } from '../../healer/approval-routing.js';
 import {
   isLoadingTool,
   isStructuringTool,
@@ -105,9 +106,11 @@ import {
 // ackInjector intentionally NOT imported, engine ack disabled per invariant
 // review (see "Engine-injected ack, DISABLED" comment below).
 import { compactionGate } from './classifiers/compaction.js';
-import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD } from '../../memory/compaction.js';
+import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, TOOL_AND_OUTPUT_RESERVE } from '../../memory/compaction.js';
+import { estimateTokens } from '../../memory/store.js';
+import { insertInterAgentEngineRow, insertInterAgentOwnOutput, tagInterAgentOwnOutputConvKey } from '../../memory/interagent.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
-import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, claimAssembledSiblings, type TurnCounterparty } from './counterparty.js';
+import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, claimAssembledSiblings, type TurnCounterparty, type EngineEventSrc } from './counterparty.js';
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
 import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout } from './classifiers/output.js';
 import { detectUngroundedDeliveryClaim } from './classifiers/grounding.js';
@@ -232,27 +235,120 @@ const BOOKKEEPING_NUDGE_TOOLS = new Set([
 
 const BOOKKEEPING_NUDGE = `\n\n[Engine note: this was internal bookkeeping. If the user just asked you to do exactly this (e.g. "save my key", "remember that", "delete X"), reply with ONE short line confirming it is done (e.g. "Saved.", "Got it, stored your OpenWeather key.") so they get acknowledgment. If instead this was incidental to other work, something you did on your own initiative, or the user already has what they needed, end the turn with literal \`[no-reply]\` rather than a generic "Done." / "All set." / "Got it." closeout.]`;
 
-// v3.1.11 (FN-9): tracker MUTATION tools, creating, advancing, or closing
-// tracker state. A call to any of these disarms the multi-step enforcement
-// gate (state.trackerWriteThisTurn), because it means the agent is actually
-// tending its work. READS (tracker_get_status / tracker_list_active) are
-// deliberately absent so a bare status peek can't disarm enforcement. The
-// PM / validation-lane governance tools (tracker_validate, tracker_retask,
-// tracker_override, tracker_request_override, tracker_request_user_verdict,
+// v3.1.11 (FN-9) + FA-T2: tracker mutation tools partitioned by whether a call
+// proves the worker is TENDING open multi-step work.
+//
+// DISARMING (open / advance-to-active): creating a project or task, adding
+// notes, editing a task/project, or advancing a step. A call to one of these
+// means the agent is actively opening or pushing its work forward, so it
+// disarms the multi-step enforcement floor (state.trackerWriteThisTurn).
+//
+// NON-DISARMING (close / abandon / handoff), and so DELIBERATELY absent:
+// tracker_close_project, tracker_reassign_task, tracker_resolve_missed_runs, and
+// tracker_update_status when its status ARGUMENT is a terminal / non-active value
+// (complete / fallen / paused / blocked). These REMOVE or hand off the thing the
+// PM watches, so they must NOT disarm, otherwise new multi-step work started
+// LATER in the same turn rides in behind an earlier close and escapes both the
+// nudge and the floor (FA-T2). For those the floor falls through to the
+// hasRecentlyTendedTask DB check, which reflects whether an OPEN task actually
+// still exists after the mutation.
+//
+// READS (tracker_get_status / tracker_list_active) are absent from both sets: a
+// bare status peek never disarms enforcement (FN-9 invariant). PM / validation-
+// lane governance tools (tracker_validate, tracker_retask, tracker_override,
+// tracker_request_override, tracker_request_user_verdict,
 // tracker_apply_user_verdict, tracker_apply_user_validation,
 // tracker_pause_schedule, tracker_resume_schedule) are also absent: those are
 // override/governance actions, not a worker opening or advancing its own task.
-const TRACKER_MUTATION_TOOLS = new Set([
+const TRACKER_DISARMING_MUTATION_TOOLS = new Set([
   'tracker_create_project',
   'tracker_create_task',
-  'tracker_update_status',
   'tracker_add_notes',
   'tracker_edit_task',
-  'tracker_complete_step',
   'tracker_edit_project',
-  'tracker_close_project',
-  'tracker_reassign_task',
-  'tracker_resolve_missed_runs',
+  'tracker_complete_step',
+]);
+
+// FA-T2: tracker_update_status disarms the floor ONLY when its status argument
+// ADVANCES the task to an active state. These are the canonical active statuses
+// plus the weak-model synonyms the tracker_update_status normalizer accepts for
+// them (kept in sync with STATUS_SYNONYMS in tracker/tools.ts). A transition to
+// complete / fallen / paused / blocked, an update with no status (a bare
+// reassign/repriority), or an unrecognized value is NOT advancing and does not
+// disarm, it falls through to the hasRecentlyTendedTask DB check. That is safe
+// by construction: mis-reading an advancing synonym as non-advancing only defers
+// to the DB, which then sees the freshly-tended open task and suppresses anyway;
+// only wrongly reading a CLOSING status as advancing would be a real disarm hole,
+// and this set never contains a terminal value.
+const ADVANCING_STATUS_ARGS = new Set([
+  'in_progress', 'inprogress', 'working', 'active', 'doing', 'started', 'wip',
+  'on_deck', 'ondeck', 'todo', 'to_do', 'queued', 'backlog', 'pending',
+]);
+function isAdvancingStatusArg(rawStatus: unknown): boolean {
+  if (typeof rawStatus !== 'string') return false;
+  const key = rawStatus.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  return ADVANCING_STATUS_ARGS.has(key);
+}
+
+// FA-T3: read-only reconnaissance / utility / bookkeeping tools that do NOT
+// count as multi-step WORK for the tracker floor. Mirrors the carve-out from the
+// deleted classifiers/tracker.ts (get_current_time, load_tool_docs, complete_task,
+// vault_search/remember/forget, history_search/get/expand) and adds the obvious
+// read-only LOOKUPS a pure reconnaissance turn is made of: checking email,
+// calendar, texts, contacts, the vault, chat history, and the clock. Before this,
+// such a turn (~6 read-only lookups) tripped the >=6 work-call floor and
+// auto-scaffolded a junk project, which then failed the close-out gate,
+// auto-paused, and fired CLOSEOUT_MISS at the PM. Trivial lookups are not
+// multi-step work.
+//
+// The line drawn: "looking things up" (your inbox / calendar / contacts / vault /
+// history / the clock) is trivial; "producing or transforming an artifact" is
+// work. So file_read is DELIBERATELY NOT here, reading a file to act on it is
+// real work, and the untracked-multistep-floor scenario locks file_read +
+// file_write as the NON-trivial signal that must keep driving the floor.
+// Likewise exec, every send / create / write, and document/drive/pdf reads stay
+// NON-trivial. (tracker_* reads are already excluded upstream by the tracker_
+// prefix filter, so they aren't listed here.)
+const TRIVIAL_TOOLS = new Set([
+  // Time / utility (no artifact, no side effect)
+  'get_current_time',
+  'convert_time',
+  'load_tool_docs',
+  'complete_task',
+  // Vault (search/get are reads; remember/forget are bookkeeping per the deleted carve-out)
+  'vault_search',
+  'vault_get',
+  'vault_remember',
+  'vault_forget',
+  // Chat-history recall (read-only context recovery)
+  'history_search',
+  'history_get',
+  'history_expand',
+  'recall_recent_thread',
+  // Read-only view surface
+  'canvas_read',
+  // Contacts / texts lookups
+  'imessage_list_contacts',
+  'contacts_search',
+  'contacts_list',
+  'contacts_get',
+  // Email reconnaissance (list / search / inbox), Google + Microsoft
+  'gmail_search',
+  'gmail_read',
+  'gmail_inbox',
+  'gmail_list_labels',
+  'outlook_search',
+  'outlook_read',
+  'outlook_inbox',
+  // Calendar reconnaissance (agenda / list / search / free-busy), Google + Microsoft
+  'calendar_agenda',
+  'calendar_search',
+  'calendar_list',
+  'calendar_freebusy',
+  'calendar_agenda_ms',
+  'calendar_search_ms',
+  'calendar_list_ms',
+  'calendar_freebusy_ms',
 ]);
 
 function appendBookkeepingNudgeIfRelevant<T extends { name?: string; content?: string; isError?: boolean }>(toolResult: T): T {
@@ -458,7 +554,13 @@ function stopStatusHeartbeat(agentId: string): void {
 export function setAgentStatus(agentId: string, status: string): void {
   try {
     const db = getDb();
-    if (status === 'idle' || status === 'working') {
+    // FA-A2: clear the diagnostic ONLY on a clean turn end ('idle'), not on the
+    // 'working' transition. A turn that errors and retries goes working → error →
+    // working; clearing last_error on 'working' wiped the diagnostic on every
+    // retry and raced the Healer's grace-delayed notify. Clearing on 'idle' lets
+    // it survive across retries and clears once the turn actually finishes clean.
+    // Genuine recovery also clears it via onAgentRecovered (injury-recovery.ts).
+    if (status === 'idle') {
       db.prepare(`
         UPDATE agents SET status = ?, last_error = NULL, last_error_at = NULL, updated_at = datetime('now') WHERE id = ?
       `).run(status, agentId);
@@ -567,6 +669,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // of the same conversation created before this instant were IN the assembled
   // context and are claimed at teardown (see claimAssembledSiblings).
   let lastAssembledAtIso: string | null = null;
+  // FA-M1: the non-compressible overhead (assembled system prompt + tool-schema/
+  // output reserve) the pre-call compaction gate subtracts from the window to get
+  // the compressible budget. Refreshed from each assembly below; the pre-call gate
+  // sits at the top of the iteration (before assembly), so it uses the prior
+  // iteration's value (0 on the very first gate, i.e. old full-window behavior).
+  // The stronger, exact anti-silent-loss signal is the eviction broadcast, which
+  // fires whenever the assembler actually drops fresh-tail rows.
+  let assemblerOverheadTokens = 0;
+  let freshTailDropWarned = false;
   // E-C1: publish the conversation this turn serves so recall_recent_thread scopes
   // to it. null on engine/A2A turns (no waiting human) so recall doesn't latch the
   // last human conversation. Cleared when the agent goes idle.
@@ -634,7 +745,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // D8: set at the engine-event pickup below when THIS turn claims a pending engine
   // event (conv_key stamped 'engine'). Declared here, before the abort revert that
   // reads it, so the closure never touches a TDZ variable.
-  let claimedEngineEventRowid: number | null = null;
+  // D-A step 4: also carry the source table (`src`) the event was found in, so the
+  // revert reverts + records the failure against the row's ACTUAL home table
+  // (per-table rowid, a wrong-table revert would re-deliver the event forever).
+  let claimedEngineEvent: { rowid: number; src: EngineEventSrc } | null = null;
   const revertTriggerStampOnAbort = () => {
     if (chosenConvKey && triggerRow) {
       try {
@@ -653,12 +767,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // re-arm below: a turn that already executed tools may have performed a side
     // effect (sent the reminder via imessage_send, created a task), and re-firing
     // the event would duplicate it, so the claim is left in place in that case.
-    if (claimedEngineEventRowid != null) {
+    if (claimedEngineEvent != null) {
       try {
         if (state.toolCallsExecutedThisTurn === 0) {
-          const res = db.prepare(`UPDATE messages SET conv_key = NULL WHERE agent_id = ? AND rowid = ? AND conv_key = 'engine'`)
-            .run(agentId, claimedEngineEventRowid);
-          if (res.changes > 0) recordEngineEventDeliveryFailure(agentId, claimedEngineEventRowid);
+          // D-A step 4: revert + record against the event's ACTUAL home table.
+          const table = claimedEngineEvent.src === 'ia' ? 'inter_agent_messages' : 'messages';
+          const res = db.prepare(`UPDATE ${table} SET conv_key = NULL WHERE agent_id = ? AND rowid = ? AND conv_key = 'engine'`)
+            .run(agentId, claimedEngineEvent.rowid);
+          if (res.changes > 0) recordEngineEventDeliveryFailure(agentId, claimedEngineEvent.rowid, claimedEngineEvent.src);
         }
       } catch { /* best effort, recovery, never block the abort */ }
     }
@@ -756,12 +872,28 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // runtime.ts finally + turn-state.ts).
   const forcedA2ATurn = forceA2ATurn.has(agentId);
   forceA2ATurn.delete(agentId);
-  const mostRecentInbound = db.prepare(
-    "SELECT rowid, content, origin_kind, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, conv_key FROM messages WHERE agent_id = ? AND role = 'user' ORDER BY created_at DESC, rowid DESC LIMIT 1",
-  ).get(agentId) as {
+  // D-A: read the MERGED most-recent inbound. Human/engine rows still live in
+  // `messages`; peer A2A inbound now lives in inter_agent_messages. Merging both is
+  // what lets a NEW store ASSIGN be seen as the most-recent trigger, so mostRecentIsA2A
+  // is true → isA2ATurn → counterparty.kind='agent' → the assembler scopes (not strips)
+  // the merged tail to that thread and the model actually sees the ASSIGN. `_src` tags
+  // the source table so the terminal-wake claim UPDATE below hits the right one; the
+  // messages arm dedups against store ids so a backfilled row is not seen twice.
+  const mostRecentInbound = db.prepare(`
+    SELECT rowid, content, origin_kind, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, conv_key, created_at, 0 AS _tag, 'm' AS _src
+      FROM messages
+     WHERE agent_id = @agentId AND role = 'user'
+       AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
+    UNION ALL
+    SELECT rowid, content, origin_kind, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, conv_key, created_at, 1 AS _tag, 'ia' AS _src
+      FROM inter_agent_messages
+     WHERE agent_id = @agentId AND role = 'user'
+    ORDER BY created_at DESC, _tag DESC, rowid DESC
+    LIMIT 1
+  `).get({ agentId }) as {
     rowid: number; content: string; origin_kind: string | null; origin_intent: string | null;
     source_agent_id: string | null; a2a_thread_id: string | null; a2a_intent: string | null;
-    a2a_requires_response: number | null; conv_key: string | null;
+    a2a_requires_response: number | null; conv_key: string | null; _src: 'm' | 'ia';
   } | undefined;
   // A reply-needed peer A2A (QUESTION/ASSIGN/BLOCK) is most-recent. Engine-origin
   // rows (fromAgent='system') are NOT peer A2A, they drive an engine turn instead,
@@ -781,7 +913,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // (a2a_requires_response=1) and has not yet been claimed by a turn (conv_key NULL).
   // Gated with !hasUnansweredUser below so a waiting human always wins (no hijack).
   const TERMINAL_WAKE_INTENTS = new Set(['DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL']);
-  let terminalWakeA2A: { intent: string; threadShort: string; fromName: string; rowid: number } | null = null;
+  let terminalWakeA2A: { intent: string; threadShort: string; fromName: string; rowid: number; src: 'm' | 'ia' } | null = null;
   if (
     mostRecentInbound &&
     mostRecentInbound.origin_kind !== 'engine' &&
@@ -799,6 +931,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       threadShort: mostRecentInbound.a2a_thread_id.slice(0, 8),
       fromName: senderRow?.name ?? mostRecentInbound.source_agent_id ?? 'another agent',
       rowid: mostRecentInbound.rowid,
+      src: mostRecentInbound._src,
     };
   }
   // The user always wins: if a real user-channel message is still unanswered
@@ -836,7 +969,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // inert to every other consumer. Mirrors the human/engine pickup-claim above.
   if (terminalWakeDrivesTurn && terminalWakeA2A) {
     try {
-      db.prepare("UPDATE messages SET conv_key = 'a2a' WHERE agent_id = ? AND rowid = ? AND conv_key IS NULL")
+      // D-A: claim in whichever table the row lives in. A peer terminal-wake now
+      // lives in inter_agent_messages; an engine one still in `messages`. rowid is
+      // per-table, so the table MUST match the source or the claim silently misses.
+      const claimTable = terminalWakeA2A.src === 'ia' ? 'inter_agent_messages' : 'messages';
+      db.prepare(`UPDATE ${claimTable} SET conv_key = 'a2a' WHERE agent_id = ? AND rowid = ? AND conv_key IS NULL`)
         .run(agentId, terminalWakeA2A.rowid);
     } catch { /* best effort, exactly-once is a safety net, not a correctness gate */ }
   }
@@ -865,13 +1002,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
   if (isEngineTurn && pendingEngineEvent) {
     let engineClaimed = true;
     try {
-      const res = db.prepare(`UPDATE messages SET conv_key = 'engine' WHERE agent_id = ? AND rowid = ? AND conv_key IS NULL`)
+      // D-A step 4: claim in whichever table the pending event lives in (tagged by
+      // the merged getPendingEngineEvent read). rowid is per-table, so a claim against
+      // the wrong table stamps nothing, leaves the event conv_key NULL, and it
+      // re-delivers on every subsequent drain, forever, the worst regression here.
+      const engineTable = pendingEngineEvent.src === 'ia' ? 'inter_agent_messages' : 'messages';
+      const res = db.prepare(`UPDATE ${engineTable} SET conv_key = 'engine' WHERE agent_id = ? AND rowid = ? AND conv_key IS NULL`)
         .run(agentId, pendingEngineEvent.rowid);
       engineClaimed = res.changes > 0;
     } catch { /* best effort */ }
     // D8: remember OUR claim so a no-answer abort can revert it symmetrically with
     // the human trigger stamp (see revertTriggerStampOnAbort above).
-    if (engineClaimed) claimedEngineEventRowid = pendingEngineEvent.rowid;
+    if (engineClaimed) claimedEngineEvent = { rowid: pendingEngineEvent.rowid, src: pendingEngineEvent.src };
     if (!engineClaimed) {
       // C24: symmetry with the human pickup-claim above, the atomic engine-event claim
       // affected 0 rows, so ANOTHER process already picked up this engine event. Bail cleanly
@@ -1422,10 +1564,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // and the dashboard shows it inline as the engine's voice. Stamp the
             // structured engine origin (mig 075) so it's attributed as an EVENT,
             // not parsed from the [Engine thrash gate] prose.
-            db.prepare(`
-              INSERT OR IGNORE INTO messages (id, agent_id, role, content, conv_key, origin_kind, origin_intent, turn_number, created_at)
-              VALUES (?, ?, 'user', ?, 'engine-steer', 'engine', 'thrash_gate', ?, datetime('now'))
-            `).run(steerMsgId, agentId, steerMsg, turnNumber);
+            // D-A step 4: an engine steer is inter-agent/engine traffic
+            // (origin_kind='engine'), so it lands in the physical inter-agent store,
+            // not `messages`. conv_key 'engine-steer' (below) keeps it un-selectable
+            // as a pending event; the EVENTS lane still surfaces it via origin_kind.
+            insertInterAgentEngineRow({
+              id: steerMsgId,
+              agentId,
+              content: steerMsg,
+              sourceAgentId: null,
+              originIntent: 'thrash_gate',
+              convKey: 'engine-steer',
+              turnNumber,
+            });
             // C6: stamp a non-NULL conv_key sentinel ('engine-steer'). The steer is
             // origin_kind='engine' with conv_key NULL, so getPendingEngineEvent (which
             // selects conv_key-NULL engine rows) would return it → the drain fires an
@@ -1551,7 +1702,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
       //   96–99% emergency compact (force checkAndCompact + queue wakeup)
       //   ≥99%   block (surrender turn, recovery cascade re-runs)
       const assembledEstimate = estimateAssembledTokens(agentId, contextWindow);
-      const gateResult = compactionGate(assembledEstimate.total, contextWindow);
+      // FA-M1: gate the compressible total against the compressible BUDGET (window
+      // minus the non-compressible overhead the assembler produced), not the full
+      // window. The numerator stays compressible-only so compaction still never
+      // no-op-loops on bloat it cannot shrink.
+      const gateResult = compactionGate(assembledEstimate.total, contextWindow, assemblerOverheadTokens);
       // D3: remember this iteration's utilization so the anti-hoarding advisory
       // can nudge on real context pressure instead of raw load-count.
       state = advance(state, { lastContextRatio: gateResult.ratio });
@@ -1712,7 +1867,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
       let engineEventKeepFullId: string | null = null;
       if (isEngineTurn && pendingEngineEvent?.originIntent === 'a2a_request') {
         try {
-          const idRow = db.prepare('SELECT id FROM messages WHERE agent_id = ? AND rowid = ?')
+          // D-A step 4: an action-required engine-origin A2A ('a2a_request') is
+          // delivered by deliverA2AMessage, which now persists into the STORE, so
+          // resolve its id from the event's ACTUAL home table. A `messages`-only read
+          // would miss the store row, drop engineEventKeepFullId to null, and let the
+          // approval token / full escalation get clipped into the truncated gist.
+          const kfTable = pendingEngineEvent.src === 'ia' ? 'inter_agent_messages' : 'messages';
+          const idRow = db.prepare(`SELECT id FROM ${kfTable} WHERE agent_id = ? AND rowid = ?`)
             .get(agentId, pendingEngineEvent.rowid) as { id: string } | undefined;
           engineEventKeepFullId = idRow?.id ?? null;
         } catch { /* best effort, fall back to the truncated awareness gist */ }
@@ -1722,10 +1883,53 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // read counterparty / othersWaiting / conversationalTurn / isEngineTurn (they
       // are not recomputed).
       const sharedTurnContext = { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn, engineEventKeepFullId };
+      // LIVE = RELOAD, pre-model half (incident 2026-07-06): the persisted-output
+      // visibility keys on the six-way interAgentTurn union (computed post-model,
+      // below), but the dashboard's live suppression needs the turn kind BEFORE the
+      // first chunk/tool frame. Stamp here from the union's PRE-MODEL-knowable
+      // terms: the A2A trigger, an agent counterparty, and the background-A2A
+      // condition (mostRecentIsA2A with no unanswered user, which also subsumes the
+      // exchange term). The spontaneous/pure-background terms depend on what the
+      // model does, so the post-model re-stamp below remains as the catch-up for
+      // later phases of the same turn.
+      const preModelInterAgent = isA2ATurn || counterparty.kind === 'agent' || (mostRecentIsA2A && !hasUnansweredUser);
+      if (preModelInterAgent && currentTurnKind.get(agentId) !== 'a2a') {
+        currentTurnKind.set(agentId, 'a2a');
+        broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: 'a2a' });
+      }
       const ctx = await assembleContext(agentId, contextModelId, sharedTurnContext);
       lastAssembledAtIso = new Date().toISOString(); // F9: see claimAssembledSiblings
       let systemPrompt = ctx.systemPrompt;
       const messages = ctx.messages;
+
+      // FA-M1: record the non-compressible overhead the assembler just produced
+      // (system prompt + the tool-schema/output reserve it also reserves) so the
+      // NEXT iteration's pre-call gate measures the compressible total against the
+      // real compressible budget instead of the full window.
+      assemblerOverheadTokens = estimateTokens(systemPrompt) + TOOL_AND_OUTPUT_RESERVE;
+
+      // FA-M1: surface the assembler's oldest-fresh-tail eviction. budgetFreshTail
+      // silently dropped older fresh-tail groups to fit the window (live-view loss
+      // where the weakest model needs it most). Emit the existing CONTEXT_HIGH
+      // warning once per turn so the dashboard shows it instead of it being
+      // log-only. The dropped rows are persisted and later summarized (not lost).
+      if (!freshTailDropWarned && (ctx.freshTailDropped ?? 0) > 0) {
+        freshTailDropWarned = true;
+        const dropped = ctx.freshTailDropped ?? 0;
+        logger.warn('assembler evicted oldest fresh-tail messages to fit the window (live-view loss)', {
+          agentId, dropped, contextWindow,
+        }, agentId);
+        try {
+          broadcast({
+            type: 'chat:error',
+            agentId,
+            error: `Agent's memory is full, so it set aside its ${dropped} oldest recent message${dropped === 1 ? '' : 's'} to keep working. Older context is still saved.`,
+            code: 'CONTEXT_HIGH',
+            severity: 'warning',
+            retryable: false,
+          });
+        } catch { /* best effort */ }
+      }
 
       // One message-injection context for this iteration's §3c entries
       // (technique, context-gap, tracker-notif, nudge, tool-note, turn-context). The
@@ -1938,7 +2142,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // them as multistep user intent and auto-creating tracker projects
       // titled "Tracker review -- N active tasks:". Polluted the PM's view
       // every poke tick. PM never wants engine-auto-created projects.
-      if (state.loopCount === 1 && lastUserMessageContent && !isPMAgent(agentId)) {
+      // D-B v2: also skip the Healer. It has no tracker tools and never touches
+      // the tracker (its SOUL forbids it), so an engine-opened task it cannot
+      // tend would go stale and trip the PM poke ladder against it, which is
+      // exactly the state a held destructive consent must not leave behind.
+      if (state.loopCount === 1 && lastUserMessageContent && !isPMAgent(agentId) && !isHealerAgent(agentId)) {
         try {
           const { detectMultistep, getMultistepConfig } = await import('./classifiers/multistep.js');
           const cfg = getMultistepConfig();
@@ -2773,6 +2981,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // as background chatter.
       const pureBackgroundTurn = !hasUnansweredUser && !triggerRow && !mostRecentIsA2A && !deliberateSurfaceTurn && !isHumanContinuation;
       const interAgentTurn = isA2ATurn || counterparty.kind === 'agent' || spontaneousA2ATurn || a2aBackgroundTurn || a2aExchangeTurn || pureBackgroundTurn;
+      // LIVE = RELOAD (incident 2026-07-06): the dashboard's live suppression keys
+      // on the turnKind stamp, but the PERSISTED visibility keys on
+      // `source: interAgentTurn ? 'a2a' : null` below, and interAgentTurn is a
+      // SIX-way union of which the turn-start stamp knew only isA2ATurn. Any turn
+      // that became inter-agent via the other five terms (agent counterparty,
+      // spontaneous/background/exchange/pure-background) streamed into regular-mode
+      // chat live and then vanished on refresh. Re-stamp the turn kind HERE, from
+      // the SAME predicate the persistence uses, before any chunk is emitted (this
+      // point precedes the model call); the heartbeat re-broadcasts the same map.
+      if (interAgentTurn && currentTurnKind.get(agentId) !== 'a2a') {
+        currentTurnKind.set(agentId, 'a2a');
+        broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: 'a2a' });
+      }
       // [DIAGNOSTIC] phantom-waiting-user: an A2A poke that should be a background turn
       // is being flipped to a user turn by a stale waiting conversation. Log which
       // conversation is keeping hasUnansweredUser true so the served-tracking edge can
@@ -3352,25 +3573,42 @@ export async function runV2Turn(agentId: string): Promise<void> {
             input: tc.arguments,
           });
         }
-        db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, token_count, model_id, cost, latency_ms, turn_number, reasoning_content, source, created_at)
-          VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, NULL, ?, ?, ?, datetime('now'))
-        `).run(
-          messageId,
-          agentId,
-          JSON.stringify(assistantContent),
-          queuedAttachmentsJson,
-          result.outputTokens,
-          effectiveModelIdForPersist,
-          null,
-          turnNumber,
-          result.reasoningContent ?? null,
-          // v3.1.10: stamp A2A-turn output so the dashboard hides the entire
-          // inter-agent turn (text + tool badges) in regular mode. A2A-turn
-          // tool calls (file_read/web_search/etc.) would otherwise flash a
-          // badge into the user's chat, content can't reveal it was an A2A turn.
-          interAgentTurn ? 'a2a' : null,
-        );
+        const assistantContentJson = JSON.stringify(assistantContent);
+        if (interAgentTurn) {
+          // D-A step 8: the agent's OWN inter-agent-turn output goes to the physical
+          // inter-agent store, never the `messages` chat table. Persisting it here
+          // (stamped source='a2a') is what let a coordination burst bury the owner's
+          // conversation 10k rows deep and blank the chat, and the 'a2a' stamp was a
+          // leak-prone downstream overlay. The merged tail loaders UNION this row back
+          // into the model context byte-identically (role/content/order/attachments/
+          // turn_number preserved; the display/accounting columns NULL-pad exactly as
+          // for peer-A2A rows), so model continuity holds. Regular-mode chat (messages-
+          // only) never sees it; wordy mode serves it from the merged set. The row id
+          // stays STABLE (other tables reference message ids) and content byte-identical.
+          insertInterAgentOwnOutput({
+            id: messageId,
+            agentId,
+            role: 'assistant',
+            content: assistantContentJson,
+            attachments: queuedAttachmentsJson,
+            turnNumber,
+          });
+        } else {
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, token_count, model_id, cost, latency_ms, turn_number, reasoning_content, source, created_at)
+            VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, NULL, ?, ?, NULL, datetime('now'))
+          `).run(
+            messageId,
+            agentId,
+            assistantContentJson,
+            queuedAttachmentsJson,
+            result.outputTokens,
+            effectiveModelIdForPersist,
+            null,
+            turnNumber,
+            result.reasoningContent ?? null,
+          );
+        }
         broadcast({
           type: 'chat:message',
           agentId,
@@ -3402,20 +3640,36 @@ export async function runV2Turn(agentId: string): Promise<void> {
           state = advance(state, { lastAssistantTextForIM: stripOrbMood(persistedContent) });
         }
       } else if (persistedContent) {
-        db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, token_count, model_id, cost, latency_ms, turn_number, reasoning_content, created_at)
-          VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, NULL, ?, ?, datetime('now'))
-        `).run(
-          messageId,
-          agentId,
-          persistedContent,
-          queuedAttachmentsJson,
-          result.outputTokens,
-          effectiveModelIdForPersist,
-          null,
-          turnNumber,
-          result.reasoningContent ?? null,
-        );
+        if (interAgentTurn) {
+          // D-A step 8: own-output on an inter-agent iteration NEVER touches
+          // `messages`. In practice outputPersistenceClassifier always suppresses
+          // trailing text on an inter-agent turn (so persistedContent is null and
+          // this branch does not run), but keeping the relocation here makes the
+          // "no own inter-agent output in messages" invariant total and future-proof.
+          insertInterAgentOwnOutput({
+            id: messageId,
+            agentId,
+            role: 'assistant',
+            content: persistedContent,
+            attachments: queuedAttachmentsJson,
+            turnNumber,
+          });
+        } else {
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, token_count, model_id, cost, latency_ms, turn_number, reasoning_content, created_at)
+            VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, NULL, ?, ?, datetime('now'))
+          `).run(
+            messageId,
+            agentId,
+            persistedContent,
+            queuedAttachmentsJson,
+            result.outputTokens,
+            effectiveModelIdForPersist,
+            null,
+            turnNumber,
+            result.reasoningContent ?? null,
+          );
+        }
         if (persistedContent.trim().length > 0) {
           state = advance(state, { lastAssistantTextForIM: stripOrbMood(persistedContent) });
         }
@@ -3830,7 +4084,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               const { getTask } = await import('../../tracker/schema.js');
               for (const id of pausedIds) {
                 const t = getTask(id);
-                if (t) broadcast({ type: 'tracker:task_updated', data: t } as never);
+                if (t) broadcast({ type: 'tracker:task_updated', data: t });
               }
             } catch { /* best effort */ }
             logger.warn('v2 idle-with-in_progress hardcap fired, auto-paused; reply KEPT (persisted + shown), task paused + escalated to PM', {
@@ -3915,7 +4169,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // receiver got nothing but I sent the message" cognitive
           // dissonance that drove the loop.txt spiral.
           priorReplyOnSameThread:
-            !!a2aReplyContext?.threadShort && hasPriorReplyOnThread(agentId, a2aReplyContext.threadShort),
+            !!a2aReplyContext?.threadShort && hasPriorReplyOnThread(agentId, a2aReplyContext.threadShort, unrepliedAssign?.threadId ?? null),
         });
         if (replyDecision.decision === 'nudge') {
           const nudgeId = uuidv4();
@@ -4082,7 +4336,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   for (const tid of state.danglingTaskIds) {
                     const updatedTask = getTask(tid);
                     if (updatedTask) {
-                      broadcast({ type: 'tracker:task_updated', data: updatedTask } as never);
+                      broadcast({ type: 'tracker:task_updated', data: updatedTask });
                     }
                   }
                 } catch { /* best effort */ }
@@ -4581,28 +4835,99 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // signature-bound, 60-min expiry). Prose cannot hold this line on
           // the weakest model; the gate is the mechanism.
           if (!isPrimaryAgent(agentId)) {
-            const destructiveKind = isDestructiveCall(tc.name, tc.arguments as Record<string, unknown>);
-            if (destructiveKind) {
+            // FU-4: pass the caller so the Healer's writes to owner identity/config
+            // paths classify as destructive (see destructive-gate.ts); for every
+            // other agent the third arg changes nothing.
+            const destructiveKind = isDestructiveCall(tc.name, tc.arguments as Record<string, unknown>, agentId);
+            // FA-P2: only HOLD a destructive call the agent's OWN manifest would
+            // actually let run. When the manifest already denies it (e.g. a
+            // restricted worker's `rm`, absent from exec_allow), do NOT file an
+            // approval the executor's allowlist would reject on retry, that wastes
+            // the one-shot approval and dead-ends the worker after telling it
+            // approval was granted. Instead we fall through to executeTool below,
+            // which returns the standard [BLOCKED] permission-denied result and the
+            // permissionAlternativeFinder escalation path (send_to_agent to a
+            // privileged agent, request a grant). Only manifest-permitted-but-
+            // destructive calls (a destructive git subcommand, or an `rm` a worker
+            // explicitly lists) reach the hold below. The pre-check uses the SAME
+            // checkPermission the executor uses, so there is no manifest drift.
+            if (destructiveKind && manifestPermitsDestructiveCall(agentId, tc.name, tc.arguments as Record<string, unknown>)) {
               const gateSig = canonicalToolSignature(tc.name, tc.arguments);
-              if (!consumeApproval(agentId, gateSig)) {
-                const gateAgentRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-                const refusal = await requestApproval({
+              // D-B v2 Part 1: Healer scratch-zone auto-approve (engine rule,
+              // static, fail-closed). A strictly-parseable rm/rmdir whose every
+              // target resolves (hardened canonicalizer) strictly inside a
+              // designated scratch zone runs WITHOUT consent, leaving an audit row
+              // + a Vitals history record. Any miss holds. Protected-identity and
+              // global denies already ran above (isDestructiveCall + the manifest
+              // exec check), so this only narrows what holds, never widens what
+              // can be deleted.
+              const scratchAutoApproved =
+                isHealerAgent(agentId) &&
+                maybeAutoApproveHealerScratch({
                   agentId,
-                  agentName: gateAgentRow?.name ?? agentId,
                   toolName: tc.name,
-                  signature: gateSig,
+                  args: tc.arguments as Record<string, unknown>,
                   kind: destructiveKind,
-                  callDescription: `${tc.name}(${JSON.stringify(tc.arguments).slice(0, 300)})`,
                 });
+              if (scratchAutoApproved) {
+                logger.info('v2: healer scratch-zone destructive auto-approved, executing', {
+                  tool: tc.name,
+                }, agentId);
+                // Fall through to executeTool: no hold, no consent ask.
+              } else if (!consumeApproval(agentId, gateSig)) {
+                const gateAgentRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+                const callDescription = `${tc.name}(${JSON.stringify(tc.arguments).slice(0, 300)})`;
+                let refusal: string;
+                // D-B v2 Part 3: a held Healer consent is QUEUED, not an error;
+                // the turn continues normally. Only a filing FAILURE is a genuine
+                // block (isError). Every OTHER agent keeps the primary-approver
+                // path (isError as before).
+                let heldIsError = true;
+                if (isHealerAgent(agentId)) {
+                  // D-B step 2: the Healer answers to the OWNER, so its held
+                  // destructive calls route to a single owner-approval object (a
+                  // healer_proposals row carrying the bound token + THIS canonical
+                  // signature), NOT to the primary. Owner approval mints the
+                  // consumable destructive_approvals row that the retry consumes.
+                  const held = await fileHealerApprovalProposal({
+                    agentId,
+                    agentName: gateAgentRow?.name ?? agentId,
+                    toolName: tc.name,
+                    signature: gateSig,
+                    kind: destructiveKind,
+                    callDescription,
+                    heldDirectDestructiveCall: true,
+                  });
+                  refusal = held.refusal;
+                  heldIsError = !held.queued;
+                } else {
+                  refusal = await requestApproval({
+                    agentId,
+                    agentName: gateAgentRow?.name ?? agentId,
+                    toolName: tc.name,
+                    signature: gateSig,
+                    kind: destructiveKind,
+                    callDescription,
+                  });
+                }
                 try {
                   broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
                   broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusal.slice(0, 500) });
                 } catch { /* best effort */ }
-                return { toolCallId: tc.id, name: tc.name, content: refusal, isError: true };
+                return { toolCallId: tc.id, name: tc.name, content: refusal, isError: heldIsError };
+              } else {
+                // Approval consumed: the call is cleared to run exactly once.
+                if (isHealerAgent(agentId)) {
+                  // D-B step 2: the owner-approved held action just cleared the gate.
+                  // Record the bound proposal as applied so runHealingCycle stops
+                  // re-presenting it and a stray re-issue cannot re-hold the now-
+                  // consumed token into a fresh proposal.
+                  markHealerProposalAppliedBySignature(agentId, gateSig);
+                }
+                logger.info('v2: destructive call approved, executing', {
+                  tool: tc.name,
+                }, agentId);
               }
-              logger.info('v2: destructive call approved by primary, executing', {
-                tool: tc.name,
-              }, agentId);
             }
           }
 
@@ -4928,17 +5253,30 @@ export async function runV2Turn(agentId: string): Promise<void> {
         const collapsedText = collapsedParts.join('\n');
         // Same messageId as the assistant first-persist, INSERT OR IGNORE
         // keeps the original text-only row intact.
-        db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, token_count, model_id, cost, latency_ms, turn_number, created_at)
-          VALUES (?, ?, 'assistant', ?, ?, ?, NULL, NULL, ?, datetime('now'))
-        `).run(
-          messageId,
-          agentId,
-          collapsedText,
-          result.outputTokens,
-          effectiveModelIdForPersist,
-          turnNumber,
-        );
+        if (interAgentTurn) {
+          // D-A step 8: the weak-model (XML-fallback) own-output on an inter-agent
+          // iteration relocates to the store too, so the DeepSeek floor path never
+          // leaks collapsed tool narration into the owner's chat.
+          insertInterAgentOwnOutput({
+            id: messageId,
+            agentId,
+            role: 'assistant',
+            content: collapsedText,
+            turnNumber,
+          });
+        } else {
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, token_count, model_id, cost, latency_ms, turn_number, created_at)
+            VALUES (?, ?, 'assistant', ?, ?, ?, NULL, NULL, ?, datetime('now'))
+          `).run(
+            messageId,
+            agentId,
+            collapsedText,
+            result.outputTokens,
+            effectiveModelIdForPersist,
+            turnNumber,
+          );
+        }
         broadcast({
           type: 'chat:message',
           agentId,
@@ -4975,10 +5313,27 @@ export async function runV2Turn(agentId: string): Promise<void> {
             is_error: tr.isError,
           };
         }) as Anthropic.ToolResultBlockParam[];
-        db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-          VALUES (?, ?, 'tool', ?, ?, datetime('now'))
-        `).run(toolMessageId, agentId, JSON.stringify(toolResultContent), turnNumber);
+        const toolResultJson = JSON.stringify(toolResultContent);
+        if (interAgentTurn) {
+          // D-A step 8: the inter-agent turn's tool_result rows relocate to the
+          // store alongside their assistant tool_use rows (same per-phase
+          // interAgentTurn classification), so a coordination burst's tool pills
+          // never bury or leak into the owner's chat. The merged tail UNIONs them
+          // back with role='tool', so the tool_use/tool_result pairing the model
+          // sees on its next turn is byte-identical.
+          insertInterAgentOwnOutput({
+            id: toolMessageId,
+            agentId,
+            role: 'tool',
+            content: toolResultJson,
+            turnNumber,
+          });
+        } else {
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+            VALUES (?, ?, 'tool', ?, ?, datetime('now'))
+          `).run(toolMessageId, agentId, toolResultJson, turnNumber);
+        }
         broadcast({
           type: 'chat:message',
           agentId,
@@ -5011,7 +5366,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
       const trackerInThisIter = result.toolCalls.filter(
         (tc) => tc.name.startsWith('tracker_'),
       ).length;
-      const nonTrackerInThisIter = result.toolCalls.length - trackerInThisIter;
+      // FA-T3: the multi-step floor counts REAL WORK calls only, calls that are
+      // neither tracker ops nor TRIVIAL_TOOLS (read-only reconnaissance / utility
+      // / bookkeeping). Before this, a pure recon turn (check email + calendar +
+      // texts + vault, ~6 read-only lookups) tripped the >=6 floor, auto-scaffolded
+      // a junk project, then failed the close-out gate, auto-paused, and fired
+      // CLOSEOUT_MISS at the PM. Trivial lookups are not multi-step work. Reads
+      // still never DISARM the floor (FN-9); they simply no longer COUNT toward it.
+      const nonTrackerInThisIter = result.toolCalls.filter(
+        (tc) => !tc.name.startsWith('tracker_') && !TRIVIAL_TOOLS.has(tc.name),
+      ).length;
       // tracker_update_status / tracker_complete_step are the status-mutation
       // tools, they're the signal "agent advanced or closed a task this
       // turn", distinct from broad tracker engagement (which includes
@@ -5019,20 +5383,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
       const trackerStatusInThisIter = result.toolCalls.some(
         (tc) => tc.name === 'tracker_update_status' || tc.name === 'tracker_complete_step' || tc.name === 'tracker_close_project',
       );
-      // v3.1.11 (FN-9): a call to any tracker MUTATION tool is the agent
-      // tending its work, and disarms the multi-step enforcement gate below.
-      // READS (tracker_get_status / tracker_list_active) are DELIBERATELY
-      // excluded: a bare status peek must not disarm enforcement, or an agent
-      // could dodge the floor forever by polling the tracker without ever
-      // opening a task. The remaining tracker_* tools are PM / validation-lane
-      // governance tools (tracker_validate, tracker_retask, tracker_override,
-      // tracker_request_override, tracker_request_user_verdict,
-      // tracker_apply_user_verdict, tracker_apply_user_validation,
-      // tracker_pause_schedule, tracker_resume_schedule) and are intentionally
-      // NOT counted as a worker tending its OWN multi-step work: a non-PM
-      // worker opening/advancing its task reaches for the create/advance tools
-      // in this set, not the override lane.
-      const trackerWriteInThisIter = result.toolCalls.some((tc) => TRACKER_MUTATION_TOOLS.has(tc.name));
+      // v3.1.11 (FN-9) + FA-T2: disarm the multi-step floor only when the agent
+      // OPENS or ADVANCES its own work. Creating / editing / adding-notes /
+      // advancing-a-step is tending; tracker_update_status disarms only when its
+      // status arg advances the task to an active state. CLOSING / abandoning /
+      // handing off (tracker_close_project, tracker_reassign_task,
+      // tracker_resolve_missed_runs, update_status -> complete/fallen/paused/blocked)
+      // does NOT disarm: it removes what the PM watches, so new multi-step work
+      // later in the SAME turn must not ride in behind an earlier close. For those
+      // the floor falls through to the hasRecentlyTendedTask DB check. READS never
+      // disarm (they are absent from the disarming set).
+      const trackerWriteInThisIter = result.toolCalls.some(
+        (tc) =>
+          TRACKER_DISARMING_MUTATION_TOOLS.has(tc.name) ||
+          (tc.name === 'tracker_update_status' && isAdvancingStatusArg(tc.arguments?.status)),
+      );
       if (nonTrackerInThisIter > 0 || trackerInThisIter > 0) {
         state = advance(state, {
           nonTrackerToolCalls: state.nonTrackerToolCalls + nonTrackerInThisIter,
@@ -5052,6 +5417,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
       const TRACKER_NUDGE_THRESHOLD = 3;
       const TRACKER_AUTO_SCAFFOLD_AT = 6;
       if (
+        // D-B v2: the Healer is tracker-exempt (no tracker tools; SOUL forbids
+        // touching it). Neither nudge it nor auto-open a task it cannot tend,
+        // which would go stale and trip the PM poke ladder, the exact trap a held
+        // destructive consent must not spring against the waiting Healer.
+        !isHealerAgent(agentId) &&
         !state.trackerWriteThisTurn &&
         ((!state.nudgedForTrackerThisTurn && state.nonTrackerToolCalls > TRACKER_NUDGE_THRESHOLD) ||
           state.nonTrackerToolCalls >= TRACKER_AUTO_SCAFFOLD_AT)
@@ -5162,14 +5532,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // create-a-project wording.
           const nudgeText = staleOpenTask
             ? (
-              `[System: you've made ${state.nonTrackerToolCalls} non-tracker tool calls this turn, but the only open tracker task assigned to you ("${staleOpenTask.title}", task_id ${staleOpenTask.id.slice(0, 8)}) hasn't been updated in a while. ` +
+              `[System: you've made ${state.nonTrackerToolCalls} work tool calls this turn, but the only open tracker task assigned to you ("${staleOpenTask.title}", task_id ${staleOpenTask.id.slice(0, 8)}) hasn't been updated in a while. ` +
               `Multi-step work that isn't reflected in a live tracker task drifts and stalls (the PM agent can't intervene because there's nothing current to monitor) and your context is filling up which means compaction is coming and you'll lose source detail you've already read. ` +
               `Decide now: if what you've been doing IS that task, bring it current via tracker_update_status / tracker_add_notes; otherwise this is NEW work, so open a project for it with tracker_create_project(title="<short name>", level=2, tasks=[…one task per discrete batch…]). ` +
               `Then keep each task current via tracker_update_status, and use scratchpad_set to keep a running outline that survives compaction. ` +
               `Resume the work once the tracker reflects it.]`
             )
             : (
-              `[System: you've made ${state.nonTrackerToolCalls} non-tracker tool calls this turn without an active tracker task assigned to you. ` +
+              `[System: you've made ${state.nonTrackerToolCalls} work tool calls this turn without an active tracker task assigned to you. ` +
               `This is the failure shape we want to catch, multi-step work without a tracker entry drifts and stalls (the PM agent can't intervene because there's nothing to monitor) and your context is filling up which means compaction is coming and you'll lose source detail you've already read. ` +
               `STOP what you're doing right now and call tracker_create_project(title="<short name>", level=2, tasks=[…one task per discrete batch…]) describing the steps for what you've been doing and what's left. ` +
               `Then update each task as you complete it via tracker_update_status, and use scratchpad_set to keep a running outline that survives compaction. ` +
@@ -5269,9 +5639,25 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // question dropped) or an unrelated payload is relayed as "Heard back from X".
             // The first (oldest) reply-warranting send of the turn is the delegation of
             // the owner's ask being handed off, park on that (ASC).
+            // D-A: this agent's own outbound wake-ask is persisted as the RECIPIENT's
+            // inbound row, and for peer A2A that row now lives in inter_agent_messages,
+            // not `messages`. Read the MERGED source so the structural park-thread
+            // derivation still finds the send it just made (a messages-only read would
+            // miss it and silently fall back to the fragile prose regex). The messages
+            // arm dedups against store ids; the cross-table tiebreak (created_at, then
+            // messages-first on a tie, then rowid) keeps the OLDEST reply-warranting
+            // send of the turn (ASC), matching the legacy single-table rowid ASC.
             const sent = db.prepare(
-              `SELECT a2a_thread_id FROM messages WHERE source_agent_id = ? AND a2a_thread_id IS NOT NULL AND a2a_intent IN ('QUESTION','ASSIGN','BLOCK') AND created_at >= ? ORDER BY rowid ASC LIMIT 1`,
-            ).get(agentId, turnStartedAt) as { a2a_thread_id: string } | undefined;
+              `SELECT a2a_thread_id, created_at, rowid AS _rowid, 0 AS _tag FROM messages
+                 WHERE source_agent_id = @agentId AND a2a_thread_id IS NOT NULL
+                   AND a2a_intent IN ('QUESTION','ASSIGN','BLOCK') AND created_at >= @turnStartedAt
+                   AND id NOT IN (SELECT id FROM inter_agent_messages WHERE source_agent_id = @agentId)
+               UNION ALL
+               SELECT a2a_thread_id, created_at, rowid AS _rowid, 1 AS _tag FROM inter_agent_messages
+                 WHERE source_agent_id = @agentId AND a2a_thread_id IS NOT NULL
+                   AND a2a_intent IN ('QUESTION','ASSIGN','BLOCK') AND created_at >= @turnStartedAt
+               ORDER BY created_at ASC, _tag ASC, _rowid ASC LIMIT 1`,
+            ).get({ agentId, turnStartedAt }) as { a2a_thread_id: string } | undefined;
             // BUG-4 (comms-audit): park under the FULL thread id (not an 8-char prefix).
             // Two parked questions from one agent that share an 8-hex prefix would
             // otherwise collide, the relay's `ORDER BY rowid DESC LIMIT 1` would return
@@ -5891,6 +6277,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
               if (!r.ok) {
                 logger.warn('v2.9.18: sms auto-reply failed', { agentId, error: r.error }, agentId);
               } else {
+                // C26 (FA-C3): the SMS auto-route was the only durable-channel auto-send
+                // without a receipt, so a PM/user story could not prove it happened. Write a
+                // tier-1 receipt exactly like the sms_send TOOL and the iMessage auto-route:
+                // verified on the Twilio SID (provider-id), else http-status. r.data.sid is
+                // the SID (sendSms returns { ok, data }, not a flat r.sid). This cannot block a
+                // completion, the gate only demands receipts for turns that ran a send TOOL.
+                const smsSid = r.data.sid;
+                writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: !!smsSid, basis: smsSid ? 'provider-id' : 'http-status', providerId: smsSid ?? null, recipient: state.inboundContext.smsFromNumber, detail: { route: 'auto', textLength: state.lastAssistantTextForIM.length } });
                 persistRoutingMarker(`SMS to ${state.inboundContext.smsFromNumber}`);
                 logger.info('v2.9.18: routed reply via SMS', {
                   agentId,
@@ -6057,10 +6451,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
             `If there is genuinely nothing worth telling them, reply with [no-reply].`
           );
           const reportId = uuidv4();
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, origin_kind, origin_intent, turn_number, created_at)
-            VALUES (?, ?, 'user', ?, 'engine', 'completion_report', ?, datetime('now'))
-          `).run(reportId, agentId, reportMsg, turnNumber);
+          // D-A step 6 closeout: the LAST engine writer moved off `messages` into
+          // the inter-agent store (the other five moved in step 4). conv_key NULL
+          // keeps it a PENDING engine event: the merged getPendingEngineEvent finds
+          // it in the store and the claim branches on its home table, exactly like
+          // the scheduler/tracker/healer events. The universal NO_INTERAGENT_LEAK
+          // battery invariant now holds absolutely (no by-design exceptions).
+          insertInterAgentEngineRow({
+            id: reportId,
+            agentId,
+            content: reportMsg,
+            sourceAgentId: null,
+            originIntent: 'completion_report',
+            convKey: null,
+            turnNumber,
+          });
           // Queue wakeup so handleMessage's finally fires the report turn.
           pendingWakeups.add(agentId);
           logger.info('v2 close-the-loop: scheduled completion report after A2A turn', {
@@ -6224,6 +6629,64 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }
         } catch { /* best effort, turn teardown must not throw */ }
       }
+    }
+
+    // FA-TS4: pending-attachments teardown net. The three normal drain sites
+    // (:~3187 no-reply, :~3365 text-bearing persist) and the end-of-turn safety
+    // net (:~6064) all live INSIDE the main turn try, so a throw before terminal
+    // routing (e.g. a model 429 mid-loop) skips every one of them and strands the
+    // queued show_to_user files in the module-level per-agent buffer. Nothing
+    // clears it, so on the NEXT turn (possibly a different conversation) those
+    // files would drain onto an unrelated reply. Drain-and-flush here, on EVERY
+    // exit path, scoped to THIS turn: surface the files to their own conversation
+    // now, then clear so they can never carry forward.
+    //
+    // Idempotence vs the normal drains: every drain is a destructive read
+    // (buffers.delete in pending-attachments.ts). On a clean turn the safety net
+    // above already emptied the buffer, so this reads nothing and is a no-op.
+    // Only an error/abort path (where that net was skipped) still has content
+    // here, and this is then the SOLE drainer, so no double-surface is possible.
+    //
+    // Degraded delivery: a thrown turn has no clean reply row to ride on and the
+    // channel router never ran, so we attach the files to a minimal assistant
+    // message in this turn's OWN conversation (conv_key = chosenConvKey) on the
+    // dashboard, using the model's show_to_user caption if it left one. We
+    // deliberately do NOT re-push to iMessage/voice from teardown: on a thrown
+    // turn the channel context may be half-resolved and a channel send is a
+    // non-idempotent side effect we won't risk here. The v2.9.20 requirement
+    // (queued files are never silently lost) is met via the dashboard surface
+    // plus a loud warning.
+    try {
+      const { drainPendingAttachmentsWithCaptions } = await import('../pending-attachments.js');
+      const leftover = drainPendingAttachmentsWithCaptions(agentId);
+      if (leftover.attachments.length > 0 && counterparty.kind !== 'agent') {
+        const caption = leftover.captions.length > 0
+          ? leftover.captions.join('\n\n')
+          : 'Here are the files I prepared (the turn ended early).';
+        const leftoverId = uuidv4();
+        db.prepare(`
+          INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, conv_key, turn_number, created_at)
+          VALUES (?, ?, 'assistant', ?, ?, ?, ?, datetime('now'))
+        `).run(leftoverId, agentId, caption, JSON.stringify(leftover.attachments), chosenConvKey, turnNumber);
+        broadcast({
+          type: 'chat:message',
+          agentId,
+          message: {
+            id: leftoverId, agentId, role: 'assistant' as Message['role'],
+            content: caption,
+            tokenCount: null, modelId: null, cost: null, latencyMs: null,
+            createdAt: new Date().toISOString(),
+            attachments: leftover.attachments,
+          },
+        });
+        logger.warn('FA-TS4: flushed stranded show_to_user attachments in turn teardown', {
+          agentId, fileCount: leftover.attachments.length, turnNumber,
+        }, agentId);
+      }
+    } catch (err) {
+      logger.warn('FA-TS4: teardown attachment flush failed (non-fatal)', {
+        agentId, error: err instanceof Error ? err.message : String(err),
+      }, agentId);
     }
   }
 }

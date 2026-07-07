@@ -95,6 +95,12 @@ export const PM_AGENT_ALWAYS_LOADED = [
   'vault_search',
   'vault_get',
   'file_read',
+  // FA-PT5: PM-SOUL ("# Vault, Review Continuity") tells the PM to
+  // vault_remember important project state/decisions/blockers each cycle and
+  // vault_search before each review. vault_search was preloaded, vault_remember
+  // was not, so the save half of that per-cycle instruction cost a load_tool_docs
+  // round-trip.
+  'vault_remember',
 ];
 
 // Dreamer agent: vault-focused, extracts knowledge from conversation archives.
@@ -129,6 +135,15 @@ export const TRAINER_AGENT_ALWAYS_LOADED = [
   'save_technique',
   'update_technique',
   'publish_technique',
+  // FA-PT5: TRAINER-SOUL's "# Importing a Technique" runbook ends every import
+  // with technique_set_placeholder (step 4, fill each scrubbed secret) then
+  // technique_finalize then publish_technique (step 5). publish_technique was
+  // preloaded but its two runbook predecessors were not, so each import spent a
+  // load_tool_docs round-trip mid-flow on the floor model. (The SOUL's
+  // credential_add instruction is a separate PERMISSION gap, not a preload one:
+  // it is absent from the Trainer's tools_policy.allow, tracked under FA-X4.)
+  'technique_set_placeholder',
+  'technique_finalize',
   'send_to_agent',
   'exec',
   'file_read',
@@ -145,12 +160,22 @@ export const TRAINER_AGENT_ALWAYS_LOADED = [
 ];
 
 // Healer agent: diagnostic + agent management for injury recovery.
+// FA-PT5: HEALER-SOUL is a shell/SQL runbook built on exec(sqlite3 ...),
+// file_read, and file_list ("When unsure where a file lives, `file_list` the
+// parent"; the Diagnostic Runbook is entirely exec + file_read). Those three
+// were NOT preloaded, so on turn 1 of every diagnostic cycle the floor model was
+// told to run them but neither was in the API tools array, forcing a
+// load_tool_docs round-trip (or a give-up) before it could investigate at all.
+// PRIMARY/TRAINER/SUB_AGENT all preload exec+file_read; the Healer now does too.
 export const HEALER_AGENT_ALWAYS_LOADED = [
   ...DEFAULT_ALWAYS_LOADED_TOOLS,
   'list_agents',
   'send_to_agent',
   'reset_session',
   'imessage_send',
+  'exec',
+  'file_read',
+  'file_list',
   'vault_search',
   'vault_remember',
   'healer_log_action',
@@ -167,7 +192,7 @@ export const IMAGINER_AGENT_ALWAYS_LOADED = [
   ...DEFAULT_ALWAYS_LOADED_TOOLS,
 ];
 
-// Sub-agents (ronin / apprentice / freelance): sensible defaults for common work.
+// Sub-agents (ronin / apprentice): sensible defaults for common work.
 // These tools are used by most sub-agents regardless of specific task.
 // Permission filtering will strip any tools the sub-agent lacks permission for.
 export const SUB_AGENT_ALWAYS_LOADED = [
@@ -312,7 +337,7 @@ function getDefaultForAgent(agentId: string): string[] {
       | { name: string; classification: string }
       | undefined;
     if (row?.name === 'Dreamer') return DREAMER_AGENT_ALWAYS_LOADED;
-    if (row && ['ronin', 'apprentice', 'freelance'].includes(row.classification)) {
+    if (row && ['ronin', 'apprentice'].includes(row.classification)) {
       return SUB_AGENT_ALWAYS_LOADED;
     }
   } catch { /* DB not ready yet, use minimal default */ }

@@ -314,7 +314,7 @@ function broadcastStatus(): void {
   broadcast({
     type: 'system:tunnel_status',
     data: getTunnelStatus(),
-  } as never);
+  });
 }
 
 /**

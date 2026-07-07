@@ -3,7 +3,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
-import { estimateTokens, getMessagesOutsideFreshTail, getRecentMessages } from './store.js';
+import { estimateTokens, getFreshTailCount, getMessagesOutsideFreshTail, getRecentMessages } from './store.js';
 import {
   createLeafSummary,
   createCondensedSummary,
@@ -72,6 +72,12 @@ export const NO_CONVERSATION_PLACEHOLDER = '(system/inter-agent activity, no use
 // not "did somebody dump a 30K file into a single tool result".
 const MAX_GATE_MESSAGE_TOKENS = 4000;
 
+// Tokens the model layer adds outside the assembler's control (tool schemas) plus
+// an output reserve. The assembler reserves the same amount (assembler.ts). Also
+// used by the FA-M1 gate as the fixed, non-compressible part of the overhead when
+// converting the full window into the compressible budget.
+export const TOOL_AND_OUTPUT_RESERVE = 15000;
+
 export function estimateAssembledTokens(agentId: string, contextWindow: number): {
   total: number;
   summaryTokens: number;
@@ -83,7 +89,7 @@ export function estimateAssembledTokens(agentId: string, contextWindow: number):
   const summaries = getContextSummaries(agentId);
   const rawSummaryTokens = summaries.reduce((sum, s) => sum + (s.tokenCount ?? 0), 0);
 
-  const freshTail = getRecentMessages(agentId, getCompactionTailCount(contextWindow));
+  const freshTail = getRecentMessages(agentId, getFreshTailCount(contextWindow));
   const freshTailTokens = freshTail.reduce(
     (sum, m) => {
       const raw = m.tokenCount ?? estimateTokens(m.content);
@@ -111,7 +117,6 @@ export function estimateAssembledTokens(agentId: string, contextWindow: number):
   // depth-N summaries any further, and the loop wedges firing the same
   // "memory is too full" message forever. The assembler will trim summaries
   // to fit; the gate must reflect that, not the unbounded raw total.
-  const TOOL_AND_OUTPUT_RESERVE = 15000;
   const maxAssemblerTokens = Math.max(0, Math.floor(DEFAULTS.contextThreshold * contextWindow) - TOOL_AND_OUTPUT_RESERVE);
   const summaryBudget = Math.max(0, Math.floor((maxAssemblerTokens - briefTokens - freshTailTokens) * 0.7));
   const summaryTokens = Math.min(rawSummaryTokens, summaryBudget);
@@ -221,13 +226,8 @@ function getLeafChunkTokens(): number {
   return DEFAULTS.leafChunkTokens;
 }
 
-// Model-aware tail count for compaction boundary
-function getCompactionTailCount(contextWindow: number): number {
-  if (contextWindow >= 200000) return 80;
-  if (contextWindow >= 128000) return 64;
-  if (contextWindow >= 32000) return 40;
-  return 24;
-}
+// Model-aware tail count for compaction boundary: getFreshTailCount, imported
+// from store.js (FA-M3, single source of truth shared with the assembler).
 
 // v2.5.11, Gap-trigger threshold (mirrors UNCOMPACTED_GAP_THRESHOLD inside
 // checkAndCompact). Exported via getUncompactedGapCount for the v2 loop's
@@ -244,7 +244,7 @@ export const UNCOMPACTED_GAP_THRESHOLD = 30;
  * set of summarized message IDs, and a Set lookup. Negligible per-turn cost.
  */
 export function getUncompactedGapCount(agentId: string, contextWindow: number): number {
-  const outside = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(contextWindow));
+  const outside = getMessagesOutsideFreshTail(agentId, getFreshTailCount(contextWindow));
   const compactedIds = getCompactedMessageIds(agentId);
   return outside.filter(m => !compactedIds.has(m.id)).length;
 }
@@ -443,10 +443,12 @@ export async function checkAndCompact(
   // fresh tail that haven't yet been summarized crosses a threshold. That
   // way, summaries always cover any message that's about to fall out of
   // the fresh tail window.
-  const messagesOutsideForGap = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(contextWindow));
+  const messagesOutsideForGap = getMessagesOutsideFreshTail(agentId, getFreshTailCount(contextWindow));
   const compactedIdsForGap = getCompactedMessageIds(agentId);
   const uncompactedGapCount = messagesOutsideForGap.filter(m => !compactedIdsForGap.has(m.id)).length;
-  const UNCOMPACTED_GAP_THRESHOLD = 30;
+  // FA-M3: use the single exported UNCOMPACTED_GAP_THRESHOLD (above); the local
+  // shadow that used to sit here could drift from the exported value the v2 loop
+  // reads via getUncompactedGapCount.
   const needsCompactionByGap = uncompactedGapCount > UNCOMPACTED_GAP_THRESHOLD;
   const needsCompactionByTokens = totalTokens > threshold;
 
@@ -543,7 +545,7 @@ export async function checkAndCompact(
     // If archival fails, ABORT compaction, better to have a bloated context than lost data.
     // Exception: if the agent is on the Dreamer ignore list, the archive is
     // intentionally skipped (returns null). Don't abort compaction in that case.
-    const messagesForArchive = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(contextWindow));
+    const messagesForArchive = getMessagesOutsideFreshTail(agentId, getFreshTailCount(contextWindow));
     const archiveCompactedIds = getCompactedMessageIds(agentId);
     // D1: never re-archive messages already copied to the vault. A reset archives
     // messages without marking them compacted, so without the high-water bound a
@@ -623,7 +625,7 @@ export async function checkAndCompact(
   }
 
   // Check for proactive leaf compaction
-  const messagesOutside = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(contextWindow));
+  const messagesOutside = getMessagesOutsideFreshTail(agentId, getFreshTailCount(contextWindow));
   const compactedIds = getCompactedMessageIds(agentId);
   const uncompactedMessages = messagesOutside.filter(m => !compactedIds.has(m.id));
   const uncompactedTokens = uncompactedMessages.reduce(
@@ -698,7 +700,7 @@ export async function runLeafCompaction(
   opts?: { maxChunks?: number; abortSignal?: AbortSignal },
 ): Promise<number> {
   const cw = contextWindow ?? 200000;
-  const messagesOutside = getMessagesOutsideFreshTail(agentId, getCompactionTailCount(cw));
+  const messagesOutside = getMessagesOutsideFreshTail(agentId, getFreshTailCount(cw));
   const compactedIds = getCompactedMessageIds(agentId);
 
   // Filter to only uncompacted messages (chronological, oldest first, that's
@@ -913,7 +915,7 @@ export function rebuildContextItems(agentId: string): void {
   `).all(agentId) as TopLevelRow[];
 
   // Fresh tail messages
-  const freshTail = getRecentMessages(agentId, getCompactionTailCount(contextWindow));
+  const freshTail = getRecentMessages(agentId, getFreshTailCount(contextWindow));
 
   // Build context items: summaries first, then fresh tail messages
   const items: Array<{ itemType: 'message' | 'summary'; itemId: string }> = [];
@@ -1104,13 +1106,6 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
       error: err instanceof Error ? err.message : String(err),
     }, agentId);
   }
-}
-
-function getFreshTailCount(contextWindow: number): number {
-  if (contextWindow >= 200000) return 80;
-  if (contextWindow >= 128000) return 64;
-  if (contextWindow >= 32000) return 40;
-  return 24;
 }
 
 // ── Helpers ──

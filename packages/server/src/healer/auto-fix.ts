@@ -20,6 +20,26 @@ interface AutoFixResult {
   agentId?: string;
 }
 
+// FA-X3: a Tier-1 status reset flips an injured agent (paused/error) back to
+// idle with a raw UPDATE. That UPDATE alone leaves the recovery bookkeeping
+// stale: recovery_attempts and the per-agent Healer suppression window are
+// never cleared (so a LATER injury starts deep in the backoff ladder with a
+// shrunken wake budget, and a persistent fault bounces error->idle->error with
+// no fresh owner signal), and no AGENT_RECOVERED broadcast fires (so the
+// dashboard's injury toast lingers). Close the loop the same way a natural
+// recovered turn (loop.ts) and the Healer self-watchdog do: dynamic-import
+// injury-recovery and call onAgentRecovered. It is safe on an agent that was
+// never injured (e.g. a STUCK_AGENT reset of a 'working' agent that has no
+// injury row): the counter/suppression clears are no-ops, the pending
+// grace-timer clears find nothing, and it just emits a benign recovered
+// signal. The 30-min cooldown resets still happen; this only closes the
+// bookkeeping they were skipping.
+function clearRecoveryBookkeeping(agentId: string): void {
+  import('./injury-recovery.js')
+    .then((m) => { try { m.onAgentRecovered(agentId); } catch { /* best effort */ } })
+    .catch(() => { /* best effort */ });
+}
+
 // ── v2.3.19 (error-handling-spec Phase 4) — frequent auto-fix sweep ──
 //
 // Runs every 5 minutes engine-level, bypassing the daily Healer cycle.
@@ -67,6 +87,7 @@ export function runFrequentAutoFixes(): void {
         agentId: a.id, agentName: a.name, pausedSince: a.updated_at,
       });
       void persistAction(`Resumed ${a.name} — it had been paused for over 30 minutes`, 'success', a.id);
+      clearRecoveryBookkeeping(a.id); // FA-X3
     }
 
     // Long-errored agents (status='error' for >30 min).
@@ -83,6 +104,7 @@ export function runFrequentAutoFixes(): void {
         agentId: a.id, agentName: a.name, erroredSince: a.updated_at,
       });
       void persistAction(`Reset ${a.name} — it had been in error state for over 30 minutes`, 'success', a.id);
+      clearRecoveryBookkeeping(a.id); // FA-X3
     }
   } catch (err) {
     logger.error('runFrequentAutoFixes failed', {
@@ -120,6 +142,7 @@ function fixStuckAgent(item: DiagnosticItem): AutoFixResult {
   const db = getDb();
   db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(item.agentId);
   broadcast({ type: 'agent:status', agentId: item.agentId, status: 'idle' });
+  clearRecoveryBookkeeping(item.agentId); // FA-X3
 
   return {
     applied: true,
@@ -143,6 +166,7 @@ function fixPausedAgent(item: DiagnosticItem): AutoFixResult {
 
   db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(item.agentId);
   broadcast({ type: 'agent:status', agentId: item.agentId, status: 'idle' });
+  clearRecoveryBookkeeping(item.agentId); // FA-X3
 
   return {
     applied: true,
@@ -166,6 +190,7 @@ function fixErrorAgent(item: DiagnosticItem): AutoFixResult {
 
   db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(item.agentId);
   broadcast({ type: 'agent:status', agentId: item.agentId, status: 'idle' });
+  clearRecoveryBookkeeping(item.agentId); // FA-X3
 
   return {
     applied: true,
@@ -223,12 +248,19 @@ function fixOrphanedProject(item: DiagnosticItem): AutoFixResult {
   if (item.code !== 'ORPHANED_PROJECT') return { applied: false, description: '' };
 
   const db = getDb();
+  // D-K (owner decision): close-as-complete ONLY when every task is complete.
+  // A project that has run out of open tasks but has at least one FALLEN task
+  // must NOT be auto-closed as a success, it is left open for attention (the
+  // tracker path labels it, see checkProjectCompletion). The predicate is
+  // therefore `status != 'complete'` (not `NOT IN ('complete','fallen')`): a
+  // fallen task now blocks the close, which is also what keeps the paired
+  // ORPHANED_PROJECT detector from re-offering this project every cycle.
   const updated = db.prepare(`
     UPDATE projects SET status = 'complete', completed_at = datetime('now'), updated_at = datetime('now')
     WHERE status = 'active'
       AND NOT EXISTS (
         SELECT 1 FROM tasks t
-        WHERE t.project_id = projects.id AND t.status NOT IN ('complete', 'fallen')
+        WHERE t.project_id = projects.id AND t.status != 'complete'
       )
       AND EXISTS (SELECT 1 FROM tasks t2 WHERE t2.project_id = projects.id)
   `).run();

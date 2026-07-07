@@ -1,0 +1,17 @@
+-- FA-PT6: durable charter column on agents.
+--
+-- A spawned/created sub-agent's creator-provided charter (its identity + task
+-- instructions) was persisted ONLY as the earliest role='system' message row and
+-- recovered by a fragile sniff in getSoulContent (length>20 AND not startsWith
+-- '──'/'['), which false-rejected a terse or bracket-prefixed charter (e.g.
+-- "[Mission] ...") to '' and dropped the worker onto the generic synthesized
+-- identity, and whose LIMIT-1-on-earliest-row could latch a preceding
+-- non-charter system row. That silently ran a spawned worker on the wrong
+-- identity (behav-sig:ca67b479 class).
+--
+-- This column holds the charter durably and unambiguously, written at spawn /
+-- create / system-prompt-update time and read directly by getSoulContent. No
+-- marker text leaks into any model-visible content. Agents spawned before this
+-- migration have charter=NULL and keep working via the tightened legacy sniff
+-- (earliest non-engine-marker system row) in getSoulContent.
+ALTER TABLE agents ADD COLUMN charter TEXT DEFAULT NULL;

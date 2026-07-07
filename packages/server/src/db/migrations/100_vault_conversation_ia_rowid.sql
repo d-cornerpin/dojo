@@ -1,0 +1,33 @@
+-- 100: D-A step-4 FOLLOW-UP, store-scoped archival high-water for the inter-agent store.
+--
+-- The session-reset/termination archive pass (vault/archive.ts archiveAgentConversation)
+-- copies raw rows into vault_conversations so the Dreamer can distill them. That pass is
+-- bounded by a high-water mark (getArchiveHighWaterMark = MAX(latest_rowid)) that lives in
+-- the `messages` rowid space (migration 088). Since D-A steps 2+4, inter-agent (A2A) rows
+-- (peer AND engine-origin) live in their OWN table, `inter_agent_messages`, with its OWN
+-- independent rowid sequence. A store row's rowid is unrelated to (and on any established
+-- box far below) the `messages` high-water, so the messages-scoped bound silently EXCLUDES
+-- every store row from vault_conversations: compaction summarizes them (id-based, raw store
+-- rows persist, no data loss) but the Dreamer never sees them. This column closes that gap.
+--
+-- latest_ia_rowid is the store-space twin of latest_rowid: the highest
+-- inter_agent_messages rowid an archive covered. The store arm reads
+-- getStoreArchiveHighWaterMark = MAX(latest_ia_rowid) and copies only store rows with
+-- rowid > that high-water, exactly mirroring the messages arm. The two high-waters are
+-- INDEPENDENT: a messages archive leaves latest_ia_rowid NULL, a store archive leaves
+-- latest_rowid NULL, so MAX() over each column ignores the other lane's rows (SQLite MAX
+-- skips NULLs). rowid is unique and monotonic within its table, so the `rowid > highWater`
+-- filter is tie-free (the same reason migration 088 moved off the second-granular latest_at).
+--
+-- No backfill (NULL = archive-all-store-once, the same "never archived → archive everything
+-- the first time" default the messages high-water uses for a fresh agent). The store arm has
+-- never run, so there is nothing it previously copied to skip; seeding a store high-water
+-- from the messages-space latest_rowid would be meaningless (different rowid space). The one
+-- pre-existing overlap set is the migration-098 live-edge backfill (peer A2A copied into the
+-- store while still present in `messages`): its `messages` originals may be archived once by
+-- the messages arm and its store copies once by the store arm on the first reset. That is a
+-- bounded, one-time duplicate the Dreamer already dedups (the same dedup the D1 high-water
+-- notes); it is never a data LOSS. All A2A written after the step-2 cutover is store-only, so
+-- it can only be archived by the store arm, never doubled.
+
+ALTER TABLE vault_conversations ADD COLUMN latest_ia_rowid INTEGER;

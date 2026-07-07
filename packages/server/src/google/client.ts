@@ -158,7 +158,7 @@ export function googleWrite(
     broadcast({
       type: 'google:activity',
       data: { agentId, agentName, action, actionType: 'write', details: { ...details, account: accountId } },
-    } as never);
+    });
 
     return result;
   });

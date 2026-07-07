@@ -5,6 +5,9 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getPrimaryAgentId, getPrimaryAgentName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, isSetupCompleted, getOwnerName } from '../config/platform.js';
+import { SEND_TO_PEOPLE } from '../agent/sensei-policy.js';
+import { googleReadToolDefinitions } from '../google/tools-read.js';
+import { microsoftReadToolDefinitions } from '../microsoft/tools-read.js';
 
 const logger = createLogger('trainer-agent');
 
@@ -84,31 +87,47 @@ export function ensureTrainerAgentRunning(): void {
 
   const trainer = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(trainerId) as { id: string; status: string } | undefined;
 
+  // FU-4 (owner decision 2026-07-05): the Trainer moves from a whitelist to a
+  // DENY-list, like the primary. An EMPTY allow list means it keeps everything
+  // its manifest permits (technique tools, file read/write, exec, vault,
+  // credentials, web, tracker, history, utility, send_to_agent + in-chat
+  // replies), and only the genuinely-dangerous set below is blocked. The whole
+  // point of the migration is that a NEW tool no longer silently under-grants the
+  // Trainer, so do not reintroduce a hand-maintained allow-list here.
+  //
+  // The comms-to-people block is derived from the shared SEND_TO_PEOPLE set so a
+  // FUTURE comms tool is denied by construction (add it to sensei-policy.ts and
+  // this refresh picks it up next boot), not by remembering to edit this list.
+  // Several entries below are ALSO stripped/gated for non-primary agents already
+  // (PRIMARY_ONLY_TOOLS, the reset_session primary-or-Healer gate, the no-spawn
+  // manifest); they are listed for surface honesty and so the deny is the single
+  // authoritative statement of what the Trainer cannot do. NO file_delete entry:
+  // there is no agent-callable file_delete tool; deletion rides rm-via-exec, held
+  // by the destructive gate (FU-4 plan section 4).
   const trainerToolsPolicy = JSON.stringify({
-    allow: [
-      // Technique management
-      'save_technique', 'use_technique', 'list_techniques', 'publish_technique',
-      'update_technique', 'submit_technique_for_review', 'delete_technique',
-      'technique_list_versions',
-      'technique_set_placeholder', 'technique_finalize',
-      // File access
-      'file_read', 'file_write', 'file_list',
-      // Execution (for testing techniques, installing deps, running scripts)
-      'exec',
-      // Network (for testing API-based techniques)
-      'web_search', 'web_fetch',
-      // Communication
-      'send_to_agent', 'list_agents',
-      // Memory
-      'vault_remember', 'vault_search', 'history_search', 'history_get',
-      // Tracker, trainer drives multi-step technique builds and needs to
-      // manage its own tasks/projects without getting stuck.
-      'tracker_create_project', 'tracker_create_task', 'tracker_list_active',
-      'tracker_get_status', 'tracker_update_status',
-      'tracker_add_notes',
-      'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
-      // Utility
-      'load_tool_docs', 'get_current_time', 'complete_task',
+    allow: [],
+    deny: [
+      // (1) Sending on the owner's comms channels to real people. Shared set so a
+      // future comms tool is denied by construction. Keeps send_to_agent + replies.
+      ...SEND_TO_PEOPLE,
+      // (2) Platform / owner controls (all in PRIMARY_ONLY_TOOLS; redundant-but-honest).
+      'apply_update', 'check_for_update',
+      'set_capability_model', 'set_channel', 'set_voice', 'set_user_presence',
+      'open_settings', 'dashboard_navigate',
+      // (3) Managing other agents. update_agent is PRIMARY_ONLY; reset_session is
+      // primary-or-Healer gated, this closes it for the Trainer explicitly.
+      'update_agent', 'kill_agent', 'reset_session',
+      // (4) Spawning its own sub-agents. can_spawn_agents:false already strips
+      // spawn_agent/kill_agent from the surface; deny states it authoritatively.
+      'spawn_agent',
+      // (5) Reading the owner's personal data (owner decision 2026-07-06 night:
+      // block the read tier the deny-list migration had surfaced). Derived from
+      // the read-tool definition arrays themselves so a FUTURE read tool is
+      // denied by construction, the same discipline as SEND_TO_PEOPLE: mail,
+      // calendar, drive/onedrive, docs/sheets reads, teams reads. Technique work
+      // never needs the owner's inbox; web_search/web_fetch stay granted.
+      ...googleReadToolDefinitions.map((t) => t.name),
+      ...microsoftReadToolDefinitions.map((t) => t.name),
     ],
   });
 
@@ -120,7 +139,12 @@ export function ensureTrainerAgentRunning(): void {
   // filter even when web_fetch was on the tools_policy.allow list).
   const trainerPermissions = JSON.stringify({
     file_read: '*',
-    file_write: ['~/.dojo/techniques/**'],
+    // FU-4: the owner declined to confine the Trainer's writes to the training
+    // folders, so file_write widens from ['~/.dojo/techniques/**'] to '*'. The
+    // owner's identity/config files stay protected by the PROTECTED_IDENTITY_PATHS
+    // hard-deny in permissions.ts checkPermission (Trainer-scoped), and SOUL /
+    // secrets by the existing globals; the destructive gate holds rm-via-exec.
+    file_write: '*',
     file_delete: 'none',
     exec_allow: ['*'],
     exec_deny: [],

@@ -2242,6 +2242,17 @@ function rowToModel(row: Record<string, unknown>): Model {
       ? (typeof costPerMegapixelRaw === 'number' ? costPerMegapixelRaw : costPerUnit)
       : null;
 
+  // priceUnknown (derived, no column): the rate that applies to this model is
+  // NULL in the DB rather than an explicit 0. For token rows that's a missing
+  // input or output $/M; for every other unit it's a missing cost_per_unit.
+  // Per D-H the biller bills an unknown rate as $0, so this flag surfaces the
+  // "price unknown, set a rate" state and keeps a paid model with a failed
+  // price lookup from being silently hidden at $0.
+  const priceUnknown = pricingUnit === 'token'
+    ? (row.input_cost_per_m === null || row.input_cost_per_m === undefined ||
+       row.output_cost_per_m === null || row.output_cost_per_m === undefined)
+    : costPerUnit === null;
+
   // generation_params (new in migration 065): per-model canonical→wire param
   // spec for generation tools. null when not yet seeded.
   let generationParams: Model['generationParams'] = null;
@@ -2278,6 +2289,7 @@ function rowToModel(row: Record<string, unknown>): Model {
     pricingUnit,
     costPerUnit,
     costPerMegapixel,
+    priceUnknown,
     isEnabled: Boolean(row.is_enabled),
     thinkingEnabled,
     numCtxOverride,

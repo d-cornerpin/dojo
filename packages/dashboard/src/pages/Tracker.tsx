@@ -851,6 +851,14 @@ export const Tracker = () => {
   useEffect(() => {
     const unsubTask = subscribe('tracker:task_updated', (event: WsEvent) => {
       const e = event as TrackerTaskUpdatedEvent;
+      // Guard against a missing/partial payload. The canonical emitters send a
+      // full task row under data:, but a drifted emitter could send an empty or
+      // partial one; ignore it rather than throw (which the WS dispatch would
+      // otherwise swallow, freezing the card until a manual reload).
+      if (!e.data || !e.data.id) {
+        console.warn('[Tracker] tracker:task_updated missing data payload; ignoring', event);
+        return;
+      }
       setTasks((prev) => {
         const idx = prev.findIndex((t) => t.id === e.data.id);
         if (idx >= 0) {

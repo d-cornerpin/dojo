@@ -11,7 +11,7 @@
  * standing baseline. The cue itself is stripped from the spoken text so
  * it never reaches the TTS engine.
  *
- * The strip runs defensively for BOTH engines — Kokoro doesn't use the
+ * The strip runs defensively for BOTH engines, Kokoro doesn't use the
  * description, but if the agent emits a stray cue (e.g. in a turn that
  * routes through the local engine), we don't want "open paren open paren
  * deliver colon" read aloud.
@@ -57,7 +57,7 @@ export function parseDeliveryCue(text: string): ParsedCue {
  * like "((deliv" would land in the TTS buffer before "er: warm))" arrives.
  */
 /**
- * Stateful cue extractor for a single TTS burst. Streaming-token-safe —
+ * Stateful cue extractor for a single TTS burst. Streaming-token-safe ,
  * the agent's cue can arrive across multiple chat:chunk events
  * ("((deli" then "ver: warm))"), so the extractor buffers until the cue
  * is either complete (a closing `))`) or definitively not a cue.
@@ -75,6 +75,16 @@ export function parseDeliveryCue(text: string): ParsedCue {
  */
 export interface CueExtractor {
   consume(content: string): { content: string; description: string | null };
+  /**
+   * Release anything still held in the buffer at stream end. If the extractor
+   * is mid-buffer on what looked like a cue but the closing `))` never
+   * arrived, the held text was NOT a cue after all, so we hand it back
+   * verbatim rather than swallow it. Returns empty content when nothing is
+   * buffered (cue already resolved, or no text seen). Call this at bubble-done
+   * BEFORE the sanitizer flush so the released body still rides this bubble's
+   * tail out to TTS.
+   */
+  flush(): { content: string; description: string | null };
 }
 
 export function createCueExtractor(): CueExtractor {
@@ -85,11 +95,22 @@ export function createCueExtractor(): CueExtractor {
       if (resolved) return { content, description: null };
       buffer += content;
       if (couldBeIncompleteCue(buffer)) {
-        // Hold — more text needed to know whether this is a cue or just
+        // Hold, more text needed to know whether this is a cue or just
         // a parenthetical that happens to start with '('.
         return { content: '', description: null };
       }
       resolved = true;
+      const parsed = parseDeliveryCue(buffer);
+      buffer = '';
+      return { content: parsed.body, description: parsed.description };
+    },
+    flush(): { content: string; description: string | null } {
+      if (resolved || buffer.length === 0) return { content: '', description: null };
+      resolved = true;
+      // A complete cue would already have resolved inside consume(), so a
+      // buffer that survives to flush is an UNCLOSED cue. parseDeliveryCue is
+      // a no-op on it (CUE_RE needs the trailing `))`), returning the whole
+      // buffer as the body, exactly the text we must not drop.
       const parsed = parseDeliveryCue(buffer);
       buffer = '';
       return { content: parsed.body, description: parsed.description };
@@ -104,7 +125,7 @@ export function couldBeIncompleteCue(text: string): boolean {
   if (trimmed[0] !== '(') return false;
   // If we have a complete cue, it's not "incomplete".
   if (CUE_RE.test(trimmed)) return false;
-  // Still streaming "((deliver: ..." — looks like a partial cue.
+  // Still streaming "((deliver: ...", looks like a partial cue.
   return /^\(\(?\s*(d(e(l(i(v(e(r(\s*(:.*)?)?)?)?)?)?)?)?)?$/i.test(trimmed)
     || /^\(\(\s*deliver\s*:[^)]*$/i.test(trimmed);
 }

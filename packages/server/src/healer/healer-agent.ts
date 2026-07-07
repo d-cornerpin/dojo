@@ -22,6 +22,7 @@ import { compileDiagnosticReport } from './diagnostic.js';
 import { runAutoFixes } from './auto-fix.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { getAgentRuntime } from '../agent/runtime.js';
+import { SEND_TO_PEOPLE } from '../agent/sensei-policy.js';
 import type { Message } from '@dojo/shared';
 import {
   getPrimaryAgentId,
@@ -44,6 +45,32 @@ const HEALER_CONTEXT_OVERHEAD_TOKENS = 40_000; // sys prompt + tool schemas + va
 const HEALER_PROCESSING_GROWTH_FACTOR = 1.3;   // Healer makes fewer tool calls than Dreamer
 const HEALER_BATCH_BUDGET_CAP_RATIO = 0.35;    // hard ceiling: 35% of context for diagnostic payload
 const HEALER_FALLBACK_CONTEXT_WINDOW = 200_000; // sane default if we can't look up the model's window
+
+// Stale-proposal sweep. A pending proposal is only auto-resolved by
+// issue-matching when it carries usable provenance (an agent scope
+// and/or a diagnostic code) AND the current run shows the issue is gone.
+// Provenance-less proposals (all-NULL legacy rows, or ones the model
+// filed with no agent/code) are never issue-matched, they would vanish
+// on a false match, so an age cap is the only thing that ever closes
+// them. The cap is generous on purpose: a live proposal the owner has
+// not touched must survive many cycles, but the table still cannot grow
+// without bound.
+const PROPOSAL_EXPIRY_DAYS = 14;               // age cap: close pending proposals older than this
+const PROPOSAL_EXPIRY_NOTE = `No decision after ${PROPOSAL_EXPIRY_DAYS} days, expired unapproved and closed by sweep.`;
+const PROPOSAL_CLEARED_NOTE = 'Issue no longer detected in diagnostic, closed by sweep.';
+// D-B v2: a quietly-queued Vitals consent (a held destructive call) that the
+// owner never decided gets the same 14-day age cap, closed with a plain,
+// non-error note (a quiet Vitals drop, never a loud alert).
+const HELD_CONSENT_EXPIRY_NOTE = 'This request sat for two weeks without a decision, so I let it go. Nothing was changed or deleted.';
+
+// FA-X7(b): cap on how many cycles re-present an approved-but-unapplied
+// proposal to the Healer. An approved proposal wakes the Healer every cycle
+// until the Healer applies it (calls healer_mark_applied). If the Healer keeps
+// failing to apply it, that is an indefinite re-wake. After this many tries we
+// stop re-presenting it and tell the primary agent once that the fix is stuck,
+// so the owner can step in. Approved proposals still apply within the budget;
+// only genuinely-stuck ones fall out of the wake loop.
+const MAX_APPROVAL_REWAKES = 3;
 
 function getHealerContextWindow(modelId: string | null): number {
   if (!modelId || modelId === 'auto') return HEALER_FALLBACK_CONTEXT_WINDOW;
@@ -283,44 +310,25 @@ When you receive a \`[RECOVERY NOTICE]\`, the agent is back online. No action ne
 
 // ── Permanent Healer Agent Tools & Permissions ──
 
-const HEALER_TOOLS_POLICY = JSON.stringify({
-  allow: [
-    // Diagnostic and healing
-    'healer_propose',
-    'healer_log_action',
-    // v2.3.19, Dreamer-style log access via engine helpers. NEVER read
-    // healer-report-*.log directly; these helpers cap the response so
-    // the Healer can't choke on its own history.
-    'healer_recent_actions',
-    'healer_action_detail',
-    // v2.3.19, close the audit loop on approved proposals.
-    'healer_mark_applied',
-    // Agent management, for injury recovery
-    'list_agents',
-    'send_to_agent',       // Poke injured agents to see if they can resume
-    'reset_session',       // Clear corrupted context to heal stuck agents
-    'imessage_send',       // Alert user when an agent can't be auto-healed
-    // Vault
-    'vault_remember', 'vault_search', 'vault_forget',
-    // Memory
-    'history_search', 'history_get',
-    // File + shell access. The Healer's whole purpose is to dig into
-    // arbitrary problems and produce evidence-backed proposals. The
-    // global denies in permissions.ts (healer log files, secrets.yaml)
-    // are the only off-limits paths; everything else, the SQLite
-    // database, audit logs, app logs, configs, agent message tables, 
-    // is fair game and frequently necessary to verify what the
-    // diagnostic surfaced. `exec` is included so the Healer can run
-    // `sqlite3 ~/.dojo/data/dojo.sqlite "SELECT ..."` to look up
-    // structural fields (agent_type, config.persist, schedule_status)
-    // that no tool wrapper currently exposes. The exec deny substring
-    // 'secrets.yaml' still blocks `cat ~/.dojo/secrets.yaml` style
-    // reads via shell.
-    'file_read', 'file_list', 'exec',
-    // Utility
-    'load_tool_docs', 'get_current_time', 'complete_task',
-  ],
-});
+// FU-4 (owner decision 2026-07-05): the Healer keeps EVERY permission the primary
+// agent has for its write/exec work, with ONE deny-list carve-out. An empty allow
+// means it keeps everything its manifest permits (the prior whitelist was the FU-4
+// root cause: it silently under-granted the Healer every time a new tool shipped,
+// most visibly file_write/file_patch/file_append, which the strip dropped so the
+// Healer could not write a fix at all despite HEALER_PERMISSIONS carrying
+// file_write '*'). The deny is exactly the shared SEND_TO_PEOPLE set: those
+// comms-to-people tools (gmail/outlook send-reply-forward, teams sends, sms,
+// imessage, voice) have NO identity gate in their executors, so nothing else stops
+// the Healer from mailing/texting a real person on the owner's channels. Derived
+// from the SAME sensei-policy set the Trainer denies from so the two cannot drift:
+// a FUTURE comms tool is denied by construction (add it to sensei-policy.ts and
+// this boot refresh picks it up). The rest of the safety boundary is unchanged:
+// the destructive-action approval gate (destructive-gate.ts) holds the Healer's
+// rm/dd/truncate AND, per FU-4, its writes to the owner's identity/config files;
+// the always-on global write/exec denies (SOUL/secrets) and the non-primary
+// PRIMARY_ONLY_TOOLS strip still apply. Refreshed on the ensure/reactivate/create
+// paths below every boot, like the Trainer refreshes both columns.
+const HEALER_TOOLS_POLICY = JSON.stringify({ allow: [], deny: [...SEND_TO_PEOPLE] });
 
 const HEALER_PERMISSIONS = JSON.stringify({
   file_read: '*',
@@ -520,53 +528,118 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
     infoCount: report.infoCount,
   });
 
-  // Step 2: Sweep pending proposals, anything that's no longer in the
-  // current diagnostic is closed out as auto-resolved. Users don't check
-  // the Healer block often, and a lot of intermittent issues clear on
-  // their own (e.g., a transient provider failure, a stuck agent that
-  // restarted, a model the user removed). Without this sweep those
-  // proposals pile up forever, even after the underlying problem is
-  // gone.
+  // Step 2: Sweep pending proposals. The owner rarely checks the Healer
+  // block, and many issues clear on their own (a transient provider
+  // failure, a stuck agent that restarted, a model the owner removed),
+  // so without a sweep those proposals pile up forever. But the sweep
+  // must NEVER make a live, still-relevant proposal vanish, that would
+  // gut the approval flow the owner deliberately kept as the consent
+  // lane for routine fixes.
+  //
+  // Decision rule, per pending proposal:
+  //   1. Age cap (backstop): if it is older than PROPOSAL_EXPIRY_DAYS,
+  //      close it as expired-unapproved. This is the ONLY thing that
+  //      ever closes a provenance-less proposal, and the ultimate
+  //      guarantee the table cannot grow without bound.
+  //   2. Issue-match (only with usable provenance): if it has an agent
+  //      scope and/or a diagnostic code, close it ONLY when the current
+  //      run shows the issue is gone:
+  //        - agent-scoped  -> gone iff the current run has NO anomaly of
+  //          ANY code for that agent (conservative: keep the proposal
+  //          alive while the agent still has any trouble).
+  //        - code-only     -> gone iff the current run has NO item with
+  //          that code.
+  //   3. Otherwise (no provenance, under the age cap): keep it pending.
+  //      It is never issue-matched, so it can never vanish on a false
+  //      match; it waits for the owner or, eventually, the age cap.
+  //
+  // The prior implementation matched on `category` (free text the model
+  // supplies) against diagnostic CODES, two disjoint domains, so
+  // stillPresent was essentially always false and a proposal was
+  // auto-resolved on the very next cycle. That is the bug this replaces.
   let autoResolvedCount = 0;
+  let expiredCount = 0;
   try {
     const db = getDb();
     const pending = db.prepare(
-      `SELECT id, category, title, agent_id FROM healer_proposals WHERE status = 'pending'`,
-    ).all() as Array<{ id: string; category: string; title: string; agent_id: string | null }>;
+      `SELECT id, diagnostic_code, agent_id, approval_token, surface,
+              CAST((julianday('now') - julianday(created_at)) AS REAL) AS age_days
+       FROM healer_proposals WHERE status = 'pending'`,
+    ).all() as Array<{ id: string; diagnostic_code: string | null; agent_id: string | null; approval_token: string | null; surface: string | null; age_days: number | null }>;
     if (pending.length > 0) {
-      // Build a lookup of current diagnostic items by (code, title, agent_id).
-      // Match keys are normalized so trailing punctuation / case drift
-      // between runs doesn't accidentally re-flag a still-present issue
-      // as resolved.
-      const norm = (s: string): string => s.toLowerCase().trim().replace(/\s+/g, ' ');
-      const currentKeys = new Set<string>();
+      // Index the current run's anomalies by code and by agent so each
+      // proposal check is a Set lookup, not a scan.
+      const currentCodes = new Set<string>();
+      const currentAgents = new Set<string>();
       for (const item of report.items) {
-        // Agent-scoped issues key on (code, agent). Global issues key
-        // on (code, title), title is the discriminator there.
-        if (item.agentId) {
-          currentKeys.add(`${item.code}::${item.agentId}`);
-        }
-        currentKeys.add(`${item.code}::${norm(item.title)}`);
+        currentCodes.add(item.code.toUpperCase());
+        if (item.agentId) currentAgents.add(item.agentId);
       }
       for (const p of pending) {
-        const stillPresent = p.agent_id
-          ? currentKeys.has(`${p.category}::${p.agent_id}`)
-            || currentKeys.has(`${p.category}::${norm(p.title)}`)
-          : currentKeys.has(`${p.category}::${norm(p.title)}`);
-        if (!stillPresent) {
-          db.prepare(
+        // (0) D-B v2: a token-bearing proposal is an engine-HELD destructive
+        // consent, NOT a diagnostic anomaly. Its agent_id is the caller (the
+        // Healer), not a diagnostic scope, so issue-matching is meaningless and
+        // would wrongly close it whenever the Healer has no current anomaly.
+        // Lifecycle by lane:
+        //   - the critical TEXTED class (surface='imessage') expires on the
+        //     destructive-gate 60-minute clock with a loud owner notice;
+        //   - a quietly-queued Vitals consent gets the SAME 14-day age cap as a
+        //     routine proposal, closed here with a plain, non-error note (a quiet
+        //     Vitals drop, not an alert).
+        // Owner approval moves either out of 'pending'. Never issue-match a held
+        // call (structural marker, not text parsing).
+        if (p.approval_token) {
+          if (p.surface === 'imessage') continue; // destructive-gate owns this expiry
+          if (typeof p.age_days === 'number' && p.age_days >= PROPOSAL_EXPIRY_DAYS) {
+            const changed = db.prepare(
+              `UPDATE healer_proposals
+               SET status = 'auto_resolved', resolved_at = datetime('now'), result_summary = ?
+               WHERE id = ? AND status = 'pending'`,
+            ).run(HELD_CONSENT_EXPIRY_NOTE, p.id).changes;
+            if (changed > 0) {
+              expiredCount++;
+              try { broadcast({ type: 'healer:proposal', data: { id: p.id, status: 'auto_resolved' } }); } catch { /* */ }
+            }
+          }
+          continue;
+        }
+
+        // (1) Age cap first, applies regardless of provenance.
+        if (typeof p.age_days === 'number' && p.age_days >= PROPOSAL_EXPIRY_DAYS) {
+          const changed = db.prepare(
             `UPDATE healer_proposals
-             SET status = 'auto_resolved',
-                 resolved_at = datetime('now'),
-                 result_summary = 'Issue no longer detected in diagnostic, closed by sweep.'
+             SET status = 'auto_resolved', resolved_at = datetime('now'), result_summary = ?
              WHERE id = ? AND status = 'pending'`,
-          ).run(p.id);
-          autoResolvedCount++;
+          ).run(PROPOSAL_EXPIRY_NOTE, p.id).changes;
+          if (changed > 0) expiredCount++;
+          continue;
+        }
+
+        // (2) Issue-match, only with usable provenance.
+        const hasAgentScope = !!p.agent_id;
+        const code = p.diagnostic_code?.trim().toUpperCase() || null;
+        const hasCode = !!code;
+        if (!hasAgentScope && !hasCode) {
+          continue; // (3) no provenance: never issue-matched, keep pending
+        }
+        // Agent scope wins when present: a proposal about an agent stays
+        // live while that agent has ANY open anomaly. Code-only proposals
+        // (global, no agent) match on the exact code.
+        const stillPresent = hasAgentScope
+          ? currentAgents.has(p.agent_id as string)
+          : currentCodes.has(code as string);
+        if (!stillPresent) {
+          const changed = db.prepare(
+            `UPDATE healer_proposals
+             SET status = 'auto_resolved', resolved_at = datetime('now'), result_summary = ?
+             WHERE id = ? AND status = 'pending'`,
+          ).run(PROPOSAL_CLEARED_NOTE, p.id).changes;
+          if (changed > 0) autoResolvedCount++;
         }
       }
-      if (autoResolvedCount > 0) {
-        logger.info('Healer sweep auto-resolved stale proposals', {
-          autoResolvedCount, pendingChecked: pending.length,
+      if (autoResolvedCount > 0 || expiredCount > 0) {
+        logger.info('Healer sweep closed stale proposals', {
+          autoResolvedCount, expiredCount, pendingChecked: pending.length,
         });
       }
     }
@@ -591,11 +664,16 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
   // Healer to execute it. Now any pending approval also triggers the
   // cycle.
   const remainingIssues = report.items.filter(i => i.severity !== 'info');
+  // FA-X7(b): only proposals still under the re-wake cap can trigger a wake.
+  // Once a proposal has been re-presented MAX_APPROVAL_REWAKES times without
+  // being applied it is considered stuck (the owner was told once), so it no
+  // longer counts here and stops waking the Healer.
   const pendingApprovals = (() => {
     try {
       const row = getDb()
-        .prepare(`SELECT COUNT(*) AS cnt FROM healer_proposals WHERE status = 'approved' AND applied_at IS NULL`)
-        .get() as { cnt: number };
+        .prepare(`SELECT COUNT(*) AS cnt FROM healer_proposals
+                  WHERE status = 'approved' AND applied_at IS NULL AND rewake_count < ?`)
+        .get(MAX_APPROVAL_REWAKES) as { cnt: number };
       return row.cnt;
     } catch { return 0; }
   })();
@@ -624,16 +702,26 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
         // After executing, you MUST call healer_mark_applied(proposal_id)
         // to record the work, otherwise the proposal will show up
         // again on the next cycle.
+        // FA-X7(b): exclude proposals already at the re-wake cap. They are
+        // stuck (the owner was notified once when they hit the cap), so they
+        // are not re-presented to the Healer.
         const approved = db.prepare(`
-          SELECT id, title, proposed_fix, fix_action FROM healer_proposals
-          WHERE status = 'approved' AND applied_at IS NULL
-        `).all() as Array<{ id: string; title: string; proposed_fix: string; fix_action: string | null }>;
+          SELECT id, title, proposed_fix, fix_action, rewake_count, approval_token FROM healer_proposals
+          WHERE status = 'approved' AND applied_at IS NULL AND rewake_count < ?
+        `).all(MAX_APPROVAL_REWAKES) as Array<{ id: string; title: string; proposed_fix: string; fix_action: string | null; rewake_count: number; approval_token: string | null }>;
 
         let approvedSection = '';
         if (approved.length > 0) {
           approvedSection = '\n\n═══ APPROVED PROPOSALS, execute these, then call healer_mark_applied(proposal_id) ═══\n' +
             approved.map((p) =>
-              `[ID: ${p.id.slice(0, 8)}] ${p.title}\n   Fix: ${p.proposed_fix}`
+              // D-B step 2: a token-bearing proposal is a live destructive call the
+              // owner approved. The Healer carries it out by RE-RUNNING the exact
+              // same tool call; the engine lets it through once and records it as
+              // done automatically, so it must re-issue the action, not just
+              // acknowledge it.
+              p.approval_token
+                ? `[ID: ${p.id.slice(0, 8)}] ${p.title}\n   The owner approved this sensitive action. Re-run this exact action now to carry it out: ${p.proposed_fix}`
+                : `[ID: ${p.id.slice(0, 8)}] ${p.title}\n   Fix: ${p.proposed_fix}`
             ).join('\n') +
             '\n═══ END APPROVED ═══';
         }
@@ -707,6 +795,35 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
 
         logger.info('Healer agent woken for cycle', { healerId });
         llmTriggered = true;
+
+        // FA-X7(b): this cycle re-presented each approved-but-unapplied
+        // proposal to the Healer, count it. When a proposal reaches the cap,
+        // stop re-waking on it (the `rewake_count < ?` filters above exclude
+        // it next cycle) and tell the primary agent ONCE that the approved fix
+        // is stuck so the owner can step in. Fires exactly once per proposal:
+        // `approved` only holds rows with rewake_count < cap, so `next` reaches
+        // the cap on a single transition.
+        for (const p of approved) {
+          const next = p.rewake_count + 1;
+          db.prepare("UPDATE healer_proposals SET rewake_count = ? WHERE id = ?").run(next, p.id);
+          if (next >= MAX_APPROVAL_REWAKES) {
+            try {
+              postAgentNotice({
+                toAgentId: getPrimaryAgentId(),
+                fromName: 'Healer',
+                brief: `A fix you approved ("${p.title}") still hasn't gone through after ${MAX_APPROVAL_REWAKES} tries, so I've stopped retrying it on my own. Take a look on the Healer page when you get a chance, or let me know and we can sort it out together.`,
+                intent: 'agent_health',
+              });
+            } catch (noticeErr) {
+              logger.warn('Stuck-approval notice failed', {
+                proposalId: p.id, error: noticeErr instanceof Error ? noticeErr.message : String(noticeErr),
+              });
+            }
+            logger.warn('Approved proposal hit re-wake cap without being applied', {
+              proposalId: p.id, title: p.title, rewakeCount: next,
+            });
+          }
+        }
       }
     } catch (err) {
       logger.error('Healer LLM cycle failed', {

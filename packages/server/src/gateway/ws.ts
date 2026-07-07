@@ -3,7 +3,7 @@ import jwt from 'jsonwebtoken';
 import { getJwtSecret } from '../config/loader.js';
 import { createLogger } from '../logger.js';
 import type { WsEvent } from '@dojo/shared';
-import { deriveOrigin } from '@dojo/shared';
+import { deriveOrigin, BATCHABLE_EVENTS } from '@dojo/shared';
 
 const logger = createLogger('websocket');
 
@@ -68,16 +68,10 @@ const BATCH_INTERVAL_MS = 50; // Flush batched events every 50ms
 let batchBuffer: WsEvent[] = [];
 let batchTimer: ReturnType<typeof setTimeout> | null = null;
 
-// High-frequency event types that should be batched
-const BATCHABLE_EVENTS = new Set([
-  'chat:chunk',
-  'chat:tool_call',
-  'chat:tool_result',
-  'chat:message',
-  'agent:status',
-  'log:entry',
-  'ollama:status',
-]);
+// Which event types to coalesce is now part of the shared wire contract
+// (EVENT_BATCHABLE / BATCHABLE_EVENTS in @dojo/shared): the batching decision
+// lives beside the event union so a new event type forces an explicit choice at
+// compile time instead of silently missing this set (FA-G3).
 
 function flushBatch(): void {
   if (batchTimer) {

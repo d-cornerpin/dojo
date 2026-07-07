@@ -10,6 +10,7 @@ import { authRouter } from './routes/auth.js';
 import { configRouter } from './routes/config.js';
 import { setupRouter } from './routes/setup.js';
 import { chatRouter } from './routes/chat.js';
+import { interAgentRouter } from './routes/interagent.js';
 import { uploadRouter } from './routes/upload.js';
 import { agentsRouter } from './routes/agents.js';
 import { systemRouter } from './routes/system.js';
@@ -251,6 +252,7 @@ export function createServer() {
   app.route('/api/setup', setupDepsRouter); // /api/setup/deps/*, /api/setup/ollama/*, /api/setup/permissions/*
   app.route('/api/config', configRouter); // /api/config/providers/*, /api/config/models/*, /api/config/identity/*
   app.route('/api/chat', chatRouter);     // /api/chat/:agentId/messages
+  app.route('/api/interagent', interAgentRouter); // /api/interagent/:agentId, inter-agent lane history
   app.route('/api/upload', uploadRouter); // /api/upload/:agentId, /api/upload/file/:agentId/:filename
   app.route('/api/agents', agentsRouter); // /api/agents, /api/agents/:id
   app.route('/api/memory', memoryRouter); // /api/memory/:agentId/*

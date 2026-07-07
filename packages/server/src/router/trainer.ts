@@ -70,6 +70,33 @@ export function trainAndMaybePromote(): TrainResult {
     return { trained: false, promoted: false, reason: 'split too small' };
   }
 
+  // Class-coverage floor. A head trained on a set missing any tier class can
+  // never predict that class, so it would silently route every genuinely-heavy
+  // query below heavy, the router itself degrading the correctness floor. The
+  // only wired label source (the shadow probe) records down-tier labels only,
+  // so the heavy class is routinely absent from router_labels; without this
+  // guard the first such head trivially beats the null champion and goes live.
+  // Refuse to train on incomplete coverage rather than promote a broken head.
+  // This sits before the gradient descent so no compute is wasted and no dead
+  // challenger row is written (nothing consumes an unpromoted head; head.ts
+  // only ever reads is_active = 1). The weekly cadence, the promote floor, and
+  // the champion/challenger comparison are unchanged for full-coverage sets.
+  const present = new Set<Tier>(train.map(r => r.label));
+  const missingClasses = TIERS.filter(t => !present.has(t));
+  if (missingClasses.length > 0) {
+    logger.warn('Router head training skipped: incomplete class coverage', {
+      missingClasses,
+      presentClasses: TIERS.filter(t => present.has(t)),
+      trainingSet: train.length,
+      window: clean.length,
+    });
+    return {
+      trained: false,
+      promoted: false,
+      reason: `incomplete class coverage (missing: ${missingClasses.join(', ')})`,
+    };
+  }
+
   // Pre-normalize features.
   const Xtr = train.map(r => l2normalize(r.embedding));
   const ytr = train.map(r => classIndex[r.label]);

@@ -35,6 +35,7 @@ import type {
   AgentMessagesResponse,
   GenerationParamSpec,
   VoiceOption,
+  InterAgentMessage,
 } from '@dojo/shared';
 
 const BASE_URL = '/api';
@@ -524,12 +525,34 @@ export const getChatHistory = async (
   agentId: string,
   limit?: number,
   before?: string,
+  // wordy mode is a DIFFERENT server query (it also serves the agent's own
+  // inter-agent coordination output from the store), so it must be sent through
+  // to every page fetch, not filtered client-side out of one feed.
+  wordy?: boolean,
 ): Promise<ApiResponse<ChatHistoryResponse>> => {
   const params = new URLSearchParams();
   if (limit) params.set('limit', String(limit));
   if (before) params.set('before', before);
+  if (wordy) params.set('wordy', '1');
   const query = params.toString();
   return request<ChatHistoryResponse>(`/chat/${agentId}/messages${query ? `?${query}` : ''}`);
+};
+
+// ── Inter-agent lane ──
+
+// Load the inter-agent (A2A + engine-notice) messages the agent RECEIVED, in
+// chronological order. Backs the dashboard's Inter-Agent lane; the live path is
+// the `interagent:message` WS event. Paginated by a `before` message-id cursor.
+export const getInterAgentMessages = async (
+  agentId: string,
+  limit?: number,
+  before?: string,
+): Promise<ApiResponse<InterAgentMessage[]>> => {
+  const params = new URLSearchParams();
+  if (limit) params.set('limit', String(limit));
+  if (before) params.set('before', before);
+  const query = params.toString();
+  return request<InterAgentMessage[]>(`/interagent/${agentId}${query ? `?${query}` : ''}`);
 };
 
 // ── Agents ──
@@ -1825,6 +1848,9 @@ export interface VaultEntry {
   lastRetrievedAt: string | null;
   sourceConversationId: string | null;
   source: string;
+  // FU-2: compact JSON citation of the fact's original source, or null. Shape:
+  // { "kind": "url"|"file", "ref": "<url-or-path>", "page": 3, "section": "..." }
+  citation: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -2066,6 +2092,14 @@ export interface HealerProposal {
   // JSON-encoded array of evidence bullets the healer cited when
   // proposing the fix. Required for new proposals; null for legacy rows.
   evidence_json?: string | null;
+  // Diagnostic code the proposal traces back to (e.g. AGENT_PAUSED),
+  // captured for the stale-proposal sweep. Null for legacy rows.
+  diagnostic_code?: string | null;
+  // D-B step 3: engine-derived urgency + delivery surface, stamped at file time
+  // (approval-routing.ts). Empty/NULL on legacy rows. The dashboard re-presents the
+  // urgent+toast consent toast on load from these (App.tsx GlobalAlerts).
+  urgency?: 'routine' | 'urgent' | null;
+  surface?: 'vitals' | 'toast' | 'imessage' | null;
 }
 
 export interface HealerAction {

@@ -441,6 +441,17 @@ export function preemptAgentForUrgentMessage(agentId: string): boolean {
 // v1-only constants. v2's loop has its own equivalent constants. Removed
 // in Phase 9 Stage 2.
 
+// FA-A2: explicit stop states. 'terminated' is a hard end; 'paused' (error-loop)
+// and 'error' (Tier-D) are "stop and let a human or the Healer look" states. The
+// self-triggered re-run paths (the post-turn drain and the queued self-wakeup)
+// must NOT auto-resume any of these. A genuinely NEW inbound (handleMessage, which
+// only blocks 'terminated') and an explicit dashboard resume/reset still wake the
+// agent, and transient recovery still flows through the injury-recovery auto-wake,
+// all of which enter via handleMessage rather than these gates.
+function isSelfResumeBlockedStatus(status: string | undefined): boolean {
+  return status === 'terminated' || status === 'paused' || status === 'error';
+}
+
 class AgentRuntime {
   async handleMessage(agentId: string, _content: string): Promise<void> {
     // C20: never run a terminated agent (defense-in-depth for every entry path, the
@@ -620,7 +631,10 @@ class AgentRuntime {
       // (no terminal reply), so we stop self-spinning and idle until a new inbound.
       try {
         const drainStatus = (getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
-        if (drainStatus !== 'terminated') {
+        // FA-A2: honor the stop states. Do not self-re-queue a wakeup for a
+        // paused/errored agent just because conversations are waiting; those
+        // messages are persisted and served on the next real inbound or resume.
+        if (!isSelfResumeBlockedStatus(drainStatus)) {
           const waiting = getWaitingHumanConversations(agentId);
           if (waiting.length > 0) {
             const head = waiting[0].oldestWaitingRowid;
@@ -693,8 +707,12 @@ class AgentRuntime {
           const status = (getDb()
             .prepare('SELECT status FROM agents WHERE id = ?')
             .get(agentId) as { status?: string } | undefined)?.status;
-          if (status === 'terminated') {
-            logger.info('Skipping queued wakeup, agent is terminated', { agentId }, agentId);
+          // FA-A2: a wakeup queued before the agent stopped (e.g. a new inbound
+          // arrived during a turn that then errored) must not self-resume a
+          // paused/errored/terminated agent. The message stays persisted and is
+          // served on the next real inbound or an explicit resume.
+          if (isSelfResumeBlockedStatus(status)) {
+            logger.info('Skipping queued wakeup, agent is in a stop state', { agentId, status }, agentId);
             return;
           }
           logger.info('Processing queued wakeup', { agentId }, agentId);

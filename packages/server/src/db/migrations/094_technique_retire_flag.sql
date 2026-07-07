@@ -1,0 +1,15 @@
+-- 094 (FA-TS6): durable retirement flag on techniques.
+--
+-- findRetirementCandidates() identifies published techniques with heavy use and
+-- a low recent success rate, but the distillation cycle only ever surfaced the
+-- COUNT to the primary and persisted nothing, so the signal died with the cycle.
+-- This column lets each cycle record which techniques currently look like
+-- retirement candidates and name them for the owner. Retirement stays
+-- owner-in-the-loop: nothing is auto-archived; this is a suggestion flag only.
+--
+--   retire_flagged_at  ISO timestamp of the FIRST cycle that flagged this
+--                      technique as a retirement candidate (preserved across
+--                      cycles while it stays a candidate). Cleared back to NULL
+--                      once a later cycle finds it healthy again (success rate
+--                      recovered, or usage fell below the retirement floor).
+ALTER TABLE techniques ADD COLUMN retire_flagged_at TEXT DEFAULT NULL;

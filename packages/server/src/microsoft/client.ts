@@ -176,7 +176,7 @@ export function msGraphWrite(
     broadcast({
       type: 'microsoft:activity',
       data: { agentId, agentName, action, actionType: 'write', details: { ...details, account: accountId } },
-    } as never);
+    });
 
     return result;
   });

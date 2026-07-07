@@ -8,6 +8,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { generateEmbedding } from '../memory/embeddings.js';
 import { estimateTokens } from '../memory/store.js';
+import { getHouseholdAgentIds } from '../config/platform.js';
 
 const logger = createLogger('vault-store');
 
@@ -19,6 +20,38 @@ const MAX_ENTRY_TOKENS = 500;
 // agent-authored personal entries stay private per agent. The cross-agent
 // privacy scoping must never hide the owner's own hand-written entries.
 export const OWNER_VAULT_AGENT_ID = 'manual';
+
+// ── D-A: household recall scope (the single choke point) ──
+//
+// Decision D-A: distilled vault memory is SHARED across the household's agents;
+// the original W3-4 harness-peer leak is re-solved by EXCLUSION, not by
+// author-scoping every recall. This resolves the set of author ids a given
+// caller may recall from:
+//   - A household MEMBER (its id is in getHouseholdAgentIds(): the primaries +
+//     the Dreamer) recalls the full household set PLUS the owner, so distilled
+//     memory reaches the humans and a member can cite what the Dreamer filed.
+//   - A NON-member (a spawned worker, a harness probe, a legacy duplicate service
+//     agent) keeps today's own-plus-owner scope [self, OWNER]. This is
+//     byte-identical to the prior two-id OR, so an excluded agent's injected
+//     recall context is unchanged (the DeepSeek V4 Flash floor protection: only
+//     the IN-list membership moves, never the SQL shape around it).
+//
+// OWNER_VAULT_AGENT_ID is ALWAYS included: owner hand-written entries are meant
+// for every agent. The write path is untouched (entries keep their author id);
+// exclusion is structural on both sides, a non-member's id is in no member's
+// scope, and no member's id is in a non-member's scope.
+export function resolveRecallScope(callerAgentId: string): string[] {
+  const ids = new Set<string>([callerAgentId, OWNER_VAULT_AGENT_ID]);
+  try {
+    const household = getHouseholdAgentIds();
+    if (household.includes(callerAgentId)) {
+      for (const id of household) ids.add(id);
+    }
+  } catch {
+    /* config not ready: fall back to [self, OWNER], the pre-D-A behavior */
+  }
+  return [...ids];
+}
 
 // ── Types ──
 
@@ -39,6 +72,15 @@ export interface VaultEntry {
   lastRetrievedAt: string | null;
   sourceConversationId: string | null;
   source: string;
+  /**
+   * FU-2: compact JSON citation of the ORIGINAL source of this fact, so an agent
+   * can cite it and re-open it later. Shape (only known fields present):
+   *   { "kind": "url" | "file", "ref": "<url-or-path>", "page": 3, "section": "..." }
+   * NULL = no citation (entries without one behave exactly as before). Metadata
+   * only: not embedded, not counted against the vault_remember caps, never used
+   * in dedup/supersede similarity. See formatCitationSuffix for rendering.
+   */
+  citation: string | null;
   embedding: Buffer | null;
   /**
    * Namespace scope. NULL = personal vault (legacy semantics). 'squad:<group_id>' =
@@ -60,6 +102,9 @@ export interface VaultConversation {
   latestAt: string;
   isProcessed: boolean;
   processedAt: string | null;
+  // FA-V4: bounded Dreamer retry + poison escalation (migration 091).
+  attempts: number;
+  poisoned: boolean;
   createdAt: string;
 }
 
@@ -101,6 +146,7 @@ interface VaultEntryRow {
   last_retrieved_at: string | null;
   source_conversation_id: string | null;
   source: string;
+  citation: string | null;
   embedding: Buffer | null;
   namespace: string | null;
   created_at: string;
@@ -118,6 +164,10 @@ interface VaultConversationRow {
   latest_at: string;
   is_processed: number;
   processed_at: string | null;
+  // FA-V4 (migration 091). Older rows predate the columns; COALESCE in the
+  // mapper defaults them so a NULL never surfaces as NaN / undefined.
+  attempts: number | null;
+  poisoned: number | null;
   created_at: string;
 }
 
@@ -160,6 +210,7 @@ function rowToEntry(row: VaultEntryRow): VaultEntry {
     lastRetrievedAt: row.last_retrieved_at,
     sourceConversationId: row.source_conversation_id,
     source: row.source,
+    citation: row.citation ?? null,
     embedding: row.embedding,
     namespace: row.namespace ?? null,
     createdAt: row.created_at,
@@ -179,6 +230,8 @@ function rowToConversation(row: VaultConversationRow): VaultConversation {
     latestAt: row.latest_at,
     isProcessed: row.is_processed === 1,
     processedAt: row.processed_at,
+    attempts: row.attempts ?? 0,
+    poisoned: row.poisoned === 1,
     createdAt: row.created_at,
   };
 }
@@ -202,6 +255,43 @@ function rowToReport(row: DreamReportRow): DreamReport {
     durationMs: row.duration_ms,
     createdAt: row.created_at,
   };
+}
+
+// ── Citations (FU-2) ──
+
+/**
+ * Parsed shape of the vault_entries.citation JSON column. Only `kind` + `ref`
+ * are guaranteed; `page`/`section` appear only when the source named them.
+ */
+export interface VaultCitation {
+  kind: 'url' | 'file';
+  ref: string;
+  page?: number;
+  section?: string;
+}
+
+/**
+ * Render a stored citation as a compact recall suffix, e.g.
+ *   [source: doctor-report-2026.pdf p.3]
+ * Returns '' for a NULL/blank/unparseable citation so callers can append
+ * unconditionally. File paths collapse to the last segment to stay short (the
+ * full path lives in the stored citation, surfaced verbatim by vault_get, so
+ * the source is still re-openable). URLs are shown as-is.
+ */
+export function formatCitationSuffix(citation: string | null | undefined): string {
+  if (!citation) return '';
+  let c: Partial<VaultCitation>;
+  try { c = JSON.parse(citation) as Partial<VaultCitation>; } catch { return ''; }
+  if (!c || typeof c.ref !== 'string' || c.ref.length === 0) return '';
+  let ref = c.ref;
+  if (c.kind === 'file') {
+    const seg = ref.split(/[\\/]/).filter(Boolean).pop();
+    if (seg) ref = seg;
+  }
+  let s = ref;
+  if (typeof c.page === 'number' && Number.isFinite(c.page)) s += ` p.${c.page}`;
+  if (typeof c.section === 'string' && c.section.trim().length > 0) s += ` (${c.section.trim()})`;
+  return ` [source: ${s}]`;
 }
 
 // ── Cosine Similarity ──
@@ -232,6 +322,12 @@ export async function createEntry(params: {
   isPinned?: boolean;
   sourceConversationId?: string;
   source?: string;
+  /**
+   * FU-2: pre-serialized compact JSON citation of the fact's original source
+   * (built by the vault_remember tool layer). Persisted as-is; NULL/undefined =
+   * no citation. Never embedded, never counted against the entry-length caps.
+   */
+  citation?: string | null;
   /**
    * Optional namespace. NULL/undefined = personal vault. 'squad:<group_id>' =
    * shared with squad members (Phase 7).
@@ -286,8 +382,8 @@ export async function createEntry(params: {
   }
 
   db.prepare(`
-    INSERT INTO vault_entries (id, agent_id, agent_name, type, content, context, confidence, is_permanent, tags, is_pinned, source_conversation_id, source, embedding, namespace, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    INSERT INTO vault_entries (id, agent_id, agent_name, type, content, context, confidence, is_permanent, tags, is_pinned, source_conversation_id, source, citation, embedding, namespace, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
   `).run(
     id,
     params.agentId,
@@ -301,6 +397,7 @@ export async function createEntry(params: {
     params.isPinned ? 1 : 0,
     params.sourceConversationId ?? null,
     params.source ?? 'agent',
+    params.citation ?? null,
     embeddingBuf,
     params.namespace ?? null,
   );
@@ -409,9 +506,15 @@ export function listEntries(options?: {
   }
   if (options?.agentId) {
     if (options.includeOwnerScope) {
-      conditions.push('(agent_id = ? OR agent_id = ?)');
-      params.push(options.agentId, OWNER_VAULT_AGENT_ID);
+      // D-A: household recall scope. Members see the whole household + Dreamer +
+      // owner; non-members resolve to [self, OWNER], byte-identical rows to the
+      // prior two-id OR. resolveRecallScope already appends OWNER.
+      const scope = resolveRecallScope(options.agentId);
+      conditions.push(`agent_id IN (${scope.map(() => '?').join(', ')})`);
+      params.push(...scope);
     } else {
+      // Strict single-agent equality (owner-facing dashboard listing). No recall
+      // expansion here: this path is not agent recall.
       conditions.push('agent_id = ?');
       params.push(options.agentId);
     }
@@ -505,9 +608,13 @@ export async function semanticSearch(query: string, options?: {
     conditions.push('namespace IS NULL');
   }
   if (options?.agentId) {
-    // Agent recall always includes the owner scope (see OWNER_VAULT_AGENT_ID).
-    conditions.push('(agent_id = ? OR agent_id = ?)');
-    params.push(options.agentId, OWNER_VAULT_AGENT_ID);
+    // D-A: household recall scope. Members recall every member + the Dreamer +
+    // the owner; non-members resolve to [self, OWNER], byte-identical rows to the
+    // prior two-id OR (see resolveRecallScope). The embed-fail fallback above
+    // routes through listEntries(includeOwnerScope), which applies the same scope.
+    const scope = resolveRecallScope(options.agentId);
+    conditions.push(`agent_id IN (${scope.map(() => '?').join(', ')})`);
+    params.push(...scope);
   }
 
   const where = conditions.join(' AND ');
@@ -614,13 +721,20 @@ export function updateRetrievalStats(entryIds: string[]): void {
 // (OWNER_VAULT_AGENT_ID) stay visible to all agents by design.
 export function getPinnedEntries(agentId?: string): VaultEntry[] {
   const db = getDb();
-  const rows = (agentId
-    ? db.prepare(
-        'SELECT * FROM vault_entries WHERE is_pinned = 1 AND is_obsolete = 0 AND (agent_id = ? OR agent_id = ?) ORDER BY created_at DESC'
-      ).all(agentId, OWNER_VAULT_AGENT_ID)
-    : db.prepare(
-        'SELECT * FROM vault_entries WHERE is_pinned = 1 AND is_obsolete = 0 ORDER BY created_at DESC'
-      ).all()) as VaultEntryRow[];
+  let rows: VaultEntryRow[];
+  if (agentId) {
+    // D-A: household recall scope. Non-members resolve to [self, OWNER],
+    // byte-identical rows to the prior two-id OR (see resolveRecallScope).
+    const scope = resolveRecallScope(agentId);
+    const inList = scope.map(() => '?').join(', ');
+    rows = db.prepare(
+      `SELECT * FROM vault_entries WHERE is_pinned = 1 AND is_obsolete = 0 AND agent_id IN (${inList}) ORDER BY created_at DESC`
+    ).all(...scope) as VaultEntryRow[];
+  } else {
+    rows = db.prepare(
+      'SELECT * FROM vault_entries WHERE is_pinned = 1 AND is_obsolete = 0 ORDER BY created_at DESC'
+    ).all() as VaultEntryRow[];
+  }
   return rows.map(rowToEntry);
 }
 
@@ -639,8 +753,11 @@ export function getPinnedEntries(agentId?: string): VaultEntry[] {
 // leak across agents. Owner-authored entries stay visible to all agents.
 export function getSessionContextEntries(agentId?: string): VaultEntry[] {
   const db = getDb();
-  const agentCond = agentId ? 'AND (agent_id = ? OR agent_id = ?)' : '';
-  const params: unknown[] = agentId ? [agentId, OWNER_VAULT_AGENT_ID] : [];
+  // D-A: household recall scope. Non-members resolve to [self, OWNER],
+  // byte-identical rows to the prior two-id OR (see resolveRecallScope).
+  const scope = agentId ? resolveRecallScope(agentId) : [];
+  const agentCond = agentId ? `AND agent_id IN (${scope.map(() => '?').join(', ')})` : '';
+  const params: unknown[] = scope;
   const rows = db.prepare(
     `SELECT * FROM vault_entries
      WHERE is_obsolete = 0
@@ -666,13 +783,18 @@ export function archiveConversation(params: {
   // archival high-water. Optional so older callers still compile; null when the
   // batch carried no rowid.
   latestRowid?: number | null;
+  // Migration 100 (D-A step-4 follow-up): the highest inter_agent_messages rowid
+  // in this archive, the STORE-space archival high-water (getStoreArchiveHighWaterMark).
+  // Independent from latestRowid: a messages archive leaves this NULL, a store
+  // archive leaves latestRowid NULL. Optional so every existing caller compiles.
+  latestIaRowid?: number | null;
 }): string {
   const db = getDb();
   const id = uuidv4();
 
   db.prepare(`
-    INSERT INTO vault_conversations (id, agent_id, agent_name, messages, message_count, token_count, earliest_at, latest_at, latest_rowid, is_processed, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+    INSERT INTO vault_conversations (id, agent_id, agent_name, messages, message_count, token_count, earliest_at, latest_at, latest_rowid, latest_ia_rowid, is_processed, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
   `).run(
     id,
     params.agentId,
@@ -683,6 +805,7 @@ export function archiveConversation(params: {
     params.earliestAt,
     params.latestAt,
     params.latestRowid ?? null,
+    params.latestIaRowid ?? null,
   );
 
   logger.info('Conversation archived to vault', {
@@ -697,10 +820,55 @@ export function archiveConversation(params: {
 
 export function getUnprocessedConversations(): VaultConversation[] {
   const db = getDb();
+  // FA-V4: poisoned archives (the Dreamer failed to distill them after the
+  // bounded retry) are excluded from the work queue so the engine stops
+  // re-feeding a pathological archive to the model forever. They are surfaced
+  // by the DREAM_POISONED Healer diagnostic instead.
   const rows = db.prepare(
-    'SELECT * FROM vault_conversations WHERE is_processed = 0 ORDER BY created_at ASC'
+    'SELECT * FROM vault_conversations WHERE is_processed = 0 AND poisoned = 0 ORDER BY created_at ASC'
   ).all() as VaultConversationRow[];
   return rows.map(rowToConversation);
+}
+
+// ── FA-V4: bounded Dreamer retry + poison escalation ──
+
+// A Dreamer batch that ended in a non-'complete' terminal status was NOT
+// distilled. Bump the per-archive attempt counter so a persistently-failing
+// archive escalates instead of retrying forever. Only touches rows still
+// awaiting processing (never re-counts a distilled or already-poisoned one).
+// Returns the new attempt count so the caller can decide whether to poison.
+export function incrementArchiveAttempt(id: string): number {
+  const db = getDb();
+  db.prepare(
+    'UPDATE vault_conversations SET attempts = attempts + 1 WHERE id = ? AND is_processed = 0 AND poisoned = 0'
+  ).run(id);
+  const row = db.prepare('SELECT attempts FROM vault_conversations WHERE id = ?').get(id) as
+    | { attempts: number } | undefined;
+  return row?.attempts ?? 0;
+}
+
+// Mark an archive poisoned after it crossed the attempt cap without a distill.
+// Deliberately does NOT set is_processed=1: the archive was never distilled, so
+// claiming it was processed would be a lie (and would hide it from the backlog
+// view for the wrong reason). poisoned=1 excludes it from the work queue, the
+// backlog count, and the DREAM_STALE age signal, and lights the DREAM_POISONED
+// diagnostic. Guarded on is_processed=0 so a racing 'complete' pass wins.
+export function markArchivePoisoned(id: string, reason: string): void {
+  const db = getDb();
+  db.prepare(
+    "UPDATE vault_conversations SET poisoned = 1, poisoned_at = datetime('now'), poison_reason = ? WHERE id = ? AND is_processed = 0"
+  ).run(reason, id);
+}
+
+// Summary for the DREAM_POISONED Healer diagnostic: how many archives were
+// parked, plus the most recent reason/time for the plain-language detail.
+export function getPoisonedArchiveStats(): { count: number; latestReason: string | null; latestAt: string | null } {
+  const db = getDb();
+  const count = (db.prepare('SELECT COUNT(*) as c FROM vault_conversations WHERE poisoned = 1').get() as { c: number }).c;
+  const latest = db.prepare(
+    'SELECT poison_reason, poisoned_at FROM vault_conversations WHERE poisoned = 1 ORDER BY poisoned_at DESC LIMIT 1'
+  ).get() as { poison_reason: string | null; poisoned_at: string | null } | undefined;
+  return { count, latestReason: latest?.poison_reason ?? null, latestAt: latest?.poisoned_at ?? null };
 }
 
 // FN-1 (behav-sig:wave3-memory-across-reset-race). A session reset archives the
@@ -903,7 +1071,10 @@ export function getVaultStats(): {
     'SELECT COUNT(*) as c FROM vault_entries WHERE last_retrieved_at >= ? AND is_obsolete = 0'
   ).get(todayStart.toISOString()) as { c: number }).c;
 
-  const unprocessedArchives = (db.prepare('SELECT COUNT(*) as c FROM vault_conversations WHERE is_processed = 0').get() as { c: number }).c;
+  // FA-V4: poisoned archives are not "waiting to be dreamed", they were tried
+  // and parked. Exclude them so DREAM_BACKLOG stays honest and a parked archive
+  // does not inflate the backlog forever.
+  const unprocessedArchives = (db.prepare('SELECT COUNT(*) as c FROM vault_conversations WHERE is_processed = 0 AND poisoned = 0').get() as { c: number }).c;
 
   const lastDream = db.prepare('SELECT created_at FROM dream_reports ORDER BY created_at DESC LIMIT 1').get() as { created_at: string } | undefined;
 

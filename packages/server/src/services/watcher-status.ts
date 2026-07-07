@@ -102,7 +102,7 @@ export function maybeAlertOnFailure(params: {
       error: message,
       severity: 'error',
       retryable: false,
-    } as never);
+    });
   } catch { /* best effort */ }
   // v2.5 — watcher failures are critical for iMessage routing because
   // when Gmail/Outlook/Teams stops polling, the user's email/chat input
@@ -137,7 +137,7 @@ export function maybeAlertOnRecovery(params: {
       error: message,
       severity: 'info',
       retryable: false,
-    } as never);
+    });
   } catch { /* best effort */ }
   // v2.5 — pair to the failure alert above. Critical so the recovery
   // confirmation reaches the same channel (the phone) that got the

@@ -284,7 +284,7 @@ migrationRouter.post('/run-dependency-setup', (c) => {
     fs.writeFileSync(scriptPath, script, { mode: 0o755 });
 
     const child = spawn('bash', [scriptPath], { cwd: os.homedir(), env: process.env });
-    const emit = (line: string) => broadcast({ type: 'migration:depsetup', data: { line } } as never);
+    const emit = (line: string) => broadcast({ type: 'migration:depsetup', data: { line } });
     const onData = (buf: Buffer) => {
       for (const line of buf.toString().split('\n')) if (line.length > 0) emit(line);
     };
@@ -301,12 +301,12 @@ migrationRouter.post('/run-dependency-setup', (c) => {
       } catch (err) {
         logger.warn('Post-install re-check failed', { error: err instanceof Error ? err.message : String(err) });
       }
-      broadcast({ type: 'migration:depsetup', data: { done: true, ok: code === 0, exitCode: code } } as never);
+      broadcast({ type: 'migration:depsetup', data: { done: true, ok: code === 0, exitCode: code } });
       logger.info('Dependency setup finished', { exitCode: code });
     });
     child.on('error', (err) => {
       try { fs.unlinkSync(scriptPath); } catch { /* ignore */ }
-      broadcast({ type: 'migration:depsetup', data: { done: true, ok: false, error: err.message } } as never);
+      broadcast({ type: 'migration:depsetup', data: { done: true, ok: false, error: err.message } });
       logger.error('Dependency setup failed to start', { error: err.message });
     });
     logger.info('Dependency setup started');

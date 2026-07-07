@@ -2,7 +2,7 @@
 // WebSocket Event Type Definitions
 // ════════════════════════════════════════
 
-import type { Agent, AgentMessage, CompletionAnnouncement, HealthData, LogEntry, Message, Project, Task } from './types.js';
+import type { Agent, AgentMessage, CompletionAnnouncement, HealthData, LogEntry, Message, MessageRole, Project, Task } from './types.js';
 
 export interface AgentStatusEvent {
   type: 'agent:status';
@@ -72,6 +72,53 @@ export interface ChatSourceUpdatedEvent {
   agentId: string;
   messageId: string;
   source: 'voice' | null;
+}
+
+/**
+ * One inter-agent message as the dashboard's Inter-Agent lane renders it. This
+ * is the DEDICATED lane for agent-to-agent (A2A) traffic and engine-origin
+ * notices, which physically live in the `inter_agent_messages` store (D-A), NOT
+ * in the primary's `messages` chat table. A2A therefore leaves `chat:message`
+ * entirely: the delivery seams (a2a-transport peer delivery, agent-notice engine
+ * notices) broadcast `interagent:message` instead, and the lane loads history
+ * from GET /api/interagent/:agentId. `agentId` is the RECIPIENT (the woken
+ * agent), so the lane filters to the currently-viewed agent exactly like chat.
+ * The payload is self-sufficient (no MessageOrigin dependency) so the seam in
+ * a2a-transport.ts, which imports @dojo/shared type-only to dodge the packaged-
+ * runtime import trap, can build it without a runtime `deriveOrigin` call.
+ */
+export interface InterAgentMessage {
+  id: string;
+  /** The recipient agent (the woken agent). The lane filters on this. */
+  agentId: string;
+  role: MessageRole;
+  content: string;
+  createdAt: string;
+  /** Sender agent id for peer A2A; null for engine-origin subsystem notices. */
+  sourceAgentId: string | null;
+  /** Resolved display name of the sender (an agent name, or a subsystem label
+   *  like "Healer"/"Scheduler" for engine notices). */
+  senderName: string | null;
+  /** Resolved display name of the recipient agent. May be null on the live
+   *  broadcast path (the lane fills it from the viewed agent it already knows). */
+  recipientName: string | null;
+  /** a2a_thread_id, groups messages into a conversation thread. Null for engine
+   *  notices that carry no thread. */
+  threadId: string | null;
+  /** A2A intent (QUESTION/ASSIGN/ANSWER/…) or the engine origin_intent. */
+  intent: string | null;
+  /** Whether the sender expects a reply (a2a_requires_response). */
+  requiresResponse: boolean;
+  /** 'engine' = platform-origin notice/event; null = peer A2A. */
+  originKind: 'engine' | null;
+  attachments?: Message['attachments'];
+}
+
+export interface InterAgentMessageEvent {
+  type: 'interagent:message';
+  /** Recipient agent id (the lane filters to the viewed agent, like chat). */
+  agentId: string;
+  message: InterAgentMessage;
 }
 
 export interface ChatErrorEvent {
@@ -194,15 +241,6 @@ export interface ResourceWarningEvent {
   };
 }
 
-export interface WatchdogAlertEvent {
-  type: 'watchdog:alert';
-  data: {
-    alertType: string;
-    message: string;
-    timestamp: string;
-  };
-}
-
 /**
  * Emitted at server startup when the dep installer freshly installs a brew
  * package. The dashboard toasts each one so the user knows what changed.
@@ -276,8 +314,40 @@ export interface EngineActivityEvent {
   };
 }
 
+/**
+ * Emitted when the Healer files a new fix proposal that needs owner approval
+ * (healer_propose) and again when an approved proposal is marked applied
+ * (healer_mark_applied). The dashboard's HealerVitals card re-runs its
+ * proposals/actions load() on this event so a freshly-filed consent decision
+ * (or a just-applied fix) appears live instead of only after a page reload.
+ * The two emit sites send different fields, so everything past `id` is
+ * optional: the propose site sends `title` + `severity`; the mark-applied
+ * site sends `status: 'applied'`.
+ */
+export interface HealerProposalEvent {
+  type: 'healer:proposal';
+  data: {
+    id: string;
+    title?: string;
+    severity?: string;
+    // Resolution stamps. Every resolution site broadcasts its status so a live
+    // surface (the step-4 decision toast) can drop a stale pending card no
+    // matter WHERE the proposal was resolved (toast button, Vitals, the
+    // 60-minute urgent expiry sweep, or the Healer applying it).
+    status?: 'applied' | 'approved' | 'denied' | 'auto_resolved';
+    // D-B step 2: the engine stamps these on a proposal so a later surface
+    // (step 4 orb toast, step 5 iMessage) can decide from the live WS frame,
+    // without a refetch, whether this proposal is urgent and which lane it
+    // belongs to. Optional so the existing propose/mark-applied emit sites,
+    // which never set them, keep compiling.
+    urgency?: 'routine' | 'urgent';
+    surface?: 'vitals' | 'toast' | 'imessage';
+  };
+}
+
 export type WsEvent =
   | AgentStatusEvent
+  | HealerProposalEvent
   | VideoJobUpdateEvent
   | GenerationJobUpdateEvent
   | EngineActivityEvent
@@ -285,6 +355,7 @@ export type WsEvent =
   | ChatReasoningChunkEvent
   | ChatMessageEvent
   | ChatSourceUpdatedEvent
+  | InterAgentMessageEvent
   | ChatToolCallEvent
   | ChatToolResultEvent
   | ChatErrorEvent
@@ -302,7 +373,6 @@ export type WsEvent =
   | CostAlertEvent
   | ProviderStatusEvent
   | ResourceWarningEvent
-  | WatchdogAlertEvent
   | SystemDepInstalledEvent
   | OllamaStatusEvent
   | TechniqueCreatedEvent
@@ -324,7 +394,30 @@ export type WsEvent =
   | DockOpenEvent
   | DockCollapseEvent
   | CanvasUpdatedEvent
-  | UiNavigateEvent;
+  | UiNavigateEvent
+  | GoogleConnectedEvent
+  | GoogleDisconnectedEvent
+  | GoogleActivityEvent
+  | MicrosoftConnectedEvent
+  | MicrosoftDisconnectedEvent
+  | MicrosoftOfficePackagesEvent
+  | MicrosoftActivityEvent
+  | PlaudAuthUrlEvent
+  | PlaudConnectedEvent
+  | PlaudDisconnectedEvent
+  | PlaudLoginFailedEvent
+  | GroupCreatedEvent
+  | GroupDeletedEvent
+  | BackfillProgressEvent
+  | DreamStartedEvent
+  | DreamCompleteEvent
+  | DreamRecoveryEvent
+  | TaskRunStartedEvent
+  | TaskRunCompleteEvent
+  | TrackerTaskLogEvent
+  | SystemTunnelStatusEvent
+  | MigrationDepsetupEvent
+  | SystemRestartEvent;
 
 /**
  * Open the right dock for the user (slides the chat left). Emitted by the
@@ -550,3 +643,306 @@ export interface VoiceSleepDetectedEvent {
   agentId: string;
   phrase: string;
 }
+
+// ── Integration connect / activity events ──
+//
+// Google and Microsoft workspace connect/disconnect toggles and per-write
+// activity. `slot` is the account slot ('agent' | 'user' today; a plain string
+// so multi-account additions don't break the wire contract). None of these are
+// consumed by the dashboard yet, but they are typed so the compiler guards the
+// wire shape and a future consumer can subscribe without guessing.
+
+export interface GoogleConnectedEvent {
+  type: 'google:connected';
+  data: { email: string; slot: string };
+}
+
+export interface GoogleDisconnectedEvent {
+  type: 'google:disconnected';
+  data: { slot: string };
+}
+
+export interface GoogleActivityEvent {
+  type: 'google:activity';
+  data: {
+    agentId: string;
+    agentName: string;
+    action: string;
+    actionType: string;
+    details: Record<string, unknown>;
+  };
+}
+
+export interface MicrosoftConnectedEvent {
+  type: 'microsoft:connected';
+  data: { email: string; slot: string };
+}
+
+export interface MicrosoftDisconnectedEvent {
+  type: 'microsoft:disconnected';
+  data: { slot: string };
+}
+
+export interface MicrosoftOfficePackagesEvent {
+  type: 'microsoft:office_packages';
+  data: { status: 'installed' | 'installing' | 'failed'; error?: string };
+}
+
+export interface MicrosoftActivityEvent {
+  type: 'microsoft:activity';
+  data: {
+    agentId: string;
+    agentName: string;
+    action: string;
+    actionType: string;
+    details: Record<string, unknown>;
+  };
+}
+
+// ── Plaud (voice recorder) auth events ──
+// These carry their fields at the top level (not under `data`), matching the
+// emit sites in plaud/auth.ts and the PlaudSettings consumer.
+
+export interface PlaudAuthUrlEvent {
+  type: 'plaud:auth_url';
+  url: string;
+}
+
+export interface PlaudConnectedEvent {
+  type: 'plaud:connected';
+  email: string | null;
+}
+
+export interface PlaudDisconnectedEvent {
+  type: 'plaud:disconnected';
+}
+
+export interface PlaudLoginFailedEvent {
+  type: 'plaud:login_failed';
+  error: string;
+}
+
+// ── Agent group lifecycle ──
+
+export interface GroupCreatedEvent {
+  type: 'group:created';
+  data: { id: string; name: string };
+}
+
+export interface GroupDeletedEvent {
+  type: 'group:deleted';
+  data: { id: string };
+}
+
+// ── Memory backfill (embedding) progress ──
+
+export interface BackfillProgressEvent {
+  type: 'backfill:progress';
+  data: {
+    total: number;
+    completed: number;
+    failed: number;
+    status: 'running' | 'complete';
+  };
+}
+
+// ── Dreamer (vault maintenance) lifecycle ──
+// dream:complete carries different fields depending on the exit path (skipped
+// vs a real run), so everything is optional; the Memory page consumes it only
+// to trigger a re-fetch.
+
+export interface DreamStartedEvent {
+  type: 'dream:started';
+  data: { mode: string; archives: number; batches: number };
+}
+
+export interface DreamCompleteEvent {
+  type: 'dream:complete';
+  data: {
+    skipped?: boolean;
+    reason?: string;
+    autoSkipped?: number;
+    pruned?: number;
+    decayed?: number;
+    unpinned?: number;
+    agedOut?: number;
+    batches?: number;
+  };
+}
+
+export interface DreamRecoveryEvent {
+  type: 'dream:recovery';
+  data: {
+    reason: string;
+    newSubBatchCount: number;
+    currentIndex: number;
+    totalBatches: number;
+  };
+}
+
+// ── Scheduled task run lifecycle (consumed by TaskRunHistory) ──
+
+export interface TaskRunStartedEvent {
+  type: 'task:run_started';
+  data: { taskId: string; runId: string; agentId: string };
+}
+
+export interface TaskRunCompleteEvent {
+  type: 'task:run_complete';
+  data: { taskId: string; runId: string; status: string; nextRun: string | null };
+}
+
+// ── Tracker task audit-log append ──
+
+export interface TrackerTaskLogEvent {
+  type: 'tracker:task_log';
+  data: { taskId: string; entryKind: string; fromEntity: string };
+}
+
+// ── Cloudflare tunnel status (mirrors services/tunnel.ts TunnelStatus) ──
+
+export interface SystemTunnelStatusEvent {
+  type: 'system:tunnel_status';
+  data: {
+    enabled: boolean;
+    mode: 'named' | 'quick';
+    status: 'inactive' | 'starting' | 'active' | 'error';
+    url: string | null;
+    error: string | null;
+    startedAt: number | null;
+    cloudflaredInstalled: boolean;
+  };
+}
+
+// ── Migration dependency-installer stream ──
+// Streams the installer's stdout line-by-line, then a terminal frame with the
+// exit result. Consumed by the ImportWizard.
+
+export interface MigrationDepsetupEvent {
+  type: 'migration:depsetup';
+  data: {
+    line?: string;
+    done?: boolean;
+    ok?: boolean;
+    exitCode?: number | null;
+    error?: string;
+  };
+}
+
+// ── Server restart marker ──
+// Broadcast right before the process exits for a restart so every connected
+// device can show a "restarting" overlay and ride out the reconnect gap
+// instead of surfacing raw connection errors. Fields sit at the top level.
+
+export interface SystemRestartEvent {
+  type: 'system:restart';
+  initiatedAt: string;
+  mode: 'dev' | 'production';
+}
+
+// ════════════════════════════════════════
+// Batching decision (colocated with the union)
+// ════════════════════════════════════════
+//
+// The gateway coalesces high-frequency events in a short window (<=50ms, no
+// reorder within a type, no persistence impact) to spare the event loop. That
+// decision USED to live in a hand-maintained Set inside the server, which drifts:
+// a new high-frequency event (e.g. chat:reasoning_chunk, FA-G3) is trivially
+// forgotten, and every thinking delta then fans out one stringify+send per token.
+//
+// Carrying the flag HERE, as a Record keyed by every WsEvent type, makes the
+// batching decision part of the wire contract: adding a member to WsEvent that
+// is missing from this map is a compile error, so a new event cannot ship without
+// an explicit `true`/`false`. BATCHABLE_EVENTS is DERIVED from it, so the two can
+// never disagree.
+//
+//   true  = high-frequency stream, safe to coalesce (chunks, status, logs)
+//   false = deliver immediately (errors, completions, one-shot state changes)
+export const EVENT_BATCHABLE: Record<WsEvent['type'], boolean> = {
+  // High-frequency streams: batch.
+  'chat:chunk': true,
+  'chat:reasoning_chunk': true,
+  'chat:tool_call': true,
+  'chat:tool_result': true,
+  'chat:message': true,
+  'agent:status': true,
+  'log:entry': true,
+  'ollama:status': true,
+
+  // Everything else: deliver immediately.
+  'chat:source_updated': false,
+  // Inter-agent lane: low-frequency structured traffic (peer A2A + engine
+  // notices), never a per-chunk stream, so deliver immediately.
+  'interagent:message': false,
+  'chat:error': false,
+  'system:health': false,
+  'memory:compaction': false,
+  'memory:briefing': false,
+  'agent:created': false,
+  'agent:completed': false,
+  'agent:terminated': false,
+  'agent:message': false,
+  'healer:proposal': false,
+  'video_job:update': false,
+  'generation_job:update': false,
+  'engine:activity': false,
+  'tracker:task_updated': false,
+  'tracker:project_updated': false,
+  'tracker:poke': false,
+  'tracker:task_log': false,
+  'cost:alert': false,
+  'provider:status': false,
+  'resource:warning': false,
+  'system:dep_installed': false,
+  'technique:created': false,
+  'technique:published': false,
+  'technique:updated': false,
+  'technique:used': false,
+  'technique:state_changed': false,
+  'migration:progress': false,
+  'migration:checks': false,
+  'migration:depsetup': false,
+  'voice:model_download': false,
+  'voice:model_install_error': false,
+  'voice:stt_partial': false,
+  'voice:stt_final': false,
+  'voice:tts_start': false,
+  'voice:tts_end': false,
+  'voice:state': false,
+  'voice:wake_detected': false,
+  'voice:sleep_detected': false,
+  'dock:open': false,
+  'dock:collapse': false,
+  'canvas:updated': false,
+  'ui:navigate': false,
+  'google:connected': false,
+  'google:disconnected': false,
+  'google:activity': false,
+  'microsoft:connected': false,
+  'microsoft:disconnected': false,
+  'microsoft:office_packages': false,
+  'microsoft:activity': false,
+  'plaud:auth_url': false,
+  'plaud:connected': false,
+  'plaud:disconnected': false,
+  'plaud:login_failed': false,
+  'group:created': false,
+  'group:deleted': false,
+  'backfill:progress': false,
+  'dream:started': false,
+  'dream:complete': false,
+  'dream:recovery': false,
+  'task:run_started': false,
+  'task:run_complete': false,
+  'system:tunnel_status': false,
+  'system:restart': false,
+};
+
+/**
+ * The set of event types the gateway batches, DERIVED from EVENT_BATCHABLE so it
+ * can never drift from the per-event decision above. Consumed by the gateway's
+ * broadcast() to pick immediate vs. batched fan-out.
+ */
+export const BATCHABLE_EVENTS: ReadonlySet<WsEvent['type']> = new Set(
+  (Object.keys(EVENT_BATCHABLE) as Array<WsEvent['type']>).filter((t) => EVENT_BATCHABLE[t]),
+);

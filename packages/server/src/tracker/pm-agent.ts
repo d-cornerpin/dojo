@@ -7,7 +7,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
-import { listTasks, getTask, getLastPoke, logPoke } from './schema.js';
+import { listTasks, getTask, getLastPoke, logPoke, clearPokeLog } from './schema.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { getRecentObservations, getRecentTransitions, formatEntryLine } from './task-log.js';
 import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, isSetupCompleted, getOwnerName } from '../config/platform.js';
@@ -618,6 +618,12 @@ function runSmellDetector(taskId: string, toStatus: string): void {
 // ── PM LLM Review, runs the PM agent's brain periodically ──
 
 let lastLLMReviewAt = 0;
+// FA-T5: separate cadence marker for the POLLED validation-review path. When the
+// per-hour event-wake cap is full, validation reviews still run but are bounded
+// to one per LLM_REVIEW_INTERVAL_MS (~6/hr) so they cannot reopen the
+// ~900-calls/day poll loop D7 closed. Left at 0 so the first validation review
+// after a cap-full stretch is never delayed.
+let lastValidationReviewAt = 0;
 let lastSituationReportHash = '';
 const LLM_REVIEW_INTERVAL_MS = 600_000; // 10 minutes, gives tasks time to settle before reviewing
 
@@ -731,12 +737,13 @@ async function runPMReview(): Promise<void> {
   const now = Date.now();
   const db = getDb();
 
-  // The 10-minute time gate avoids spamming the LLM when nothing meaningful
-  // is happening. But unvalidated-complete / blocked / paused tasks and
-  // pending override requests are time-sensitive, the engine escalates to
-  // the user at 5 minutes, so PM needs a chance well before that. Bypass
-  // the gate when validation work is queued. The per-hour PM LLM cap
-  // (PM_LLM_CALLS_PER_HOUR_CAP) still bounds cost.
+  // The 10-minute time gate avoids spamming the LLM when nothing meaningful is
+  // happening. But unvalidated-complete / blocked / paused tasks and pending
+  // override requests are time-sensitive: the sooner PM validates them, the
+  // sooner real danglers surface to the user, so the review bypasses the
+  // 10-minute cadence gate when validation work is queued. Cost stays bounded by
+  // the per-hour PM LLM cap (PM_LLM_CALLS_PER_HOUR_CAP); FA-T5 below reserves
+  // validation its own ~6/hr cadence so a full event-wake cap can't starve it.
   const pendingValidationCount = (() => {
     try {
       return (db.prepare(`
@@ -751,14 +758,28 @@ async function runPMReview(): Promise<void> {
       return 0;
     }
   })();
-  if (pendingValidationCount === 0 && now - lastLLMReviewAt < LLM_REVIEW_INTERVAL_MS) return;
+  const validationPending = pendingValidationCount > 0;
+  if (!validationPending && now - lastLLMReviewAt < LLM_REVIEW_INTERVAL_MS) return;
 
-  // D7: enforce the per-hour PM LLM cap on the POLLED path too, not only the
-  // event-wake path. Before this, a stuck complete-but-unvalidated task bypassed
-  // the 10-min gate (pendingValidationCount > 0) and drove a full LLM review on
-  // every 60s poll, ~900 calls/day at idle. The cap bounds that; validation
-  // work is still handled well before the 5-min user escalation.
-  if (pmCapReached()) {
+  // D7 + FA-T5: the per-hour PM LLM cap (PM_LLM_CALLS_PER_HOUR_CAP) bounds the
+  // event-wake firehose so a transition burst can't drag cost up, and it also
+  // gates the non-validation polled path. But completion validation must not be
+  // STARVED when event wakes have already eaten the whole budget: reserve it
+  // headroom. When validation work is pending we run the review even past the
+  // event-wake cap, bounded only by its OWN cadence (lastValidationReviewAt +
+  // LLM_REVIEW_INTERVAL_MS, ~6/hr) so it can't reopen the ~900-calls/day poll
+  // loop D7 closed. Event wakes themselves stay capped (noteTransitionForReview
+  // still honors pmCapReached), preserving the D7 cost guard. In normal operation
+  // (cap not reached) the validation cadence gate is inert, so event-driven
+  // validation stays fully responsive.
+  if (validationPending) {
+    if (pmCapReached() && now - lastValidationReviewAt < LLM_REVIEW_INTERVAL_MS) {
+      logger.debug('PM validation review deferred: event-wake cap full, within validation cadence', {
+        cap: PM_LLM_CALLS_PER_HOUR_CAP, pendingValidation: pendingValidationCount,
+      });
+      return;
+    }
+  } else if (pmCapReached()) {
     logger.debug('PM review skipped, hourly LLM cap reached', { cap: PM_LLM_CALLS_PER_HOUR_CAP });
     return;
   }
@@ -831,6 +852,10 @@ async function runPMReview(): Promise<void> {
   }
 
   lastLLMReviewAt = now;
+  // FA-T5: advance the validation cadence marker when this pass is a validation
+  // review, so the reserved ~6/hr headroom stays bounded even if the dedup below
+  // skips the actual LLM call.
+  if (validationPending) lastValidationReviewAt = now;
 
   const agents = db.prepare(`
     SELECT id, name, status, classification, updated_at FROM agents WHERE status != 'terminated'
@@ -1338,7 +1363,7 @@ async function runPokeCheck(): Promise<void> {
     const STALE_A2A_GRACE_MS = 30 * 60 * 1000;
     const sweepCutoff = new Date(Date.now() - STALE_A2A_GRACE_MS).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
     const candidates = db.prepare(`
-      SELECT t.id, t.title, t.assigned_to, t.created_at
+      SELECT t.id, t.title, t.assigned_to, t.created_at, t.project_id
       FROM tasks t
       WHERE t.status = 'on_deck'
         AND t.a2a_thread_id IS NOT NULL
@@ -1346,7 +1371,7 @@ async function runPokeCheck(): Promise<void> {
         AND t.is_paused = 0
         AND datetime(t.updated_at) < ?
       LIMIT 50
-    `).all(sweepCutoff) as Array<{ id: string; title: string; assigned_to: string; created_at: string }>;
+    `).all(sweepCutoff) as Array<{ id: string; title: string; assigned_to: string; created_at: string; project_id: string | null }>;
 
     if (candidates.length > 0) {
       // Phase B.0: tasks.notes is read-only legacy. Audit trail lives in task_log.
@@ -1361,6 +1386,7 @@ async function runPokeCheck(): Promise<void> {
         LIMIT 1
       `);
       let swept = 0;
+      const sweptProjects = new Set<string>();
       const { writeTaskLog } = await import('./task-log.js');
       for (const t of candidates) {
         // Only close if the receiver was active (sent any assistant
@@ -1370,6 +1396,7 @@ async function runPokeCheck(): Promise<void> {
         const wasActive = activeCheck.get(t.assigned_to, t.created_at) as { 1: number } | undefined;
         if (!wasActive) continue;
         closeStmt.run(t.id);
+        if (t.project_id) sweptProjects.add(t.project_id);
         writeTaskLog({
           taskId: t.id,
           fromEntity: 'engine',
@@ -1386,6 +1413,15 @@ async function runPokeCheck(): Promise<void> {
           swept, candidates: candidates.length,
           sample: candidates.slice(0, 3).map(t => `${t.id.slice(0, 8)}:${t.title.slice(0, 40)}`),
         });
+        // D-K: a sweep-to-fallen can be the transition that empties a project of
+        // open tasks; run the success-vs-fail-open check so the project gets its
+        // needs-attention label + primary notice instead of staying silently
+        // active. Idempotent, extra calls are harmless. Dynamic import: tools.ts
+        // statically imports this module, a static back-import would cycle.
+        const { checkProjectCompletion } = await import('./tools.js');
+        for (const projectId of sweptProjects) {
+          checkProjectCompletion(projectId, getPMAgentId());
+        }
       }
     }
   } catch (err) {
@@ -1551,7 +1587,17 @@ async function runPokeCheck(): Promise<void> {
         });
       });
 
-      logPoke(task.id, task.assignedTo, pokeNumber, pokeType);
+      // Auto-reset is the terminal remediation: the full escalation chain
+      // failed and the task is going back to on_deck for a fresh attempt.
+      // Clear the poke_log so the on_deck move starts a clean escalation
+      // cycle -- if the task is re-pulled and stalls again it re-arms from
+      // nudge(1) instead of being stuck above rung 4 forever. This clear
+      // happens at a remediation event, never mid-cycle, so the cross-restart
+      // poke dedup stays intact. We deliberately do NOT logPoke rung 4 here:
+      // persisting it would leave lastPokeNumber=4 and defeat the reset. The
+      // auto-reset is still recorded via logger.warn + the tracker:poke
+      // broadcast below.
+      clearPokeLog(task.id);
       logger.warn('PM auto-reset: task moved to on_deck', { taskId: task.id, title: task.title, idleMinutes, assignedTo: task.assignedTo });
 
       broadcast({ type: 'tracker:poke', data: { taskId: task.id, agentId: task.assignedTo!, pokeType } });

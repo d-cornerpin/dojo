@@ -4,15 +4,22 @@
 // injection shows up as a reviewable diff (and a missing entry — a slot that
 // would silently vanish — fails the build).
 //
+// FA-PT3: the vitest root is skipped in the release gate, so THIS file never
+// runs and had gone stale on both sides (it required a dead sys.technique-weak-hint
+// and omitted msg.technique-weak/turn-context/current-time). The ENFORCED roster
+// lock is now dev-test-tools/check-prompt-inventory.mjs (a standalone tsx runner
+// wired into the release gate; it pins the exact ids AND slot order of both
+// registries). This test is kept, synced to the live roster, as a fast local
+// mirror for anyone who does run vitest; the standalone gate is authoritative.
+//
 // Importing the registry module triggers entries.ts registration (side effect).
 
 import { describe, it, expect } from 'vitest';
 import '../entries.js';
 import { registeredIds, getSystemEntries, getMessageEntries } from '../registry.js';
 
-// The complete §3 inventory (23 system slots + the weak-hint rawAppend = 24
-// system entries; 5 message entries). Keep in sync with DOJO-PROMPT-REGISTRY-PLAN
-// §3 + the contract doc.
+// The complete live inventory, in canonical slot order: 24 system entries, 8
+// message entries. Keep in sync with entries.ts (and check-prompt-inventory.mjs).
 const EXPECTED_SYSTEM = [
   'sys.reply-destination',
   'sys.channel-landscape',
@@ -38,15 +45,17 @@ const EXPECTED_SYSTEM = [
   'sys.techniques-equipped',
   'sys.runtime',
   'sys.voice-conduct',
-  'sys.technique-weak-hint',
 ];
 
 const EXPECTED_MESSAGE = [
-  'msg.tool-note',
-  'msg.pending-nudge',
+  'msg.technique-strong',
+  'msg.technique-weak',
   'msg.context-gap',
   'msg.tracker-notif',
-  'msg.technique-strong',
+  'msg.pending-nudge',
+  'msg.tool-note',
+  'msg.turn-context',
+  'msg.current-time',
 ];
 
 describe('R9 — registry inventory lock', () => {
@@ -61,6 +70,14 @@ describe('R9 — registry inventory lock', () => {
     const expected = new Set([...EXPECTED_SYSTEM, ...EXPECTED_MESSAGE]);
     const extra = registeredIds().filter((id) => !expected.has(id));
     expect(extra, `unexpected registry entries — update the inventory: ${extra.join(', ')}`).toEqual([]);
+  });
+
+  it('system registry matches the pinned roster AND order (add/remove/reorder fails)', () => {
+    expect(getSystemEntries().map((e) => e.id)).toEqual(EXPECTED_SYSTEM);
+  });
+
+  it('message registry matches the pinned roster AND order (add/remove/reorder fails)', () => {
+    expect(getMessageEntries().map((e) => e.id)).toEqual(EXPECTED_MESSAGE);
   });
 
   it('system entries are slot-sorted (canonical assembly order)', () => {

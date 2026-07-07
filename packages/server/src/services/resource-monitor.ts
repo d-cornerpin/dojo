@@ -95,7 +95,7 @@ export function canSpawnAgent(): { allowed: boolean; reason?: string } {
           totalMb: info.memory.total,
           threshold: MIN_FREE_MEMORY_MB,
         },
-      } as never);
+      });
 
       // Critical iMessage alert when memory drops below 512MB
       if (info.memory.free < 512) {

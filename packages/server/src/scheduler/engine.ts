@@ -215,8 +215,27 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
     if (!isNaN(maxRuns) && task.run_count >= maxRuns) return null;
   }
   if (task.repeat_end_type === 'on_date' && task.repeat_end_value) {
-    const endDate = new Date(task.repeat_end_value);
-    if (!isNaN(endDate.getTime()) && new Date() >= endDate) return null;
+    // D21 discipline: resolve the end boundary in the BOX timezone, not via a
+    // bare `new Date(...)`. A DATE-ONLY value ("2026-07-10", the shape the
+    // dashboard date picker sends) parsed raw lands on UTC midnight, so on a
+    // UTC-minus box it cuts the task's final local-day occurrences hours
+    // early. The user picked a calendar DAY, so a date-only end value means
+    // "through the end of that local day": end-of-day (23:59:59) wall clock in
+    // the box timezone. A value that CARRIES a time-of-day (ISO `T` form or the
+    // SQLite space form, with or without an explicit offset) is an explicit
+    // instant: normalize the space/no-offset form to UTC exactly as
+    // scheduled_start and anchor_time are normalized, and honor it as given
+    // with no end-of-day rounding.
+    const rawEnd = task.repeat_end_value.trim();
+    const endMs = /^\d{4}-\d{2}-\d{2}$/.test(rawEnd)
+      ? wallToInstant({
+          year: Number(rawEnd.slice(0, 4)),
+          month: Number(rawEnd.slice(5, 7)),
+          day: Number(rawEnd.slice(8, 10)),
+          hour: 23, minute: 59, second: 59,
+        }, tz).getTime()
+      : new Date(normalizeDbTimestamp(rawEnd)).getTime();
+    if (!isNaN(endMs) && Date.now() >= endMs) return null;
   }
 
   // If task has never run, first run IS the scheduled_start (don't add
@@ -310,7 +329,7 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
  * day numbers (0=Sun..6=Sat). Returns null if the string is empty or
  * has no valid entries (caller decides what to do).
  */
-function parseDaysOfWeek(s: string | null): Set<number> | null {
+export function parseDaysOfWeek(s: string | null): Set<number> | null {
   if (!s) return null;
   const out = new Set<number>();
   for (const part of s.split(',')) {

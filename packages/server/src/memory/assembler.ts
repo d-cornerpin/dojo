@@ -4,7 +4,7 @@ import { createLogger } from '../logger.js';
 import { type PromptTurnContext } from '../prompt/assembler.js';
 import { conversationKey, type TurnCounterparty } from '../agent/v2/counterparty.js';
 import { getContextWindow } from '../agent/model.js';
-import { estimateTokens, getRecentMessages } from './store.js';
+import { estimateTokens, getFreshTailCount, getRecentMessages } from './store.js';
 import { getContextSummaries } from './dag.js';
 import { getLatestBriefing } from './briefing.js';
 import { retrieveForContext } from '../vault/retrieval.js';
@@ -142,14 +142,9 @@ function scrubSummariesAgainstFreshTechniques<S extends SummaryLike>(
   });
 }
 
-// Model-aware tail sizing: use more of the context window for fresh messages
-// instead of a fixed count. Larger models keep more raw conversation.
-function getFreshTailCount(contextWindow: number): number {
-  if (contextWindow >= 200000) return 80;   // 200k+ (Sonnet, Opus), ~15-20 turns
-  if (contextWindow >= 128000) return 64;   // 128k (GPT-4o), ~12-15 turns
-  if (contextWindow >= 32000) return 40;    // 32k models, ~8-10 turns
-  return 24;                                 // Small models, ~5 turns
-}
+// Model-aware tail sizing (getFreshTailCount) is imported from store.js: the
+// SINGLE source of truth shared with compaction (FA-M3), so the tail count the
+// assembler SHOWS always equals the count compaction treats as inside-tail.
 
 // ── Context Assembly ──
 
@@ -249,6 +244,13 @@ export interface AssembledContext {
    */
   systemEntryIds?: (string | null)[];
   messageEntryIds?: (string | null)[];
+  /**
+   * FA-M1: how many fresh-tail messages budgetFreshTail dropped to fit the window
+   * on this assembly (oldest-first, whole groups). >0 means the model lost recent
+   * turns from its live view; the loop surfaces this as a warning. The dropped rows
+   * are persisted and later summarized, so it is live-view loss, not data loss.
+   */
+  freshTailDropped?: number;
 }
 
 /**
@@ -293,10 +295,10 @@ async function assembleContextViaRegistry(
   // engine message (prompt/registry/entries.ts renderTurnContext), so the system
   // prefix stays byte-stable and cacheable across those changes.
   const systemPrompt = sys.text;
-  const { messages } = await assembleMessageContext(agentId, modelId, systemPrompt, turnContext);
+  const { messages, freshTailDropped } = await assembleMessageContext(agentId, modelId, systemPrompt, turnContext);
   // systemVolatile is empty after P-1 (all per-turn volatile content moved to the
   // msg.turn-context tail); the field is the reserved system-side lane (P-2).
-  return { systemPrompt, systemVolatile: '', messages, systemEntryIds: sys.entryIds };
+  return { systemPrompt, systemVolatile: '', messages, systemEntryIds: sys.entryIds, freshTailDropped };
 }
 
 /**
@@ -1020,6 +1022,11 @@ async function assembleMessageContext(
 
   // Budget: only include messages that fit
   const tailMessages = budgetFreshTail(cappedFreshTail, maxTokens - usedTokens);
+  // FA-M1: budgetFreshTail drops whole groups oldest-first when the tail can't
+  // fit. The output is a suffix of the input, so the length delta is exactly the
+  // number of evicted messages. Captured here (before later orphan sanitization,
+  // which drops for a different reason) so the loop can surface the live-view loss.
+  const freshTailDropped = Math.max(0, cappedFreshTail.length - tailMessages.length);
 
   // Sanitize fresh tail: drop orphaned tool_result messages whose tool_use
   // was trimmed by budget constraints, and ensure valid pairing
@@ -1347,7 +1354,7 @@ async function assembleMessageContext(
     estimatedTokens: usedTokens,
   }, agentId);
 
-  return { systemPrompt, systemVolatile: "", messages: merged };
+  return { systemPrompt, systemVolatile: "", messages: merged, freshTailDropped };
 }
 
 // ── Helpers ──
@@ -1578,7 +1585,13 @@ async function buildRelevantMemoryBlock(agentId: string, includeVault: boolean):
       const pinnedIds = new Set(getPinnedEntries(agentId).map((e) => e.id));
       let vhits: Array<{ id: string; type: string; content: string }>;
       if (queryEmbedding) {
-        vhits = await semanticSearch(queryText, { limit: 6, minSimilarity: 0.45, queryEmbedding, agentId });
+        // FA-V6: personalOnly:true so this auto-recall path matches its own
+        // listEntries fallback below (which defaults to namespace IS NULL) and
+        // exact mode's contract. Squad-namespaced entries stay out of PERSONAL
+        // recall; squad recall flows via squad_recall. Correct under D-A (squad
+        // namespaces stay opt-in). Filter-only change: no effect on the cache
+        // prefix ordering (results are still deterministic by similarity).
+        vhits = await semanticSearch(queryText, { limit: 6, minSimilarity: 0.45, queryEmbedding, agentId, personalOnly: true });
       } else {
         vhits = listEntries({ search: queryText, limit: 6, agentId, includeOwnerScope: true });
       }

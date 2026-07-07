@@ -24,11 +24,16 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 async function refresh(): Promise<void> {
   const { refreshUpdateCache } = await import('../gateway/routes/update.js');
   const entry = await refreshUpdateCache();
+  // refreshUpdateCache folds this outcome into the consecutive-failure counter
+  // (FA-D6); surface the running count here so a persistently-failing check is
+  // visible in the logs too, not only via the Healer/owner health signal.
   logger.info('Update cache refreshed', {
     current: entry.currentVersion,
     latest: entry.latestVersion,
     updateAvailable: entry.updateAvailable,
     error: entry.error ?? null,
+    consecutiveCheckFailures: entry.consecutiveCheckFailures ?? 0,
+    checkPipelineFailing: entry.checkPipelineFailing ?? false,
   });
 }
 

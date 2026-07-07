@@ -9,6 +9,7 @@ import os from 'node:os';
 import { createRequire } from 'node:module';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
+import { bumpToolConfigGeneration } from '../agent/tool-config-generation.js';
 
 // Resolver anchored to THIS module so Node's standard
 // node_modules-walk-upward finds packages regardless of process.cwd().
@@ -65,6 +66,7 @@ export function checkAndUpdateStatus(): void {
   } else if (installStatus === 'installed') {
     // Was installed but packages are gone
     installStatus = 'not_installed';
+    bumpToolConfigGeneration(); // FA-TS1: office tools drop out of the surface
   }
 }
 
@@ -83,14 +85,15 @@ export function installOfficePackages(): void {
   if (areOfficePackagesInstalled()) {
     installStatus = 'installed';
     installError = null;
-    broadcast({ type: 'microsoft:office_packages', data: { status: 'installed' } } as never);
+    bumpToolConfigGeneration(); // FA-TS1: refresh any list cached before packages resolved
+    broadcast({ type: 'microsoft:office_packages', data: { status: 'installed' } });
     logger.info('Office packages already installed');
     return;
   }
 
   installStatus = 'installing';
   installError = null;
-  broadcast({ type: 'microsoft:office_packages', data: { status: 'installing' } } as never);
+  broadcast({ type: 'microsoft:office_packages', data: { status: 'installing' } });
 
   logger.info('Installing Office packages: docx, xlsx, pptxgenjs');
 
@@ -110,7 +113,7 @@ export function installOfficePackages(): void {
         installStatus = 'failed';
         installError = err.message;
         logger.error('Office package install failed', { error: err.message, stderr });
-        broadcast({ type: 'microsoft:office_packages', data: { status: 'failed', error: err.message } } as never);
+        broadcast({ type: 'microsoft:office_packages', data: { status: 'failed', error: err.message } });
         return;
       }
 
@@ -119,13 +122,14 @@ export function installOfficePackages(): void {
       if (areOfficePackagesInstalled()) {
         installStatus = 'installed';
         installError = null;
+        bumpToolConfigGeneration(); // FA-TS1: office create/edit tools enter the surface
         logger.info('Office packages installed successfully');
-        broadcast({ type: 'microsoft:office_packages', data: { status: 'installed' } } as never);
+        broadcast({ type: 'microsoft:office_packages', data: { status: 'installed' } });
       } else {
         installStatus = 'failed';
         installError = 'Packages installed but not resolvable';
         logger.error('Office packages installed but not resolvable');
-        broadcast({ type: 'microsoft:office_packages', data: { status: 'failed', error: installError } } as never);
+        broadcast({ type: 'microsoft:office_packages', data: { status: 'failed', error: installError } });
       }
     },
   );

@@ -283,6 +283,30 @@ export function executePublishTechnique(agentId: string, classification: string,
   if (!technique) return `Error: Technique "${name}" not found.`;
   if (technique.state === 'published') return `Technique "${technique.name}" is already published.`;
 
+  // FA-TS3: the placeholder-completeness invariant lived ONLY in
+  // finalizeImportedTechnique. A floor model that skips finalize can publish a
+  // still-in-setup technique carrying literal {{NEEDS_FROM_USER:...}} markers,
+  // which use_technique then feeds to other agents as if they were real values.
+  // The TOOL-SURFACE strip is advisory (text-mode emission bypasses it), so the
+  // gate has to live here in the executor. Refuse a needs_setup technique, and
+  // belt-and-suspenders re-scan the files for unfilled markers (no-op for
+  // locally-created techniques, which have no import manifest).
+  if (technique.state === 'needs_setup') {
+    return (
+      `Refused: "${technique.name}" is still in setup (needs_setup) and cannot be published. ` +
+      `Fill every owner-supplied value with technique_set_placeholder, then call technique_finalize ` +
+      `to move it to draft before publishing.`
+    );
+  }
+  const remaining = findRemainingPlaceholders(technique.directoryPath);
+  if (remaining.length > 0) {
+    return (
+      `Refused: "${technique.name}" still has ${remaining.length} unfilled placeholder(s): ${remaining.join(', ')}. ` +
+      `Set each with technique_set_placeholder, then call technique_finalize before publishing, ` +
+      `so other agents never receive {{NEEDS_FROM_USER}} markers as if they were real values.`
+    );
+  }
+
   const published = publishTechnique(resolved.id);
   if (!published) return `Error: Failed to publish technique "${name}".`;
 
@@ -362,7 +386,13 @@ export function executeUpdateTechnique(agentId: string, _agentName: string, clas
 // he calls this to write it into the technique files in place of the
 // {{NEEDS_FROM_USER:LABEL}} marker.
 
-export function executeTechniqueSetPlaceholder(agentId: string, args: Record<string, unknown>): string {
+export function executeTechniqueSetPlaceholder(agentId: string, classification: string, args: Record<string, unknown>): string {
+  // FA-TS7: the sensei/trainer gate was only ever enforced by the tool-surface
+  // strip, which text-mode emission bypasses. Re-check in the executor, same
+  // ownership rule and corrective surface as save/publish.
+  const refusal = authorizeTechniqueMutation(agentId, classification, 'technique_set_placeholder');
+  if (refusal) return refusal;
+
   const techniqueRef = args.technique as string;
   const label = args.label as string;
   const value = args.value as string;
@@ -407,7 +437,11 @@ export function executeTechniqueSetPlaceholder(agentId: string, args: Record<str
 // this to flip the technique out of needs_setup into draft state and
 // remove the staged import manifest.
 
-export function executeTechniqueFinalize(agentId: string, args: Record<string, unknown>): string {
+export function executeTechniqueFinalize(agentId: string, classification: string, args: Record<string, unknown>): string {
+  // FA-TS7: executor-side sensei/trainer re-check (surface strip is advisory).
+  const refusal = authorizeTechniqueMutation(agentId, classification, 'technique_finalize');
+  if (refusal) return refusal;
+
   const techniqueRef = args.technique as string;
   if (!techniqueRef) return 'Error: technique is required.';
 
@@ -425,7 +459,11 @@ export function executeTechniqueFinalize(agentId: string, args: Record<string, u
 
 // ── submit_technique_for_review ──
 
-export function executeSubmitForReview(agentId: string, args: Record<string, unknown>): string {
+export function executeSubmitForReview(agentId: string, classification: string, args: Record<string, unknown>): string {
+  // FA-TS7: executor-side sensei/trainer re-check (surface strip is advisory).
+  const refusal = authorizeTechniqueMutation(agentId, classification, 'submit_technique_for_review');
+  if (refusal) return refusal;
+
   const name = args.name as string;
   if (!name) return 'Error: name is required.';
 

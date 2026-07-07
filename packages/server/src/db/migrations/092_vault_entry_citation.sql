@@ -1,0 +1,17 @@
+-- 092 (FU-2): rich source citations on vault entries.
+--
+-- vault_entries carried only a coarse `source` tag ('extraction'/'manual'/...)
+-- and a `source_conversation_id`, not the ORIGINAL source of a remembered fact.
+-- The owner wants remembered facts to carry where they came from (a URL, a file
+-- path, and where known a page/section) so an agent can cite the source and
+-- re-open the original months later (e.g. cite "doctor-report-2026.pdf p.3" and
+-- reopen it).
+--
+-- `citation` holds a compact JSON object with only the known fields:
+--   { "kind": "url" | "file", "ref": "<url-or-path>", "page": 3, "section": "..." }
+-- kind + ref are always present; page/section appear only when known. NULL means
+-- no citation, and such entries behave exactly as before. It is METADATA only:
+-- it is not embedded, does not count against the vault_remember length caps
+-- (the cap measures content only), and never participates in dedup/supersede
+-- similarity. No index: citation is display metadata, never a query key.
+ALTER TABLE vault_entries ADD COLUMN citation TEXT;

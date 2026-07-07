@@ -64,6 +64,24 @@ export const VoiceSetupStep = () => {
     return unsub;
   }, [ws]);
 
+  // FA-DB3: surface a failed download/install. Without this the progress bar
+  // sits at whatever fraction it stalled on forever. Clear that model's
+  // progress and show the error so the user can retry.
+  useEffect(() => {
+    const unsub = ws.subscribe('voice:model_install_error', (event) => {
+      if (event.type !== 'voice:model_install_error') return;
+      const { kind, modelId, error: reason } = event.data;
+      setError(`${kind} download failed: ${reason}`);
+      setDownloadStarted(false);
+      setDownloads((prev) => {
+        const next = { ...prev };
+        delete next[`${kind}/${modelId}`];
+        return next;
+      });
+    });
+    return unsub;
+  }, [ws]);
+
   const requestMic = async () => {
     if (!navigator.mediaDevices?.getUserMedia) {
       setMicStatus('unsupported');

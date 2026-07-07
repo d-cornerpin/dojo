@@ -82,6 +82,21 @@ export async function submitUserMessage(
     return { ok: false, error: 'Message content is required', status: 400 };
   }
 
+  // FA-G1: guard the attachment shape for EVERY caller (the voice session calls
+  // this directly, bypassing the route's schema). A malformed attachment would
+  // otherwise persist a broken "[File attached: undefined ...] Path: undefined"
+  // pointer that the model then file_reads. Reject before any DB write.
+  if (attachments && attachments.length > 0) {
+    const bad = attachments.some(
+      (a) => !a
+        || typeof a.path !== 'string' || a.path.length === 0
+        || typeof a.filename !== 'string' || a.filename.length === 0
+        || typeof a.fileId !== 'string' || a.fileId.length === 0
+        || typeof a.size !== 'number' || !Number.isFinite(a.size),
+    );
+    if (bad) return { ok: false, error: 'Invalid attachment: missing file path or metadata', status: 400 };
+  }
+
   const db = getDb();
   const agent = db.prepare('SELECT id, status FROM agents WHERE id = ?').get(agentId) as { id: string; status: string } | undefined;
 
@@ -179,10 +194,19 @@ chatRouter.post('/:agentId/messages', async (c) => {
   const agentId = c.req.param('agentId');
   const body = await c.req.json().catch(() => null);
 
-  const content = (body?.content ?? '') as string;
-  const attachments = Array.isArray(body?.attachments) ? body.attachments : undefined;
+  // FA-G1 / D-J: this body is untrusted and complex (attachment pointers are
+  // persisted into the immutable store and handed to file_read), so it IS
+  // validated. safeParse keeps the {ok,error} response local (mirrors the
+  // auth route); a malformed shape (e.g. an attachment missing `path`) is
+  // rejected with 400 before any DB write instead of persisting a broken
+  // "Path: undefined" pointer.
+  const parsed = SendMessageSchema.safeParse(body);
+  if (!parsed.success) {
+    const detail = parsed.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`).join('; ');
+    return c.json({ ok: false, error: `Invalid request: ${detail}` }, 400);
+  }
 
-  const result = await submitUserMessage(agentId, content, attachments);
+  const result = await submitUserMessage(agentId, parsed.data.content, parsed.data.attachments);
   if (!result.ok) {
     return c.json({ ok: false, error: result.error }, (result.status ?? 400) as 400 | 404);
   }
@@ -194,6 +218,7 @@ chatRouter.get('/:agentId/messages', (c) => {
   const agentId = c.req.param('agentId');
   const limit = parseInt(c.req.query('limit') ?? '50', 10);
   const before = c.req.query('before'); // cursor: message ID for pagination
+  const wordy = c.req.query('wordy') === '1'; // wordy mode also serves own coordination output
 
   const db = getDb();
 
@@ -212,7 +237,93 @@ chatRouter.get('/:agentId/messages', (c) => {
   // the user-facing chat feed.
   const STOP_MARKER_FILTER = "content NOT LIKE '[STOPPED BY USER]%'";
 
-  if (before) {
+  // D-A step 7 (history retire): legacy pre-cutover inter-agent rows in `messages`
+  // are stamped retired_at (migration 102) so they never surface on the chat
+  // feed. All NEW inter-agent traffic lives in inter_agent_messages, so this
+  // predicate + the store separation are what now keep A2A out of human chat
+  // (the dashboard's user-role 'a2a' visibility overlay was retired alongside).
+  // This was the wordy-mode-reload leak: the reload reads straight from here.
+  const RETIRED_FILTER = 'retired_at IS NULL';
+
+  // REVERTED 2026-07-06 late night, owner correction: the serving contract is
+  // the SIMPLE one. `messages` is the conversation; the client renders visible
+  // rows in regular mode, everything in wordy mode, and infinite scroll pages
+  // straight back to day one on raw-row cursors. A server-side "visible walk"
+  // (briefly added tonight) broke that pagination contract. The blank-chat
+  // symptom it chased has a structural cause, agents' own coordination output
+  // being persisted into this table at all, and that is fixed at the STORE
+  // level (inter-agent turn output persists to inter_agent_messages), not by
+  // complicating this route.
+  if (wordy) {
+    // Wordy mode surfaces the agent's OWN inter-agent coordination output in chat.
+    // Constraint (own-output only): the store arm serves inter_agent_messages rows
+    // with role IN ('assistant','tool') and this agent_id, its own tool_use /
+    // tool_result history from inter-agent turns (D-A step 8). Inbound peer A2A
+    // (role='user') and engine rows never enter chat; the Threads lane owns them.
+    // That matches the live stream (wordy streams own output; inbound A2A no longer
+    // broadcasts on chat:message), so live and reload agree. The messages arm keeps
+    // today's predicates and dedups any id already in the store (live-edge backfill
+    // parity, mirrors mergedTailQuery). The regular branches below stay byte-
+    // identical; wordy is a separate query, not a rewrite of them.
+    //
+    // The store row NULL-pads the columns rowToMessage reads that the store lacks
+    // (token_count, model_id, cost, latency_ms, reasoning_content, inbound_meta),
+    // but projects 'a2a' AS source so a NEW own-output store row derives the SAME
+    // 'a2a' self origin (the pill) as a LEGACY own-output row (messages, source=
+    // 'a2a'). deriveOrigin keys the assistant/tool self-channel off source (see
+    // origin.ts); without this, new rows rendered as plain agent text while legacy
+    // siblings showed the a2a pill. Serving-only: the model-facing loaders are
+    // untouched (byte-identity law).
+    const unionSql = `
+      SELECT id, agent_id, role, content, token_count, model_id, cost, latency_ms,
+             created_at, reasoning_content, attachments, source, source_agent_id,
+             a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta,
+             origin_kind, origin_intent, rowid AS _rowid, 0 AS _tag
+      FROM messages
+      WHERE agent_id = @agentId AND ${STOP_MARKER_FILTER} AND ${RETIRED_FILTER}
+        AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
+      UNION ALL
+      SELECT id, agent_id, role, content, NULL AS token_count, NULL AS model_id, NULL AS cost, NULL AS latency_ms,
+             created_at, NULL AS reasoning_content, attachments, 'a2a' AS source, source_agent_id,
+             a2a_thread_id, a2a_intent, a2a_requires_response, NULL AS inbound_meta,
+             origin_kind, origin_intent, rowid AS _rowid, 1 AS _tag
+      FROM inter_agent_messages
+      WHERE agent_id = @agentId AND role IN ('assistant','tool')
+    `;
+
+    const params: Record<string, unknown> = { agentId, limit: Math.min(limit, 200) };
+    let cursorClause = '';
+    if (before) {
+      // The cursor id can live in EITHER table now, so resolve it to the full
+      // merged sort key (created_at, _tag, _rowid): messages first, then the store;
+      // 400 on miss (same contract as regular mode). Paging then uses a TUPLE
+      // predicate over that key so a coordination burst's same-second siblings
+      // across the table boundary are not skipped (a bare created_at < ? would drop
+      // them, and many rows land in the same second).
+      const cursor = db.prepare(`
+        SELECT created_at, 0 AS _tag, rowid AS _rowid FROM messages WHERE id = @before AND agent_id = @agentId
+        UNION ALL
+        SELECT created_at, 1 AS _tag, rowid AS _rowid FROM inter_agent_messages WHERE id = @before AND agent_id = @agentId
+        LIMIT 1
+      `).get({ before, agentId }) as { created_at: string; _tag: number; _rowid: number } | undefined;
+      if (!cursor) {
+        return c.json({ ok: false, error: 'Invalid cursor message ID' }, 400);
+      }
+      params.cCreated = cursor.created_at;
+      params.cTag = cursor._tag;
+      params.cRowid = cursor._rowid;
+      cursorClause = `WHERE created_at < @cCreated
+          OR (created_at = @cCreated AND _tag < @cTag)
+          OR (created_at = @cCreated AND _tag = @cTag AND _rowid < @cRowid)`;
+    }
+
+    rows = db.prepare(`
+      SELECT * FROM (${unionSql})
+      ${cursorClause}
+      ORDER BY created_at DESC, _tag DESC, _rowid DESC
+      LIMIT @limit
+    `).all(params) as Array<Record<string, unknown>>;
+  } else if (before) {
     // Get the timestamp of the cursor message
     const cursorMsg = db.prepare('SELECT created_at FROM messages WHERE id = ?').get(before) as { created_at: string } | undefined;
     if (!cursorMsg) {
@@ -221,14 +332,14 @@ chatRouter.get('/:agentId/messages', (c) => {
 
     rows = db.prepare(`
       SELECT * FROM messages
-      WHERE agent_id = ? AND created_at < ? AND ${STOP_MARKER_FILTER}
+      WHERE agent_id = ? AND created_at < ? AND ${STOP_MARKER_FILTER} AND ${RETIRED_FILTER}
       ORDER BY created_at DESC, rowid DESC
       LIMIT ?
     `).all(agentId, cursorMsg.created_at, Math.min(limit, 200)) as Array<Record<string, unknown>>;
   } else {
     rows = db.prepare(`
       SELECT * FROM messages
-      WHERE agent_id = ? AND ${STOP_MARKER_FILTER}
+      WHERE agent_id = ? AND ${STOP_MARKER_FILTER} AND ${RETIRED_FILTER}
       ORDER BY created_at DESC, rowid DESC
       LIMIT ?
     `).all(agentId, Math.min(limit, 200)) as Array<Record<string, unknown>>;
@@ -289,8 +400,10 @@ chatRouter.post('/:agentId/new-session', async (c) => {
   }
 
   try {
-    // 1. Archive current conversation to vault (for Dreamer to process later)
-    const archiveId = archiveAgentConversation(agentId);
+    // 1. Archive current conversation to vault (for Dreamer to process later).
+    // force=true (FA-V1): new-session is a session-boundary bump like reset_session,
+    // so always archive the pre-reset tail even if an earlier unprocessed archive exists.
+    const archiveId = archiveAgentConversation(agentId, true);
     logger.info('Session archived for new session', { agentId, archiveId });
 
     // 2. Preserve context items (summaries) across session reset.

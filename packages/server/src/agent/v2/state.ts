@@ -215,15 +215,24 @@ export interface AgentTurnState {
   repliedToCounterpartyThisTurn: { imessage?: boolean; teams?: boolean; email?: boolean; sms?: boolean; phone?: boolean };
   trackerToolCalledThisTurn: boolean;
   /**
-   * v3.1.11 (FN-9), set when the agent (or the engine floor) executes any
-   * tracker MUTATION tool this turn (create/advance/close/notes/edit/reassign,
-   * see TRACKER_MUTATION_TOOLS in loop.ts). Distinct from
+   * v3.1.11 (FN-9) + FA-T2, set when the agent (or the engine floor) OPENS or
+   * ADVANCES its own tracker work this turn (create / add-notes / edit /
+   * advance-a-step, or update_status to an active state, see
+   * TRACKER_DISARMING_MUTATION_TOOLS in loop.ts). Distinct from
    * trackerToolCalledThisTurn, which fires on ANY tracker_* call INCLUDING
    * reads (tracker_get_status / tracker_list_active). The multi-step
    * enforcement gate keys on THIS field: a bare status peek must not disarm
-   * enforcement, only actually tending the work (a mutation) does.
+   * enforcement, and neither may CLOSING / abandoning / handing off a task
+   * (that removes what the PM watches, FA-T2), only actually opening or
+   * advancing the work does.
    */
   trackerWriteThisTurn: boolean;
+  /**
+   * FA-T3: count of NON-TRACKER, NON-TRIVIAL (real work) tool calls this turn.
+   * Trivial read-only reconnaissance / utility / bookkeeping (see TRIVIAL_TOOLS
+   * in loop.ts) does NOT count, so a pure lookup turn can't trip the multi-step
+   * floor.
+   */
   nonTrackerToolCalls: number;
   /**
    * v2.5.31, message id of the most recent inbound ASSIGN/QUESTION/BLOCK

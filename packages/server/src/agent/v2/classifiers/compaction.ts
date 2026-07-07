@@ -27,9 +27,10 @@ export type CompactionGateDecision = 'noop' | 'warn' | 'compact' | 'block';
 
 export interface CompactionGateResult {
   decision: CompactionGateDecision;
-  ratio: number;          // assembledTokens / contextWindow
+  ratio: number;          // assembledTokens / compressibleBudget
   assembledTokens: number;
   contextWindow: number;
+  compressibleBudget: number; // FA-M1: contextWindow minus non-compressible overhead
   reason?: string;        // populated when decision !== 'noop'
 }
 
@@ -41,12 +42,23 @@ export const BLOCK_THRESHOLD = 0.99;    // ≥99% → block
 /**
  * Decide what the pre-call gate should do given current context utilization.
  *
+ * FA-M1: the numerator stays the COMPRESSIBLE subset (summaries + fresh tail +
+ * brief) so compaction never no-op-loops on bloat it cannot shrink. The
+ * denominator is the COMPRESSIBLE BUDGET, the full window minus the measured
+ * non-compressible overhead (system prompt + tool-schema/output reserve) the
+ * caller passes in, NOT the full window. Comparing compressible tokens to the
+ * full window understated utilization: on a small (e.g. 64K) window a 15-23%
+ * system prompt meant the compressible ratio never reached 0.90, so fresh-tail
+ * eviction happened with no WARN. `nonCompressibleOverheadTokens` defaults to 0
+ * (old full-window behavior) for callers/tests that don't supply it.
+ *
  * Pure function — no side effects beyond the logger WARN inside `gateAndLog`
  * helper below. Tests should call this directly and assert on decision/ratio.
  */
 export function compactionGate(
   assembledTokens: number,
   contextWindow: number,
+  nonCompressibleOverheadTokens = 0,
 ): CompactionGateResult {
   if (contextWindow <= 0) {
     return {
@@ -54,12 +66,14 @@ export function compactionGate(
       ratio: 0,
       assembledTokens,
       contextWindow,
+      compressibleBudget: 0,
       reason: 'invalid contextWindow (<=0); skipping gate',
     };
   }
-  const ratio = assembledTokens / contextWindow;
+  const compressibleBudget = Math.max(1, contextWindow - Math.max(0, nonCompressibleOverheadTokens));
+  const ratio = assembledTokens / compressibleBudget;
   if (ratio < WARN_THRESHOLD) {
-    return { decision: 'noop', ratio, assembledTokens, contextWindow };
+    return { decision: 'noop', ratio, assembledTokens, contextWindow, compressibleBudget };
   }
   if (ratio < COMPACT_THRESHOLD) {
     return {
@@ -67,8 +81,9 @@ export function compactionGate(
       ratio,
       assembledTokens,
       contextWindow,
+      compressibleBudget,
       reason:
-        `Context utilization at ${(ratio * 100).toFixed(1)}% (${assembledTokens}/${contextWindow}). ` +
+        `Compressible context at ${(ratio * 100).toFixed(1)}% of its budget (${assembledTokens}/${compressibleBudget}; window ${contextWindow}). ` +
         `This should not happen in normal operation — investigate tool result sizes, scaffolding injection, system prompt cost. ` +
         `See Part XVIII (Compaction Prevention Architecture).`,
     };
@@ -79,8 +94,9 @@ export function compactionGate(
       ratio,
       assembledTokens,
       contextWindow,
+      compressibleBudget,
       reason:
-        `Emergency compaction at ${(ratio * 100).toFixed(1)}%. ` +
+        `Emergency compaction at ${(ratio * 100).toFixed(1)}% of the compressible budget. ` +
         `Prevention failed — investigate and fix root cause.`,
     };
   }
@@ -89,8 +105,9 @@ export function compactionGate(
     ratio,
     assembledTokens,
     contextWindow,
+    compressibleBudget,
     reason:
-      `Context impossibly full at ${(ratio * 100).toFixed(1)}%. ` +
+      `Compressible context impossibly full at ${(ratio * 100).toFixed(1)}% of budget. ` +
       `Surrendering turn — recovery cascade will queue a wakeup.`,
   };
 }
@@ -115,8 +132,9 @@ export function gateAndLog(
     severity: 'warning';
     retryable: false;
   }) => void,
+  nonCompressibleOverheadTokens = 0,
 ): CompactionGateResult {
-  const result = compactionGate(assembledTokens, contextWindow);
+  const result = compactionGate(assembledTokens, contextWindow, nonCompressibleOverheadTokens);
   if (result.decision === 'warn') {
     logger.warn(result.reason ?? 'context utilization warning', {
       agentId,

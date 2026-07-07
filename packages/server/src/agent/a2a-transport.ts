@@ -16,6 +16,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
+import { insertInterAgentMessage } from '../memory/interagent.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
 // A2A protocol constants and helpers, inlined here to avoid runtime
 // imports from @dojo/shared (which points at .ts source and can't be
@@ -175,14 +176,27 @@ async function findRecentDuplicateAssignThread(
 ): Promise<string | null> {
   try {
     const db = getDb();
+    // D-A: the receiver's recent inbound ASSIGNs are peer A2A, which now live in
+    // inter_agent_messages, not `messages`. Read the MERGED source so cross-thread
+    // ASSIGN dedup keeps working post-cutover (a messages-only read would miss the new
+    // store rows and re-open a fresh thread + tracker task per re-send, the W3-4 bug).
+    // The messages arm dedups against store ids; cross-table order is created_at, then
+    // a stable _tag tiebreak, then rowid (newest first, matching the legacy sort and the
+    // merged loaders in memory/store.ts).
     const recent = db.prepare(`
-      SELECT content, a2a_thread_id FROM messages
-      WHERE agent_id = ? AND source_agent_id = ? AND a2a_intent = 'ASSIGN'
-        AND a2a_thread_id IS NOT NULL
-        AND created_at >= datetime('now', '-10 minutes')
-      ORDER BY created_at DESC, rowid DESC
-      LIMIT ?
-    `).all(receiverId, senderId, DEDUP_LOOKBACK) as Array<{ content: string; a2a_thread_id: string }>;
+      SELECT content, a2a_thread_id, created_at, rowid AS _rowid, 0 AS _tag FROM messages
+       WHERE agent_id = @receiverId AND source_agent_id = @senderId AND a2a_intent = 'ASSIGN'
+         AND a2a_thread_id IS NOT NULL
+         AND created_at >= datetime('now', '-10 minutes')
+         AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @receiverId)
+      UNION ALL
+      SELECT content, a2a_thread_id, created_at, rowid AS _rowid, 1 AS _tag FROM inter_agent_messages
+       WHERE agent_id = @receiverId AND source_agent_id = @senderId AND a2a_intent = 'ASSIGN'
+         AND a2a_thread_id IS NOT NULL
+         AND created_at >= datetime('now', '-10 minutes')
+      ORDER BY created_at DESC, _tag DESC, _rowid DESC
+      LIMIT @lookback
+    `).all({ receiverId, senderId, lookback: DEDUP_LOOKBACK }) as Array<{ content: string; a2a_thread_id: string }>;
     if (recent.length === 0) return null;
 
     const { generateEmbedding } = await import('../memory/embeddings.js');
@@ -879,37 +893,77 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   const originKind = engineOrigin ? 'engine' : null;
   const originIntent = engineOrigin ? (requiresResponse ? 'a2a_request' : 'system') : null;
   const msgId = uuidv4();
-  db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, attachments, origin_kind, origin_intent, created_at)
-    VALUES (?, ?, 'user', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-  `).run(msgId, target.id, contextMessage, envelope.fromAgent, threadId, effectiveIntent, requiresResponse ? 1 : 0, attachmentsJson, originKind, originIntent);
+  // D-A (owner decision, 2026-07-05): ALL inter-agent inbound gets its OWN physical
+  // store (inter_agent_messages), so it can never live in the primary's `messages`
+  // chat table where a forgetful downstream filter could leak it into human chat.
+  // The column set + values are byte-identical to the legacy messages INSERT (role
+  // 'user', created_at datetime('now')), so the merged model tail comes out
+  // unchanged. D-A step 4: engine-origin A2A (Healer/PM/scheduler/gate via
+  // fromAgent='system') now ALSO lands in the store, alongside peer A2A; the origin
+  // columns still distinguish them (origin_kind='engine' vs NULL). getPendingEngineEvent
+  // reads the MERGED (messages ∪ store) source and the loop claims the row in whichever
+  // table it lives in, so an engine turn is still driven off this row. The FA-C4
+  // .changes===0 PERSIST_SKIPPED drop guard below is unchanged (the persisted row is
+  // the sole delivery vehicle: runtime.handleMessage re-reads it, so a 0-change insert
+  // was never delivered).
+  const persistResult = insertInterAgentMessage({
+    id: msgId,
+    agentId: target.id,
+    content: contextMessage,
+    sourceAgentId: envelope.fromAgent,
+    a2aThreadId: threadId,
+    a2aIntent: effectiveIntent,
+    a2aRequiresResponse: requiresResponse ? 1 : 0,
+    attachments: attachmentsJson,
+    originKind,
+    originIntent,
+  });
 
-  // ── 12. Broadcast to dashboard (with attachments so the live UI shows the
-  // image immediately, not just on page refresh). The a2a row is the 'agent-only'
-  // visibility tier (visibility.ts, from structured origin), the dashboard hides it in
-  // regular chat and shows it in wordy mode. Nothing here decides visibility. ──
+  // ── 11b. Confirm the row actually persisted (FA-C4) ──
+  // The persisted messages row is the SOLE delivery vehicle: runtime.handleMessage
+  // ignores its content arg and re-reads this row, so a message that never landed in
+  // the store was never delivered. Capture .changes and treat 0 as a drop rather than
+  // returning delivered:true blind. OR IGNORE is kept deliberately: the only path to 0
+  // changes is a primary-key collision, which cannot happen today (msgId is a fresh
+  // uuidv4 and messages has no other UNIQUE constraint), so this is future-proofing.
+  // Keeping OR IGNORE degrades that (unreachable) collision to a clean drop instead of
+  // a throw that fire-and-forget callers (PM poke, scheduler) would not catch; genuine
+  // DB faults (BUSY/FULL/IO) are not constraint violations and still throw under OR
+  // IGNORE exactly as a plain INSERT would, so no observability is lost.
+  if (persistResult.changes === 0) {
+    logDrop(envelope, 'PERSIST_SKIPPED');
+    return { delivered: false, reason: 'PERSIST_SKIPPED', threadId };
+  }
+
+  // ── 12. Broadcast to the dashboard's Inter-Agent lane (with attachments so
+  // the live UI shows the image immediately, not just on page refresh). ──
+  // D-A step 5: inter-agent traffic leaves `chat:message` ENTIRELY. A peer (or
+  // engine-origin) A2A delivery is broadcast on the dedicated `interagent:message`
+  // lane, never the human chat feed, so the dashboard no longer needs the old
+  // 'a2a' visibility tier to hide it from chat; the store separation makes that
+  // structural. The persisted store row is still the SOLE delivery vehicle (the
+  // FA-C4 guard above); this broadcast is dashboard-only and never gates delivery.
+  // @dojo/shared is imported type-only here (packaged-runtime import trap), so the
+  // payload is built from raw fields, no runtime deriveOrigin call.
   broadcast({
-    type: 'chat:message',
+    type: 'interagent:message',
     agentId: target.id,
     message: {
       id: msgId,
       agentId: target.id,
-      role: 'user' as const,
+      role: 'user',
       content: contextMessage,
-      tokenCount: null,
-      modelId: null,
-      cost: null,
-      latencyMs: null,
       createdAt: new Date().toISOString(),
-      attachments: attachmentsList.length > 0 ? attachmentsList : undefined,
-      // Carry the structured A2A attribution so the origin-stamp seam (ws.ts)
-      // derives kind:'agent' from data, not from re-parsing the [A2A:…] marker.
-      // Without these, an inbound A2A classified as kind:'user' and leaked into
-      // the dashboard chat even with wordy mode off.
       sourceAgentId: envelope.fromAgent,
-      a2aThreadId: threadId,
-      a2aIntent: effectiveIntent,
-      a2aRequiresResponse: requiresResponse ? 1 : 0,
+      senderName: resolveAgentDisplayName(envelope.fromAgent) ?? envelope.fromAgent,
+      recipientName: target.name ?? null,
+      threadId,
+      intent: effectiveIntent,
+      requiresResponse,
+      // engineOrigin (computed above) tags Healer/PM/scheduler/gate-origin A2A;
+      // peer A2A keeps originKind null. The lane styles engine vs peer off this.
+      originKind,
+      attachments: attachmentsList.length > 0 ? attachmentsList : undefined,
     },
   });
 
@@ -1218,14 +1272,33 @@ function findUnrelayedInboundReply(parked: OpenParkRow): { payload: string; send
   const db = getDb();
   const ref = parked.conv_key.slice('park:'.length);
   const cond = parkThreadCondition(ref);
+  // D-A: the inbound reply row on the parker is peer A2A, which now lives in
+  // inter_agent_messages, not `messages`. Read the MERGED source so this recovery path
+  // (a reply that arrived but never relayed) still finds the answer post-cutover. The
+  // messages arm dedups against store ids. Ordering intent is unchanged: prefer a real
+  // reply intent, then most-recent; the cross-table recency tiebreak is created_at, then
+  // a stable _tag tiebreak, then rowid (rowid alone is not comparable across tables).
+  // NB: a compound (UNION) SELECT can only ORDER BY output columns, not an arbitrary
+  // expression, so the reply-intent priority is projected as `_reply_pri` in each arm.
   const row = db.prepare(
-    `SELECT content, source_agent_id FROM messages
+    `SELECT content, source_agent_id, created_at, rowid AS _rowid, 0 AS _tag,
+            (a2a_intent IN ('ANSWER','DELIVERABLE','COMPLETE','FAIL')) AS _reply_pri FROM messages
       WHERE agent_id = ? AND role = 'user' AND source_agent_id IS NOT NULL
         AND source_agent_id != ? AND created_at >= datetime(?, '-15 minutes')
         AND ${cond.sql}
-      ORDER BY (a2a_intent IN ('ANSWER','DELIVERABLE','COMPLETE','FAIL')) DESC, rowid DESC
-      LIMIT 1`,
-  ).get(parked.agent_id, parked.agent_id, parked.created_at, ...cond.params) as { content: string; source_agent_id: string | null } | undefined;
+        AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = ?)
+     UNION ALL
+     SELECT content, source_agent_id, created_at, rowid AS _rowid, 1 AS _tag,
+            (a2a_intent IN ('ANSWER','DELIVERABLE','COMPLETE','FAIL')) AS _reply_pri FROM inter_agent_messages
+      WHERE agent_id = ? AND role = 'user' AND source_agent_id IS NOT NULL
+        AND source_agent_id != ? AND created_at >= datetime(?, '-15 minutes')
+        AND ${cond.sql}
+     ORDER BY _reply_pri DESC, created_at DESC, _tag DESC, _rowid DESC
+     LIMIT 1`,
+  ).get(
+    parked.agent_id, parked.agent_id, parked.created_at, ...cond.params, parked.agent_id,
+    parked.agent_id, parked.agent_id, parked.created_at, ...cond.params,
+  ) as { content: string; source_agent_id: string | null } | undefined;
   if (!row) return null;
   // The stored row is the full context message: [A2A:...] envelope + payload +
   // [Thread ...] footer (+ optional engine hint). Relay just the payload.
@@ -1246,20 +1319,42 @@ function findAskedAgentForPark(parked: OpenParkRow): { name: string; status: str
   const db = getDb();
   const ref = parked.conv_key.slice('park:'.length);
   const cond = parkThreadCondition(ref);
+  // D-A: the outbound ask was delivered into the ASKED agent's inbound row (peer A2A),
+  // which now lives in inter_agent_messages, not `messages`. Read the MERGED source so
+  // park recovery can still name the asked agent post-cutover. The messages arm dedups
+  // against store ids by the same source_agent_id filter; cross-table order is created_at,
+  // then a stable _tag tiebreak, then rowid (newest, matching the legacy rowid DESC).
   const ask = db.prepare(
-    `SELECT agent_id FROM messages
+    `SELECT agent_id, created_at, rowid AS _rowid, 0 AS _tag FROM messages
       WHERE created_at >= datetime(?, '-2 hours') AND created_at <= datetime(?, '+15 minutes')
         AND source_agent_id = ? AND agent_id != ? AND ${cond.sql}
-      ORDER BY rowid DESC LIMIT 1`,
-  ).get(parked.created_at, parked.created_at, parked.agent_id, parked.agent_id, ...cond.params) as { agent_id: string } | undefined;
+        AND id NOT IN (SELECT id FROM inter_agent_messages WHERE source_agent_id = ?)
+     UNION ALL
+     SELECT agent_id, created_at, rowid AS _rowid, 1 AS _tag FROM inter_agent_messages
+      WHERE created_at >= datetime(?, '-2 hours') AND created_at <= datetime(?, '+15 minutes')
+        AND source_agent_id = ? AND agent_id != ? AND ${cond.sql}
+     ORDER BY created_at DESC, _tag DESC, _rowid DESC LIMIT 1`,
+  ).get(
+    parked.created_at, parked.created_at, parked.agent_id, parked.agent_id, ...cond.params, parked.agent_id,
+    parked.created_at, parked.created_at, parked.agent_id, parked.agent_id, ...cond.params,
+  ) as { agent_id: string } | undefined;
   let askedId: string | null = ask?.agent_id ?? null;
   if (!askedId) {
+    // D-A: the inbound-on-parker fallback is also peer A2A; read the MERGED source.
     const inbound = db.prepare(
-      `SELECT source_agent_id FROM messages
+      `SELECT source_agent_id, created_at, rowid AS _rowid, 0 AS _tag FROM messages
         WHERE agent_id = ? AND source_agent_id IS NOT NULL AND source_agent_id != ?
           AND created_at >= datetime(?, '-15 minutes') AND ${cond.sql}
-        ORDER BY rowid DESC LIMIT 1`,
-    ).get(parked.agent_id, parked.agent_id, parked.created_at, ...cond.params) as { source_agent_id: string } | undefined;
+          AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = ?)
+       UNION ALL
+       SELECT source_agent_id, created_at, rowid AS _rowid, 1 AS _tag FROM inter_agent_messages
+        WHERE agent_id = ? AND source_agent_id IS NOT NULL AND source_agent_id != ?
+          AND created_at >= datetime(?, '-15 minutes') AND ${cond.sql}
+       ORDER BY created_at DESC, _tag DESC, _rowid DESC LIMIT 1`,
+    ).get(
+      parked.agent_id, parked.agent_id, parked.created_at, ...cond.params, parked.agent_id,
+      parked.agent_id, parked.agent_id, parked.created_at, ...cond.params,
+    ) as { source_agent_id: string } | undefined;
     askedId = inbound?.source_agent_id ?? null;
   }
   if (!askedId) return null;
@@ -1395,7 +1490,16 @@ export async function resolveParksAtBoot(): Promise<{ relayedReplies: number; fa
 export async function failParksForAbandonedAsk(inboundAskMessageId: string, threadShort: string, askedAgentId?: string): Promise<void> {
   try {
     const db = getDb();
-    const full = (db.prepare('SELECT a2a_thread_id FROM messages WHERE id = ?').get(inboundAskMessageId) as { a2a_thread_id: string | null } | undefined)?.a2a_thread_id ?? null;
+    // D-A: the inbound ask row this abandoned-ask hook resolves the thread from is peer
+    // A2A, which now lives in inter_agent_messages, not `messages`. Read the MERGED
+    // source by id (a globally unique uuid, so at most one row matches across the two
+    // tables) so the full thread id is still recovered post-cutover.
+    const full = (db.prepare(
+      `SELECT a2a_thread_id FROM messages WHERE id = ?
+       UNION ALL
+       SELECT a2a_thread_id FROM inter_agent_messages WHERE id = ?
+       LIMIT 1`,
+    ).get(inboundAskMessageId, inboundAskMessageId) as { a2a_thread_id: string | null } | undefined)?.a2a_thread_id ?? null;
     const keys = [...new Set([full ? `park:${full}` : '', threadShort ? `park:${threadShort}` : ''].filter(Boolean))];
     if (keys.length === 0) return;
     const parks = db.prepare(
@@ -1421,7 +1525,11 @@ export async function failParksForAbandonedAsk(inboundAskMessageId: string, thre
  * Consistent thread IDs for the same context (e.g., task pokes)
  * keep related messages grouped together.
  */
-export function makeThreadId(seed: string): string {
+export // CAUTION (FA-C2 class): the id shape is 'thread-' + base36 hash + '-' + seed,
+// so ANY 8-char prefix is 'thread-' plus ONE hash character (~36 buckets) and
+// collides heavily. Matchers must compare the FULL id; never substr(...,1,8).
+// (conversationKey C-2, parkThreadCondition, and a2a-replies all learned this.)
+function makeThreadId(seed: string): string {
   // Simple deterministic hash, same seed always produces the same thread ID
   // This lets us group e.g. all pokes for a task into one thread
   let hash = 0;

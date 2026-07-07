@@ -46,6 +46,37 @@ done
 fail() { echo "" >&2; echo "❌ $*" >&2; exit 1; }
 step() { echo ""; echo "▶ $*"; }
 
+# Prerelease-aware "strictly greater": exit 0 iff version $1 ranks strictly
+# ABOVE version $2. Mirrors the engine's compareVersions (packages/server/src/
+# gateway/routes/update.ts) EXACTLY so this gate matches how a box actually
+# resolves the newest release: higher base wins; a stable release outranks any
+# pre-release of the SAME base (so 3.1.10-preflight.1 ranks BELOW stable 3.1.10);
+# two pre-releases compare by ordinal; malformed segments clamp to 0 (FA-D7).
+rank_above() {
+  node -e '
+    function parse(v){
+      const s=String(v).replace(/^v/,"");const d=s.indexOf("-");
+      const bp=d===-1?s:s.slice(0,d);const pt=d===-1?"":s.slice(d+1);
+      const base=bp.split(".").map(x=>{const n=Number(x);return Number.isFinite(n)?n:0;});
+      let pre=null;if(pt){const m=pt.match(/(\d+)\s*$/);pre=m?Number(m[1]):0;}
+      return {base,pre};
+    }
+    function cmp(a,b){a=parse(a);b=parse(b);
+      for(let i=0;i<3;i++){const d=(a.base[i]||0)-(b.base[i]||0);if(d)return d;}
+      if(a.pre===null&&b.pre===null)return 0;
+      if(a.pre===null)return 1;if(b.pre===null)return -1;return a.pre-b.pre;}
+    process.exit(cmp(process.argv[1],process.argv[2])>0?0:1);
+  ' "$1" "$2"
+}
+
+# True iff tag $1 exists locally AND points at the current HEAD commit. Used to
+# detect a re-entry (FA-D3): a prior run that committed the bump, created and
+# pushed the tag, then failed at `gh release create`.
+tag_points_at_head() {
+  git rev-parse "$1" >/dev/null 2>&1 \
+    && [ "$(git rev-parse "$1^{commit}" 2>/dev/null)" = "$(git rev-parse HEAD 2>/dev/null)" ]
+}
+
 # Stable needs an explicit X.Y.Z (released as vX.Y.Z from `main`). Preflight
 # AUTO-PICKS its number — latest stable + 1 patch — and auto-increments the
 # pre-release ordinal, so nobody has to choose it (the common foot-gun). You may
@@ -80,12 +111,16 @@ if [ -n "$(git status --porcelain)" ]; then fail "Working tree is not clean. Com
 CURRENT="$(node -p "require('./package.json').version")"
 
 if [ "$PREFLIGHT" = "1" ]; then
-  # Auto-pick the base when not given: latest stable + 1 patch. Preflight must
-  # always sit ABOVE current stable, or a Preflight box would treat the equal/
-  # lower stable as newer and silently drop the test feature.
+  # We ALWAYS need the latest stable now: to auto-pick the base when none was
+  # given, AND (FA-D2) to GUARD that the resulting preflight tag ranks strictly
+  # above it. Before FA-D2 the guard lived only in the auto-pick branch, so an
+  # explicit base (e.g. `--preflight 3.1.9` while stable is 3.1.10) skipped it
+  # and published a pre-release every box ignores, silently stranding the
+  # feature under test with a "success" report.
+  LATEST_STABLE="$(gh api "repos/$REPO/releases/latest" --jq '.tag_name' 2>/dev/null | sed 's/^v//')"
+  echo "$LATEST_STABLE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+    || fail "Could not read latest stable release to compute/guard the preflight base (got '${LATEST_STABLE:-none}')."
   if [ -z "$BASE" ]; then
-    LATEST_STABLE="$(gh api "repos/$REPO/releases/latest" --jq '.tag_name' 2>/dev/null | sed 's/^v//')"
-    echo "$LATEST_STABLE" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || fail "Could not read latest stable release to compute the preflight base (got '${LATEST_STABLE:-none}')."
     BASE="$(echo "$LATEST_STABLE" | awk -F. '{printf "%d.%d.%d", $1, $2, $3 + 1}')"
     echo "  ↪ auto base: latest stable $LATEST_STABLE → preflight target $BASE"
   fi
@@ -98,18 +133,51 @@ if [ "$PREFLIGHT" = "1" ]; then
   NEXT_N=$(( ${LAST_N:-0} + 1 ))
   VERSION="${BASE}-preflight.${NEXT_N}"
   TAG="v$VERSION"
+  # Rank guard (FA-D2): the FULL preflight tag must rank strictly above latest
+  # stable, whether the base was auto-picked OR given explicitly. A base equal
+  # to stable is the classic trap, 3.1.10-preflight.1 ranks BELOW stable
+  # 3.1.10 (a stable outranks its own pre-releases), so the box takes stable and
+  # drops the feature. This is verbatim the preserved invariant.
+  if ! rank_above "$VERSION" "$LATEST_STABLE"; then
+    SUGGEST="$(echo "$LATEST_STABLE" | awk -F. '{printf "%d.%d.%d", $1, $2, $3 + 1}')"
+    fail "Preflight $VERSION does NOT rank above current stable $LATEST_STABLE, every Preflight box would treat stable as newer, install it, and silently drop the feature under test. Use a base at least one patch above stable (e.g. --preflight $SUGGEST), or just run --preflight with no base to auto-pick it."
+  fi
+  echo "  ✓ $VERSION ranks above current stable $LATEST_STABLE"
 else
   VERSION="$BASE"
   TAG="v$VERSION"
-  # Stable must strictly increase over the installed stable version.
-  if ! node -e "const a='$VERSION'.split('.').map(Number),b='$CURRENT'.replace(/-.*/,'').split('.').map(Number);for(let i=0;i<3;i++){if(a[i]>b[i])process.exit(0);if(a[i]<b[i])process.exit(1)}process.exit(1)"; then
+  # Stable must strictly increase over the installed stable version, UNLESS we
+  # are re-entering an interrupted release (FA-D3), where the bump is already
+  # committed so CURRENT already equals VERSION and the tag sits at HEAD.
+  if ! tag_points_at_head "$TAG" \
+     && ! node -e "const a='$VERSION'.split('.').map(Number),b='$CURRENT'.replace(/-.*/,'').split('.').map(Number);for(let i=0;i<3;i++){if(a[i]>b[i])process.exit(0);if(a[i]<b[i])process.exit(1)}process.exit(1)"; then
     fail "New version $VERSION must be greater than current $CURRENT"
   fi
 fi
 
-if git rev-parse "$TAG" >/dev/null 2>&1; then fail "Tag $TAG already exists locally"; fi
-if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then fail "Release $TAG already exists on GitHub"; fi
-echo "  ✓ on $BRANCH, clean tree, gh authed, $CHANNEL_LABEL, $CURRENT → $VERSION, tag $TAG free"
+# Re-entry detection (FA-D3). A prior run may have committed the bump, created +
+# pushed the tag, then FAILED at `gh release create`, leaving branch+tag
+# advanced with NO consumable release. Re-running must RESUME, not abort. We are
+# re-entering iff the tag already exists locally at HEAD; any other pre-existing
+# tag is a genuine conflict and still hard-fails. The late steps below are all
+# idempotent, so a resumed run finishes the release rather than erroring.
+REENTRY=0
+if git rev-parse "$TAG" >/dev/null 2>&1; then
+  if tag_points_at_head "$TAG"; then
+    REENTRY=1
+    echo "  ↪ re-entry: local tag $TAG already at HEAD, resuming an interrupted release"
+  else
+    fail "Tag $TAG already exists locally at a DIFFERENT commit than HEAD. Delete it (git tag -d $TAG) or choose another version before re-running."
+  fi
+fi
+if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+  # A release row already exists. If we're resuming (tag at HEAD), that's fine -
+  # the create step below falls through to an idempotent asset re-upload. If we
+  # are NOT resuming, this tag was already fully released; refuse to clobber it.
+  [ "$REENTRY" = "1" ] || fail "Release $TAG already exists on GitHub and no matching local tag is at HEAD. Nothing to resume; pick a new version."
+  echo "  ↪ re-entry: release $TAG already exists, will ensure both assets are uploaded, then verify"
+fi
+echo "  ✓ on $BRANCH, clean tree, gh authed, $CHANNEL_LABEL, $CURRENT → $VERSION, tag $TAG $([ "$REENTRY" = "1" ] && echo '(re-entry)' || echo 'free')"
 
 # ── Typecheck (a broken build must never ship) ──
 step "Typecheck"
@@ -196,13 +264,15 @@ step "Cacheable-prefix determinism gate (C28)"
 # Real-model behavioral runs are slow (~25 min) and cannot run inline here, so
 # the gate checks for a RECENT full-suite green MARKER written only when every
 # scenario passed with zero blocking findings (dev-test-tools/behavioral/
-# results/last-green.json). Tradeoff stated plainly: the marker's git SHA is
-# logged for the human but not hard-matched, because the release commit itself
-# (and the instrument uninstall) legitimately change the SHA after the green
-# run. Freshness is the enforced bar: a marker older than 24h means the suite
-# was not run against this change set. Run it with:
+# results/last-green.json). FA-D4: freshness is only the STALENESS FLOOR. The
+# gate must also mean "THIS change set passed," so we now HARD-MATCH the
+# marker's gitSha to the current pre-bump HEAD. HEAD is still the change-set
+# commit at this point, the version bump above is uncommitted and the release
+# commit happens later, and the runner records exactly `git rev-parse HEAD` of
+# the platform repo, so an equal-length compare is exact. A change landed after
+# the green run ⇒ HEAD moved ⇒ mismatch ⇒ refuse. Run the suite with:
 #   (cd ../dev-test-tools && node behavioral/runner.mjs)
-step "Behavioral suite gate (full-suite green marker, <24h)"
+step "Behavioral suite gate (full-suite green marker, <24h AND same HEAD)"
 BEHAV_MARKER="$SCRIPT_DIR/../../dev-test-tools/behavioral/results/last-green.json"
 if [ ! -f "$BEHAV_MARKER" ]; then
   fail "Behavioral gate: no last-green marker. Run the behavioral suite to green first. NOT publishing."
@@ -212,7 +282,16 @@ BEHAV_SHA=$(node -e "try{console.log(require('$BEHAV_MARKER').gitSha||'unknown')
 if [ "$(node -e "console.log($BEHAV_AGE_H > 24 ? 1 : 0)")" = "1" ]; then
   fail "Behavioral gate: last-green marker is ${BEHAV_AGE_H}h old (>24h). Re-run the suite to green. NOT publishing."
 fi
-echo "  ✓ behavioral suite green ${BEHAV_AGE_H}h ago (marker sha ${BEHAV_SHA:0:8}; verify it reflects this change set)"
+# FA-D4: SHA match. The marker must carry a readable sha AND it must equal the
+# tree we are about to ship, or the "green" tells us nothing about this change.
+HEAD_SHA="$(git rev-parse HEAD)"
+if [ "$BEHAV_SHA" = "unknown" ] || [ "$BEHAV_SHA" = "unreadable" ] || [ -z "$BEHAV_SHA" ]; then
+  fail "Behavioral gate: the last-green marker has no readable gitSha, so it can't be tied to this change set. Re-run the behavioral suite to green. NOT publishing."
+fi
+if [ "$BEHAV_SHA" != "$HEAD_SHA" ]; then
+  fail "Behavioral gate: the suite passed a different tree (marker sha ${BEHAV_SHA:0:8}, current HEAD ${HEAD_SHA:0:8}), a change landed after the green run. Re-run the behavioral suite against this HEAD. NOT publishing."
+fi
+echo "  ✓ behavioral suite green ${BEHAV_AGE_H}h ago at this exact HEAD (${HEAD_SHA:0:8})"
 
 # ── Dev-instrument ship-gate (C23) ──
 # The dev-test-tools harness injects sim-outbound send-capture + /api/dev routes into
@@ -253,16 +332,30 @@ else
   NOTES_ARGS=(--generate-notes)
 fi
 
-# ── Commit + tag + push ──
+# ── Commit + tag + push (order preserved; each step idempotent on re-run) ──
+# FA-D3: keeping the documented order (commit → tag → push → release), every
+# late step below is a no-op when a prior interrupted run already did it, so a
+# resumed run finishes the release instead of erroring on the existing tag.
 step "Committing, tagging, pushing"
 git add package.json
-git commit -m "release: $TAG" -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
-git tag "$TAG"
+if git diff --cached --quiet; then
+  echo "  ↪ package.json bump already committed (re-entry); skipping commit"
+else
+  git commit -m "release: $TAG" -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
+fi
+if git rev-parse "$TAG" >/dev/null 2>&1; then
+  echo "  ↪ tag $TAG already exists at HEAD (re-entry); skipping tag"
+else
+  git tag "$TAG"
+fi
 git push origin "$BRANCH"
+# Idempotent: pushing a tag already identical on the remote is a harmless
+# no-op ("Everything up-to-date"); an UNPUSHED tag (a prior run that tagged but
+# died before the tag push) gets pushed now.
 git push origin "$TAG"
 echo "  ✓ pushed $BRANCH + $TAG"
 
-# ── Create the release WITH the assets in the same call ──
+# ── Create the release WITH the assets in the same call (idempotent) ──
 # Preflight builds are GitHub pre-releases so Stable's releases/latest ignores
 # them; only the Preflight channel picks them up.
 PRERELEASE_ARGS=()
@@ -270,7 +363,15 @@ PRERELEASE_ARGS=()
 step "Creating GitHub $([ "$PREFLIGHT" = "1" ] && echo 'pre-')release $TAG with both assets"
 # Note the ${arr[@]+"${arr[@]}"} guards: under `set -u`, macOS bash 3.2 treats
 # "${empty[@]}" as an unbound variable and aborts, so expand empty arrays safely.
-gh release create "$TAG" "$DIST/$ZIP_NAME" "$DIST/$PKG_NAME" --repo "$REPO" --title "$TAG" ${PRERELEASE_ARGS[@]+"${PRERELEASE_ARGS[@]}"} ${NOTES_ARGS[@]+"${NOTES_ARGS[@]}"}
+if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+  # FA-D3 re-entry: the release row already exists (a prior run created it but
+  # the asset upload failed). Ensure BOTH assets are present via an idempotent
+  # --clobber upload instead of erroring on the existing release.
+  echo "  ↪ release $TAG already exists, re-uploading both assets (--clobber)"
+  gh release upload "$TAG" "$DIST/$ZIP_NAME" "$DIST/$PKG_NAME" --repo "$REPO" --clobber
+else
+  gh release create "$TAG" "$DIST/$ZIP_NAME" "$DIST/$PKG_NAME" --repo "$REPO" --title "$TAG" ${PRERELEASE_ARGS[@]+"${PRERELEASE_ARGS[@]}"} ${NOTES_ARGS[@]+"${NOTES_ARGS[@]}"}
+fi
 
 # ── The guard rail: do not declare victory until the release is verified ──
 step "Verifying the published release"

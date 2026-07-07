@@ -44,6 +44,11 @@ export function permissionAlternativeFinder(
   const { toolName, toolArgs, manifest, hasSendToAgent, hasCompleteTask } = input;
 
   switch (toolName) {
+    // FA-P4 (option B): 'file_delete' shares the file_write suggestions but is
+    // currently unreachable, there is no agent-callable file_delete tool, so no
+    // denied call arrives under this name (deletion rides the exec/rm path). Kept
+    // as future-proofing for FU-4's possible scoped-delete tool; it does not imply
+    // a live file_delete tool exists now.
     case 'file_write':
     case 'file_delete': {
       const allowedWrite = Array.isArray(manifest.file_write) ? manifest.file_write : [];
