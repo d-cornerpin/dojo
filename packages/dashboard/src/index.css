@@ -3934,6 +3934,21 @@
 }
 .dojo3-stage .chip-tool__detail { animation: dojo3-msgIn .3s cubic-bezier(.22, .9, .26, 1) both; }
 
+/* Grouped tool chip: N same-named calls collapsed to one pill with a corner
+   count badge. Same .chip-tool pill (relative so the badge can sit on its
+   corner); the badge reuses the dojo3 count-pill idiom from .kcol__count. */
+.dojo3-stage .chip-tool--group { position: relative; }
+.dojo3-stage .chip-tool__count {
+  position: absolute; top: -6px; right: -6px;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font: 500 9.5px/1 var(--dojo3-font-mono);
+  border-radius: 999px;
+  background: rgba(255, 252, 246, 0.5);
+  box-shadow: inset 0 0 0 1px rgba(152, 126, 92, 0.22);
+  color: var(--dojo3-ink-3);
+}
+
 /* Media card: generated/attached image or video/audio rendered as a poster
    tile with optional duration and a filename/size meta row. */
 .dojo3-stage .media {

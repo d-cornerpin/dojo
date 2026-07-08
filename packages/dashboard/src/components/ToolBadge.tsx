@@ -59,6 +59,56 @@ const ToolChip = ({ chip }: { chip: ToolChipData }) => {
   );
 };
 
+// A run of the SAME tool called many times in one chip row (the owner
+// screenshotted 14 identical PLAUD_GET_SUMMARY pills). Collapse them to ONE
+// chip-tool pill carrying a small corner count badge (the tool name + e.g. 14).
+// Clicking the collapsed chip expands it inline into the individual member
+// chips, each of which then behaves exactly as a standalone ToolChip (click one
+// to open its args/result detail). Only used for members.length >= 2; a lone
+// call renders as a plain ToolChip. The pill look is the same .chip-tool; the
+// badge is the dojo3 count idiom (.kcol__count) parked on the corner.
+const GroupedToolChip = ({ name, members }: { name: string; members: ToolChipData[] }) => {
+  const [expanded, setExpanded] = useState(false);
+  // Expanded: emit the individual chips so they flow inline in the parent chip
+  // row exactly like ungrouped chips, each with its own expand-to-detail.
+  if (expanded) {
+    return <>{members.map((c) => <ToolChip key={c.key} chip={c} />)}</>;
+  }
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <button
+        type="button"
+        className="chip-tool chip-tool--group"
+        aria-expanded={false}
+        aria-label={`${name}, ${members.length} calls (expand)`}
+        onClick={() => setExpanded(true)}
+      >
+        {name}
+        <span className="chip-tool__count" aria-hidden="true">{members.length}</span>
+      </button>
+    </div>
+  );
+};
+
+// Collapse same-named chips within a row into groups, first-appearance order.
+// Different tool names never merge; a name that appears only once stays a group
+// of one (rendered as a plain ToolChip). [A, B, A] -> [A(2), B(1)] (both A's
+// merge under A's first appearance, ahead of B).
+function groupChipsByName(chips: ToolChipData[]): Array<{ name: string; members: ToolChipData[] }> {
+  const order: string[] = [];
+  const byName = new Map<string, ToolChipData[]>();
+  for (const c of chips) {
+    const existing = byName.get(c.name);
+    if (existing) {
+      existing.push(c);
+    } else {
+      byName.set(c.name, [c]);
+      order.push(c.name);
+    }
+  }
+  return order.map((name) => ({ name, members: byName.get(name)! }));
+}
+
 // One or more tool badges in a left-aligned wrap row. Handles both a single
 // tool-only turn (items.length === 1) and a grouped run of adjacent tool-only
 // turns. Renders nothing when there is nothing visible (all bookkeeping).
@@ -75,9 +125,18 @@ export const ToolBadgeGroup = ({
   chips?: ToolChipData[];
 }) => {
   if (chips && chips.length > 0) {
+    // Collapse repeated same-named calls into one counted chip; a single call
+    // stays a plain ToolChip. Group key is the first member's stable key.
+    const groups = groupChipsByName(chips);
     return (
       <div className="flex flex-wrap items-start gap-1.5 justify-start">
-        {chips.map((c) => <ToolChip key={c.key} chip={c} />)}
+        {groups.map((g) =>
+          g.members.length > 1 ? (
+            <GroupedToolChip key={g.members[0].key} name={g.name} members={g.members} />
+          ) : (
+            <ToolChip key={g.members[0].key} chip={g.members[0]} />
+          ),
+        )}
       </div>
     );
   }

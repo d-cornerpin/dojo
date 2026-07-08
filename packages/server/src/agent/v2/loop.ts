@@ -4089,6 +4089,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
             attachments: queuedAttachments.length > 0 ? queuedAttachments : undefined,
             reasoningContent: result.reasoningContent ?? undefined,
             source: interAgentTurn ? 'a2a' : null,
+            // Carry the turn's conversation key LIVE so the dashboard can hide
+            // background-run tool chips in regular mode consistently with reload.
+            // conv_key is stamped on the persisted row only at turn end, so this
+            // broadcast (mid-turn) sources it from chosenConvKey directly: a
+            // human conversation key for a user turn (chips stay visible), null
+            // for a background/engine turn (chips hidden). Matches what
+            // rowToMessage serves on the next refetch.
+            convKey: chosenConvKey,
           },
         });
         // v2.7.24, also track text-with-tools iterations as deliverable

@@ -366,6 +366,15 @@ function rowToMessage(row: Record<string, unknown>): Message {
     reasoningContent: (row.reasoning_content as string | null) ?? null,
     attachments: row.attachments ? JSON.parse(row.attachments as string) : undefined,
     source: (row.source as 'voice' | null | undefined) ?? null,
+    // The conversation this turn served. Stamped on the agent's OWN
+    // assistant/tool rows at turn end (migration 076 / loop C15) with the human
+    // conversation key ('owner', 'imessage:…', 'email:…', …); a background /
+    // engine turn (scheduler sync, watcher, tracker-driven surface) leaves it
+    // null. The dashboard reads it to hide background-run tool CHIPS in regular
+    // mode while keeping user-triggered chips (and all surfaced text) visible.
+    // Only the regular SELECT * path carries conv_key; the wordy union omits the
+    // column, which is fine because wordy mode renders every chip regardless.
+    convKey: (row.conv_key as string | null | undefined) ?? null,
     // Canonical attribution for the dashboard's origin-based classifier
     // (mirrors the memory store + agents route projection).
     origin: deriveOrigin({

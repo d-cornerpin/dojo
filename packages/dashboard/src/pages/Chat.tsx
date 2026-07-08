@@ -91,6 +91,14 @@ interface ChatMessage {
   /** Canonical attribution from the server (deriveOrigin). The visibility
    *  classifier reads this to decide what shows in regular mode. */
   origin?: MessageOrigin;
+  /** The conversation this turn served, stamped on the agent's own
+   *  assistant/tool rows (migration 076 / loop C15). A human conversation key
+   *  ('owner', 'imessage:…', …) means the user triggered the turn; null means a
+   *  background/engine run (scheduler sync, watcher, tracker-driven surface).
+   *  Regular mode hides background-run tool CHIPS by keying on this; the
+   *  surfaced text of a background turn still renders. Absent on local
+   *  optimistic/streaming bubbles (treated as user-visible). */
+  convKey?: string | null;
 }
 
 
@@ -431,6 +439,9 @@ const toolBadgeItems = (
 ): Array<{ id: string; summary: ToolTurnSummary }> =>
   msgs
     .map((m) => {
+      // Background/engine run: drop its badge in regular mode (chips-only rule;
+      // its surfaced text still renders). Wordy mode keeps everything.
+      if (!wordyMode && isBackgroundTurnRow(m)) return null;
       const names = (parseMessageContent(m.content).blocks ?? [])
         .filter((b) => b.type === 'tool_use')
         .filter((b) => wordyMode || !isErroredToolResult(b.id ? resultById.get(b.id) : undefined))
@@ -456,13 +467,42 @@ interface ToolResultInfo { content: string; isError: boolean }
 // only caught missing-param errors and could over-match a legit "is required".)
 const isErroredToolResult = (info?: ToolResultInfo): boolean => !!info?.isError;
 
+// A tool chip is user-visible in REGULAR mode only when its row was produced
+// serving a HUMAN conversation. The turn's conv_key is the structural signal:
+// a user-triggered turn stamps its own assistant/tool rows with the human
+// conversation key ('owner', 'imessage:…', 'email:…', 'teams:…', …); a
+// background / engine turn (scheduler sync, watcher, tracker-driven surface)
+// leaves them null because the turn had no waiting human (chosenConvKey null,
+// so the teardown stamp is a no-op). Verified against the live DB: the
+// 'engine' / 'park:' / 'relayed:' sentinels only ever land on the role='user'
+// TRIGGER row, never on the agent's own assistant/tool output, so on a chip row
+// `null` IS the background marker (the sentinels are excluded defensively too).
+// This hides only the CHIP; a background turn's surfaced TEXT is a separate
+// assistant row and still renders. Wordy mode shows every chip. Absent convKey
+// (undefined, e.g. a local optimistic bubble) defaults to user-visible so a live
+// user turn never loses its own chips. NOTE: legacy rows written before conv_key
+// stamping (migration 076) are null too, so their chips are hidden in regular
+// mode and only appear in wordy mode (an accepted, bounded history tradeoff).
+const isBackgroundTurnRow = (m: ChatMessage): boolean => {
+  const ck = m.convKey;
+  if (ck === undefined) return false;      // no signal → show (safety for live user turns)
+  if (ck === null || ck === '') return true;
+  if (ck === 'engine' || ck === 'engine-steer' || ck === 'engine-notice') return true;
+  if (ck.startsWith('park:') || ck.startsWith('relayed:')) return true;
+  return false;                            // a real human conversation key → show
+};
+
 const toolChips = (
   msgs: ChatMessage[],
   resultById: Map<string, ToolResultInfo>,
   wordyMode: boolean,
 ): ToolChipData[] =>
   msgs.flatMap((m) =>
-    (parseMessageContent(m.content).blocks ?? [])
+    // Background/engine run: drop its tool chips in regular mode (only the chips
+    // are hidden; the turn's surfaced text is a separate row that still renders).
+    (!wordyMode && isBackgroundTurnRow(m))
+      ? []
+    : (parseMessageContent(m.content).blocks ?? [])
       .filter((b) => b.type === 'tool_use' && b.name && classifyTool(b.name) !== 'bookkeeping')
       .filter((b) => wordyMode || !isErroredToolResult(b.id ? resultById.get(b.id) : undefined))
       .map((b, i): ToolChipData => {
@@ -829,6 +869,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             attachments: m.attachments,
             source: m.source ?? null,
             origin: m.origin,
+            convKey: m.convKey,
           })),
         );
         setHasMore(result.data.length >= 50);
@@ -876,6 +917,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
         attachments: m.attachments,
         source: m.source ?? null,
         origin: m.origin,
+        convKey: m.convKey,
       }));
       setMessages(prev => [...older, ...prev]);
       setHasMore(result.data.length >= 50);
@@ -1147,6 +1189,10 @@ export const Chat = ({ panel = null }: ChatProps) => {
             // the live toolCalls were just a streaming artifact.
             toolCalls: undefined,
             isStreaming: false,
+            // Carry the turn's conversation key so a finalized tool-only row's
+            // chips get the same background-vs-user discrimination live as on
+            // reload (null = background run, chips hidden in regular mode).
+            convKey: e.message.convKey ?? existing.convKey,
           };
           // v2.5.21 — Removed the v2.5.20 move-to-tail. It fired when
           // chat:message arrived for a streaming bubble AND the bubble
@@ -1205,6 +1251,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             attachments: e.message.attachments,
             source: e.message.source ?? null,
             origin: e.message.origin,
+            convKey: e.message.convKey,
           },
         ];
       });
