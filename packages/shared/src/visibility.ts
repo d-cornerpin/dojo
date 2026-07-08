@@ -140,10 +140,13 @@ const INBOUND_CHANNEL_RES: ReadonlyArray<{ channel: ChannelKind; re: RegExp }> =
 ];
 
 // Outbound routing marker the engine writes after delivering a reply.
-// Supports the current form ([Reply routed via X ...]) and the legacy
-// iMessage form ([SENT VIA IMESSAGE to X]).
+// Supports the current form ([Reply routed via <channel> to <recipient>]), the
+// legacy iMessage form ([SENT VIA IMESSAGE to X]), and every channel the reply
+// resolver and engine-ack path emit: iMessage, Teams, email, phone call, SMS.
+// SMS was previously absent from this alternation, so SMS outbound markers went
+// unparsed and rendered no badge at all; it is included now.
 const OUTBOUND_ROUTING_RE =
-  /^\[(?:SENT VIA IMESSAGE to (.+?)|Reply routed via (iMessage|Teams|email|phone call)([^\]]*))\]$/i;
+  /^\[(?:SENT VIA IMESSAGE to (.+?)|Reply routed via (iMessage|Teams|email|phone call|SMS)([^\]]*))\]$/i;
 
 // Lifecycle divider: the engine persists these as a system message shaped
 // "── label ──" (box-drawing U+2500), e.g. "── New Session ──" or
@@ -243,8 +246,14 @@ export function stripInboundChannelMarker(content: string): string {
   return out.replace(PHONE_TRAILER_RE, '').trim();
 }
 
-// Parse an outbound routing marker (a standalone system message). Returns
-// the channel + recipient where present. email markers carry no recipient.
+// Parse an outbound routing marker (a standalone system message). Returns the
+// channel + recipient where present. Every channel now carries the recipient
+// the resolver/engine-ack path resolved; an email REPLY marker that carries a
+// subject instead of an address (the "[Reply routed via email reply (thread:
+// …)]" legacy form) has no "to <addr>" tail and so keeps recipient=null,
+// falling back to the channel-only badge. Backward compatible: the legacy
+// [SENT VIA IMESSAGE to X] form and the recipient-less phone/email forms all
+// still parse exactly as before.
 export function parseOutboundRouting(content: string): OutboundRoutingMatch | null {
   const m = content.trim().match(OUTBOUND_ROUTING_RE);
   if (!m) return null;
@@ -254,13 +263,19 @@ export function parseOutboundRouting(content: string): OutboundRoutingMatch | nu
   }
   const raw = (m[2] || 'imessage').toLowerCase();
   const channel: ChannelKind =
-    raw === 'teams' ? 'teams' : raw === 'email' ? 'email' : raw === 'phone call' ? 'phone' : 'imessage';
+    raw === 'teams' ? 'teams'
+    : raw === 'email' ? 'email'
+    : raw === 'phone call' ? 'phone'
+    : raw === 'sms' ? 'sms'
+    : 'imessage';
   const tail = m[3] || '';
-  let recipient: string | null = null;
-  if (channel === 'imessage') recipient = tail.match(/to (.+)$/i)?.[1]?.trim() || null;
-  else if (channel === 'teams') recipient = tail.match(/to chat (.+)$/i)?.[1]?.trim() || null;
-  else if (channel === 'phone') recipient = tail.match(/to (.+)$/i)?.[1]?.trim() || null;
-  // email intentionally shows no recipient ("sent via email reply")
+  // Teams stamps "to chat <id>"; every other channel stamps "to <recipient>".
+  // Anchor the non-Teams match to the tail start so a "to " that appears INSIDE
+  // an email subject (the thread-form marker) is never mistaken for a recipient.
+  const recipient =
+    channel === 'teams'
+      ? tail.match(/to chat (.+)$/i)?.[1]?.trim() || null
+      : tail.match(/^\s*to (.+)$/i)?.[1]?.trim() || null;
   return { channel, recipient };
 }
 

@@ -1313,6 +1313,35 @@ export async function runV2Turn(agentId: string): Promise<void> {
     if (chosenConvKey) continuationContext.set(agentId, { convKey: chosenConvKey, counterparty });
   };
 
+  // Persist + broadcast an outbound routing marker (a role='system'
+  // `[Reply routed via <label>]` row). The dashboard hides the raw row and turns
+  // it into a "to <recipient> via <channel>" badge on the preceding assistant
+  // bubble (parseOutboundRouting + outboundBadge). ONE writer, shared by the
+  // engine-ack channel pushes (deliverEngineUserAck, below) and the end-of-turn
+  // reply-destination resolver, so every outbound delivery is labeled
+  // identically and an engine-sent line is never an unlabeled bubble in the
+  // owner's stream (the observed defect). The <label> always carries the
+  // recipient the sender actually resolved (e.g. `iMessage to <name>`), never a
+  // bare channel word.
+  const persistRoutingMarker = (label: string): void => {
+    const tagId = uuidv4();
+    const tagContent = `[Reply routed via ${label}]`;
+    db.prepare(`
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+      VALUES (?, ?, 'system', ?, ?, datetime('now'))
+    `).run(tagId, agentId, tagContent, turnNumber);
+    broadcast({
+      type: 'chat:message',
+      agentId,
+      message: {
+        id: tagId, agentId, role: 'system' as const,
+        content: tagContent,
+        tokenCount: null, modelId: null, cost: null, latencyMs: null,
+        createdAt: new Date().toISOString(),
+      },
+    });
+  };
+
   // ── Engine-enforced human acknowledgment (NEXT-WAVE item 1) ──
   // When the multistep classifier deems a user request tracker-project-worthy,
   // the person who asked MUST hear "on it" when the work starts and "done" when
@@ -1366,19 +1395,32 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // dashboard already has it via the broadcast above; this reaches an away
     // user on the channel they wrote in on. Best-effort: a channel failure still
     // leaves the ack in chat + the store.
+    // Stamp the SAME routing marker the reply resolver writes whenever this ack
+    // is pushed to a non-dashboard channel, so an engine-sent line reaching an
+    // away user's phone renders with a "to <recipient> via <channel>" badge in
+    // the dashboard, identical to the model's own channel sends. Without this an
+    // engine-pushed ack was an unlabeled bubble in the owner's interleaved
+    // stream (the observed defect).
     try {
       if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
         const { sendResponseViaIMessage } = await import('../../services/imessage-bridge.js');
-        sendResponseViaIMessage(text, agentId, counterparty.senderId, false);
+        const delivered = sendResponseViaIMessage(text, agentId, counterparty.senderId, false);
+        if (delivered) persistRoutingMarker(`iMessage to ${delivered.name}`);
       } else if (counterparty.kind === 'user' && counterparty.channel === 'phone' && state.inboundContext?.phoneCallSid) {
         const { getCallSession } = await import('../../twilio/call-session.js');
         const session = getCallSession(state.inboundContext.phoneCallSid);
-        if (session && !session.isEnded()) await session.queueAgentSay(text);
+        if (session && !session.isEnded()) {
+          await session.queueAgentSay(text);
+          persistRoutingMarker(`phone call to ${state.inboundContext.phoneFromNumber ?? counterparty.senderId ?? '(unknown)'}`);
+        }
       } else if (counterparty.kind === 'user' && counterparty.channel === 'sms' && state.inboundContext?.smsFromNumber) {
         const { sendSms } = await import('../../twilio/client.js');
         const { getDefaultFromNumber } = await import('../../twilio/auth.js');
         const fromNumber = state.inboundContext?.smsToNumber ?? getDefaultFromNumber();
-        if (fromNumber) await sendSms(state.inboundContext.smsFromNumber, text, fromNumber);
+        if (fromNumber) {
+          await sendSms(state.inboundContext.smsFromNumber, text, fromNumber);
+          persistRoutingMarker(`SMS to ${state.inboundContext.smsFromNumber}`);
+        }
       }
     } catch (err) {
       logger.warn('v2: engine user-ack channel delivery failed (non-fatal)', {
@@ -1405,7 +1447,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
     startAckTimer = setTimeout(() => {
       void (async () => {
         try {
-          const repliedNow = () => !!db.prepare(`
+          // The person has heard something the moment EITHER a user-visible
+          // assistant text row landed this turn (the DB check) OR the agent
+          // delivered through a channel send TOOL (explicitSendThisTurn). The
+          // tool-send case leaves NO assistant text row, so the DB check alone
+          // was blind to it and fired a duplicate ack seconds after the model's
+          // own send (the observed double-ack, and the stray "On it" after a
+          // relay was already sent). `state` is read at fire time, so this sees
+          // the flag set during the loop. When the agent truly did nothing on
+          // any channel, both are false and the engine still speaks.
+          const repliedNow = () =>
+            Object.values(state.explicitSendThisTurn).some(Boolean) ||
+            !!db.prepare(`
             SELECT 1 FROM messages
             WHERE agent_id = ? AND role = 'assistant' AND turn_number = ?
               AND content NOT LIKE '[{%'
@@ -6587,10 +6640,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // trivial task, or a model-authored completion never triggers a canned line.
     // [no-reply] is not a valid resolution here: if the model went silent on a
     // completed user-requested task, the engine speaks for it.
+    //
+    // Same channel-delivery blindness as the F10 start-ack: a turn that
+    // delivered its "done" through a channel send TOOL leaves no assistant text
+    // row (lastAssistantTextForIM / surfacedReplyThisTurn both stay unset), so
+    // without the explicitSendThisTurn guard the engine would compose a second,
+    // duplicate completion line on top of the model's own send. A genuine
+    // silent drift-to-A2A sets none of these (send_to_agent is not a channel
+    // send), so the engine still speaks there.
     if (
       counterparty.kind === 'user' &&
       !state.lastAssistantTextForIM &&
-      !state.surfacedReplyThisTurn
+      !state.surfacedReplyThisTurn &&
+      !Object.values(state.explicitSendThisTurn).some(Boolean)
     ) {
       try {
         const { ENGINE_AUTO_MARKER } = await import('./classifiers/multistep.js');
@@ -6824,30 +6886,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
               imessageBridgeConfigured: isImessageConfigured(),
             });
 
-        // Small helper: persist + broadcast the routing marker so wordy
-        // mode shows it and the dashboard renderer can surface a "sent
-        // via X" pill (the existing pill regex matches `Reply routed via
-        // (iMessage|Teams|email)`).
-        const persistRoutingMarker = (label: string) => {
-          const tagId = uuidv4();
-          const tagContent = `[Reply routed via ${label}]`;
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-            VALUES (?, ?, 'system', ?, ?, datetime('now'))
-          `).run(tagId, agentId, tagContent, turnNumber);
-          broadcast({
-            type: 'chat:message',
-            agentId,
-            message: {
-              id: tagId, agentId, role: 'system' as const,
-              content: tagContent,
-              tokenCount: null, modelId: null, cost: null, latencyMs: null,
-              createdAt: new Date().toISOString(),
-            },
-          });
-        };
+        // Outbound routing markers are written via the hoisted
+        // persistRoutingMarker helper (defined near deliverEngineUserAck), the
+        // single writer shared with the engine-ack channel pushes so the
+        // dashboard's "to <recipient> via <channel>" pill wording cannot drift
+        // between the two paths.
 
-        // The agent works out details DIRECTLY with whoever it is talking to, 
+        // The agent works out details DIRECTLY with whoever it is talking to,
         // including someone it proactively reached on the owner's behalf (the
         // owner asked it to reach a contact). Its reply to that person routes
         // BACK to that person over iMessage; it then brings the result to the
@@ -6956,8 +7001,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
             if (result.isError) {
               logger.warn('v2.7.24: email auto-reply failed', { agentId, tool: toolName, error: result.content }, agentId);
             } else {
+              // Prefer the recipient address (the person we replied to) so the
+              // badge reads "to <addr> via email"; fall back to the thread
+              // subject form when the address isn't known (recipient stays null,
+              // badge falls back to "sent via email reply").
+              const emailRecipient = state.inboundContext.recipientAddress;
               const subjectPreview = state.inboundContext.emailSubject?.slice(0, 40) ?? '(no subject)';
-              persistRoutingMarker(`email reply (thread: "${subjectPreview}")`);
+              persistRoutingMarker(
+                emailRecipient
+                  ? `email to ${emailRecipient}`
+                  : `email reply (thread: "${subjectPreview}")`,
+              );
               logger.info('v2.7.24: routed reply via email', {
                 agentId,
                 emailService: state.inboundContext.emailService,

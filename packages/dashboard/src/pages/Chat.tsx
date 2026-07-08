@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import type { Message } from '@dojo/shared';
 import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, WsEvent } from '@dojo/shared';
-import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting } from '@dojo/shared';
+import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool } from '@dojo/shared';
 import type { MessageOrigin } from '@dojo/shared';
 import { summarizeToolTurn, type ToolTurnSummary } from '../lib/tool-display';
 import { inboundBadge, outboundBadge } from '../lib/channel-display';
@@ -517,20 +517,46 @@ const toolChips = (
       }),
   );
 
-// v2.7.23 — mirror AgentDetail.tsx: render channel-send tool calls as
-// outbound message bubbles with the channel pill, not generic gear icons.
-const CHANNEL_SEND_TOOLS: Record<string, { label: string; emoji: string }> = {
-  imessage_send: { label: 'sent via iMessage', emoji: '\u{1F4AC}' },
-  teams_send_message: { label: 'sent via Teams', emoji: '\u{1F4DD}' },
-  outlook_reply: { label: 'sent via email reply', emoji: '\u{2709}\u{FE0F}' },
-  gmail_reply: { label: 'sent via email reply', emoji: '\u{2709}\u{FE0F}' },
-  outlook_send: { label: 'sent via email', emoji: '\u{2709}\u{FE0F}' },
-  gmail_send: { label: 'sent via email', emoji: '\u{2709}\u{FE0F}' },
+// v2.7.23 — render channel-send tool calls as outbound message bubbles with a
+// RECIPIENT-bearing channel pill ("to X via iMessage"), not a generic gear icon
+// and not a bare "sent via iMessage" (the observed defect: with two
+// conversations interleaved in one stream the owner could not tell who a bubble
+// went to). The pill wording is the SAME outboundBadge the resolver-routed
+// replies use, so the two outbound paths cannot drift; the recipient is read
+// cheaply from the tool's own arguments (raw handle/number as the honest
+// fallback when no display name is available client-side). This SET is the
+// message-bearing send tools; voice_call carries no body, so it stays a plain
+// action badge.
+const CHANNEL_SEND_BUBBLE_TOOLS: ReadonlySet<string> = new Set([
+  'imessage_send', 'sms_send', 'teams_send_message',
+  'gmail_reply', 'gmail_send', 'outlook_reply', 'outlook_send',
+]);
+
+// The recipient the send targeted, pulled from the tool's own arguments. Replies
+// target the inbound thread and carry no explicit recipient, so they return null
+// and the badge falls back to channel-only wording.
+const sendToolRecipient = (name: string, input: Record<string, unknown>): string | null => {
+  const s = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
+  switch (name) {
+    case 'imessage_send': return s(input.to) ?? s(input.recipient) ?? s(input.handle);
+    case 'sms_send': return s(input.to) ?? s(input.number) ?? s(input.recipient);
+    case 'teams_send_message': {
+      // A Teams chat id is a long GUID, not a display name, and resolving it to
+      // one needs a network call the dashboard must not make. Show the same
+      // truncated id the resolver's Teams marker uses so the two paths match.
+      const chat = s(input.chat_id) ?? s(input.chatId);
+      return chat ? `${chat.slice(0, 8)}…` : null;
+    }
+    case 'gmail_send':
+    case 'outlook_send': return s(input.to);
+    default: return null; // replies: inbound thread, no explicit recipient in input
+  }
 };
 
 const ChannelSendBubble = ({ msg, toolUse }: { msg: ChatMessage; toolUse: ContentBlock }) => {
-  const meta = CHANNEL_SEND_TOOLS[toolUse.name ?? ''];
-  if (!meta) return null;
+  const name = toolUse.name ?? '';
+  const channel = channelOfSendTool(name);
+  if (!channel || !CHANNEL_SEND_BUBBLE_TOOLS.has(name)) return null;
   // imessage_send / teams_send_message use `message`; outlook/gmail use `body`.
   const messageText = typeof toolUse.input?.message === 'string'
     ? toolUse.input.message
@@ -540,11 +566,12 @@ const ChannelSendBubble = ({ msg, toolUse }: { msg: ChatMessage; toolUse: Conten
         ? toolUse.input.text
         : '';
   if (!messageText) return null;
+  const badge = outboundBadge(channel, sendToolRecipient(name, (toolUse.input as Record<string, unknown>) ?? {}));
   return (
     <div className="flex flex-col items-start">
       <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono mb-1 ml-1">
-        <span className="text-ui/40">{meta.emoji}</span>
-        <span>{meta.label}</span>
+        <span className="text-ui/40">{badge.emoji}</span>
+        <span>{badge.label}</span>
       </div>
       <div className="bubble-assistant max-w-[75%] px-4 py-3 text-ui">
         <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed break-words">
@@ -1443,7 +1470,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
       if (text) return null;
       const toolUses = (blocks ?? []).filter(b => b.type === 'tool_use');
       if (toolUses.length === 0) return null;
-      const channelSend = toolUses.find(b => b.name && CHANNEL_SEND_TOOLS[b.name]);
+      const channelSend = toolUses.find(b => b.name && CHANNEL_SEND_BUBBLE_TOOLS.has(b.name));
       const channelSendErrored = channelSend?.id
         ? toolResultErrorById.get(channelSend.id) === true
         : false;
@@ -1734,7 +1761,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             // v2.7.23 — render channel-send tool calls as outbound bubbles
             // (the user sees what was sent, not just a "⚙ imessage_send" gear).
             const channelSend = blocks?.find(
-              (b) => b.type === 'tool_use' && b.name && CHANNEL_SEND_TOOLS[b.name],
+              (b) => b.type === 'tool_use' && b.name && CHANNEL_SEND_BUBBLE_TOOLS.has(b.name),
             );
             // v2.7.25 — hide the outbound bubble when the underlying tool
             // call was refused. See AgentDetail.tsx for the longer rationale.

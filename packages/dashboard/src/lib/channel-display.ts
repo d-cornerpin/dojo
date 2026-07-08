@@ -46,18 +46,20 @@ export function inboundBadge(channel: ChannelKind, sender: string | null): Chann
 }
 
 // Outbound: the agent's reply was routed out via this channel ("to X via
-// iMessage"). Email shows no recipient (the thread id is not a person's name),
-// matching the prior UX.
+// iMessage"). Every channel shows the recipient when one is known (including
+// email, whose recipient is the address we replied to). When no recipient is
+// resolvable (an email REPLY badged by thread only, or a suppressed send), fall
+// back to the channel-only wording, "sent via email reply" for email to match
+// the prior UX, "sent via <channel>" otherwise.
 export function outboundBadge(channel: ChannelKind, recipient: string | null): ChannelBadge {
-  const who = channel === 'email' ? null : cleanName(recipient);
+  const who = cleanName(recipient);
   const name = CHANNEL_NAME[channel];
   return {
     emoji: CHANNEL_EMOJI[channel],
-    label:
-      channel === 'email'
+    label: who
+      ? `to ${who} via ${name}`
+      : channel === 'email'
         ? 'sent via email reply'
-        : who
-          ? `to ${who} via ${name}`
-          : `sent via ${name}`,
+        : `sent via ${name}`,
   };
 }
