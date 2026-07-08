@@ -814,19 +814,21 @@ async function main(): Promise<void> {
     })();
   }
 
-  // 4j-bis. One-time migration: mirror existing safe-sender lists (all channels)
-  // into the contacts store so upgrading users with senders already configured
-  // get their contacts without re-saving each list. Gated by a config flag;
-  // new adds are mirrored live by the config/append write paths. Fast (small
-  // lists), so it runs inline rather than as a background task.
+  // 4j-bis. Every-boot reconcile: mirror the safe-sender lists (all channels)
+  // into the contacts store so every trusted sender has a contact record the
+  // agent can resolve by name. Self-healing safety net for senders added before
+  // live mirroring existed (the live config/append/agent write paths keep new
+  // adds in sync). Idempotent + additive + fast (small lists), so it runs inline
+  // rather than as a background task. See backfillSafeSenderContacts for the
+  // dropped-flag tradeoff.
   try {
     const { backfillSafeSenderContacts } = await import('./services/channel-safe-senders.js');
     const r = backfillSafeSenderContacts();
-    if (!r.skipped) {
-      logger.info('Safe-sender contacts migration complete', { created: r.created, updated: r.updated });
+    if (r.created || r.updated) {
+      logger.info('Safe-sender contacts reconcile complete', { created: r.created, updated: r.updated });
     }
   } catch (err) {
-    logger.warn('Safe-sender contacts migration failed', {
+    logger.warn('Safe-sender contacts reconcile failed', {
       error: err instanceof Error ? err.message : String(err),
     });
   }

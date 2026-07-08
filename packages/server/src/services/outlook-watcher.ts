@@ -333,16 +333,17 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
         VALUES (?, ?, 'user', ?, datetime('now'))
       `).run(msgId, primaryId, content);
       // v3.0.9 — structured routing metadata (see gmail-watcher for rationale).
-      recordInboundMeta(msgId, {
-        channel: 'email',
+      const inboundMetaObj = {
+        channel: 'email' as const,
         accountKind: kind,
         authorized: isDirectToAgent,
         sender: fromAddr || from,
         emailMessageId: msg.id,
-        emailService: 'outlook',
+        emailService: 'outlook' as const,
         emailAccount: notifyAccount,
         emailSubject: subject,
-      });
+      };
+      recordInboundMeta(msgId, inboundMetaObj);
 
       broadcast({
         type: 'chat:message',
@@ -352,6 +353,10 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
           agentId: primaryId,
           role: 'user' as const,
           content,
+          // Carry the SAME structured inbound_meta into the live broadcast that
+          // the DB row holds, so ws.ts stampChatMessageOrigin derives identical
+          // attribution live and on refetch (mirrors the iMessage OPEN-13 fix).
+          inboundMeta: JSON.stringify(inboundMetaObj),
           tokenCount: null,
           modelId: null,
           cost: null,

@@ -17,6 +17,7 @@ import { getPrimaryAgentId, getOwnerName } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { getTwilioSmsSafeSenders } from '../services/channel-safe-senders.js';
 import { addressesMatch } from '../services/imessage-bridge.js';
+import { resolveRecipientDisplay } from '../contacts/resolve-recipient.js';
 import { isSmsEnabled, getTwilioCreds } from './auth.js';
 
 const logger = createLogger('twilio-sms-inbound');
@@ -229,7 +230,16 @@ function buildMediaSection(media: MmsMediaResult): string {
  */
 function buildContent(payload: InboundSmsPayload, knownSender: boolean, ownerName: string, media: MmsMediaResult): string {
   if (knownSender) {
-    const header = `[SOURCE: SMS FROM ${payload.fromNumber}]`;
+    // Show the trusted sender's saved name (contacts → SMS safe-sender
+    // registry) in the header, not just the raw number, so the agent knows who
+    // texted and the dashboard's inbound badge reads "from <name> via SMS"
+    // (parseInboundChannel cuts at the "(number)"), matching the iMessage
+    // framing. Falls back to the bare number when no name resolves. Reply
+    // routing is unaffected (it keys off inbound_meta.smsFromNumber).
+    const senderName = resolveRecipientDisplay('sms', payload.fromNumber);
+    const header = senderName && senderName !== payload.fromNumber
+      ? `[SOURCE: SMS FROM ${senderName} (${payload.fromNumber})]`
+      : `[SOURCE: SMS FROM ${payload.fromNumber}]`;
     const body = payload.body.trim() || (media.files.length > 0 ? '(sent without a caption)' : '(empty message)');
     // D15: downloaded media is registered in messages.attachments and marked
     // with a short marker here; raw MediaUrls appear only for items that
@@ -314,15 +324,16 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
   // safe-sender verdict; an unknown number => authorized:false => the agent
   // sees a notification (it decides whether to surface it) and does not
   // auto-text back.
-  recordInboundMeta(msgId, {
-    channel: 'sms',
-    accountKind: 'agent',
+  const inboundMetaObj = {
+    channel: 'sms' as const,
+    accountKind: 'agent' as const,
     authorized: knownSender,
     sender: payload.fromNumber,
     smsFromNumber: payload.fromNumber,
     smsToNumber: payload.toNumber,
     recipientAddress: payload.fromNumber,
-  });
+  };
+  recordInboundMeta(msgId, inboundMetaObj);
 
   broadcast({
     type: 'chat:message',
@@ -332,6 +343,13 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
       agentId: primaryId,
       role: 'user' as const,
       content,
+      // Carry the SAME structured inbound_meta into the live broadcast that the
+      // DB row holds, so ws.ts stampChatMessageOrigin derives identical
+      // attribution live and on HTTP refetch (mirrors the iMessage OPEN-13
+      // fix). Without it the live broadcast fell back to marker-parsing while
+      // refetch used inbound_meta, so an unauthorized-sender notification could
+      // render live yet vanish on refresh (the live-vs-refetch divergence).
+      inboundMeta: JSON.stringify(inboundMetaObj),
       tokenCount: null,
       modelId: null,
       cost: null,

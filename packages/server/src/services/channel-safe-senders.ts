@@ -127,21 +127,30 @@ export function appendTwilioVoiceSafeCaller(sender: SafeSender): AppendChannelSe
   return appendToKey(TWILIO_VOICE_CONFIG_KEY, sender);
 }
 
-// One-time migration: mirror every EXISTING safe-sender list (all channels +
-// slots) into the contacts store, so users upgrading with senders already on
-// their allowlists get contacts without having to re-save each list. Gated by a
-// config flag so it runs exactly once; afterward the live write paths (config
-// PUT, appendToKey, the agent's iMessage write) keep contacts in sync. The
-// mirror itself is idempotent, but the flag also avoids resurrecting a contact
-// the user deleted after the migration ran.
-const SAFE_SENDER_BACKFILL_FLAG = 'safe_senders_contacts_backfilled';
-
+// Boot-time reconcile: mirror every safe-sender list (all channels + slots)
+// into the contacts store on EVERY startup, so a trusted sender always has a
+// contact record the agent can resolve by name.
+//
+// This used to be a one-time, config-flag-gated migration. The flag encoded a
+// real intent: don't resurrect a contact the user deleted after the migration
+// ran. But it also made the sweep fragile — if the flag was set on a boot
+// BEFORE a sender was added via a path that (at that historical moment) didn't
+// mirror live, that sender's contact never got created and the flag stopped the
+// sweep from ever catching it (the production symptom: a saved iMessage safe
+// sender with no contact row, so her outbound label showed the raw number).
+//
+// The live write paths (config PUT, appendToKey, the agent's iMessage write)
+// already keep contacts in sync going forward, so this sweep is now a cheap,
+// idempotent, self-healing safety net for anything added before mirroring
+// existed. The mirror is additive + one-way (create-or-augment, never delete)
+// and matches on the channel address, so re-running over the full lists every
+// boot is a no-op once a sender is on file. The lists are small, so it runs
+// inline. Accepted tradeoff of dropping the flag: a safe-sender-derived contact
+// the user deleted while the sender is still on the allowlist can reappear on
+// the next boot — the sender is still trusted, so recreating the name record is
+// low-harm, and closing the "missing contact" gap is the priority.
 export function backfillSafeSenderContacts(): { created: number; updated: number; skipped: boolean } {
   const db = getDb();
-  const done = db
-    .prepare('SELECT value FROM config WHERE key = ?')
-    .get(SAFE_SENDER_BACKFILL_FLAG) as { value: string } | undefined;
-  if (done?.value === 'true') return { created: 0, updated: 0, skipped: true };
 
   let created = 0;
   let updated = 0;
@@ -158,9 +167,5 @@ export function backfillSafeSenderContacts(): { created: number; updated: number
     updated += r.updated;
   }
 
-  db.prepare(`
-    INSERT INTO config (key, value, updated_at) VALUES (?, 'true', datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = datetime('now')
-  `).run(SAFE_SENDER_BACKFILL_FLAG);
   return { created, updated, skipped: false };
 }

@@ -524,13 +524,17 @@ const toolChips = (
 // went to). The pill wording is the SAME outboundBadge the resolver-routed
 // replies use, so the two outbound paths cannot drift; the recipient is read
 // cheaply from the tool's own arguments (raw handle/number as the honest
-// fallback when no display name is available client-side). This SET is the
-// message-bearing send tools; voice_call carries no body, so it stays a plain
-// action badge.
-const CHANNEL_SEND_BUBBLE_TOOLS: ReadonlySet<string> = new Set([
-  'imessage_send', 'sms_send', 'teams_send_message',
-  'gmail_reply', 'gmail_send', 'outlook_reply', 'outlook_send',
-]);
+// fallback when no display name is available client-side).
+//
+// DERIVED, not a hand list (2026-07-08 defect-class sweep): a tool renders a
+// message bubble iff it is a real human-channel send (channelOfSendTool knows
+// them all: iMessage/Teams/SMS/Gmail+Outlook send+reply+FORWARD) AND it carries
+// a body. Only voice_call is bodiless, so it is the single exclusion. The old
+// hand Set had silently dropped gmail_forward / outlook_forward (both carry a
+// note); deriving from the canonical map fixes that and can never fall behind a
+// new send channel again.
+const isChannelSendBubbleTool = (name: string): boolean =>
+  channelOfSendTool(name) !== null && name !== 'voice_call';
 
 // The recipient the send targeted, pulled from the tool's own arguments. Replies
 // target the inbound thread and carry no explicit recipient, so they return null
@@ -553,10 +557,10 @@ const sendToolRecipient = (name: string, input: Record<string, unknown>): string
   }
 };
 
-const ChannelSendBubble = ({ msg, toolUse }: { msg: ChatMessage; toolUse: ContentBlock }) => {
+const ChannelSendBubble = ({ msg, toolUse, serverBadge }: { msg: ChatMessage; toolUse: ContentBlock; serverBadge?: OutboundChannelInfo | null }) => {
   const name = toolUse.name ?? '';
   const channel = channelOfSendTool(name);
-  if (!channel || !CHANNEL_SEND_BUBBLE_TOOLS.has(name)) return null;
+  if (!channel || !isChannelSendBubbleTool(name)) return null;
   // imessage_send / teams_send_message use `message`; outlook/gmail use `body`.
   const messageText = typeof toolUse.input?.message === 'string'
     ? toolUse.input.message
@@ -566,7 +570,14 @@ const ChannelSendBubble = ({ msg, toolUse }: { msg: ChatMessage; toolUse: Conten
         ? toolUse.input.text
         : '';
   if (!messageText) return null;
-  const badge = outboundBadge(channel, sendToolRecipient(name, (toolUse.input as Record<string, unknown>) ?? {}));
+  // Prefer the server-resolved outbound badge: the engine writes a persisted
+  // routing marker for this send carrying the recipient's display name resolved
+  // from the contacts store / safe-sender registry (parsed into serverBadge by
+  // the outboundChannelByAssistantId walk). Only when no marker is attached
+  // (older messages, or a reply with no explicit recipient) do we fall back to
+  // reading the raw handle from the tool input — the honest handle-only
+  // fallback, never a second label on top of the server one.
+  const badge = serverBadge ?? outboundBadge(channel, sendToolRecipient(name, (toolUse.input as Record<string, unknown>) ?? {}));
   return (
     <div className="flex flex-col items-start">
       <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-ui/[0.05] text-tertiary text-[10px] font-mono mb-1 ml-1">
@@ -1470,7 +1481,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
       if (text) return null;
       const toolUses = (blocks ?? []).filter(b => b.type === 'tool_use');
       if (toolUses.length === 0) return null;
-      const channelSend = toolUses.find(b => b.name && CHANNEL_SEND_BUBBLE_TOOLS.has(b.name));
+      const channelSend = toolUses.find(b => b.name && isChannelSendBubbleTool(b.name));
       const channelSendErrored = channelSend?.id
         ? toolResultErrorById.get(channelSend.id) === true
         : false;
@@ -1761,7 +1772,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             // v2.7.23 — render channel-send tool calls as outbound bubbles
             // (the user sees what was sent, not just a "⚙ imessage_send" gear).
             const channelSend = blocks?.find(
-              (b) => b.type === 'tool_use' && b.name && CHANNEL_SEND_BUBBLE_TOOLS.has(b.name),
+              (b) => b.type === 'tool_use' && b.name && isChannelSendBubbleTool(b.name),
             );
             // v2.7.25 — hide the outbound bubble when the underlying tool
             // call was refused. See AgentDetail.tsx for the longer rationale.
@@ -1769,12 +1780,17 @@ export const Chat = ({ panel = null }: ChatProps) => {
               ? toolResultErrorById.get(channelSend.id) === true
               : false;
             if (channelSend && !channelSendErrored) {
+              // The outbound badge (if any) describes the SEND, so it rides on
+              // the ChannelSendBubble, not the accompanying dashboard-facing
+              // text. Passing it to BOTH would double-label; the text stays a
+              // plain dashboard bubble (outboundChannel=null).
+              const sendBadge = outboundChannelByAssistantId.get(msg.id) ?? null;
               return (
                 <div key={msg.id} className="flex flex-col gap-2">
                   {text && (
-                    <AssistantBubble msg={{ ...msg, content: text }} wordyMode={wordyMode} modelNames={modelNames} outboundChannel={outboundChannelByAssistantId.get(msg.id) ?? null} />
+                    <AssistantBubble msg={{ ...msg, content: text }} wordyMode={wordyMode} modelNames={modelNames} outboundChannel={null} />
                   )}
-                  <ChannelSendBubble msg={msg} toolUse={channelSend} />
+                  <ChannelSendBubble msg={msg} toolUse={channelSend} serverBadge={sendBadge} />
                 </div>
               );
             }

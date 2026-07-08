@@ -534,21 +534,26 @@ export class CallSession {
       // handleMessage runs below so the turn reads it. A live call is already
       // connected, so the reply is always spoken back via TTS to whoever is
       // on the line (authorized:true — no safe-sender gate; you answered).
-      recordInboundMeta(msgId, {
-        channel: 'phone',
-        accountKind: 'agent',
+      const inboundMetaObj = {
+        channel: 'phone' as const,
+        accountKind: 'agent' as const,
         authorized: true,
         sender: this.fromNumber,
         phoneCallSid: this.callSid,
         phoneFromNumber: this.fromNumber,
         recipientAddress: this.fromNumber,
-      });
+      };
+      recordInboundMeta(msgId, inboundMetaObj);
       broadcast({
         type: 'chat:message',
         agentId: primaryId,
         message: {
           id: msgId, agentId: primaryId, role: 'user' as const,
           content,
+          // Carry the SAME structured inbound_meta into the live broadcast that
+          // the DB row holds, so ws.ts stampChatMessageOrigin derives identical
+          // attribution live and on refetch (mirrors iMessage OPEN-13).
+          inboundMeta: JSON.stringify(inboundMetaObj),
           tokenCount: null, modelId: null, cost: null, latencyMs: null,
           createdAt: new Date().toISOString(),
         },

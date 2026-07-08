@@ -309,15 +309,16 @@ async function pollForNewMessages(): Promise<void> {
         // the agent can choose to reply into the group with an explicit teams_send_message.
         // A 1:1 (DM) from a safe sender stays authorized → normal routed reply turn.
         const isDm = chat.chatType === 'oneOnOne';
-        recordInboundMeta(msgId, {
-          channel: 'teams',
-          accountKind: 'agent',
+        const inboundMetaObj = {
+          channel: 'teams' as const,
+          accountKind: 'agent' as const,
           authorized: isDm && isSenderAuthorized('teams', senderEmail, 'agent'),
           sender: senderEmail,
           chatId: chat.id,
-          chatType: isDm ? 'dm' : 'group',
+          chatType: (isDm ? 'dm' : 'group') as 'dm' | 'group',
           recipientAddress: senderEmail ?? undefined,
-        });
+        };
+        recordInboundMeta(msgId, inboundMetaObj);
 
         broadcast({
           type: 'chat:message',
@@ -327,6 +328,13 @@ async function pollForNewMessages(): Promise<void> {
             agentId: primaryId,
             role: 'user' as const,
             content,
+            // Carry the SAME structured inbound_meta into the live broadcast
+            // that the DB row holds, so ws.ts stampChatMessageOrigin derives
+            // identical attribution live and on refetch (mirrors iMessage
+            // OPEN-13). Load-bearing here: a group/meeting message is
+            // authorized:false, so without inbound_meta the live payload's
+            // marker-parse fallback would render it while refetch hides it.
+            inboundMeta: JSON.stringify(inboundMetaObj),
             tokenCount: null,
             modelId: null,
             cost: null,

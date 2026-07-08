@@ -393,16 +393,17 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       // already encodes the auth verdict (agent-kind mailbox + safe sender);
       // a user-kind mailbox or unknown sender => authorized:false => the agent
       // reads it as a notification and never auto-replies on the human's behalf.
-      recordInboundMeta(msgId, {
-        channel: 'email',
+      const inboundMetaObj = {
+        channel: 'email' as const,
         accountKind: kind,
         authorized: isDirectToAgent,
         sender: fromAddr || from,
         emailMessageId: msg.id,
-        emailService: 'gmail',
+        emailService: 'gmail' as const,
         emailAccount: notifyAccount,
         emailSubject: subject,
-      });
+      };
+      recordInboundMeta(msgId, inboundMetaObj);
 
       broadcast({
         type: 'chat:message',
@@ -412,6 +413,13 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
           agentId: primaryId,
           role: 'user' as const,
           content,
+          // Carry the SAME structured inbound_meta into the live broadcast that
+          // the DB row holds, so ws.ts stampChatMessageOrigin derives identical
+          // attribution live and on refetch (mirrors the iMessage OPEN-13 fix).
+          // Without it the live payload fell back to marker-parsing while
+          // refetch used inbound_meta, so a mailbox-notification's visibility
+          // could disagree between the live append and a page refresh.
+          inboundMeta: JSON.stringify(inboundMetaObj),
           tokenCount: null,
           modelId: null,
           cost: null,
