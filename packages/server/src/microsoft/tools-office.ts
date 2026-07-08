@@ -1211,7 +1211,15 @@ async function saveOfficeBuffer(
   kind: 'word' | 'excel' | 'powerpoint',
 ): Promise<string> {
   const { isMicrosoftConnected } = await import('./auth.js');
-  if (isMicrosoftConnected('agent')) {
+  // OneDrive is the destination ONLY for the primary agent (owner decision
+  // 2026-07-03: mutating the connected Microsoft account is primary-only,
+  // while a LOCAL office doc is just a file on disk, allowed for ANY agent
+  // under its file_write manifest). Pre-fix this branch keyed on connection
+  // alone, so the moment Microsoft was connected a sub-agent's create was
+  // classified as an account write upstream and DENIED instead of falling
+  // back to the local path it is entitled to.
+  const { getPrimaryAgentId } = await import('../config/platform.js');
+  if (isMicrosoftConnected('agent') && agentId === getPrimaryAgentId()) {
     const result = await uploadToOneDrive(buffer, filename, mimeType, folderId);
     const kindLabel = kind === 'word' ? 'Word document' : kind === 'excel' ? 'Excel spreadsheet' : 'PowerPoint presentation';
     return `${kindLabel} "${result.name}" created on OneDrive.\nFile ID: ${result.id}\nOpen: ${result.webUrl}${result.shareLink ? `\nShare link: ${result.shareLink}` : ''}`;

@@ -9883,7 +9883,15 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           'office_replace_in_presentation', 'office_insert_slide', 'office_delete_slide',
         ]);
         const usesOneDriveFileId = typeof args.file_id === 'string' && (args.file_id as string).trim().length > 0;
-        const createGoesToOneDrive = OFFICE_CREATE_TOOLS.has(name) && isMicrosoftConnected('agent');
+        // A create goes to OneDrive only when Microsoft is connected AND the
+        // caller is the primary agent; saveOfficeBuffer routes every other
+        // agent's create to the LOCAL uploads path. Pre-fix this keyed on the
+        // connection alone, so connecting Microsoft flipped every sub-agent
+        // create from "local file, manifest-governed" to "account write,
+        // denied", the exact split the 2026-07-03 decision forbids. The
+        // primary-only wall below still guards every REAL account write
+        // (file_id edits and the Graph-only presentation ops).
+        const createGoesToOneDrive = OFFICE_CREATE_TOOLS.has(name) && isMicrosoftConnected('agent') && isPrimaryAgent(agentId);
         const targetsMicrosoftAccount = OFFICE_MS_ACCOUNT_ONLY_TOOLS.has(name) || usesOneDriveFileId || createGoesToOneDrive;
 
         if (targetsMicrosoftAccount) {
