@@ -31,12 +31,20 @@ DIST="$SCRIPT_DIR/dist"
 
 DRY_RUN=0
 PREFLIGHT=0
+SKIP_BEHAVIORAL=0
 NOTES_FILE=""
 VERSION=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --preflight) PREFLIGHT=1; shift ;;
+    # Owner-authorized bypass of the behavioral-suite gate for THIS invocation
+    # only. Deliberately a FLAG, not an env var (env-var toggles here caused an
+    # accidental publish once; a flag must be typed on purpose, every time).
+    # Only use it when the owner explicitly said this push may skip the suite;
+    # every other gate (smoke boot, cache prefix, dev instruments, asset
+    # verification) still runs.
+    --skip-behavioral-gate) SKIP_BEHAVIORAL=1; shift ;;
     --notes-file) NOTES_FILE="${2:-}"; shift 2 ;;
     -*) echo "Unknown flag: $1" >&2; exit 2 ;;
     *) VERSION="$1"; shift ;;
@@ -273,6 +281,12 @@ step "Cacheable-prefix determinism gate (C28)"
 # the green run ⇒ HEAD moved ⇒ mismatch ⇒ refuse. Run the suite with:
 #   (cd ../dev-test-tools && node behavioral/runner.mjs)
 step "Behavioral suite gate (full-suite green marker, <24h AND same HEAD)"
+if [ "$SKIP_BEHAVIORAL" = "1" ]; then
+  echo "  ⚠⚠⚠ BEHAVIORAL SUITE GATE SKIPPED (--skip-behavioral-gate) ⚠⚠⚠"
+  echo "  This build ships WITHOUT a suite-green marker tied to this HEAD."
+  echo "  Only valid when the owner explicitly authorized skipping the suite"
+  echo "  for THIS push. The skip is recorded in the release notes."
+else
 BEHAV_MARKER="$SCRIPT_DIR/../../dev-test-tools/behavioral/results/last-green.json"
 if [ ! -f "$BEHAV_MARKER" ]; then
   fail "Behavioral gate: no last-green marker. Run the behavioral suite to green first. NOT publishing."
@@ -292,6 +306,7 @@ if [ "$BEHAV_SHA" != "$HEAD_SHA" ]; then
   fail "Behavioral gate: the suite passed a different tree (marker sha ${BEHAV_SHA:0:8}, current HEAD ${HEAD_SHA:0:8}), a change landed after the green run. Re-run the behavioral suite against this HEAD. NOT publishing."
 fi
 echo "  ✓ behavioral suite green ${BEHAV_AGE_H}h ago at this exact HEAD (${HEAD_SHA:0:8})"
+fi
 
 # ── Dev-instrument ship-gate (C23) ──
 # The dev-test-tools harness injects sim-outbound send-capture + /api/dev routes into
@@ -327,6 +342,11 @@ if [ -n "$NOTES_FILE" ]; then
 elif [ -n "$PREV_TAG" ]; then
   TMP_NOTES="$(mktemp)"
   { echo "Changes since $PREV_TAG:"; echo ""; git log "$PREV_TAG"..HEAD --pretty='- %s'; } > "$TMP_NOTES"
+  # Honesty line the skip-flag warning promises: a build cut without the
+  # behavioral-suite marker says so on its release page.
+  if [ "$SKIP_BEHAVIORAL" = "1" ]; then
+    { echo ""; echo "Note: cut with --skip-behavioral-gate (owner-authorized); the behavioral suite was not re-run for this build."; } >> "$TMP_NOTES"
+  fi
   NOTES_ARGS=(--notes-file "$TMP_NOTES")
 else
   NOTES_ARGS=(--generate-notes)
