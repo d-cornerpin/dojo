@@ -39,12 +39,18 @@ import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { broadcast } from '../../gateway/ws.js';
 import type { Message, ToolCall } from '@dojo/shared';
+// classifyTool is the canonical effectful/retrieval/bookkeeping classifier
+// (test-covered against the full tool registry); the closeout machinery
+// derives "did this turn do real work" from it instead of a hand list that
+// drifted (missed every _ms variant and user_ twin, see countsAsTaskWork).
+import { classifyTool } from '@dojo/shared';
 import { deriveOrigin } from '@dojo/shared';
 
 import { assembleContext } from '../../memory/assembler.js';
 import { callModel, getContextWindow } from '../model.js';
 import { writeContextReceipt } from './receipt.js';
 import { executeTool, agentCanSelfCompleteById } from '../tools.js';
+import { resolveRecipientDisplay } from '../../contacts/resolve-recipient.js';
 import { hasHandedCredentialValues, redactHandedCredentials } from '../../credentials/tools.js';
 // recordError intentionally NOT imported, handleMessage's catch path calls
 // it. Calling here would double-count errors and trip the loop-detector
@@ -90,7 +96,7 @@ import {
 
 import { partitionTools, type ToolBatch } from './classifiers/concurrency.js';
 import { complexityClassifier } from './classifiers/complexity.js';
-import { loopDetector, RECENT_TOOL_WINDOW, canonicalToolSignature, isNearDuplicateText, isMutatingTool } from './classifiers/loop.js';
+import { loopDetector, RECENT_TOOL_WINDOW, canonicalToolSignature, isNearDuplicateText } from './classifiers/loop.js';
 import { recordToolOutcome, crossTurnFailureNote } from './attempt-record.js';
 // Engine message-injection now flows exclusively through the registry channel
 // (injectRegistryMessage); the legacy pushEngineMessage, detectContextGap, and
@@ -100,9 +106,10 @@ import type { AssemblyContext } from '../../prompt/registry/types.js';
 import { isDestructiveCall, manifestPermitsDestructiveCall, consumeApproval, requestApproval } from '../destructive-gate.js';
 import { fileHealerApprovalProposal, markHealerProposalAppliedBySignature, maybeAutoApproveHealerScratch } from '../../healer/approval-routing.js';
 import {
-  isLoadingTool,
   isStructuringTool,
+  isLoadCountExemptRead,
   LOADING_GATE_THRESHOLD,
+  LOADING_RESULT_MIN_TOKENS,
 } from './classifiers/hoarding.js';
 // ackInjector intentionally NOT imported, engine ack disabled per invariant
 // review (see "Engine-injected ack, DISABLED" comment below).
@@ -147,6 +154,12 @@ const ENGINE_BLOCK_ESCAPE_HATCH =
 // immediately after one of these is called. This is the engine-enforced
 // version of the tool result's "end your turn now" instruction, so a
 // disobedient model can't retry-storm.
+//
+// HAND-PICKED, NOT DERIVABLE: this is the CLOSED set of async media-capability
+// generators wired to the background-delivery pipeline (image/tts/music/video).
+// "effectful-action" is far too broad, a gmail_send is effectful but is NOT
+// fire-and-forget. Membership is tied to the delivery wiring, not the verb, and
+// a new media generator would have to be wired here deliberately anyway.
 const FIRE_AND_FORGET_GEN_TOOLS = new Set([
   'image_create',
   'tts_create',
@@ -223,6 +236,13 @@ function appendVisibilityHintIfRelevant<T extends { content?: string; isError?: 
 // asked a real question, work isn't done, etc.), it can ignore the
 // nudge and write whatever it wants. Same machinery as the visibility
 // hint above, append-on-condition, no behavior change to the tool.
+//
+// HAND-PICKED, NOT DERIVABLE: this is a curated subset of bookkeeping tools
+// that specifically trigger the model's "wrap up with a closeout line" reflex
+// when they are the LAST thing the user asked for ("save my key", "remember
+// that"). It is intentionally narrower than classifyTool === 'bookkeeping' (we
+// do not nudge after a scratchpad_set or a tracker read); drift here only mutes
+// a soft nudge on a new tool, never a correctness issue.
 const BOOKKEEPING_NUDGE_TOOLS = new Set([
   'tracker_update_status',
   'tracker_complete_step',
@@ -632,18 +652,27 @@ function detectTaskThrashing(agentId: string): {
         const name = String(block.name ?? '');
         if (!name) continue;
         const failed = block.id != null && failedToolUseIds.has(String(block.id));
-        // tracker_update_status / complete_task count as forward progress, 
+        // tracker_update_status / complete_task count as forward progress,
         // an agent that calls these is at least transitioning. Same for
         // send_to_user / chat-style replies (they finish the work).
-        // D5: a SUCCESSFUL mutating tool (file_write/append/patch, a channel
-        // send) is ALSO forward progress, building a doc section-by-section or
-        // sending distinct messages is real work, not thrash. A FAILED mutating
-        // call is NOT progress and falls through into the thrash counts below.
+        // D5 (2026-07-08 defect-class sweep): a SUCCESSFUL effectful-action tool
+        // is ALSO forward progress. This used to be a hand list (isMutatingTool,
+        // ~10 file/channel-send names) that missed every _ms / user_ / Google-
+        // write / calendar / drive variant, so an MS-heavy or upload-heavy work
+        // turn could look like non-progress and get thrash-flagged. classifyTool
+        // is the canonical, verb-derived effect classifier: creating a calendar
+        // event (calendar_create/_ms), uploading a file (drive_upload/onedrive_
+        // upload), editing a doc, or sending on any channel all classify as
+        // 'effectful-action' and correctly count as work. A FAILED call is NOT
+        // progress and falls through into the thrash counts below. (A genuine
+        // re-run of the IDENTICAL effectful call still trips loopDetector on its
+        // canonical signature, so counting effectful success as progress here
+        // does not open a thrash hole.)
         if (
           !failed && (
             name === 'tracker_update_status' || name === 'complete_task' ||
             name === 'tracker_complete_step' || name === 'tracker_add_notes' ||
-            isMutatingTool(name)
+            classifyTool(name) === 'effectful-action'
           )
         ) {
           madeProgress = true;
@@ -1411,7 +1440,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         const session = getCallSession(state.inboundContext.phoneCallSid);
         if (session && !session.isEnded()) {
           await session.queueAgentSay(text);
-          persistRoutingMarker(`phone call to ${state.inboundContext.phoneFromNumber ?? counterparty.senderId ?? '(unknown)'}`);
+          persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', state.inboundContext.phoneFromNumber ?? counterparty.senderId ?? '(unknown)')}`);
         }
       } else if (counterparty.kind === 'user' && counterparty.channel === 'sms' && state.inboundContext?.smsFromNumber) {
         const { sendSms } = await import('../../twilio/client.js');
@@ -1419,7 +1448,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         const fromNumber = state.inboundContext?.smsToNumber ?? getDefaultFromNumber();
         if (fromNumber) {
           await sendSms(state.inboundContext.smsFromNumber, text, fromNumber);
-          persistRoutingMarker(`SMS to ${state.inboundContext.smsFromNumber}`);
+          persistRoutingMarker(`SMS to ${resolveRecipientDisplay('sms', state.inboundContext.smsFromNumber)}`);
         }
       }
     } catch (err) {
@@ -4368,15 +4397,25 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // (scheduler / A2A task coordination) OR it produced a real side effect
           // (sent a message, ran exec, created a doc/file). Reading the tracker or
           // just talking does not count. Decide by what the turn actually did.
-          const SIDE_EFFECTING = new Set([
-            'gmail_send', 'outlook_send', 'gmail_reply', 'outlook_reply', 'gmail_forward', 'outlook_forward',
-            'imessage_send', 'sms_send', 'teams_send_message', 'teams_send_channel_message', 'voice_call',
-            'calendar_create', 'calendar_update', 'drive_upload', 'docs_create', 'sheets_create', 'slides_create_presentation',
-            'share_publicly', 'exec', 'file_write', 'tracker_add_notes', 'tracker_create_task',
-          ]);
+          //
+          // MEMBERSHIP IS DERIVED, NOT HAND-LISTED. The original hand list here
+          // froze a snapshot of google-flavored canonical names, so every _ms
+          // variant, every user_ twin, and every office/onedrive tool read as
+          // "just conversation": a 31-event calendar_create_ms turn skipped this
+          // whole machinery, its task sat open for 100 minutes, and an unrelated
+          // email wake re-announced the finished work to the owner (observed on
+          // the production box 2026-07-08). classifyTool is the canonical,
+          // test-covered classifier (every tool in categories.ts must classify,
+          // per the shared V5 test), so new tools can never silently fall out.
+          // tracker_add_notes / tracker_create_task classify as bookkeeping but
+          // counted in the old list on purpose (tending the tracker IS task
+          // work); keep them explicitly.
+          const countsAsTaskWork = (name: string): boolean =>
+            classifyTool(name) === 'effectful-action' ||
+            name === 'tracker_add_notes' || name === 'tracker_create_task';
           const schedulerTurn = mostRecentInbound?.origin_intent === 'scheduler' || (lastUserMessageContent ?? '').includes('[SOURCE: SCHEDULER');
           const workedATaskThisTurn = schedulerTurn || isA2ATurn ||
-            state.toolResults.some(tr => !tr.isError && SIDE_EFFECTING.has(tr.name));
+            state.toolResults.some(tr => !tr.isError && !!tr.name && countsAsTaskWork(tr.name));
 
           if (openTasks.length > 0 && !transitionedThisTurn && workedATaskThisTurn) {
             // v2.10.2, detect scheduler-triggered turns AND scan this
@@ -4399,17 +4438,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
             const isSchedulerTriggered =
               mostRecentInbound?.origin_intent === 'scheduler' ||
               (lastUserMessageContent ?? '').includes('[SOURCE: SCHEDULER');
-            const NON_IDEMPOTENT_TOOLS = new Set([
-              'gmail_send', 'outlook_send', 'gmail_reply', 'outlook_reply',
-              'imessage_send', 'sms_send', 'teams_send_message',
-              'voice_call', 'calendar_create', 'calendar_update',
-              'drive_upload', 'docs_create', 'sheets_create', 'slides_create_presentation',
-              'share_publicly', 'exec',
-            ]);
+            // Same derived membership as countsAsTaskWork above (minus the
+            // tracker tools: this hint warns about re-running EXTERNAL side
+            // effects, and re-adding a tracker note is harmless). The old hand
+            // list had the same google-only drift as SIDE_EFFECTING did.
             const recentSideEffects: Array<{ name: string; preview: string }> = [];
             for (let i = state.toolResults.length - 1; i >= 0 && recentSideEffects.length < 4; i--) {
               const tr = state.toolResults[i];
-              if (!tr.name || !NON_IDEMPOTENT_TOOLS.has(tr.name)) continue;
+              if (!tr.name || classifyTool(tr.name) !== 'effectful-action') continue;
               if (tr.isError) continue;
               const preview = (tr.content ?? '').replace(/\s+/g, ' ').slice(0, 160);
               recentSideEffects.push({ name: tr.name, preview });
@@ -5253,16 +5289,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // loads have happened AND context is genuinely near compaction, nudge
           // ONCE (advice, framed as an engine hint, never a refusal) to write the
           // sources down now, then let the read through. Reads are never blocked.
+          // The count (heavyLoadsThisTurn) reflects the SIZE of prior results this
+          // turn (see the post-result accounting below); the trigger no longer
+          // keys on whether THIS call is a "loading tool" (that name-set is gone).
+          // We only skip nudging on the very call that structures (isStructuringTool),
+          // since telling the agent to write things down as it writes them down is
+          // noise; !structuringToolCalledThisTurn already covers "already structured".
           if (
             !state.structuringToolCalledThisTurn &&
             !state.nudgedForHoardingThisTurn &&
-            isLoadingTool(tc.name) &&
-            !isTrainerOwnTechniquesRead(agentId, tc.name, tc.arguments) &&
-            state.loadingToolCallsThisTurn >= LOADING_GATE_THRESHOLD &&
+            !isStructuringTool(tc.name) &&
+            state.heavyLoadsThisTurn >= LOADING_GATE_THRESHOLD &&
             state.lastContextRatio >= 0.85
           ) {
             const nudge = (
-              `[Engine hint: you've pulled ${state.loadingToolCallsThisTurn} sources into context this turn and ` +
+              `[Engine hint: you've pulled ${state.heavyLoadsThisTurn} sources into context this turn and ` +
               `memory is about ${(state.lastContextRatio * 100).toFixed(0)}% full. Compaction may soon summarize ` +
               `the older ones, and a deliverable written from a summary rather than the source can drift. If there ` +
               `are facts here you'll rely on, jot them into scratchpad_set / a file_write / a tracker note now so ` +
@@ -5291,9 +5332,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
             }
             state = advance(state, { nudgedForHoardingThisTurn: true });
             logger.info('v2: hoarding advisory nudged (non-blocking)', {
-              agentId, tool: tc.name, loadingCount: state.loadingToolCallsThisTurn, ratio: state.lastContextRatio,
+              agentId, tool: tc.name, heavyLoads: state.heavyLoadsThisTurn, ratio: state.lastContextRatio,
             }, agentId);
-            // Fall through: the loading tool executes normally. No refusal.
+            // Fall through: the tool executes normally. No refusal.
           }
           // ── Pre-turn close-out gate (v2.5.46) ──
           // Refuse non-tracker tool calls when the agent has dangling
@@ -5303,6 +5344,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // Once any qualifying tracker call lands, the gate disengages
           // for the rest of the turn (re-arms next turn if there are
           // still danglers).
+          //
+          // HAND-PICKED, NOT DERIVABLE, and legitimately so: this is a tracker-
+          // FAMILY allowlist (the stable tracker_* surface plus load_tool_docs so
+          // the agent can fetch a close-out tool's schema). Its domain is the
+          // tracker family, which does not span the google/microsoft/_ms/user_
+          // tool explosion that drifts, so it does not have the defect-class
+          // disease. No display/effect classifier encodes "counts as engaging
+          // with your dangling tasks"; that is exactly this gate's private rule.
           const CLOSE_OUT_TRACKER_TOOLS = new Set([
             'tracker_update_status',
             'tracker_complete_step',
@@ -5424,16 +5473,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
             state = advance(state, { awaitingPostCompactRecall: false, nudgedForPostCompactRecall: true });
           }
           // ── Anti-hoarding accounting (v2.5.43) ──
-          // Flip structuring flag the moment the call is dispatched (not
-          // after, we want sibling parallel loading calls in the SAME
-          // batch to also satisfy the gate if they're paired with a
-          // structuring sibling). Increment loading count on dispatch
-          // so the next batch's gate check sees the right number even
-          // if the executor below still has work to do.
+          // Flip the structuring flag the moment the call is dispatched (not
+          // after, we want sibling parallel structuring calls in the SAME batch to
+          // satisfy the gate). The heavy-LOAD count is NOT incremented here: as of
+          // the 2026-07-08 rewrite it ticks on measured RESULT SIZE, which is only
+          // known after the executor returns, so it lives at the post-result site
+          // below (search "heavyLoadsThisTurn + 1").
           if (isStructuringTool(tc.name)) {
             state = advance(state, { structuringToolCalledThisTurn: true });
-          } else if (isLoadingTool(tc.name) && !isTrainerOwnTechniquesRead(agentId, tc.name, tc.arguments)) {
-            state = advance(state, { loadingToolCallsThisTurn: state.loadingToolCallsThisTurn + 1 });
           }
           // ── Destructive-action gate (remediation 4d, open question 6) ──
           // The primary has full reign; every OTHER agent's destructive call
@@ -5602,18 +5649,35 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
           state = advance(state, { toolCallsExecutedThisTurn: state.toolCallsExecutedThisTurn + 1 });
 
-          // OPEN-16: a FAILED loading call loaded nothing into context, so it
-          // can't cause the summarization confabulation the anti-hoarding gate
-          // guards against, undo the dispatch-time increment so failed retries
-          // (e.g. a multi-account outlook_search erroring on a missing `account`
-          // param) don't pad the count and trip the gate on a legitimate lookup.
+          // ── Anti-hoarding heavy-load accounting (2026-07-08 measured-size) ──
+          // The counter ticks on the MEASURED SIZE of the result's text payload,
+          // tool-agnostic: any successful result carrying at least
+          // LOADING_RESULT_MIN_TOKENS of text is one heavy load, so a new/unknown
+          // reader that returns real corpus counts by construction and there is no
+          // LOADING_TOOLS name-set to rot. This also subsumes the old OPEN-16
+          // decrement: a FAILED call loaded nothing into context, and now it simply
+          // never increments (we only count successful results), so failed retries
+          // (e.g. a multi-account outlook_search erroring on a missing `account`)
+          // can't pad the count and trip the advisory on a legitimate lookup.
+          //
+          // We measure the RAW result text (toolResult.content), not the JSON
+          // tool_result block the row is persisted as, so it is the actual payload
+          // the model reads, not wrapper overhead. Structuring calls and the
+          // internal-state reads (own conversation / own tracker, see
+          // isLoadCountExemptRead) never count; the trainer-reading-its-own-
+          // techniques carve-out (per-agent + per-args) applies here too.
           if (
-            toolResult.isError &&
-            isLoadingTool(tc.name) &&
-            !isTrainerOwnTechniquesRead(agentId, tc.name, tc.arguments) &&
-            state.loadingToolCallsThisTurn > 0
+            !toolResult.isError &&
+            !isStructuringTool(tc.name) &&
+            !isLoadCountExemptRead(tc.name) &&
+            !isTrainerOwnTechniquesRead(agentId, tc.name, tc.arguments)
           ) {
-            state = advance(state, { loadingToolCallsThisTurn: state.loadingToolCallsThisTurn - 1 });
+            const rawText = typeof toolResult.content === 'string'
+              ? toolResult.content
+              : JSON.stringify(toolResult.content ?? '');
+            if (estimateTokens(rawText) >= LOADING_RESULT_MIN_TOKENS) {
+              state = advance(state, { heavyLoadsThisTurn: state.heavyLoadsThisTurn + 1 });
+            }
           }
 
           // v2.7.23, track explicit channel-send tool calls so the
@@ -5659,6 +5723,36 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 repliedToCounterpartyThisTurn: { ...state.repliedToCounterpartyThisTurn, sms: state.repliedToCounterpartyThisTurn.sms || toCp },
               });
             }
+          }
+
+          // Issue 2 (Path A): label an explicit channel send with the recipient's
+          // RESOLVED display name, via the SAME persisted routing marker the
+          // auto-route path writes. The dashboard's outbound send bubble then
+          // reads "to <name> via <channel>" instead of the raw handle the model
+          // passed as the tool argument (observed defect: a saved contact's raw
+          // number showed instead of her name). Persisted, so the badge is
+          // identical live and on refetch; the client prefers this server-
+          // resolved badge over its own tool-input reading, so there is no
+          // double label. Skipped for replies (no explicit recipient — the
+          // client's channel-only fallback is correct) and for Teams (a chat id,
+          // not a name we can resolve without a network call).
+          if (!toolResult.isError) {
+            try {
+              let sendMarkerLabel: string | null = null;
+              if (tc.name === 'imessage_send') {
+                const to = String(tc.arguments?.to ?? tc.arguments?.recipient ?? tc.arguments?.handle ?? '').trim()
+                  || (counterparty.kind === 'user' && counterparty.channel === 'imessage' ? (counterparty.senderId ?? '') : '');
+                if (to) sendMarkerLabel = `iMessage to ${resolveRecipientDisplay('imessage', to)}`;
+              } else if (tc.name === 'sms_send') {
+                const to = String(tc.arguments?.to ?? tc.arguments?.number ?? tc.arguments?.recipient ?? '').trim()
+                  || (state.inboundContext?.smsFromNumber ?? '');
+                if (to) sendMarkerLabel = `SMS to ${resolveRecipientDisplay('sms', to)}`;
+              } else if (tc.name === 'gmail_send' || tc.name === 'outlook_send') {
+                const to = String(tc.arguments?.to ?? '').trim();
+                if (to) sendMarkerLabel = `email to ${resolveRecipientDisplay('email', to)}`;
+              }
+              if (sendMarkerLabel) persistRoutingMarker(sendMarkerLabel);
+            } catch { /* outbound labeling is best-effort; never block a send */ }
           }
 
           // ── Technique-acknowledgement gate state sync (v2.7.6) ──
@@ -7009,7 +7103,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               const subjectPreview = state.inboundContext.emailSubject?.slice(0, 40) ?? '(no subject)';
               persistRoutingMarker(
                 emailRecipient
-                  ? `email to ${emailRecipient}`
+                  ? `email to ${resolveRecipientDisplay('email', emailRecipient)}`
                   : `email reply (thread: "${subjectPreview}")`,
               );
               logger.info('v2.7.24: routed reply via email', {
@@ -7055,7 +7149,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 await session.queueAgentSay(tail);
                 phoneStreamBuffer = '';
               }
-              persistRoutingMarker(`phone call to ${state.inboundContext.phoneFromNumber ?? '(unknown)'}`);
+              persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', state.inboundContext.phoneFromNumber ?? '(unknown)')}`);
               logger.info('v2.9.23: routed reply via phone TTS (streamed)', {
                 agentId,
                 callSid: state.inboundContext.phoneCallSid,
@@ -7065,7 +7159,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               }, agentId);
             } else {
               await session.queueAgentSay(state.lastAssistantTextForIM);
-              persistRoutingMarker(`phone call to ${state.inboundContext.phoneFromNumber ?? '(unknown)'}`);
+              persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', state.inboundContext.phoneFromNumber ?? '(unknown)')}`);
               logger.info('v2.9.18: routed reply via phone TTS', {
                 agentId,
                 callSid: state.inboundContext.phoneCallSid,
@@ -7103,7 +7197,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 // completion, the gate only demands receipts for turns that ran a send TOOL.
                 const smsSid = r.data.sid;
                 writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: !!smsSid, basis: smsSid ? 'provider-id' : 'http-status', providerId: smsSid ?? null, recipient: state.inboundContext.smsFromNumber, detail: { route: 'auto', textLength: state.lastAssistantTextForIM.length } });
-                persistRoutingMarker(`SMS to ${state.inboundContext.smsFromNumber}`);
+                persistRoutingMarker(`SMS to ${resolveRecipientDisplay('sms', state.inboundContext.smsFromNumber)}`);
                 logger.info('v2.9.18: routed reply via SMS', {
                   agentId,
                   to: state.inboundContext.smsFromNumber,

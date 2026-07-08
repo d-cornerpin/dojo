@@ -52,6 +52,9 @@ const EXPECTED_MESSAGE = [
   'msg.technique-weak',
   'msg.context-gap',
   'msg.tracker-notif',
+  // F9 (2026-07-08): explicit-delegation engine hint, slot 1550 between
+  // TrackerNotif (1500) and the later message slots.
+  'msg.delegation-hint',
   'msg.pending-nudge',
   'msg.tool-note',
   'msg.turn-context',

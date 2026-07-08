@@ -9,6 +9,12 @@
 // AgentDetail) so the wording cannot drift.
 import { classifyTool } from '@dojo/shared';
 
+// COSMETIC map: curated friendly phrasing for the common user-visible tools.
+// It does NOT need to be exhaustive, toolFriendlyLabel() falls back to a
+// humanized tool name for anything absent, so drift here only makes a rare
+// tool's badge read "onedrive upload" instead of "uploaded a file". The tool-
+// list conformance test still asserts every KEY here is a real tool (the phantom
+// `file_delete`, which was never a tool, was removed in the 2026-07-08 sweep).
 const FRIENDLY_LABELS: Record<string, string> = {
   // effectful actions
   image_create: 'created an image',
@@ -17,7 +23,6 @@ const FRIENDLY_LABELS: Record<string, string> = {
   tts_create: 'generated speech',
   file_write: 'wrote a file',
   file_patch: 'edited a file',
-  file_delete: 'deleted a file',
   exec: 'ran a command',
   reminder_create: 'set a reminder',
   calendar_create: 'created a calendar event',

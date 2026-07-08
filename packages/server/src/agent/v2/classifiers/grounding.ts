@@ -21,26 +21,29 @@
 // already did it, confirm and continue."
 // ════════════════════════════════════════
 
-/** Outbound delivery tools — a claim of "sent/told/forwarded to <someone>" is
- *  grounded only if one of these fired this turn. */
-const DELIVERY_TOOLS = new Set<string>([
-  'send_to_agent',
-  'broadcast_to_group',
-  'imessage_send',
-  'sms_send',
-  'gmail_send',
-  'outlook_send',
-  'teams_send',
-  'user_gmail_send',
-  'user_outlook_send',
-  'user_teams_send',
-]);
+// channelOfSendTool is the canonical send-tool -> channel map in @dojo/shared;
+// the delivery predicate below derives from it instead of a hand list.
+import { channelOfSendTool } from '@dojo/shared';
 
-/** Also treat any tool whose name looks like a send/reply/forward as delivery,
- *  so provider tools we didn't enumerate still count (no false fabrication
- *  flags just because a tool isn't in the set above). */
+/**
+ * True when a tool call is an outbound DELIVERY, so a claim of "sent/told/
+ * forwarded to <someone>" made this turn is grounded (not a fabrication).
+ *
+ * DERIVED, not a hand list (2026-07-08 defect-class sweep). The old
+ * DELIVERY_TOOLS Set had already drifted, it named `teams_send` and
+ * `user_teams_send`, neither of which is a real tool (the real ones are
+ * teams_send_message + its user_ twin), while the real long tail was carried
+ * by the name-shape heuristic anyway. So the primary signal is now the canonical
+ * channelOfSendTool (every real human-facing channel send: iMessage, Teams, SMS,
+ * Gmail/Outlook send+reply+forward, voice), plus the two inter-agent sends, plus
+ * the SAME name-shape backstop that catches user_ twins and any provider send/
+ * reply/forward we didn't anticipate. Over-counting delivery is the SAFE
+ * direction here (a missed delivery tool would falsely flag a truthful agent),
+ * so the union is deliberately generous.
+ */
 function isDeliveryTool(name: string): boolean {
-  if (DELIVERY_TOOLS.has(name)) return true;
+  if (channelOfSendTool(name) !== null) return true;
+  if (name === 'send_to_agent' || name === 'broadcast_to_group') return true;
   return (
     name.endsWith('_send') ||
     name.endsWith('_reply') ||

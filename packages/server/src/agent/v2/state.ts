@@ -266,15 +266,17 @@ export interface AgentTurnState {
    */
   nudgedForTrackerCloseThisTurn: boolean;
   /**
-   * v2.5.43, running count of loading-tool calls (file_read, exec,
-   * vault_search, get_agent_profile, web_fetch, use_technique, etc.)
-   * executed THIS turn. D3: used by the anti-hoarding ADVISORY, once this
-   * crosses LOADING_GATE_THRESHOLD with no structuring AND context is near
-   * compaction, the engine nudges ONCE to write sources down. It no longer
-   * REFUSES any read (that blocked legitimate multi-source work). Per-turn
-   * only; resets each turn.
+   * Running count of HEAVY LOADS this turn: successful tool results whose text
+   * payload was at least LOADING_RESULT_MIN_TOKENS (2026-07-08 rewrite, was a
+   * count of calls to the curated LOADING_TOOLS name-set). Measured by result
+   * size, tool-agnostic, so a new/unknown reader that returns real corpus counts
+   * by construction and a small/empty read (time lookup, empty search) does not.
+   * D3: used by the anti-hoarding ADVISORY, once this crosses
+   * LOADING_GATE_THRESHOLD with no structuring AND context is near compaction,
+   * the engine nudges ONCE to write sources down. It never REFUSES a read.
+   * Per-turn only; resets each turn.
    */
-  loadingToolCallsThisTurn: number;
+  heavyLoadsThisTurn: number;
   /**
    * v2.5.43, flips true the moment the agent calls any structuring
    * tool (tracker_create_project, tracker_create_task, tracker_update_
@@ -516,7 +518,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     nudgedForTrackerThisTurn: false,
     trackerStatusUpdatedThisTurn: false,
     nudgedForTrackerCloseThisTurn: false,
-    loadingToolCallsThisTurn: 0,
+    heavyLoadsThisTurn: 0,
     structuringToolCalledThisTurn: false,
     nudgedForHoardingThisTurn: false,
     lastContextRatio: 0,

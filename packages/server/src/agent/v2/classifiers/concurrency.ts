@@ -31,6 +31,18 @@ export interface ToolBatch {
  *   special, one-of-a-kind semantics, sequential
  *
  * Unknown tools default to 'special' (safest serial behavior).
+ *
+ * HAND-PICKED, but SAFE-BY-CONSTRUCTION and superseded as source of truth: the
+ * canonical concurrency category is now ToolDefinition.concurrency, registered
+ * into REGISTRY_OVERRIDES at module init (see registerConcurrency below), which
+ * classifyConcurrency checks FIRST. This map is only the Phase-1A fallback for
+ * tools that declare no concurrency field, and the fallback default for anything
+ * missing is 'special' (serial), the SAFEST behavior, so drift here can only
+ * cost parallelism, never correctness. The 2026-07-08 sweep removed phantom keys
+ * (drive_search, teams_read_chat, gmail_archive/gmail_delete, docs_update/
+ * sheets_update, outlook_archive, slides_create_deck, word_/excel_/pptx_*) that
+ * named no real tool and so never matched a call; the conformance test now
+ * asserts every remaining key is a real registered tool.
  */
 export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   // ── safe (read-only, parallelizable) ──
@@ -59,7 +71,6 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   gmail_read: 'safe',
   calendar_agenda: 'safe',
   calendar_search: 'safe',
-  drive_search: 'safe',
   drive_read: 'safe',
   docs_read: 'safe',
   sheets_read: 'safe',
@@ -71,7 +82,6 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   onedrive_search: 'safe',
   onedrive_read: 'safe',
   teams_list_chats: 'safe',
-  teams_read_chat: 'safe',
 
   // ── serial (writes, side effects) ──
   file_write: 'serial',
@@ -95,9 +105,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   // Google writes
   gmail_send: 'serial',
   gmail_reply: 'serial',
-  gmail_archive: 'serial',
   gmail_label: 'serial',
-  gmail_delete: 'serial',
   calendar_create: 'serial',
   calendar_update: 'serial',
   calendar_delete: 'serial',
@@ -107,13 +115,10 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   drive_share: 'serial',
   drive_delete: 'serial',
   docs_create: 'serial',
-  docs_update: 'serial',
   sheets_create: 'serial',
-  sheets_update: 'serial',
   // Microsoft writes
   outlook_send: 'serial',
   outlook_reply: 'serial',
-  outlook_archive: 'serial',
   outlook_delete: 'serial',
   calendar_create_ms: 'serial',
   calendar_update_ms: 'serial',
@@ -125,7 +130,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   teams_send_message: 'serial',
   teams_create_chat: 'serial',
   // Slides, write-shaped (each call mutates the deck)
-  slides_create_deck: 'serial',
+  slides_create_presentation: 'serial',
   slides_add_slide: 'serial',
   slides_set_style: 'serial',
   // Forms, write-shaped (each call mutates the form). Reads are 'safe'
@@ -140,13 +145,6 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   forms_set_settings: 'serial',
   forms_delete_item: 'serial',
   forms_delete_form: 'serial',
-  // Office (Word/Excel/PowerPoint local files)
-  word_create: 'serial',
-  word_update: 'serial',
-  excel_create: 'serial',
-  excel_update: 'serial',
-  pptx_create: 'serial',
-  pptx_update: 'serial',
   // Office docs over Graph (OneDrive in-place edits)
   office_create_word_document: 'serial',
   office_append_to_word_document: 'serial',

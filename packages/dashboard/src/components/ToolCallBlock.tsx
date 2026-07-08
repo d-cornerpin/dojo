@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { classifyTool } from '@dojo/shared';
 
 // ── Tool Call Card (assistant used a tool) ──
 
@@ -7,6 +8,11 @@ interface ToolCallCardProps {
   input: Record<string, unknown>;
 }
 
+// COSMETIC: specific per-tool glyphs for the tools worth a distinct icon. This
+// is intentionally NOT exhaustive, iconFor() below falls back to a bucket icon
+// derived from the canonical classifyTool class, so a brand-new tool always gets
+// a sensible glyph (effectful/retrieval/etc.) instead of a bare "T". Drift here
+// only dulls an icon; it can never make a tool render wrong.
 const toolIcons: Record<string, string> = {
   exec: '>_',
   file_read: 'R',
@@ -27,6 +33,19 @@ const toolIcons: Record<string, string> = {
   tracker_create_task: '\u{1F4CB}',
   tracker_update_status: '\u{1F4CB}',
 };
+
+// Bucket-icon fallback keyed off the canonical display class, so an unlisted
+// tool still gets a meaningful glyph rather than a generic placeholder.
+const CLASS_ICONS: Record<ReturnType<typeof classifyTool>, string> = {
+  'effectful-action': '\u{2699}', // gear: it did something in the world
+  retrieval: '\u{1F50D}',         // magnifier: it read/searched
+  delivery: '\u{1F4E4}',          // outbox: it showed the user something
+  bookkeeping: '\u{2022}',        // dot: internal machinery
+};
+
+function iconFor(name: string): string {
+  return toolIcons[name] ?? CLASS_ICONS[classifyTool(name)];
+}
 
 function toolSummary(name: string, input: Record<string, unknown>): string {
   switch (name) {
@@ -68,7 +87,7 @@ function toolSummary(name: string, input: Record<string, unknown>): string {
 
 export const ToolCallCard = ({ name, input }: ToolCallCardProps) => {
   const [showRaw, setShowRaw] = useState(false);
-  const icon = toolIcons[name] ?? 'T';
+  const icon = iconFor(name);
   const summary = toolSummary(name, input);
 
   return (

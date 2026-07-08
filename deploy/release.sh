@@ -268,6 +268,23 @@ step "Cacheable-prefix determinism gate (C28)"
     node "$SCRIPT_DIR/check-prefix-determinism.mjs" "$SMOKE_PLATFORM/packages/server/dist" ) \
   || fail "Cacheable-prefix determinism gate: a cache-breaker is in the system prefix. NOT publishing."
 
+# ── Tool-list conformance gate (2026-07-08 defect-class tripwire) ──
+# A whole defect class: hand-maintained lists/maps of tool NAMES that freeze a
+# snapshot of the tool surface and silently drift as tools ship (every _ms
+# variant, user_ twin, office/onedrive tool falls out). It bit prod, a close-out
+# list missed calendar_create_ms and a finished job ghost-re-announced 100 min
+# later; drifted google validator maps left drive_upload + sheets_append 100%
+# dead. This gate reads the freshly-BUILT dist (npm run build:package above ran
+# tsc into packages/{shared,server}/dist) and refuses to publish if any surviving
+# hand list names a nonexistent tool OR the derived classifications regress. It is
+# CHEAP and static, so it runs OUTSIDE the behavioral conditional, on EVERY cut
+# including --skip-behavioral-gate; it is never skippable. It never imports
+# agent/tools.ts (module-init circular import), only categories + leaf hand-list
+# modules + @dojo/shared.
+step "Tool-list conformance gate (hand lists vs. real tool surface)"
+node "$SCRIPT_DIR/check-tool-conformance.mjs" \
+  || fail "Tool-list conformance gate: a tool-name list drifted from the real tool surface. NOT publishing."
+
 # ── Behavioral suite gate (wave-2 fix loop, 2026-07-03) ──
 # Real-model behavioral runs are slow (~25 min) and cannot run inline here, so
 # the gate checks for a RECENT full-suite green MARKER written only when every

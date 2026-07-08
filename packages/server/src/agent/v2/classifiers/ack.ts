@@ -41,8 +41,16 @@ export interface AckInjectorResult {
 /**
  * Tools that are themselves visible/conversational and don't need a
  * pre-ack — the act of calling them IS the response.
+ *
+ * HAND-PICKED, NOT DERIVABLE: "calling this tool is itself the acknowledgment"
+ * is a UX judgment, not an effect class. It mixes a delivery primitive
+ * (show_to_user), a channel send that IS the reply (imessage_send), the media
+ * generators (which post their own started-ack), and the two A2A sends. The
+ * conformance test asserts every name here is a real registered tool; a wrong
+ * entry would only cause a redundant "Working on it…" ack, never a correctness
+ * issue.
  */
-const SELF_ACKNOWLEDGING_TOOLS = new Set([
+export const SELF_ACKNOWLEDGING_TOOLS = new Set([
   'show_to_user',       // displays a file directly
   'imessage_send',      // proactive iMessage IS the response
   'image_create',       // engine posts ack + image directly

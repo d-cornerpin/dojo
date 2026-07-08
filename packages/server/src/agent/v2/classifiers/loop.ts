@@ -70,10 +70,16 @@ const DEFAULT_PROSE_FIELDS = new Set([
  *
  * Update this set when you add a new search-style tool whose primary
  * input is the user-supplied search string.
+ *
+ * HAND-PICKED, NOT DERIVABLE: membership here is an ARG-SCHEMA fact (this
+ * tool's `query` field carries operation identity), which no display/effect
+ * classifier knows. The tool-list conformance test asserts every name below is
+ * a real registered tool, so a rename/typo (e.g. the removed `vault_describe`,
+ * which was never a real tool) fails the build instead of silently going dead.
  */
-const SEARCH_TOOLS = new Set([
+export const SEARCH_TOOLS = new Set([
   // Vault + memory
-  'vault_search', 'vault_describe', 'vault_get',
+  'vault_search', 'vault_get',
   'history_search', 'history_get', 'history_expand',
   'squad_recall',
   // External search
@@ -108,7 +114,7 @@ const SEARCH_TOOL_PROSE_FIELDS = (() => {
  * each distinct prompt counts as a distinct operation. The other
  * DEFAULT_PROSE_FIELDS (reason, note, etc.) still get stripped.
  */
-const GENERATION_TOOLS = new Set([
+export const GENERATION_TOOLS = new Set([
   'image_create',
   'video_create',
   'music_create',
@@ -132,7 +138,7 @@ const GENERATION_TOOL_PROSE_FIELDS = (() => {
  * operations; a TRUE thrash (re-sending the identical message) still collapses
  * to one signature and is still caught. Mirrors the SEARCH/GENERATION carve-outs.
  */
-const COORDINATION_TOOLS = new Set([
+export const COORDINATION_TOOLS = new Set([
   'send_to_agent',
   'broadcast_to_group',
 ]);
@@ -155,8 +161,19 @@ const COORDINATION_TOOL_PROSE_FIELDS = (() => {
  * long strings to a cheap prefix+len hash, so distinct writes/sends are
  * distinct operations. A TRUE thrash (identical content re-written/re-sent)
  * still collapses to one signature and is still caught.
+ *
+ * HAND-PICKED, NOT DERIVABLE, and DELIBERATELY NARROW: this set is NOT "every
+ * effectful tool". It is exactly the tools whose ARG SHAPE carries a free-text
+ * content/text/message field that must stay in the signature. That is an
+ * arg-schema fact, not an effect classification, so it is not derived from
+ * classifyTool (a calendar_create is effectful but its identity is structured
+ * {summary,start,end}, not a content blob, so it uses the DEFAULT prose fields).
+ * The thrash-PROGRESS question ("did a world-changing call succeed this turn")
+ * is a separate concern and is answered by classifyTool === 'effectful-action'
+ * at the detectTaskThrashing call site, NOT by this set. The conformance test
+ * asserts every name here is a real registered tool.
  */
-const MUTATING_TOOLS = new Set([
+export const MUTATING_TOOLS = new Set([
   'file_write', 'file_append', 'file_patch',
   'imessage_send', 'sms_send',
   'gmail_send', 'gmail_reply',
@@ -180,12 +197,14 @@ function proseFieldsFor(toolName: string): ReadonlySet<string> {
   return DEFAULT_PROSE_FIELDS;
 }
 
-// D5: a successful mutating tool (a write or a send) is forward progress, the
-// task-thrash breaker must not count it toward a "stuck" verdict. Exposed so the
-// breaker's madeProgress check can treat writes/sends like tracker transitions.
-export function isMutatingTool(toolName: string): boolean {
-  return MUTATING_TOOLS.has(toolName);
-}
+// D5 (2026-07-08 defect-class sweep): the "a successful mutating call is forward
+// progress" predicate is NO LONGER a hand list. It was a 10-name snapshot with
+// zero _ms / user_ / calendar / drive coverage, so an MS-heavy or Google-write
+// work turn looked like non-progress to the stall machinery. The predicate now
+// lives at the detectTaskThrashing call site as classifyTool(name) ===
+// 'effectful-action', which expands correctly (creating a calendar event or
+// uploading a file IS real work) and never drifts. The MUTATING_TOOLS set above
+// survives ONLY for the signature prose-field carve-out, a different concern.
 
 /**
  * Build a canonical signature for a tool call, used to detect loops.

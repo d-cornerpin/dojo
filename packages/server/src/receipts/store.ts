@@ -33,6 +33,16 @@ export type ReceiptBasis = 'provider-id' | 'refetch' | 'http-status' | 'exit-cod
 // sendMail 202 no-body); tier 3 = honestly unverifiable (iMessage exit code).
 // Used by the dev harness intercept to pick the tier for a synthetic
 // receipt, and available to any caller that needs the canonical tier.
+//
+// HAND-PICKED, NOT DERIVABLE: the VALUE is a verification TIER (how the send can
+// be confirmed), which is a per-provider fact no effect/channel classifier
+// knows, gmail_send hands back a message id (tier 1) but outlook_send returns a
+// bodiless 202 that needs a re-fetch (tier 2) and imessage_send can only read an
+// exit code (tier 3). Production receipts are written by each tool executor
+// calling writeToolReceipt with an explicit tier (this map does not gate them),
+// so drift here weakens only dev-harness coverage, not the live gate. The tool-
+// list conformance tripwire asserts every KEY here is a real registered tool so
+// a rename cannot rot the map unnoticed.
 export const RECEIPT_TOOLS: Record<string, ReceiptTier> = {
   gmail_send: 1, gmail_reply: 1, gmail_forward: 1,
   calendar_create: 1, calendar_update: 1,
@@ -40,6 +50,34 @@ export const RECEIPT_TOOLS: Record<string, ReceiptTier> = {
   teams_send_message: 1, teams_send_channel_message: 1,
   outlook_send: 2, outlook_reply: 2, outlook_forward: 2,
   imessage_send: 3,
+};
+
+/**
+ * NOT-APPLICABLE ledger for the RECEIPT exhaustiveness check (anti-omission,
+ * 2026-07-08). The conformance test + release gate account for the WHOLE
+ * comms-to-people surface (every member of sensei-policy SEND_TO_PEOPLE): each
+ * must either carry a tier in RECEIPT_TOOLS above OR be matched here with a
+ * reason. A new comms send added to SEND_TO_PEOPLE with neither fails the build,
+ * naming the tool, so a send can never ship without a delivery-verification
+ * decision (the failure mode the receipt machinery exists to prevent). Keys are
+ * exact tool names or family-prefix globs (trailing `*`).
+ *
+ * Coupling the domain to SEND_TO_PEOPLE (not just channelOfSendTool) is
+ * deliberate: it makes "reaches a person" and "has a receipt decision" the same
+ * gate, so a whole new comms channel can't be added on the security side while
+ * silently skipping delivery verification.
+ */
+export const RECEIPT_EXEMPT: Readonly<Record<string, string>> = {
+  // user-slot sends run the BASE tool's executor and write their receipt under
+  // the base tool name (already tiered above, e.g. user_gmail_send -> gmail_send
+  // tier 1), so a separate tier here would be dead. See writeToolReceipt callers
+  // in google/tools-write.ts + microsoft/tools-write.ts (they hardcode the base
+  // tool name).
+  'user_*': 'user-slot send shares the base tool executor + writes its receipt under the base name',
+  // non-send members of the comms surface: no delivery to verify.
+  'imessage_list_contacts': 'contact read, not a send',
+  'voice_call_end': 'call lifecycle, not a message delivery',
+  'voice_call_status': 'call status read, not a message delivery',
 };
 
 export interface WriteReceiptParams {
