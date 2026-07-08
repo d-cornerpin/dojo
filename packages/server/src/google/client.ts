@@ -104,7 +104,17 @@ async function googleFetch(
       return { ok: true, data: null, apiEndpoint: url };
     }
 
-    const data = await resp.json();
+    // Content-aware parse. Most Google endpoints return JSON, but alt=media
+    // downloads (drive_read of a plain-text/markdown/binary file) return the
+    // raw file bytes. Blindly calling resp.json() on those throws
+    // "Unexpected token ... is not valid JSON" and fails the read on every
+    // non-JSON file. Parse JSON only when the server says it's JSON; hand
+    // everything else back as a string. GoogleApiResult.data is unknown and
+    // downstream callers (e.g. drive_read) already branch on typeof data.
+    const responseContentType = resp.headers.get('content-type') ?? '';
+    const data = responseContentType.includes('application/json')
+      ? await resp.json()
+      : await resp.text();
     return { ok: true, data, apiEndpoint: url };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

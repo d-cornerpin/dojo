@@ -155,6 +155,18 @@ function getImageDimensions(bytes: Buffer): { width: number; height: number } | 
   return null;
 }
 
+// Parse a "W:H" aspect-ratio string (e.g. "16:9") into a numeric width/height
+// ratio. Returns null for anything we can't read so callers skip the check
+// rather than raise a false mismatch.
+function parseAspectRatio(s: string): number | null {
+  const m = s.match(/^\s*(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)\s*$/);
+  if (!m) return null;
+  const w = parseFloat(m[1]);
+  const h = parseFloat(m[2]);
+  if (!(w > 0) || !(h > 0)) return null;
+  return w / h;
+}
+
 function capabilitiesInclude(capsJson: string | null, capability: string): boolean {
   if (!capsJson) return false;
   try {
@@ -238,10 +250,15 @@ export async function generateImage(req: GenerateImageRequest): Promise<Generate
     };
   }
 
-  // Build the prompt. Some image models honor an explicit aspect ratio in
-  // the request parameters, others only understand it from the prompt
-  // text. OpenRouter passes this through, so mentioning the ratio in the
-  // prompt is the safest portable approach.
+  // Convey the requested aspect ratio through every channel available, because
+  // none of them is universal:
+  //   1. Structured: image_config.aspect_ratio on the request body (added just
+  //      below). image_config-aware models (the Gemini image family) honor it.
+  //   2. Prose: appended to the prompt here, for models that only read the
+  //      prompt text and ignore image_config.
+  // Flux-class models honor neither reliably, so the post-generation dimension
+  // check further down is the honesty floor: it measures the delivered image
+  // and tells the caller when the ratio was not applied.
   const fullPrompt = req.aspectRatio
     ? `${req.prompt}\n\nAspect ratio: ${req.aspectRatio}`
     : req.prompt;
@@ -251,11 +268,25 @@ export async function generateImage(req: GenerateImageRequest): Promise<Generate
   // like FLUX only support image output and return 404 if text is
   // requested. Models that CAN output text alongside (Gemini) will still
   // include it even when only 'image' is specified.
-  const requestBody = {
+  const requestBody: {
+    model: string;
+    messages: Array<{ role: 'user'; content: string }>;
+    modalities: string[];
+    image_config?: { aspect_ratio: string };
+  } = {
     model: row.api_model_id,
     messages: [{ role: 'user', content: fullPrompt }],
     modalities: ['image'],
   };
+  // Structured aspect-ratio passthrough. OpenRouter documents
+  // `image_config.aspect_ratio` on the chat-completions image path; models that
+  // support it (the Gemini image family) clamp to their nearest supported ratio,
+  // models that do not simply ignore the field. Sent only when a ratio was
+  // requested; the tool's ratios (1:1, 16:9, 9:16, 4:3, 3:4) are all within the
+  // documented supported set.
+  if (req.aspectRatio) {
+    requestBody.image_config = { aspect_ratio: req.aspectRatio };
+  }
 
   logger.info('Generating image', {
     modelId: req.modelId,
@@ -388,6 +419,37 @@ export async function generateImage(req: GenerateImageRequest): Promise<Generate
   // mismatch fine) but the caller may want to know.
   if (decoded.mimeType !== 'image/png') {
     notes.push(`Provider returned ${decoded.mimeType}; saved with .png extension for portability.`);
+  }
+
+  // Honesty floor for aspect_ratio. The ratio is requested via image_config
+  // and prompt prose (see requestBody/fullPrompt above), but neither channel
+  // is universal; Flux-class models ignore both and return their own native
+  // size. Rather than let that pass silently,
+  // measure the delivered image and, when it materially differs from what was
+  // asked, tell the truth in a note the agent sees so it can inform the user or
+  // retry. A relative tolerance of 5% absorbs provider rounding while still
+  // catching a real mismatch (the standard ratios are far more than 5% apart).
+  if (req.aspectRatio && dimensions && dimensions.height > 0) {
+    const requestedRatio = parseAspectRatio(req.aspectRatio);
+    if (requestedRatio) {
+      const actualRatio = dimensions.width / dimensions.height;
+      const relDiff = Math.abs(actualRatio - requestedRatio) / requestedRatio;
+      if (relDiff > 0.05) {
+        notes.push(
+          `Requested aspect ratio ${req.aspectRatio} was not honored: the provider returned ` +
+          `${dimensions.width}x${dimensions.height}. This image model sizes to its own native ` +
+          `output and ignores ratio hints. Tell the user, or retry with a model that accepts a size parameter.`,
+        );
+        logger.info('Image aspect ratio not honored by provider', {
+          modelId: req.modelId,
+          apiModelId: row.api_model_id,
+          requestedAspect: req.aspectRatio,
+          actualWidth: dimensions.width,
+          actualHeight: dimensions.height,
+          relDiff: Number(relDiff.toFixed(3)),
+        });
+      }
+    }
   }
 
   logger.info('Image generated successfully', {

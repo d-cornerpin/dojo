@@ -91,19 +91,19 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'calendar_agenda',
-    description: "Show upcoming calendar events. Defaults to today's agenda on your primary calendar. Pass calendar_id to read from a shared calendar (use calendar_list to find IDs). When a user asks about a specific local day (e.g. \"events for Wednesday\"), pass start_date + timezone so the window aligns to local midnight rather than UTC — otherwise late-evening events that have already crossed into the next day in UTC will be missed.",
+    description: "[DEFAULT for any 'my day / my schedule / what's coming up' ask] Merged agenda across EVERY connected calendar (agent + owner, Google + Microsoft), each item labeled with its source. Use calendar_agenda_ms / user_calendar_agenda / user_calendar_agenda_ms only when the user names one specific account. When a user asks about a specific local day (e.g. \"events for Wednesday\"), pass start_date + timezone so the window aligns to local midnight rather than UTC. The `account` parameter is IGNORED on this merged view (the provider-specific variants take it).",
     input_schema: {
       type: 'object',
       properties: {
         days: { type: 'number', description: 'How many days to span (1 = a single day, 7 = a week, default 1).' },
         timezone: { type: 'string', description: 'IANA timezone (e.g. "America/Los_Angeles"). Defaults to the system timezone. When set, the window snaps to local midnight in this timezone.' },
         start_date: { type: 'string', description: 'Anchor the window to a specific local date in YYYY-MM-DD (interpreted in `timezone`). Use this when the user asks about a specific day like "Wednesday" or "tomorrow" — compute the date, then pass it here. Omit to default to "today" in the given timezone.' },
-        calendar_id: { type: 'string', description: 'Calendar ID. Defaults to "primary" (your own). Use calendar_list to discover shared calendar IDs.' },
+        calendar_id: { type: 'string', description: 'Ignored on the merged view. To read a single shared calendar by ID, use the provider-specific variant (user_calendar_agenda / calendar_agenda_ms).' },
       },
       required: [],
     },
     concurrency: 'safe',
-    maxResultTokens: 2000,
+    maxResultTokens: 6000,
   },
   {
     name: 'calendar_search',
@@ -222,8 +222,8 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
       type: 'object',
       properties: {
         attendees: { type: 'array', items: { type: 'string' }, description: 'Email addresses to check (include the user themselves if you want their schedule too).' },
-        start: { type: 'string', description: "Window start datetime (ISO 8601, e.g., '2026-05-30T08:00:00')." },
-        end: { type: 'string', description: 'Window end datetime (ISO 8601).' },
+        start: { type: 'string', description: "Window start datetime (ISO 8601 WITH a UTC offset, e.g. '2026-05-30T08:00:00-07:00'; an offset-less time is assumed to be in the host timezone)." },
+        end: { type: 'string', description: "Window end datetime (ISO 8601, same format as `start`)." },
       },
       required: ['attendees', 'start', 'end'],
     },
@@ -282,9 +282,151 @@ for (const def of googleReadToolDefinitions) {
   }
 }
 
+// F4: `user_calendar_agenda` reads ONLY the owner's Google calendar. The base
+// `calendar_agenda` is now the merged cross-account view (dispatch routes it to
+// the unified executor), so the user_* generator's inherited "merged" wording
+// would mislead here. Restate the true, narrow scope.
+{
+  const userCalAgenda = googleReadToolDefinitions.find(t => t.name === 'user_calendar_agenda');
+  if (userCalAgenda) {
+    userCalAgenda.description =
+      "[The OWNER'S Google calendar only] Show upcoming events on the owner's connected Google calendar. For the merged view across every connected calendar (agent + owner, Google + Microsoft) use calendar_agenda; for the owner's Microsoft calendar use user_calendar_agenda_ms.";
+  }
+}
+
 // ── Tool Execution ──
 
+// Google's freeBusy timeMin/timeMax require an RFC3339 timestamp WITH a UTC
+// offset. Offset-less strings (the format the schema example used to teach) and
+// date-only strings 400. Default any offset-less value to the host timezone by
+// parsing it as local time and re-emitting UTC, matching the calendar write
+// tools' host-timezone convention (Intl.DateTimeFormat().resolvedOptions()).
+function toRfc3339WithOffset(value: string): string {
+  const t = value.trim();
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/.test(t)) return t; // already carries an offset
+  const local = /^\d{4}-\d{2}-\d{2}$/.test(t) ? `${t}T00:00:00` : t;
+  const d = new Date(local); // parsed as host-local time
+  return isNaN(d.getTime()) ? t : d.toISOString();
+}
+
 const googleReadToolDefByName = new Map(googleReadToolDefinitions.map(t => [t.name, t]));
+
+// ════════════════════════════════════════
+// F4: shared per-account FETCH helpers.
+//
+// The narrow `calendar_agenda` / `gmail_search` cases below and the merged
+// tools/unified-read.ts executors both call these, so the provider-specific
+// fetch + normalize logic lives in exactly one place ("one fetch path, two
+// renderers"). The helpers return STRUCTURED items; each renderer formats them.
+// The narrow-case rendering downstream is byte-for-byte what it was before the
+// extraction. Import direction stays one-way (unified-read -> here, never back).
+// ════════════════════════════════════════
+
+/** Normalized calendar event, provider-agnostic once times are parsed to Dates. */
+export interface GoogleAgendaFetchItem {
+  title: string;
+  start: Date | null;
+  end: Date | null;
+  rawStart: string;
+  rawEnd: string;
+  allDay: boolean;
+  location?: string;
+  notes?: string;
+}
+
+/** Normalized email row (metadata only) for search rendering. */
+export interface GoogleMailFetchItem {
+  id: string;
+  from: string;
+  to: string;
+  subject: string;
+  dateDisplay: string;
+  dateSortMs: number;
+  snippet: string;
+  /** Read-state is not fetched by Gmail search; left undefined (unknown). */
+  read: boolean | undefined;
+}
+
+/** Fetch + normalize one account's events for a window. `accountId` is the row id (slot). */
+export async function fetchAgendaItemsForAccount(
+  accountId: string,
+  window: { startISO: string; endISO: string; anchored: boolean },
+  tz: string,
+  agentId: string,
+  agentName: string,
+  opts?: { calendarId?: string; days?: number },
+): Promise<{ ok: true; items: GoogleAgendaFetchItem[] } | { ok: false; error: string }> {
+  const calendarId = opts?.calendarId ?? 'primary';
+  const params = new URLSearchParams({
+    timeMin: window.startISO,
+    timeMax: window.endISO,
+    singleEvents: 'true',
+    orderBy: 'startTime',
+    timeZone: tz,
+  });
+  const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`;
+  const result = await googleRead(url, agentId, agentName, 'calendar_agenda', { days: opts?.days, timezone: tz, anchored: window.anchored, calendarId }, accountId);
+  if (!result.ok) return { ok: false, error: result.error ?? 'unknown error' };
+
+  const data = result.data as { items?: Array<{ summary: string; start: { dateTime?: string; date?: string; timeZone?: string }; end: { dateTime?: string; date?: string; timeZone?: string }; location?: string; description?: string }> };
+  const items: GoogleAgendaFetchItem[] = (data?.items ?? []).map(e => {
+    const isAllDay = !!(e.start.date && !e.start.dateTime);
+    const rawStart = e.start.dateTime ?? e.start.date ?? '';
+    const rawEnd = e.end.dateTime ?? e.end.date ?? '';
+    return {
+      title: e.summary,
+      start: parseFlexibleTime(rawStart),
+      end: parseFlexibleTime(rawEnd),
+      rawStart,
+      rawEnd,
+      allDay: isAllDay,
+      location: e.location,
+      notes: e.description,
+    };
+  });
+  return { ok: true, items };
+}
+
+/** Search one account's Gmail. `total` is the raw match count (pre-detail-fetch). */
+export async function searchMailForAccount(
+  accountId: string,
+  query: string,
+  maxResults: number,
+  agentId: string,
+  agentName: string,
+): Promise<{ ok: true; total: number; items: GoogleMailFetchItem[] } | { ok: false; error: string }> {
+  const listUrl = `${GMAIL_BASE}/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
+  const result = await googleRead(listUrl, agentId, agentName, 'gmail_search', { query, maxResults }, accountId);
+  if (!result.ok) return { ok: false, error: result.error ?? 'unknown error' };
+
+  const data = result.data as { messages?: Array<{ id: string; threadId: string }> };
+  if (!data?.messages || data.messages.length === 0) return { ok: true, total: 0, items: [] };
+
+  const items: GoogleMailFetchItem[] = [];
+  for (const msg of data.messages.slice(0, maxResults)) {
+    const detailUrl = `${GMAIL_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`;
+    const detail = await googleRead(detailUrl, agentId, agentName, 'gmail_read', { messageId: msg.id }, accountId);
+    if (detail.ok) {
+      const msgData = detail.data as { id: string; snippet: string; payload?: { headers?: Array<{ name: string; value: string }> } };
+      const headers = msgData?.payload?.headers ?? [];
+      const from = headers.find(h => h.name === 'From')?.value ?? '';
+      const to = headers.find(h => h.name === 'To')?.value ?? '';
+      const subject = headers.find(h => h.name === 'Subject')?.value ?? '(no subject)';
+      const date = headers.find(h => h.name === 'Date')?.value ?? '';
+      const snippet = msgData?.snippet ?? '';
+      const parsed = date ? parseFlexibleTime(date) : null;
+      items.push({ id: msg.id, from, to, subject, dateDisplay: fmtEmailDate(date), dateSortMs: parsed ? parsed.getTime() : 0, snippet, read: undefined });
+    }
+  }
+  return { ok: true, total: data.messages.length, items };
+}
+
+// F4 data floor: the narrow read cases below no longer nudge with an advice
+// note (a weak model ignored it and answered from one surface). They now append
+// the ACTUAL other-surface data via otherCalendarsAgendaSection /
+// otherMailboxesCountSection (tools/unified-read.ts). The requirement the old
+// unifiedCoverageNote encoded — a narrow result must never read as the whole
+// picture — is preserved, strictly better, by carrying the data itself.
 
 export async function executeGoogleReadTool(
   name: string,
@@ -318,40 +460,29 @@ export async function executeGoogleReadTool(
       const maxResults = (args.max_results as number) ?? 10;
       const verbose = args.verbose as boolean | undefined;
 
-      const listUrl = `${GMAIL_BASE}/messages?q=${encodeURIComponent(query)}&maxResults=${maxResults}`;
-      const result = await googleRead(listUrl, agentId, agentName, 'gmail_search', { query, maxResults }, slot);
-      if (!result.ok) return `Error searching Gmail: ${result.error}`;
+      const fetched = await searchMailForAccount(slot, query, maxResults, agentId, agentName);
+      if (!fetched.ok) return `Error searching Gmail: ${fetched.error}`;
 
-      const data = result.data as { messages?: Array<{ id: string; threadId: string }> };
-      if (!data?.messages || data.messages.length === 0) return 'No emails found matching that query.';
+      // F4 data floor: the SAME query run against every OTHER connected mailbox,
+      // counts only, so a single-mailbox search never reads as the whole picture.
+      const { otherMailboxesCountSection } = await import('../tools/unified-read.js');
+      const others = await otherMailboxesCountSection({ provider: 'google', accountId: slot }, query, 0, agentId, agentName);
 
-      const details: string[] = [];
-      for (const msg of data.messages.slice(0, maxResults)) {
-        const detailUrl = `${GMAIL_BASE}/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`;
-        const detail = await googleRead(detailUrl, agentId, agentName, 'gmail_read', { messageId: msg.id }, slot);
-        if (detail.ok) {
-          const msgData = detail.data as { id: string; snippet: string; payload?: { headers?: Array<{ name: string; value: string }> } };
-          const headers = msgData?.payload?.headers ?? [];
-          const from = headers.find(h => h.name === 'From')?.value ?? '';
-          const to = headers.find(h => h.name === 'To')?.value ?? '';
-          const subject = headers.find(h => h.name === 'Subject')?.value ?? '(no subject)';
-          const date = headers.find(h => h.name === 'Date')?.value ?? '';
-          const snippet = msgData?.snippet ?? '';
-          const fmtDate = fmtEmailDate(date);
-          if (verbose) {
-            details.push(`ID: ${msg.id}\nFrom: ${from}\nTo: ${to}\nSubject: ${subject}\nDate: ${fmtDate}\nSnippet: ${snippet}\n`);
-          } else {
-            // Compact: one line per email — drop To, keep snippet capped to 200ch.
-            const shortSnippet = snippet.length > 200 ? snippet.slice(0, 200) + '…' : snippet;
-            details.push(`- ${fmtDate} | ${from} — ${subject}\n  ID: ${msg.id} | ${shortSnippet}`);
-          }
+      if (fetched.total === 0) return 'No emails found matching that query.' + others;
+
+      const details: string[] = fetched.items.map(it => {
+        if (verbose) {
+          return `ID: ${it.id}\nFrom: ${it.from}\nTo: ${it.to}\nSubject: ${it.subject}\nDate: ${it.dateDisplay}\nSnippet: ${it.snippet}\n`;
         }
-      }
+        // Compact: one line per email — drop To, keep snippet capped to 200ch.
+        const shortSnippet = it.snippet.length > 200 ? it.snippet.slice(0, 200) + '…' : it.snippet;
+        return `- ${it.dateDisplay} | ${it.from} — ${it.subject}\n  ID: ${it.id} | ${shortSnippet}`;
+      });
 
-      if (details.length === 0) return `Found ${data.messages.length} email(s) but could not fetch details.`;
-      const header = `Found ${data.messages.length} email(s):\n\n${details.join(verbose ? '\n---\n' : '\n')}`;
-      if (verbose) return header;
-      return `${header}\n\n${details.length} compact result${details.length === 1 ? '' : 's'} shown. For full body of one: gmail_read(message_id=<id>). For To/CC + full snippet on every result: re-call gmail_search with verbose=true.`;
+      if (details.length === 0) return `Found ${fetched.total} email(s) but could not fetch details.` + others;
+      const header = `Found ${fetched.total} email(s):\n\n${details.join(verbose ? '\n---\n' : '\n')}`;
+      if (verbose) return header + others;
+      return `${header}\n\n${details.length} compact result${details.length === 1 ? '' : 's'} shown. For full body of one: gmail_read(message_id=<id>). For To/CC + full snippet on every result: re-call gmail_search with verbose=true.${others}`;
     }
 
     case 'gmail_read': {
@@ -475,6 +606,10 @@ export async function executeGoogleReadTool(
     }
 
     case 'calendar_agenda': {
+      // Base `calendar_agenda` is the MERGED cross-account view (dispatched to
+      // tools/unified-read.ts). This case now serves user_calendar_agenda (owner
+      // Google) and any internal single-account reuse; it fetches through the
+      // shared helper and renders exactly as before.
       const days = (args.days as number) ?? 1;
       const tz = (args.timezone as string | undefined) ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
       const startDate = args.start_date as string | undefined;
@@ -482,43 +617,32 @@ export async function executeGoogleReadTool(
       const { computeCalendarWindow } = await import('../services/calendar-window.js');
       const window = computeCalendarWindow({ days, timezone: args.timezone as string | undefined, start_date: startDate });
 
-      const params = new URLSearchParams({
-        timeMin: window.startISO,
-        timeMax: window.endISO,
-        singleEvents: 'true',
-        orderBy: 'startTime',
-        timeZone: tz,
-      });
-      const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`;
-      const result = await googleRead(url, agentId, agentName, 'calendar_agenda', { days, timezone: tz, startDate, anchored: window.anchored, calendarId }, slot);
-      if (!result.ok) return `Error fetching calendar: ${result.error}`;
+      const fetched = await fetchAgendaItemsForAccount(slot, window, tz, agentId, agentName, { calendarId, days });
+      if (!fetched.ok) return `Error fetching calendar: ${fetched.error}`;
 
-      const data = result.data as { items?: Array<{ summary: string; start: { dateTime?: string; date?: string; timeZone?: string }; end: { dateTime?: string; date?: string; timeZone?: string }; location?: string; description?: string }> };
-      if (!data?.items || data.items.length === 0) return `No events in the next ${days} day(s).`;
+      // F4 data floor: the SAME window fetched from every OTHER connected
+      // calendar surface, compact + labeled, so a single-calendar agenda never
+      // reads as the whole day (advice notes were ignored by the floor model).
+      const { otherCalendarsAgendaSection } = await import('../tools/unified-read.js');
+      const others = await otherCalendarsAgendaSection({ provider: 'google', accountId: slot }, window, tz, days, agentId, agentName);
+
+      if (fetched.items.length === 0) return `No events in the next ${days} day(s).` + others;
 
       // Google returns dateTime with an embedded offset (good) OR date for
       // all-day events. Either way, formatTimeRangeForAgent gives the
       // agent an unambiguous dual-format string so it doesn't misread the
       // ISO as its own local time.
-      const { parseFlexibleTime, formatTimeRangeForAgent } = await import('../services/format-time.js');
-      const events = data.items.map(e => {
-        const isAllDay = !!(e.start.date && !e.start.dateTime);
-        // dateTime already has an offset → parseFlexibleTime handles it.
-        // date is a calendar date → parse as a plain Date (UTC midnight is fine
-        // since formatTimeRangeForAgent renders all-day in UTC to preserve the date).
-        const rawStart = e.start.dateTime ?? e.start.date ?? '';
-        const rawEnd = e.end.dateTime ?? e.end.date ?? '';
-        const startDate = parseFlexibleTime(rawStart);
-        const endDate = parseFlexibleTime(rawEnd);
-        const when = startDate && endDate
-          ? formatTimeRangeForAgent(startDate, endDate, { timezone: tz, allDay: isAllDay })
-          : `${rawStart} to ${rawEnd} (could not parse)`;
-        let line = `- ${e.summary}\n  ${when}`;
+      const { formatTimeRangeForAgent } = await import('../services/format-time.js');
+      const events = fetched.items.map(e => {
+        const when = e.start && e.end
+          ? formatTimeRangeForAgent(e.start, e.end, { timezone: tz, allDay: e.allDay })
+          : `${e.rawStart} to ${e.rawEnd} (could not parse)`;
+        let line = `- ${e.title}\n  ${when}`;
         if (e.location) line += `\n  Location: ${e.location}`;
-        if (e.description) line += `\n  Notes: ${e.description.slice(0, 200)}`;
+        if (e.notes) line += `\n  Notes: ${e.notes.slice(0, 200)}`;
         return line;
       });
-      return `Calendar agenda (next ${days} day(s)):\n\n${events.join('\n\n')}`;
+      return `Calendar agenda (next ${days} day(s)):\n\n${events.join('\n\n')}` + others;
     }
 
     case 'calendar_search': {
@@ -750,8 +874,8 @@ export async function executeGoogleReadTool(
       // only supports GET, so use googleWrite which threads body cleanly.
       const { googleWrite } = await import('./client.js');
       const body = {
-        timeMin: start,
-        timeMax: end,
+        timeMin: toRfc3339WithOffset(start),
+        timeMax: toRfc3339WithOffset(end),
         items: attendees.map(email => ({ id: email })),
       };
       const result = await googleWrite('POST', 'https://www.googleapis.com/calendar/v3/freeBusy', body, agentId, agentName, 'calendar_freebusy', { attendees, start, end }, undefined, slot);

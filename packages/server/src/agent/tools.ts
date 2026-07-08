@@ -15,7 +15,7 @@ import { setCurrentCanvas, getCurrentCanvas, viewCanvas } from './canvas-view.js
 import { isEmbeddable, captureSiteScreenshot } from './site-snapshot.js';
 import { queueCanvasDoc, queueScreenChip } from './pending-attachments.js';
 import { memoryGrep, memoryDescribe, memoryExpand } from '../memory/retrieval.js';
-import { checkRequired, friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer, type FieldSpec } from './tool-helpers.js';
+import { checkRequired, friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer } from './tool-helpers.js';
 // Phase 3.5 (2026-05-04), `shouldIntercept` / `interceptLargeFile` removed
 // from the executeTool path. See agent/tools.ts:executeTool for the explanation.
 // The functions still exist in `memory/large-files.ts` for backward compatibility
@@ -57,9 +57,10 @@ import { plaudReadToolDefinitions, executePlaudTool } from '../plaud/tools-read.
 import { isPlaudConnected } from '../plaud/auth.js';
 import { credentialsToolDefinitions, executeCredentialTool } from '../credentials/tools.js';
 import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../microsoft/tools-write.js';
-import { officeCreateToolDefinitions, officeWordEditToolDefinitions, officeEditToolDefinitions, executeOfficeTool } from '../microsoft/tools-office.js';
+import { officeCreateToolDefinitions, officeWordEditToolDefinitions, officeExcelEditToolDefinitions, officeEditToolDefinitions, executeOfficeTool } from '../microsoft/tools-office.js';
 import { getAgentMicrosoftAccessLevel, isMicrosoftConnected, getMicrosoftWorkspaceConfig, isAnyMicrosoftAccountConnected, isMsServiceEnabledForKind, getMsServiceFlagsForKind } from '../microsoft/auth.js';
 import { areOfficePackagesInstalled } from '../microsoft/office-packages.js';
+import { unifiedToolDefinitions, EMAIL_SEARCH_TOOL, unifiedCalendarAgenda, unifiedEmailSearch } from '../tools/unified-read.js';
 import { getTunnelStatus } from '../services/tunnel.js';
 import { getModelCapabilities } from '../services/capabilities.js';
 import { getEffectiveAudioGenModel } from '../services/audio-gen-model.js';
@@ -294,7 +295,10 @@ export function getAllToolDefinitions(): ToolDefinition[] {
     ...microsoftReadToolDefinitions,
     ...microsoftWriteToolDefinitions,
     ...officeCreateToolDefinitions,
+    ...officeWordEditToolDefinitions,
+    ...officeExcelEditToolDefinitions,
     ...officeEditToolDefinitions,
+    ...unifiedToolDefinitions,
   ];
 }
 
@@ -821,20 +825,52 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
   }
   // msAccess === 'none': no Microsoft tools added
 
+  // ── F4: unified email_search (merged read across every connected mailbox) ──
+  // Available whenever at least one MAIL-capable account is connected on a slot
+  // the agent can read (Gmail on any connected Google account, or Outlook on any
+  // connected Microsoft account). The merged calendar_agenda ships as part of the
+  // Google read set above; email_search is registered here because it is a NEW,
+  // cross-provider tool with no provider array of its own. It deliberately gets
+  // no user_ twin and no `account` param (it spans every mailbox at once).
+  const googleMailCapable = googleAccess !== 'none'
+    && ((agentKindConnected && googleServiceFlags.agent.gmail) || (userKindConnected && googleServiceFlags.user.gmail));
+  const msMailCapable = msAccess !== 'none'
+    && ((agentSlotMsConnected && msServiceFlags.agent.outlook) || (userSlotMsConnected && msServiceFlags.user.outlook));
+  if (googleMailCapable || msMailCapable) {
+    filtered.push(EMAIL_SEARCH_TOOL);
+  }
+
+  // The merged `calendar_agenda` lives in googleReadToolDefinitions (so the
+  // user_ generator + registration loops find it), and the Google filter above
+  // already added it when the AGENT's Google calendar is enabled. But the merged
+  // view spans every provider, so it must also be available on a Microsoft-only
+  // or owner-Google-only box. Surface it whenever ANY connected calendar exists
+  // and it isn't already present (the guard prevents a double-push).
+  const calendarCapable =
+    (googleAccess !== 'none' && ((agentKindConnected && googleServiceFlags.agent.calendar) || (userKindConnected && googleServiceFlags.user.calendar)))
+    || (msAccess !== 'none' && ((agentSlotMsConnected && msServiceFlags.agent.calendar) || (userSlotMsConnected && msServiceFlags.user.calendar)));
+  if (calendarCapable && !filtered.some(t => t.name === 'calendar_agenda')) {
+    const mergedAgenda = googleReadToolDefinitions.find(t => t.name === 'calendar_agenda');
+    if (mergedAgenda) filtered.push(mergedAgenda);
+  }
+
   // ── Office document tools ──
   // Three tiers of gating:
   //   - CREATE tools (Word / Excel / PowerPoint generation) write to disk
   //     under ~/.dojo/uploads/<agentId>/ when Microsoft isn't connected,
   //     just like pdf_create. Exposed to every agent with the npm packages.
-  //   - WORD EDIT/READ tools (append/insert/replace/delete/outline/read)
-  //     now operate on a LOCAL path too, so they're granted alongside the
-  //     creates, otherwise a local-only setup could create Word docs but
-  //     not edit them, forcing wasteful full-document regeneration.
-  //   - The remaining EDIT/READ tools (Excel workbook + PowerPoint slide
-  //     ops) genuinely need the Graph connection, gated behind 'full'.
+  //   - LOCAL EDIT/READ tools (Word: append/insert/replace/delete/outline/read;
+  //     Excel: get/write range, append rows, add/delete sheet) operate on a
+  //     LOCAL path too, so they're granted alongside the creates, otherwise a
+  //     local-only setup could create docs/workbooks but not edit them, forcing
+  //     wasteful full-file regeneration. Two honestly-named arrays (Word +
+  //     Excel) so neither can silently hide the other's membership.
+  //   - The remaining EDIT/READ tools (PowerPoint slide ops) genuinely need the
+  //     Graph connection, gated behind 'full'.
   if (areOfficePackagesInstalled()) {
     filtered.push(...officeCreateToolDefinitions);
     filtered.push(...officeWordEditToolDefinitions);
+    filtered.push(...officeExcelEditToolDefinitions);
   }
   if (msAccess === 'full' && areOfficePackagesInstalled()) {
     filtered.push(...officeEditToolDefinitions);
@@ -885,6 +921,10 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
   ]);
 
   const annotated = filtered.map(t => {
+    // F4: `calendar_agenda` is the MERGED cross-account view, not routed to a
+    // single email — skip the "[Routes to <email>, agent's Google account]"
+    // prefix that would be misleading here. Its user_ variant stays annotated.
+    if (t.name === 'calendar_agenda') return t;
     const isUserSlot = t.name.startsWith('user_');
     let routesTo: string | null = null;
     let label: string = '';
@@ -1207,7 +1247,16 @@ export const toolDefinitions: ToolDefinition[] = [
       properties: {
         pattern: {
           type: 'string',
-          description: 'The search pattern or query string',
+          description: 'The search string. Canonical, preferred arg.',
+        },
+        // `query` is a declared alias for `pattern`, not a stray arg: the
+        // executor honors it via `args.pattern ?? args.query` (case
+        // 'history_search'). Declaring it here is what keeps the unknown-arg
+        // detector from warning "silently ignored" about an arg we actually
+        // honor, so schema and behavior tell the same story.
+        query: {
+          type: 'string',
+          description: 'Alias for `pattern` (accepted for convenience; prefer `pattern`). Pass exactly one of the two.',
         },
         mode: {
           type: 'string',
@@ -1232,7 +1281,11 @@ export const toolDefinitions: ToolDefinition[] = [
           description: 'Maximum number of results to return (default: 20)',
         },
       },
-      required: ['pattern'],
+      // Not ['pattern']: `pattern` is canonical but `query` is an accepted
+      // alternate, so requiring pattern at the schema level would contradict the
+      // executor, which accepts pattern-or-query and enforces "at least one
+      // non-empty" itself (case 'history_search').
+      required: [],
     },
     concurrency: 'safe',
     maxResultTokens: 4000,
@@ -4930,11 +4983,13 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         break;
       }
       case 'history_search': {
-        // Accept `query` as an alias for `pattern`, the schema names the
-        // param `pattern`, but agents who learned the tool from natural
-        // descriptions ("search for the QUARK marker") often pass `query`.
-        // Without this fallback, undefined was silently passed to the FTS5
-        // engine and returned irrelevant rows. Validate explicitly.
+        // Accept `query` as an alias for `pattern`. `pattern` is canonical, but
+        // agents who learned the tool from natural descriptions ("search for the
+        // QUARK marker") often pass `query`. Both are declared in the schema
+        // above (so the unknown-arg detector does not warn), and required is
+        // loosened there because either one satisfies this call. Without this
+        // fallback, undefined was silently passed to the FTS5 engine and
+        // returned irrelevant rows. Validate explicitly.
         const grepPattern = (args.pattern ?? args.query) as string | undefined;
         if (!grepPattern || typeof grepPattern !== 'string' || !grepPattern.trim()) {
           content = 'Error: history_search needs a non-empty `pattern` (the search string). Example: history_search({ pattern: "budget meeting" }).';
@@ -9558,13 +9613,33 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
 
+      // ── F4: unified merged reads (dispatched ABOVE the per-provider cases) ──
+      // `calendar_agenda` (exact base name) is the merged agenda across EVERY
+      // connected calendar; `email_search` is the merged search across EVERY
+      // connected mailbox. The per-provider variants (user_calendar_agenda,
+      // calendar_agenda_ms, gmail_search, outlook_search, …) still route to the
+      // provider executors below. The Google executor's internal 'calendar_agenda'
+      // case remains (serving user_calendar_agenda + single-account reuse).
+      case 'calendar_agenda': {
+        const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+        content = await unifiedCalendarAgenda(args, agentId, agentRow?.name ?? agentId);
+        isError = content.startsWith('Error');
+        break;
+      }
+
+      case 'email_search': {
+        const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
+        content = await unifiedEmailSearch(args, agentId, agentRow?.name ?? agentId);
+        isError = content.startsWith('Error');
+        break;
+      }
+
       // ── Google Workspace Tools ──
 
       case 'gmail_search':
       case 'gmail_read':
       case 'gmail_list_attachments':
       case 'gmail_inbox':
-      case 'calendar_agenda':
       case 'calendar_search':
       case 'calendar_list':
       case 'drive_list':
@@ -9583,24 +9658,12 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
       case 'user_calendar_list':
       case 'user_drive_list':
       case 'user_drive_read': {
-        // Per-tool required-field validation for Google read tools.
-        // Lookup by canonical name so user_* variants share validation.
-        const canonicalName = name.startsWith('user_') ? name.slice('user_'.length) : name;
-        const readReqs: Record<string, FieldSpec[]> = {
-          gmail_search: [{ name: 'query', value: args.query, type: 'string' }],
-          gmail_read: [{ name: 'message_id', value: args.message_id, type: 'string' }],
-          gmail_list_attachments: [{ name: 'message_id', value: args.message_id, type: 'string' }],
-          gmail_inbox: [],
-          calendar_agenda: [],
-          calendar_list: [],
-          drive_list: [],
-          calendar_search: [{ name: 'query', value: args.query, type: 'string' }],
-          drive_read: [{ name: 'file_id', value: args.file_id, type: 'string' }],
-          docs_read: [{ name: 'document_id', value: args.document_id, type: 'string' }],
-          sheets_read: [{ name: 'spreadsheet_id', value: args.spreadsheet_id, type: 'string' }],
-        };
-        const readErr = checkRequired(readReqs[canonicalName] ?? []);
-        if (readErr) { content = readErr; isError = true; break; }
+        // Required-field validation lives in executeGoogleReadTool, which runs
+        // validateAgainstSchema against each tool's real input_schema
+        // (google/tools-read.ts). A hand-maintained readReqs map used to sit
+        // here too; it was pure duplication of that check and a drift risk, so
+        // it was removed. The schema is the single source of truth, and base +
+        // user_ variants take the same validated path downstream.
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         content = await executeGoogleReadTool(name, args, agentId, agentRow?.name ?? agentId);
         content = prependUserMailboxBanner(content, name);
@@ -9640,60 +9703,16 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           auditLog(agentId, name, null, 'denied', 'Google write tool restricted to primary agent');
           break;
         }
-        // Per-tool required-field validation. Catches missing recipient /
-        // subject / body before the tool hits Google's API and returns an
-        // opaque 4xx that the agent can't act on.
-        const writeReqs: Record<string, FieldSpec[]> = {
-          gmail_send: [
-            { name: 'to', value: args.to, type: 'string' },
-            { name: 'subject', value: args.subject, type: 'string' },
-            { name: 'body', value: args.body, type: 'string' },
-          ],
-          gmail_reply: [
-            { name: 'message_id', value: args.message_id, type: 'string' },
-            { name: 'body', value: args.body, type: 'string' },
-          ],
-          gmail_forward: [
-            { name: 'message_id', value: args.message_id, type: 'string' },
-            { name: 'to', value: args.to, type: 'string' },
-          ],
-          gmail_label: [{ name: 'message_id', value: args.message_id, type: 'string' }],
-          gmail_read_attachment: [
-            { name: 'message_id', value: args.message_id, type: 'string' },
-            { name: 'attachment_id', value: args.attachment_id, type: 'string' },
-          ],
-          calendar_create: [
-            // title is the preferred param; summary/subject are accepted aliases
-            // (the tool resolves them). Validate against whichever was passed.
-            { name: 'title', value: args.title ?? args.summary ?? args.subject, type: 'string' },
-            { name: 'start', value: args.start, type: 'string' },
-          ],
-          calendar_update: [{ name: 'event_id', value: args.event_id, type: 'string' }],
-          calendar_delete: [{ name: 'event_id', value: args.event_id, type: 'string' }],
-          drive_upload: [
-            { name: 'name', value: args.name, type: 'string' },
-            { name: 'content', value: args.content, type: 'string', allowEmpty: true },
-          ],
-          drive_share: [{ name: 'file_id', value: args.file_id, type: 'string' }],
-          drive_delete: [{ name: 'file_id', value: args.file_id, type: 'string' }],
-          docs_create: [{ name: 'title', value: args.title, type: 'string' }],
-          docs_edit: [{ name: 'document_id', value: args.document_id, type: 'string' }],
-          sheets_create: [{ name: 'title', value: args.title, type: 'string' }],
-          sheets_append: [
-            { name: 'spreadsheet_id', value: args.spreadsheet_id, type: 'string' },
-            { name: 'values', value: args.values, type: 'array' },
-          ],
-          sheets_write: [
-            { name: 'spreadsheet_id', value: args.spreadsheet_id, type: 'string' },
-            { name: 'values', value: args.values, type: 'array' },
-          ],
-        };
-        // Validation map is keyed by canonical (unprefixed) tool name. Strip
-        // user_ here so a user_gmail_send call still validates against the
-        // gmail_send required-fields list.
-        const canonicalForValidation = name.startsWith('user_') ? name.slice('user_'.length) : name;
-        const writeErr = checkRequired(writeReqs[canonicalForValidation] ?? []);
-        if (writeErr) { content = writeErr; isError = true; break; }
+        // Required-field validation lives in executeGoogleWriteTool, which runs
+        // validateAgainstSchema against each tool's real input_schema
+        // (google/tools-write.ts). A hand-maintained writeReqs map used to sit
+        // here; it duplicated that check and had DRIFTED from the schema (it
+        // demanded a non-existent `content` field on drive_upload and an array
+        // `values` on sheets_append whose schema and executor actually take a
+        // comma-separated string), so every base call died at dispatch while the
+        // user_ variants, which skip this case via the default membership
+        // dispatch, worked. The map is gone; the schema is the single source of
+        // truth and base + user_ variants now take the same validated path.
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         content = await executeGoogleWriteTool(name, args, agentId, agentRow?.name ?? agentId);
         isError = content.startsWith('Error');

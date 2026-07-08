@@ -186,6 +186,62 @@ export function claimAssembledSiblings(agentId: string, convKey: string, assembl
   return n;
 }
 
+/**
+ * F3 (owed mid-turn interrupt): the AUTHORIZED-human user rows of THIS turn's
+ * conversation that arrived AFTER the turn started and were pulled into the
+ * answered context (so the teardown batch-claim, claimAssembledSiblings, is about
+ * to mark them served), yet may never have been addressed. A READ-ONLY sibling of
+ * claimAssembledSiblings: it scopes to the SAME set the claim takes (this
+ * conversation, conv_key NULL, unswept, not engine, not A2A, created_at <= the
+ * turn's final assembly), reusing the identical conversationKey logic, then
+ * NARROWS to genuine mid-turn arrivals (created_at > turnStartedAt) so the turn's
+ * own trigger (claimed + pre-dates the turn) and any pre-turn burst siblings
+ * (already in the FIRST assembly, so answered as the turn's subject) are excluded.
+ *
+ * The loop re-prompts the model with these ONCE before turn-end, so a quick
+ * question that landed mid-task is addressed instead of being silently absorbed
+ * and then claimed as answered. This does NOT mutate anything (the existing claim
+ * still owns the served-stamping, unchanged); it only reports the owed set,
+ * oldest-first. The caller caps how many it quotes.
+ */
+export function getOwedMidTurnArrivals(
+  agentId: string,
+  convKey: string,
+  turnStartedAt: string,
+  assembledAtIso: string,
+): Array<{ rowid: number; content: string }> {
+  const db = getDb();
+  const sessionStart = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
+  // Same window claimAssembledSiblings uses (<= the final assembly), plus the
+  // strict turnStartedAt lower bound so only mid-turn arrivals qualify.
+  const rows = db.prepare(
+    `SELECT rowid, content, source, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, origin_kind, origin_intent
+       FROM messages
+      WHERE agent_id = ? AND role = 'user' AND created_at >= ?
+        AND conv_key IS NULL
+        AND swept_at IS NULL
+        AND datetime(created_at) > datetime(?)
+        AND datetime(created_at) <= datetime(?)
+        AND (origin_kind IS NULL OR origin_kind != 'engine')
+        AND source_agent_id IS NULL AND a2a_thread_id IS NULL
+      ORDER BY created_at ASC, rowid ASC`,
+  ).all(agentId, sessionStart, turnStartedAt, assembledAtIso) as Array<WaitingConversation['latest']>;
+  const owed: Array<{ rowid: number; content: string }> = [];
+  for (const r of rows) {
+    const o = deriveOrigin({
+      role: 'user', content: r.content, source: r.source, sourceAgentId: r.source_agent_id,
+      a2aThreadId: r.a2a_thread_id, a2aIntent: r.a2a_intent, a2aRequiresResponse: r.a2a_requires_response,
+      inboundMeta: r.inbound_meta, originKind: r.origin_kind, originIntent: r.origin_intent,
+    });
+    // Same authorized-human gate as getWaitingHumanConversations: only an
+    // authorized human's ask is a conversation the agent owes a reply.
+    if (o.kind !== 'user' || !o.authorized) continue;
+    if (conversationKey(o.channel, o.senderId, o.senderName, o.threadId) !== convKey) continue;
+    owed.push({ rowid: r.rowid, content: r.content });
+  }
+  return owed;
+}
+
 // ── D8: durable delivery lifecycle for engine events (migration 084) ──
 // An engine event lives on its own messages row; its lifecycle state lives there
 // too: conv_key ('engine' = claimed by a turn), swept_at (disposed), plus

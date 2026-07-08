@@ -131,14 +131,19 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
         title: { type: 'string', description: 'Event title (preferred). Aliases `summary` and `subject` also accepted.' },
         summary: { type: 'string', description: 'Alias for `title` (matches Google Calendar API field name).' },
         subject: { type: 'string', description: 'Alias for `title` (matches Microsoft Graph field name; accepted for cross-provider portability).' },
-        start: { type: 'string', description: "Start datetime (ISO 8601, e.g., '2026-03-25T10:00:00')" },
-        end: { type: 'string', description: 'End datetime (ISO 8601)' },
+        start: { type: 'string', description: "Start datetime. Timed event: ISO 8601 WITH a UTC offset, e.g. '2026-03-25T10:00:00-07:00' (or pass an offset-less time plus `timezone`). All-day event: a date-only string, e.g. '2026-03-25'." },
+        end: { type: 'string', description: "End datetime, same format as `start`. For an all-day event this is the EXCLUSIVE end date; for a single-day all-day event omit it or set it equal to `start`." },
+        timezone: { type: 'string', description: "Optional IANA timezone (e.g. 'America/Los_Angeles') applied to offset-less `start`/`end` values. Defaults to the host timezone. Ignored for all-day (date-only) events." },
         description: { type: 'string', description: 'Event description' },
         attendees: { type: 'array', items: { type: 'string' }, description: 'Attendee email addresses' },
         location: { type: 'string', description: 'Event location' },
         calendar_id: { type: 'string', description: 'Calendar ID. Defaults to "primary" (your own).' },
       },
-      required: ['start', 'end'],
+      // `end` is optional on purpose: the description promises "omit it" for a
+      // single-day all-day event, and the executor derives a missing end
+      // (all-day: start + 1 day exclusive; timed: start + 1 hour) instead of
+      // bouncing the call back for a value it can infer.
+      required: ['start'],
     },
   },
   {
@@ -151,8 +156,9 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
         title: { type: 'string', description: 'New event title (preferred). Aliases `summary` and `subject` also accepted.' },
         summary: { type: 'string', description: 'Alias for `title`.' },
         subject: { type: 'string', description: 'Alias for `title`.' },
-        start: { type: 'string', description: 'New start datetime' },
-        end: { type: 'string', description: 'New end datetime' },
+        start: { type: 'string', description: "New start datetime. Timed: ISO 8601 with a UTC offset (or offset-less plus `timezone`). All-day: a date-only string, e.g. '2026-03-25'." },
+        end: { type: 'string', description: "New end datetime, same format as `start`. All-day end date is EXCLUSIVE." },
+        timezone: { type: 'string', description: "Optional IANA timezone applied to offset-less `start`/`end` values. Defaults to the host timezone." },
         description: { type: 'string', description: 'New event description' },
         calendar_id: { type: 'string', description: 'Calendar ID. Defaults to "primary".' },
       },
@@ -210,7 +216,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'drive_upload',
-    description: 'Upload a file from the local machine to Google Drive.',
+    description: 'Upload a file from the local machine to Google Drive. If this file is a deliverable meant for the user/owner, prefer user_drive_upload so it lands directly in their Drive where they can see it.',
     input_schema: {
       type: 'object',
       properties: {
@@ -219,6 +225,18 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
         folder_id: { type: 'string', description: 'Upload to a specific Drive folder' },
       },
       required: ['file_path'],
+    },
+  },
+  {
+    name: 'drive_create_folder',
+    description: 'Create a folder in Google Drive (get-or-create: if a folder with the same name already exists under the same parent, that existing folder is returned instead of making a duplicate). Returns the folder ID and its shareable URL.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Folder name.' },
+        parent_id: { type: 'string', description: 'Optional parent folder ID. Omit to create in the Drive root.' },
+      },
+      required: ['name'],
     },
   },
   {
@@ -279,7 +297,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'docs_create',
-    description: 'Create a new Google Doc with optional initial content.',
+    description: 'Create a new Google Doc with optional initial content. If the doc is a deliverable meant for the user/owner, prefer user_docs_create so it lands directly in their Drive where they can see it.',
     input_schema: {
       type: 'object',
       properties: {
@@ -343,7 +361,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'sheets_create',
-    description: 'Create a new Google Sheets spreadsheet.',
+    description: 'Create a new Google Sheets spreadsheet. If the sheet is a deliverable meant for the user/owner, prefer user_sheets_create so it lands directly in their Drive where they can see it.',
     input_schema: {
       type: 'object',
       properties: {
@@ -753,6 +771,146 @@ for (const def of googleWriteToolDefinitions) {
 
 // ── Tool Execution ──
 
+// ── Calendar time helpers ──
+//
+// Google Calendar rejects offset-less datetimes and needs a distinct shape for
+// all-day events. These normalize agent-supplied strings:
+//   - date-only "YYYY-MM-DD"    → { date } all-day (Google's end date is EXCLUSIVE)
+//   - offset-less datetime      → { dateTime, timeZone } so Google knows the zone
+//   - offset-carrying datetime  → { dateTime } as-is
+// The host-timezone default matches services/format-time.ts and get_current_time.
+const HOST_TIMEZONE = (() => {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone; }
+  catch { return 'UTC'; }
+})();
+
+function isDateOnly(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
+}
+
+function hasUtcOffset(value: string): boolean {
+  // Trailing 'Z' or +/-HH:MM (colon optional) marks an explicit offset.
+  return /(?:Z|[+-]\d{2}:?\d{2})$/.test(value.trim());
+}
+
+function addOneCalendarDay(dateOnly: string): string {
+  const [y, m, d] = dateOnly.trim().split('-').map(n => parseInt(n, 10));
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + 1);
+  return dt.toISOString().slice(0, 10);
+}
+
+// Build the start/end objects for a Calendar event/patch. Only the fields the
+// caller actually supplied come back set, so this serves both create (both
+// present) and update (either present).
+function buildCalendarTimes(
+  start: string | undefined,
+  end: string | undefined,
+  timezoneOverride: string | undefined,
+  // Create derives a missing end (the schema makes `end` optional so a
+  // single-day all-day event can omit it); update must NOT invent one, a
+  // patch that only moves the start keeps the event's existing end.
+  deriveMissingEnd = false,
+): { start?: Record<string, string>; end?: Record<string, string> } {
+  const tz = (timezoneOverride && timezoneOverride.trim()) || HOST_TIMEZONE;
+  const out: { start?: Record<string, string>; end?: Record<string, string> } = {};
+  const startTrim = start?.trim();
+  const endTrim = end?.trim();
+  const startIsDateOnly = startTrim ? isDateOnly(startTrim) : false;
+
+  if (startTrim) {
+    out.start = startIsDateOnly
+      ? { date: startTrim }
+      : { dateTime: startTrim, ...(hasUtcOffset(startTrim) ? {} : { timeZone: tz }) };
+  }
+
+  if (endTrim) {
+    if (isDateOnly(endTrim)) {
+      // Google's all-day end date is EXCLUSIVE. A same-day (or earlier) end for
+      // a date-only event yields a zero/negative span Google rejects, so bump
+      // to start+1 for a proper one-day all-day event.
+      const endDate = (startIsDateOnly && startTrim && endTrim <= startTrim)
+        ? addOneCalendarDay(startTrim)
+        : endTrim;
+      out.end = { date: endDate };
+    } else {
+      out.end = { dateTime: endTrim, ...(hasUtcOffset(endTrim) ? {} : { timeZone: tz }) };
+    }
+  } else if (startIsDateOnly && startTrim) {
+    // Date-only start, no end → a one-day all-day event (exclusive end).
+    out.end = { date: addOneCalendarDay(startTrim) };
+  } else if (deriveMissingEnd && startTrim && out.start?.dateTime) {
+    // Timed start with no end on CREATE: default to a one-hour event rather
+    // than bouncing the call (Google requires an end on inserts). Parse in the
+    // same zone semantics the start was given.
+    const startMs = new Date(startTrim).getTime();
+    if (!isNaN(startMs)) {
+      const endDate = new Date(startMs + 60 * 60 * 1000);
+      if (hasUtcOffset(startTrim)) {
+        out.end = { dateTime: endDate.toISOString() };
+      } else {
+        // Offset-less start was interpreted as host-local by the Date parse,
+        // so re-emit the +1h end as an offset-less host-local string and let
+        // the shared timeZone field carry the zone, matching the start.
+        const pad = (n: number) => String(n).padStart(2, '0');
+        const localIso = `${endDate.getFullYear()}-${pad(endDate.getMonth() + 1)}-${pad(endDate.getDate())}T${pad(endDate.getHours())}:${pad(endDate.getMinutes())}:${pad(endDate.getSeconds())}`;
+        out.end = { dateTime: localIso, timeZone: tz };
+      }
+    }
+  }
+
+  return out;
+}
+
+// ── Drive share helpers ──
+//
+// Single place that grants a specific email a permission on a Drive file. Used
+// by both the drive_share tool and the owner-reachability floor below, so the
+// permissions call isn't duplicated.
+async function shareDriveFileWithEmail(
+  fileId: string,
+  email: string,
+  role: 'reader' | 'writer' | 'commenter',
+  agentId: string,
+  agentName: string,
+  slot: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const url = `${DRIVE_BASE}/files/${encodeURIComponent(fileId)}/permissions?supportsAllDrives=true&sendNotificationEmail=false`;
+  const result = await googleWrite(
+    'POST', url,
+    { role, type: 'user', emailAddress: email },
+    agentId, agentName, 'drive_share',
+    { fileId, email, role },
+    undefined, slot,
+  );
+  return { ok: result.ok, error: result.error };
+}
+
+// Owner reachability floor. A create/upload on the AGENT slot lands the file in
+// the agent's own Drive, where the human owner cannot see it. If a user-slot
+// Google account is connected, auto-share the new file with that owner email so
+// the deliverable is actually reachable. The user_ variants already write into
+// the owner's Drive, so they skip this. Returns a trailer fragment to append to
+// the tool result (empty when there is nothing to do).
+async function shareCreatedFileWithOwner(
+  fileId: string,
+  kind: AccountSlot,
+  slot: string,
+  creatorEmail: string | null | undefined,
+  agentId: string,
+  agentName: string,
+): Promise<string> {
+  if (kind !== 'agent') return '';
+  const { getPrimaryGoogleAccount } = await import('./accounts.js');
+  const ownerEmail = getPrimaryGoogleAccount('user')?.email?.trim();
+  if (!ownerEmail) return '';
+  // Already reachable when the file was created in the owner's own account.
+  if (creatorEmail && creatorEmail.trim().toLowerCase() === ownerEmail.toLowerCase()) return '';
+  const share = await shareDriveFileWithEmail(fileId, ownerEmail, 'reader', agentId, agentName, slot);
+  if (share.ok) return " Shared with the owner's account.";
+  return ` (Could not auto-share with the owner's account: ${share.error ?? 'unknown error'}. Send them the link above.)`;
+}
+
 const googleWriteToolDefByName = new Map(googleWriteToolDefinitions.map(t => [t.name, t]));
 
 export async function executeGoogleWriteTool(
@@ -1043,10 +1201,21 @@ export async function executeGoogleWriteTool(
       if (!resolvedTitle || typeof resolvedTitle !== 'string' || !resolvedTitle.trim()) {
         return 'Error: event title is required. Pass it as `title` (preferred), or as `summary` / `subject` (aliases).';
       }
+      // Normalize the datetimes: attach the host (or caller-supplied) timezone
+      // to offset-less values, and map date-only strings to all-day semantics.
+      // Pre-fix this sent { dateTime: args.start } with no timeZone, which
+      // Google rejects for offset-less strings and 400s for date-only ones.
+      // deriveMissingEnd: create fills in an omitted end (all-day +1 day,
+      // timed +1 hour) since Google requires one on insert.
+      const times = buildCalendarTimes(
+        args.start as string | undefined,
+        args.end as string | undefined,
+        args.timezone as string | undefined,
+        true,
+      );
       const event: Record<string, unknown> = {
         summary: resolvedTitle,
-        start: { dateTime: args.start },
-        end: { dateTime: args.end },
+        ...times,
       };
       if (args.description) event.description = args.description;
       if (args.location) event.location = args.location;
@@ -1074,8 +1243,15 @@ export async function executeGoogleWriteTool(
       const resolvedTitle = (args.title ?? args.summary ?? args.subject) as string | undefined;
       const patch: Record<string, unknown> = {};
       if (resolvedTitle) patch.summary = resolvedTitle;
-      if (args.start) patch.start = { dateTime: args.start };
-      if (args.end) patch.end = { dateTime: args.end };
+      // Same timezone / all-day normalization as calendar_create; only the
+      // fields the caller supplied get patched.
+      const times = buildCalendarTimes(
+        args.start as string | undefined,
+        args.end as string | undefined,
+        args.timezone as string | undefined,
+      );
+      if (times.start) patch.start = times.start;
+      if (times.end) patch.end = times.end;
       if (args.description) patch.description = args.description;
 
       const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
@@ -1189,9 +1365,12 @@ export async function executeGoogleWriteTool(
       // multipart/related, which Google rejects with 400 because it expects
       // raw bytes for the multipart payload, not a base64 wrapper. The
       // Google client now passes Uint8Array/Buffer through to fetch as-is.
+      // Ask Drive for the shareable webViewLink in the response (same fields
+      // trick uploadAttachmentToDrive uses) so we can hand the user a link
+      // instead of a bare file ID they cannot open.
       const result = await googleWrite(
         'POST',
-        `${UPLOAD_BASE}/files?uploadType=multipart`,
+        `${UPLOAD_BASE}/files?uploadType=multipart&fields=id,name,webViewLink`,
         bodyBuffer,
         agentId, agentName, 'drive_upload',
         { filePath, name: fileName, folderId },
@@ -1204,8 +1383,26 @@ export async function executeGoogleWriteTool(
         return `Error uploading file: ${result.error}`;
       }
 
-      const data = result.data as { id?: string; name?: string };
-      return `File uploaded to Drive${data?.name ? `: ${data.name}` : ''}${data?.id ? ` (ID: ${data.id})` : ''}`;
+      const data = result.data as { id?: string; name?: string; webViewLink?: string };
+      const uploadLink = data?.webViewLink ?? (data?.id ? `https://drive.google.com/file/d/${data.id}/view` : undefined);
+      const uploadOwnerNote = data?.id
+        ? await shareCreatedFileWithOwner(data.id, kind, slot, resolved.account.email, agentId, agentName)
+        : '';
+      const uploadTrailer = uploadLink ? '\n\nGive the user this link so they can open the file.' : '';
+      return `File uploaded to Drive${data?.name ? `: ${data.name}` : ''}${data?.id ? ` (ID: ${data.id})` : ''}${uploadLink ? `\nLink: ${uploadLink}` : ''}${uploadOwnerNote}${uploadTrailer}`;
+    }
+
+    case 'drive_create_folder': {
+      // Get-or-create semantics (getOrCreateDriveFolder): a same-named folder
+      // under the same parent is reused rather than duplicated. Encodes the
+      // requirement that repeat calls don't litter Drive with duplicate folders.
+      const folderName = args.name as string;
+      const parentId = args.parent_id as string | undefined;
+      const folder = await getOrCreateDriveFolder(folderName, parentId, agentId, agentName, slot);
+      if (!folder.ok) return `Error creating folder: ${folder.error}`;
+      const folderUrl = `https://drive.google.com/drive/folders/${folder.id}`;
+      const folderOwnerNote = await shareCreatedFileWithOwner(folder.id, kind, slot, resolved.account.email, agentId, agentName);
+      return `Folder "${folderName}" ready (ID: ${folder.id})\nLink: ${folderUrl}${folderOwnerNote}\n\nGive the user this link so they can open the folder.`;
     }
 
     case 'drive_share': {
@@ -1269,13 +1466,8 @@ export async function executeGoogleWriteTool(
       if (!rawEmail.includes('@')) {
         return `Error: "${rawEmail}" is not a valid email address. For link-share use audience: "anyone" instead, DO NOT pass "anyone"/"public"/"everyone" as the email value.`;
       }
-      const result = await googleWrite(
-        'POST', url,
-        { role, type: 'user', emailAddress: rawEmail },
-        agentId, agentName, 'drive_share',
-        { fileId, email: rawEmail, role },
-      undefined, slot);
-      if (!result.ok) return `Error sharing file: ${result.error}`;
+      const share = await shareDriveFileWithEmail(fileId, rawEmail, role as 'reader' | 'writer' | 'commenter', agentId, agentName, slot);
+      if (!share.ok) return `Error sharing file: ${share.error}`;
       return `File ${fileId} shared with ${rawEmail} as ${role}.`;
     }
 
@@ -1380,7 +1572,14 @@ export async function executeGoogleWriteTool(
         }
       }
 
-      return `Google Doc "${title}" created${docId ? ` (ID: ${docId})` : ''}`;
+      // Docs have a deterministic edit URL. Hand it back (plus an owner-reach
+      // note) so the deliverable is actually reachable, not a bare ID.
+      const docLink = docId ? `https://docs.google.com/document/d/${docId}/edit` : undefined;
+      const docOwnerNote = docId
+        ? await shareCreatedFileWithOwner(docId, kind, slot, resolved.account.email, agentId, agentName)
+        : '';
+      const docTrailer = docLink ? '\n\nGive the user this link so they can open the doc.' : '';
+      return `Google Doc "${title}" created${docId ? ` (ID: ${docId})` : ''}${docLink ? `\nLink: ${docLink}` : ''}${docOwnerNote}${docTrailer}`;
     }
 
     case 'docs_edit': {
@@ -1448,7 +1647,9 @@ export async function executeGoogleWriteTool(
       const result = await googleWrite('POST', SHEETS_BASE, { properties: { title } }, agentId, agentName, 'sheets_create', { title }, undefined, slot);
       if (!result.ok) return `Error creating spreadsheet: ${result.error}`;
 
-      const data = result.data as { spreadsheetId?: string };
+      // The create response already carries spreadsheetUrl; pre-fix it was cast
+      // away. Keep it so we can hand the user a real link.
+      const data = result.data as { spreadsheetId?: string; spreadsheetUrl?: string };
       const sheetId = data?.spreadsheetId;
 
       // Write headers if provided
@@ -1458,7 +1659,12 @@ export async function executeGoogleWriteTool(
         await googleWrite('PUT', valuesUrl, { values: [headers] }, agentId, agentName, 'sheets_write', { spreadsheetId: sheetId, headers }, undefined, slot);
       }
 
-      return `Spreadsheet "${title}" created${sheetId ? ` (ID: ${sheetId})` : ''}`;
+      const sheetLink = data?.spreadsheetUrl ?? (sheetId ? `https://docs.google.com/spreadsheets/d/${sheetId}/edit` : undefined);
+      const sheetOwnerNote = sheetId
+        ? await shareCreatedFileWithOwner(sheetId, kind, slot, resolved.account.email, agentId, agentName)
+        : '';
+      const sheetTrailer = sheetLink ? '\n\nGive the user this link so they can open the sheet.' : '';
+      return `Spreadsheet "${title}" created${sheetId ? ` (ID: ${sheetId})` : ''}${sheetLink ? `\nLink: ${sheetLink}` : ''}${sheetOwnerNote}${sheetTrailer}`;
     }
 
     case 'sheets_append': {

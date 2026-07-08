@@ -343,10 +343,20 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       const snippet = msgData?.snippet ?? '';
       const labelIds = msgData?.labelIds ?? [];
 
+      // Parse the sender address once, up front: it is the decisive signal for
+      // the self-sent skip below and is reused for the direct-message check.
+      const fromAddr = (from.match(/<([^>]+)>/) ?? from.match(/(\S+@\S+)/))?.[1]?.toLowerCase() ?? '';
+
+      // Requirement: the agent's own outbound must never wake it (cost plus
+      // reply-loop risk). A label-only test (SENT and not INBOX) can never fire
+      // here: the list query is `in:inbox`, and self-addressed mail carries BOTH
+      // SENT and INBOX. The decisive check is that the sender IS the watched
+      // account; hasSent stays as a cheap corroborating signal in the log. The
+      // mail remains in the inbox and searchable; only the wake is suppressed.
       const hasSent = labelIds.includes('SENT');
-      const hasInbox = labelIds.includes('INBOX');
-      if (hasSent && !hasInbox) {
-        logger.info('Gmail poll: skipping self-sent', { accountId, messageId: msg.id, from, subject });
+      const isSelfSent = !!fromAddr && !!accountEmail && addressesMatch(fromAddr, accountEmail);
+      if (isSelfSent) {
+        logger.info('Gmail poll: skipping self-sent', { accountId, messageId: msg.id, from, subject, hasSent });
         notifiedIds.add(msg.id);
         continue;
       }
@@ -356,9 +366,8 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       const ownerName = getOwnerName();
       // Is this a direct message TO the agent? Only the AGENT's own mailbox
       // counts, and only from a known safe sender on this channel. A user
-      // mailbox is the human's mail — the agent surfaces it but never replies
-      // on their behalf, even from a safe sender.
-      const fromAddr = (from.match(/<([^>]+)>/) ?? from.match(/(\S+@\S+)/))?.[1]?.toLowerCase() ?? '';
+      // mailbox is the human's mail; the agent surfaces it but never replies
+      // on their behalf, even from a safe sender. fromAddr is parsed above.
       const isDirectToAgent = kind === 'agent' && !!fromAddr
         && getGmailSafeSenders('agent').some(sndr => addressesMatch(sndr.address, fromAddr));
       const body = isDirectToAgent

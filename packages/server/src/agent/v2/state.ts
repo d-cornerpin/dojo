@@ -361,6 +361,29 @@ export interface AgentTurnState {
    */
   nudgedForGoingIdleWithInProgressThisTurn: boolean;
   /**
+   * The task id of a project the ENGINE itself auto-scaffolded THIS turn
+   * (mid-turn floor at 6+ work calls), or null. The engine owns the
+   * lifecycle of tasks it opens: on a read-only conversation turn the
+   * normal going-idle closeout machinery never fires (it requires a
+   * scheduler / A2A / side-effecting turn), so without this the task the
+   * engine opened would dangle and later trip the PM poke chain into
+   * re-delivering the old answer. Recorded here so natural turn-end can
+   * close JUST that task against the reply the user already saw, without
+   * bulk-closing unrelated danglers.
+   */
+  autoScaffoldedTaskIdThisTurn: string | null;
+  /**
+   * F3: fire-once guard for the owed mid-turn interrupt re-prompt. A user message
+   * that arrives WHILE a turn is running is not an interrupt; its wakeup row rides
+   * into the running turn's per-iteration reassembled tail, so at teardown the
+   * batch-claim (claimAssembledSiblings) marks it served because it was "in context
+   * when we answered", even if the model never actually addressed it. When the
+   * natural turn-end path finds such an owed arrival, it re-prompts the model ONCE
+   * (the message quoted verbatim, with a [no-reply] escape) and sets this flag so
+   * the re-prompt can never re-fire and spin the loop.
+   */
+  nudgedForOwedInterruptThisTurn: boolean;
+  /**
    * Set true at preflight when there is an unacknowledged compaction
    * recall nudge in the message log (i.e. compaction fired and the
    * agent has not yet called recall_recent_thread since). Used by the
@@ -504,6 +527,8 @@ export function initState(params: InitStateParams): AgentTurnState {
     nudgedForUngroundedClaimThisTurn: false,
     nudgedForThrashDriftThisTurn: false,
     nudgedForGoingIdleWithInProgressThisTurn: false,
+    autoScaffoldedTaskIdThisTurn: null,
+    nudgedForOwedInterruptThisTurn: false,
     awaitingPostCompactRecall: false,
     nudgedForPostCompactRecall: false,
     taskClosedWithTextThisTurn: false,

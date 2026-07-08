@@ -2508,15 +2508,19 @@ const officeToolDefByName = new Map(officeToolDefinitions.map(t => [t.name, t]))
 
 /**
  * Three tiers of gating (see the filter in agent/tools.ts):
- *   - CREATE tools work locally — they only need the npm packages (docx,
+ *   - CREATE tools work locally: they only need the npm packages (docx,
  *     exceljs, pptxgenjs) and write to disk. Granted to every agent.
- *   - WORD EDIT/READ tools also work locally now: they accept a `path` and
- *     read/manipulate/write the .docx on disk (they still accept a OneDrive
- *     file_id when Microsoft is connected). Granted alongside the creates so
- *     a local-only setup can EDIT Word docs in place instead of regenerating.
- *   - The remaining EDIT tools (Excel workbook ops, PowerPoint slide ops)
- *     genuinely need the Graph connection, so they stay gated behind full
- *     Microsoft access.
+ *   - LOCAL EDIT/READ tools (Word AND Excel) also work locally: they accept a
+ *     `path` and read/manipulate/write the .docx or .xlsx on disk (they still
+ *     accept a OneDrive file_id when Microsoft is connected). Granted alongside
+ *     the creates so a local-only setup can EDIT in place instead of
+ *     regenerating. Exposed as two honestly-named arrays,
+ *     officeWordEditToolDefinitions and officeExcelEditToolDefinitions, so the
+ *     array name cannot hide that Excel is a local-granted member (that mislabel
+ *     is what dropped all 11 from the docs index).
+ *   - The remaining EDIT/READ tools (PowerPoint slide ops and any other
+ *     Graph-backed office op) genuinely need the Graph connection, so they stay
+ *     gated behind full Microsoft access.
  */
 const OFFICE_CREATE_TOOL_NAMES = new Set([
   'office_create_word_document',
@@ -2538,11 +2542,19 @@ const OFFICE_EXCEL_EDIT_TOOL_NAMES = new Set([
   'office_add_sheet',
   'office_delete_sheet',
 ]);
+// Union of the two local-capable edit sets. Kept for the Graph-only negative
+// filter below; callers granting local edit push the Word and Excel arrays.
 const OFFICE_LOCAL_EDIT_TOOL_NAMES = new Set([...OFFICE_WORD_EDIT_TOOL_NAMES, ...OFFICE_EXCEL_EDIT_TOOL_NAMES]);
 export const officeCreateToolDefinitions: ToolDefinition[] = officeToolDefinitions.filter(t => OFFICE_CREATE_TOOL_NAMES.has(t.name));
-// Word + Excel edit/read — local-capable (path-based), granted without Microsoft.
-export const officeWordEditToolDefinitions: ToolDefinition[] = officeToolDefinitions.filter(t => OFFICE_LOCAL_EDIT_TOOL_NAMES.has(t.name));
-// Everything else (PowerPoint edit/read) — Graph-only, Microsoft required.
+// Word edit/read tools, local-capable (path-based), granted without Microsoft.
+export const officeWordEditToolDefinitions: ToolDefinition[] = officeToolDefinitions.filter(t => OFFICE_WORD_EDIT_TOOL_NAMES.has(t.name));
+// Excel range/sheet edit tools, ALSO local-capable (path-based) and granted
+// without Microsoft alongside the Word set. This is its own honestly-named
+// array on purpose: folding these into a "Word" list is exactly what let all
+// 11 local edit tools drop out of the docs index (getAllToolDefinitions),
+// so load_tool_docs answered "Tools not found" for tools the model could see.
+export const officeExcelEditToolDefinitions: ToolDefinition[] = officeToolDefinitions.filter(t => OFFICE_EXCEL_EDIT_TOOL_NAMES.has(t.name));
+// Everything else (PowerPoint edit/read), Graph-only, Microsoft required.
 export const officeEditToolDefinitions: ToolDefinition[] = officeToolDefinitions.filter(
   t => !OFFICE_CREATE_TOOL_NAMES.has(t.name) && !OFFICE_LOCAL_EDIT_TOOL_NAMES.has(t.name),
 );

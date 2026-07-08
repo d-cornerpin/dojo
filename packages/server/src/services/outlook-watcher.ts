@@ -301,6 +301,17 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
       // Direct message TO the agent? Only the agent's own mailbox + a known safe
       // sender. User mailboxes are the human's mail — surface, never reply for them.
       const fromAddr = fromAddress.includes('@') ? fromAddress.toLowerCase() : '';
+
+      // Requirement: the agent's own outbound must never wake it (cost plus
+      // reply-loop risk). Outlook polls me/mailFolders/inbox, so unlike Gmail
+      // there is no SENT label to lean on; the decisive check is that the sender
+      // IS the watched account. The mail stays in the inbox and searchable; only
+      // the wake is suppressed (notifiedIds.add keeps it marked as handled).
+      if (!!fromAddr && !!view.email && addressesMatch(fromAddr, view.email)) {
+        logger.info('Outlook poll: skipping self-sent', { accountId, messageId: msg.id, from, subject });
+        notifiedIds.add(msg.id);
+        continue;
+      }
       const isDirectToAgent = kind === 'agent' && !!fromAddr
         && getOutlookSafeSenders('agent').some(sndr => addressesMatch(sndr.address, fromAddr));
       const body = isDirectToAgent

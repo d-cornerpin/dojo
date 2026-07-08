@@ -128,6 +128,14 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     tools: ['tunnel'],
   },
   {
+    // Merged cross-account reads (F4): one call covers every connected surface
+    // so a weak model can't silently answer from an arbitrary subset. The base
+    // `calendar_agenda` is the merged agenda (listed under Google Calendar);
+    // `email_search` is the merged mailbox search.
+    label: 'Unified Search (all connected accounts at once)',
+    tools: ['email_search'],
+  },
+  {
     label: 'Gmail',
     tools: ['gmail_search', 'gmail_read', 'gmail_inbox', 'gmail_send', 'gmail_reply', 'gmail_forward', 'gmail_label', 'gmail_list_labels', 'gmail_create_label', 'gmail_delete_label', 'gmail_list_attachments', 'gmail_read_attachment'],
   },
@@ -137,7 +145,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'Google Drive / Docs / Sheets',
-    tools: ['drive_list', 'drive_read', 'drive_upload', 'drive_share', 'drive_delete', 'drive_move', 'drive_rename', 'drive_versions_list', 'docs_read', 'docs_create', 'docs_edit', 'docs_insert_text', 'docs_find_replace', 'docs_delete_range', 'sheets_read', 'sheets_create', 'sheets_append', 'sheets_write', 'sheets_add_sheet', 'sheets_delete_sheet', 'sheets_format'],
+    tools: ['drive_list', 'drive_read', 'drive_upload', 'drive_create_folder', 'drive_share', 'drive_delete', 'drive_move', 'drive_rename', 'drive_versions_list', 'docs_read', 'docs_create', 'docs_edit', 'docs_insert_text', 'docs_find_replace', 'docs_delete_range', 'sheets_read', 'sheets_create', 'sheets_append', 'sheets_write', 'sheets_add_sheet', 'sheets_delete_sheet', 'sheets_format'],
   },
   {
     label: 'Google Tasks',

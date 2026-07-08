@@ -106,12 +106,13 @@ import {
 } from './classifiers/hoarding.js';
 // ackInjector intentionally NOT imported, engine ack disabled per invariant
 // review (see "Engine-injected ack, DISABLED" comment below).
+import { composeStartAck, composeCompletionAck } from './ack-copy.js';
 import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, TOOL_AND_OUTPUT_RESERVE } from '../../memory/compaction.js';
 import { estimateTokens } from '../../memory/store.js';
 import { insertInterAgentEngineRow, insertInterAgentOwnOutput, tagInterAgentOwnOutputConvKey } from '../../memory/interagent.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
-import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, claimAssembledSiblings, type TurnCounterparty, type EngineEventSrc } from './counterparty.js';
+import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, claimAssembledSiblings, getOwedMidTurnArrivals, type TurnCounterparty, type EngineEventSrc } from './counterparty.js';
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
 import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout } from './classifiers/output.js';
 import { detectUngroundedDeliveryClaim } from './classifiers/grounding.js';
@@ -373,6 +374,13 @@ const MAX_TOOL_LOOPS = 75;                     // matches v1
 const TURN_TIME_BUDGET_MS = 15 * 60 * 1000;    // matches v1, 15 min/turn
 const MAX_TURN_AUTO_CONTINUATIONS = 3;         // matches v1
 const ACK_DEFAULT_TEXT = 'Working on it…';
+// Elapsed-based start-ack floor (F10). The classifier and scaffold acks key off
+// call accounting (project-worthy classification / 6 work calls), which can land
+// long after the person started waiting or, on a quiet-phrased ask, never. This
+// floor keys off the USER'S WAIT instead: quick lookups that finish in ~12s stay
+// ceremony-free (the battery praised that), anything longer acks before the user
+// starts wondering whether the agent heard them.
+const ENGINE_START_ACK_AFTER_MS = 12000;
 
 // ── Task-thrash detector ──
 // Catches the "agent re-runs the SAME canonical tool call over and over"
@@ -407,6 +415,145 @@ const THRASH_GATE_DRIFT_LIMIT = 8;
 // across auto-continued turns (comms-audit REG-1). The gap between 8 and 24 gives a
 // genuinely-working task ample room past the nudge before any block.
 const THRASH_GATE_DRIFT_HARD_LIMIT = 24;
+
+// F12.5: shared derivation of an auto-scaffold title from a raw user message.
+// Both scaffold sites (turn-start classifier + mid-turn engine floor) used to
+// slice the raw prompt, producing kanban titles like "Can you go through my
+// inbox and put together a lis". Strip leading politeness/filler, truncate at a
+// word boundary within ~50 chars, capitalize. May return '' (no meaningful
+// content), callers apply their own fallback. The PM rename handoff still runs
+// afterward to give a proper umbrella name; this only makes the interim name
+// readable instead of a mangled slice.
+function deriveScaffoldTitle(raw: string): string {
+  let s = (raw ?? '').split('\n')[0].trim();
+  // Repeatedly strip leading politeness/filler so "Hey, can you ..." also cleans up.
+  const FILLER_PREFIX = /^(can you|could you|would you|will you|please|hey|hi|ok so|okay so|ok|also)\b[,:\s]*/i;
+  let prev = '';
+  while (s !== prev) {
+    prev = s;
+    s = s.replace(FILLER_PREFIX, '').trimStart();
+  }
+  if (s.length > 50) {
+    const cut = s.slice(0, 50);
+    const lastSpace = cut.lastIndexOf(' ');
+    s = (lastSpace > 20 ? cut.slice(0, lastSpace) : cut).trim();
+  }
+  s = s.replace(/[.!?]+$/, '').trim();
+  if (s.length === 0) return '';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+// F9 (harness finding): the user EXPLICITLY routed work to the agent's own
+// agents and the floor model silently did it itself, never mentioning the
+// choice. Owner stance (middle): the agent keeps judgment, but the routing
+// instruction must be SURFACED (delegate, or say why not); a silent override
+// must be impossible in practice. This conservative detector recognizes an
+// EXPLICIT routing instruction so the engine can inject the advice-voice steer.
+//
+// Anchor on an imperative delegation VERB + a "your agent(s)/team" object, or
+// the word "delegate" used as a verb, or an explicit "spawn/spin up ... agent".
+// It must NOT fire on mere MENTIONS of agents ("do you have any agents?", "how
+// many agents...", "your agents are great"), so a bare noun reference never
+// matches. Canonical positive (the battery phrase):
+//   "Have one of your agents research it and report back to me."
+const DELEGATION_PATTERNS: readonly RegExp[] = [
+  // Imperative delegation verb targeting the agent's OWN agents/team. Requires
+  // the possessive "your" (optionally "one of your ..."), so "do you have any
+  // agents?" / "have you seen my agent" never match.
+  /\b(have|get|ask|tell|assign|task)\s+(one of\s+)?your\s+(agents?|sub-?agents?|team|helpers?|assistants?)\b/i,
+  // "delegate" as a verb with a work object ("delegate this/it/that", "delegate
+  // the research"). \s after the word excludes "delegated"; a pronoun/the-object
+  // excludes the noun "the delegate for ...".
+  /\bdelegate\s+(this|it|that|these|those|the\b)/i,
+  // "hand this/it (off) to (one of) your/an agent(s)/team". "the team" (not
+  // "your"/"a"/"an") does not match, so "hand this to the team lead" is out.
+  /\bhand\s+(this|it|that|these|those)\s+(off\s+)?to\s+(one of\s+)?(your|an?)\s+(agents?|sub-?agents?|team|helpers?)\b/i,
+  // Explicit "spawn/spin up ... agent" (with an agent object, so "salmon spawn
+  // in the river" and "the spawn point" never match).
+  /\b(spawn|spin ?up|fire ?up|kick ?off)\s+(a |an |another |one )?(new\s+)?(sub-?)?agent\b/i,
+];
+
+/** True when the user text EXPLICITLY routes the work to the agent's agents. */
+function detectExplicitDelegation(text: string): boolean {
+  if (!text) return false;
+  return DELEGATION_PATTERNS.some((re) => re.test(text));
+}
+
+// F9 hint body (shared by the live model-visible injection and the persisted
+// EVENTS-lane row). Advice voice per the precedence ladder (tier-7), never an
+// order. No em-dashes; plain layman language.
+const DELEGATION_HINT_BODY =
+  'the user explicitly asked for this to be delegated to one of your agents. ' +
+  'Either delegate it (spawn_agent for a fresh helper, or send_to_agent to task ' +
+  'an existing one) and synthesize the result back to the user, or, if doing it ' +
+  'yourself is clearly better here, briefly tell the user you are handling it ' +
+  'directly and why. Do not silently override their routing instruction.';
+
+// F12.5: fire-and-forget PM rename handoff, factored out so BOTH scaffold sites
+// (turn-start classifier and mid-turn engine floor) hand the ugly interim names
+// to the PM agent to rewrite on its own turn via its local model. The user-facing
+// agent never waits; a failed PM call just leaves the interim names in place.
+async function dispatchPMRenameHandoff(params: {
+  callingAgentId: string;
+  projectId: string;
+  taskId: string;
+  projectTitle: string;
+  taskTitle: string;
+  originalPrompt: string;
+}): Promise<void> {
+  try {
+    const { getPMAgentId, getPMAgentName, getPrimaryAgentName } = await import('../../config/platform.js');
+    const pmId = getPMAgentId();
+    const pmName = getPMAgentName();
+    const primaryName = getPrimaryAgentName();
+    if (!pmId || !pmName) return;
+    const renameRequest = (
+      `[ENGINE RENAME REQUEST] An auto-created project needs better names. ` +
+      `The multi-step classifier just opened this from a user prompt and named both the project ` +
+      `and the first task with a slice of that prompt, looks bad on the kanban.\n\n` +
+      `Project id: ${params.projectId}\n` +
+      `Current project title: ${params.projectTitle}\n` +
+      `First task id: ${params.taskId}\n` +
+      `Current first-task title: ${params.taskTitle}\n\n` +
+      `Original user prompt:\n${params.originalPrompt.slice(0, 1500)}\n\n` +
+      `Please call tracker_edit_project(project_id="${params.projectId}", title="<short 3-6 word umbrella name>") ` +
+      `and tracker_edit_task(task_id="${params.taskId}", title="<short 3-6 word first-step name>"). ` +
+      `The project name describes the WHOLE effort; the first-task name is the first concrete thing to do. ` +
+      `Make them distinct, don't reuse the same string for both. After both edits land, send NO message ` +
+      `back to anyone, this is a silent rename. Do not contact ${primaryName}.`
+    );
+    const renameMsgId = uuidv4();
+    const db = getDb();
+    db.prepare(`
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+      VALUES (?, ?, 'user', ?, datetime('now'))
+    `).run(renameMsgId, pmId, renameRequest);
+    broadcast({
+      type: 'chat:message',
+      agentId: pmId,
+      message: {
+        id: renameMsgId, agentId: pmId, role: 'user' as const,
+        content: renameRequest,
+        tokenCount: null, modelId: null, cost: null, latencyMs: null,
+        createdAt: new Date().toISOString(),
+      },
+    });
+    // Fire-and-forget wake. handleMessage queues itself if PM is busy.
+    void getAgentRuntime().handleMessage(pmId, renameRequest).catch(err => {
+      logger.warn('v2 multistep: PM rename wake failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      }, params.callingAgentId);
+    });
+    logger.info('v2 multistep: dispatched PM rename request', {
+      agentId: params.callingAgentId, pmId, projectId: params.projectId, taskId: params.taskId,
+    }, params.callingAgentId);
+  } catch (renameErr) {
+    logger.warn('v2 multistep: PM rename dispatch failed (non-fatal)', {
+      agentId: params.callingAgentId,
+      error: renameErr instanceof Error ? renameErr.message : String(renameErr),
+    }, params.callingAgentId);
+  }
+}
 
 // D16: normalize a channel recipient id (phone / email / iMessage handle / chat
 // id) for comparison, tolerating formatting differences.
@@ -1183,12 +1330,23 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // suppression of the model's own reply. Fires only for user counterparties;
   // A2A / engine turns never reach the classifier that calls it.
   let engineStartAckDeliveredThisTurn = false;
-  const deliverEngineUserAck = async (text: string): Promise<void> => {
+  // originIntent stamps a machine-readable marker on the ack row so consumers
+  // (the completion-ack cross-turn dedup, the PM poke chain, the F10 replied-
+  // check) recognize an engine ack STRUCTURALLY instead of by copy prefix,
+  // which is what lets the wording vary freely. origin_kind is deliberately
+  // left NULL: an assistant row with only origin_intent still classifies as
+  // normal user-visible agent speech (deriveOrigin keys engine-origin off
+  // origin_kind, and the display classifier ignores origin_intent on assistant
+  // rows), so the ack still shows in chat exactly as before.
+  // originIntent defaults to null so a non-ack caller (e.g. the thrash-block
+  // user notice) keeps origin_intent NULL and stays a substantive reply. The
+  // start-ack sites pass 'engine_start_ack' explicitly.
+  const deliverEngineUserAck = async (text: string, originIntent: string | null = null): Promise<void> => {
     const ackId = uuidv4();
     try {
       db.prepare(
-        `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at) VALUES (?, ?, 'assistant', ?, ?, datetime('now'))`,
-      ).run(ackId, agentId, text, turnNumber);
+        `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, origin_intent, created_at) VALUES (?, ?, 'assistant', ?, ?, ?, datetime('now'))`,
+      ).run(ackId, agentId, text, turnNumber, originIntent);
       broadcast({
         type: 'chat:message',
         agentId,
@@ -1228,6 +1386,61 @@ export async function runV2Turn(agentId: string): Promise<void> {
       }, agentId);
     }
   };
+
+  // ── F10: wall-clock start-ack timer ──
+  // The person who sent a fresh ask hears "on it" at ENGINE_START_ACK_AFTER_MS
+  // if no user-visible reply has landed by then. A TIMER, not a loop-boundary
+  // check: the first model round can alone take 25s+, so a boundary check
+  // cannot fire until moments before the reply (observed: ack 3s before
+  // completion, exactly the noise pattern this exists to kill). Armed ONLY
+  // when this turn serves a waiting human NOW (triggerRow set, the same
+  // "human is waiting" signal the close-out gate trusts): a queued-wakeup /
+  // drain / continuation turn has a user counterparty too, and an ack fired
+  // there reads as a stray "On it." attached to nothing (observed live).
+  // Cancelled in the teardown finally; a fire after the reply is prevented by
+  // the DB check (any user-visible assistant text already stamped with this
+  // turn_number) plus the shared once-per-turn flag.
+  let startAckTimer: ReturnType<typeof setTimeout> | null = null;
+  if (counterparty.kind === 'user' && triggerRow) {
+    startAckTimer = setTimeout(() => {
+      void (async () => {
+        try {
+          const repliedNow = () => !!db.prepare(`
+            SELECT 1 FROM messages
+            WHERE agent_id = ? AND role = 'assistant' AND turn_number = ?
+              AND content NOT LIKE '[{%'
+              AND origin_intent IS NULL
+              AND length(trim(content)) > 0
+            LIMIT 1
+          `).get(agentId, turnNumber);
+          if (engineStartAckDeliveredThisTurn || repliedNow()) return;
+          engineStartAckDeliveredThisTurn = true;
+          // Seconds of slack here (the timer already fired), so the wording
+          // call is awaited inline; the pool fallback guarantees a line.
+          const ackText = await composeStartAck({ userMessage: lastUserMessageContent ?? '', agentId });
+          // Re-check AFTER composing: the wording call can take up to ~2s on a
+          // box with a system model, and the real reply can land inside that
+          // gap (observed live: reply at :16, stray ack at :17). An ack that
+          // arrives after the answer is pure noise, so the moment of truth is
+          // immediately before delivery, not before composition.
+          if (repliedNow()) {
+            logger.info('v2 F10: start ack skipped, the reply landed while the wording was being composed', {
+              agentId, turnNumber,
+            }, agentId);
+            return;
+          }
+          await deliverEngineUserAck(ackText, 'engine_start_ack');
+          logger.info('v2 F10: wall-clock start ack delivered (no reply yet at threshold)', {
+            agentId, turnNumber, thresholdMs: ENGINE_START_ACK_AFTER_MS,
+          }, agentId);
+        } catch (err) {
+          logger.warn('v2 F10: start-ack timer fire failed (non-fatal)', {
+            agentId, error: err instanceof Error ? err.message : String(err),
+          }, agentId);
+        }
+      })();
+    }, ENGINE_START_ACK_AFTER_MS);
+  }
 
   // ── v2.5.46: pre-turn close-out gate detection ──
   // Look up in_progress tasks the agent appears to have abandoned. Pre-
@@ -1333,28 +1546,43 @@ export async function runV2Turn(agentId: string): Promise<void> {
         `tracker_add_notes (if you are STILL actively working it - then KEEP GOING on this same turn, do not stop after writing the note), ` +
         `or - if the whole project was abandoned/duplicated/superseded - tracker_close_project(project_id, status="cancelled", reason="..."). ` +
         `The engine will REFUSE every non-tracker tool call until one of those lands; after that the gate releases for the rest of the turn so you can keep resolving the others alongside other work. ` +
-        `Do NOT generate a user-facing response on this turn until the gate is satisfied - the user does not expect a reply yet; they expect the tracker to come back in sync.]`
+        `Do NOT generate a user-facing response on this turn until the gate is satisfied - the user does not expect a reply yet; they expect the tracker to come back in sync. ` +
+        `Results already delivered to the user must NOT be repeated; after your tracker call, reply [no-reply] unless the user asked something new.]`
       );
+      // F2.4: dedupe the gate message per wakeup batch. Queued wakeups re-arm this
+      // gate on every attempt (three duplicate inserts were observed in 20s). The
+      // enforcement state is already armed above (danglingTaskIds), so if the
+      // dashboard already carries a close-out gate message from the last 5 minutes,
+      // skip the redundant INSERT + broadcast while STILL arming enforcement.
+      const recentGateMsg = db.prepare(`
+        SELECT 1 FROM messages
+        WHERE agent_id = ? AND role = 'system'
+          AND content LIKE '[System: REQUIRED close-out%'
+          AND created_at >= datetime('now', '-5 minutes')
+        LIMIT 1
+      `).get(agentId);
       const gateMsgId = uuidv4();
-      try {
-        db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-          VALUES (?, ?, 'system', ?, datetime('now'))
-        `).run(gateMsgId, agentId, gateMsg);
-        broadcast({
-          type: 'chat:message',
-          agentId,
-          message: {
-            id: gateMsgId, agentId, role: 'system' as const,
-            content: gateMsg,
-            tokenCount: null, modelId: null, cost: null, latencyMs: null,
-            createdAt: new Date().toISOString(),
-          },
-        });
-      } catch (msgErr) {
-        logger.warn('v2: close-out gate system message insert failed', {
-          agentId, error: msgErr instanceof Error ? msgErr.message : String(msgErr),
-        }, agentId);
+      if (!recentGateMsg) {
+        try {
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+            VALUES (?, ?, 'system', ?, datetime('now'))
+          `).run(gateMsgId, agentId, gateMsg);
+          broadcast({
+            type: 'chat:message',
+            agentId,
+            message: {
+              id: gateMsgId, agentId, role: 'system' as const,
+              content: gateMsg,
+              tokenCount: null, modelId: null, cost: null, latencyMs: null,
+              createdAt: new Date().toISOString(),
+            },
+          });
+        } catch (msgErr) {
+          logger.warn('v2: close-out gate system message insert failed', {
+            agentId, error: msgErr instanceof Error ? msgErr.message : String(msgErr),
+          }, agentId);
+        }
       }
       logger.info('v2: pre-turn close-out gate armed', {
         agentId, danglingCount: danglingRows.length,
@@ -1430,6 +1658,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // answer the weak model paired with a closing tool is never silently lost.
   let deferredUserReplyWithTools: string | null = null;
 
+  // F3 owed-interrupt round contract: the already-delivered main reply captured at
+  // the moment the F3 re-prompt fires (see ~:4510). Stays null unless F3 actually
+  // fires this turn, which is what scopes the near-duplicate contract floor below
+  // (~:3810) to the single extra owed-interrupt round and nothing else.
+  let owedInterruptPriorReply: string | null = null;
+
   try {
     // ── Main loop ──
     //
@@ -1493,18 +1727,32 @@ export async function runV2Turn(agentId: string): Promise<void> {
       if (!isPMAgent(agentId) && driftSoftTrip && !driftHardTrip && !refusalTrip) {
         if (!state.nudgedForThrashDriftThisTurn) {
           const driftNudge =
-            `[System: the engine thrash gate has been active for ${drift} iterations and you keep ` +
-            `varying your tool calls without recording progress. If you ARE making progress, call ` +
-            `tracker_update_status (or tracker_add_notes) to record it, then continue. If you are stuck, ` +
-            `wrap up and tell the user where things stand. ${ENGINE_BLOCK_ESCAPE_HATCH}]`;
+            `[Engine hint] The engine thrash gate has been active for ${drift} iterations and you keep ` +
+            `varying your tool calls without recording progress. If you ARE making progress, record it with ` +
+            `tracker_update_status (or tracker_add_notes), then continue. If you are stuck, wrap up and tell ` +
+            `the user where things stand. ${ENGINE_BLOCK_ESCAPE_HATCH}`;
           const driftNudgeId = uuidv4();
           try {
-            db.prepare(
-              `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at) VALUES (?, ?, 'system', ?, ?, datetime('now'))`,
-            ).run(driftNudgeId, agentId, driftNudge, turnNumber);
+            // Model-visible steer channel. A role='system' row would be stripped
+            // by the assembler (dashboard-only theater), so this ladder rung would
+            // never reach the model. Persist as an origin_kind='engine' inter-agent
+            // row (the EVENTS lane surfaces it next turn) AND set pendingNudge so
+            // the model receives it on the very next iteration. conv_key sentinel
+            // 'engine-steer' keeps it un-selectable as a pending event (see the
+            // thrash-steer C6 note below).
+            insertInterAgentEngineRow({
+              id: driftNudgeId,
+              agentId,
+              content: driftNudge,
+              sourceAgentId: null,
+              originIntent: 'thrash_drift',
+              convKey: 'engine-steer',
+              turnNumber,
+            });
           } catch { /* best effort */ }
-          // One-shot nudge only, the drift window is deliberately NOT reset.
-          state = advance(state, { nudgedForThrashDriftThisTurn: true });
+          // One-shot nudge only, the drift window is deliberately NOT reset (a
+          // signature-varying spiral must keep accruing drift to the hard limit).
+          state = advance(state, { nudgedForThrashDriftThisTurn: true, pendingNudge: driftNudge });
           logger.info('v2: thrash drift nudge (one-shot; drift keeps accruing to the hard limit)', {
             agentId, drift, loopCount: state.loopCount,
           }, agentId);
@@ -1515,19 +1763,38 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // (refusalTrip), OR kept varying call signatures to DODGE the gate past the
         // HARD drift limit despite the nudge (driftHardTrip), a genuine spiral that
         // the refusal counter can't see. The task hits a real terminal state. The
-        // AGENT is told (a persisted system message with the escape-hatch), not just a
-        // dashboard toast, so the block is VISIBLE and recoverable, not a dead-end.
+        // AGENT is told on the model-visible steer channel (below), the USER is told
+        // in plain language if the work is theirs (F1), and a dashboard toast fires,
+        // so the block is VISIBLE and recoverable, not a mute dead-end.
+        // Third-person reason for the task-log line and the dashboard toast.
         const breakerReason = refusalTrip
           ? `agent ignored the thrash gate ${state.thrashGateRefusalCount}× without wrapping up`
           : `agent kept varying call signatures for ${drift} iterations to dodge the thrash gate, never wrapping up`;
+        // Second-person reason for the agent-facing note. Fixes the old
+        // "because you agent ..." double-subject bug: the note prepends "because",
+        // and BOTH branches of breakerReason start with "agent ...", so it read
+        // "because you agent ...". This string starts with "you ...".
+        const breakerReasonSecondPerson = refusalTrip
+          ? `you ignored the thrash gate ${state.thrashGateRefusalCount}× without wrapping up`
+          : `you kept varying call signatures for ${drift} iterations to dodge the thrash gate, never wrapping up`;
+        // F1: does this blocked work trace to a user request? A user ask can be
+        // continuing on a background (non-user) turn, so the engine-auto marker on
+        // the project also counts as user-origin. If so, the engine tells the person
+        // directly (below) rather than leaving the whole escalation ladder mute.
+        let blockedWorkIsUserOrigin = counterparty.kind === 'user';
         try {
           const db2 = getDb();
+          const { ENGINE_AUTO_MARKER } = await import('./classifiers/multistep.js');
           const task = db2.prepare(`
-            SELECT id, title FROM tasks
+            SELECT id, title, project_id FROM tasks
             WHERE assigned_to = ? AND status = 'in_progress'
             ORDER BY updated_at DESC LIMIT 1
-          `).get(agentId) as { id: string; title: string } | undefined;
+          `).get(agentId) as { id: string; title: string; project_id: string | null } | undefined;
           if (task) {
+            if (!blockedWorkIsUserOrigin && task.project_id) {
+              const proj = db2.prepare(`SELECT description FROM projects WHERE id = ?`).get(task.project_id) as { description: string | null } | undefined;
+              if (proj?.description && proj.description.startsWith(ENGINE_AUTO_MARKER)) blockedWorkIsUserOrigin = true;
+            }
             const noteLine = `Engine auto-blocked: ${breakerReason}. Likely needs human review or a re-stated goal.`;
             db2.prepare(`
               UPDATE tasks
@@ -1536,6 +1803,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   updated_at = datetime('now')
               WHERE id = ?
             `).run(task.id);
+            // F1.4: no noteTransitionForReview call here. runPMReview surfaces any
+            // blocked task after 30 minutes regardless of blocked_validated (the
+            // pm-agent blocked-issue check), so the PM has its backstop. A fresh
+            // block (<30 min) would be dropped by that 30-min gate anyway, and
+            // re-validating a deterministic engine block would be theater:
+            // blocked_validated=1 IS the engine's validation.
             void import('../../tracker/task-log.js').then(({ writeTaskLog }) => {
               writeTaskLog({
                 taskId: task.id,
@@ -1556,19 +1829,38 @@ export async function runV2Turn(agentId: string): Promise<void> {
               taskId: task.id, refusalCount: state.thrashGateRefusalCount, loopCount: state.loopCount,
             }, agentId);
           }
+          // F1.3: agent-facing block note on the model-visible steer channel. A
+          // role='system' row is stripped by the assembler (dashboard-only theater),
+          // so the block would never reach the model. No pendingNudge: the turn is
+          // ending here (break below), so the next turn's EVENTS lane surfaces it.
+          // conv_key sentinel keeps it un-selectable as a pending event.
           const agentNoteId = uuidv4();
-          db2.prepare(
-            `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at) VALUES (?, ?, 'system', ?, ?, datetime('now'))`,
-          ).run(
-            agentNoteId,
+          insertInterAgentEngineRow({
+            id: agentNoteId,
             agentId,
-            `[System: the engine auto-blocked your current task because you ${breakerReason}. On your next ` +
-            `turn, either re-state the goal and resume (call tracker_update_status), or tell the user it is ` +
-            `blocked and why. ${ENGINE_BLOCK_ESCAPE_HATCH}]`,
+            content:
+              `[System] The engine auto-blocked your current task because ${breakerReasonSecondPerson}. Next turn, either ` +
+              `re-state the goal and resume (tracker_update_status), or tell the user it is blocked and why. ` +
+              `If this block looks wrong and is stopping something the user needs, tell them what you were attempting so they can decide.`,
+            sourceAgentId: null,
+            originIntent: 'thrash_block',
+            convKey: 'engine-steer',
             turnNumber,
-          );
+          });
         } catch (err) {
           logger.warn('v2: thrash auto-block failed', { error: err instanceof Error ? err.message : String(err) }, agentId);
+        }
+        // F1.1: user-visible notice. The engine speaks for the blocked agent, in
+        // plain layman language, so a person waiting on the ask is not left silent.
+        // This is an engine act (a real assistant reply pushed to their channel),
+        // not a nudge. Not gated by the start-ack flag: a start-ack is different
+        // information; the user needs to hear the work stopped.
+        if (blockedWorkIsUserOrigin) {
+          try {
+            await deliverEngineUserAck(
+              `I hit a wall on this: I kept retrying without making progress, so I've stopped rather than keep spinning on it. Tell me to try again, or adjust what you're after, and I'll take another run at it.`,
+            );
+          } catch { /* best effort, the dashboard/toast still show the block */ }
         }
         try {
           broadcast({
@@ -1676,6 +1968,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // path enforces the gate on tool execution.
         }
       }
+
+      // ── F10 note: the start-ack floor is the wall-clock timer armed at turn
+      // start (search "F10: wall-clock start-ack timer"), NOT a loop-boundary
+      // check here. A boundary check could only fire between model rounds, and
+      // a single slow first round pushed the ack to seconds before the reply
+      // (observed live), while wakeup/drain turns with a user counterparty but
+      // no waiting human got a stray "On it." attached to nothing. ──
 
       // ── Turn time budget, auto-continue, don't halt ──
       // (Matches v1 runtime.ts:884-919.) When a turn runs longer than 15 min,
@@ -2259,18 +2558,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 const { createProject } = await import('../../tracker/schema.js');
                 const { ENGINE_AUTO_MARKER } = await import('./classifiers/multistep.js');
 
-                // Engine names projects/tasks with a slice of the user's
-                // prompt. This is intentionally ugly, the PM agent gets
-                // dispatched immediately after creation to rename both
-                // via its local model (see the rename handoff below).
-                // Async naming keeps the user-facing turn latency clean.
-                const fallbackName = lastUserMessageContent
-                  .split('\n')[0]
-                  .slice(0, 50)
-                  .trim()
-                  .replace(/[.!?]+$/, '');
-                const projectTitle = decision.name ?? fallbackName ?? 'Multi-step task';
-                const taskTitle = decision.name ?? fallbackName ?? 'Initial task';
+                // Engine names projects/tasks from a cleaned slice of the user's
+                // prompt (F12.5: strip politeness/filler, truncate at a word
+                // boundary, capitalize, so the interim kanban name is readable
+                // instead of a mangled raw slice). The PM agent gets dispatched
+                // immediately after creation to rename both via its local model
+                // (see the rename handoff below). Async naming keeps latency clean.
+                const fallbackName = deriveScaffoldTitle(lastUserMessageContent);
+                const projectTitle = decision.name ?? (fallbackName || 'Multi-step task');
+                const taskTitle = decision.name ?? (fallbackName || 'Initial task');
 
                 try {
                   // createdBy == agentId so createProject's auto-start
@@ -2304,6 +2600,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
                     title: projectTitle,
                     source: decision.source,
                   }, agentId);
+
+                  // F2.1 coverage: the engine owns the lifecycle of every task it
+                  // opens. This turn-start classifier scaffold feeds the SAME
+                  // same-turn close and PM poke-chain sweep as the mid-turn 6-call
+                  // scaffold site (~:6030), so a read-only turn's classifier-created
+                  // task cannot dangle in_progress after its brief is delivered
+                  // (previously it waited on the 30-minute PM sweep backstop).
+                  state = advance(state, { autoScaffoldedTaskIdThisTurn: created.taskIds[0] });
 
                   // Inject the standard task-assignment notification, 
                   // same payload tracker_create_task uses, including the
@@ -2342,79 +2646,37 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   // production failure where the floor model ended the turn on an
                   // A2A send and the owner heard nothing. One per turn.
                   if (counterparty.kind === 'user' && !engineStartAckDeliveredThisTurn) {
+                    // Flag set synchronously at the fire decision so a second
+                    // site can never double-ack. Wording is composed fire-and-
+                    // forget (best-effort model, guaranteed pool fallback) so it
+                    // never delays the model loop; an ack always lands.
                     engineStartAckDeliveredThisTurn = true;
                     // Do NOT splice the project title into the sentence: it is derived
-                    // from the raw, truncated user request and reads as broken grammar
-                    // ("...starting on Please do all three of these: write a short 4-line
-                    // now..."). A title-free ack is always clean; the person just sent
-                    // the request, so they know what it refers to.
-                    await deliverEngineUserAck(
-                      `On it. I've started, and I'll let you know when it's done.`,
-                    );
+                    // from the raw, truncated user request and reads as broken grammar.
+                    // The composer sees the user's message for context but keeps the
+                    // line title-free; the person just sent the request so they know
+                    // what it refers to.
+                    void (async () => {
+                      const ackText = await composeStartAck({ userMessage: lastUserMessageContent ?? '', agentId });
+                      await deliverEngineUserAck(ackText, 'engine_start_ack');
+                    })();
                   }
 
-                  // ── PM rename handoff (async) ──
-                  // The project + first task were named from a slice of the
-                  // user prompt, that's ugly on the kanban. Fire a request
-                  // at the PM agent to rename both via its local model.
-                  // Fire-and-forget: the user-facing agent doesn't wait,
-                  // and a failed PM call just leaves the slice-named rows
-                  // in place (no worse than before). Async means the
-                  // kanban shows the ugly name briefly (~seconds) until
-                  // the PM rewrite lands.
-                  try {
-                    const { getPMAgentId, getPMAgentName, getPrimaryAgentName } = await import('../../config/platform.js');
-                    const pmId = getPMAgentId();
-                    const pmName = getPMAgentName();
-                    const primaryName = getPrimaryAgentName();
-                    if (pmId && pmName) {
-                      const renameRequest = (
-                        `[ENGINE RENAME REQUEST] An auto-created project needs better names. ` +
-                        `The multi-step classifier just opened this from a user prompt and named both the project ` +
-                        `and the first task with a slice of that prompt, looks bad on the kanban.\n\n` +
-                        `Project id: ${created.projectId}\n` +
-                        `Current project title: ${projectTitle}\n` +
-                        `First task id: ${taskId}\n` +
-                        `Current first-task title: ${taskTitle}\n\n` +
-                        `Original user prompt:\n${lastUserMessageContent.slice(0, 1500)}\n\n` +
-                        `Please call tracker_edit_project(project_id="${created.projectId}", title="<short 3-6 word umbrella name>") ` +
-                        `and tracker_edit_task(task_id="${taskId}", title="<short 3-6 word first-step name>"). ` +
-                        `The project name describes the WHOLE effort; the first-task name is the first concrete thing to do. ` +
-                        `Make them distinct, don't reuse the same string for both. After both edits land, send NO message ` +
-                        `back to anyone, this is a silent rename. Do not contact ${primaryName}.`
-                      );
-                      const renameMsgId = uuidv4();
-                      db.prepare(`
-                        INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-                        VALUES (?, ?, 'user', ?, datetime('now'))
-                      `).run(renameMsgId, pmId, renameRequest);
-                      broadcast({
-                        type: 'chat:message',
-                        agentId: pmId,
-                        message: {
-                          id: renameMsgId, agentId: pmId, role: 'user' as const,
-                          content: renameRequest,
-                          tokenCount: null, modelId: null, cost: null, latencyMs: null,
-                          createdAt: new Date().toISOString(),
-                        },
-                      });
-                      // Fire-and-forget wake. handleMessage queues itself
-                      // if PM is busy.
-                      void getAgentRuntime().handleMessage(pmId, renameRequest).catch(err => {
-                        logger.warn('v2 multistep: PM rename wake failed (non-fatal)', {
-                          error: err instanceof Error ? err.message : String(err),
-                        }, agentId);
-                      });
-                      logger.info('v2 multistep: dispatched PM rename request', {
-                        agentId, pmId, projectId: created.projectId, taskId,
-                      }, agentId);
-                    }
-                  } catch (renameErr) {
-                    logger.warn('v2 multistep: PM rename dispatch failed (non-fatal)', {
-                      agentId,
-                      error: renameErr instanceof Error ? renameErr.message : String(renameErr),
-                    }, agentId);
-                  }
+                  // ── PM rename handoff (async, fire-and-forget) ──
+                  // The project + first task carry cleaned-but-interim names; hand
+                  // both to the PM agent to rewrite into a proper umbrella + first-
+                  // step name via its local model. The user-facing agent does not
+                  // wait; a failed PM call just leaves the interim names in place.
+                  // Factored into dispatchPMRenameHandoff so the mid-turn scaffold
+                  // site (below) uses the identical dispatch (F12.5).
+                  void dispatchPMRenameHandoff({
+                    callingAgentId: agentId,
+                    projectId: created.projectId,
+                    taskId,
+                    projectTitle,
+                    taskTitle,
+                    originalPrompt: lastUserMessageContent,
+                  });
                 } catch (createErr) {
                   logger.warn('v2 multistep: createProject failed (non-fatal)', {
                     agentId,
@@ -2432,6 +2694,61 @@ export async function runV2Turn(agentId: string): Promise<void> {
           } else {
             logger.warn('v2 multistep classifier failed (non-fatal)', { agentId, error: msg }, agentId);
           }
+        }
+      }
+
+      // ── F9: explicit-delegation routing hint ───────────────────────────────
+      // The user EXPLICITLY routed work to the agent's own agents ("have one of
+      // your agents research it and report back to me") and the floor model was
+      // observed silently doing the work itself, never mentioning the choice.
+      // Owner stance (middle): keep the agent's judgment, but the routing
+      // instruction must be SURFACED (delegate, or say why not); a silent
+      // override must be impossible in practice. Same guard family as the
+      // multistep classifier: first tool round with a real user message, this
+      // turn is FOR a user (not A2A), not the PM, not the Healer. Skips
+      // engine-shaped messages (an engine notice is not the user delegating).
+      // Advice voice (tier-7), never an order; the agent still decides.
+      if (
+        state.loopCount === 1 &&
+        lastUserMessageContent &&
+        counterparty.kind === 'user' &&
+        !isPMAgent(agentId) &&
+        !isHealerAgent(agentId) &&
+        detectExplicitDelegation(lastUserMessageContent)
+      ) {
+        try {
+          const { looksLikeEngineMessage } = await import('./classifiers/multistep.js');
+          if (!looksLikeEngineMessage(lastUserMessageContent)) {
+            // Model-visible THIS turn: inject the hint right after the user's ask
+            // via the registry channel (same path as msg.tracker-notif). The
+            // colon-bracket "[Engine hint: ...]" form is the live advice voice.
+            mctx.delegationHint = `[Engine hint: ${DELEGATION_HINT_BODY}]`;
+            injectRegistryMessage('msg.delegation-hint', messages, mctx);
+
+            // Persist for later turns: an origin_kind='engine' inter-agent row the
+            // EVENTS lane surfaces next turn. conv_key sentinel 'engine-steer'
+            // keeps it un-selectable as a pending engine event. Label form
+            // ("[Engine hint] body", space not colon) so the events-lane
+            // leading-bracket strip drops only the label and keeps the body; a
+            // single wrapping "[Engine hint: ...]" bracket would be stripped whole.
+            insertInterAgentEngineRow({
+              id: uuidv4(),
+              agentId,
+              content: `[Engine hint] ${DELEGATION_HINT_BODY}`,
+              sourceAgentId: null,
+              originIntent: 'delegation_hint',
+              convKey: 'engine-steer',
+              turnNumber,
+            });
+
+            logger.info('v2 F9: explicit-delegation hint fired (user routed the work to the agent\'s agents; injected the delegate-or-say-why steer)', {
+              agentId, turnNumber, loopCount: state.loopCount,
+            }, agentId);
+          }
+        } catch (err) {
+          logger.warn('v2 F9 delegation-hint failed (non-fatal)', {
+            agentId, error: err instanceof Error ? err.message : String(err),
+          }, agentId);
         }
       }
 
@@ -3536,6 +3853,47 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }, agentId);
       }
 
+      // ── Owed-interrupt round contract floor (engine-enforced "answer the ask, do not re-deliver") ──
+      // The F3 owed-interrupt block (below, ~:4510) grants EXACTLY ONE extra round for
+      // ONE purpose: answer the quoted mid-turn message the teardown claim is about to
+      // mark served. A near-copy of the reply the user already received is, by
+      // definition, not that answer, so the engine treats this round's output as its
+      // [no-reply]. This is enforcement of the round's contract, the SAME class as
+      // bare-[no-reply] swallowing, NOT suppression of a genuine agent response:
+      //  - owedInterruptPriorReply is set only when F3 actually fired, so this never
+      //    runs on any turn where the extra round was not granted;
+      //  - the MAIN reply from the earlier iteration is never touched (that text was
+      //    already persisted and is what owedInterruptPriorReply holds, only THIS
+      //    round's fresh output is compared);
+      //  - a genuinely NEW answer (not a near-duplicate) fails isNearDuplicateText and
+      //    flows through completely unchanged.
+      // Swallow it exactly the way a bare [no-reply] / redundant closeout is swallowed
+      // (null persistedContent, clear the streamed bubble), no system marker, the user
+      // already has the real reply.
+      if (
+        persistedContent &&
+        result.toolCalls.length === 0 &&
+        state.nudgedForOwedInterruptThisTurn &&
+        owedInterruptPriorReply &&
+        isNearDuplicateText(owedInterruptPriorReply, persistedContent)
+      ) {
+        persistedContent = null;
+        broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
+        broadcast({
+          type: 'chat:message',
+          agentId,
+          message: {
+            id: messageId, agentId, role: 'assistant' as const,
+            content: '',
+            tokenCount: null, modelId: null, cost: null, latencyMs: null,
+            createdAt: new Date().toISOString(),
+          },
+        });
+        logger.warn('v2: the owed-interrupt round produced a near-duplicate of the already-delivered reply; the engine treated it as [no-reply]', {
+          agentId, loopCount: state.loopCount, turnNumber,
+        }, agentId);
+      }
+
       // Arm the floor: once any user-facing reply surfaces this turn, later
       // generic closeouts get suppressed (above). Set AFTER the suppression
       // checks so a just-swallowed closeout (now null) doesn't arm it.
@@ -4056,6 +4414,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   createdAt: new Date().toISOString(),
                 },
               });
+              // F2.6: the persisted row above is a role='system' message, which the
+              // assembler strips, so the re-entered round would carry NO new info and
+              // burn a model call for nothing. Deliver the menu via pendingNudge (a
+              // synthetic user message injected next iteration) so the extra round
+              // actually shows the model the 4-option decision. Row kept for the
+              // dashboard. Gating is unchanged.
+              state = advance(state, { pendingNudge: nudgeText });
               logger.info('v2 going-idle-with-in_progress nudge fired', {
                 agentId, openTaskCount: openTasks.length, taskIds: openTasks.map(t => t.id),
               }, agentId);
@@ -4166,6 +4531,131 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }
         }
 
+        // F2.1: same-turn engine close of an engine-auto-scaffolded task on a
+        // read-only conversation turn. The mid-turn floor opens a task after 6 work
+        // calls of ANY kind, including pure reads. On a read-only turn (e.g. an inbox
+        // sweep) the going-idle machinery above never fires (it requires a scheduler /
+        // A2A / side-effecting turn), so the task the ENGINE itself opened would
+        // dangle and later trip the PM poke chain into re-delivering the old answer as
+        // a "ghost done". Requirement satisfied: the engine owns the lifecycle of the
+        // tasks it opens. Scope is deliberately narrow, ONLY this turn's scaffolded
+        // task, closed against the reply the user already saw (engineCloseDeliveredTask,
+        // complete_validated=1). Unrelated danglers keep their existing handling; a
+        // read-only turn must NOT bulk-close unrelated work against an unrelated reply.
+        // The !nudgedForGoingIdle guard means the worked-task path (hardcap above)
+        // already swept it, so this only runs when nothing else did. Natural turn end
+        // only (inside result.toolCalls.length === 0), never the turn-budget path.
+        if (
+          state.autoScaffoldedTaskIdThisTurn &&
+          !state.nudgedForGoingIdleWithInProgressThisTurn &&
+          persistedContent && persistedContent.trim().length > 0
+        ) {
+          const scaffoldId = state.autoScaffoldedTaskIdThisTurn;
+          const stillOpen = db.prepare(
+            `SELECT 1 FROM tasks WHERE id = ? AND status = 'in_progress' AND is_paused = 0`,
+          ).get(scaffoldId);
+          if (stillOpen) {
+            try {
+              const { engineCloseDeliveredTask } = await import('../../tracker/tools.js');
+              const closed = await engineCloseDeliveredTask(agentId, scaffoldId, persistedContent);
+              if (closed) {
+                logger.info('v2 same-turn scaffold close: engine-closed the auto-scaffolded task against the delivered reply (read-only turn)', {
+                  agentId, taskId: scaffoldId,
+                }, agentId);
+              }
+            } catch { /* best effort */ }
+          }
+        }
+
+        // ── F3: owed mid-turn interrupt re-prompt ──
+        // A quick question that lands WHILE a turn is running is NOT an interrupt:
+        // its wakeup row sits conv_key NULL and rides into the running turn's
+        // per-iteration reassembled tail (runtime.ts). At teardown,
+        // claimAssembledSiblings claims every same-conversation user row that was in
+        // the answered context (conv_key NULL, created_at <= the final assembly) so a
+        // burst can't earn a duplicate answer, a requirement we KEEP intact. The gap
+        // it leaves: "in context when we answered" is treated as "was answered", so a
+        // DISTINCT factual question that arrived mid-task is claimed as served and
+        // never answered anywhere (the weak model absorbs the interruption silently).
+        //
+        // Fix the CAUSE, don't suppress the claim: on a user turn that produced a
+        // reply, give the model exactly ONE more round to address any owed mid-turn
+        // arrival BEFORE the same teardown claim marks it served. The [no-reply]
+        // escape is what keeps this from creating a NEW duplicate-answer problem when
+        // the main reply already covered it. getOwedMidTurnArrivals scopes to the
+        // EXACT set the claim will take (same conv-scoping + window) narrowed to
+        // mid-turn arrivals (created_at > turnStartedAt), so the trigger and any
+        // pre-turn burst siblings (answered as the turn's subject) are excluded.
+        //
+        // Placed AFTER the F2.1 scaffold close so that close still runs on THIS
+        // iteration's reply (it must not be deferred into a possible [no-reply] extra
+        // round), and it yields to the going-idle hardcap above (which breaks first on
+        // a worked-task-with-danglers turn) so this never fights that reconciliation.
+        // One-shot (nudgedForOwedInterruptThisTurn) and skipped at the loop cap, so it
+        // can neither spin the loop nor push past MAX_TOOL_LOOPS.
+        if (
+          counterparty.kind === 'user' &&
+          !isEngineTurn &&
+          !state.nudgedForOwedInterruptThisTurn &&
+          persistedContent && persistedContent.trim().length > 0 &&
+          state.loopCount < MAX_TOOL_LOOPS &&
+          lastAssembledAtIso &&
+          chosenConvKey &&
+          chosenConvKey !== 'engine' &&
+          !chosenConvKey.startsWith('park:') &&
+          !chosenConvKey.startsWith('relayed:')
+        ) {
+          let owed = getOwedMidTurnArrivals(agentId, chosenConvKey, turnStartedAt, lastAssembledAtIso);
+          if (owed.length > 0) {
+            // Belt-and-suspenders on top of the query's origin_kind='engine' filter:
+            // never quote human text that merely opens with an engine tag ([System:,
+            // [A2A:, [SOURCE: ...) back into a model-visible re-prompt.
+            const { looksLikeEngineMessage } = await import('./classifiers/multistep.js');
+            owed = owed.filter((m) => !looksLikeEngineMessage(m.content));
+          }
+          if (owed.length > 0) {
+            const quoted = owed
+              .slice(0, 3)
+              .map((m) => `"${m.content.replace(/\s+/g, ' ').trim().slice(0, 200)}"`)
+              .join('; ');
+            const itThem = owed.length === 1 ? 'it' : 'them';
+            const rePrompt = (
+              `[System] While you were working, the user also sent: ${quoted}. ` +
+              `Reply ONLY to ${itThem}, in one or two sentences. ` +
+              `Do NOT repeat, summarize, or re-deliver ANY part of your earlier reply; the user already has it. ` +
+              `If your earlier reply already answered ${itThem}, reply exactly [no-reply].`
+            );
+            const rePromptId = uuidv4();
+            try {
+              // Model-visible engine channel, same pattern as the thrash steer and the
+              // auto-scaffold note: an origin_kind='engine' row (EVENTS lane surfaces
+              // it) with the 'engine-steer' conv_key sentinel so it can never be picked
+              // as a pending engine event, PLUS pendingNudge so the steer reaches the
+              // model on the very next iteration. Label form ([System] body) so the
+              // events-lane leading-bracket strip keeps the body.
+              insertInterAgentEngineRow({
+                id: rePromptId,
+                agentId,
+                content: rePrompt,
+                sourceAgentId: null,
+                originIntent: 'owed_interrupt',
+                convKey: 'engine-steer',
+                turnNumber,
+              });
+            } catch { /* best effort */ }
+            state = advance(state, { nudgedForOwedInterruptThisTurn: true, pendingNudge: rePrompt });
+            // Capture the reply the user already received so the contract floor above
+            // (~:3810) can treat a near-copy of it on the extra round as [no-reply].
+            // persistedContent here is the delivered main reply (guarded non-empty
+            // above, never reassigned between the persist and this point).
+            owedInterruptPriorReply = persistedContent;
+            logger.info('v2 owed-interrupt re-prompt: a mid-turn user message was assembled but may be unanswered; giving the model one more round before the teardown claim marks it served', {
+              agentId, turnNumber, owedCount: owed.length, convKey: chosenConvKey,
+            }, agentId);
+            continue; // exactly one more round for the model to answer the owed ask
+          }
+        }
+
         // v2.5.31, Hardcap: if the missed-reply nudge already fired once
         // for this assign id and the LLM STILL produced text-no-tool, end
         // the turn instead of nudging again. This is the loop-breaker for
@@ -4179,10 +4669,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
           !state.sentToAgentThisTurn &&
           persistedContent && persistedContent.trim().length > 0
         ) {
+          // Hardcap engaged to prevent the pre-v2.5.31 nudge spiral (the enforcer
+          // kept re-nudging a model that pattern-matched "user wants a summary" and
+          // ignored the send_to_agent directive, ~30 loops until the budget killed it).
           const stopMsg = (
-            `[System: Ending turn, the missed-reply nudge fired but the agent kept writing text instead of calling send_to_agent. ` +
-            `The inbound A2A message remains marked as unreplied; manual intervention may be needed. ` +
-            `(Hardcap engaged to prevent the v2.5.30-and-earlier nudge spiral.)]`
+            `[System: Ending the turn. You wrote text instead of calling send_to_agent, so the message from the other agent is still unanswered. ` +
+            `If it still needs a reply, call send_to_agent on your next turn; otherwise leave it.]`
           );
           const stopId = uuidv4();
           db.prepare(`
@@ -4776,7 +5268,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
               `Before any other tool call, resolve at least one with tracker_complete_step, ` +
               `tracker_update_status (complete | blocked | paused), or, if you're genuinely still working ` +
               `on it across turns, tracker_add_notes to signal "in flight." After ANY one of those, the gate ` +
-              `disengages for the rest of this turn and "${tc.name}" will work normally.\n\n` +
+              `disengages for the rest of this turn and "${tc.name}" will work normally. ` +
+              `Results already delivered to the user must NOT be repeated; after your tracker call, reply [no-reply] unless the user asked something new.\n\n` +
               ENGINE_BLOCK_ESCAPE_HATCH
             );
             try {
@@ -5480,10 +5973,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
         !engineStartAckDeliveredThisTurn &&
         result.toolCalls.some((tc) => tc.name === 'tracker_create_project')
       ) {
+        // Flag set synchronously; wording composed fire-and-forget with a
+        // guaranteed pool fallback so it never blocks the loop.
         engineStartAckDeliveredThisTurn = true;
-        await deliverEngineUserAck(
-          `On it. I've started, and I'll let you know when it's done.`,
-        );
+        void (async () => {
+          const ackText = await composeStartAck({ userMessage: lastUserMessageContent ?? '', agentId });
+          await deliverEngineUserAck(ackText, 'engine_start_ack');
+        })();
       }
       // F2 (post-D3): the deleted anti-hoarding gate was ALSO the thing that forced
       // task scaffolding at the 6th load; deleting it removed all engine pressure to
@@ -5575,43 +6071,60 @@ export async function runV2Turn(agentId: string): Promise<void> {
           try {
             const { createProject } = await import('../../tracker/schema.js');
             const { ENGINE_AUTO_MARKER } = await import('./classifiers/multistep.js');
-            const scaffoldName = state.lastUserMessageContent
-              .split('\n')[0]
-              .slice(0, 50)
-              .trim()
-              .replace(/[.!?]+$/, '') || 'Multi-step task';
+            // F12.5: cleaned interim name (strip filler, word-boundary truncate,
+            // capitalize) instead of a mangled raw slice; PM rename handoff below
+            // gives it a proper umbrella name. Capture the prompt now (narrowed to
+            // string by the enclosing guard) so the rename dispatch below still has
+            // it after the state reassignments that follow.
+            const scaffoldPrompt: string = state.lastUserMessageContent;
+            const scaffoldName = deriveScaffoldTitle(scaffoldPrompt) || 'Multi-step task';
             const created = createProject({
               title: scaffoldName,
-              description: ENGINE_AUTO_MARKER + state.lastUserMessageContent.slice(0, 2000),
+              description: ENGINE_AUTO_MARKER + scaffoldPrompt.slice(0, 2000),
               level: 1,
               tasks: [{ title: scaffoldName, assignedTo: agentId }],
               createdBy: agentId,
             });
+            const scaffoldTaskId = created.taskIds?.[0] ?? null;
+            // F2.2: scaffold note on the model-visible steer channel. The old
+            // role='system' row was stripped by the assembler, so a continuing
+            // agent never learned the engine had opened the task (it then drifted
+            // and the PM later re-delivered the old answer). Persist as an
+            // origin_kind='engine' row (EVENTS lane surfaces it) AND pendingNudge
+            // so the continuing agent sees the task id + how to close it THIS turn.
+            // Label form ([System] body) so the events-lane leading-bracket strip
+            // keeps the body. conv_key sentinel keeps it un-selectable as an event.
             const autoNoteText = (
-              `[System: the engine opened tracker task "${scaffoldName}" (task_id: ${created.taskIds?.[0] ?? created.projectId}) for this work ` +
+              `[System] The engine opened tracker task "${scaffoldName}" (task_id: ${scaffoldTaskId ?? created.projectId}) for this work ` +
               `(you made ${state.nonTrackerToolCalls} work calls with no tracker entry; untracked multi-step work drifts and the PM cannot monitor it). ` +
-              `Keep working; update it with tracker_add_notes as you go and close it with tracker_update_status(complete) plus result/evidence when done.]`
+              `Keep working; update it with tracker_add_notes as you go and close it with tracker_update_status(complete) plus result/evidence when done.`
             );
             const autoNoteId = uuidv4();
-            db.prepare(`
-              INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-              VALUES (?, ?, 'system', ?, ?, datetime('now'))
-            `).run(autoNoteId, agentId, autoNoteText, turnNumber);
-            broadcast({
-              type: 'chat:message',
-              agentId,
-              message: {
-                id: autoNoteId, agentId, role: 'system' as const,
+            try {
+              insertInterAgentEngineRow({
+                id: autoNoteId,
+                agentId,
                 content: autoNoteText,
-                tokenCount: null, modelId: null, cost: null, latencyMs: null,
-                createdAt: new Date().toISOString(),
-              },
-            });
+                sourceAgentId: null,
+                originIntent: 'auto_scaffold',
+                convKey: 'engine-steer',
+                turnNumber,
+              });
+            } catch { /* best effort */ }
             // The floor just performed a tracker mutation (createProject), so
             // set trackerWriteThisTurn to fully disarm the gate above and stop
             // it re-entering on later iterations. trackerToolCalledThisTurn is
-            // kept for parity with the agent-engaged-tracker signal.
-            state = advance(state, { trackerToolCalledThisTurn: true, trackerWriteThisTurn: true, nudgedForTrackerThisTurn: true });
+            // kept for parity with the agent-engaged-tracker signal. pendingNudge
+            // delivers the scaffold note to a continuing agent this turn (F2.2);
+            // autoScaffoldedTaskIdThisTurn lets natural turn-end close JUST this
+            // task if the turn was read-only and nothing else closed it (F2.1).
+            state = advance(state, {
+              trackerToolCalledThisTurn: true,
+              trackerWriteThisTurn: true,
+              nudgedForTrackerThisTurn: true,
+              pendingNudge: autoNoteText,
+              autoScaffoldedTaskIdThisTurn: scaffoldTaskId,
+            });
             logger.info('v2: tracker auto-scaffold fired (engine floor)', {
               agentId, nonTrackerToolCalls: state.nonTrackerToolCalls, projectId: created.projectId,
             }, agentId);
@@ -5619,12 +6132,29 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // The engine just decided this in-flight work is project-worthy, so
             // the person who asked hears it is being tracked, once per turn.
             if (counterparty.kind === 'user' && !engineStartAckDeliveredThisTurn) {
+              // Flag set synchronously; wording composed fire-and-forget. This
+              // site fires MID-WORK (the engine just opened a task for in-flight
+              // work), so it uses the 'inprogress' flavor ("already working on
+              // it") rather than the fresh-start flavor.
               engineStartAckDeliveredThisTurn = true;
               // Title-free (see the other start-ack site): scaffoldName is a raw
               // truncated user request and reads as broken grammar if spliced in.
-              await deliverEngineUserAck(
-                `Quick note, I've got this in progress and I'll let you know when it's done.`,
-              );
+              void (async () => {
+                const ackText = await composeStartAck({ userMessage: lastUserMessageContent ?? '', agentId, phase: 'inprogress' });
+                await deliverEngineUserAck(ackText, 'engine_start_ack');
+              })();
+            }
+            // F12.5: same PM rename handoff the turn-start site uses, so this
+            // interim name also gets a proper umbrella name. Fire-and-forget.
+            if (scaffoldTaskId) {
+              void dispatchPMRenameHandoff({
+                callingAgentId: agentId,
+                projectId: created.projectId,
+                taskId: scaffoldTaskId,
+                projectTitle: scaffoldName,
+                taskTitle: scaffoldName,
+                originalPrompt: scaffoldPrompt,
+              });
             }
           } catch (err) {
             logger.warn('Tracker auto-scaffold failed (non-fatal, falling back to nudge)', {
@@ -5647,7 +6177,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             )
             : (
               `[System: you've made ${state.nonTrackerToolCalls} work tool calls this turn without an active tracker task assigned to you. ` +
-              `This is the failure shape we want to catch, multi-step work without a tracker entry drifts and stalls (the PM agent can't intervene because there's nothing to monitor) and your context is filling up which means compaction is coming and you'll lose source detail you've already read. ` +
+              `Multi-step work without a tracker entry drifts and stalls (the PM agent can't intervene because there's nothing to monitor) and your context is filling up which means compaction is coming and you'll lose source detail you've already read. ` +
               `STOP what you're doing right now and call tracker_create_project(title="<short name>", level=2, tasks=[…one task per discrete batch…]) describing the steps for what you've been doing and what's left. ` +
               `Then update each task as you complete it via tracker_update_status, and use scratchpad_set to keep a running outline that survives compaction. ` +
               `Resume the work after the project is opened.]`
@@ -6091,6 +6621,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
           WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?
             AND (source IS NULL OR source != 'a2a')
             AND content NOT LIKE '[{%'
+            -- Engine acks are excluded STRUCTURALLY by their origin_intent tag,
+            -- so the varied wording can no longer break this dedup. The three
+            -- prose NOT LIKEs below are kept ONLY to catch historical ack rows
+            -- written before the tag existed (origin_intent NULL); new acks rely
+            -- on the tag above.
+            AND origin_intent IS NULL
             AND content NOT LIKE 'On it.%'
             AND content NOT LIKE 'Quick note, I%'
             AND content NOT LIKE 'Done, I finished what you asked for.%'
@@ -6107,10 +6643,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // grammar. The task result (model-written) carries the specifics.
           const firstResult = justCompletedScaffold.find((t) => t.result && t.result.trim())?.result ?? null;
           const resultLine = firstResult ? ` ${firstResult.replace(/\s+/g, ' ').trim().slice(0, 200)}` : '';
-          const ackText = `Done, I finished what you asked for.${resultLine}`;
+          // Vary the "done" sentence (best-effort model, guaranteed pool
+          // fallback); the caller still appends the model-written result line.
+          // Awaited inline (turn teardown, not the model loop) because the
+          // resolver below routes lastAssistantTextForIM to the away channel.
+          const doneLine = await composeCompletionAck({ resultLine, agentId });
+          const ackText = `${doneLine}${resultLine}`;
           const ackId = uuidv4();
           db.prepare(
-            `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at) VALUES (?, ?, 'assistant', ?, ?, datetime('now'))`,
+            `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, origin_intent, created_at) VALUES (?, ?, 'assistant', ?, ?, 'engine_completion_ack', datetime('now'))`,
           ).run(ackId, agentId, ackText, turnNumber);
           broadcast({
             type: 'chat:message',
@@ -6804,6 +7345,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
       }, agentId);
     }
   } finally {
+    // F10: the wall-clock start-ack timer must never outlive its turn. The DB
+    // check inside the callback also guards a race where the timer fired just
+    // before this clear, but cancelling here is the primary discipline.
+    if (startAckTimer) { clearTimeout(startAckTimer); startAckTimer = null; }
     // C15: on EVERY exit path (clean reply, decline, MAX_TOOL_LOOPS, spinning/thrash
     // break, exception) tag THIS turn's own assistant/tool rows with the conversation's
     // conv_key. The clean reply/decline exits (~:2851/:5199) already stamp, but the

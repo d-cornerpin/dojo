@@ -529,6 +529,119 @@ for (const def of microsoftReadToolDefinitions) {
 
 const microsoftReadToolDefByName = new Map(microsoftReadToolDefinitions.map(t => [t.name, t]));
 
+// ════════════════════════════════════════
+// F4: shared per-account FETCH helpers (mirror google/tools-read.ts).
+//
+// The narrow `calendar_agenda_ms` / `outlook_search` cases and the merged
+// tools/unified-read.ts executors both call these — one fetch path, two
+// renderers. Structured items out; the narrow-case rendering downstream stays
+// byte-for-byte what it was. Import direction is one-way (unified-read -> here).
+// ════════════════════════════════════════
+
+/** Normalized calendar event, provider-agnostic once times are parsed to Dates. */
+export interface MsAgendaFetchItem {
+  title: string;
+  start: Date | null;
+  end: Date | null;
+  rawStart: string;
+  rawEnd: string;
+  allDay: boolean;
+  location?: string;
+  notes?: string;
+  id?: string;
+}
+
+/** Normalized email row (metadata only) for search rendering. */
+export interface MsMailFetchItem {
+  id: string;
+  from: string;
+  to: string;
+  subject: string;
+  dateDisplay: string;
+  dateSortMs: number;
+  snippet: string;
+  /** Raw Graph isRead flag (see outlook_search: its label expression is inverted; unified uses this correctly). */
+  read: boolean | undefined;
+}
+
+/** Fetch + normalize one account's events for a window. `accountId` is the row id (slot). */
+export async function fetchAgendaItemsForAccountMs(
+  accountId: string,
+  window: { startISO: string; endISO: string; anchored: boolean },
+  agentId: string,
+  agentName: string,
+  opts?: { calendarId?: string; days?: number },
+): Promise<{ ok: true; items: MsAgendaFetchItem[] } | { ok: false; error: string }> {
+  const calendarId = opts?.calendarId;
+  const result = await msGraphRead(
+    `${calendarPrefix(calendarId)}calendarView?startDateTime=${window.startISO}&endDateTime=${window.endISO}&$orderby=start/dateTime&$select=id,subject,start,end,location,bodyPreview,isAllDay`,
+    agentId, agentName, 'calendar_agenda_ms', { days: opts?.days, calendarId, anchored: window.anchored }, accountId,
+  );
+  if (!result.ok) return { ok: false, error: result.error ?? 'unknown error' };
+
+  const data = result.data as { value?: Array<{ id: string; subject: string; start: { dateTime: string; timeZone?: string }; end: { dateTime: string; timeZone?: string }; location?: { displayName?: string }; bodyPreview?: string; isAllDay?: boolean }> };
+  // Microsoft Graph returns start/end as naked ISO with no offset; the timeZone
+  // field on each side tells us how to interpret it (defaults to UTC). Parse
+  // here so both renderers get real Dates.
+  const { parseFlexibleTime } = await import('../services/format-time.js');
+  const items: MsAgendaFetchItem[] = (data?.value ?? []).map(e => {
+    const startTz = e.start.timeZone || 'UTC';
+    const endTz = e.end.timeZone || 'UTC';
+    return {
+      title: e.subject,
+      start: parseFlexibleTime(e.start.dateTime, startTz),
+      end: parseFlexibleTime(e.end.dateTime, endTz),
+      rawStart: e.start.dateTime,
+      rawEnd: e.end.dateTime,
+      allDay: e.isAllDay === true,
+      location: e.location?.displayName,
+      notes: e.bodyPreview,
+      id: e.id,
+    };
+  });
+  return { ok: true, items };
+}
+
+/** Search one account's Outlook mail. */
+export async function searchMailForAccountMs(
+  accountId: string,
+  query: string,
+  maxResults: number,
+  agentId: string,
+  agentName: string,
+): Promise<{ ok: true; items: MsMailFetchItem[] } | { ok: false; error: string }> {
+  const result = await msGraphRead(
+    `me/messages?$search="${encodeURIComponent(query)}"&$top=${maxResults}&$select=id,from,subject,receivedDateTime,bodyPreview,isRead`,
+    agentId, agentName, 'outlook_search', { query, maxResults }, accountId,
+  );
+  if (!result.ok) return { ok: false, error: result.error ?? 'unknown error' };
+
+  const data = result.data as { value?: Array<{ id: string; from: { emailAddress: { name: string; address: string } }; subject: string; receivedDateTime: string; bodyPreview: string; isRead: boolean }> };
+  const { formatTimeForAgent } = await import('../services/format-time.js');
+  const items: MsMailFetchItem[] = (data?.value ?? []).map(m => {
+    const fromName = m.from?.emailAddress?.name ?? '';
+    const fromAddr = m.from?.emailAddress?.address ?? '';
+    return {
+      id: m.id,
+      from: `${fromName} <${fromAddr}>`,
+      to: '',
+      subject: m.subject,
+      dateDisplay: formatTimeForAgent(m.receivedDateTime),
+      dateSortMs: new Date(m.receivedDateTime).getTime() || 0,
+      snippet: m.bodyPreview,
+      read: m.isRead,
+    };
+  });
+  return { ok: true, items };
+}
+
+// F4 data floor: the narrow read cases below no longer nudge with an advice
+// note (a weak model ignored it and answered from one surface). They now append
+// the ACTUAL other-surface data via otherCalendarsAgendaSection /
+// otherMailboxesCountSection (tools/unified-read.ts). The requirement the old
+// unifiedCoverageNote encoded — a narrow result must never read as the whole
+// picture — is preserved, strictly better, by carrying the data itself.
+
 export async function executeMicrosoftReadTool(
   name: string,
   args: Record<string, unknown>,
@@ -562,31 +675,32 @@ export async function executeMicrosoftReadTool(
       const query = args.query as string;
       const maxResults = (args.max_results as number) ?? 10;
       const verbose = args.verbose as boolean | undefined;
-      const result = await msGraphRead(
-        `me/messages?$search="${encodeURIComponent(query)}"&$top=${maxResults}&$select=id,from,subject,receivedDateTime,bodyPreview,isRead`,
-        agentId, agentName, 'outlook_search', { query, maxResults }, slot,
-      );
-      if (!result.ok) return `Error searching Outlook: ${result.error}`;
 
-      const data = result.data as { value?: Array<{ id: string; from: { emailAddress: { name: string; address: string } }; subject: string; receivedDateTime: string; bodyPreview: string; isRead: boolean }> };
-      if (!data?.value || data.value.length === 0) return 'No emails found matching that query.';
+      const fetched = await searchMailForAccountMs(slot, query, maxResults, agentId, agentName);
+      if (!fetched.ok) return `Error searching Outlook: ${fetched.error}`;
 
-      const { formatTimeForAgent } = await import('../services/format-time.js');
-      const emails = data.value.map(m => {
-        const unread = m.isRead ? ' [UNREAD]' : '';
-        const fromName = m.from?.emailAddress?.name ?? '';
-        const fromAddr = m.from?.emailAddress?.address ?? '';
-        const when = formatTimeForAgent(m.receivedDateTime);
+      // F4 data floor: the SAME query run against every OTHER connected mailbox,
+      // counts only, so a single-mailbox search never reads as the whole picture.
+      const { otherMailboxesCountSection } = await import('../tools/unified-read.js');
+      const others = await otherMailboxesCountSection({ provider: 'microsoft', accountId: slot }, query, 0, agentId, agentName);
+
+      if (fetched.items.length === 0) return 'No emails found matching that query.' + others;
+
+      const emails = fetched.items.map(m => {
+        // Tag UNREAD mail (pre-existing inversion labeled READ mail instead;
+        // fixed 2026-07-07, outlook_inbox and the merged email_search already
+        // had the correct sense).
+        const unread = m.read ? '' : ' [UNREAD]';
         if (verbose) {
-          return `${unread.trim()}ID: ${m.id}\nFrom: ${fromName} <${fromAddr}>\nSubject: ${m.subject}\nDate: ${when}\nPreview: ${m.bodyPreview}`;
+          return `${unread.trim()}ID: ${m.id}\nFrom: ${m.from}\nSubject: ${m.subject}\nDate: ${m.dateDisplay}\nPreview: ${m.snippet}`;
         }
         // Compact: one line per email — drop preview body, keep date+sender+subject+unread.
-        return `-${unread} ${when} | ${fromName} <${fromAddr}> — ${m.subject}\n  ID: ${m.id}`;
+        return `-${unread} ${m.dateDisplay} | ${m.from} — ${m.subject}\n  ID: ${m.id}`;
       });
 
-      const header = `Found ${data.value.length} email(s):\n\n${emails.join(verbose ? '\n\n---\n\n' : '\n')}`;
-      if (verbose) return header;
-      return `${header}\n\n${emails.length} compact result${emails.length === 1 ? '' : 's'} shown. For full body of one: outlook_read(message_id=<id>). For previews on every result: re-call outlook_search with verbose=true.`;
+      const header = `Found ${fetched.items.length} email(s):\n\n${emails.join(verbose ? '\n\n---\n\n' : '\n')}`;
+      if (verbose) return header + others;
+      return `${header}\n\n${emails.length} compact result${emails.length === 1 ? '' : 's'} shown. For full body of one: outlook_read(message_id=<id>). For previews on every result: re-call outlook_search with verbose=true.${others}`;
     }
 
     case 'outlook_read': {
@@ -662,37 +776,35 @@ export async function executeMicrosoftReadTool(
       const requestedTz = (args.timezone as string | undefined);
       const { computeCalendarWindow } = await import('../services/calendar-window.js');
       const window = computeCalendarWindow({ days, timezone: requestedTz, start_date: startDate });
-      const result = await msGraphRead(
-        `${calendarPrefix(calendarId)}calendarView?startDateTime=${window.startISO}&endDateTime=${window.endISO}&$orderby=start/dateTime&$select=id,subject,start,end,location,bodyPreview,isAllDay`,
-        agentId, agentName, 'calendar_agenda_ms', { days, calendarId, startDate, anchored: window.anchored }, slot,
-      );
-      if (!result.ok) return `Error fetching calendar: ${result.error}`;
 
-      const data = result.data as { value?: Array<{ id: string; subject: string; start: { dateTime: string; timeZone?: string }; end: { dateTime: string; timeZone?: string }; location?: { displayName?: string }; bodyPreview?: string; isAllDay?: boolean }> };
-      if (!data?.value || data.value.length === 0) return `No events in the next ${days} day(s).`;
+      const fetched = await fetchAgendaItemsForAccountMs(slot, window, agentId, agentName, { calendarId, days });
+      if (!fetched.ok) return `Error fetching calendar: ${fetched.error}`;
 
-      // Microsoft Graph returns start/end as naked ISO ("2026-05-20T19:00:00.0000000")
-      // with no timezone suffix. The timeZone field on each side tells us
-      // what zone to interpret it as (defaults to UTC). Without conversion
-      // the agent reads the raw string as its own local time and gets
-      // every event wrong. Route everything through formatTimeRangeForAgent.
-      const { parseFlexibleTime, formatTimeRangeForAgent } = await import('../services/format-time.js');
-      const events = data.value.map(e => {
-        const startTz = e.start.timeZone || 'UTC';
-        const endTz = e.end.timeZone || 'UTC';
-        const startDate = parseFlexibleTime(e.start.dateTime, startTz);
-        const endDate = parseFlexibleTime(e.end.dateTime, endTz);
-        const when = startDate && endDate
-          ? formatTimeRangeForAgent(startDate, endDate, { timezone: requestedTz, allDay: e.isAllDay === true })
-          : `${e.start.dateTime} to ${e.end.dateTime} (could not parse)`;
-        let line = `- ${e.subject}\n  ${when}`;
-        if (e.location?.displayName) line += `\n  Location: ${e.location.displayName}`;
-        if (e.bodyPreview) line += `\n  Notes: ${e.bodyPreview.slice(0, 200)}`;
+      // F4 data floor: the SAME window fetched from every OTHER connected
+      // calendar surface, compact + labeled, so a single-calendar agenda never
+      // reads as the whole day (advice notes were ignored by the floor model).
+      const tz = requestedTz ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const { otherCalendarsAgendaSection } = await import('../tools/unified-read.js');
+      const others = await otherCalendarsAgendaSection({ provider: 'microsoft', accountId: slot }, window, tz, days, agentId, agentName);
+
+      if (fetched.items.length === 0) return `No events in the next ${days} day(s).` + others;
+
+      // Times are already parsed to Dates by the helper (Graph gives naked ISO +
+      // a per-side timeZone). formatTimeRangeForAgent renders an unambiguous
+      // dual-format string so the agent doesn't misread the ISO as local time.
+      const { formatTimeRangeForAgent } = await import('../services/format-time.js');
+      const events = fetched.items.map(e => {
+        const when = e.start && e.end
+          ? formatTimeRangeForAgent(e.start, e.end, { timezone: requestedTz, allDay: e.allDay })
+          : `${e.rawStart} to ${e.rawEnd} (could not parse)`;
+        let line = `- ${e.title}\n  ${when}`;
+        if (e.location) line += `\n  Location: ${e.location}`;
+        if (e.notes) line += `\n  Notes: ${e.notes.slice(0, 200)}`;
         line += `\n  ID: ${e.id}`;
         return line;
       });
 
-      return `Calendar agenda (next ${days} day(s)):\n\n${events.join('\n\n')}`;
+      return `Calendar agenda (next ${days} day(s)):\n\n${events.join('\n\n')}` + others;
     }
 
     case 'calendar_search_ms': {

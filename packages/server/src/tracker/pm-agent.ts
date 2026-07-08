@@ -1562,6 +1562,64 @@ async function runPokeCheck(): Promise<void> {
 
     if (!pokeType) continue;
 
+    // F2 (ghost re-announce): before poking, silently close an engine-scaffolded
+    // one-shot task whose answer the user already has. The mid-turn auto-scaffold
+    // opens a task after 6 work calls of ANY kind (including pure reads); a read-only
+    // turn's closeout machinery never closed it, and 30 min later this chain would
+    // wake the assignee, which on the weak model re-delivers the whole old answer as
+    // a "ghost done". Requirement satisfied: the engine owns the lifecycle of the
+    // tasks IT opened. Narrow to engine-scaffolded work ONLY (project description
+    // carries ENGINE_AUTO_MARKER): the PM must keep chasing AGENT-created tasks,
+    // which is this chain's reason for existing.
+    try {
+      const scaffoldMeta = pokeDb.prepare(`
+        SELECT t.repeat_interval AS repeat_interval, t.created_at AS created_at, p.description AS proj_desc
+        FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
+        WHERE t.id = ?
+      `).get(task.id) as { repeat_interval: number | null; created_at: string | null; proj_desc: string | null } | undefined;
+      const { ENGINE_AUTO_MARKER } = await import('../agent/v2/classifiers/multistep.js');
+      if (
+        scaffoldMeta &&
+        scaffoldMeta.repeat_interval == null &&
+        scaffoldMeta.proj_desc &&
+        scaffoldMeta.proj_desc.startsWith(ENGINE_AUTO_MARKER)
+      ) {
+        // Adapted from the completion-ack dedup query in loop.ts: a substantive,
+        // model-authored user-visible reply after the task was created, excluding
+        // tool_use/tool_result JSON rows and engine ack rows. Engine acks are
+        // excluded STRUCTURALLY via their origin_intent tag (so the varied wording
+        // can't break this check); the three prose NOT LIKEs are kept ONLY for
+        // historical ack rows written before the tag existed (origin_intent NULL).
+        const afterTs = scaffoldMeta.created_at ?? '1970-01-01';
+        const deliveredReply = pokeDb.prepare(`
+          SELECT content FROM messages
+          WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?
+            AND (source IS NULL OR source != 'a2a')
+            AND content NOT LIKE '[{%'
+            AND origin_intent IS NULL
+            AND content NOT LIKE 'On it.%'
+            AND content NOT LIKE 'Quick note, I%'
+            AND content NOT LIKE 'Done, I finished what you asked for.%'
+            AND length(trim(content)) > 40
+          ORDER BY created_at DESC LIMIT 1
+        `).get(task.assignedTo, afterTs) as { content: string } | undefined;
+        if (deliveredReply) {
+          const { engineCloseDeliveredTask } = await import('./tools.js');
+          const closed = await engineCloseDeliveredTask(task.assignedTo, task.id, deliveredReply.content);
+          if (closed) {
+            logger.info('PM poke chain: engine-closed a scaffolded one-shot task whose answer the user already has; skipping poke', {
+              taskId: task.id, assignedTo: task.assignedTo,
+            });
+            continue;
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn('PM poke chain: scaffold-close pre-check failed (non-fatal, proceeding to poke)', {
+        taskId: task.id, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     const primaryId = getPrimaryAgentId();
     const pmId = getPMAgentId();
     const pmName = getPMAgentName();

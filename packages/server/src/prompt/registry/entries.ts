@@ -399,6 +399,20 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     render: (ctx) => (ctx.trackerNotif ? { role: 'user', content: ctx.trackerNotif } : null),
   },
   {
+    id: 'msg.delegation-hint',
+    target: 'messages',
+    slot: MessageSlot.DelegationHint,
+    precedenceTier: 7,
+    reason:
+      'F9: when the user EXPLICITLY routes work to the agent\'s own agents ("have ' +
+      'one of your agents research it and report back to me"), the floor model was ' +
+      'observed doing the work itself and never mentioning the choice. Advice-voice ' +
+      'engine hint (tier 7): delegate, or briefly say why you are handling it ' +
+      'directly, never silently override. Content is computed by the loop detector; ' +
+      'the entry renders + injects it.',
+    render: (ctx) => (ctx.delegationHint ? { role: 'user', content: ctx.delegationHint } : null),
+  },
+  {
     id: 'msg.technique-strong',
     target: 'messages',
     slot: MessageSlot.TechniqueStrong,

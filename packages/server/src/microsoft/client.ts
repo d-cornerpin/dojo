@@ -122,7 +122,16 @@ async function graphFetch(
       return { ok: true, data: null, apiEndpoint: url };
     }
 
-    const data = await resp.json();
+    // Content-aware parse. Most Graph endpoints return JSON, but raw content
+    // downloads (a file's /content) return the raw bytes. Blindly calling
+    // resp.json() on those throws "Unexpected token ... is not valid JSON".
+    // Parse JSON only when the server says it's JSON; hand everything else
+    // back as a string. MsGraphResult.data is unknown and callers branch on
+    // typeof data.
+    const responseContentType = resp.headers.get('content-type') ?? '';
+    const data = responseContentType.includes('application/json')
+      ? await resp.json()
+      : await resp.text();
     return { ok: true, data, apiEndpoint: url };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

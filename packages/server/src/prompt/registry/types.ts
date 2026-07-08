@@ -112,6 +112,7 @@ export enum MessageSlot {
   TechniqueWeak = 1300, // weak hint (legacy: appended to systemPrompt; moves here at R5)
   ContextGap = 1400, // "ask the user" hint
   TrackerNotif = 1500, // auto-tracker task notice
+  DelegationHint = 1550, // F9: explicit-delegation routing hint (advice voice)
   Attachments = 1600, // image/PDF content blocks
   PendingNudge = 1700, // steering nudge
   ToolNote = 1800, // no-tools capability note
@@ -191,6 +192,9 @@ export interface AssemblyContext {
   techniqueStrong?: string | null;
   /** Weak-match technique hint (raw system-prompt append). */
   techniqueWeakHint?: string | null;
+  /** F9: explicit-delegation routing hint (advice voice), set by the loop when
+   *  the user explicitly routes work to the agent's own agents. */
+  delegationHint?: string | null;
 }
 
 /**
