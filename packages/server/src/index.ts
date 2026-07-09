@@ -730,6 +730,24 @@ async function main(): Promise<void> {
     }
   }
 
+  // 4i-1. Start the workspace reconnect probe. A benched Google/Microsoft
+  // account (connected=0) has no automatic way back on its own: before this,
+  // a single bad token-refresh response permanently removed a healthy account
+  // from every sweep until a human re-authenticated in Settings (incident
+  // 2026-07-08). Every ~30 min this re-tests benched accounts that still hold a
+  // refresh token and un-benches any whose refresh token still works. Cheap:
+  // no network work unless something is actually benched.
+  {
+    try {
+      const { startWorkspaceReconnectProbe } = await import('./services/workspace-reconnect-probe.js');
+      startWorkspaceReconnectProbe();
+    } catch (err) {
+      logger.warn('Workspace reconnect probe failed to start', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // 4i-2. Start the daily update checker, refreshes a DB cache of the latest
   // release once a day (model-free). The agent reads it on demand via
   // check_for_update; the owner decides whether to check on a schedule.

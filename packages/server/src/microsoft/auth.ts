@@ -12,6 +12,7 @@ import crypto from 'node:crypto';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
 import { sendAlert } from '../services/imessage-bridge.js';
+import { classifyTokenRefreshFailure } from '../services/oauth-refresh-classify.js';
 import {
   countMicrosoftAccounts,
   deleteMicrosoftAccount,
@@ -278,6 +279,24 @@ export async function getValidAccessToken(slot: AccountSlot = 'agent'): Promise<
   return getValidAccessTokenForAccount(acc.id);
 }
 
+/**
+ * Bench an account: mark it disconnected and, ONLY on the transition from
+ * connected → benched, broadcast the disconnect and send the one critical
+ * "re-authenticate" alert. Gating on the prior connected state is what stops
+ * the recovery probe (which calls refresh on already-benched accounts) from
+ * re-alerting the owner every cycle: the alert fires exactly once, when a
+ * working account first goes down.
+ */
+function benchMicrosoftAccount(acc: MicrosoftAccount | null, accountId: string): void {
+  const wasConnected = acc?.connected ?? false;
+  updateMicrosoftAccount(accountId, { connected: false });
+  if (!wasConnected) return; // already benched — no re-broadcast, no re-alert
+  broadcast({ type: 'microsoft:disconnected', data: { slot: acc?.kind ?? 'agent' } });
+  const label = acc?.kind === 'user' ? "user's" : "agent's";
+  const who = acc?.email ? ` (${acc.email})` : '';
+  try { sendAlert(`Microsoft 365 ${label} account${who} connection expired. Re-authenticate in Settings > Microsoft.`, 'critical'); } catch { /* alert best effort */ }
+}
+
 async function refreshAccessTokenForAccount(accountId: string): Promise<string | null> {
   const acc = getMicrosoftAccount(accountId);
   const refreshToken = acc?.refreshToken ?? null;
@@ -299,13 +318,19 @@ async function refreshAccessTokenForAccount(accountId: string): Promise<string |
 
     if (!resp.ok) {
       const err = await resp.text();
-      logger.error('Token refresh failed', { accountId, status: resp.status, error: err });
-      if (resp.status === 400 || resp.status === 401) {
-        updateMicrosoftAccount(accountId, { connected: false });
-        broadcast({ type: 'microsoft:disconnected', data: { slot: acc?.kind ?? 'agent' } });
-        const label = acc?.kind === 'user' ? "user's" : "agent's";
-        const who = acc?.email ? ` (${acc.email})` : '';
-        try { sendAlert(`Microsoft 365 ${label} account${who} connection expired. Re-authenticate in Settings > Microsoft.`, 'critical'); } catch {}
+      const verdict = classifyTokenRefreshFailure(resp.status, err);
+      if (verdict === 'terminal') {
+        // Genuine dead-account signal (invalid_grant / interaction_required /
+        // consent_required / login_required): bench + one critical alert.
+        logger.error('Microsoft token refresh failed (terminal, benching account)', { accountId, status: resp.status, error: err });
+        benchMicrosoftAccount(acc, accountId);
+      } else {
+        // TRANSIENT (5xx, throttling, clock skew, an intermittent AADSTS server
+        // error, an unrecognized 400). Benching a healthy account on a passing
+        // hiccup is the one-way trap this fix removes: keep connected=1, log the
+        // parsed failure so the pattern is diagnosable, and let the caller's
+        // null-return handle just this call. The recovery probe re-tests later.
+        logger.warn('Microsoft token refresh failed (transient, leaving account connected)', { accountId, status: resp.status, error: err });
       }
       return null;
     }
@@ -319,9 +344,51 @@ async function refreshAccessTokenForAccount(accountId: string): Promise<string |
     updateMicrosoftAccount(accountId, patch);
     return data.access_token;
   } catch (err) {
-    logger.error('Token refresh error', { accountId, error: err instanceof Error ? err.message : String(err) });
+    // A network throw never produced an HTTP response, so it is transient by
+    // definition (classifyTokenRefreshFailure(0, '') === 'transient'). Never
+    // bench here: log and return null so the caller degrades for this call only.
+    logger.warn('Microsoft token refresh error (transient, leaving account connected)', { accountId, error: err instanceof Error ? err.message : String(err) });
     return null;
   }
+}
+
+// ── Recovery probe (the way back through the one-way door) ──
+
+/**
+ * Benched accounts that still hold a refresh token — the recovery probe's
+ * candidate set. An account with no refresh token can only be fixed by a
+ * Settings re-auth, so the probe leaves it alone.
+ */
+export function listReconnectableMicrosoftAccounts(): MicrosoftAccount[] {
+  return listMicrosoftAccounts().filter(a => !a.connected && !!a.refreshToken);
+}
+
+/**
+ * Recovery-probe step for ONE benched account. Force a real token refresh: if
+ * the refresh token still works, un-bench the account (connected=1 +
+ * lastVerifiedAt) and broadcast the reconnect so the dashboard clears its
+ * "disconnected" state. One plain info log, no owner ping — we already pinged
+ * when it went down, and a silent self-heal should not celebrate. If the
+ * refresh fails, refreshAccessTokenForAccount already handled it: a terminal
+ * failure re-benched silently (the account was already connected=0, so the
+ * transition-gated alert stayed quiet); a transient failure just leaves it for
+ * the next cycle.
+ */
+export async function attemptMicrosoftReconnect(accountId: string): Promise<'reconnected' | 'still-down'> {
+  const acc = getMicrosoftAccount(accountId);
+  if (!acc || acc.connected || !acc.refreshToken) return 'still-down';
+  const token = await refreshAccessTokenForAccount(accountId);
+  if (!token) return 'still-down';
+  updateMicrosoftAccount(accountId, { connected: true, lastVerifiedAt: new Date().toISOString() });
+  broadcast({ type: 'microsoft:connected', data: { email: acc.email ?? '', slot: acc.kind } });
+  logger.info('Microsoft account reconnected on recovery probe', { accountId, slot: acc.kind, email: acc.email ?? null });
+  // The bench sent a critical "re-authenticate in Settings" alert; a silent
+  // self-heal would leave the owner planning a trip to Settings for nothing.
+  // One low-key line closes that loop. Not celebration, cancellation.
+  try {
+    sendAlert(`Microsoft account${acc.email ? ` (${acc.email})` : ''} reconnected on its own, no action needed.`, 'notice');
+  } catch { /* alert best effort */ }
+  return 'reconnected';
 }
 
 // ── PKCE ──

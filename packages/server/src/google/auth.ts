@@ -32,6 +32,7 @@ import {
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { sendAlert } from '../services/imessage-bridge.js';
+import { classifyTokenRefreshFailure } from '../services/oauth-refresh-classify.js';
 
 const logger = createLogger('google-auth');
 
@@ -393,6 +394,24 @@ export async function getValidAccessToken(slot: AccountSlot = 'agent'): Promise<
   return getValidAccessTokenForAccount(acc.id);
 }
 
+/**
+ * Bench an account: mark it disconnected and, ONLY on the transition from
+ * connected → benched, broadcast the disconnect and send the one critical
+ * "re-authenticate" alert (v2.3.19 — OAuth expiry is a true blocker). Gating on
+ * the prior connected state is what stops the recovery probe (which calls
+ * refresh on already-benched accounts) from re-alerting the owner every cycle:
+ * the alert fires exactly once, when a working account first goes down.
+ */
+function benchGoogleAccount(acc: GoogleAccount | null, accountId: string): void {
+  const wasConnected = acc?.connected ?? false;
+  updateGoogleAccount(accountId, { connected: false });
+  if (!wasConnected) return; // already benched — no re-broadcast, no re-alert
+  broadcast({ type: 'google:disconnected', data: { slot: acc?.kind ?? 'agent' } });
+  const label = acc?.kind === 'user' ? "user's" : "agent's";
+  const who = acc?.email ? ` (${acc.email})` : '';
+  try { sendAlert(`Google Workspace ${label} account${who} connection expired. Re-authenticate in Settings > Google.`, 'critical'); } catch { /* alert best effort */ }
+}
+
 async function refreshAccessTokenForAccount(accountId: string): Promise<string | null> {
   const acc = getGoogleAccount(accountId);
   const refreshToken = acc?.refreshToken ?? null;
@@ -418,14 +437,19 @@ async function refreshAccessTokenForAccount(accountId: string): Promise<string |
 
     if (!resp.ok) {
       const err = await resp.text();
-      logger.error('Google token refresh failed', { accountId, status: resp.status, error: err });
-      if (resp.status === 400 || resp.status === 401) {
-        updateGoogleAccount(accountId, { connected: false });
-        broadcast({ type: 'google:disconnected', data: { slot: acc?.kind ?? 'agent' } });
-        // v2.3.19 — OAuth expiry is a true blocker. Critical.
-        const label = acc?.kind === 'user' ? "user's" : "agent's";
-        const who = acc?.email ? ` (${acc.email})` : '';
-        try { sendAlert(`Google Workspace ${label} account${who} connection expired. Re-authenticate in Settings > Google.`, 'critical'); } catch {}
+      const verdict = classifyTokenRefreshFailure(resp.status, err);
+      if (verdict === 'terminal') {
+        // Genuine dead-account signal (invalid_grant / interaction_required /
+        // consent_required / login_required): bench + one critical alert
+        // (v2.3.19 — OAuth expiry is a true blocker).
+        logger.error('Google token refresh failed (terminal, benching account)', { accountId, status: resp.status, error: err });
+        benchGoogleAccount(acc, accountId);
+      } else {
+        // TRANSIENT (5xx, throttling, clock skew, an unrecognized 400). Benching
+        // a healthy account on a passing hiccup is the one-way trap this fix
+        // removes: keep connected=1, log the parsed failure, let the caller's
+        // null-return handle just this call. The recovery probe re-tests later.
+        logger.warn('Google token refresh failed (transient, leaving account connected)', { accountId, status: resp.status, error: err });
       }
       return null;
     }
@@ -441,9 +465,50 @@ async function refreshAccessTokenForAccount(accountId: string): Promise<string |
     logger.debug('Google access token refreshed', { accountId });
     return data.access_token;
   } catch (err) {
-    logger.error('Google token refresh error', { accountId, error: err instanceof Error ? err.message : String(err) });
+    // A network throw never produced an HTTP response, so it is transient by
+    // definition. Never bench here: log and return null so the caller degrades
+    // for this call only; the recovery probe re-tests on its next cycle.
+    logger.warn('Google token refresh error (transient, leaving account connected)', { accountId, error: err instanceof Error ? err.message : String(err) });
     return null;
   }
+}
+
+// ── Recovery probe (the way back through the one-way door) ──
+
+/**
+ * Benched accounts that still hold a refresh token — the recovery probe's
+ * candidate set. An account with no refresh token can only be fixed by a
+ * Settings re-auth, so the probe leaves it alone.
+ */
+export function listReconnectableGoogleAccounts(): GoogleAccount[] {
+  return listGoogleAccounts().filter(a => !a.connected && !!a.refreshToken);
+}
+
+/**
+ * Recovery-probe step for ONE benched account. Force a real token refresh: if
+ * the refresh token still works, un-bench the account (connected=1 +
+ * lastVerifiedAt) and broadcast the reconnect so the dashboard clears its
+ * "disconnected" state. One plain info log, no owner ping — we already pinged
+ * when it went down, and a silent self-heal should not celebrate. If the
+ * refresh fails, refreshAccessTokenForAccount already handled it: a terminal
+ * failure re-benched silently (the account was already connected=0, so the
+ * transition-gated alert stayed quiet); a transient failure just leaves it for
+ * the next cycle.
+ */
+export async function attemptGoogleReconnect(accountId: string): Promise<'reconnected' | 'still-down'> {
+  const acc = getGoogleAccount(accountId);
+  if (!acc || acc.connected || !acc.refreshToken) return 'still-down';
+  const token = await refreshAccessTokenForAccount(accountId);
+  if (!token) return 'still-down';
+  updateGoogleAccount(accountId, { connected: true, lastVerifiedAt: new Date().toISOString() });
+  broadcast({ type: 'google:connected', data: { email: acc.email ?? '', slot: acc.kind } });
+  logger.info('Google account reconnected on recovery probe', { accountId, slot: acc.kind, email: acc.email ?? null });
+  // Same loop-closing notice as the Microsoft twin: the bench told the owner to
+  // re-authenticate, so the self-heal must cancel that instruction.
+  try {
+    sendAlert(`Google account${acc.email ? ` (${acc.email})` : ''} reconnected on its own, no action needed.`, 'notice');
+  } catch { /* alert best effort */ }
+  return 'reconnected';
 }
 
 // ── OAuth Flow ──
