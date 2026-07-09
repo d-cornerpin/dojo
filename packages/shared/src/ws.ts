@@ -15,6 +15,21 @@ export interface AgentStatusEvent {
    * wordy mode is on. Absent on non-working statuses.
    */
   turnKind?: 'user' | 'a2a';
+  /**
+   * Whether this turn is serving a HUMAN conversation (dashboard / iMessage /
+   * voice), i.e. its turn conv_key is a real conversation and not a pure
+   * background a2a / engine (scheduler, PM poke, watcher) turn. Carried on
+   * working AND idle/terminal broadcasts so the composer's "a user request is
+   * unanswered" latch can survive a background turn's idle: on a busy box a
+   * dashboard send queues behind background work, and the background turn's idle
+   * used to wipe that latch before the queued user turn even started, killing the
+   * thinking dots + stop button (regression, v3.1.10-preflight.31). A background
+   * idle now carries userFacing:false and the client keeps the latch; only a
+   * user-facing turn's idle (userFacing:true) clears it. Absent on legacy / raw
+   * status broadcasts that predate this field, which keep the old clear-on-idle
+   * behavior.
+   */
+  userFacing?: boolean;
 }
 
 export interface ChatChunkEvent {

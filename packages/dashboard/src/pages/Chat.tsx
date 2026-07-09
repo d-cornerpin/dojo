@@ -1301,25 +1301,36 @@ export const Chat = ({ panel = null }: ChatProps) => {
     // thinking dots and the send→stop button swap need to react live
     // without requiring a page reload to pick up the backend state.
     const unsubStatus = subscribe('agent:status', (event: WsEvent) => {
-      const e = event as { agentId: string; status: string; turnKind?: 'user' | 'a2a' };
+      const e = event as { agentId: string; status: string; turnKind?: 'user' | 'a2a'; userFacing?: boolean };
       if (e.agentId !== agentIdRef.current) return;
       if (e.status === 'working') {
         setIsWorking(true);
         const kind = e.turnKind ?? 'user';
         setTurnKind(kind);
-        // A user-kind working status means the agent is on a USER-triggered turn.
-        // Latch it (the same flag handleSend sets) so the working UI (dots + stop)
-        // stays up for the WHOLE turn, even during an early phase that only ran
-        // tool activity (which renders nothing in regular mode) and even if the
-        // agent later dips into a2a coordination (which flips turnKind to 'a2a').
-        // handleSend covers dashboard sends; this covers externally-triggered user
-        // turns (iMessage / voice) where handleSend never ran, which otherwise
-        // showed no indicator or stop button in regular mode. Pure background a2a
-        // never sends a user-kind status, so it stays quiet.
-        if (kind === 'user') setAwaitingUserReply(true);
+        // A user-FACING working status means the agent is on a turn serving a human
+        // conversation (dashboard / iMessage / voice). Latch it (the same flag
+        // handleSend sets) so the working UI (dots + stop) stays up for the WHOLE
+        // turn, even during an early phase that only ran tool activity (which renders
+        // nothing in regular mode) and even if the agent later dips into a2a
+        // coordination (which flips turnKind to 'a2a'). handleSend covers dashboard
+        // sends; this covers externally-triggered user turns (iMessage / voice) where
+        // handleSend never ran. userFacing (not just turnKind==='user') is required so
+        // a BACKGROUND engine turn (scheduler / PM poke / watcher, also turnKind
+        // 'user' but userFacing:false) does NOT latch, which would otherwise leave the
+        // latch stuck on after background noise. Pure background a2a is turnKind 'a2a'
+        // and stays quiet regardless.
+        if (kind === 'user' && e.userFacing === true) setAwaitingUserReply(true);
       } else if (e.status === 'idle' || e.status === 'error') {
         setIsWorking(false);
-        setAwaitingUserReply(false); // request finished — stop forcing the working UI
+        // Clear the "a user request is unanswered" latch ONLY when the turn that
+        // just ended was user-facing. A pure background a2a / engine turn's idle
+        // (userFacing:false) must NOT wipe the latch a still-unanswered dashboard
+        // send set: on a busy box the send queues behind the background turn, and
+        // the background idle used to clear the latch before the queued user turn
+        // even started, killing the dots + stop button (the busy-box race). A legacy
+        // / raw status with no userFacing field keeps the old clear-on-idle behavior
+        // (undefined !== false) so unrelated idle broadcasts still resolve the UI.
+        if (e.userFacing !== false) setAwaitingUserReply(false);
         reconcileStreamingBubbles();
       }
     });

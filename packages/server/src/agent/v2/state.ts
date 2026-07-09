@@ -386,6 +386,16 @@ export interface AgentTurnState {
    */
   nudgedForOwedInterruptThisTurn: boolean;
   /**
+   * Promise floor fire-once guard. The last member of the fall-asleep family: a
+   * user turn whose ENTIRE deliverable is a forward promise to start ("On it. Let
+   * me pull up all your calendars.") with no tool call and nothing actually done.
+   * When the natural turn-end path detects that shape on a negligible-work turn,
+   * it steers the model ONCE to do the work now and sets this flag; a second
+   * promise ending after the steer logs a tripwire and lets the turn end rather
+   * than spin the loop.
+   */
+  nudgedForPromiseFloorThisTurn: boolean;
+  /**
    * Set true at preflight when there is an unacknowledged compaction
    * recall nudge in the message log (i.e. compaction fired and the
    * agent has not yet called recall_recent_thread since). Used by the
@@ -531,6 +541,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     nudgedForGoingIdleWithInProgressThisTurn: false,
     autoScaffoldedTaskIdThisTurn: null,
     nudgedForOwedInterruptThisTurn: false,
+    nudgedForPromiseFloorThisTurn: false,
     awaitingPostCompactRecall: false,
     nudgedForPostCompactRecall: false,
     taskClosedWithTextThisTurn: false,

@@ -113,7 +113,7 @@ import {
 } from './classifiers/hoarding.js';
 // ackInjector intentionally NOT imported, engine ack disabled per invariant
 // review (see "Engine-injected ack, DISABLED" comment below).
-import { composeStartAck, composeCompletionAck, extractDeliverableLinks, condenseResultProse } from './ack-copy.js';
+import { composeStartAck, composeCompletionAck, extractDeliverableLinks, condenseResultProse, isForwardPromiseReply } from './ack-copy.js';
 import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, TOOL_AND_OUTPUT_RESERVE } from '../../memory/compaction.js';
 import { estimateTokens } from '../../memory/store.js';
@@ -785,7 +785,7 @@ function startStatusHeartbeat(agentId: string): void {
       // UI (thinking dots + stop button) on the next tick, clobbering the 'a2a'
       // turnKind that the turn-start broadcast set, so inter-agent turns flashed
       // the working UI back into the user's chat every heartbeat interval.
-      broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: currentTurnKind.get(agentId) ?? 'user' });
+      broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: currentTurnKind.get(agentId) ?? 'user', userFacing: typeof currentTurnConvKey.get(agentId) === 'string' });
     } catch {
       /* best effort */
     }
@@ -804,6 +804,15 @@ function stopStatusHeartbeat(agentId: string): void {
 export function setAgentStatus(agentId: string, status: string): void {
   try {
     const db = getDb();
+    // Capture the turn's human-conversation binding BEFORE the idle boundary below
+    // deletes it. currentTurnConvKey is a non-null conv_key on a genuine human turn
+    // (dashboard / iMessage / voice) and null on a pure background a2a / engine
+    // turn. Threaded onto the broadcast as `userFacing` so the composer can tell an
+    // "idle after a user turn" from an "idle after background noise" without
+    // guessing: on a busy box a queued dashboard send must keep its working-UI latch
+    // across a background turn's idle (see AgentStatusEvent.userFacing).
+    const turnConvKeyAtStatus = currentTurnConvKey.get(agentId); // string | null | undefined
+    const userFacingTurn = typeof turnConvKeyAtStatus === 'string' && turnConvKeyAtStatus.length > 0;
     // FA-A2: clear the diagnostic ONLY on a clean turn end ('idle'), not on the
     // 'working' transition. A turn that errors and retries goes working → error →
     // working; clearing last_error on 'working' wiped the diagnostic on every
@@ -824,7 +833,18 @@ export function setAgentStatus(agentId: string, status: string): void {
     // A2A turns (unless wordy mode). Defaults to 'user' until the counterparty
     // is resolved early in the turn.
     const turnKind = status === 'working' ? (currentTurnKind.get(agentId) ?? 'user') : undefined;
-    broadcast({ type: 'agent:status', agentId, status, ...(turnKind ? { turnKind } : {}) });
+    // userFacing rides on EVERY status this seam emits (working AND idle/terminal),
+    // captured above before the idle delete. `undefined` (no turn resolved yet, e.g.
+    // the pre-classification 'working' at turn start) is omitted so the client keeps
+    // its safe default there; the authoritative value lands on the post-resolution
+    // working re-broadcast and on the terminal broadcast.
+    broadcast({
+      type: 'agent:status',
+      agentId,
+      status,
+      ...(turnKind ? { turnKind } : {}),
+      ...(turnConvKeyAtStatus !== undefined ? { userFacing: userFacingTurn } : {}),
+    });
   } catch (err) {
     logger.warn('Failed to update agent status', {
       agentId,
@@ -1284,7 +1304,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // count for the turn that produced them (a later poked turn keeps the
   // prose-evidence path). Cleared again on idle at the boundary above.
   clearTurnReceipts(agentId);
-  broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: isA2ATurn ? 'a2a' : 'user' });
+  broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: isA2ATurn ? 'a2a' : 'user', userFacing: !!chosenConvKey });
 
   // Enforcer arms ONLY on A2A turns AND only for reply-needed intents. On a user
   // turn a pending/lingering A2A must not force a send_to_agent into the user-facing
@@ -2441,7 +2461,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       const preModelInterAgent = isA2ATurn || counterparty.kind === 'agent' || (mostRecentIsA2A && !hasUnansweredUser);
       if (preModelInterAgent && currentTurnKind.get(agentId) !== 'a2a') {
         currentTurnKind.set(agentId, 'a2a');
-        broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: 'a2a' });
+        broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: 'a2a', userFacing: !!chosenConvKey });
       }
       const ctx = await assembleContext(agentId, contextModelId, sharedTurnContext);
       lastAssembledAtIso = new Date().toISOString(); // F9: see claimAssembledSiblings
@@ -3574,7 +3594,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // point precedes the model call); the heartbeat re-broadcasts the same map.
       if (interAgentTurn && currentTurnKind.get(agentId) !== 'a2a') {
         currentTurnKind.set(agentId, 'a2a');
-        broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: 'a2a' });
+        broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: 'a2a', userFacing: !!chosenConvKey });
       }
       // [DIAGNOSTIC] phantom-waiting-user: an A2A poke that should be a background turn
       // is being flipped to a user turn by a stale waiting conversation. Log which
@@ -4856,6 +4876,91 @@ export async function runV2Turn(agentId: string): Promise<void> {
               agentId, turnNumber, owedCount: owed.length, convKey: chosenConvKey,
             }, agentId);
             continue; // exactly one more round for the model to answer the owed ask
+          }
+        }
+
+        // ── Promise floor: a turn whose entire deliverable is a promise to start ──
+        // The last member of the fall-asleep family. Observed live 2026-07-08: the
+        // owner asked for a calendars-to-markdown job, the ack fired, one
+        // load_tool_docs round ran, then the model emitted TEXT ("On it. Let me pull
+        // up all your calendars.") with NO tool calls, and the loop took that promise
+        // as the turn's reply and ended clean. Every existing floor (task closeout,
+        // going-idle, completion ack) keys on tasks or deliveries; NONE catches a
+        // reply whose whole content is a promise to begin.
+        //
+        // Sequenced AFTER the F3 owed-interrupt block so that answering an owed
+        // mid-turn ask takes priority (F3 continues before we reach here). Guards
+        // mirror F3 (real user turn, non-empty reply, a human conv_key, and the same
+        // MAX_TOOL_LOOPS proximity skip so it can neither spin nor push past the cap)
+        // plus two more, deliberately conservative because the action is a re-prompt:
+        // (2) the reply must LOOK like a forward promise at its END
+        // (isForwardPromiseReply, unit-tested), and (3) the turn must have done
+        // NEGLIGIBLE work, no successful effectful-action tool result AND no task
+        // transitioned/closed this turn (same classifyTool === 'effectful-action'
+        // derivation the closeout machinery uses at countsAsTaskWork; retrieval /
+        // bookkeeping reads like load_tool_docs do NOT count, so the live case still
+        // qualifies). One-shot: if the model ends AGAIN with a promise after the
+        // steer, log the tripwire and let the turn end rather than spin.
+        if (
+          counterparty.kind === 'user' &&
+          !isEngineTurn &&
+          persistedContent && persistedContent.trim().length > 0 &&
+          state.loopCount < MAX_TOOL_LOOPS &&
+          chosenConvKey &&
+          chosenConvKey !== 'engine' &&
+          !chosenConvKey.startsWith('park:') &&
+          !chosenConvKey.startsWith('relayed:') &&
+          isForwardPromiseReply(persistedContent)
+        ) {
+          const didEffectfulWorkThisTurn = state.toolResults.some(
+            (tr) => !tr.isError && !!tr.name && classifyTool(tr.name) === 'effectful-action',
+          );
+          const transitionedATaskThisTurn = state.toolResults.some(
+            (tr) => !tr.isError && (
+              tr.name === 'tracker_update_status' ||
+              tr.name === 'tracker_complete_step' ||
+              tr.name === 'tracker_close_project'
+            ),
+          );
+          if (!didEffectfulWorkThisTurn && !transitionedATaskThisTurn) {
+            const quoted = persistedContent.replace(/\s+/g, ' ').trim().slice(0, 200);
+            if (state.nudgedForPromiseFloorThisTurn) {
+              // Steered once already this turn and the model STILL ended on a promise.
+              // Don't spin, let the turn end. This warn is the tripwire that a harder
+              // floor is needed if the weak model can't be talked past it.
+              logger.warn('promise floor: second promise ending, letting the turn end', {
+                agentId, turnNumber, convKey: chosenConvKey,
+              }, agentId);
+            } else {
+              const steer = (
+                `[System] Your reply to the user was a promise to start ('${quoted}') but the turn ` +
+                `was about to end with no work done. Do the work NOW with tool calls and deliver the ` +
+                `result. Do not narrate what you are about to do again.`
+              );
+              const steerId = uuidv4();
+              try {
+                // Model-visible engine channel, same pattern as the owed-interrupt
+                // re-prompt: an origin_kind='engine' row on the 'engine-steer' conv_key
+                // sentinel (never pickable as a pending event), PLUS pendingNudge so the
+                // steer reaches the model on the next iteration. The promise text row the
+                // user already saw is KEPT visible (never delete a user-visible row); the
+                // follow-through lands after it.
+                insertInterAgentEngineRow({
+                  id: steerId,
+                  agentId,
+                  content: steer,
+                  sourceAgentId: null,
+                  originIntent: 'promise_floor',
+                  convKey: 'engine-steer',
+                  turnNumber,
+                });
+              } catch { /* best effort */ }
+              state = advance(state, { nudgedForPromiseFloorThisTurn: true, pendingNudge: steer });
+              logger.info('v2 promise floor: reply was a forward promise with negligible work this turn; steering the model to do the work now', {
+                agentId, turnNumber, convKey: chosenConvKey,
+              }, agentId);
+              continue; // one more round to actually do the work and deliver
+            }
           }
         }
 
