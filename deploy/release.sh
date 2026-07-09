@@ -154,11 +154,16 @@ if [ "$PREFLIGHT" = "1" ]; then
 else
   VERSION="$BASE"
   TAG="v$VERSION"
-  # Stable must strictly increase over the installed stable version, UNLESS we
-  # are re-entering an interrupted release (FA-D3), where the bump is already
+  # Stable must strictly increase over the current version, UNLESS we are
+  # re-entering an interrupted release (FA-D3), where the bump is already
   # committed so CURRENT already equals VERSION and the tag sits at HEAD.
-  if ! tag_points_at_head "$TAG" \
-     && ! node -e "const a='$VERSION'.split('.').map(Number),b='$CURRENT'.replace(/-.*/,'').split('.').map(Number);for(let i=0;i<3;i++){if(a[i]>b[i])process.exit(0);if(a[i]<b[i])process.exit(1)}process.exit(1)"; then
+  # Uses rank_above (the engine-mirroring, prerelease-aware comparator) on
+  # purpose: when a promotion fast-forwards main over Preflight release
+  # commits, CURRENT is a pre-release string (e.g. 3.1.10-preflight.33) and
+  # the stable of the SAME base must rank ABOVE it, exactly as every box's
+  # updater resolves it. The old inline compare stripped the pre-release
+  # suffix and saw the two as equal, wrongly refusing the promotion cut.
+  if ! tag_points_at_head "$TAG" && ! rank_above "$VERSION" "$CURRENT"; then
     fail "New version $VERSION must be greater than current $CURRENT"
   fi
 fi
