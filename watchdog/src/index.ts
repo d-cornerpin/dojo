@@ -550,36 +550,23 @@ async function checkStalledAgents(): Promise<void> {
 
     db.close();
 
-    // Both feed the existing 'stalled_agents' alert path (shared cooldown + recovery),
-    // with a distinct message per cause.
-    const parts: string[] = [];
+    // LOG-ONLY by owner decision (2026-07-09): the watchdog's phone voice is
+    // reserved for the platform being down or a self-update failing. Agent-level
+    // supervision (stuck runs, unanswered backlog) is the platform's own job
+    // (Healer / engine floors), and the backlog query below is an approximation
+    // that has produced a false positive on a healthy box. Detection stays as
+    // log lines so the Healer and any log review can still see it; no iMessage.
     if (stalled.length > 0) {
       const names = stalled.map(a => a.name).join(', ');
       log('warn', `Stalled agents detected: ${names}`, { count: stalled.length });
-      parts.push(`${stalled.length} agent(s) stuck working with no progress for 30+ min: ${names}`);
     }
     if (backlog.length > 0) {
       const names = backlog.map(a => `${a.name} (${a.waiting} waiting, ${a.status})`).join(', ');
       log('warn', `Agents with unanswered human backlog: ${names}`, { count: backlog.length });
-      parts.push(`${backlog.length} agent(s) not working but with a person's message waiting 15+ min unanswered: ${names}`);
     }
-
-    if (parts.length > 0) {
-      if (shouldSendAlert('stalled_agents')) {
-        const imRecipient = getImessageRecipient();
-        if (imRecipient) {
-          await sendSmartAlert(imRecipient, `Watchdog: ${parts.join('. ')}. Will follow up when resolved.`);
-          recordAlert(parts.join('. '));
-        }
-      }
-    } else {
-      if (markAlertResolved('stalled_agents')) {
-        log('info', 'No more stalled agents or human backlog');
-        const imRecipient = getImessageRecipient();
-        if (imRecipient) {
-          sendIMessage(imRecipient, 'Watchdog: Stalled agents resolved, all agents are responding.');
-        }
-      }
+    if (stalled.length === 0 && backlog.length === 0 && markAlertResolved('stalled_agents')) {
+      // Clears any alert state left behind by a pre-2026-07-09 watchdog, silently.
+      log('info', 'No more stalled agents or human backlog');
     }
   } catch (err) {
     log('error', 'Failed to check stalled agents', {
@@ -683,11 +670,8 @@ async function checkProviders(): Promise<void> {
     if (reachable) {
       providerFailureCounts[p.id] = 0;
       if (markAlertResolved(alertKey)) {
+        // Clears alert state a pre-2026-07-09 watchdog may have left, silently.
         log('info', 'Provider reachable again', { provider: p.name });
-        const imRecipient = getImessageRecipient();
-        if (imRecipient) {
-          sendIMessage(imRecipient, `Watchdog: model provider ${p.name} is reachable again.`);
-        }
       } else {
         log('debug', 'Provider reachable', { provider: p.name });
       }
@@ -699,15 +683,16 @@ async function checkProviders(): Promise<void> {
     providerFailureCounts[p.id] = count;
     log('warn', 'Provider unreachable', { provider: p.name, type: p.type, url: probe.url, consecutive: count });
 
-    if (count >= PROVIDER_FAILURE_THRESHOLD && shouldSendAlert(alertKey)) {
-      const imRecipient = getImessageRecipient();
-      if (imRecipient) {
-        const localNote = probe.local
-          ? ' This provider runs locally on this machine (it powers the router and any local models), so the machine or its local model server may need attention.'
-          : '';
-        await sendSmartAlert(imRecipient, `Watchdog: model provider ${p.name} has been unreachable for ${count} straight checks (about ${count * 2} min).${localNote} Will notify when it recovers.`);
-        recordAlert(`Provider down: ${p.name}`);
-      }
+    // LOG-ONLY by owner decision (2026-07-09), reversing the earlier alert-on-
+    // sustained-outage decision after real-world use: a locally hosted provider
+    // that is deliberately powered off (a laptop asleep for the night) flaps
+    // against this probe (the network can answer for a sleeping machine), which
+    // turned this into recurring midnight texts about a non-problem. Provider
+    // reachability stays as log lines for the Healer and log review; the
+    // watchdog's phone voice is reserved for platform-down and update failures.
+    if (count === PROVIDER_FAILURE_THRESHOLD) {
+      log('warn', 'Provider has reached the sustained-unreachable threshold (log-only, no owner text)', {
+        provider: p.name, consecutive: count });
     }
   }
 }
