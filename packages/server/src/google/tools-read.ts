@@ -449,10 +449,17 @@ export async function executeGoogleReadTool(
   const schemaErr = validateAgainstSchema(canonicalName, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
   if (schemaErr) return schemaErr;
 
-  const { resolveGoogleAccountForTool } = await import('./accounts.js');
-  const resolved = resolveGoogleAccountForTool(kind, args.account as string | undefined);
+  // READ resolver (Issue 2, 2026-07-08): a narrow read on a multi-account slot
+  // defaults to the primary connected account instead of bouncing with an
+  // ask-which-account error (that stays on the WRITE side, deliberately). When the
+  // slot has >1 connected account, `labelAccount` is set so the result names the
+  // account it read (self-describing header), and the F4 "also checked" block
+  // surfaces the other accounts.
+  const { resolveGoogleAccountForRead } = await import('./accounts.js');
+  const resolved = resolveGoogleAccountForRead(kind, args.account as string | undefined);
   if ('error' in resolved) return `Error: ${resolved.error}`;
   const slot = resolved.account.id;
+  const acctLabel = resolved.labelAccount ? (resolved.account.email ?? slot) : null;
 
   switch (canonicalName) {
     case 'gmail_search': {
@@ -468,7 +475,8 @@ export async function executeGoogleReadTool(
       const { otherMailboxesCountSection } = await import('../tools/unified-read.js');
       const others = await otherMailboxesCountSection({ provider: 'google', accountId: slot }, query, 0, agentId, agentName);
 
-      if (fetched.total === 0) return 'No emails found matching that query.' + others;
+      const inAcct = acctLabel ? ` in ${acctLabel}` : '';
+      if (fetched.total === 0) return `No emails found matching that query${inAcct}.` + others;
 
       const details: string[] = fetched.items.map(it => {
         if (verbose) {
@@ -479,8 +487,8 @@ export async function executeGoogleReadTool(
         return `- ${it.dateDisplay} | ${it.from} — ${it.subject}\n  ID: ${it.id} | ${shortSnippet}`;
       });
 
-      if (details.length === 0) return `Found ${fetched.total} email(s) but could not fetch details.` + others;
-      const header = `Found ${fetched.total} email(s):\n\n${details.join(verbose ? '\n---\n' : '\n')}`;
+      if (details.length === 0) return `Found ${fetched.total} email(s)${inAcct} but could not fetch details.` + others;
+      const header = `Found ${fetched.total} email(s)${inAcct}:\n\n${details.join(verbose ? '\n---\n' : '\n')}`;
       if (verbose) return header + others;
       return `${header}\n\n${details.length} compact result${details.length === 1 ? '' : 's'} shown. For full body of one: gmail_read(message_id=<id>). For To/CC + full snippet on every result: re-call gmail_search with verbose=true.${others}`;
     }
@@ -602,7 +610,7 @@ export async function executeGoogleReadTool(
           details.push(`${unread}ID: ${msg.id} | From: ${from} | Subject: ${subject} | Date: ${fmtEmailDate(date)}`);
         }
       }
-      return `Inbox (${data.messages.length} messages):\n\n${details.join('\n')}`;
+      return `Inbox${acctLabel ? ` for ${acctLabel}` : ''} (${data.messages.length} messages):\n\n${details.join('\n')}`;
     }
 
     case 'calendar_agenda': {
@@ -626,7 +634,7 @@ export async function executeGoogleReadTool(
       const { otherCalendarsAgendaSection } = await import('../tools/unified-read.js');
       const others = await otherCalendarsAgendaSection({ provider: 'google', accountId: slot }, window, tz, days, agentId, agentName);
 
-      if (fetched.items.length === 0) return `No events in the next ${days} day(s).` + others;
+      if (fetched.items.length === 0) return `No events in the next ${days} day(s)${acctLabel ? ` for ${acctLabel}` : ''}.` + others;
 
       // Google returns dateTime with an embedded offset (good) OR date for
       // all-day events. Either way, formatTimeRangeForAgent gives the
@@ -642,7 +650,10 @@ export async function executeGoogleReadTool(
         if (e.notes) line += `\n  Notes: ${e.notes.slice(0, 200)}`;
         return line;
       });
-      return `Calendar agenda (next ${days} day(s)):\n\n${events.join('\n\n')}` + others;
+      const agendaHeader = acctLabel
+        ? `Calendar agenda for ${acctLabel} (next ${days} day(s)):`
+        : `Calendar agenda (next ${days} day(s)):`;
+      return `${agendaHeader}\n\n${events.join('\n\n')}` + others;
     }
 
     case 'calendar_search': {
@@ -665,7 +676,7 @@ export async function executeGoogleReadTool(
       if (!result.ok) return `Error searching calendar: ${result.error}`;
 
       const data = result.data as { items?: Array<{ summary: string; start: { dateTime?: string; date?: string }; id: string }> };
-      if (!data?.items || data.items.length === 0) return `No events matching "${searchQuery}" in the next ${daysAhead} days.`;
+      if (!data?.items || data.items.length === 0) return `No events matching "${searchQuery}"${acctLabel ? ` in ${acctLabel}` : ''} in the next ${daysAhead} days.`;
 
       const requestedTz = args.timezone as string | undefined;
       const { parseFlexibleTime, formatTimeForAgent } = await import('../services/format-time.js');
@@ -678,7 +689,7 @@ export async function executeGoogleReadTool(
           : `${raw} (could not parse)`;
         return `- ${e.summary}\n  ${when}\n  [ID: ${e.id}]`;
       });
-      return `Found ${data.items.length} event(s) matching "${searchQuery}":\n\n${events.join('\n')}`;
+      return `Found ${data.items.length} event(s) matching "${searchQuery}"${acctLabel ? ` in ${acctLabel}` : ''}:\n\n${events.join('\n')}`;
     }
 
     case 'calendar_list': {
@@ -693,7 +704,7 @@ export async function executeGoogleReadTool(
         const desc = c.description ? `\n  ${c.description.slice(0, 120)}` : '';
         return `- ${name} [${tags}]\n  ID: ${c.id}${desc}`;
       });
-      return `${data.items.length} calendar(s):\n\n${lines.join('\n')}`;
+      return `${data.items.length} calendar(s)${acctLabel ? ` on ${acctLabel}` : ''}:\n\n${lines.join('\n')}`;
     }
 
     case 'drive_list': {
@@ -720,7 +731,7 @@ export async function executeGoogleReadTool(
       if (!result.ok) return `Error listing Drive files: ${result.error}`;
 
       const data = result.data as { files?: Array<{ id: string; name: string; mimeType: string; modifiedTime: string; size?: string }> };
-      if (!data?.files || data.files.length === 0) return 'No files found.';
+      if (!data?.files || data.files.length === 0) return `No files found${acctLabel ? ` in ${acctLabel}` : ''}.`;
 
       const files = data.files.map(f => {
         const size = f.size ? ` (${Math.round(parseInt(f.size) / 1024)}KB)` : '';
@@ -739,7 +750,7 @@ export async function executeGoogleReadTool(
         return `- ${f.name}${size} [${shortType}] (${f.id}) — ${f.modifiedTime.slice(0, 10)}`;
       });
 
-      const header = `Found ${data.files.length} file(s):\n\n${files.join(verbose ? '\n\n' : '\n')}`;
+      const header = `Found ${data.files.length} file(s)${acctLabel ? ` in ${acctLabel}` : ''}:\n\n${files.join(verbose ? '\n\n' : '\n')}`;
       if (verbose) return header;
       return `${header}\n\n${files.length} compact result${files.length === 1 ? '' : 's'} shown. For file content: drive_read(file_id=<id>). For full mime types + timestamps on every result: re-call drive_list with verbose=true.`;
     }

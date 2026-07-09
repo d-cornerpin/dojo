@@ -256,3 +256,125 @@ describe('renderOtherMailboxesCount', () => {
     expect(out).not.toContain('[agent Gmail]');
   });
 });
+
+// ── F4 coverage floor (2026-07-08): checked-empty must be visible, and distinct
+// from both never-checked (silence) and could-not-check (failure). ──
+
+describe('renderOtherCalendarsSection — coverage floor', () => {
+  it('enumerates checked-empty surfaces even with no rows (was silent before)', () => {
+    const out = renderOtherCalendarsSection([], new Set(), { emptySurfaces: [ownerGoogle, agentMs] });
+    expect(out).toBe('Also checked, nothing in this window: [owner Google], [agent Microsoft]');
+  });
+
+  it('renders rows, then the checked-empty line, then failures — all three', () => {
+    const rows: OtherCalendarRow[] = [{ title: 'Sync', when: '9:00 AM', source: agentGoogle }];
+    const out = renderOtherCalendarsSection(rows, new Set(), {
+      emptySurfaces: [ownerGoogle],
+      failed: [{ label: 'agent Microsoft calendar (a@ms.com)', error: 'HTTP 503' }],
+    });
+    expect(out).toContain('Also on other connected calendars (not shown above):');
+    expect(out).toContain('- Sync, 9:00 AM [agent Google]');
+    expect(out).toContain('Also checked, nothing in this window: [owner Google]');
+    expect(out).toContain('could not check: agent Microsoft calendar (a@ms.com) (HTTP 503)');
+  });
+
+  it('keeps a FAILED surface distinguishable from a checked-EMPTY one', () => {
+    const emptyOut = renderOtherCalendarsSection([], new Set(), { emptySurfaces: [ownerGoogle] });
+    const failOut = renderOtherCalendarsSection([], new Set(), {
+      failed: [{ label: 'owner Google calendar', error: 'token expired' }],
+    });
+    expect(emptyOut).toContain('Also checked, nothing in this window: [owner Google]');
+    expect(emptyOut).not.toContain('could not check');
+    expect(failOut).toContain('could not check: owner Google calendar (token expired)');
+    expect(failOut).not.toContain('Also checked, nothing in this window');
+  });
+
+  it('all-empty: the checked list still renders so the sweep is visible', () => {
+    const out = renderOtherCalendarsSection([], new Set(), {
+      emptySurfaces: [agentGoogle, ownerGoogle, agentMs],
+    });
+    expect(out).not.toBe('');
+    expect(out).toContain('[agent Google]');
+    expect(out).toContain('[owner Google]');
+    expect(out).toContain('[agent Microsoft]');
+  });
+
+  it('nothing at all (no rows, no empty, no failures) is still honest silence', () => {
+    expect(renderOtherCalendarsSection([], new Set(), {})).toBe('');
+    expect(renderOtherCalendarsSection([], new Set())).toBe('');
+  });
+
+  it('disambiguates a checked-empty surface by email when its slot+provider has >1 account', () => {
+    const ambiguous = computeAmbiguousLabels([agentGoogle, agentGoogle2]);
+    const out = renderOtherCalendarsSection([], ambiguous, { emptySurfaces: [agentGoogle2] });
+    expect(out).toContain('Also checked, nothing in this window: [agent Google] (second@ex.com)');
+  });
+});
+
+describe('renderOtherMailboxesCount — coverage floor', () => {
+  it('lists checked-empty mailboxes on a "No matches in" line (was silent before)', () => {
+    const out = renderOtherMailboxesCount([], new Set(), { emptySurfaces: [agentGmail, ownerOutlook] });
+    expect(out).toBe('No matches in: [agent Gmail], [owner Outlook]');
+  });
+
+  it('combines matches, empties, and failures on distinct lines', () => {
+    const out = renderOtherMailboxesCount([{ source: agentGmail, count: 2 }], new Set(), {
+      emptySurfaces: [ownerOutlook],
+      failed: [{ label: 'agent Outlook (x@ms.com)', error: 'HTTP 500' }],
+    });
+    expect(out).toContain('Also matching in other connected mailboxes: 2 in [agent Gmail]');
+    expect(out).toContain('No matches in: [owner Outlook]');
+    expect(out).toContain('could not check: agent Outlook (x@ms.com) (HTTP 500)');
+  });
+
+  it('keeps a FAILED mailbox distinguishable from a checked-EMPTY one', () => {
+    const emptyOut = renderOtherMailboxesCount([], new Set(), { emptySurfaces: [agentGmail] });
+    const failOut = renderOtherMailboxesCount([], new Set(), { failed: [{ label: 'agent Gmail', error: 'quota' }] });
+    expect(emptyOut).toContain('No matches in: [agent Gmail]');
+    expect(emptyOut).not.toContain('could not check');
+    expect(failOut).toContain('could not check: agent Gmail (quota)');
+    expect(failOut).not.toContain('No matches in');
+  });
+
+  it('all-empty: the checked list still renders so the sweep is visible', () => {
+    const out = renderOtherMailboxesCount([], new Set(), { emptySurfaces: [agentGmail, ownerOutlook] });
+    expect(out).not.toBe('');
+  });
+
+  it('nothing at all is still honest silence', () => {
+    expect(renderOtherMailboxesCount([], new Set(), {})).toBe('');
+    expect(renderOtherMailboxesCount([], new Set())).toBe('');
+  });
+});
+
+describe('renderCalendarAgenda — empty-surface enumeration (merged view)', () => {
+  it('lists empty surfaces so the "across N connected calendars" count is verifiable', () => {
+    const out = renderCalendarAgenda([], new Set(), [], {
+      days: 1, accountCount: 2, emptySurfaces: [ownerGoogle, agentMs],
+    });
+    expect(out).toContain('across 2 connected calendars');
+    expect(out).toContain('No events on any connected calendar in this window.');
+    expect(out).toContain('Empty in this window: [owner Google], [agent Microsoft]');
+  });
+
+  it('lists only the EMPTY surfaces when some have events', () => {
+    const merged = dedupCalendarItems(mergeCalendarChronologically([cal('Standup', 100, agentGoogle, { when: '9am' })]));
+    const out = renderCalendarAgenda(merged, new Set(), [], {
+      days: 1, accountCount: 2, emptySurfaces: [ownerGoogle],
+    });
+    expect(out).toContain('- Standup');
+    expect(out).toContain('Empty in this window: [owner Google]');
+    expect(out).not.toContain('Empty in this window: [agent Google]');
+  });
+});
+
+describe('renderEmailSearch — empty-surface enumeration (merged view)', () => {
+  it('lists empty mailboxes so the "across N connected mailboxes" count is verifiable', () => {
+    const out = renderEmailSearch([], new Set(), [], {
+      query: 'invoice', accountCount: 2, emptySurfaces: [agentGmail, ownerOutlook],
+    });
+    expect(out).toContain('across 2 connected mailboxes');
+    expect(out).toContain('No matching email in any connected mailbox.');
+    expect(out).toContain('Empty in this window: [agent Gmail], [owner Outlook]');
+  });
+});

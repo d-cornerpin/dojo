@@ -167,7 +167,12 @@ export function renderCalendarAgenda(
   merged: MergedCalendarItem[],
   ambiguous: Set<string>,
   failures: AccountFailure[],
-  opts: { days: number; accountCount: number },
+  // `emptySurfaces` (F4 coverage floor, 2026-07-08): the connected calendars that
+  // were checked and held NOTHING in this window. Enumerated so the "across N
+  // connected calendars" claim is verifiable — a reader can see which of the N
+  // were swept and came back empty, instead of empty being indistinguishable
+  // from never-checked.
+  opts: { days: number; accountCount: number; emptySurfaces?: UnifiedSource[] },
 ): string {
   const timed = merged.filter(m => !m.allDay);
   const allDay = merged.filter(m => m.allDay);
@@ -188,6 +193,11 @@ export function renderCalendarAgenda(
     lines.push('');
     lines.push('No events on any connected calendar in this window.');
   }
+  const empty = opts.emptySurfaces ?? [];
+  if (empty.length > 0) {
+    lines.push('');
+    lines.push(`Empty in this window: ${empty.map(s => formatSourceLabel(s, ambiguous)).join(', ')}`);
+  }
   if (failures.length > 0) {
     lines.push('');
     lines.push(...renderFailures(failures));
@@ -199,7 +209,11 @@ export function renderEmailSearch(
   items: UnifiedMailItem[],
   ambiguous: Set<string>,
   failures: AccountFailure[],
-  opts: { query: string; accountCount: number },
+  // `emptySurfaces` (F4 coverage floor, 2026-07-08): the connected mailboxes that
+  // were searched and matched NOTHING. Enumerated so "across N connected
+  // mailboxes" is verifiable — the reader sees which of the N were swept clean
+  // rather than empty reading the same as never-checked.
+  opts: { query: string; accountCount: number; emptySurfaces?: UnifiedSource[] },
 ): string {
   const lines: string[] = [];
   lines.push(
@@ -218,6 +232,11 @@ export function renderEmailSearch(
   } else {
     lines.push('');
     lines.push('No matching email in any connected mailbox.');
+  }
+  const empty = opts.emptySurfaces ?? [];
+  if (empty.length > 0) {
+    lines.push('');
+    lines.push(`Empty in this window: ${empty.map(s => formatSourceLabel(s, ambiguous)).join(', ')}`);
   }
   if (failures.length > 0) {
     lines.push('');
@@ -255,21 +274,44 @@ export interface OtherCalendarRow {
 
 /**
  * "Also on other connected calendars" block appended to a NARROW agenda result
- * so a single-surface answer never reads as the whole day. Capped at `cap`
- * lines; when more exist, a pointer to the merged tool replaces the overflow.
- * '' for an empty list (silence is honest — nothing elsewhere). Pure.
+ * so a single-surface answer never reads as the whole day.
+ *
+ * Coverage floor (2026-07-08): honest SILENCE for an empty surface was the wrong
+ * call — the owner could not tell "checked, nothing there" from "never checked".
+ * So the block now ACCOUNTS for every OTHER connected calendar the fan-out
+ * touched:
+ *   • surfaces WITH events keep their data lines (capped at `cap`; on overflow a
+ *     pointer to the merged tool replaces the tail);
+ *   • surfaces checked and EMPTY are named on one compact "Also checked, nothing
+ *     in this window" line (the sweep is visible even when it found nothing);
+ *   • surfaces whose fetch FAILED are itemized separately as "could not check"
+ *     so a failure never masquerades as checked-empty.
+ * Returns '' only when there was genuinely nothing to report (no rows, no empty,
+ * no failures — i.e. no other surface at all). Pure.
  */
 export function renderOtherCalendarsSection(
   rows: OtherCalendarRow[],
   ambiguous: Set<string>,
-  cap = 6,
+  opts: { emptySurfaces?: UnifiedSource[]; failed?: AccountFailure[]; cap?: number } = {},
 ): string {
-  if (rows.length === 0) return '';
-  const shown = rows.slice(0, cap);
-  const lines = shown.map(r => `- ${r.title}, ${r.when} ${formatSourceLabel(r.source, ambiguous)}`);
-  let out = `Also on other connected calendars (not shown above):\n${lines.join('\n')}`;
-  if (rows.length > cap) out += `\n(call calendar_agenda for the fully merged view)`;
-  return out;
+  const cap = opts.cap ?? 6;
+  const empty = opts.emptySurfaces ?? [];
+  const failed = opts.failed ?? [];
+  const lines: string[] = [];
+  if (rows.length > 0) {
+    lines.push('Also on other connected calendars (not shown above):');
+    for (const r of rows.slice(0, cap)) {
+      lines.push(`- ${r.title}, ${r.when} ${formatSourceLabel(r.source, ambiguous)}`);
+    }
+    if (rows.length > cap) lines.push('(call calendar_agenda for the fully merged view)');
+  }
+  if (empty.length > 0) {
+    lines.push(`Also checked, nothing in this window: ${empty.map(s => formatSourceLabel(s, ambiguous)).join(', ')}`);
+  }
+  for (const f of failed) {
+    lines.push(`could not check: ${f.label} (${f.error})`);
+  }
+  return lines.join('\n');
 }
 
 export interface MailboxCount {
@@ -278,15 +320,37 @@ export interface MailboxCount {
 }
 
 /**
- * One-line "also matching elsewhere" count block for a NARROW mail search.
- * Zero-count surfaces are dropped; an all-zero list yields '' (honest silence).
- * Pure.
+ * "Also matching / checked elsewhere" block for a NARROW mail search.
+ *
+ * Coverage floor (2026-07-08): honest silence for an empty mailbox hid the sweep
+ * — the owner could not tell "checked, no matches" from "never checked". So every
+ * OTHER connected mailbox the fan-out queried is now accounted for:
+ *   • mailboxes WITH matches get a count on the "Also matching" line;
+ *   • mailboxes checked with NO match are named on a "No matches in" line;
+ *   • a mailbox whose query FAILED is itemized as "could not check" so a failure
+ *     is never mistaken for checked-empty.
+ * Returns '' only when there was no other mailbox to report at all. Pure.
  */
-export function renderOtherMailboxesCount(counts: MailboxCount[], ambiguous: Set<string>): string {
+export function renderOtherMailboxesCount(
+  counts: MailboxCount[],
+  ambiguous: Set<string>,
+  opts: { emptySurfaces?: UnifiedSource[]; failed?: AccountFailure[] } = {},
+): string {
+  const empty = opts.emptySurfaces ?? [];
+  const failed = opts.failed ?? [];
   const nonzero = counts.filter(c => c.count > 0);
-  if (nonzero.length === 0) return '';
-  const parts = nonzero.map(c => `${c.count} in ${formatSourceLabel(c.source, ambiguous)}`);
-  return `Also matching in other connected mailboxes: ${parts.join(', ')}. Call email_search to see them together.`;
+  const lines: string[] = [];
+  if (nonzero.length > 0) {
+    const parts = nonzero.map(c => `${c.count} in ${formatSourceLabel(c.source, ambiguous)}`);
+    lines.push(`Also matching in other connected mailboxes: ${parts.join(', ')}. Call email_search to see them together.`);
+  }
+  if (empty.length > 0) {
+    lines.push(`No matches in: ${empty.map(s => formatSourceLabel(s, ambiguous)).join(', ')}`);
+  }
+  for (const f of failed) {
+    lines.push(`could not check: ${f.label} (${f.error})`);
+  }
+  return lines.join('\n');
 }
 
 // ── Account enumeration (runtime; touches the DB via dynamic import) ──
@@ -382,45 +446,57 @@ export async function unifiedCalendarAgenda(
   const { formatTimeRangeForAgent } = await import('../services/format-time.js');
 
   const failures: AccountFailure[] = [];
+  const emptySurfaces: UnifiedSource[] = [];
   const collected: UnifiedCalendarItem[] = [];
 
-  await Promise.all(
+  // Fetch in parallel but CLASSIFY in a deterministic second pass (account
+  // enumeration order), so the empty-surface enumeration below is stable rather
+  // than in fetch-completion order.
+  const results = await Promise.all(
     accounts.map(async (acc) => {
       try {
         const res =
           acc.provider === 'google'
             ? await fetchAgendaItemsForAccount(acc.accountId, window, tz, agentId, agentName, { days })
             : await fetchAgendaItemsForAccountMs(acc.accountId, window, agentId, agentName, { days });
-        if (!res.ok) {
-          failures.push({ label: acc.label, error: res.error });
-          return;
-        }
-        for (const it of res.items) {
-          const when =
-            it.start && it.end
-              ? formatTimeRangeForAgent(it.start, it.end, { timezone: tz, allDay: it.allDay })
-              : `${it.rawStart} to ${it.rawEnd} (could not parse)`;
-          const startISO = it.start ? it.start.toISOString() : it.rawStart;
-          const sortKey = it.start ? it.start.getTime() : Number.MAX_SAFE_INTEGER;
-          collected.push({
-            title: it.title,
-            startISO,
-            sortKey,
-            allDay: it.allDay,
-            location: it.location,
-            when,
-            source: acc.source,
-          });
-        }
+        return { acc, res };
       } catch (err) {
-        failures.push({ label: acc.label, error: err instanceof Error ? err.message : String(err) });
+        return { acc, res: { ok: false as const, error: err instanceof Error ? err.message : String(err) } };
       }
     }),
   );
 
+  for (const { acc, res } of results) {
+    if (!res.ok) {
+      failures.push({ label: acc.label, error: res.error });
+      continue;
+    }
+    if (res.items.length === 0) {
+      emptySurfaces.push(acc.source); // checked, nothing in this window
+      continue;
+    }
+    for (const it of res.items) {
+      const when =
+        it.start && it.end
+          ? formatTimeRangeForAgent(it.start, it.end, { timezone: tz, allDay: it.allDay })
+          : `${it.rawStart} to ${it.rawEnd} (could not parse)`;
+      const startISO = it.start ? it.start.toISOString() : it.rawStart;
+      const sortKey = it.start ? it.start.getTime() : Number.MAX_SAFE_INTEGER;
+      collected.push({
+        title: it.title,
+        startISO,
+        sortKey,
+        allDay: it.allDay,
+        location: it.location,
+        when,
+        source: acc.source,
+      });
+    }
+  }
+
   const merged = dedupCalendarItems(mergeCalendarChronologically(collected));
   const ambiguous = computeAmbiguousLabels(accounts.map(a => a.source));
-  return renderCalendarAgenda(merged, ambiguous, failures, { days, accountCount: accounts.length });
+  return renderCalendarAgenda(merged, ambiguous, failures, { days, accountCount: accounts.length, emptySurfaces });
 }
 
 /**
@@ -447,59 +523,54 @@ export async function unifiedEmailSearch(
   const { searchMailForAccountMs } = await import('../microsoft/tools-read.js');
 
   const failures: AccountFailure[] = [];
+  const emptySurfaces: UnifiedSource[] = [];
   const collected: UnifiedMailItem[] = [];
 
-  await Promise.all(
+  // Fetch in parallel; CLASSIFY in a deterministic second pass (enumeration
+  // order) so the empty-surface enumeration is stable, not fetch-completion order.
+  const results = await Promise.all(
     accounts.map(async (acc) => {
       try {
         if (acc.provider === 'google') {
           // Gmail understands `newer_than:Nd` as a recency bound in the query.
           const gq = days > 0 ? `${query} newer_than:${days}d` : query;
           const res = await searchMailForAccount(acc.accountId, gq, limit, agentId, agentName);
-          if (!res.ok) {
-            failures.push({ label: acc.label, error: res.error });
-            return;
-          }
-          for (const it of res.items) {
-            collected.push({
-              id: it.id,
-              from: it.from,
-              subject: it.subject,
-              when: it.dateDisplay,
-              sortKey: it.dateSortMs,
-              snippet: it.snippet,
-              unread: it.read === false,
-              source: acc.source,
-            });
-          }
-        } else {
-          const res = await searchMailForAccountMs(acc.accountId, query, limit, agentId, agentName);
-          if (!res.ok) {
-            failures.push({ label: acc.label, error: res.error });
-            return;
-          }
-          for (const it of res.items) {
-            collected.push({
-              id: it.id,
-              from: it.from,
-              subject: it.subject,
-              when: it.dateDisplay,
-              sortKey: it.dateSortMs,
-              snippet: it.snippet,
-              unread: it.read === false,
-              source: acc.source,
-            });
-          }
+          return { acc, res: res.ok ? { ok: true as const, items: res.items } : res };
         }
+        const res = await searchMailForAccountMs(acc.accountId, query, limit, agentId, agentName);
+        return { acc, res };
       } catch (err) {
-        failures.push({ label: acc.label, error: err instanceof Error ? err.message : String(err) });
+        return { acc, res: { ok: false as const, error: err instanceof Error ? err.message : String(err) } };
       }
     }),
   );
 
+  for (const { acc, res } of results) {
+    if (!res.ok) {
+      failures.push({ label: acc.label, error: res.error });
+      continue;
+    }
+    if (res.items.length === 0) {
+      emptySurfaces.push(acc.source); // searched, matched nothing
+      continue;
+    }
+    for (const it of res.items) {
+      collected.push({
+        id: it.id,
+        from: it.from,
+        subject: it.subject,
+        when: it.dateDisplay,
+        sortKey: it.dateSortMs,
+        snippet: it.snippet,
+        unread: it.read === false,
+        source: acc.source,
+      });
+    }
+  }
+
   const merged = mergeMailByRecency(collected);
   const ambiguous = computeAmbiguousLabels(accounts.map(a => a.source));
-  return renderEmailSearch(merged, ambiguous, failures, { query, accountCount: accounts.length });
+  return renderEmailSearch(merged, ambiguous, failures, { query, accountCount: accounts.length, emptySurfaces });
 }
 
 // ── Narrow-tool DATA-floor orchestrators (impure; fan out over OTHER surfaces) ──
@@ -507,16 +578,23 @@ export async function unifiedEmailSearch(
 // Called by the NARROW agenda/mail cases in the provider files (via dynamic
 // import, keeping the static graph one-way). They reuse the SAME enumeration +
 // per-account fetch helpers the merged executors above use, excluding the one
-// account the narrow tool already read. Per-surface fetch errors are swallowed
-// here (the MERGED tool is where failures get itemized); a narrow answer must
-// never be sunk or delayed by another surface beyond the parallel fetch cost.
+// account the narrow tool already read. A narrow answer is never SUNK or delayed
+// by another surface (each fetch is parallel and its own failure is caught), but
+// per the coverage floor (2026-07-08) a per-surface failure is no longer silently
+// swallowed: it is reported as a distinct "could not check" line so it cannot
+// masquerade as checked-empty. The ambiguity set is computed over ALL surfaces
+// (including the one already read) so a slot+provider with two accounts still
+// disambiguates the OTHER one by email.
 
 /**
  * Compact "also on other calendars" block for a NARROW agenda read. `exclude` is
  * the account the narrow tool already rendered (by provider + row id); every
- * OTHER connected calendar is fetched for the SAME window in parallel. Returns
- * '' (leading newlines included only when non-empty) when nothing else holds
- * events or no other surface exists.
+ * OTHER connected calendar is fetched for the SAME window in parallel. Coverage
+ * floor: the returned block accounts for EVERY other connected calendar — ones
+ * with events (data lines), ones checked-and-empty (an enumerated line), and ones
+ * that failed to fetch (a "could not check" line). Returns '' only when there is
+ * no other connected calendar at all (leading newlines included only when
+ * non-empty).
  */
 export async function otherCalendarsAgendaSection(
   exclude: { provider: 'google' | 'microsoft'; accountId: string },
@@ -526,7 +604,8 @@ export async function otherCalendarsAgendaSection(
   agentId: string,
   agentName: string,
 ): Promise<string> {
-  const accounts = (await enumerateAccounts('calendar')).filter(
+  const all = await enumerateAccounts('calendar');
+  const accounts = all.filter(
     a => !(a.provider === exclude.provider && a.accountId === exclude.accountId),
   );
   if (accounts.length === 0) return '';
@@ -534,39 +613,56 @@ export async function otherCalendarsAgendaSection(
   const { fetchAgendaItemsForAccount } = await import('../google/tools-read.js');
   const { fetchAgendaItemsForAccountMs } = await import('../microsoft/tools-read.js');
 
-  const collected: Array<{ row: OtherCalendarRow; sortKey: number }> = [];
-  await Promise.all(
+  const results = await Promise.all(
     accounts.map(async (acc) => {
       try {
         const res =
           acc.provider === 'google'
             ? await fetchAgendaItemsForAccount(acc.accountId, window, tz, agentId, agentName, { days })
             : await fetchAgendaItemsForAccountMs(acc.accountId, window, agentId, agentName, { days });
-        if (!res.ok) return; // skip this surface silently (the merged tool itemizes errors)
-        for (const it of res.items) {
-          collected.push({
-            row: { title: it.title, when: compactEventTime(it.start, tz, it.allDay), source: acc.source },
-            sortKey: it.start ? it.start.getTime() : Number.MAX_SAFE_INTEGER,
-          });
-        }
-      } catch {
-        /* skip this surface silently */
+        return { acc, res };
+      } catch (err) {
+        return { acc, res: { ok: false as const, error: err instanceof Error ? err.message : String(err) } };
       }
     }),
   );
 
-  if (collected.length === 0) return '';
+  const collected: Array<{ row: OtherCalendarRow; sortKey: number }> = [];
+  const emptySurfaces: UnifiedSource[] = [];
+  const failed: AccountFailure[] = [];
+  for (const { acc, res } of results) {
+    if (!res.ok) {
+      failed.push({ label: acc.label, error: res.error });
+      continue;
+    }
+    if (res.items.length === 0) {
+      emptySurfaces.push(acc.source);
+      continue;
+    }
+    for (const it of res.items) {
+      collected.push({
+        row: { title: it.title, when: compactEventTime(it.start, tz, it.allDay), source: acc.source },
+        sortKey: it.start ? it.start.getTime() : Number.MAX_SAFE_INTEGER,
+      });
+    }
+  }
+
   collected.sort((a, b) => a.sortKey - b.sortKey);
-  const ambiguous = computeAmbiguousLabels(accounts.map(a => a.source));
-  const section = renderOtherCalendarsSection(collected.map(c => c.row), ambiguous);
+  // Ambiguity over ALL surfaces (including the one already read) so a two-account
+  // slot+provider still disambiguates the OTHER account by email.
+  const ambiguous = computeAmbiguousLabels(all.map(a => a.source));
+  const section = renderOtherCalendarsSection(collected.map(c => c.row), ambiguous, { emptySurfaces, failed });
   return section ? `\n\n${section}` : '';
 }
 
 /**
- * One-line "also matching in other mailboxes" count block for a NARROW mail
- * search. Runs the SAME query against every OTHER connected mailbox (small
- * per-mailbox cap), counts only. `days > 0` applies a Gmail recency bound; pass
- * 0 to mirror an unbounded narrow search.
+ * "Also matching / checked in other mailboxes" block for a NARROW mail search.
+ * Runs the SAME query against every OTHER connected mailbox (small per-mailbox
+ * cap). Coverage floor: accounts for EVERY other connected mailbox — ones with
+ * matches (a count), ones checked with none (an enumerated "No matches in" line),
+ * and ones that failed (a "could not check" line). `days > 0` applies a Gmail
+ * recency bound; pass 0 to mirror an unbounded narrow search. Returns '' only
+ * when there is no other connected mailbox at all.
  */
 export async function otherMailboxesCountSection(
   exclude: { provider: 'google' | 'microsoft'; accountId: string },
@@ -575,7 +671,8 @@ export async function otherMailboxesCountSection(
   agentId: string,
   agentName: string,
 ): Promise<string> {
-  const accounts = (await enumerateAccounts('mail')).filter(
+  const all = await enumerateAccounts('mail');
+  const accounts = all.filter(
     a => !(a.provider === exclude.provider && a.accountId === exclude.accountId),
   );
   if (accounts.length === 0) return '';
@@ -584,27 +681,38 @@ export async function otherMailboxesCountSection(
   const { searchMailForAccountMs } = await import('../microsoft/tools-read.js');
   const perMailboxLimit = 5;
 
-  const counts: MailboxCount[] = [];
-  await Promise.all(
+  const results = await Promise.all(
     accounts.map(async (acc) => {
       try {
         if (acc.provider === 'google') {
           const gq = days > 0 ? `${query} newer_than:${days}d` : query;
           const res = await searchMailForAccount(acc.accountId, gq, perMailboxLimit, agentId, agentName);
-          if (res.ok && res.total > 0) counts.push({ source: acc.source, count: res.total });
-        } else {
-          const res = await searchMailForAccountMs(acc.accountId, query, perMailboxLimit, agentId, agentName);
-          if (res.ok && res.items.length > 0) counts.push({ source: acc.source, count: res.items.length });
+          return { acc, count: res.ok ? res.total : null, error: res.ok ? null : res.error };
         }
-      } catch {
-        /* skip this surface silently */
+        const res = await searchMailForAccountMs(acc.accountId, query, perMailboxLimit, agentId, agentName);
+        return { acc, count: res.ok ? res.items.length : null, error: res.ok ? null : res.error };
+      } catch (err) {
+        return { acc, count: null, error: err instanceof Error ? err.message : String(err) };
       }
     }),
   );
 
-  if (counts.length === 0) return '';
-  const ambiguous = computeAmbiguousLabels(accounts.map(a => a.source));
-  const line = renderOtherMailboxesCount(counts, ambiguous);
+  const counts: MailboxCount[] = [];
+  const emptySurfaces: UnifiedSource[] = [];
+  const failed: AccountFailure[] = [];
+  for (const r of results) {
+    if (r.count === null) {
+      failed.push({ label: r.acc.label, error: r.error ?? 'unknown error' });
+      continue;
+    }
+    if (r.count > 0) counts.push({ source: r.acc.source, count: r.count });
+    else emptySurfaces.push(r.acc.source);
+  }
+
+  // Ambiguity over ALL surfaces (including the one already read) so a two-account
+  // slot+provider still disambiguates the OTHER account by email.
+  const ambiguous = computeAmbiguousLabels(all.map(a => a.source));
+  const line = renderOtherMailboxesCount(counts, ambiguous, { emptySurfaces, failed });
   return line ? `\n\n${line}` : '';
 }
 

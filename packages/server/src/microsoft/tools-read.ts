@@ -665,10 +665,18 @@ export async function executeMicrosoftReadTool(
   const schemaErr = validateAgainstSchema(canonicalName, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
   if (schemaErr) return schemaErr;
 
-  const { resolveMicrosoftAccountForTool } = await import('./accounts.js');
-  const resolved = resolveMicrosoftAccountForTool(kind, args.account as string | undefined);
+  // READ resolver (Issue 2, 2026-07-08): a narrow read on a multi-account slot
+  // defaults to the primary connected account instead of bouncing with an
+  // ask-which-account error (that stays on the WRITE side, deliberately). When the
+  // slot has >1 connected account, `labelAccount` is set so the result names the
+  // account it read (self-describing header), and the F4 "also checked" block
+  // surfaces the other accounts. This is the fix for the live divergence where a
+  // narrow MS calendar read returned the primary with an unlabeled header.
+  const { resolveMicrosoftAccountForRead } = await import('./accounts.js');
+  const resolved = resolveMicrosoftAccountForRead(kind, args.account as string | undefined);
   if ('error' in resolved) return `Error: ${resolved.error}`;
   const slot = resolved.account.id;
+  const acctLabel = resolved.labelAccount ? (resolved.account.email ?? slot) : null;
 
   switch (canonicalName) {
     case 'outlook_search': {
@@ -684,7 +692,8 @@ export async function executeMicrosoftReadTool(
       const { otherMailboxesCountSection } = await import('../tools/unified-read.js');
       const others = await otherMailboxesCountSection({ provider: 'microsoft', accountId: slot }, query, 0, agentId, agentName);
 
-      if (fetched.items.length === 0) return 'No emails found matching that query.' + others;
+      const inAcct = acctLabel ? ` in ${acctLabel}` : '';
+      if (fetched.items.length === 0) return `No emails found matching that query${inAcct}.` + others;
 
       const emails = fetched.items.map(m => {
         // Tag UNREAD mail (pre-existing inversion labeled READ mail instead;
@@ -698,7 +707,7 @@ export async function executeMicrosoftReadTool(
         return `-${unread} ${m.dateDisplay} | ${m.from} — ${m.subject}\n  ID: ${m.id}`;
       });
 
-      const header = `Found ${fetched.items.length} email(s):\n\n${emails.join(verbose ? '\n\n---\n\n' : '\n')}`;
+      const header = `Found ${fetched.items.length} email(s)${inAcct}:\n\n${emails.join(verbose ? '\n\n---\n\n' : '\n')}`;
       if (verbose) return header + others;
       return `${header}\n\n${emails.length} compact result${emails.length === 1 ? '' : 's'} shown. For full body of one: outlook_read(message_id=<id>). For previews on every result: re-call outlook_search with verbose=true.${others}`;
     }
@@ -766,7 +775,7 @@ export async function executeMicrosoftReadTool(
         return `${unread}ID: ${m.id} | From: ${m.from?.emailAddress?.name} <${m.from?.emailAddress?.address}> | Subject: ${m.subject} | Date: ${fmtTime2(m.receivedDateTime)}`;
       });
 
-      return `Inbox (${data.value.length} messages):\n\n${emails.join('\n')}`;
+      return `Inbox${acctLabel ? ` for ${acctLabel}` : ''} (${data.value.length} messages):\n\n${emails.join('\n')}`;
     }
 
     case 'calendar_agenda_ms': {
@@ -787,7 +796,7 @@ export async function executeMicrosoftReadTool(
       const { otherCalendarsAgendaSection } = await import('../tools/unified-read.js');
       const others = await otherCalendarsAgendaSection({ provider: 'microsoft', accountId: slot }, window, tz, days, agentId, agentName);
 
-      if (fetched.items.length === 0) return `No events in the next ${days} day(s).` + others;
+      if (fetched.items.length === 0) return `No events in the next ${days} day(s)${acctLabel ? ` for ${acctLabel}` : ''}.` + others;
 
       // Times are already parsed to Dates by the helper (Graph gives naked ISO +
       // a per-side timeZone). formatTimeRangeForAgent renders an unambiguous
@@ -804,7 +813,10 @@ export async function executeMicrosoftReadTool(
         return line;
       });
 
-      return `Calendar agenda (next ${days} day(s)):\n\n${events.join('\n\n')}` + others;
+      const agendaHeader = acctLabel
+        ? `Calendar agenda for ${acctLabel} (next ${days} day(s)):`
+        : `Calendar agenda (next ${days} day(s)):`;
+      return `${agendaHeader}\n\n${events.join('\n\n')}` + others;
     }
 
     case 'calendar_search_ms': {
@@ -822,7 +834,7 @@ export async function executeMicrosoftReadTool(
       if (!result.ok) return `Error searching calendar: ${result.error}`;
 
       const data = result.data as { value?: Array<{ id: string; subject: string; start: { dateTime: string; timeZone?: string }; end?: { dateTime: string; timeZone?: string }; isAllDay?: boolean }> };
-      if (!data?.value || data.value.length === 0) return `No events matching "${query}" in the next ${daysAhead} days.`;
+      if (!data?.value || data.value.length === 0) return `No events matching "${query}"${acctLabel ? ` in ${acctLabel}` : ''} in the next ${daysAhead} days.`;
 
       const { parseFlexibleTime, formatTimeForAgent } = await import('../services/format-time.js');
       const events = data.value.map(e => {
@@ -833,7 +845,7 @@ export async function executeMicrosoftReadTool(
           : `${e.start.dateTime} (could not parse)`;
         return `- ${e.subject}\n  ${when}\n  [ID: ${e.id}]`;
       });
-      return `Found ${data.value.length} event(s) matching "${query}":\n\n${events.join('\n')}`;
+      return `Found ${data.value.length} event(s) matching "${query}"${acctLabel ? ` in ${acctLabel}` : ''}:\n\n${events.join('\n')}`;
     }
 
     case 'calendar_list_ms': {
@@ -853,7 +865,7 @@ export async function executeMicrosoftReadTool(
         const ownerStr = c.owner?.name || c.owner?.address ? ` (owner: ${c.owner.name ?? c.owner.address})` : '';
         return `- ${c.name}${ownerStr} [${perms.join(', ') || 'read-only'}]\n  ID: ${c.id}`;
       });
-      return `${data.value.length} calendar(s):\n\n${lines.join('\n')}`;
+      return `${data.value.length} calendar(s)${acctLabel ? ` on ${acctLabel}` : ''}:\n\n${lines.join('\n')}`;
     }
 
     case 'calendar_share_invites_ms': {
@@ -890,7 +902,7 @@ export async function executeMicrosoftReadTool(
       if (!result.ok) return `Error listing OneDrive: ${result.error}`;
 
       const data = result.data as { value?: Array<{ id: string; name: string; size?: number; lastModifiedDateTime: string; file?: { mimeType: string }; folder?: { childCount: number }; webUrl?: string }> };
-      if (!data?.value || data.value.length === 0) return 'No files found.';
+      if (!data?.value || data.value.length === 0) return `No files found${acctLabel ? ` in ${acctLabel}` : ''}.`;
 
       const { formatTimeForAgent: fmtTime4 } = await import('../services/format-time.js');
       const files = data.value.map(f => {
@@ -913,7 +925,7 @@ export async function executeMicrosoftReadTool(
         return `- ${f.name}${size} [${shortType}] (${f.id}) — ${f.lastModifiedDateTime.slice(0, 10)}`;
       });
 
-      const header = `Found ${data.value.length} item(s):\n\n${files.join(verbose ? '\n\n' : '\n')}`;
+      const header = `Found ${data.value.length} item(s)${acctLabel ? ` in ${acctLabel}` : ''}:\n\n${files.join(verbose ? '\n\n' : '\n')}`;
       if (verbose) return header;
       return `${header}\n\n${files.length} compact result${files.length === 1 ? '' : 's'} shown. For file content: onedrive_read(file_id=<id>). For full mime types + URLs on every result: re-call onedrive_list with verbose=true.`;
     }

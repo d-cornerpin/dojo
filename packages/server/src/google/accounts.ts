@@ -155,6 +155,52 @@ export function resolveGoogleAccountForTool(
   return { error: `More than one ${kind} Google account is connected — say which with the \`account\` parameter. Available: ${emails}.` };
 }
 
+/** Read-side resolution of a slot's account. */
+export interface GoogleReadResolution {
+  account: GoogleAccount;
+  /** True when this slot has more than one CONNECTED account, so a narrow read
+   *  result should name the account it read (self-describing header). */
+  labelAccount: boolean;
+}
+
+/**
+ * READ-only account resolver. Diverges from resolveGoogleAccountForTool on ONE
+ * case, by owner decision (2026-07-08, correctness-floor): when a slot has more
+ * than one connected account and the caller named none, a READ must NOT bounce
+ * with an ask-which-account error (a wasted round trip for a pure lookup).
+ * Instead it defaults to the slot's PRIMARY (lowest-position) connected account
+ * and flags `labelAccount` so the caller labels the result with that account's
+ * address. Partial coverage is then honest (self-describing header) and the
+ * F4 coverage floor carries the rest (the other accounts show up in the
+ * "also checked" block).
+ *
+ * The WRITE side deliberately keeps the ambiguity error (resolveGoogleAccountForTool):
+ * ask-which-account before mutating the wrong mailbox/calendar is intentional and
+ * is the subject of a separate open owner decision. Do NOT fold the two.
+ */
+export function resolveGoogleAccountForRead(
+  kind: GoogleAccountKind,
+  email?: string | null,
+): GoogleReadResolution | { error: string } {
+  const connected = listGoogleAccounts(kind).filter(a => a.connected);
+  if (email) {
+    // Named account: reuse the strict resolver so a bad/unmatched email still errors.
+    const strict = resolveGoogleAccountForTool(kind, email);
+    if ('error' in strict) return strict;
+    return { account: strict.account, labelAccount: connected.length > 1 };
+  }
+  if (connected.length === 0) {
+    // No connected account — reuse the strict resolver's not-connected error.
+    return resolveGoogleAccountForTool(kind, email) as { error: string };
+  }
+  if (connected.length === 1) {
+    return { account: connected[0], labelAccount: false };
+  }
+  // >1 connected, none named: default to the lowest-position connected account
+  // (= position-1/primary when it is connected) and label it.
+  return { account: connected[0], labelAccount: true };
+}
+
 export function countGoogleAccounts(kind: GoogleAccountKind): number {
   const r = getDb().prepare('SELECT COUNT(*) AS n FROM google_accounts WHERE kind = ?').get(kind) as { n: number };
   return r.n;
