@@ -1305,7 +1305,18 @@ export const Chat = ({ panel = null }: ChatProps) => {
       if (e.agentId !== agentIdRef.current) return;
       if (e.status === 'working') {
         setIsWorking(true);
-        setTurnKind(e.turnKind ?? 'user');
+        const kind = e.turnKind ?? 'user';
+        setTurnKind(kind);
+        // A user-kind working status means the agent is on a USER-triggered turn.
+        // Latch it (the same flag handleSend sets) so the working UI (dots + stop)
+        // stays up for the WHOLE turn, even during an early phase that only ran
+        // tool activity (which renders nothing in regular mode) and even if the
+        // agent later dips into a2a coordination (which flips turnKind to 'a2a').
+        // handleSend covers dashboard sends; this covers externally-triggered user
+        // turns (iMessage / voice) where handleSend never ran, which otherwise
+        // showed no indicator or stop button in regular mode. Pure background a2a
+        // never sends a user-kind status, so it stays quiet.
+        if (kind === 'user') setAwaitingUserReply(true);
       } else if (e.status === 'idle' || e.status === 'error') {
         setIsWorking(false);
         setAwaitingUserReply(false); // request finished — stop forcing the working UI
@@ -1561,10 +1572,12 @@ export const Chat = ({ panel = null }: ChatProps) => {
   // agent-to-agent (A2A) turn with wordy off, the composer stays calm.
   // Show the working UI (dots + stop) whenever the agent is working AND either:
   // it's a user-facing turn, wordy mode is on, OR the user has a request in flight
-  // (awaitingUserReply). The last clause is what keeps the UI visible across a2a
-  // sub-turns of a user-initiated task. It hides ONLY for pure background a2a
-  // (another agent working, no user waiting): then turnKind==='a2a',
-  // awaitingUserReply===false, wordy off → hidden.
+  // (awaitingUserReply). The awaitingUserReply latch is set both on a local send
+  // (handleSend) AND on any user-kind agent:status 'working' event, so an
+  // externally-triggered user turn (iMessage / voice) and any a2a sub-turn of a
+  // user-initiated task both keep the UI visible for the whole turn. It hides
+  // ONLY for pure background a2a (another agent working, no user waiting): then
+  // turnKind==='a2a', awaitingUserReply===false, wordy off → hidden.
   const showWorkingUi = isWorking && (turnKind !== 'a2a' || wordyMode || awaitingUserReply);
 
   const composer = (

@@ -113,7 +113,7 @@ import {
 } from './classifiers/hoarding.js';
 // ackInjector intentionally NOT imported, engine ack disabled per invariant
 // review (see "Engine-injected ack, DISABLED" comment below).
-import { composeStartAck, composeCompletionAck } from './ack-copy.js';
+import { composeStartAck, composeCompletionAck, extractDeliverableLinks, condenseResultProse } from './ack-copy.js';
 import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, TOOL_AND_OUTPUT_RESERVE } from '../../memory/compaction.js';
 import { estimateTokens } from '../../memory/store.js';
@@ -257,6 +257,78 @@ const BOOKKEEPING_NUDGE_TOOLS = new Set([
 
 const BOOKKEEPING_NUDGE = `\n\n[Engine note: this was internal bookkeeping. If the user just asked you to do exactly this (e.g. "save my key", "remember that", "delete X"), reply with ONE short line confirming it is done (e.g. "Saved.", "Got it, stored your OpenWeather key.") so they get acknowledgment. If instead this was incidental to other work, something you did on your own initiative, or the user already has what they needed, end the turn with literal \`[no-reply]\` rather than a generic "Done." / "All set." / "Got it." closeout.]`;
 
+// Marker-aware variant. When the task being closed belongs to a USER-REQUESTED
+// project (its project description carries ENGINE_AUTO_MARKER, set by the
+// turn-start multistep classifier when the user asked for the work), the
+// [no-reply] branch is WRONG: a live failure had the floor model close a
+// user-requested itinerary task and then go silent because the generic note
+// offered exactly that escape. So for user-requested closes the note drops the
+// [no-reply] option entirely and asks plainly for the outcome + any link. The
+// generic note above stays for genuinely incidental / self-initiated
+// bookkeeping, where silence is still the right call.
+const BOOKKEEPING_NUDGE_USER_REQUESTED = `\n\n[Engine note: the user asked you to do this, so it is not incidental bookkeeping. Reply to them now with the outcome in one short line, and if your tool results above produced a link or file for them (a "Link:", "Open:", or "Share link:" line), include that link in your reply so they can open it. Do NOT end this turn with [no-reply].]`;
+
+// Mirror of ENGINE_AUTO_MARKER in classifiers/multistep.ts (same duplication
+// tracker/tools.ts keeps, to avoid a static import of the classifier from this
+// hot path). The turn-start classifier prefixes it onto the PROJECT description
+// of any user-requested multi-step work.
+const ENGINE_AUTO_MARKER_MIRROR = '[engine:multistep] ';
+
+// The two close tools whose task_id lets us tell a user-requested close from
+// incidental bookkeeping. vault_*/credential_* have no task, so they always get
+// the generic note (their [no-reply] reason is real).
+const CLOSE_TOOLS_WITH_TASK_ID = new Set(['tracker_update_status', 'tracker_complete_step']);
+
+/**
+ * True when this close targets a USER-REQUESTED task (project description
+ * carries the ENGINE_AUTO_MARKER) that the user has NOT yet been answered for,
+ * i.e. the case where the "reply now with the outcome" note belongs instead of
+ * the [no-reply] one. Reads the task by its task_id argument (full UUID or
+ * 8-char prefix). Returns false, so the generic note (which keeps the [no-reply]
+ * escape) is used, when: not a marker task, OR the user already received a
+ * substantive reply for this work since the task was created (a silent
+ * cross-turn close where silence IS correct, the same case the completion-ack
+ * dedup handles). Synchronous DB reads, best-effort: any miss returns false.
+ */
+function userRequestedCloseWantsReply(
+  toolName: string | undefined,
+  args: Record<string, unknown>,
+  agentId: string,
+): boolean {
+  if (!toolName || !CLOSE_TOOLS_WITH_TASK_ID.has(toolName)) return false;
+  const rawId = args?.task_id;
+  if (typeof rawId !== 'string' || !rawId.trim()) return false;
+  const id = rawId.trim();
+  try {
+    const db = getDb();
+    const task = db.prepare(`
+      SELECT t.created_at AS created_at FROM tasks t
+      JOIN projects p ON p.id = t.project_id
+      WHERE t.assigned_to = ?
+        AND (t.id = ? OR t.id LIKE ?)
+        AND p.description LIKE ?
+      LIMIT 1
+    `).get(agentId, id, `${id}%`, `${ENGINE_AUTO_MARKER_MIRROR}%`) as { created_at: string } | undefined;
+    if (!task) return false;
+    // Already answered? Mirror the completion-ack cross-turn dedup: a genuine
+    // model reply (not a tagged engine ack, not a2a, not tool JSON) since the
+    // task was created means silence is correct here, so fall back to the
+    // generic note rather than pushing a duplicate reply.
+    const alreadyAnswered = !!db.prepare(`
+      SELECT 1 FROM messages
+      WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?
+        AND (source IS NULL OR source != 'a2a')
+        AND content NOT LIKE '[{%'
+        AND origin_intent IS NULL
+        AND length(trim(content)) > 40
+      LIMIT 1
+    `).get(agentId, task.created_at);
+    return !alreadyAnswered;
+  } catch {
+    return false;
+  }
+}
+
 // v3.1.11 (FN-9) + FA-T2: tracker mutation tools partitioned by whether a call
 // proves the worker is TENDING open multi-step work.
 //
@@ -373,12 +445,13 @@ const TRIVIAL_TOOLS = new Set([
   'calendar_freebusy_ms',
 ]);
 
-function appendBookkeepingNudgeIfRelevant<T extends { name?: string; content?: string; isError?: boolean }>(toolResult: T): T {
+function appendBookkeepingNudgeIfRelevant<T extends { name?: string; content?: string; isError?: boolean }>(toolResult: T, userRequestedClose = false): T {
   if (toolResult.isError) return toolResult;
   if (!toolResult.name || !BOOKKEEPING_NUDGE_TOOLS.has(toolResult.name)) return toolResult;
   const content = toolResult.content;
   if (typeof content !== 'string') return toolResult;
-  return { ...toolResult, content: content + BOOKKEEPING_NUDGE };
+  const note = userRequestedClose ? BOOKKEEPING_NUDGE_USER_REQUESTED : BOOKKEEPING_NUDGE;
+  return { ...toolResult, content: content + note };
 }
 
 const STATUS_HEARTBEAT_INTERVAL_MS = 30_000;
@@ -1745,6 +1818,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // fires this turn, which is what scopes the near-duplicate contract floor below
   // (~:3810) to the single extra owed-interrupt round and nothing else.
   let owedInterruptPriorReply: string | null = null;
+  // F3 owed-interrupt RUNWAY tripwire: the one-shot flag only stops RE-prompting;
+  // the granted round can still iterate through unlimited tool calls (live
+  // evidence: the floor model spent it re-running the main task's heavy tool
+  // instead of answering). Record the loopCount when the re-prompt fires; if the
+  // turn keeps iterating >3 loops past it, log once and let the natural-end
+  // machinery take over. Tools are never restricted, a legit quick lookup must
+  // keep working; the log is the tripwire for whether a harder bound is needed.
+  let owedInterruptRePromptLoopCount: number | null = null;
+  let owedInterruptRunwayWarned = false;
 
   try {
     // ── Main loop ──
@@ -1764,6 +1846,25 @@ export async function runV2Turn(agentId: string): Promise<void> {
       !state.taskClosedWithTextThisTurn
     ) {
       state = advance(state, { loopCount: state.loopCount + 1, phase: 'preCallGates' });
+
+      // F3 owed-interrupt runway tripwire (log only, never blocks). If the granted
+      // extra round is still iterating >3 loops past the re-prompt, it is almost
+      // certainly re-running the main task's tools instead of answering; surface
+      // it once so we have the evidence, and let the natural-end machinery
+      // (MAX_TOOL_LOOPS / going-idle) end the turn. Once the round produces its
+      // answer the turn ends within a loop, so this never trips on a clean round.
+      if (
+        owedInterruptRePromptLoopCount !== null &&
+        !owedInterruptRunwayWarned &&
+        state.loopCount > owedInterruptRePromptLoopCount + 3
+      ) {
+        owedInterruptRunwayWarned = true;
+        logger.warn('v2 owed-interrupt runway exceeded: the granted re-prompt round is still iterating past its budget without answering; letting natural turn-end proceed', {
+          agentId, turnNumber,
+          rePromptLoopCount: owedInterruptRePromptLoopCount,
+          loopCount: state.loopCount,
+        }, agentId);
+      }
 
       // Stop / preempt checks
       if (stoppedAgents.has(agentId)) {
@@ -4719,6 +4820,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
             const rePrompt = (
               `[System] While you were working, the user also sent: ${quoted}. ` +
               `Reply ONLY to ${itThem}, in one or two sentences. ` +
+              `Answer from what you already know, with at most one quick lookup if truly needed. ` +
+              `Do not re-run the tools you used for the main task; that work is done and delivered. ` +
               `Do NOT repeat, summarize, or re-deliver ANY part of your earlier reply; the user already has it. ` +
               `If your earlier reply already answered ${itThem}, reply exactly [no-reply].`
             );
@@ -4741,6 +4844,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
               });
             } catch { /* best effort */ }
             state = advance(state, { nudgedForOwedInterruptThisTurn: true, pendingNudge: rePrompt });
+            // Arm the runway tripwire: the granted round starts here; the check at
+            // the top of the loop warns if it overruns without answering.
+            owedInterruptRePromptLoopCount = state.loopCount;
             // Capture the reply the user already received so the contract floor above
             // (~:3810) can treat a near-copy of it on the extra round as [no-reply].
             // persistedContent here is the delivered main reply (guarded non-empty
@@ -5615,7 +5721,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // turns where silence is the correct outcome, stopping the conflict at the
             // source rather than hoping the reworded prompt holds on a weak model.
             if (!triggerRow && !hasUnansweredUser) {
-              toolResult = appendBookkeepingNudgeIfRelevant(toolResult);
+              // When this close targets a still-unanswered USER-REQUESTED task, the
+              // note must ask for the outcome + link, not offer [no-reply] (which is
+              // what let the floor model close a user-requested doc task and go
+              // silent). An already-answered cross-turn close falls back to the
+              // generic note (silence is correct there).
+              const userRequestedClose = userRequestedCloseWantsReply(
+                tc.name, (tc.arguments ?? {}) as Record<string, unknown>, agentId,
+              );
+              toolResult = appendBookkeepingNudgeIfRelevant(toolResult, userRequestedClose);
             }
           } catch (toolErr) {
             const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
@@ -6806,13 +6920,30 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // the task from a raw, truncated user request, which reads as broken
           // grammar. The task result (model-written) carries the specifics.
           const firstResult = justCompletedScaffold.find((t) => t.result && t.result.trim())?.result ?? null;
-          const resultLine = firstResult ? ` ${firstResult.replace(/\s+/g, ' ').trim().slice(0, 200)}` : '';
+          // DELIVERABLE HANDOFF: a silent completion still owes the person the
+          // thing they asked for (the link to the doc/sheet/file just created).
+          // Extract the link(s) FIRST and always in full, from this turn's tool
+          // results (the create tools emit "Link:"/"Open:"/"Share link:" lines)
+          // plus the model-written task results (in case the model pasted the
+          // labeled link into its result). Only THEN condense the prose, at a
+          // word boundary, so a link is never sliced mid-word or before the URL.
+          const deliverableLinks = extractDeliverableLinks([
+            ...state.toolResults.map((tr) => tr.content),
+            ...justCompletedScaffold.map((t) => t.result),
+          ]);
+          const condensed = firstResult
+            ? condenseResultProse(firstResult, { dropUrls: deliverableLinks })
+            : '';
+          const resultLine = condensed ? ` ${condensed}` : '';
           // Vary the "done" sentence (best-effort model, guaranteed pool
           // fallback); the caller still appends the model-written result line.
           // Awaited inline (turn teardown, not the model loop) because the
           // resolver below routes lastAssistantTextForIM to the away channel.
           const doneLine = await composeCompletionAck({ resultLine, agentId });
-          const ackText = `${doneLine}${resultLine}`;
+          // Links go on their own line(s) after the summary sentence, whole and
+          // untruncated, so the person can actually open the deliverable.
+          const linksBlock = deliverableLinks.length ? `\n${deliverableLinks.join('\n')}` : '';
+          const ackText = `${doneLine}${resultLine}${linksBlock}`;
           const ackId = uuidv4();
           db.prepare(
             `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, origin_intent, created_at) VALUES (?, ?, 'assistant', ?, ?, 'engine_completion_ack', datetime('now'))`,

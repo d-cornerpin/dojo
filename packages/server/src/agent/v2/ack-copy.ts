@@ -210,3 +210,79 @@ export async function composeCompletionAck(args: ComposeCompletionAckArgs): Prom
   const fromModel = await modelAckLine(prompt, args.agentId, timeoutMs);
   return fromModel ?? pickCompletionAck();
 }
+
+// ── Deliverable handoff (completion-ack link extraction + prose condensing) ──
+//
+// When the engine composes a completion ack on the model's behalf (the model
+// finished the work but went silent), the person still needs the DELIVERABLE,
+// e.g. the link to the doc/sheet/file that was just created. A production
+// failure delivered a "done" line with the task result sliced at 200 chars,
+// which cut mid-word and BEFORE the link. These two pure helpers fix the
+// handoff: pull the link out whole first, then condense the prose separately.
+
+// The labeled deliverable-link line shapes OUR OWN create tools emit. We key
+// ONLY on these (never scrape arbitrary URLs out of, e.g., web_fetch results,
+// which would hand the user a random link): Docs / Sheets / Drive / folder /
+// calendar emit "Link: <url>"; OneDrive / office emit "Open: <url>" and
+// "Share link: <url>". Anchored at line start so a "Weblink:" or a "File ID:"
+// line can never match.
+const DELIVERABLE_LINK_LINE_RE = /^\s*(?:Link|Open|Share link)\s*:\s*(https?:\/\/\S+)/i;
+
+/** Trim trailing punctuation a URL almost never really ends on. */
+function trimUrlTail(url: string): string {
+  return url.replace(/[).,;\]]+$/, '');
+}
+
+/**
+ * Pull the deliverable link(s) the user is meant to receive out of a set of
+ * tool-result strings. Keys ONLY on the "Link:" / "Open:" / "Share link:"
+ * labeled lines our create tools emit, so it never returns a stray URL from
+ * web_fetch or other arbitrary tool output. Returns unique, in-order, WHOLE
+ * URLs (never truncated). Pure, no I/O.
+ */
+export function extractDeliverableLinks(
+  toolResultContents: readonly (string | null | undefined)[],
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of toolResultContents) {
+    if (!raw) continue;
+    for (const line of raw.split('\n')) {
+      const m = line.match(DELIVERABLE_LINK_LINE_RE);
+      if (!m || !m[1]) continue;
+      const url = trimUrlTail(m[1]);
+      if (url && !seen.has(url)) { seen.add(url); out.push(url); }
+    }
+  }
+  return out;
+}
+
+/** Default cap for the condensed task-result prose in a completion ack. */
+export const RESULT_PROSE_MAX_CHARS = 400;
+
+/**
+ * Condense a model-written task-result string for a completion ack. Collapses
+ * whitespace, drops any URLs that will be shown on their own line (so they are
+ * not duplicated or left as a fragment), then truncates to ~400 chars at a WORD
+ * boundary with an ellipsis, never mid-word. Because a URL contains no spaces,
+ * cutting at the last word boundary guarantees any remaining URL survives WHOLE
+ * or is dropped WHOLE (the caller shows the extracted links separately). Pure.
+ */
+export function condenseResultProse(
+  raw: string | null | undefined,
+  opts: { maxChars?: number; dropUrls?: readonly string[] } = {},
+): string {
+  const maxChars = opts.maxChars ?? RESULT_PROSE_MAX_CHARS;
+  let s = (raw ?? '').replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  for (const url of opts.dropUrls ?? []) {
+    if (url) s = s.split(url).join(' ');
+  }
+  s = s.replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  if (s.length <= maxChars) return s;
+  let cut = s.slice(0, maxChars);
+  const lastSpace = cut.lastIndexOf(' ');
+  if (lastSpace > 0) cut = cut.slice(0, lastSpace);
+  return cut.replace(/[\s.,;:]+$/, '') + '…';
+}
