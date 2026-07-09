@@ -153,6 +153,12 @@ fi
 if [[ -d "$SCRIPT_DIR/watchdog" ]]; then
     rsync -a "$SCRIPT_DIR/watchdog/" "$DOJO_DIR/watchdog/"
 fi
+# Stamp the watchdog version marker (ships inside platform/watchdog-dist) beside the
+# installed watchdog so the platform's boot-time self-refresh sees a fresh install as
+# already up-to-date and does not needlessly re-copy + kickstart on the first boot.
+if [[ -f "$SCRIPT_DIR/platform/watchdog-dist/watchdog.version" ]]; then
+    cp "$SCRIPT_DIR/platform/watchdog-dist/watchdog.version" "$DOJO_DIR/watchdog/watchdog.version"
+fi
 
 # Copy scripts
 mkdir -p "$DOJO_DIR/scripts"

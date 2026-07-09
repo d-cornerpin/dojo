@@ -20,6 +20,17 @@
 --
 -- SQLite cannot drop a constraint in place; standard rebuild (new table, copy,
 -- drop, rename). The copy preserves every existing mapping row.
+--
+-- IDEMPOTENCE GUARD (added post-ship, defense in depth): the CREATE below is
+-- bare, so a mid-file abort that left a `summary_messages_new` skeleton behind
+-- would make a re-run die on "table already exists". The runner now applies each
+-- migration inside ONE transaction (apply+record atomic), which already closes
+-- the partial-apply window; this leading DROP IF EXISTS is a belt-and-suspenders
+-- guard that is valid SQL and harmless. Editing an ALREADY-SHIPPED migration is
+-- normally forbidden, but this edit is safe: it ONLY adds an idempotence guard and
+-- changes no applied semantics, and every box that already recorded 103 in
+-- _migrations never re-runs it, so nothing re-executes on upgraded boxes.
+DROP TABLE IF EXISTS summary_messages_new;
 
 CREATE TABLE summary_messages_new (
   summary_id TEXT NOT NULL REFERENCES summaries(id),

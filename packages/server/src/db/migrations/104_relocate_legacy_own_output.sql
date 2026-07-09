@@ -108,6 +108,17 @@ CREATE INDEX _mig104_a2a_turns_idx ON _mig104_a2a_turns(agent_id, turn_number);
 
 -- Store-archive exemption marker (CRITICAL INTERACTION 1). NULL on every existing
 -- (store-native) row; datetime('now') on every row relocated below.
+--
+-- IDEMPOTENCE NOTE (added post-ship, defense in depth): this ALTER is the ONE
+-- non-idempotent statement in an otherwise idempotent file (the INSERT OR IGNORE
+-- and the retired_at UPDATE both re-run cleanly), and SQLite has no
+-- `ADD COLUMN IF NOT EXISTS`, so it cannot be guarded in-file. It is instead
+-- protected by the runner: each migration now applies AND records into
+-- _migrations inside ONE transaction, so a partial apply rolls back whole and a
+-- re-run reapplies from a clean state (the column never pre-exists on re-run). No
+-- SQL change is made here on purpose; editing an ALREADY-SHIPPED migration is only
+-- safe when it changes no applied semantics, and boxes that already recorded 104
+-- never re-run it.
 ALTER TABLE inter_agent_messages ADD COLUMN relocated_at TEXT;
 
 -- Copy the own-output rows into the store, ORDER BY rowid so their relative order

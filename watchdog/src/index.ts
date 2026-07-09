@@ -16,6 +16,7 @@ import {
   toFailedPermanently,
   spawnRollbackDetached,
   ROLLBACK_SCRIPT,
+  FAIL_WALL_CLOCK_MS,
 } from './auto-rollback.js';
 
 // ── Config ──
@@ -920,8 +921,10 @@ async function maybeAutoRollback(): Promise<boolean> {
   const imRecipient = getImessageRecipient();
 
   if (decision.action === 'escalate') {
-    // No rollback: record the terminal state, alert once (loud, plain language).
-    writeMarker(toFailedPermanently(marker));
+    // No rollback: record the terminal state (with the reason, so the platform's
+    // confirmHealthy can later recover a migration escalation that finishes healthy
+    // after the window), alert once (loud, plain language).
+    writeMarker(toFailedPermanently(marker, decision.reason));
     log('error', 'D-F: escalating a failed self-update to failed-permanently (no auto-rollback)', {
       reason: decision.reason,
       targetVersion: marker.targetVersion,
@@ -975,6 +978,28 @@ async function maybeAutoRollback(): Promise<boolean> {
   return true;
 }
 
+// Patience gate for a self-update migration boot. A first jump to a marker-aware
+// build can run a long ONE-TIME migration chain with health down the whole time
+// (the platform only starts listening AFTER runMigrations). The generic restart
+// cadence below (MAX_FAILURES_BEFORE_RESTART checks ~= 10 min) would otherwise
+// kickstart the box mid-migration, BEFORE the 15-minute migration allowance the
+// auto-rollback gate deliberately grants. Reading the SAME FAIL_WALL_CLOCK_MS
+// constant guarantees the kickstart can never land before that window elapses.
+// Only 'booting-new' (a build coming up for the first time, not yet confirmed
+// healthy) qualifies; once the window passes, maybeAutoRollback owns the decision
+// (escalate on a migration episode, roll back a code-only one), so a genuinely
+// wedged box is never stranded.
+function isWithinMigrationBootWindow(): boolean {
+  const marker = readMarker();
+  if (!marker) return false;
+  if (marker.phase !== 'booting-new') return false;
+  if (marker.confirmedHealthyAt) return false;
+  if (!marker.firstBootAt) return false;
+  const firstBootMs = Date.parse(marker.firstBootAt);
+  if (!Number.isFinite(firstBootMs)) return false;
+  return (Date.now() - firstBootMs) < FAIL_WALL_CLOCK_MS;
+}
+
 // ── Main Loop ──
 
 // FA-W8(a): a monotonic cycle counter so the integrity check runs on a
@@ -1010,13 +1035,23 @@ async function runCheck(): Promise<void> {
       lastRestartAt: lastRestartAt ? new Date(lastRestartAt).toISOString() : null,
     });
 
-    // Restart cadence unchanged: fire a restart every MAX_FAILURES_BEFORE_RESTART failed
-    // checks. Only the cadence counter resets here; the truthful count keeps climbing.
+    // Restart cadence: fire a restart every MAX_FAILURES_BEFORE_RESTART failed
+    // checks. Only the cadence counter resets here; the truthful count keeps
+    // climbing. EXCEPTION: while a self-update migration boot is still inside the
+    // shared 15-min allowance, hold the kickstart rather than kill the box
+    // mid-migration (do NOT reset the cadence counter, so the moment the window
+    // passes the very next cycle proceeds to restart / maybeAutoRollback handles it).
     if (failuresSinceRestart >= MAX_FAILURES_BEFORE_RESTART) {
-      await attemptRestart();
-      restartAttempts++;
-      lastRestartAt = Date.now();
-      failuresSinceRestart = 0;
+      if (isWithinMigrationBootWindow()) {
+        log('info', 'Holding platform restart: a self-update migration boot is in progress and still inside the allowed window; waiting rather than killing it mid-migration', {
+          consecutiveFailures, failuresSinceRestart,
+        });
+      } else {
+        await attemptRestart();
+        restartAttempts++;
+        lastRestartAt = Date.now();
+        failuresSinceRestart = 0;
+      }
     }
 
     if (consecutiveFailures >= MAX_FAILURES_BEFORE_ALERT && shouldSendAlert('platform_down')) {
@@ -1059,6 +1094,24 @@ async function runCheck(): Promise<void> {
     // outage re-alerts cleanly. No separate text, the "back UP and healthy" message above
     // already tells the owner it recovered (respects the 2h anti-spam intent).
     markAlertResolved('platform_restart_failed');
+
+    // FALSE-ESCALATION correction: if we escalated a failed self-update to the owner
+    // (auto_rollback_failed) but the box then came up healthy after all, the platform
+    // recovers the update-state marker (confirmHealthy clears a migration escalation)
+    // and we send the owner the low-key "it finished after all" correction HERE, on the
+    // SAME alert path the escalation went out on. markAlertResolved returns true only if
+    // that alert was actually active (i.e. was sent), so the correction fires exactly
+    // when an escalation preceded a recovery.
+    if (markAlertResolved('auto_rollback_failed')) {
+      const imRecipient = getImessageRecipient();
+      if (imRecipient) {
+        sendIMessage(imRecipient, 'Watchdog: the Dojo update finished starting up after all and the box is healthy. No action needed.');
+      }
+    }
+    // Clear the "putting the previous version back" alert on recovery too, so a future
+    // episode re-alerts cleanly. Silent: the "back UP and healthy" message above already
+    // told the owner the box recovered.
+    markAlertResolved('auto_rollback');
     // FA-W3(a): recovery is the ONLY place the truthful counter and restart bookkeeping
     // reset.
     consecutiveFailures = 0;

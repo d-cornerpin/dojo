@@ -18,6 +18,7 @@ import { v4 as uuidv4 } from 'uuid';
 import Database from 'better-sqlite3';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
+import { appleMessageDateToUnixMs } from './imessage-date.js';
 
 // ── iMessage attachment pipeline ────────────────────────────────────────────
 //
@@ -572,6 +573,15 @@ let pollTimer: ReturnType<typeof setInterval> | null = null;
 let approvedSenders: SafeSender[] = [];
 let lastSeenRowId = 0;
 const POLL_INTERVAL_MS = 5000;
+
+// ── Offline-replay age floor ──
+// A box that was offline for days reconnects with a stale cursor; without a floor
+// the first poll would replay EVERY safe-sender text between the cursor and now as
+// a fresh inbound and auto-reply to conversations the sender long since moved on
+// from. Ignore anything older than this: the cursor still advances past it (so it
+// is skipped permanently, never re-read), but the agent is never woken and no
+// reply is sent. Online boxes are unaffected, their inbound rows are seconds old.
+const IMESSAGE_MAX_REPLAY_AGE_MS = 48 * 60 * 60 * 1000;
 
 // True while pollMessages is mid-flight. setInterval keeps firing every 5s,
 // but if a poll is still reading/persisting inbound rows we skip the next
@@ -1243,6 +1253,22 @@ async function pollMessages(): Promise<void> {
       };
 
       for (const msg of messages) {
+        // ── Offline-replay age floor ──
+        // Skip (but permanently advance past) any row older than the floor so a
+        // long-offline box does not auto-reply to stale texts on reconnect. Placed
+        // BEFORE the attachment gate so a stale message never triggers attachment
+        // copying either. When the age can't be determined (null), fall through and
+        // process normally, dropping a real text is worse than a rare stale reply.
+        const sentAtMs = appleMessageDateToUnixMs(msg.date);
+        if (sentAtMs !== null && Date.now() - sentAtMs > IMESSAGE_MAX_REPLAY_AGE_MS) {
+          logger.info('iMessage skipped, older than the offline-replay floor (advancing cursor past it)', {
+            rowid: msg.ROWID,
+            ageHours: Math.round((Date.now() - sentAtMs) / 3_600_000),
+          });
+          advancePastRow(msg.ROWID); // deliberate skip, advance so it is never re-read
+          continue;
+        }
+
         // ── Attachment-readiness gate ──
         // If chat.db claims this message has attachments but the files
         // aren't on disk yet (iCloud sync, slow download, etc.), defer

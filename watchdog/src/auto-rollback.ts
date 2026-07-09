@@ -54,6 +54,12 @@ export interface UpdateMarker {
   confirmedHealthyAt: string | null;
   rollbackCount: number;
   migrationsRanDuringEpisode: boolean;
+  // Why we escalated to 'failed-permanently' ('migration' = a migration ran, so a
+  // code-only rollback is unsafe; 'exhausted' = the one allowed rollback was spent).
+  // null in every non-terminal state. SHARED CONTRACT with the platform's
+  // packages/server/src/update-state.ts: the platform's confirmHealthy reads this so
+  // ONLY a migration escalation may later self-recover if the box comes up healthy.
+  failedReason: 'migration' | 'exhausted' | null;
   updatedAt: string;
 }
 
@@ -86,6 +92,7 @@ export function readMarker(statePath: string = UPDATE_STATE_PATH): UpdateMarker 
       confirmedHealthyAt: str(parsed.confirmedHealthyAt),
       rollbackCount: num(parsed.rollbackCount),
       migrationsRanDuringEpisode: parsed.migrationsRanDuringEpisode === true,
+      failedReason: parsed.failedReason === 'migration' || parsed.failedReason === 'exhausted' ? parsed.failedReason : null,
       updatedAt: str(parsed.updatedAt) ?? new Date().toISOString(),
     };
   } catch {
@@ -157,11 +164,15 @@ export function toRolledBack(marker: UpdateMarker): UpdateMarker {
 
 // Terminal transition when we will NOT auto-roll-back (a migration ran, or the
 // one allowed rollback was already spent). launchd still relaunches whatever
-// build is in place; the owner gets the loud alert + a Healer diagnostic.
-export function toFailedPermanently(marker: UpdateMarker): UpdateMarker {
+// build is in place; the owner gets the loud alert + a Healer diagnostic. The
+// escalation reason is persisted so the platform's confirmHealthy can tell a
+// recoverable migration escalation (the build may still finish healthy after the
+// window) from an unrecoverable exhausted one (a spent rollback that also failed).
+export function toFailedPermanently(marker: UpdateMarker, reason: 'migration' | 'exhausted'): UpdateMarker {
   return {
     ...marker,
     phase: 'failed-permanently',
+    failedReason: reason,
     updatedAt: new Date().toISOString(),
   };
 }

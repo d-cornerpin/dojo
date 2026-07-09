@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger, setLogBroadcast } from './logger.js';
 import { getDb } from './db/connection.js';
@@ -12,7 +13,7 @@ import { broadcast } from './gateway/ws.js';
 import { checkTimeouts } from './agent/spawner.js';
 import { killTunnelSync } from './services/tunnel.js';
 import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, isPMEnabled, setPlatformConfig, HOUSEHOLD_AGENT_IDS_KEY } from './config/platform.js';
-import { recordBootAttempt, markMigrationsRan, confirmHealthy, readMarker } from './update-state.js';
+import { recordBootAttempt, markMigrationsRan, confirmHealthy, readMarker, synthesizeMigrationBootEpisode } from './update-state.js';
 
 const logger = createLogger('main');
 const PORT = parseInt(process.env.DOJO_PORT ?? '3001', 10);
@@ -35,16 +36,39 @@ function countAppliedMigrations(): number {
   }
 }
 
+// Count the migration SQL files shipped with this build (dist/db/migrations at
+// runtime, src/db/migrations under tsx), resolved the SAME way db/migrations.ts
+// does. Read-only: it only lists the directory to answer "are there unapplied
+// migrations?" without touching the migration runner. Used ONLY by the jump-#1
+// self-update detection below.
+function countAvailableMigrationFiles(): number {
+  try {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const migDir = path.join(here, 'db', 'migrations');
+    if (!fs.existsSync(migDir)) return 0;
+    return fs.readdirSync(migDir).filter(f => f.endsWith('.sql')).length;
+  } catch {
+    return 0;
+  }
+}
+
 // D-F health-confirm: when this boot is part of a self-update episode, wait for
 // ~90s of continuous uptime, then re-check the DB is serving (the same
 // db !== 'error' contract /api/health and the watchdog use) and flip the marker
 // to healthy, which clears the episode. If the process crashes before the timer
 // fires, it never confirms and the watchdog's boot-attempt / wall-clock gate
 // takes over. No-op on a normal (non-update) boot.
+//
+// 'failed-permanently' is also armed HERE (not just the in-flight phases): a
+// migration-carrying boot that legitimately finishes AFTER the watchdog's 15-min
+// window has, by listen time, already been escalated to 'failed-permanently'. Its
+// eventual healthy confirmation is exactly the signal confirmHealthy uses to clear
+// that FALSE terminal state (only the 'migration' escalation reason recovers; see
+// confirmHealthy). Without arming this phase the recovery would be unreachable.
 function scheduleUpdateHealthConfirm(): void {
   const marker = readMarker();
   if (!marker) return;
-  if (marker.phase !== 'booting-new' && marker.phase !== 'rolled-back') return;
+  if (marker.phase !== 'booting-new' && marker.phase !== 'rolled-back' && marker.phase !== 'failed-permanently') return;
   if (marker.confirmedHealthyAt) return;
   setTimeout(() => {
     try {
@@ -247,6 +271,25 @@ async function main(): Promise<void> {
   // 2. Load secrets
   loadSecrets();
 
+  // 2b. Refresh the watchdog from the platform bundle BEFORE migrations run.
+  // The in-app updater only rewrites ~/.dojo/platform, so the new watchdog (with
+  // its auto-rollback + read-only-WAL fixes, and the patience that lets a long
+  // migration boot finish) rides inside platform/watchdog-dist and we self-install
+  // it here. ORDER MATTERS: refresh THEN migrate, so on the very first jump from an
+  // old updater the PATIENT new watchdog is the one supervising the (potentially
+  // long, 30-migration) first-boot window, instead of the old 3.1.9 watchdog that
+  // kickstarts the box after ~10 min of health-down and would kill it mid-
+  // migration. Best-effort, darwin+prod only, never fails the boot.
+  {
+    try {
+      const { refreshBundledWatchdog } = await import('./services/watchdog-refresh.js');
+      const r = await refreshBundledWatchdog();
+      if (r.refreshed) logger.info('Watchdog self-refresh: installed the bundled watchdog before migrations', { reason: r.reason });
+    } catch (err) {
+      logger.warn('Watchdog self-refresh failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   // 3. Run database migrations
   // D-F boot sentinel: if this boot is part of a self-update episode, count the
   // attempt BEFORE migrations run (a crash mid-migration still increments the
@@ -255,8 +298,21 @@ async function main(): Promise<void> {
   // rollback (owner decision 2026-07-06): the restored old build could choke on
   // the new schema. On a normal (non-update) boot, recordBootAttempt returns null
   // and this is all inert.
-  const bootEpisode = recordBootAttempt();
-  const migCountBefore = bootEpisode ? countAppliedMigrations() : 0;
+  const migCountBefore = countAppliedMigrations();
+  let bootEpisode = recordBootAttempt();
+  // Jump-#1: an OLD updater (pre-D-F) may have swapped the platform WITHOUT writing
+  // a marker, so recordBootAttempt sees no episode even though this boot is a real
+  // self-update carrying new migrations. Detect that here and synthesize a
+  // 'booting-new' episode BEFORE migrations run, so the freshly-installed patient
+  // watchdog (step 2b) has a phase to read across the long first-boot window.
+  // Gated tightly so it can only fire on a genuine self-update: some migrations
+  // ALREADY applied (an existing box, never a fresh install, which has 0) AND more
+  // are now pending (the new build brought schema the DB has not applied yet).
+  if (!bootEpisode && migCountBefore > 0 && countAvailableMigrationFiles() > migCountBefore) {
+    const { getCurrentVersion } = await import('./gateway/routes/update.js');
+    bootEpisode = synthesizeMigrationBootEpisode(getCurrentVersion());
+    logger.warn('D-F: self-update boot detected without an updater marker (old-updater jump); synthesized a migration-carrying boot episode so the watchdog stays patient through the migration window and escalates rather than rolls back if it fails');
+  }
   runMigrations();
   if (bootEpisode && countAppliedMigrations() > migCountBefore) {
     markMigrationsRan();

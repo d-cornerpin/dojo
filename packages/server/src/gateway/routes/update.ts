@@ -176,7 +176,7 @@ let cleanupState: CleanupState = {
   error: null,
 };
 
-function getCurrentVersion(): string {
+export function getCurrentVersion(): string {
   // Try reading from the installed platform's package.json first
   try {
     const pkgPath = path.join(PLATFORM_DIR, 'package.json');
@@ -636,6 +636,21 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
     // 8. Clean up temp files
     fs.rmSync(tmpDir, { recursive: true });
 
+    // 8a. Refresh the watchdog from the just-installed platform bundle and kickstart
+    // it, so the NEW watchdog (with its auto-rollback + read-only-WAL fixes) takes
+    // over BEFORE we hand off to the restarted build. The updater only rewrites
+    // ~/.dojo/platform, so without this the watchdog would stay on the old code
+    // forever. force=true because we KNOW the platform tree just changed; a no-op
+    // when this box predates watchdog bundling. Best-effort: never fail an otherwise-
+    // good update. Shared with the boot-time self-refresh.
+    try {
+      const { refreshBundledWatchdog } = await import('../../services/watchdog-refresh.js');
+      const r = await refreshBundledWatchdog({ force: true });
+      logger.info('Watchdog refresh after update', { refreshed: r.refreshed, reason: r.reason });
+    } catch (err) {
+      logger.warn('Watchdog refresh after update failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    }
+
     // 8b. Prune old backups - fire-and-forget. Background `rm -rf` keeps
     // the apply response fast and never blocks Cloudflare's 100s timeout.
     pruneOldBackupsAsync().catch(err => {
@@ -823,6 +838,18 @@ updateRouter.post('/rollback', async (c) => {
 
     await execAsync('npm install --omit=dev', { cwd: PLATFORM_DIR, timeout: 120000, env });
     fs.rmSync(tmpDir, { recursive: true });
+
+    // Refresh the watchdog from the just-restored platform bundle and kickstart it,
+    // so the watchdog matches the build it now supervises (a rollback is an update
+    // episode too). force=true because the platform tree just changed; a no-op if the
+    // restored build predates watchdog bundling. Best-effort. Shared helper.
+    try {
+      const { refreshBundledWatchdog } = await import('../../services/watchdog-refresh.js');
+      const r = await refreshBundledWatchdog({ force: true });
+      logger.info('Watchdog refresh after rollback', { refreshed: r.refreshed, reason: r.reason });
+    } catch (err) {
+      logger.warn('Watchdog refresh after rollback failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    }
 
     // Fire-and-forget: prune runs in background using rm -rf so it never
     // blocks the rollback's response and never trips Cloudflare timeouts.

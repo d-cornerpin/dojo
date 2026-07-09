@@ -70,10 +70,29 @@ node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('$PROJECT_ROO
 mkdir -p "$DEST/platform/templates"
 cp "$PROJECT_ROOT/templates/"*.md "$DEST/platform/templates/"
 
-# Watchdog
+# Watchdog (SIBLING copy, install.sh uses this on a fresh install)
 mkdir -p "$DEST/watchdog"
 cp -r "$PROJECT_ROOT/watchdog/dist" "$DEST/watchdog/" 2>/dev/null || true
 cp "$PROJECT_ROOT/watchdog/package.json" "$DEST/watchdog/"
+
+# Watchdog (BUNDLED INSIDE platform/, closes the in-app-update delivery gap).
+# The in-app updater only rewrites ~/.dojo/platform, so the watchdog living at
+# ~/.dojo/watchdog was never refreshed by an update. Shipping the built watchdog
+# inside platform/ lets the platform self-install it (services/watchdog-refresh.ts,
+# before migrations on the next boot) so the new watchdog rides along inside the one
+# directory the updater actually installs. node_modules is intentionally omitted
+# (mirrors the sibling copy above + install.sh, which runs `npm ci` in
+# ~/.dojo/watchdog); the refresh preserves the already-compiled node_modules there.
+mkdir -p "$DEST/platform/watchdog-dist"
+cp -r "$PROJECT_ROOT/watchdog/dist" "$DEST/platform/watchdog-dist/" 2>/dev/null || true
+cp "$PROJECT_ROOT/watchdog/package.json" "$DEST/platform/watchdog-dist/"
+# Version marker read by the boot-time refresh: "<platformVersion> <distHash>".
+# The platform version drives the "is the bundle newer" decision; the content hash
+# lets a same-version watchdog rebuild still trigger a refresh. Deterministic
+# ordering so the hash is stable across builds of identical output.
+PLATFORM_VERSION="$(node -e "console.log(require('$PROJECT_ROOT/package.json').version)")"
+WATCHDOG_HASH="$(cd "$DEST/platform/watchdog-dist" && find dist package.json -type f -print0 2>/dev/null | sort -z | xargs -0 cat 2>/dev/null | shasum -a 256 | cut -c1-16)"
+printf '%s %s\n' "$PLATFORM_VERSION" "$WATCHDOG_HASH" > "$DEST/platform/watchdog-dist/watchdog.version"
 
 # Build menu bar app
 echo "📦 Building menu bar app..."
