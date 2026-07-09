@@ -113,7 +113,7 @@ import {
 } from './classifiers/hoarding.js';
 // ackInjector intentionally NOT imported, engine ack disabled per invariant
 // review (see "Engine-injected ack, DISABLED" comment below).
-import { composeStartAck, composeCompletionAck, extractDeliverableLinks, condenseResultProse, isForwardPromiseReply } from './ack-copy.js';
+import { composeStartAck, composeCompletionAck, extractDeliverableLinks, condenseResultProse, isForwardPromiseReply, pickA2AHandoffAck } from './ack-copy.js';
 import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, TOOL_AND_OUTPUT_RESERVE } from '../../memory/compaction.js';
 import { estimateTokens } from '../../memory/store.js';
@@ -2458,7 +2458,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // exchange term). The spontaneous/pure-background terms depend on what the
       // model does, so the post-model re-stamp below remains as the catch-up for
       // later phases of the same turn.
-      const preModelInterAgent = isA2ATurn || counterparty.kind === 'agent' || (mostRecentIsA2A && !hasUnansweredUser);
+      // USER TURNS ARE NEVER RECLASSIFIED (owner law 2026-07-09): a turn whose
+      // counterparty is a human stays turnKind 'user' for its whole life, no
+      // matter what it does along the way. Without this guard, the recency terms
+      // below flip a user-facing turn to 'a2a' the moment it delegates via
+      // send_to_agent, which hides the working dots + stop button in regular
+      // (non-wordy) mode and buries the rest of the turn's output as inter-agent
+      // traffic (production transcript 2026-07-09).
+      const preModelInterAgent = counterparty.kind !== 'user' && (isA2ATurn || counterparty.kind === 'agent' || (mostRecentIsA2A && !hasUnansweredUser));
       if (preModelInterAgent && currentTurnKind.get(agentId) !== 'a2a') {
         currentTurnKind.set(agentId, 'a2a');
         broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: 'a2a', userFacing: !!chosenConvKey });
@@ -3582,7 +3589,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // answer must be delivered + routed to the restored counterparty, never suppressed
       // as background chatter.
       const pureBackgroundTurn = !hasUnansweredUser && !triggerRow && !mostRecentIsA2A && !deliberateSurfaceTurn && !isHumanContinuation;
-      const interAgentTurn = isA2ATurn || counterparty.kind === 'agent' || spontaneousA2ATurn || a2aBackgroundTurn || a2aExchangeTurn || pureBackgroundTurn;
+      // USER TURNS ARE NEVER RECLASSIFIED (owner law 2026-07-09, same guard as the
+      // pre-model stamp): with a human counterparty this union is forced false, so
+      // neither the live turnKind stamp nor the persisted source:'a2a' visibility
+      // can hide a user-facing turn after it delegates mid-turn.
+      const interAgentTurn = counterparty.kind !== 'user' && (isA2ATurn || counterparty.kind === 'agent' || spontaneousA2ATurn || a2aBackgroundTurn || a2aExchangeTurn || pureBackgroundTurn);
       // LIVE = RELOAD (incident 2026-07-06): the dashboard's live suppression keys
       // on the turnKind stamp, but the PERSISTED visibility keys on
       // `source: interAgentTurn ? 'a2a' : null` below, and interAgentTurn is a
@@ -4961,6 +4972,66 @@ export async function runV2Turn(agentId: string): Promise<void> {
               }, agentId);
               continue; // one more round to actually do the work and deliver
             }
+          }
+        }
+
+        // A2A-handoff floor (owner law 2026-07-09: a turn the user triggered may
+        // never end in silence because work was delegated). The async handoff
+        // contract tells the model to end its turn after send_to_agent; on a weak
+        // model that instruction wins over "tell the user first," so a user-facing
+        // turn can end with results in hand and nothing delivered (production
+        // transcript 2026-07-09: live device list fetched, then a handoff, then
+        // silence). Mutually exclusive with the promise floor above, which
+        // requires a non-empty final reply; this one requires an EMPTY one.
+        // Steer once; if the model STILL ends silently, the engine delivers a
+        // short handoff notice itself, so silence stops being a possible outcome.
+        // A successful explicit channel send this turn (explicitSendThisTurn)
+        // means the user already heard something delivered on purpose; stand down.
+        if (
+          counterparty.kind === 'user' &&
+          !isEngineTurn &&
+          (!persistedContent || persistedContent.trim().length === 0) &&
+          chosenConvKey &&
+          chosenConvKey !== 'engine' &&
+          !chosenConvKey.startsWith('park:') &&
+          !chosenConvKey.startsWith('relayed:') &&
+          !Object.values(state.explicitSendThisTurn).some(Boolean) &&
+          state.toolResults.some((tr) => !tr.isError && tr.name === 'send_to_agent')
+        ) {
+          if (!state.nudgedForA2AHandoffFloorThisTurn && state.loopCount < MAX_TOOL_LOOPS) {
+            const steer = (
+              `[System] You handed work to another agent and are ending this turn without telling ` +
+              `the user anything. The user is waiting. Send the user a short message NOW: report any ` +
+              `results you already have, and say you have asked another agent for the rest and will ` +
+              `report back when they answer. Do not message the other agent again.`
+            );
+            const steerId = uuidv4();
+            try {
+              insertInterAgentEngineRow({
+                id: steerId,
+                agentId,
+                content: steer,
+                sourceAgentId: null,
+                originIntent: 'a2a_handoff_floor',
+                convKey: 'engine-steer',
+                turnNumber,
+              });
+            } catch { /* best effort */ }
+            state = advance(state, { nudgedForA2AHandoffFloorThisTurn: true, pendingNudge: steer });
+            logger.info('v2 a2a-handoff floor: user-facing turn ending silently after a handoff; steering the model to report to the user first', {
+              agentId, turnNumber, convKey: chosenConvKey,
+            }, agentId);
+            continue; // one more round to report to the user
+          }
+          if (state.nudgedForA2AHandoffFloorThisTurn) {
+            // Hard floor: the steer did not produce a user-facing send, so the
+            // engine says the honest minimum itself. Deterministic, model-free.
+            try {
+              await deliverEngineUserAck(pickA2AHandoffAck(), 'engine_progress_ack');
+              logger.warn('v2 a2a-handoff floor: model ended silently after the steer; engine delivered the handoff notice itself', {
+                agentId, turnNumber, convKey: chosenConvKey,
+              }, agentId);
+            } catch { /* best effort; never block the turn end */ }
           }
         }
 

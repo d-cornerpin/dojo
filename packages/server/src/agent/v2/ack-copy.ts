@@ -58,6 +58,16 @@ const PROGRESS_ACK_POOL: readonly string[] = [
   "Making progress on this, I'll report back when it's done.",
 ];
 
+// A2A-handoff floor fallback: a user-triggered turn is ending because work was
+// handed to another agent (whose reply is asynchronous) and the model sent the
+// user nothing at the end. The engine delivers one of these so the user is
+// never left in silence; the model was already steered once and did not send.
+const A2A_HANDOFF_ACK_POOL: readonly string[] = [
+  "I've pulled in another agent on part of this and I'll report back as soon as they answer.",
+  "Part of this is now with another agent; I'll follow up the moment I hear back.",
+  "I've handed a piece of this off and will let you know as soon as the answer comes back.",
+];
+
 // Finished. The caller appends the result line after this sentence, so each
 // line has to read cleanly both on its own and with a result trailing it.
 const COMPLETION_ACK_POOL: readonly string[] = [
@@ -73,6 +83,7 @@ const COMPLETION_ACK_POOL: readonly string[] = [
 const startPick = { last: -1 };
 const progressPick = { last: -1 };
 const completionPick = { last: -1 };
+const a2aHandoffPick = { last: -1 };
 
 function pickFromPool(pool: readonly string[], state: { last: number }): string {
   if (pool.length === 0) return '';
@@ -93,6 +104,11 @@ export function pickStartAck(phase: StartAckPhase = 'start'): string {
 /** Pool-only completion line (the guaranteed fallback), exported for direct use. */
 export function pickCompletionAck(): string {
   return pickFromPool(COMPLETION_ACK_POOL, completionPick);
+}
+
+/** Pool-only A2A-handoff notice (the hard-floor fallback), exported for direct use. */
+export function pickA2AHandoffAck(): string {
+  return pickFromPool(A2A_HANDOFF_ACK_POOL, a2aHandoffPick);
 }
 
 // ── Validation ──

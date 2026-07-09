@@ -396,6 +396,14 @@ export interface AgentTurnState {
    */
   nudgedForPromiseFloorThisTurn: boolean;
   /**
+   * A user-triggered turn tried to end via the asynchronous agent-to-agent
+   * handoff contract without sending the user anything at the end. The floor
+   * steers the model ONCE to report to the user first and sets this flag; if
+   * the model ends silently AGAIN, the engine delivers a handoff notice itself
+   * (pickA2AHandoffAck) so the user is never left in silence.
+   */
+  nudgedForA2AHandoffFloorThisTurn: boolean;
+  /**
    * Set true at preflight when there is an unacknowledged compaction
    * recall nudge in the message log (i.e. compaction fired and the
    * agent has not yet called recall_recent_thread since). Used by the
@@ -542,6 +550,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     autoScaffoldedTaskIdThisTurn: null,
     nudgedForOwedInterruptThisTurn: false,
     nudgedForPromiseFloorThisTurn: false,
+    nudgedForA2AHandoffFloorThisTurn: false,
     awaitingPostCompactRecall: false,
     nudgedForPostCompactRecall: false,
     taskClosedWithTextThisTurn: false,
