@@ -30,10 +30,16 @@ export const ToolBadge = ({ summary }: { summary: ToolTurnSummary }) => {
 export interface ToolChipData {
   key: string;
   name: string;
+  // Pill text. Defaults to `name`; the generic runner tools (exec,
+  // applescript_run) carry a payload-derived label here (e.g. `mv`, `finder`)
+  // via deriveChipLabel. The expanded detail always uses the true `name`.
+  label?: string;
   input: Record<string, unknown>;
   result?: string;
   isError?: boolean;
 }
+
+const chipLabel = (c: ToolChipData) => c.label ?? c.name;
 
 const ToolChip = ({ chip }: { chip: ToolChipData }) => {
   const [open, setOpen] = useState(false);
@@ -45,7 +51,7 @@ const ToolChip = ({ chip }: { chip: ToolChipData }) => {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
       >
-        {chip.name}
+        {chipLabel(chip)}
       </button>
       {open && (
         <div className="chip-tool__detail w-full max-w-[420px]">
@@ -59,9 +65,10 @@ const ToolChip = ({ chip }: { chip: ToolChipData }) => {
   );
 };
 
-// A run of the SAME tool called many times in one chip row (the owner
-// screenshotted 14 identical PLAUD_GET_SUMMARY pills). Collapse them to ONE
-// chip-tool pill carrying a small corner count badge (the tool name + e.g. 14).
+// A run of chips sharing the SAME pill label in one chip row (the owner
+// screenshotted 14 identical PLAUD_GET_SUMMARY pills; the same now applies to a
+// repeated exec base command like `mv`). Collapse them to ONE chip-tool pill
+// carrying a small corner count badge (the label + e.g. 14).
 // Clicking the collapsed chip expands it inline into the individual member
 // chips, each of which then behaves exactly as a standalone ToolChip (click one
 // to open its args/result detail). Only used for members.length >= 2; a lone
@@ -90,23 +97,26 @@ const GroupedToolChip = ({ name, members }: { name: string; members: ToolChipDat
   );
 };
 
-// Collapse same-named chips within a row into groups, first-appearance order.
-// Different tool names never merge; a name that appears only once stays a group
-// of one (rendered as a plain ToolChip). [A, B, A] -> [A(2), B(1)] (both A's
-// merge under A's first appearance, ahead of B).
-function groupChipsByName(chips: ToolChipData[]): Array<{ name: string; members: ToolChipData[] }> {
+// Collapse same-LABEL chips within a row into groups, first-appearance order.
+// Grouping keys on the displayed label, not the raw tool name, so a run of the
+// same exec command (`mv`, `mv`, `mv`) still collapses to one "MV x3" pill while
+// three different commands (`mv`, `rm`, `ls`) stay distinct. Non-runner tools
+// group exactly as before (label defaults to name). A label that appears once
+// stays a group of one (rendered as a plain ToolChip). [A, B, A] -> [A(2), B(1)].
+function groupChipsByLabel(chips: ToolChipData[]): Array<{ name: string; members: ToolChipData[] }> {
   const order: string[] = [];
-  const byName = new Map<string, ToolChipData[]>();
+  const byLabel = new Map<string, ToolChipData[]>();
   for (const c of chips) {
-    const existing = byName.get(c.name);
+    const label = chipLabel(c);
+    const existing = byLabel.get(label);
     if (existing) {
       existing.push(c);
     } else {
-      byName.set(c.name, [c]);
-      order.push(c.name);
+      byLabel.set(label, [c]);
+      order.push(label);
     }
   }
-  return order.map((name) => ({ name, members: byName.get(name)! }));
+  return order.map((name) => ({ name, members: byLabel.get(name)! }));
 }
 
 // One or more tool badges in a left-aligned wrap row. Handles both a single
@@ -127,7 +137,7 @@ export const ToolBadgeGroup = ({
   if (chips && chips.length > 0) {
     // Collapse repeated same-named calls into one counted chip; a single call
     // stays a plain ToolChip. Group key is the first member's stable key.
-    const groups = groupChipsByName(chips);
+    const groups = groupChipsByLabel(chips);
     return (
       <div className="flex flex-wrap items-start gap-1.5 justify-start">
         {groups.map((g) =>

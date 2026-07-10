@@ -74,6 +74,81 @@ export function toolFriendlyLabel(name: string): string {
   return FRIENDLY_LABELS[name] ?? humanize(name);
 }
 
+// ── Chip pill labels for the "generic runner" tools ──
+//
+// The collapsed chip pill (dojo3 chat) shows the raw tool NAME, uppercased by
+// CSS, so a heavily-used generic runner like `exec` always reads as a vague
+// "EXEC" no matter what it actually ran. For the handful of tools whose name
+// hides the real operation, derive a sharper pill label from the call's own
+// arguments: `exec` -> the base command (`mv`, `git`, `rm`), `applescript_run`
+// -> the app it drives (`finder`, `messages`). This is PILL-ONLY cosmetics; the
+// expanded detail still shows the true tool name + full args, and anything we
+// cannot read cleanly falls back to the tool name so the label never lies.
+//
+// Pipelines relabel by their FIRST command plus a continuation marker
+// (`ps -e | wc -l` -> "ps …"): measured against real agent history, nearly
+// every exec is a pipeline, so the original refuse-all-pipelines rule left
+// almost every chip reading EXEC (owner report 2026-07-10). The first segment
+// plus an ellipsis is honest, it says what the command starts with AND that
+// there is more. Hard bailouts remain for the genuinely unreadable shapes:
+// multi-line scripts, subshells, backticks, and quoted metacharacters (a
+// quoted pipe in e.g. grep "a|b" splits wrong, but the mislabeled first
+// segment is still `grep`, which stays truthful; heredocs and $( trip the
+// bailout before any guess). Trailing redirects (2>/dev/null) never
+// disqualify; they are stripped with their targets.
+
+// Shapes we refuse to guess about: multi-line, subshell, backtick.
+const SHELL_BAILOUT_RE = /[`\n]|\$\(/;
+// Segment separators: pipe, && , ||, ; (first segment wins, marker added).
+const SEGMENT_SPLIT_RE = /\||&&|;/;
+// A leading `NAME=value` env assignment prefix (`FOO=bar mv ...`).
+const ENV_ASSIGN_RE = /^[A-Za-z_][A-Za-z0-9_]*=/;
+// A redirect token (2>/dev/null, >out.txt, <in.txt) and its glued target.
+const REDIRECT_TOKEN_RE = /^[0-9]*[<>]/;
+// What a real base-command token may contain once path + prefixes are stripped.
+const CLEAN_COMMAND_RE = /^[A-Za-z0-9._-]+$/;
+
+function baseCommandOf(command: string): string | null {
+  const cmd = command.trim();
+  if (!cmd || SHELL_BAILOUT_RE.test(cmd)) return null; // multi-line/subshell -> keep EXEC
+  const segments = cmd.split(SEGMENT_SPLIT_RE);
+  const first = segments[0]?.trim();
+  if (!first) return null;
+  const hasMore = segments.length > 1;
+  const tokens = first.split(/\s+/).filter((t) => !REDIRECT_TOKEN_RE.test(t));
+  let i = 0;
+  while (i < tokens.length && ENV_ASSIGN_RE.test(tokens[i])) i++; // FOO=bar mv ...
+  if (tokens[i] === 'sudo') {
+    i++;
+    // A flagged sudo (`sudo -u root cmd`) is ambiguous to tokenize (its options
+    // can take arguments), so bail to EXEC; only the clean `sudo cmd` relabels.
+    if (i < tokens.length && tokens[i].startsWith('-')) return null;
+  }
+  const head = tokens[i];
+  if (!head) return null;
+  const base = head.slice(head.lastIndexOf('/') + 1); // /usr/bin/mv -> mv
+  if (!base || base.length > 24 || !CLEAN_COMMAND_RE.test(base)) return null;
+  return hasMore ? `${base} …` : base;
+}
+
+function appDrivenBy(script: string): string | null {
+  const m = /tell\s+application\s+"([^"]{1,40})"/i.exec(script);
+  return m ? m[1] : null;
+}
+
+// The pill text for a tool call: the tool name for everything except the
+// generic runners, which get a payload-derived label (falling back to the name
+// when the payload cannot be read cleanly). Never returns empty.
+export function deriveChipLabel(name: string, input: Record<string, unknown>): string {
+  if (name === 'exec' && typeof input.command === 'string') {
+    return baseCommandOf(input.command) ?? name;
+  }
+  if (name === 'applescript_run' && typeof input.script === 'string') {
+    return appDrivenBy(input.script) ?? name;
+  }
+  return name;
+}
+
 export type ToolBadgeClass = 'effectful-action' | 'retrieval' | 'mixed';
 
 export interface ToolTurnSummary {

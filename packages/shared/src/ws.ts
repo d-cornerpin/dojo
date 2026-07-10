@@ -77,6 +77,27 @@ export interface ChatMessageEvent {
 }
 
 /**
+ * Demote a live-streamed bubble into a working note. Mid-work narration
+ * (assistant text riding in the same model response as tool calls) is never a
+ * message to the user; the engine persists it as a `[working-note]` system row
+ * instead of a conversation message. Because that text already STREAMED live,
+ * silently dropping it made the bubble vanish before the user's eyes (owner
+ * report 2026-07-10). This event tells the dashboard to convert the streamed
+ * bubble (messageId) in place into the dimmed note (noteId), so live view and
+ * reload agree and nothing pops out of existence.
+ */
+export interface ChatWorkingNoteEvent {
+  type: 'chat:workingnote';
+  agentId: string;
+  /** The streaming bubble to convert in place. */
+  messageId: string;
+  /** The persisted working-note system row's id. */
+  noteId: string;
+  /** The narration text, unprefixed. */
+  content: string;
+}
+
+/**
  * Marks an existing assistant message as having been delivered through
  * voice mode TTS (Kokoro or Hume). The dashboard sets the local
  * message's `source` field to 'voice' so the AssistantBubble renders
@@ -369,6 +390,7 @@ export type WsEvent =
   | ChatChunkEvent
   | ChatReasoningChunkEvent
   | ChatMessageEvent
+  | ChatWorkingNoteEvent
   | ChatSourceUpdatedEvent
   | InterAgentMessageEvent
   | ChatToolCallEvent
@@ -880,6 +902,9 @@ export const EVENT_BATCHABLE: Record<WsEvent['type'], boolean> = {
   'chat:tool_call': true,
   'chat:tool_result': true,
   'chat:message': true,
+  // One-shot bubble demotion; must land promptly so the streamed bubble
+  // converts before the eye registers a vanish.
+  'chat:workingnote': false,
   'agent:status': true,
   'log:entry': true,
   'ollama:status': true,

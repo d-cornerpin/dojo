@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { classifyTool } from '@dojo/shared';
+import { deriveChipLabel } from '../lib/tool-display';
 
 // ── Tool Call Card (assistant used a tool) ──
 
@@ -89,6 +90,10 @@ export const ToolCallCard = ({ name, input }: ToolCallCardProps) => {
   const [showRaw, setShowRaw] = useState(false);
   const icon = iconFor(name);
   const summary = toolSummary(name, input);
+  // Same payload-derived headline the regular-mode pill chips use (exec -> the
+  // base command, applescript_run -> the app), so both display modes agree.
+  // The raw tool name stays one click away in the expanded JSON.
+  const headline = deriveChipLabel(name, input);
 
   return (
     <div className="my-1.5 rounded-lg border border-ui/[0.10] bg-ui/[0.05]/60 overflow-hidden">
@@ -99,7 +104,7 @@ export const ToolCallCard = ({ name, input }: ToolCallCardProps) => {
         <span className="w-6 h-6 rounded bg-ui/[0.08] text-cp-blue text-xs font-mono flex items-center justify-center shrink-0">
           {icon}
         </span>
-        <span className="text-xs font-semibold text-ui/70">{name}</span>
+        <span className="text-xs font-semibold text-ui/70">{headline}</span>
         <span className="text-xs text-ui/40 truncate flex-1 font-mono">
           {summary}
         </span>

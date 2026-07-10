@@ -3767,6 +3767,37 @@ export async function runV2Turn(agentId: string): Promise<void> {
         if (hasUnansweredUser && !interAgentTurn) {
           deferredUserReplyWithTools = persistedContent;
         }
+        // Demote, don't discard (owner request 2026-07-10). This narration
+        // already STREAMED into the user's chat live; classifying it out of the
+        // conversation made the bubble visibly vanish, which reads as the engine
+        // killing the agent mid-thought. Persist it as a [working-note] system
+        // row (role='system' never enters model context, so this cannot feed the
+        // re-answer class) and tell the dashboard to convert the streamed bubble
+        // in place into a dimmed note. Live view and reload agree. Inter-agent
+        // turns keep the hard suppression: their narration never streamed to the
+        // user (chat:chunk is suppressed on those turns), so there is nothing on
+        // screen to demote.
+        if (!interAgentTurn) {
+          try {
+            const noteId = uuidv4();
+            // Chat-native system note: prefix-marked, NO origin stamp, same
+            // convention as routing markers and dividers. An origin_kind of
+            // 'engine' here would make the row inter-agent-shaped, and those
+            // belong in the store, not messages (the NO_INTERAGENT_LEAK
+            // invariant caught exactly that on the first draft of this).
+            db.prepare(`
+              INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+              VALUES (?, ?, 'system', ?, ?, datetime('now'))
+            `).run(noteId, agentId, `[working-note] ${persistedContent}`, turnNumber);
+            broadcast({
+              type: 'chat:workingnote',
+              agentId,
+              messageId,
+              noteId,
+              content: persistedContent,
+            });
+          } catch { /* cosmetic; never block the turn */ }
+        }
         persistedContent = null;
       }
 

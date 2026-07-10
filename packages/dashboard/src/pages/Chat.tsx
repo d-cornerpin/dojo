@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react';
 import type { Message } from '@dojo/shared';
-import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, WsEvent } from '@dojo/shared';
+import type { ChatChunkEvent, ChatMessageEvent, ChatToolCallEvent, ChatToolResultEvent, ChatErrorEvent, ChatWorkingNoteEvent, WsEvent } from '@dojo/shared';
 import { classifyMessageForDisplay, classifyTool, parseInboundChannel, stripInboundChannelMarker, parseOutboundRouting, channelOfSendTool } from '@dojo/shared';
 import type { MessageOrigin } from '@dojo/shared';
-import { summarizeToolTurn, type ToolTurnSummary } from '../lib/tool-display';
+import { summarizeToolTurn, deriveChipLabel, type ToolTurnSummary } from '../lib/tool-display';
 import { inboundBadge, outboundBadge } from '../lib/channel-display';
 import { ToolBadgeGroup, type ToolChipData } from '../components/ToolBadge';
 import * as api from '../lib/api';
@@ -161,10 +161,44 @@ const isOwnerAlertSystemNote = (content: string): boolean => {
 // [tracker:project_needs_attention] tag (jargon a non-technical owner should
 // not see). The plain-language "Heads up:" notes carry no such framing and are
 // returned unchanged.
+// ── Working notes (demoted mid-work narration) ──
+//
+// Assistant text that rides in the same model response as tool calls is
+// Lane-2 process narration, never a message to the user; the engine persists
+// it as a `[working-note]` system row instead of a conversation message
+// (loop.ts, owner request 2026-07-10). Because that text streamed live before
+// the classification landed, the old behavior deleted the bubble in front of
+// the user. It now demotes: the bubble converts in place (chat:workingnote
+// event live; this prefix check on reload) into a dimmed, collapsed note.
+const WORKING_NOTE_PREFIX = '[working-note] ';
+const workingNoteText = (content: string): string | null =>
+  content.startsWith(WORKING_NOTE_PREFIX) ? content.slice(WORKING_NOTE_PREFIX.length) : null;
+
 const ownerAlertDisplayText = (content: string): string =>
   stripSourceEnvelope(content.trim())
     .replace(/^\[tracker:project_needs_attention\]\s*/, '')
     .trim();
+
+// Dimmed, collapsed rendering for a demoted working note. Styling copied from
+// the owner-alert system-note bubble (nearest analog) with quieter text and an
+// expand-on-click, mirroring the tool-chip interaction users already know.
+const WorkingNoteBubble = ({ text }: { text: string }) => {
+  const [open, setOpen] = useState(false);
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  const collapsed = oneLine.length > 96 ? `${oneLine.slice(0, 96)}…` : oneLine;
+  return (
+    <div className="flex justify-start my-1">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="max-w-[92%] sm:max-w-[75%] rounded-lg border border-ui/[0.06] bg-ui/[0.03] px-3 py-1.5 text-left text-[11px] sm:text-xs text-ui/35 italic leading-relaxed"
+      >
+        {open ? <span className="whitespace-pre-wrap">{text}</span> : collapsed}
+      </button>
+    </div>
+  );
+};
 
 // ── Message Bubble Renderers ──
 
@@ -507,10 +541,12 @@ const toolChips = (
       .filter((b) => wordyMode || !isErroredToolResult(b.id ? resultById.get(b.id) : undefined))
       .map((b, i): ToolChipData => {
         const res = b.id ? resultById.get(b.id) : undefined;
+        const input = (b.input as Record<string, unknown>) ?? {};
         return {
           key: `${m.id}-${b.id ?? i}`,
           name: b.name ?? '',
-          input: (b.input as Record<string, unknown>) ?? {},
+          label: deriveChipLabel(b.name ?? '', input),
+          input,
           result: res?.content,
           isError: res?.isError,
         };
@@ -1016,6 +1052,28 @@ export const Chat = ({ panel = null }: ChatProps) => {
       );
     };
 
+    const unsubWorkingNote = subscribe('chat:workingnote', (event: WsEvent) => {
+      const e = event as ChatWorkingNoteEvent;
+      if (e.agentId !== agentIdRef.current) return;
+      setMessages((prev) => {
+        const note: ChatMessage = {
+          id: e.noteId,
+          role: 'system',
+          content: `${WORKING_NOTE_PREFIX}${e.content}`,
+          createdAt: new Date().toISOString(),
+        };
+        // Convert the streamed bubble in place so the text never vanishes; if
+        // it was never streamed (or already reconciled away), append instead.
+        const idx = prev.findIndex((m) => m.id === e.messageId);
+        if (idx >= 0) {
+          const out = [...prev];
+          out[idx] = note;
+          return out;
+        }
+        if (prev.some((m) => m.id === e.noteId)) return prev; // reconnect dupe
+        return [...prev, note];
+      });
+    });
     const unsubChunk = subscribe('chat:chunk', (event: WsEvent) => {
       const e = event as ChatChunkEvent;
       if (e.agentId !== agentIdRef.current) return;
@@ -1361,6 +1419,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
     });
 
     return () => {
+      unsubWorkingNote();
       unsubChunk();
       unsubReasoning();
       unsubToolCall();
@@ -1725,6 +1784,12 @@ export const Chat = ({ panel = null }: ChatProps) => {
             // as a chat bubble. Hide in both wordy and non-wordy modes.
             if (trimmedSys === '[Agent ended turn without replying — conversation closed]') {
               return null;
+            }
+            // Demoted working note: renders in BOTH modes (the narration was
+            // visible live in both, so its settled form must be too).
+            const noteText = workingNoteText(trimmedSys);
+            if (noteText) {
+              return <WorkingNoteBubble key={msg.id} text={noteText} />;
             }
             // Divider-style markers: any system message shaped "── label ──"
             // renders as a horizontal divider with the label centered.
