@@ -218,10 +218,23 @@ function applyIntegrityPass(messages: LoopMsg[], agentId: string): LoopMsg[] {
     }
   }
 
-  // Ensure conversation ends with a user message (Anthropic API requirement, 
-  // "does not support assistant message prefill").
-  while (merged.length > 0 && merged[merged.length - 1].role === 'assistant') {
-    merged.pop();
+  // Ensure the conversation ends with a user message (providers reject a
+  // trailing assistant message as prefill). HOW matters enormously: this used
+  // to POP trailing assistant messages, which deleted the agent's own newest
+  // delivered answer from context on every wake turn, because the awareness
+  // lift had just removed the (newer) notification row that followed it. The
+  // model then saw its last turn as promised-and-computed-but-never-delivered,
+  // and dutifully re-delivered, the months-long re-answer ghost (owner
+  // transcripts 2026-07-07/09/10, reproduced live on dev). Append a neutral
+  // engine line instead: the API constraint is satisfied, nothing is deleted.
+  if (merged.length > 0 && merged[merged.length - 1].role === 'assistant') {
+    merged.push({
+      role: 'user',
+      content:
+        '[Engine: end of recorded history. Everything above, including your own final ' +
+        'replies, was already delivered to its recipients. Continue from the newest ' +
+        'event of THIS turn; do not re-send or re-answer anything above.]',
+    });
   }
 
   return merged;
@@ -397,8 +410,15 @@ function scopeToA2AThread(tail: Message[], threadId: string | null): Message[] {
       // drop standalone user-facing reply TEXT (and engine acks) so the user
       // conversation doesn't bleed into the A2A turn even via the agent's own
       // prior lines. (m.content for tool_use/tool_result is a JSON array.)
+      // Tool activity STAMPED FOR A HUMAN CONVERSATION is dropped too: a served
+      // human turn's leftover tool debris (minus its conv-stamped answer, which
+      // the text rule above already drops) otherwise reads as an unfinished job
+      // and the agent re-does settled work at its A2A counterparty (the
+      // re-answer ghost, same root as the human/engine scopers). A2A rows only
+      // ever carry a2a/engine conv keys; anything else is a human stamp.
       const isToolActivity = typeof m.content === 'string' && m.content.trimStart().startsWith('[{');
-      return isToolActivity || o.channel === 'a2a';
+      const humanStamped = !!m.convKey && m.convKey !== 'a2a' && !m.convKey.startsWith('engine');
+      return (isToolActivity && !humanStamped) || o.channel === 'a2a';
     }
     return false;                                          // exclude human + engine
   });
@@ -423,7 +443,13 @@ function scopeToA2AThread(tail: Message[], threadId: string | null): Message[] {
 function scopeToEngineTurn(tail: Message[]): Message[] {
   return tail.filter((m) => {
     const o = m.origin;
-    if (!o) return true;                       // unclassified, keep (safe default)
+    // Unclassified rows (tool-role rows have no derivable origin) follow the
+    // same rule as classified self output below: a conv-stamped row belongs to
+    // a prior conversation's turn and is dropped; only untagged (current-turn
+    // in-flight / legacy) rows keep the old safe default. Without this, a
+    // settled turn's tool debris leaked into engine turns even after the
+    // haiku-failure fix dropped the conv-stamped SELF rows.
+    if (!o) return !m.convKey;
     if (o.kind === 'engine') return true;      // kept; EVENTS lane lifts it out
     if (o.kind === 'self') {
       // Keep ONLY the current turn's own work (untagged, conv_key is stamped at
@@ -462,8 +488,7 @@ function scopeToHumanConversation(tail: Message[], cp: TurnCounterparty | undefi
   const cpKey = conversationKey(cp.channel, cp.senderId, cp.name, cp.threadId);
   return a2aStripped.filter((m) => {
     const o = m.origin;
-    if (!o) return true;                       // unclassified, keep (safe default)
-    if (o.kind === 'user') {
+    if (o?.kind === 'user') {
       // Unauthorized human inbound (a mailbox notification about the owner's inbox,
       // an unknown sender) is NOT a conversation. Keep it so the caller can lift it
       // into the EVENTS/awareness lane (surfaced to the owner, never answered as
@@ -472,16 +497,22 @@ function scopeToHumanConversation(tail: Message[], cp: TurnCounterparty | undefi
       if (!o.authorized) return true;
       return conversationKey(o.channel, o.senderId, o.senderName, o.threadId) === cpKey;
     }
-    if (o.kind === 'self') {
-      // The agent's own output stays only if it belongs to THIS conversation
-      // (conv_key matches) or is untagged, current-turn in-progress work, not
-      // yet stamped, or legacy. Output stamped for a DIFFERENT conversation is
-      // dropped so one counterparty's work can't bleed into another's turn
-      // (the colleague-got-a-dentist-answer failure).
-      return !m.convKey || m.convKey === cpKey;
-    }
     // engine → EVENTS lane (handled by the caller); keep here.
-    return true;
+    if (o?.kind === 'engine') return true;
+    // EVERYTHING ELSE is the agent's own turn output: final reply text, engine
+    // acks, tool calls, and tool RESULTS, however deriveOrigin classified them
+    // (tool-role rows come through unclassified). A turn's output belongs to
+    // its conversation AS A UNIT: conv_key is that stamp, and it must gate the
+    // debris exactly like the answer. The old shape kept unclassified rows
+    // unconditionally while dropping the conv-stamped final reply, so a turn
+    // scoped elsewhere saw a settled turn's promise + tool math WITHOUT its
+    // delivered answer, an apparently unfinished job the model then dutifully
+    // finished, re-answering the user (the months-long re-answer ghost; owner
+    // transcripts 2026-07-07 and 2026-07-09, reproduced on dev 2026-07-10).
+    // Same rule the engine scoper adopted for the identical bug (the re-emitted
+    // memory-rundown haiku failure), now applied symmetrically. Untagged rows
+    // (current-turn in-flight work, legacy pre-076 history) are kept.
+    return !m.convKey || m.convKey === cpKey;
   });
 }
 
@@ -2071,18 +2102,47 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
   // for removal. This preserves the model's tool-call context while
   // still producing API-valid adjacency.
 
-  const keep = new Array<boolean>(annotated.length).fill(true);
+  // Bug history, part two (2026-07-10, the months-long re-answer ghost): the
+  // "drop the intruders" behavior above turned out to be the root cause of the
+  // agent re-answering settled questions. In a tail where several turns and
+  // conversations interleave by created_at, the walk from a tool_use to its
+  // result passes over ORDINARY CONVERSATION, the agent's delivered answers,
+  // acks, other turns' text, and deleted it all as intruders. The model then
+  // saw a promise and tool math with no delivered answer (an apparently
+  // unfinished job) and dutifully finished it, re-answering the user on every
+  // wake. 54 messages went into this function on the diagnosed box; 14 came
+  // out. The tool-repeat disease this function's LAST fix addressed was the
+  // same disease one level down; deletion just moved the damage.
+  //
+  // The invariant actually required is ADJACENCY, not absence: REORDER instead
+  // of remove. A valid pair emits use-then-result back to back; the messages
+  // that sat between them emit immediately AFTER the pair, in their original
+  // relative order. Chronology bends slightly at the seam; nothing is lost.
+  // Tool_use messages encountered while deferring stay unconsumed so the outer
+  // walk gives each its own pairing pass. All the genuine-brokenness drops are
+  // preserved exactly: an unmatched tool_use is dropped, a partial parallel
+  // match drops the pair, an orphaned tool_result is dropped in pass two.
+  const consumed = new Array<boolean>(annotated.length).fill(false);
+  const dropped = new Array<boolean>(annotated.length).fill(false);
+  const outOrder: number[] = [];
 
   for (let i = 0; i < annotated.length; i++) {
+    if (consumed[i] || dropped[i]) continue;
     const entry = annotated[i];
-    if (entry.toolUseIds.length === 0) continue;
+    if (entry.toolUseIds.length === 0) {
+      outOrder.push(i);
+      consumed[i] = true;
+      continue;
+    }
 
     const useIdSet = new Set(entry.toolUseIds);
 
-    // Walk forward looking for the matching tool_result.
+    // Walk forward looking for the matching tool_result, collecting what sits
+    // in between for deferral (NOT deletion).
     let resultIdx = -1;
-    const intrudersBetween: number[] = [];
+    const betweenIdx: number[] = [];
     for (let j = i + 1; j < annotated.length; j++) {
+      if (consumed[j] || dropped[j]) continue;
       const cand = annotated[j];
       if (cand.msg.role === 'tool' && cand.toolResultIds.length > 0) {
         const matched = cand.toolResultIds.some((id) => useIdSet.has(id));
@@ -2090,58 +2150,72 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
           resultIdx = j;
           break;
         }
-        // A tool message with non-matching ids is itself broken (an
-        // orphaned tool_result for some other use). Treat it as an
-        // intruder and keep searching.
-        intrudersBetween.push(j);
+        // An orphaned tool_result for some other use; defer past it, pass two
+        // decides its fate.
+        betweenIdx.push(j);
         continue;
       }
-      // Non-tool message between the use and its result, must be
-      // dropped from the context fed to the model so the
-      // assistant-tool_use / user-tool_result adjacency the API
-      // requires is preserved.
-      intrudersBetween.push(j);
+      betweenIdx.push(j);
     }
 
     if (resultIdx === -1) {
-      // No matching tool_result anywhere ahead. The tool_use is
-      // genuinely unanswered (in-progress turn that hasn't reached
-      // tool execution yet, or a real broken state). Drop the
-      // tool_use itself; leave the intruders alone.
-      keep[i] = false;
+      // No matching tool_result anywhere ahead. The tool_use is genuinely
+      // unanswered (in-progress turn that hasn't reached tool execution yet,
+      // or a real broken state). Drop the tool_use itself; everything deferred
+      // stays for the outer walk.
+      dropped[i] = true;
       continue;
     }
 
-    // Verify EVERY use_id has a matching result_id in the chosen
-    // tool message. Partial matches mean the model expected N
-    // parallel results but only got M; treating that as a mismatch
-    // is the conservative choice.
+    // Verify EVERY use_id has a matching result_id in the chosen tool message.
+    // Partial matches mean the model expected N parallel results but only got
+    // M; treating that as a mismatch is the conservative choice.
     const resultIdSet = new Set(annotated[resultIdx].toolResultIds);
     const allMatched = entry.toolUseIds.every((id) => resultIdSet.has(id));
     if (!allMatched) {
-      keep[i] = false;
-      keep[resultIdx] = false;
+      dropped[i] = true;
+      dropped[resultIdx] = true;
       continue;
     }
 
-    // Pair valid. Mark intruders for removal so the tool_use and
-    // tool_result land adjacent in the final array.
-    for (const idx of intrudersBetween) keep[idx] = false;
+    // Pair valid: emit adjacently, then the deferred conversation in order.
+    // Deferred tool_use messages (and stray tool messages) stay unconsumed so
+    // the outer walk pairs them on its own pass.
+    outOrder.push(i);
+    consumed[i] = true;
+    outOrder.push(resultIdx);
+    consumed[resultIdx] = true;
+    for (const k of betweenIdx) {
+      if (consumed[k] || dropped[k]) continue;
+      const deferredEntry = annotated[k];
+      if (deferredEntry.toolUseIds.length > 0) continue;                       // its own pairing pass
+      if (deferredEntry.msg.role === 'tool' && deferredEntry.toolResultIds.length > 0) continue; // pass two
+      outOrder.push(k);
+      consumed[k] = true;
+    }
   }
 
-  // Second pass: drop orphaned tool_result messages that never paired
-  // with anything in the loop above (the loop only walked forward
-  // from tool_use messages, so a leading tool_result with no
-  // preceding tool_use never got considered).
+  // Anything never consumed nor dropped (trailing orphan tool messages the
+  // deferral skipped) joins the tail in original order for pass two to judge.
   for (let i = 0; i < annotated.length; i++) {
-    if (!keep[i]) continue;
-    const entry = annotated[i];
+    if (!consumed[i] && !dropped[i]) {
+      outOrder.push(i);
+      consumed[i] = true;
+    }
+  }
+
+  // Second pass (unchanged semantics, applied over the EMITTED order): drop
+  // orphaned tool_result messages that never sit adjacent to their kept
+  // tool_use. With pairs emitted adjacently, the nearest preceding
+  // tool_use-bearing kept message must match.
+  const keepOut = new Array<boolean>(outOrder.length).fill(true);
+  for (let oi = 0; oi < outOrder.length; oi++) {
+    const entry = annotated[outOrder[oi]];
     if (entry.msg.role !== 'tool' || entry.toolResultIds.length === 0) continue;
-    // Scan backward for the matching tool_use that's still kept.
     let matchedToKeptUse = false;
-    for (let j = i - 1; j >= 0; j--) {
-      if (!keep[j]) continue;
-      const prev = annotated[j];
+    for (let oj = oi - 1; oj >= 0; oj--) {
+      if (!keepOut[oj]) continue;
+      const prev = annotated[outOrder[oj]];
       if (prev.toolUseIds.length === 0) continue;
       const useIdSet = new Set(prev.toolUseIds);
       if (entry.toolResultIds.some((id) => useIdSet.has(id))) {
@@ -2149,17 +2223,20 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
       }
       break;
     }
-    if (!matchedToKeptUse) keep[i] = false;
+    if (!matchedToKeptUse) keepOut[oi] = false;
   }
 
-  const result = annotated.filter((_, i) => keep[i]).map((a) => a.msg);
+  const result = outOrder.filter((_, oi) => keepOut[oi]).map((oi) => annotated[oi].msg);
 
-  const dropped = annotated.length - result.length;
-  if (dropped > 0) {
+  const droppedCount = annotated.length - result.length;
+  if (droppedCount > 0) {
+    // Only genuinely broken tool messages are dropped now (unmatched tool_use,
+    // partial parallel match, orphaned tool_result); conversation is never
+    // dropped, it is deferred past the pair instead.
     const droppedDetails = annotated
-      .map((a, i) => keep[i] ? null : `[${i}] role=${a.msg.role} useIds=${a.toolUseIds.join(',')} resultIds=${a.toolResultIds.join(',')}`)
+      .map((a, i) => (dropped[i] || !consumed[i]) ? `[${i}] role=${a.msg.role} useIds=${a.toolUseIds.join(',')} resultIds=${a.toolResultIds.join(',')}` : null)
       .filter(Boolean);
-    logger.warn(`Dropped ${dropped} messages while sanitizing tool pairs (intruders between tool_use/tool_result, or genuinely orphaned)`, {
+    logger.warn(`Dropped ${droppedCount} genuinely broken tool message(s) while sanitizing tool pairs`, {
       details: droppedDetails.slice(0, 10),
     });
   }

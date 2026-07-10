@@ -114,6 +114,7 @@ import {
 // ackInjector intentionally NOT imported, engine ack disabled per invariant
 // review (see "Engine-injected ack, DISABLED" comment below).
 import { composeStartAck, composeCompletionAck, extractDeliverableLinks, condenseResultProse, isForwardPromiseReply, pickA2AHandoffAck } from './ack-copy.js';
+import { findCrossConvReAnswer } from './re-answer-guard.js';
 import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, TOOL_AND_OUTPUT_RESERVE } from '../../memory/compaction.js';
 import { estimateTokens } from '../../memory/store.js';
@@ -1266,6 +1267,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // give it its own turn after the human is served.
   const pendingEngineEvent = (!isA2ATurn && !hasUnansweredUser) ? getPendingEngineEvent(agentId) : null;
   const isEngineTurn = !isA2ATurn && !hasUnansweredUser && pendingEngineEvent != null;
+  // Settled-context wake (owner report 2026-07-09 9:39 PM, third re-chase
+  // specimen): when NO human is waiting at turn start, every user conversation
+  // this turn can see is, by definition, already answered (a fresh human ask
+  // would be in waitingConvs). The engine's claim bookkeeping knows this; the
+  // model cannot see that bookkeeping, so on background wakes it sometimes
+  // re-answers the last visible question as if it were new. On these turns an
+  // [Engine hint] is injected at the context tail (see the assembly site) and a
+  // turn-end tripwire logs any user-facing outbound for calibration.
+  const settledContextWakeTurn = !hasUnansweredUser;
   // Mark the engine event PROCESSED at pickup (mirrors the human pickup-stamp) so it
   // can't re-fire and so getPendingEngineEvent stops returning it. conv_key='engine'
   // is a non-human sentinel (the human waiting-set ignores engine rows by origin).
@@ -2474,6 +2484,49 @@ export async function runV2Turn(agentId: string): Promise<void> {
       lastAssembledAtIso = new Date().toISOString(); // F9: see claimAssembledSiblings
       let systemPrompt = ctx.systemPrompt;
       const messages = ctx.messages;
+      // Settled-context hint (see settledContextWakeTurn above). Injected at the
+      // TAIL of the assembled messages on every iteration of a settled-context
+      // turn: assembly rebuilds from persisted rows each round, so an unpersisted
+      // hint must be re-applied per assembly. Tail position keeps the cacheable
+      // prefix untouched. Folded into a trailing user-role message (string or
+      // block-array content) to preserve role alternation; appended as its own
+      // user message when the tail is an assistant turn. Advice framing on
+      // purpose ([Engine hint], never an order): user-authored content wins per
+      // the precedence ladder, and result-delivery turns (a peer's answer coming
+      // back, a reminder firing) must stay free to message the user.
+      if (messages.length > 0 && state.loopCount === 0) {
+        // FIRST ITERATION ONLY: the hint orients the turn at its start. Injected
+        // mid-turn it lands directly after a tool result, where "respond only to
+        // the newest incoming item" reads as verification pressure on a weak
+        // model (battery 2026-07-10: a file_read re-verification spiral surfaced
+        // with the every-iteration version; the engine STOP guard caught it).
+        // Two shapes of the same disease (both reproduced live on dev 2026-07-10):
+        // a background wake with nothing waiting re-answers the last visible
+        // question, AND a turn legitimately serving conversation X re-answers a
+        // settled conversation Y on the side (the owner's 9:39 PM duplicate came
+        // from an ordinary inbound serving turn). So the hint is injected on
+        // EVERY turn, worded for whichever shape this turn is.
+        const SETTLED_HINT = settledContextWakeTurn
+          ? '[Engine hint: no one is waiting on a reply right now. Every user conversation ' +
+            'visible above has already been answered and is closed. Do not re-answer, re-send, ' +
+            'or redo anything from it. Act only on what woke you this turn, and only deliver ' +
+            'information that is genuinely new (a result that just arrived, a reminder firing, ' +
+            'the event itself).]'
+          : '[Engine hint: respond only to the newest incoming item, the one that triggered ' +
+            'this turn. Every OTHER user conversation visible above has already been answered ' +
+            'and is closed; do not re-answer, re-send, or redo any of it, even if it looks ' +
+            'recent or unfinished.]';
+        const tail = messages[messages.length - 1];
+        if (tail.role === 'user') {
+          if (typeof tail.content === 'string') {
+            tail.content = `${tail.content}\n\n${SETTLED_HINT}`;
+          } else if (Array.isArray(tail.content)) {
+            tail.content.push({ type: 'text', text: SETTLED_HINT });
+          }
+        } else {
+          messages.push({ role: 'user', content: SETTLED_HINT });
+        }
+      }
 
       // FA-M1: record the non-compressible overhead the assembler just produced
       // (system prompt + the tool-schema/output reserve it also reserves) so the
@@ -5032,6 +5085,59 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 agentId, turnNumber, convKey: chosenConvKey,
               }, agentId);
             } catch { /* best effort; never block the turn end */ }
+          }
+        }
+
+        // Cross-conversation re-answer floor (2026-07-09 disease, structural
+        // stage). The tail [Engine hint] alone did not stop the weakest
+        // supported model from re-answering another conversation's settled
+        // question (verified on dev 2026-07-10), so when the deterministic
+        // content detector (re-answer-guard.ts) flags the final reply as a
+        // near-duplicate of an answer the user already received elsewhere, the
+        // model gets ONE steer to respond only to this turn's trigger. A second
+        // emission is DELIVERED (never suppressed, per house rules) and logged
+        // loudly as the evidence for any harder future stage.
+        if (
+          persistedContent && persistedContent.trim().length >= 160 &&
+          chosenConvKey !== 'engine' &&
+          !(chosenConvKey ?? '').startsWith('park:') &&
+          !(chosenConvKey ?? '').startsWith('relayed:')
+        ) {
+          const reAnswer = findCrossConvReAnswer(db, agentId, persistedContent, chosenConvKey ?? null);
+          if (reAnswer) {
+            // LOG-ONLY, deliberately (2026-07-10). The steer version of this
+            // floor false-positived on legitimately similar recurring content
+            // (a reused agent's repeated fixtures in the battery; daily reports
+            // and repeated confirmations in real life) and its escape hatch
+            // ("or nothing at all") licensed the weak model into a SILENT reply
+            // on a basic question, the exact disease this work exists to kill.
+            // The ROOT fix for re-answers lives in memory/assembler.ts (never
+            // delete delivered history); this detector remains as production
+            // telemetry proving that fix holds. It must never alter behavior.
+            logger.warn('v2 re-answer telemetry: final reply resembles a settled answer from another conversation (delivering normally; root fix is the assembler)', {
+              agentId, turnNumber, convKey: chosenConvKey, matchConv: reAnswer.convKey, similarity: reAnswer.similarity,
+            }, agentId);
+          }
+        }
+
+        // Settled-context tripwire (calibration for the 2026-07-09 re-answer
+        // class, log-only by design). This turn started with every visible user
+        // conversation already answered AND the engine hint injected; any
+        // user-facing outbound it produced is either a legitimate delivery (a
+        // peer's result relayed, a reminder's message) or exactly the re-answer
+        // disease the hint targets. Log every instance so the hint's real-world
+        // effectiveness on the weak model is measurable from production logs
+        // before deciding whether a harder structural floor is needed. NEVER
+        // suppresses or alters the outbound.
+        if (settledContextWakeTurn) {
+          const sentExplicitThisTurn = Object.values(state.explicitSendThisTurn).some(Boolean);
+          const persistedVisible = !!(persistedContent && persistedContent.trim().length > 0) && !interAgentTurn;
+          if (sentExplicitThisTurn || persistedVisible) {
+            logger.warn('settled-context tripwire: user-facing outbound from a wake turn whose visible conversations were all answered (engine hint was in context); verify it is a genuine delivery and not a re-answer', {
+              agentId, turnNumber, convKey: chosenConvKey ?? null,
+              explicitSend: sentExplicitThisTurn,
+              snippet: (persistedContent ?? '').replace(/\s+/g, ' ').slice(0, 140),
+            }, agentId);
           }
         }
 
