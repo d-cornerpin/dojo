@@ -24,13 +24,32 @@ import {
 const providerLastSuccess = new Map<string, string>();
 const providerErrorCounts = new Map<string, number>();
 
+// Consecutive failures (including stream idle timeouts) at which the provider's
+// Health card flips unhealthy (owner decision 2026-07-10: sustained slowdowns
+// surface through the EXISTING provider cards, with log lines only, no toasts).
+// recordProviderSuccess zeroes the count, so the card clears itself on the
+// first healthy call, matching how the other card problems behave.
+export const PROVIDER_DEGRADED_THRESHOLD = 3;
+
 export function recordProviderSuccess(providerId: string): void {
+  const prev = providerErrorCounts.get(providerId) ?? 0;
+  if (prev >= PROVIDER_DEGRADED_THRESHOLD) {
+    logger.info('Provider recovered: calls succeeding again after repeated failures; Health card clearing', {
+      providerId, previousErrorCount: prev,
+    });
+  }
   providerLastSuccess.set(providerId, new Date().toISOString());
   providerErrorCounts.set(providerId, 0);
 }
 
 export function recordProviderError(providerId: string): void {
-  providerErrorCounts.set(providerId, (providerErrorCounts.get(providerId) ?? 0) + 1);
+  const next = (providerErrorCounts.get(providerId) ?? 0) + 1;
+  providerErrorCounts.set(providerId, next);
+  if (next === PROVIDER_DEGRADED_THRESHOLD) {
+    logger.warn('Provider degraded: repeated consecutive call failures or timeouts; Health card flipping unhealthy until a call succeeds', {
+      providerId, errorCount: next,
+    });
+  }
 }
 import { getProviderCredential } from '../../config/loader.js';
 
@@ -145,14 +164,20 @@ servicesRouter.get('/providers/health', async (c) => {
     } else {
       // For API providers, check if credential exists
       const credential = getProviderCredential(provider.id);
+      const errorCount = providerErrorCounts.get(provider.id) ?? 0;
+      const degraded = errorCount >= PROVIDER_DEGRADED_THRESHOLD;
       results.push({
         id: provider.id,
         name: provider.name,
         type: provider.type,
-        healthy: !!credential,
+        healthy: !!credential && !degraded,
         lastSuccess: providerLastSuccess.get(provider.id) ?? null,
-        errorCount: providerErrorCounts.get(provider.id) ?? 0,
-        error: credential ? undefined : 'No API key configured',
+        errorCount,
+        error: !credential
+          ? 'No API key configured'
+          : degraded
+            ? 'Repeated failures or timeouts on recent calls; the agent retries automatically and this clears on the next successful call'
+            : undefined,
       });
     }
   }

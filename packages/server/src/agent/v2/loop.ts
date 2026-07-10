@@ -47,7 +47,7 @@ import { classifyTool } from '@dojo/shared';
 import { deriveOrigin } from '@dojo/shared';
 
 import { assembleContext } from '../../memory/assembler.js';
-import { callModel, getContextWindow } from '../model.js';
+import { callModel, getContextWindow, STREAM_IDLE_TIMEOUT_ERROR } from '../model.js';
 import { writeContextReceipt } from './receipt.js';
 import { executeTool, agentCanSelfCompleteById } from '../tools.js';
 import { resolveRecipientDisplay } from '../../contacts/resolve-recipient.js';
@@ -1574,56 +1574,78 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // Cancelled in the teardown finally; a fire after the reply is prevented by
   // the DB check (any user-visible assistant text already stamped with this
   // turn_number) plus the shared once-per-turn flag.
+  // WORK-GATED (owner report 2026-07-10, slow-local-model screenshot): the ack
+  // exists for WORK, not conversation. On a slow model every reply crosses the
+  // wall-clock, so a purely time-based ack answered "Hey dude!" with "Starting
+  // on this, back with you soon." The gate: the timer only speaks when the turn
+  // has STARTED USING TOOLS by the time it fires; a slow chat reply just
+  // streams (the working dots cover the wait). Work that begins later than the
+  // threshold is covered by the first-tool-call hook at the execution site,
+  // which fires this same routine the moment real work starts.
   let startAckTimer: ReturnType<typeof setTimeout> | null = null;
-  if (counterparty.kind === 'user' && triggerRow) {
+  let anyToolStartedThisTurn = false;
+  const startAckArmed = counterparty.kind === 'user' && !!triggerRow;
+  const startAckArmedAtMs = Date.now();
+  // The person has heard something the moment EITHER a user-visible
+  // assistant text row landed this turn (the DB check) OR the agent
+  // delivered through a channel send TOOL (explicitSendThisTurn). The
+  // tool-send case leaves NO assistant text row, so the DB check alone
+  // was blind to it and fired a duplicate ack seconds after the model's
+  // own send (the observed double-ack, and the stray "On it" after a
+  // relay was already sent). `state` is read at fire time, so this sees
+  // the flag set during the loop. When the agent truly did nothing on
+  // any channel, both are false and the engine still speaks.
+  const startAckRepliedNow = (): boolean =>
+    Object.values(state.explicitSendThisTurn).some(Boolean) ||
+    !!db.prepare(`
+    SELECT 1 FROM messages
+    WHERE agent_id = ? AND role = 'assistant' AND turn_number = ?
+      AND content NOT LIKE '[{%'
+      AND origin_intent IS NULL
+      AND length(trim(content)) > 0
+    LIMIT 1
+  `).get(agentId, turnNumber);
+  const fireStartAckIfOwed = async (via: 'timer' | 'first-tool'): Promise<void> => {
+    try {
+      if (engineStartAckDeliveredThisTurn || startAckRepliedNow()) return;
+      engineStartAckDeliveredThisTurn = true;
+      // Seconds of slack here (the threshold already passed), so the wording
+      // call is awaited inline; the pool fallback guarantees a line.
+      const ackText = await composeStartAck({ userMessage: lastUserMessageContent ?? '', agentId });
+      // Re-check AFTER composing: the wording call can take up to ~2s on a
+      // box with a system model, and the real reply can land inside that
+      // gap (observed live: reply at :16, stray ack at :17). An ack that
+      // arrives after the answer is pure noise, so the moment of truth is
+      // immediately before delivery, not before composition.
+      if (startAckRepliedNow()) {
+        logger.info('v2 F10: start ack skipped, the reply landed while the wording was being composed', {
+          agentId, turnNumber,
+        }, agentId);
+        return;
+      }
+      await deliverEngineUserAck(ackText, 'engine_start_ack');
+      logger.info('v2 F10: work-gated start ack delivered (no reply yet, work underway)', {
+        agentId, turnNumber, via, thresholdMs: ENGINE_START_ACK_AFTER_MS,
+      }, agentId);
+    } catch (err) {
+      logger.warn('v2 F10: start-ack fire failed (non-fatal)', {
+        agentId, error: err instanceof Error ? err.message : String(err),
+      }, agentId);
+    }
+  };
+  if (startAckArmed) {
     startAckTimer = setTimeout(() => {
-      void (async () => {
-        try {
-          // The person has heard something the moment EITHER a user-visible
-          // assistant text row landed this turn (the DB check) OR the agent
-          // delivered through a channel send TOOL (explicitSendThisTurn). The
-          // tool-send case leaves NO assistant text row, so the DB check alone
-          // was blind to it and fired a duplicate ack seconds after the model's
-          // own send (the observed double-ack, and the stray "On it" after a
-          // relay was already sent). `state` is read at fire time, so this sees
-          // the flag set during the loop. When the agent truly did nothing on
-          // any channel, both are false and the engine still speaks.
-          const repliedNow = () =>
-            Object.values(state.explicitSendThisTurn).some(Boolean) ||
-            !!db.prepare(`
-            SELECT 1 FROM messages
-            WHERE agent_id = ? AND role = 'assistant' AND turn_number = ?
-              AND content NOT LIKE '[{%'
-              AND origin_intent IS NULL
-              AND length(trim(content)) > 0
-            LIMIT 1
-          `).get(agentId, turnNumber);
-          if (engineStartAckDeliveredThisTurn || repliedNow()) return;
-          engineStartAckDeliveredThisTurn = true;
-          // Seconds of slack here (the timer already fired), so the wording
-          // call is awaited inline; the pool fallback guarantees a line.
-          const ackText = await composeStartAck({ userMessage: lastUserMessageContent ?? '', agentId });
-          // Re-check AFTER composing: the wording call can take up to ~2s on a
-          // box with a system model, and the real reply can land inside that
-          // gap (observed live: reply at :16, stray ack at :17). An ack that
-          // arrives after the answer is pure noise, so the moment of truth is
-          // immediately before delivery, not before composition.
-          if (repliedNow()) {
-            logger.info('v2 F10: start ack skipped, the reply landed while the wording was being composed', {
-              agentId, turnNumber,
-            }, agentId);
-            return;
-          }
-          await deliverEngineUserAck(ackText, 'engine_start_ack');
-          logger.info('v2 F10: wall-clock start ack delivered (no reply yet at threshold)', {
-            agentId, turnNumber, thresholdMs: ENGINE_START_ACK_AFTER_MS,
-          }, agentId);
-        } catch (err) {
-          logger.warn('v2 F10: start-ack timer fire failed (non-fatal)', {
-            agentId, error: err instanceof Error ? err.message : String(err),
-          }, agentId);
-        }
-      })();
+      if (!anyToolStartedThisTurn) {
+        // Chat-shaped so far: the model is composing a reply with no tools.
+        // Stay silent (dots cover the wait); if tools DO start later, the
+        // first-tool-call hook delivers the ack then. Delivered-flag stays
+        // unset on purpose so that hook can still speak.
+        logger.info('v2 F10: start-ack threshold passed with no tool activity; staying quiet (chat-shaped turn)', {
+          agentId, turnNumber,
+        }, agentId);
+        return;
+      }
+      void fireStartAckIfOwed('timer');
     }, ENGINE_START_ACK_AFTER_MS);
   }
 
@@ -3208,7 +3230,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // ── Call model with retry-and-fallback (matches v1 runtime.ts:1028-1116) ──
       // For auto-routed agents, try up to 3 different models in the tier.
       // For fixed-model agents, throw on first failure.
-      const maxAttempts = isAutoRouted ? 3 : 1;
+      // Fixed-model agents get ONE attempt normally, PLUS one same-model retry
+      // when the stream idle watchdog aborted a hung provider call (model.ts,
+      // 2026-07-10): the request died on the wire, not in the model, and a
+      // fresh attempt typically succeeds in seconds (the 602s production hang's
+      // silent retry completed in 3s).
+      const maxAttempts = isAutoRouted ? 3 : 2;
       let result: Awaited<ReturnType<typeof callModel>> | undefined;
       let callSucceeded = false;
 
@@ -3345,11 +3372,25 @@ export async function runV2Turn(agentId: string): Promise<void> {
             return;
           }
 
-          // Not auto-routed OR exhausted attempts, rethrow.
+          // Fixed-model path: the ONLY error that earns the second attempt is
+          // the stream-idle watchdog abort (same model, fresh connection).
+          // Everything else rethrows immediately, exactly as before.
+          if (!isAutoRouted) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (attempt < maxAttempts - 1 && msg.includes(STREAM_IDLE_TIMEOUT_ERROR)) {
+              logger.warn('v2: model stream idle timeout; retrying the same model once on a fresh connection', {
+                attempt, modelId,
+              }, agentId);
+              continue;
+            }
+            revertTriggerStampOnAbort(); // N-1: model call failed with no answer, re-arm the ask
+            throw err;
+          }
+          // Auto-routed and exhausted attempts, rethrow.
           // (v1's catch path in handleMessage handles further recovery, 
           // Dreamer overflow, provider 4xx, healer notification, etc. Phase 6
           // moves all of that into agent/v2/recovery.ts.)
-          if (!isAutoRouted || attempt >= maxAttempts - 1) {
+          if (attempt >= maxAttempts - 1) {
             revertTriggerStampOnAbort(); // N-1: model call failed with no answer, re-arm the ask
             throw err;
           }
@@ -5972,6 +6013,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
             }
           }
 
+          // First-tool hook for the work-gated start ack: real work is now
+          // beginning. If the user has already been waiting past the ack
+          // threshold (a slow model that thought before acting), speak now;
+          // under the threshold the armed timer handles it.
+          if (!anyToolStartedThisTurn) {
+            anyToolStartedThisTurn = true;
+            if (startAckArmed && !engineStartAckDeliveredThisTurn &&
+                Date.now() - startAckArmedAtMs > ENGINE_START_ACK_AFTER_MS) {
+              void fireStartAckIfOwed('first-tool');
+            }
+          }
           // Execute (with safety wrapper)
           let toolResult;
           try {

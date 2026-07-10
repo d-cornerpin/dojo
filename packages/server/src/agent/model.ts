@@ -19,6 +19,58 @@ const logger = createLogger('model');
 
 // Client cache is defined below after CachedClient type
 
+// ── Stream idle watchdog (2026-07-10) ──
+// A provider can hang or slow-walk a streaming response indefinitely; the
+// production trigger was a 602-second call that returned one empty token and
+// held a reminder turn hostage (DOJO-ISSUES-LOG 2026-07-10). Bound the STREAM,
+// not the generation: a healthy long answer keeps producing chunks and never
+// times out; a dead connection dies at the first-chunk bound and a mid-stream
+// stall dies at the idle bound. The watchdog's abort is distinguishable from
+// the user's stop button (timedOut()), and the v2 loop grants one same-model
+// retry on the translated timeout error.
+export const STREAM_FIRST_CHUNK_TIMEOUT_MS = 90_000;
+export const STREAM_IDLE_TIMEOUT_MS = 60_000;
+
+export interface StreamWatchdog {
+  /** Combined signal: fires on watchdog timeout OR the external (stop) signal. */
+  signal: AbortSignal;
+  /** Call on every received chunk/event; re-arms the idle bound. */
+  bump: () => void;
+  /** Call when the stream finishes (success or failure); disarms the timer. */
+  finish: () => void;
+  /** True iff the WATCHDOG fired (never true for a user stop). */
+  timedOut: () => boolean;
+  /** Milliseconds since the watchdog was armed. */
+  elapsedMs: () => number;
+}
+
+export function makeStreamWatchdog(
+  external?: AbortSignal,
+  firstChunkMs: number = STREAM_FIRST_CHUNK_TIMEOUT_MS,
+  idleMs: number = STREAM_IDLE_TIMEOUT_MS,
+): StreamWatchdog {
+  const controller = new AbortController();
+  const startedAt = Date.now();
+  let fired = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const arm = (ms: number): void => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => { fired = true; controller.abort(); }, ms);
+    timer.unref?.();
+  };
+  arm(firstChunkMs);
+  return {
+    signal: external ? AbortSignal.any([controller.signal, external]) : controller.signal,
+    bump: () => arm(idleMs),
+    finish: () => { if (timer) { clearTimeout(timer); timer = null; } },
+    timedOut: () => fired,
+    elapsedMs: () => Date.now() - startedAt,
+  };
+}
+
+/** The loop matches on this exact phrase to grant a single same-model retry. */
+export const STREAM_IDLE_TIMEOUT_ERROR = 'model stream idle timeout';
+
 export interface ModelCallParams {
   agentId: string;
   modelId: string;
@@ -1483,10 +1535,11 @@ async function callOpenAIModel(
     }, agentId);
   }
 
+  // Stream idle watchdog: bounds connect/first-token and inter-chunk gaps;
+  // combined with the stop-button signal so user aborts still work unchanged.
+  const watchdog = makeStreamWatchdog(params.abortSignal);
   try {
-    // Pass the external abort signal so stop-button aborts cancel the
-    // in-flight fetch (instead of letting it complete in the background).
-    const requestOptions = params.abortSignal ? { signal: params.abortSignal } : undefined;
+    const requestOptions = { signal: watchdog.signal };
     // .withResponse() hands back both the parsed stream and the raw Response so
     // we can feed rate-limit headers into the proactive tracker (FA-R2). It does
     // not consume the SSE body; `stream` is iterated below exactly as before.
@@ -1501,6 +1554,7 @@ async function callOpenAIModel(
     let realUsage: (OpenAI.CompletionUsage & { prompt_cache_hit_tokens?: number; prompt_cache_miss_tokens?: number }) | undefined;
 
     for await (const chunk of stream) {
+      watchdog.bump();
       // The usage chunk arrives last with an empty choices array, capture it
       // before the delta guard skips it.
       if (chunk.usage) realUsage = chunk.usage as typeof realUsage;
@@ -1584,6 +1638,7 @@ async function callOpenAIModel(
       });
     }
 
+    watchdog.finish();
     const latencyMs = Date.now() - startTime;
 
     // Prompt-cache visibility: log how much of the prompt was served from cache.
@@ -1810,6 +1865,18 @@ async function callOpenAIModel(
       reasoningContent: fullReasoning.length > 0 ? fullReasoning : undefined,
     };
   } catch (err) {
+    watchdog.finish();
+    if (watchdog.timedOut() && !params.abortSignal?.aborted) {
+      // The WATCHDOG aborted (never the user's stop; that leaves timedOut()
+      // false or shows on the external signal). Translate to the retryable
+      // phrase the v2 loop matches for its single same-model retry.
+      recordProviderError(modelInfo.providerId);
+      const msg = `${STREAM_IDLE_TIMEOUT_ERROR}: no data from provider for too long (elapsed ${watchdog.elapsedMs()}ms)`;
+      logger.warn(`OpenAI call aborted by stream watchdog: ${msg}`, {
+        model: modelInfo.apiModelId, providerId: modelInfo.providerId,
+      }, agentId);
+      throw new AgentError(msg, agentId, { code: 'stream_idle_timeout', retryable: true });
+    }
     const latencyMs = Date.now() - startTime;
     const message = err instanceof Error ? err.message : String(err);
     recordProviderError(modelInfo.providerId);
@@ -2327,11 +2394,16 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
 
   const startTime = Date.now();
 
+  const anthWatchdog = makeStreamWatchdog(params.abortSignal);
   try {
-    // Pass the external abort signal so stop-button aborts cancel the
-    // in-flight Anthropic streaming request immediately.
-    const requestOptions = params.abortSignal ? { signal: params.abortSignal } : undefined;
+    // Stream idle watchdog (see makeStreamWatchdog): bounds first-token and
+    // inter-event gaps; the stop button rides the combined signal unchanged.
+    const requestOptions = { signal: anthWatchdog.signal };
     const stream = client.messages.stream(requestParams, requestOptions);
+    // Bump on EVERY SSE event, not just text: an extended-thinking phase emits
+    // non-text events for long stretches, and those prove the connection is
+    // alive just as well as words do.
+    stream.on('streamEvent', () => anthWatchdog.bump());
 
     let fullText = '';
     const toolCalls: ToolCall[] = [];
@@ -2340,6 +2412,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     let currentToolId = '';
 
     stream.on('text', (text) => {
+      anthWatchdog.bump();
       fullText += text;
       if (onChunk) {
         onChunk(text);
@@ -2357,6 +2430,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     });
 
     const finalMessage = await stream.finalMessage();
+    anthWatchdog.finish();
 
     const latencyMs = Date.now() - startTime;
     const inputTokens = finalMessage.usage.input_tokens;
@@ -2458,6 +2532,12 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
       stopReason: finalMessage.stop_reason,
     };
   } catch (err) {
+    anthWatchdog.finish();
+    if (anthWatchdog.timedOut() && !params.abortSignal?.aborted) {
+      const msg = `${STREAM_IDLE_TIMEOUT_ERROR}: no data from provider for too long (elapsed ${anthWatchdog.elapsedMs()}ms)`;
+      logger.warn(`Anthropic call aborted by stream watchdog: ${msg}`, {}, agentId);
+      throw new AgentError(msg, agentId, { code: 'stream_idle_timeout', retryable: true });
+    }
     const latencyMs = Date.now() - startTime;
     const message = err instanceof Error ? err.message : String(err);
 
