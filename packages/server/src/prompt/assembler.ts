@@ -7,6 +7,7 @@ import { createLogger } from '../logger.js';
 import { toolDefinitions, getFilteredTools } from '../agent/tools.js';
 import { isPrimaryAgent, isPMAgent, isTrainerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName } from '../config/platform.js';
 import type { TurnCounterparty } from '../agent/v2/counterparty.js';
+import type { Channel } from '@dojo/shared';
 import { getAgentGoogleAccessLevel, getGoogleWorkspaceConfig, isGoogleConnected, isEmailMonitoringEnabled, isEmailSendingEnabled } from '../google/auth.js';
 import { getAgentMicrosoftAccessLevel, getMsAccountType, getMicrosoftWorkspaceConfig, isMicrosoftConnected, isMsEmailMonitoringEnabled, isMsEmailSendingEnabled } from '../microsoft/auth.js';
 import { getChannelCapabilities, listIntegrationStatuses } from '../services/capability-registry.js';
@@ -508,6 +509,22 @@ export interface PromptTurnContext {
    * stale-RAM-request hijack). Computed once per turn in the v2 loop.
    */
   isEngineTurn?: boolean;
+  /**
+   * RC-5.2: true when this turn is a NOTIFICATION wake, no trigger row, not A2A, not
+   * an engine event, and the newest inbound is an unauthorized mailbox/channel notice.
+   * The counterparty header then renders a dedicated variant ("triggered by a
+   * notification, NOT a person messaging you… end with [no-reply]") instead of the
+   * owner-on-dashboard framing the awareness lane contradicts. Computed once per turn.
+   */
+  isNotificationTurn?: boolean;
+  /**
+   * RC-10: the channel the reply will ACTUALLY be delivered on when it differs from the
+   * counterparty's inbound channel, resolved by owner-channel affinity at turn start.
+   * The counterparty header renders THIS as the reply channel so the model is never
+   * told "dashboard" on a turn the engine will text (iMessage). Undefined = deliver on
+   * the counterparty's own channel (the common case).
+   */
+  resolvedReplyChannel?: Channel;
   /**
    * On an engine turn driven by an ACTION-REQUIRED engine-origin A2A message
    * (Healer QUESTION, PM escalation, destructive-gate approval), the message id of

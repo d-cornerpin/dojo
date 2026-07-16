@@ -151,7 +151,12 @@ async function checkSemanticDedup(payload: string, threadId: string, fromAgent: 
   } catch (err) {
     // Embedding service unavailable, skip dedup, deliver the message.
     // Dedup is a nice-to-have, not a gate.
-    logger.debug('Semantic dedup skipped (embedding unavailable)', {
+    // RC-14: raised from debug to info. An embedding outage silently disables a
+    // real loop guard (this is one of the documented dedup holes), so the skip
+    // must be visible in the operational log, not buried at debug. The
+    // deterministic awaiting-reply latch below does NOT depend on embeddings, so
+    // wake-intent re-asks stay gated even while this is degraded.
+    logger.info('Semantic dedup skipped (embedding unavailable)', {
       threadId,
       error: err instanceof Error ? err.message : String(err),
     });
@@ -280,7 +285,16 @@ export function payloadLooksDeliverable(payload: string): boolean {
 
 // ── Logging ──
 
-function logDrop(envelope: A2AEnvelope, reason: A2ADropReason): void {
+// RC-14: AWAITING_REPLY is a transport-local drop reason for the deterministic
+// awaiting-reply latch below. It is intentionally NOT added to the shared
+// A2ADropReason union here (that type lives in @dojo/shared and is edited
+// separately); we widen locally so the transport is self-contained and the send
+// tool renders the refusal text. The tools.ts default drop branch already
+// surfaces any unrecognised reason, so the latch works before a dedicated render
+// lands.
+type A2ADropReasonLocal = A2ADropReason | 'AWAITING_REPLY';
+
+function logDrop(envelope: A2AEnvelope, reason: A2ADropReasonLocal): void {
   logger.info('A2A message dropped', {
     threadId: envelope.threadId,
     from: envelope.fromAgent,
@@ -371,7 +385,7 @@ async function renderOwnTaskEvidenceForQuestion(recipientId: string, payload: st
 
 export interface A2ADeliveryResult {
   delivered: boolean;
-  reason?: A2ADropReason;
+  reason?: A2ADropReasonLocal;
   threadId: string;
   messageId?: string;
   /**
@@ -518,6 +532,71 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   if (currentHops >= MAX_HOPS_PER_THREAD) {
     logDrop(envelope, 'HOP_LIMIT_EXCEEDED');
     return { delivered: false, reason: 'HOP_LIMIT_EXCEEDED', threadId };
+  }
+
+  // ── 5.5. Awaiting-reply latch (RC-14) ──
+  // A wake-intent re-ask (QUESTION/ASSIGN/BLOCK) on a thread whose most recent
+  // delivery was THIS sender's own, still-unanswered wake-intent is almost always
+  // an impatient re-ping ("did you get my question?"), not new signal. The prose
+  // "do not message X again" the send tool appends is advisory only, nothing
+  // engine-side keys on it; the per-recipient cap resets every turn (each wake
+  // send force-ends the turn) and semantic dedup has documented holes (embedding
+  // outage, rewording under the 0.85 threshold, exempt intents), so neither
+  // reliably catches the re-ask. This deterministic, embedding-free latch does:
+  // while the receiver still owes a reply and we are inside a short cooldown, the
+  // re-ask is dropped with AWAITING_REPLY and the sender is told to wait. The
+  // engine already solves the identical problem for duplicate ASSIGNs; QUESTION
+  // and BLOCK now share the discipline.
+  //
+  // Carve-outs: STATUS/FYI and the answer-class intents (ANSWER/DELIVERABLE/
+  // COMPLETE/FAIL) are not reopening intents, so they never enter this branch;
+  // system/engine envelopes bypass entirely (operational traffic, every event is
+  // a fresh condition the receiver must see); and any message from the receiver
+  // back on this thread inside the window releases the latch at once
+  // (receiver-has-replied).
+  const AWAITING_REPLY_COOLDOWN = '-15 minutes';
+  const isEngineEnvelope = envelope.fromAgent === 'system' || envelope.origin === 'engine';
+  if (isReopeningIntent(effectiveIntent) && !isEngineEnvelope) {
+    // Cheap gate: this thread's last recorded delivery was from THIS sender, it
+    // was itself a wake-intent, and it landed inside the cooldown. recordDelivery
+    // flips last_sender to the receiver the moment they reply, so this already
+    // implies "receiver has not answered"; the merged read below confirms it
+    // authoritatively and covers any thread-state drift.
+    const latchRow = db.prepare(`
+      SELECT last_intent FROM a2a_threads
+       WHERE thread_id = @threadId
+         AND last_sender = @senderId
+         AND updated_at >= datetime('now', @window)
+    `).get({ threadId, senderId: envelope.fromAgent, window: AWAITING_REPLY_COOLDOWN }) as
+      | { last_intent: string | null }
+      | undefined;
+    const senderOwesReply =
+      !!latchRow && !!latchRow.last_intent && isReopeningIntent(latchRow.last_intent as A2AIntent);
+    if (senderOwesReply) {
+      // Has the RECEIVER posted anything back to this sender on this thread inside
+      // the cooldown? Peer replies now live in inter_agent_messages, not `messages`
+      // (D-A store cutover), so read the MERGED source; a messages-only read would
+      // miss the reply and keep the latch closed after the receiver had answered.
+      // Copies findRecentDuplicateAssignThread's merged-read pattern.
+      const receiverReplied = db.prepare(`
+        SELECT 1 AS hit FROM messages
+         WHERE agent_id = @senderId AND source_agent_id = @receiverId
+           AND a2a_thread_id = @threadId
+           AND created_at >= datetime('now', @window)
+        UNION ALL
+        SELECT 1 AS hit FROM inter_agent_messages
+         WHERE agent_id = @senderId AND source_agent_id = @receiverId
+           AND a2a_thread_id = @threadId
+           AND created_at >= datetime('now', @window)
+        LIMIT 1
+      `).get({ senderId: envelope.fromAgent, receiverId: target.id, threadId, window: AWAITING_REPLY_COOLDOWN }) as
+        | { hit: number }
+        | undefined;
+      if (!receiverReplied) {
+        logDrop(envelope, 'AWAITING_REPLY');
+        return { delivered: false, reason: 'AWAITING_REPLY', threadId };
+      }
+    }
   }
 
   // ── 6. Semantic dedup ──

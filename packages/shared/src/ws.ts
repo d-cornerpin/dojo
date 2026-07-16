@@ -95,6 +95,16 @@ export interface ChatWorkingNoteEvent {
   noteId: string;
   /** The narration text, unprefixed. */
   content: string;
+  /**
+   * RC-9: this note was demoted on a routed-channel human turn (iMessage / SMS /
+   * Teams / email), where exactly ONE routing pass delivers exactly ONE string to
+   * the channel while the dashboard live-mirrors every iteration. A demoted line
+   * here was NOT delivered to that channel, so showing it as a settled note risks
+   * reading as a second, contradictory reply. Internal notes are hidden by default
+   * in the dashboard (shown only in wordy/verbose mode). Absent/false = the prior
+   * always-visible working note (dashboard/voice turns are unchanged).
+   */
+  internal?: boolean;
 }
 
 /**

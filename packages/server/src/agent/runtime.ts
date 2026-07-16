@@ -1161,6 +1161,18 @@ function recoverStuckAgents(): void {
   } catch (err) {
     logger.error('recoverStuckAgents failed', { error: err instanceof Error ? err.message : String(err) });
   }
+
+  // RC-15 follow-up (owner ruled 2026-07-16): piggyback the Dreamer health
+  // sweep on this same recovery tick so a mid-day dream-cycle stall (stuck
+  // 'working' corpse or a dropped batch continuation) recovers within minutes
+  // instead of waiting for the nightly window. The sweep is idempotent and
+  // guards against live batches itself; dynamic import keeps this module free
+  // of a static vault dependency.
+  void import('../vault/maintenance.js')
+    .then(m => m.sweepDreamerHealth())
+    .catch(err => {
+      logger.warn('Dreamer health sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    });
 }
 
 // ── Orphaned model_id repair (v2.3.19) ──

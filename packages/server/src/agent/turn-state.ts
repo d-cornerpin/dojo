@@ -39,6 +39,42 @@ export const currentTurnImRecipient = new Map<string, string>();
 // turn that produced them; a later poked turn keeps the prose-evidence path.
 export const currentTurnReceipts = new Map<string, string[]>();
 
+// RC-12: the outer turn number of the current turn per agent. Set by the loop
+// right after it derives turnNumber (mirrors currentTurnConvKey above); read by
+// writeToolReceipt (receipts/store.ts) so an engine-written receipt can be stamped
+// with the turn that produced it WITHOUT threading turnNumber through every send
+// executor. Cleared at the turn boundary (idle). A missing entry means "outside a
+// turn" and the receipt's turn_number stays NULL.
+export const currentTurnNumber = new Map<string, number>();
+
+// RC-3 item 2: per-turn recall budget. recall_recent_thread / history_search
+// dumps are the doom-loop fuel (a wordy recall returns 12-16k chars, and nothing
+// caps N of them per turn). This map tracks cumulative EMITTED recall/history
+// output tokens for the current turn so the tool dispatcher (agent/tools.ts) can
+// return a short engine notice instead of another dump once the budget is spent.
+// The AgentTurnState (agent/v2/state.ts) is not reachable from the tool executor,
+// so the enforcement counter lives here alongside currentTurnReceipts, the
+// established home for per-turn state the executor must see. Cleared at the turn
+// boundary (turn entry + idle).
+export const currentTurnRecallTokens = new Map<string, number>();
+
+/** Recall/history output tokens accumulated this turn for the agent (0 if none). */
+export function getRecallBudgetUsed(agentId: string): number {
+  return currentTurnRecallTokens.get(agentId) ?? 0;
+}
+
+/** Add `tokens` to the agent's recall budget for this turn; returns the new total. */
+export function addRecallBudgetUsed(agentId: string, tokens: number): number {
+  const next = (currentTurnRecallTokens.get(agentId) ?? 0) + Math.max(0, tokens);
+  currentTurnRecallTokens.set(agentId, next);
+  return next;
+}
+
+/** Clear the current turn's recall budget (turn boundary). */
+export function clearRecallBudget(agentId: string): void {
+  currentTurnRecallTokens.delete(agentId);
+}
+
 /** Append a receipt id to the current turn's register for this agent. */
 export function noteTurnReceipt(agentId: string, receiptId: string): void {
   const list = currentTurnReceipts.get(agentId);
@@ -112,6 +148,46 @@ export const a2aTurnRetries = new Map<string, number>();
  *  there; this just resets the in-memory drain spin-guard. */
 export function clearServedConversations(agentId: string): void {
   drainHead.delete(agentId);
+  untrackedWorkAcrossTurns.delete(agentId);
+}
+
+// RC-19 item 3: cross-turn untracked-work counter.
+//
+// The per-turn `nonTrackerToolCalls` counter in AgentTurnState resets every turn,
+// so an agent that breaks the turn with an A2A send (the "send_to_agent IS the
+// response" exit) before the >=6 auto-scaffold floor engages can dodge the floor
+// forever (work, send_to_agent, work, send_to_agent, ...). This map carries the
+// untracked work-tool count across CONSECUTIVE turns of the SAME human conversation
+// so a turn break can no longer reset the floor. Keyed by agentId; the stored
+// convKey tags which conversation the count belongs to, so a turn on a different
+// conversation resets instead of accumulating. Reset on any tracker write (the work
+// is now tracked) or a new session. Only human turns (a non-null conv_key)
+// participate; a2a/engine detours (conv_key null) leave it untouched so an
+// interleaved A2A turn does not clobber the human conversation's running total. Same
+// in-memory, deterministic, LLM-free pattern as the counters above.
+export const untrackedWorkAcrossTurns = new Map<string, { convKey: string; count: number }>();
+
+/** Add `delta` untracked work-tool calls to the agent's cross-turn total for the
+ *  given human conversation, resetting first if the conversation changed. Returns
+ *  the new running total. */
+export function accumulateUntrackedWorkAcrossTurns(agentId: string, convKey: string, delta: number): number {
+  const prev = untrackedWorkAcrossTurns.get(agentId);
+  const base = prev && prev.convKey === convKey ? prev.count : 0;
+  const count = base + delta;
+  untrackedWorkAcrossTurns.set(agentId, { convKey, count });
+  return count;
+}
+
+/** Cross-turn untracked-work total for the agent on the given human conversation
+ *  (0 if none recorded or the conversation changed). */
+export function getUntrackedWorkAcrossTurns(agentId: string, convKey: string): number {
+  const prev = untrackedWorkAcrossTurns.get(agentId);
+  return prev && prev.convKey === convKey ? prev.count : 0;
+}
+
+/** Clear the agent's cross-turn untracked-work total (any tracker write). */
+export function clearUntrackedWorkAcrossTurns(agentId: string): void {
+  untrackedWorkAcrossTurns.delete(agentId);
 }
 
 // Drain progress: the head (oldest-waiting) rowid the runtime last re-triggered

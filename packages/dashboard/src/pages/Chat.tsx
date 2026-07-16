@@ -171,8 +171,21 @@ const isOwnerAlertSystemNote = (content: string): boolean => {
 // the user. It now demotes: the bubble converts in place (chat:workingnote
 // event live; this prefix check on reload) into a dimmed, collapsed note.
 const WORKING_NOTE_PREFIX = '[working-note] ';
-const workingNoteText = (content: string): string | null =>
-  content.startsWith(WORKING_NOTE_PREFIX) ? content.slice(WORKING_NOTE_PREFIX.length) : null;
+// RC-9: internal working notes are demoted narration from a ROUTED-channel human turn
+// (iMessage / SMS / Teams / email). Exactly one string was delivered to that channel
+// while the dashboard live-mirrors every iteration, so an internal note was NOT sent to
+// the channel and would read as a second, contradictory reply. Hidden by default; shown
+// only in wordy/verbose mode.
+const INTERNAL_WORKING_NOTE_PREFIX = '[working-note:internal] ';
+const workingNote = (content: string): { text: string; internal: boolean } | null => {
+  if (content.startsWith(INTERNAL_WORKING_NOTE_PREFIX)) {
+    return { text: content.slice(INTERNAL_WORKING_NOTE_PREFIX.length), internal: true };
+  }
+  if (content.startsWith(WORKING_NOTE_PREFIX)) {
+    return { text: content.slice(WORKING_NOTE_PREFIX.length), internal: false };
+  }
+  return null;
+};
 
 const ownerAlertDisplayText = (content: string): string =>
   stripSourceEnvelope(content.trim())
@@ -1056,10 +1069,13 @@ export const Chat = ({ panel = null }: ChatProps) => {
       const e = event as ChatWorkingNoteEvent;
       if (e.agentId !== agentIdRef.current) return;
       setMessages((prev) => {
+        // RC-9: carry the internal flag through the persisted content prefix so the
+        // render-time filter hides an internal note (routed-channel human turn) outside
+        // wordy mode, identically live and on reload.
         const note: ChatMessage = {
           id: e.noteId,
           role: 'system',
-          content: `${WORKING_NOTE_PREFIX}${e.content}`,
+          content: `${e.internal ? INTERNAL_WORKING_NOTE_PREFIX : WORKING_NOTE_PREFIX}${e.content}`,
           createdAt: new Date().toISOString(),
         };
         // Convert the streamed bubble in place so the text never vanishes; if
@@ -1785,11 +1801,14 @@ export const Chat = ({ panel = null }: ChatProps) => {
             if (trimmedSys === '[Agent ended turn without replying — conversation closed]') {
               return null;
             }
-            // Demoted working note: renders in BOTH modes (the narration was
-            // visible live in both, so its settled form must be too).
-            const noteText = workingNoteText(trimmedSys);
-            if (noteText) {
-              return <WorkingNoteBubble key={msg.id} text={noteText} />;
+            // Demoted working note: a plain note renders in BOTH modes (the narration
+            // was visible live in both). RC-9: an INTERNAL note (from a routed-channel
+            // human turn, never delivered to that channel) is hidden outside wordy mode
+            // so it can't read as a second, contradictory reply.
+            const note = workingNote(trimmedSys);
+            if (note) {
+              if (note.internal && !wordyMode) return null;
+              return <WorkingNoteBubble key={msg.id} text={note.text} />;
             }
             // Divider-style markers: any system message shaped "── label ──"
             // renders as a horizontal divider with the label centered.

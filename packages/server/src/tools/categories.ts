@@ -55,7 +55,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'Conversation Recall',
-    tools: ['recall_recent_thread', 'history_search', 'history_get', 'history_expand'],
+    tools: ['recall_recent_thread', 'history_search', 'history_get', 'history_expand', 'loop_resolve'],
   },
   {
     // Squad-shared memory for multi-agent coordination (Phase 7 / Part X).

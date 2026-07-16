@@ -15,6 +15,7 @@ import { msGraphRead } from '../microsoft/client.js';
 import { listMicrosoftAccountViews, type MicrosoftAccountView } from '../microsoft/auth.js';
 import { getOutlookSafeSenders } from './channel-safe-senders.js';
 import { addressesMatch } from './imessage-bridge.js';
+import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
 import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError } from './watcher-status.js';
 
 const logger = createLogger('outlook-watcher');
@@ -284,6 +285,10 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
     const accountSuffix = kind === 'user' ? "user's Microsoft account" : "agent's Microsoft account";
     const toolHint = kind === 'agent' ? 'outlook_read' : 'user_outlook_read';
 
+    // Every agent-mailbox identity across both providers, resolved once per
+    // poll and reused for the self-sent skip below.
+    const selfIdentities = listAgentSelfIdentities();
+
     let newCount = 0;
 
     for (const msg of data.value) {
@@ -304,11 +309,20 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
 
       // Requirement: the agent's own outbound must never wake it (cost plus
       // reply-loop risk). Outlook polls me/mailFolders/inbox, so unlike Gmail
-      // there is no SENT label to lean on; the decisive check is that the sender
-      // IS the watched account. The mail stays in the inbox and searchable; only
-      // the wake is suppressed (notifiedIds.add keeps it marked as handled).
-      if (!!fromAddr && !!view.email && addressesMatch(fromAddr, view.email)) {
-        logger.info('Outlook poll: skipping self-sent', { accountId, messageId: msg.id, from, subject });
+      // there is no SENT label to lean on; the SENDER address is the decisive
+      // signal: it must not be one of the agent's own mailboxes. That means this
+      // watched account AND every other connected agent-mailbox identity across
+      // both providers, so mail the agent sent from a different one of its own
+      // mailboxes into this one is suppressed too. User-kind mailboxes are
+      // excluded from that set: the owner mailing the agent must still wake it.
+      // The mail stays in the inbox and searchable; only the wake is suppressed
+      // (notifiedIds.add keeps it marked as handled).
+      const selfIdentity = !fromAddr
+        ? null
+        : matchSelfIdentity(fromAddr, selfIdentities)
+          ?? (view.email && addressesMatch(fromAddr, view.email) ? view.email : null);
+      if (selfIdentity) {
+        logger.info('Outlook poll: skipping self-sent', { accountId, messageId: msg.id, from, subject, selfIdentity });
         notifiedIds.add(msg.id);
         continue;
       }

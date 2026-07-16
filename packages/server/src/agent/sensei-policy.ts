@@ -123,6 +123,7 @@ export const SEND_TO_PEOPLE_NA: Readonly<Record<string, string>> = {
   'squad_*': 'agent-to-agent shared memory (not an owner channel)',
   'tracker_*': 'internal project bookkeeping',
   'reminder_create': 'internal reminder bookkeeping',
+  'loop_resolve': 'retires a tracked open loop; internal bookkeeping, sends nothing',
   'list_agents': 'agent management',
   'list_groups': 'agent management',
   'list_models': 'agent management',

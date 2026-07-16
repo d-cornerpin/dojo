@@ -356,6 +356,20 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
     }
 
     const lines: string[] = [];
+    // RC-3 item 3: label the UNSCOPED view. Live context is conv-scoped, but
+    // scope:'all' recall is the raw merged multi-conversation soup; without this
+    // label the agent flips between two inconsistent views of "what just happened"
+    // and misreads the extra rows as its live context being corrupt (the "I see you
+    // in the recall but not your actual message text" panic). Explain the difference
+    // at the source instead. (The counterparty name is not resolved at this layer, so
+    // the label says "the current conversation" rather than naming it.)
+    if (opts.scope === 'all') {
+      lines.push(
+        `[UNSCOPED view: includes ALL conversations and background lanes; your live ` +
+        `context is scoped to the current conversation. Rows here that you don't see ` +
+        `live are NOT missing, they belong to other lanes.]`,
+      );
+    }
     const headerParts = [
       `last ${opts.turnCount} user/assistant exchanges`,
       sessionBoundary ? 'bounded by current session' : null,
@@ -372,7 +386,13 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
 
     for (const msg of slice) {
       if (!oldestIncludedId) oldestIncludedId = msg.id;
-      messagesShown += 1;
+      // RC-3 item 1: count a row as "shown" ONLY if it actually emits at least one
+      // line. The old `messagesShown += 1` counted every FETCHED row, so a body-less
+      // response (an assistant row that is pure tool_use with include_tool_calls=false,
+      // or a system row > 200 chars) footed "Showed 5 messages" with nothing visible,
+      // which the agent read as corruption ("I see you in the recall but not your
+      // message text"). Comparing lines.length before/after makes the count truthful.
+      const linesBefore = lines.length;
 
       const role = ROLE_LABEL[msg.role] ?? msg.role.toUpperCase();
       const t = formatTimestamp(msg.created_at);
@@ -380,9 +400,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
       if (msg.role === 'system') {
         const trimmed = msg.content.trim();
         if (trimmed.length <= 200) lines.push(`[${role} ${t}] ${trimmed}`);
-        continue;
-      }
-      if (msg.role === 'user') {
+      } else if (msg.role === 'user') {
         const userClip = clip(msg.content.trim(), messageChars);
         lines.push(`[${role} ${t}] ${userClip.text || '(no text)'}`);
         if (userClip.truncated > 0) {
@@ -390,60 +408,61 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
             `  [truncated, ${userClip.truncated} more chars, call history_get(id="${msg.id}") for full body]`,
           );
         }
-        continue;
-      }
-      if (msg.role === 'tool') {
+      } else if (msg.role === 'tool') {
         // Only emitted when includeToolResults=true; otherwise tool rows
         // were filtered out by the SQL. Render with truncation.
         // Note: tool results emitted next to their tool_use (in the assistant
         // branch below) are consumed from toolResultsByUseId and won't appear
         // here. This branch is the fallback for orphaned tool rows.
         const tuid = extractToolUseId(msg.content);
-        if (tuid && !toolResultsByUseId.has(tuid)) continue; // already emitted
-        const resultText = parseToolContent(msg.content);
-        const clipped = clip(resultText, truncateChars);
-        lines.push(`[${role} ${t}] (result) ${clipped.text || '(empty)'}`);
-        if (clipped.truncated > 0) {
-          truncatedResultCount += 1;
-          lines.push(
-            `  [truncated, ${clipped.truncated} more chars, call history_get(id="${msg.id}") for full body]`,
-          );
+        if (!tuid || toolResultsByUseId.has(tuid)) { // not already emitted next to a tool_use
+          const resultText = parseToolContent(msg.content);
+          const clipped = clip(resultText, truncateChars);
+          lines.push(`[${role} ${t}] (result) ${clipped.text || '(empty)'}`);
+          if (clipped.truncated > 0) {
+            truncatedResultCount += 1;
+            lines.push(
+              `  [truncated, ${clipped.truncated} more chars, call history_get(id="${msg.id}") for full body]`,
+            );
+          }
         }
-        continue;
-      }
-      // assistant
-      const parts = parseAssistantContent(msg.content);
-      if (parts.text) {
-        const asstClip = clip(parts.text, messageChars);
-        lines.push(`[${role} ${t}] ${asstClip.text}`);
-        if (asstClip.truncated > 0) {
-          lines.push(
-            `  [truncated, ${asstClip.truncated} more chars, call history_get(id="${msg.id}") for full body]`,
-          );
+      } else {
+        // assistant
+        const parts = parseAssistantContent(msg.content);
+        if (parts.text) {
+          const asstClip = clip(parts.text, messageChars);
+          lines.push(`[${role} ${t}] ${asstClip.text}`);
+          if (asstClip.truncated > 0) {
+            lines.push(
+              `  [truncated, ${asstClip.truncated} more chars, call history_get(id="${msg.id}") for full body]`,
+            );
+          }
         }
-      }
-      if (opts.includeToolCalls && parts.toolCalls.length > 0) {
-        for (const tc of parts.toolCalls) {
-          lines.push(`[${role} ${t}] (called: ${tc.name}${tc.args ? ' ' + tc.args : ''})`);
-          if (includeToolResults && tc.id) {
-            const resultRow = toolResultsByUseId.get(tc.id);
-            if (resultRow) {
-              const resultText = parseToolContent(resultRow.content);
-              const clipped = clip(resultText, truncateChars);
-              const resT = formatTimestamp(resultRow.created_at);
-              lines.push(`[TOOL ${resT}] (result: ${tc.name}) ${clipped.text || '(empty)'}`);
-              if (clipped.truncated > 0) {
-                truncatedResultCount += 1;
-                lines.push(
-                  `  [truncated, ${clipped.truncated} more chars, call history_get(id="${resultRow.id}") for full body]`,
-                );
+        if (opts.includeToolCalls && parts.toolCalls.length > 0) {
+          for (const tc of parts.toolCalls) {
+            lines.push(`[${role} ${t}] (called: ${tc.name}${tc.args ? ' ' + tc.args : ''})`);
+            if (includeToolResults && tc.id) {
+              const resultRow = toolResultsByUseId.get(tc.id);
+              if (resultRow) {
+                const resultText = parseToolContent(resultRow.content);
+                const clipped = clip(resultText, truncateChars);
+                const resT = formatTimestamp(resultRow.created_at);
+                lines.push(`[TOOL ${resT}] (result: ${tc.name}) ${clipped.text || '(empty)'}`);
+                if (clipped.truncated > 0) {
+                  truncatedResultCount += 1;
+                  lines.push(
+                    `  [truncated, ${clipped.truncated} more chars, call history_get(id="${resultRow.id}") for full body]`,
+                  );
+                }
+                // Mark consumed so we don't double-emit below.
+                toolResultsByUseId.delete(tc.id);
               }
-              // Mark consumed so we don't double-emit below.
-              toolResultsByUseId.delete(tc.id);
             }
           }
         }
       }
+
+      if (lines.length > linesBefore) messagesShown += 1;
     }
 
     // Footer, impossible to misread. Always tells the agent how to get
@@ -452,6 +471,14 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
     lines.push('');
     const footerParts: string[] = [];
     footerParts.push(`Showed ${messagesShown} messages from ${slice.length} fetched rows`);
+    // RC-3 item 1: when fetched > emitted, the gap is tool-activity-only rows that
+    // rendered nothing. Say so explicitly so a body-less footer is never misread as
+    // corruption. This single line would have prevented the 7/12 panic.
+    if (messagesShown < slice.length) {
+      footerParts.push(
+        `${slice.length - messagesShown} rows in this window are tool-activity only; pass include_tool_calls=true to see them`,
+      );
+    }
     if (oldestIncludedId) {
       footerParts.push(
         `oldest in this slice: id="${oldestIncludedId}", call recall_recent_thread(before_id="${oldestIncludedId}") for older turns`,

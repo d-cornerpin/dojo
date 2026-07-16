@@ -307,7 +307,11 @@ function renderTurnContext(ctx: AssemblyContext): EngineMessage | null {
   const parts: string[] = [];
 
   if (tc?.counterparty) {
-    parts.push(renderCounterpartyHeader(tc.counterparty, { isEngineTurn: tc.isEngineTurn }));
+    parts.push(renderCounterpartyHeader(tc.counterparty, {
+      isEngineTurn: tc.isEngineTurn,
+      isNotificationTurn: tc.isNotificationTurn,
+      resolvedDestination: tc.resolvedReplyChannel,
+    }));
   }
   const rd = renderReplyDestination(ctx.replyDestination, ctx.smsFromNumber, ctx.phoneFromNumber, ctx.replyRecipientName);
   if (rd) parts.push(rd);

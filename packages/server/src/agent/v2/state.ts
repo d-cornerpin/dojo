@@ -345,6 +345,21 @@ export interface AgentTurnState {
    */
   nudgedForUngroundedClaimThisTurn: boolean;
   /**
+   * RC-12 denial direction. Set true the first time the delivery-DENIAL guard fires
+   * this turn: the terminal reply denies having sent something ("Not yet", "sending
+   * now") but the engine receipt ledger proves it already did. One-shot correction
+   * (steer with the receipt fact), then the turn ends normally, so a model that keeps
+   * denying can't spin the loop. Mirrors nudgedForUngroundedClaimThisTurn.
+   */
+  nudgedForDeliveryDenialThisTurn: boolean;
+  /**
+   * RC-13.2 save-claim floor. Set true the first time the failed-save-claim guard
+   * fires this turn: the reply claims something was saved/stored/remembered but every
+   * vault_remember this turn was REJECTED and nothing was stored. One-shot steer, then
+   * the turn ends normally.
+   */
+  nudgedForFailedSaveClaimThisTurn: boolean;
+  /**
    * Set true the first time the thrash-gate DRIFT path nudges this turn
    * (comms-audit G-BLK-1). Drift (gate on while the agent varies call signatures)
    * is a false-positive-prone signal, legitimate progress also varies signatures, 
@@ -545,6 +560,8 @@ export function initState(params: InitStateParams): AgentTurnState {
     nudgedForCloseOutThisTurn: false,
     nudgedForAddNotesStopThisTurn: false,
     nudgedForUngroundedClaimThisTurn: false,
+    nudgedForDeliveryDenialThisTurn: false,
+    nudgedForFailedSaveClaimThisTurn: false,
     nudgedForThrashDriftThisTurn: false,
     nudgedForGoingIdleWithInProgressThisTurn: false,
     autoScaffoldedTaskIdThisTurn: null,

@@ -170,6 +170,9 @@ interface SafeSender {
   description?: string;
   is_primary: boolean;
   sharing_level: SharingLevel;
+  /** This contact is another AI agent, not a person. The engine skips
+   *  work-acks and damps content-free courtesy volleys toward it. */
+  is_agent?: boolean;
 }
 
 const SHARING_LEVEL_LABELS: Record<SharingLevel, string> = {
@@ -217,6 +220,7 @@ const parseSenders = (raw: string | undefined): SafeSender[] => {
           description: typeof item.description === 'string' && item.description.trim() ? item.description.trim() : undefined,
           is_primary: isPrimary,
           sharing_level: isSharingLevel(item.sharing_level) ? item.sharing_level : (isPrimary ? 'open_book' : 'dont_overshare'),
+          is_agent: item.is_agent === true,
         }];
       }
       return [];
@@ -233,6 +237,7 @@ const IMBridgeSettings = () => {
   const [newName, setNewName] = useState('');
   const [newDescription, setNewDescription] = useState('');
   const [newSharingLevel, setNewSharingLevel] = useState<SharingLevel>('dont_overshare');
+  const [newIsAgent, setNewIsAgent] = useState(false);
   const [showAddInput, setShowAddInput] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -347,12 +352,16 @@ const IMBridgeSettings = () => {
       name,
       description,
       is_primary: isPrimary,
+      // The primary is the owner, a person by definition; the agent flag only
+      // ever applies to non-primary senders.
+      is_agent: isPrimary ? false : newIsAgent,
       sharing_level: isPrimary ? 'open_book' : newSharingLevel,
     }]);
     setNewAddress('');
     setNewName('');
     setNewDescription('');
     setNewSharingLevel('dont_overshare');
+    setNewIsAgent(false);
     setShowAddInput(false);
     setError(null);
   };
@@ -385,6 +394,10 @@ const IMBridgeSettings = () => {
 
   const setSharingLevel = (index: number, level: SharingLevel) => {
     setSenders(senders.map((s, i) => i === index ? { ...s, sharing_level: level } : s));
+  };
+
+  const setIsAgentFlag = (index: number, isAgent: boolean) => {
+    setSenders(senders.map((s, i) => i === index ? { ...s, is_agent: isAgent } : s));
   };
 
   if (loading) return null;
@@ -494,6 +507,20 @@ const IMBridgeSettings = () => {
                       <p className="text-xs text-cp-amber">⚠ Project Only needs a description that names the specific project; without it the agent has no scope to enforce.</p>
                     )}
                   </div>
+                  {!sender.is_primary && (
+                    <label
+                      className="mt-2 inline-flex items-center gap-2 cursor-pointer select-none"
+                      title="Check this when the contact is another AI agent (like a family member's assistant). Your agent will skip the automatic 'on it' texts and won't volley courtesy replies with it."
+                    >
+                      <input
+                        type="checkbox"
+                        checked={sender.is_agent === true}
+                        onChange={(e) => setIsAgentFlag(i, e.target.checked)}
+                        className="h-3.5 w-3.5 rounded border-ui/[0.15] bg-ui/[0.05] accent-amber-500 cursor-pointer"
+                      />
+                      <span className="text-[11px] text-ui/55">This contact is an AI agent, not a person</span>
+                    </label>
+                  )}
                 </div>
               ))}
             </div>
@@ -561,6 +588,18 @@ const IMBridgeSettings = () => {
                     ))}
                   </select>
                   <p className="text-xs text-ui/25">{SHARING_LEVEL_HINTS[newSharingLevel]}</p>
+                  <label
+                    className="mt-2 inline-flex items-center gap-2 cursor-pointer select-none"
+                    title="Check this when the contact is another AI agent (like a family member's assistant). Your agent will skip the automatic 'on it' texts and won't volley courtesy replies with it."
+                  >
+                    <input
+                      type="checkbox"
+                      checked={newIsAgent}
+                      onChange={(e) => setNewIsAgent(e.target.checked)}
+                      className="h-3.5 w-3.5 rounded border-ui/[0.15] bg-ui/[0.05] accent-amber-500 cursor-pointer"
+                    />
+                    <span className="text-[11px] text-ui/55">This contact is an AI agent, not a person</span>
+                  </label>
                 </div>
               )}
               {senders.length === 0 && (
@@ -575,7 +614,7 @@ const IMBridgeSettings = () => {
                   Add sender
                 </button>
                 <button
-                  onClick={() => { setShowAddInput(false); setNewAddress(''); setNewName(''); setNewDescription(''); setNewSharingLevel('dont_overshare'); }}
+                  onClick={() => { setShowAddInput(false); setNewAddress(''); setNewName(''); setNewDescription(''); setNewSharingLevel('dont_overshare'); setNewIsAgent(false); }}
                   className="px-3 py-2 text-sm text-ui/55 hover:text-ui/90 transition-colors"
                 >
                   Cancel

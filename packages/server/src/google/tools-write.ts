@@ -983,11 +983,13 @@ export async function executeGoogleWriteTool(
       // discarded). A 2xx with no message id means we cannot confirm the send;
       // fail the turn and write an unverified receipt so the gate blocks close.
       const sendData = result.data as { id?: string; threadId?: string } | null;
+      // RC-12: sent_text = subject + first 300 chars of body (bounded further in the store).
+      const gmailSentText = `${subject}: ${(body ?? '').slice(0, 300)}`;
       if (!sendData?.id) {
-        writeToolReceipt({ agentId, tool: 'gmail_send', tier: 1, verified: false, basis: 'http-status', recipient: to, detail: { anomaly: 'gmail send 2xx but no message id', threadId: sendData?.threadId ?? null } });
+        writeToolReceipt({ agentId, tool: 'gmail_send', tier: 1, verified: false, basis: 'http-status', recipient: to, sentText: gmailSentText, detail: { anomaly: 'gmail send 2xx but no message id', threadId: sendData?.threadId ?? null } });
         return `Error: the Gmail API accepted the request but returned no message id, so the send to ${to} could not be verified. It may still have gone out: check the Sent folder FIRST, and re-send only if it is not there.`;
       }
-      writeToolReceipt({ agentId, tool: 'gmail_send', tier: 1, verified: true, basis: 'provider-id', providerId: sendData.id, threadId: sendData.threadId ?? null, recipient: to, detail: { status: 'sent' } });
+      writeToolReceipt({ agentId, tool: 'gmail_send', tier: 1, verified: true, basis: 'provider-id', providerId: sendData.id, threadId: sendData.threadId ?? null, recipient: to, sentText: gmailSentText, detail: { status: 'sent' } });
 
       const attachSummary = (inline.length + overflow.length) === 0 ? '' :
         ` with ${inline.length} inline attachment(s)${overflow.length > 0 ? ` and ${overflow.length} Drive link(s)` : ''}`;

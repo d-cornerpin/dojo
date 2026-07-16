@@ -323,6 +323,37 @@ async function assembleContextViaRegistry(
 const A2A_INBOUND_RE = /^\s*(\[A2A:|\[SOURCE: AGENT MESSAGE FROM|\[SOURCE: GROUP BROADCAST FROM|\[SOURCE: PM AGENT POKE FROM)/;
 
 /**
+ * RC-5.4: build a compact awareness-lane gist for a mailbox/channel notification from
+ * its STRUCTURED inbound_meta (sender + subject) plus a short preview lifted from the
+ * notification body, instead of slicing 400 chars of boilerplate (the MAILBOX EVENT
+ * preamble alone is ~407 chars, so the raw slice often carried no actual email
+ * metadata). Returns null when no structured meta is present, so the caller falls back
+ * to the raw slice. Pure.
+ */
+function buildAwarenessGist(inboundMetaRaw: string | null | undefined, rawContent: string): string | null {
+  if (!inboundMetaRaw) return null;
+  let meta: { sender?: string | null; emailSubject?: string | null } | null = null;
+  try {
+    meta = JSON.parse(inboundMetaRaw) as { sender?: string | null; emailSubject?: string | null };
+  } catch {
+    return null;
+  }
+  const sender = (meta?.sender ?? '').toString().trim();
+  const subject = (meta?.emailSubject ?? '').toString().trim();
+  // Nothing structured to lean on, let the caller use its raw-slice fallback.
+  if (!sender && !subject) return null;
+  // The mailbox watchers include a "Preview: <snippet>" line in the body; lift it as a
+  // short preview (subject is the headline; preview is the flavor).
+  const previewMatch = /(?:^|\n)\s*Preview:\s*([^\n]+)/i.exec(rawContent);
+  const preview = previewMatch ? previewMatch[1].replace(/\s+/g, ' ').trim() : '';
+  const parts: string[] = [];
+  if (sender) parts.push(`from ${sender}`);
+  if (subject) parts.push(`subject: "${subject.slice(0, 140)}"`);
+  if (preview) parts.push(preview.slice(0, 160));
+  return parts.join(' | ');
+}
+
+/**
  * Remove inter-agent traffic from a fresh tail for a normal/user turn:
  *   (a) inbound A2A messages (role='user' with origin.kind==='agent'),
  *   (b) the agent's own send_to_agent / broadcast_to_group tool calls,
@@ -481,8 +512,12 @@ function scopeToEngineTurn(tail: Message[]): Message[] {
  * output (A2A sends already stripped), and engine events (which the caller then
  * lifts into the EVENTS lane). Drops: every other human's inbound and all A2A.
  * Falls back to the A2A-only strip when there's no counterparty (legacy path).
+ *
+ * Exported for the RC-1 no-bleed regression tests (memory/__tests__): the dual-home
+ * echo row must land in the RECIPIENT's scoped tail and NOWHERE else, and no other
+ * conversation's user rows may ever cross into a turn's scoped tail.
  */
-function scopeToHumanConversation(tail: Message[], cp: TurnCounterparty | undefined): Message[] {
+export function scopeToHumanConversation(tail: Message[], cp: TurnCounterparty | undefined): Message[] {
   const a2aStripped = stripA2AFromTail(tail);
   if (!cp) return a2aStripped;
   const cpKey = conversationKey(cp.channel, cp.senderId, cp.name, cp.threadId);
@@ -1020,7 +1055,8 @@ async function assembleMessageContext(
   if (awarenessEvents.length > 0) {
     const eventLines = awarenessEvents.slice(-10).map((m) => {
       const o = m.origin;
-      const body = (typeof m.content === 'string' ? m.content : '')
+      const rawContent = typeof m.content === 'string' ? m.content : '';
+      const body = rawContent
         .replace(/^\s*\[[^\]]*\]\s*/, '') // drop the leading [SOURCE: …] marker
         .replace(/\s+/g, ' ')
         .trim();
@@ -1030,7 +1066,15 @@ async function assembleMessageContext(
       const label = o?.kind === 'user'
         ? `${o.channel ?? 'msg'} notice${o.senderName ? ` from ${o.senderName}` : ''}`
         : (o?.intent ?? 'event');
-      return `• [${label}] ${body.slice(0, 400)}`;
+      // RC-5.4: build the gist from the STRUCTURED inbound_meta fields when present
+      // instead of slicing 400 chars of the notification boilerplate. The MAILBOX EVENT
+      // preamble alone is ~407 chars, so the raw slice often carried ZERO email metadata
+      // (the model woke knowing only "an email arrived" and improvised). For a mailbox
+      // notification (user-kind awareness event) surface sender + subject + a short
+      // preview; fall back to the raw slice when there is no structured meta.
+      const structured = o?.kind === 'user' ? buildAwarenessGist(m.inboundMeta, rawContent) : null;
+      const gist = structured ?? body.slice(0, 400);
+      return `• [${label}] ${gist}`;
     });
     messages.push({
       role: 'user',

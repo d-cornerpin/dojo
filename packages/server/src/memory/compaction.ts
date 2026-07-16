@@ -13,6 +13,7 @@ import {
   replaceContextItems,
 } from './dag.js';
 import { generateSummary } from './summarize.js';
+import { ingestSummaryOpenLoops, stripOpenLoopsSection } from './open-loops.js';
 import { archiveMessagesBeforeCompaction, isDreamerIgnored, getArchiveHighWaterMark } from '../vault/archive.js';
 import { isSystemServiceAgent } from '../config/platform.js';
 import { lastCompactionDividerAt } from '../agent/shared-state.js';
@@ -795,10 +796,19 @@ export async function runLeafCompaction(
         abortSignal: opts?.abortSignal,
       });
 
+      // RC-2: parse the summary's fenced OPEN-LOOPS + RESOLVED/CLOSED sections,
+      // upsert/resolve structured open_loops rows (attributed to the chunk's
+      // conversations), and STRIP the OPEN-LOOPS section from the stored summary so
+      // open obligations live as retirable rows, not immortal prose. Defensive: a
+      // parse failure returns the summary unchanged. Recompute the token count on
+      // the stripped text so the stored count stays accurate.
+      const leafText = ingestSummaryOpenLoops({ agentId, summaryText: summary.text, chunk });
+      const leafTokens = leafText === summary.text ? summary.tokenCount : estimateTokens(leafText);
+
       createLeafSummary(
         agentId,
-        summary.text,
-        summary.tokenCount,
+        leafText,
+        leafTokens,
         messageIds,
         earliestAt,
         latestAt,
@@ -1052,7 +1062,13 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
       previousContext: CONTINUITY_BRIEF_PROMPT,
     });
 
-    if (!result.text || result.text.length < 50) {
+    // RC-2: the depth-0 contract can emit a fenced OPEN-LOOPS section; the
+    // continuity brief is a narrative for the agent, not the canonical leaf that
+    // upserts structured rows, so strip the section here (no upsert) to keep the
+    // brief clean. No-op when the section is absent.
+    const briefText = stripOpenLoopsSection(result.text);
+
+    if (!briefText || briefText.length < 50) {
       logger.warn('Continuity brief generation produced empty/short result, skipping', { agentId });
       return;
     }
@@ -1067,7 +1083,7 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
       hour: '2-digit', minute: '2-digit', hour12: true,
       timeZoneName: 'short',
     });
-    const briefContent = `[CONTINUITY BRIEF, ${briefTimestamp}, generated before memory compaction]\n${result.text}\n\nYour older conversation history has been archived to the vault. If you need details beyond what's in this brief, use vault_search or history_search to find specific facts, file paths, decisions, or instructions from your earlier conversation.`;
+    const briefContent = `[CONTINUITY BRIEF, ${briefTimestamp}, generated before memory compaction]\n${briefText}\n\nYour older conversation history has been archived to the vault. If you need details beyond what's in this brief, use vault_search or history_search to find specific facts, file paths, decisions, or instructions from your earlier conversation.`;
 
     // Phase 4 §C (2026-05-04), set continuityBriefValidUntilTurn so the
     // assembler stops injecting the brief after 3 turns post-emergency

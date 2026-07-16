@@ -23,6 +23,7 @@ import { googleRead } from '../google/client.js';
 import { listGoogleAccountViews, type GoogleAccountView } from '../google/auth.js';
 import { getGmailSafeSenders } from './channel-safe-senders.js';
 import { addressesMatch } from './imessage-bridge.js';
+import { listAgentSelfIdentities, matchSelfIdentity } from './self-identities.js';
 import { type WatcherStatus, type RecentNotification, pushRecent, maybeAlertOnFailure, maybeAlertOnRecovery, normalizeError } from './watcher-status.js';
 
 const logger = createLogger('gmail-watcher');
@@ -313,6 +314,10 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
     const notifyAccount = accountEmail ?? kind;
     const accountSuffix = kind === 'user' ? "user's Google account" : "agent's Google account";
 
+    // Every agent-mailbox identity across both providers, resolved once per
+    // poll and reused for the self-sent skip below.
+    const selfIdentities = listAgentSelfIdentities();
+
     let newCount = 0;
 
     for (const msg of data.messages) {
@@ -350,13 +355,21 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       // Requirement: the agent's own outbound must never wake it (cost plus
       // reply-loop risk). A label-only test (SENT and not INBOX) can never fire
       // here: the list query is `in:inbox`, and self-addressed mail carries BOTH
-      // SENT and INBOX. The decisive check is that the sender IS the watched
-      // account; hasSent stays as a cheap corroborating signal in the log. The
-      // mail remains in the inbox and searchable; only the wake is suppressed.
+      // SENT and INBOX. The decisive signal is the SENDER address: it must not be
+      // one of the agent's own mailboxes. That means this watched account AND
+      // every other connected agent-mailbox identity across both providers, so
+      // mail the agent sent from a different one of its own mailboxes into this
+      // one is suppressed too. User-kind mailboxes are excluded from that set:
+      // the owner mailing the agent must still wake it. hasSent stays as a cheap
+      // corroborating signal in the log. The mail remains in the inbox and
+      // searchable; only the wake is suppressed.
       const hasSent = labelIds.includes('SENT');
-      const isSelfSent = !!fromAddr && !!accountEmail && addressesMatch(fromAddr, accountEmail);
-      if (isSelfSent) {
-        logger.info('Gmail poll: skipping self-sent', { accountId, messageId: msg.id, from, subject, hasSent });
+      const selfIdentity = !fromAddr
+        ? null
+        : matchSelfIdentity(fromAddr, selfIdentities)
+          ?? (accountEmail && addressesMatch(fromAddr, accountEmail) ? accountEmail : null);
+      if (selfIdentity) {
+        logger.info('Gmail poll: skipping self-sent', { accountId, messageId: msg.id, from, subject, hasSent, selfIdentity });
         notifiedIds.add(msg.id);
         continue;
       }

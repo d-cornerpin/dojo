@@ -59,6 +59,10 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   // model reaches for screen_screenshot (which only screenshots for itself) instead.
   'screen_broadcast',
   'recall_recent_thread',
+  // RC-2: the primary is the agent that gets OPEN LOOPS injected, so the tool that
+  // retires one must be callable in a single step (no load_tool_docs round-trip)
+  // the moment it delivers an answer.
+  'loop_resolve',
   'scratchpad_set',
   'technique_read',
   // v2.9.16: DOJO contacts store. Primary uses these on nearly every

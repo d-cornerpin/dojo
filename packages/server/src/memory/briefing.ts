@@ -6,6 +6,7 @@ import { callModel } from '../agent/model.js';
 import { broadcast } from '../gateway/ws.js';
 import { estimateTokens } from './store.js';
 import { getSummariesByAgent } from './dag.js';
+import { markStaleLoops, buildStaleLoopsBriefSection } from './open-loops.js';
 
 const logger = createLogger('memory-briefing');
 
@@ -101,8 +102,18 @@ Do NOT include preamble like "Here is your briefing" — start directly with the
       tools: false,
     });
 
-    const id = await saveBriefing(agentId, result.content);
-    const tokenCount = estimateTokens(result.content);
+    // RC-2: aging open loops are never silently dropped. First flip any past the
+    // staleness threshold to 'stale' (a marker, not a drop), then append a
+    // deterministic one-line-per-loop section to the brief so the owner sees them
+    // ("still open, no answer: X, ask again or drop?"). Appended AFTER the model
+    // pass so a weak model can't drop it. Only an explicit resolution/dismissal
+    // (loop_resolve) closes a surfaced loop.
+    markStaleLoops(agentId);
+    const staleSection = buildStaleLoopsBriefSection(agentId);
+    const content = staleSection ? `${result.content}\n\n${staleSection}` : result.content;
+
+    const id = await saveBriefing(agentId, content);
+    const tokenCount = estimateTokens(content);
 
     broadcast({
       type: 'memory:briefing',
@@ -115,9 +126,10 @@ Do NOT include preamble like "Here is your briefing" — start directly with the
       briefingId: id,
       tokenCount,
       summaryCount: recentSummaries.length,
+      staleLoops: staleSection ? true : false,
     }, agentId);
 
-    return { id, content: result.content, tokenCount };
+    return { id, content, tokenCount };
   } catch (err) {
     logger.error('Briefing generation failed', {
       error: err instanceof Error ? err.message : String(err),

@@ -18,8 +18,8 @@ import {
 import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
 import { injectTaskAssignmentNotification, claimAssignmentNoticeForTerminalTask } from './notify.js';
 import { writeTaskLog } from './task-log.js';
-import { calculateNextRun, normalizeDbTimestamp, parseDaysOfWeek, type ScheduledTask } from '../scheduler/engine.js';
-import { onTaskRunComplete } from '../scheduler/runner.js';
+import { calculateNextRun, normalizeDbTimestamp, parseDaysOfWeek, wallToInstant, getBoxTimeZone, type ScheduledTask, type WallClock } from '../scheduler/engine.js';
+import { onTaskRunComplete, terminateLiveScheduleOnFallen } from '../scheduler/runner.js';
 import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, isPrimaryAgent, getOwnerName, isPMAgent } from '../config/platform.js';
@@ -70,6 +70,64 @@ function notifyPrimaryAgent(message: string, callingAgentId: string, forceNotify
       },
     });
   } catch { /* best-effort */ }
+}
+
+// ── RC-18: local wall-clock schedule input ──
+//
+// The model's single biggest schedule failure is doing timezone math itself
+// (P-2: "9 PM PT" written as a botched UTC offset lands the anchor an hour off).
+// Let the model hand us the wall-clock time it means and convert it engine-side
+// with the SAME wallToInstant the scheduler uses, so the offset is never the
+// model's job. Accepts a tz-less "YYYY-MM-DDTHH:MM[:SS]" (or space separator)
+// plus an optional IANA timezone (defaults to the box timezone).
+const WALL_CLOCK_RE = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/;
+function resolveLocalWallClock(
+  localTime: string,
+  tz?: string,
+): { ok: true; iso: string; zone: string } | { ok: false; error: string } {
+  const m = WALL_CLOCK_RE.exec(localTime.trim());
+  if (!m) {
+    return {
+      ok: false,
+      error:
+        `Error: local_time="${localTime}" must be a wall-clock time with NO timezone offset, in the form ` +
+        `"YYYY-MM-DDThh:mm" or "YYYY-MM-DD hh:mm[:ss]" (24-hour), e.g. "2026-07-16T21:00" for 9 PM. ` +
+        `The engine converts it to the correct instant for the box timezone, do NOT do the UTC math yourself. ` +
+        `Pass local_timezone (IANA, e.g. "America/Los_Angeles") if it should be resolved in a specific zone.`,
+    };
+  }
+  const zone = tz && tz.trim() ? tz.trim() : getBoxTimeZone();
+  const wall: WallClock = {
+    year: Number(m[1]), month: Number(m[2]), day: Number(m[3]),
+    hour: Number(m[4]), minute: Number(m[5]), second: m[6] ? Number(m[6]) : 0,
+  };
+  try {
+    const instant = wallToInstant(wall, zone);
+    if (isNaN(instant.getTime())) {
+      return { ok: false, error: `Error: local_time="${localTime}" in timezone "${zone}" did not resolve to a valid instant.` };
+    }
+    return { ok: true, iso: instant.toISOString(), zone };
+  } catch (err) {
+    return { ok: false, error: `Error: could not resolve local_time="${localTime}" in timezone "${zone}": ${err instanceof Error ? err.message : String(err)}.` };
+  }
+}
+
+// RC-18: one-line wall-clock echo + re-call nudge for any schedule write, so the
+// wall time the agent (and user) care about is shown next to the canonical UTC
+// instant. formatTimeForAgent already renders BOTH the localized form (with tz
+// abbreviation) and the UTC ISO, so an agent can never misread an unlabeled ISO.
+function scheduleEchoLines(scheduledStartIso: string | null, nextRunIso: string | null): string[] {
+  const lines: string[] = [];
+  if (scheduledStartIso) {
+    lines.push(`Scheduled (local): ${formatTimeForAgent(scheduledStartIso)}`);
+  }
+  if (nextRunIso) {
+    lines.push(`Next run (local): ${formatTimeForAgent(nextRunIso)}`);
+  }
+  if (scheduledStartIso || nextRunIso) {
+    lines.push('If this local time is NOT what the user asked for, re-call with the corrected time (or pass local_time="YYYY-MM-DDThh:mm" and let the engine do the timezone conversion).');
+  }
+  return lines;
 }
 
 // ── Engine close-out against a delivered reply (C2 invariant) ──
@@ -625,6 +683,21 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     const dependsOn = args.dependsOn as string[] | undefined;
     const phase = args.phase as number | undefined;
 
+    // RC-18: local wall-clock schedule input. When the caller passes local_time
+    // (a tz-less wall clock) instead of doing the UTC math itself, convert it
+    // engine-side into scheduled_start. Explicit scheduled_start wins if both are
+    // given. Anchor defaults to scheduled_start downstream, so we only set the
+    // start here.
+    if (args.local_time !== undefined && args.local_time !== null && args.local_time !== '' && !args.scheduled_start) {
+      if (typeof args.local_time !== 'string') {
+        return 'Error: local_time must be a string wall-clock time, e.g. "2026-07-16T21:00".';
+      }
+      const tz = (args.local_timezone ?? args.tz) as string | undefined;
+      const resolved = resolveLocalWallClock(args.local_time, typeof tz === 'string' ? tz : undefined);
+      if (!resolved.ok) return resolved.error;
+      args.scheduled_start = resolved.iso;
+    }
+
     // 2026-07-03: schedule timestamps must be parseable, checked BEFORE the
     // row is created. An unparseable scheduled_start used to be kept verbatim
     // ("keep original if parse fails") and written into scheduled_start AND
@@ -855,7 +928,15 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     if (assignedTo) parts.push(`Assigned to: ${assignedTo}`);
     if (assignedToGroup) parts.push(`Assigned to group: ${assignedToGroup}`);
     if (priority) parts.push(`Priority: ${priority}`);
-    if (scheduledStart) parts.push(`Scheduled: ${scheduledStart}`);
+    if (scheduledStart) {
+      // RC-18: echo the wall-clock (with tz + canonical UTC) instead of a raw ISO,
+      // and show the computed next run, so the anchor the user cares about is
+      // visible and any timezone mistake is caught before it fires.
+      const createdTask = getTask(taskId);
+      for (const line of scheduleEchoLines(scheduledStart, createdTask?.nextRunAt ?? null)) {
+        parts.push(line);
+      }
+    }
 
     // Notify assigned agent about the new task (unless they created it themselves,
     // or it's a scheduled task, the scheduler handles those).
@@ -894,13 +975,17 @@ export function reminderCreate(agentId: string, args: Record<string, unknown>): 
   if (!what) return 'Error: `what` is required (the reminder text).';
 
   const when = (args.when as string | undefined)?.trim();
-  if (!when) {
+  // RC-18: a local wall-clock (local_time) is an accepted alternative to `when`;
+  // the engine converts it to the anchor instant, so the model never does UTC math.
+  const localTime = (args.local_time as string | undefined)?.trim();
+  if (!when && !localTime) {
     return (
       'ASK_USER: This reminder needs a time. Ask the user when they would like to be ' +
       'reminded ("in 5 minutes", "tomorrow at 8am", "every Monday at 9am"). ' +
-      'Once they answer, call get_current_time to anchor relative times, then re-call ' +
-      'reminder_create with `when` set to the resolved ISO 8601 datetime. ' +
-      'Do NOT create the reminder yet.'
+      'Once they answer, either call get_current_time to anchor relative times and re-call ' +
+      'reminder_create with `when` set to the resolved ISO 8601 datetime, OR pass ' +
+      'local_time="YYYY-MM-DDThh:mm" (24-hour wall clock) and let the engine do the timezone ' +
+      'conversion. Do NOT create the reminder yet.'
     );
   }
 
@@ -908,12 +993,12 @@ export function reminderCreate(agentId: string, args: Record<string, unknown>): 
   // a `when`-flavored message (that is the arg the caller actually used). An
   // unparseable `when` used to flow into next_run_at verbatim and the reminder
   // silently never fired (behavioral harness caught when="in 2 minutes").
-  if (isNaN(new Date(when).getTime())) {
+  if (when && isNaN(new Date(when).getTime())) {
     return (
       `Error: when="${when}" is not a parseable datetime, so this reminder would never fire. ` +
       `Resolve the relative time yourself: call get_current_time, add the offset ` +
       `(e.g. "in 2 minutes" = current UTC + 2 minutes), then re-call reminder_create with an ` +
-      `ISO 8601 UTC timestamp, e.g. when="2026-07-03T16:38:00Z".`
+      `ISO 8601 UTC timestamp, e.g. when="2026-07-03T16:38:00Z". Or pass local_time="YYYY-MM-DDThh:mm".`
     );
   }
 
@@ -925,6 +1010,11 @@ export function reminderCreate(agentId: string, args: Record<string, unknown>): 
     description: what,
     kind: 'reminder',
     scheduled_start: when,
+    // RC-18: forward the wall-clock inputs; trackerCreateTask converts local_time
+    // to scheduled_start engine-side when scheduled_start (`when`) is absent.
+    local_time: localTime,
+    local_timezone: args.local_timezone,
+    tz: args.tz,
     // Caller may pass repeat params through for recurring reminders
     // ("every Monday at 9am"). Same shape as tracker_create_task.
     repeat_interval: args.repeat_interval,
@@ -1293,6 +1383,33 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // validation (matches one-shot complete semantics, final state needs
     // the same review discipline).
     if (status === 'complete' && isScheduledRecurring) {
+      // ── RC-17.1: open-occurrence gate ──
+      // A recurring per-run complete only makes sense when there is an
+      // actually-open occurrence: the scheduler must have fired this run
+      // (schedule_status='running') AND a matching 'running' task_runs row must
+      // exist. The same-status NO-OP guard above deliberately EXEMPTS recurring
+      // completes, so every stray/stale `complete` call reaches this block; a
+      // stale scheduler trigger still sitting in the agent's context would
+      // otherwise advance the schedule again (inflating run_count) or, worse,
+      // close a different occurrence (F-16). Require both signals; without them
+      // this is a stale trigger from a run that already closed, so return the
+      // existing [NO-OP] stale-trigger text and do NOT advance. The deliberate
+      // "stop the whole schedule" path (complete_all_runs=true) is handled
+      // above this block and is intentionally not gated.
+      const openRun = db.prepare(
+        `SELECT id FROM task_runs WHERE task_id = ? AND status = 'running' ORDER BY run_number DESC LIMIT 1`
+      ).get(taskId) as { id: string } | undefined;
+      const scheduleStatusNow = (
+        db.prepare('SELECT schedule_status FROM tasks WHERE id = ?').get(taskId) as { schedule_status: string } | undefined
+      )?.schedule_status;
+      if (!openRun || scheduleStatusNow !== 'running') {
+        return (
+          `[NO-OP] task_id=${taskId} | status=complete, no open scheduled run to complete, no change made.\n\n` +
+          `Task: ${taskRow?.title ?? '(unknown title)'}\n\n` +
+          `There is no run currently in progress for this recurring task. If a scheduler trigger for it is showing in your recent context, that is a STALE trigger left over from when the run actually fired, the scheduler is NOT re-firing it. Skip it silently and move on; you do not need to "re-close" already-closed work. If you actually want to STOP the whole recurring schedule, call tracker_update_status with complete_all_runs=true.`
+        );
+      }
+
       const detail = db.prepare(`
         SELECT scheduled_start, repeat_interval, repeat_unit, repeat_end_type,
                repeat_end_value, repeat_days_of_week, anchor_time, run_count,
@@ -1453,7 +1570,20 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // D-K: a 'fallen' transition can be the one that empties the project of open
     // tasks (fall-last ordering), so the fail-open check must run here too, not
     // only on completions. Idempotent: still_open/noop guards make extra calls harmless.
+    let fallenScheduleNote: string | null = null;
     if (status === 'fallen') {
+      // RC-17.5: 'fallen' on a live schedule must also STOP the schedule, or the
+      // due query (which filters only schedule_status/is_paused, not status)
+      // keeps firing it (F-17). Terminate it, close any open run as skipped, and
+      // SAY so in the result.
+      const term = terminateLiveScheduleOnFallen(taskId, 'the task was marked fallen (given up on)');
+      if (term.terminated) {
+        fallenScheduleNote =
+          `Schedule stopped so it cannot fire again` +
+          (term.runsSkipped > 0 ? `; ${term.runsSkipped} open run(s) skipped` : '') +
+          (term.isReminder && term.runsSkipped > 0 ? ` (owner told the reminder was skipped)` : '') +
+          '.';
+      }
       checkProjectCompletion(task.projectId, agentId);
     }
 
@@ -1462,6 +1592,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       ``,
       `Task updated: ${task.title}`,
     ];
+    if (fallenScheduleNote) parts.push(fallenScheduleNote);
     if (task.assignedTo) parts.push(`Assigned to: ${task.assignedToName ?? task.assignedTo}`);
     parts.push(`Priority: ${task.priority}`);
     if (task.status === 'paused' && task.pausedUntil) {
@@ -1634,6 +1765,20 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     if (!resolved.ok) return formatResolveError('task', rawTaskId, resolved);
     const taskId = resolved.id;
 
+    // RC-18: local wall-clock schedule input on edit too. Convert local_time to
+    // scheduled_start engine-side before the field reads below. Explicit
+    // scheduled_start wins if both are given.
+    if (args.local_time !== undefined && args.local_time !== null && args.local_time !== ''
+        && args.scheduledStart === undefined && args.scheduled_start === undefined) {
+      if (typeof args.local_time !== 'string') {
+        return 'Error: local_time must be a string wall-clock time, e.g. "2026-07-16T21:00".';
+      }
+      const tz = (args.local_timezone ?? args.tz) as string | undefined;
+      const resolvedWall = resolveLocalWallClock(args.local_time, typeof tz === 'string' ? tz : undefined);
+      if (!resolvedWall.ok) return resolvedWall.error;
+      args.scheduled_start = resolvedWall.iso;
+    }
+
     const title = args.title as string | undefined;
     const description = args.description as string | undefined;
     const dependsOn = args.dependsOn ?? args.depends_on;
@@ -1752,6 +1897,39 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       }
     }
 
+    // ── RC-16: task content (title/description) edits are audited AND guarded ──
+    // Snapshot title/description/original_description BEFORE the update so we can
+    // (a) write a task_log audit entry for content edits, the same discipline
+    // goal edits already get above, and (b) enforce the exact-revert guard. Two
+    // structural defects made P-1 (a silent description revert) possible and
+    // invisible: any agent could rewrite any task's description with no guard,
+    // and description/title edits were NOT task_log-audited (only goal edits).
+    const contentSnapshot = (title !== undefined || description !== undefined)
+      ? getDb().prepare('SELECT title, description, original_description FROM tasks WHERE id = ?')
+          .get(taskId) as { title: string | null; description: string | null; original_description: string | null } | undefined
+      : undefined;
+
+    // Exact-revert guard (RC-16): restoring `description` to a value that is
+    // byte-identical to the immutable `original_description`, while the current
+    // description has already been edited away from it (a later edit exists),
+    // requires an explicit revert_to_original=true. This blocks the silent
+    // "restore the stale original over a legitimate later edit" write (P-1)
+    // without preventing an intentional, acknowledged revert.
+    if (description !== undefined && description !== null && description !== '' && contentSnapshot) {
+      const orig = contentSnapshot.original_description;
+      const cur = contentSnapshot.description;
+      const isByteIdenticalToOriginal = orig !== null && description === orig;
+      const laterEditExists = cur !== orig; // current diverged from the original ask
+      if (isByteIdenticalToOriginal && laterEditExists && args.revert_to_original !== true) {
+        return (
+          `Error: this edit restores the description to the task's ORIGINAL text byte-for-byte, over a later edit that changed it. ` +
+          `That is usually an accidental revert of intended work (a stale copy overwriting the current description). ` +
+          `If you really mean to roll the description back to the original ask, re-call with revert_to_original=true. ` +
+          `Otherwise, edit from the CURRENT description instead of pasting the original back.`
+        );
+      }
+    }
+
     const updates: Parameters<typeof updateTask>[1] = {};
     if (title !== undefined) {
       if (!title.trim()) return 'Error: title cannot be empty';
@@ -1803,6 +1981,36 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     const task = updateTask(taskId, updates);
     if (!task) {
       return `Error: Task ${taskId} was deleted before the update completed. It no longer exists.`;
+    }
+
+    // RC-16: audit title/description content edits in task_log, the same
+    // discipline goal edits get above. Only logging goal edits is exactly what
+    // made P-1 (a description revert) invisible; content edits now leave the same
+    // before/after trail so a reviewer / PM can see who changed the user-facing
+    // task text and to what.
+    if (contentSnapshot) {
+      const contentEditor = isPMAgent(agentId) ? 'pm' : `agent:${agentId}`;
+      if (title !== undefined && title.trim() !== (contentSnapshot.title ?? '')) {
+        writeTaskLog({
+          taskId,
+          fromEntity: contentEditor,
+          entryKind: 'observation',
+          actionTaken: 'title_edited',
+          note: `BEFORE: ${contentSnapshot.title ?? '(none)'} -- AFTER: ${title.trim()}`,
+        });
+      }
+      if (description !== undefined) {
+        const newDesc = description === '' ? null : description;
+        if (newDesc !== (contentSnapshot.description ?? null)) {
+          writeTaskLog({
+            taskId,
+            fromEntity: contentEditor,
+            entryKind: 'observation',
+            actionTaken: args.revert_to_original === true ? 'description_edited (revert_to_original)' : 'description_edited',
+            note: `BEFORE: ${contentSnapshot.description ?? '(none)'} -- AFTER: ${newDesc ?? '(cleared)'}`,
+          });
+        }
+      }
     }
 
     // v2.5.3, if any schedule field changed, recompute next_run_at so the
@@ -1876,12 +2084,21 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     const changed: string[] = [];
     for (const k of Object.keys(updates)) changed.push(k);
 
-    return [
+    const editParts = [
       `[OK] task_id=${task.id}`,
       ``,
       `Task updated: ${task.title}`,
       `Fields changed: ${changed.join(', ')}`,
-    ].join('\n');
+    ];
+    // RC-18: if the schedule changed, echo the wall-clock anchor + next run so a
+    // timezone mistake is caught before the next fire.
+    if (scheduleChanged) {
+      const fresh = getTask(taskId);
+      for (const line of scheduleEchoLines(fresh?.scheduledStart ?? null, fresh?.nextRunAt ?? null)) {
+        editParts.push(line);
+      }
+    }
+    return editParts.join('\n');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('trackerEditTask failed', { error: msg }, agentId);
@@ -1926,6 +2143,19 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
             return dep ? dep.title : depId;
           });
           parts.push(`Depends on: ${depNames.join(', ')}`);
+        }
+        // RC-18: surface the schedule so the description's prose time ("9 PM PT")
+        // and the actual anchor are visible side by side (P-2 was invisible
+        // because get_status never showed the schedule). Wall-clock + UTC via
+        // formatTimeForAgent so the time can't be misread.
+        if (task.scheduleStatus && task.scheduleStatus !== 'unscheduled') {
+          const cadence = task.repeatInterval && task.repeatUnit
+            ? `every ${task.repeatInterval} ${task.repeatUnit}`
+            : 'one-time';
+          parts.push(`Schedule: ${cadence} | status=${task.scheduleStatus}${task.isPaused ? ' (paused)' : ''}`);
+          if (task.scheduledStart) parts.push(`  Anchor: ${formatTimeForAgent(task.scheduledStart)}`);
+          parts.push(`  Next run: ${task.nextRunAt ? formatTimeForAgent(task.nextRunAt) : 'none scheduled'}`);
+          if (task.runCount) parts.push(`  Runs completed: ${task.runCount}`);
         }
         if (task.notes) parts.push(`\nNotes:\n${task.notes}`);
         parts.push(`Created: ${task.createdAt}`);
@@ -2129,6 +2359,24 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
     // Guard: don't complete a paused task, it was intentionally put on hold
     if (task.status === 'paused') {
       return `Error: Task "${task.title}" is paused. It cannot be completed while paused. Unpause it first (tracker_update_status with status="in_progress") or ask ${getOwnerName()} for instructions.`;
+    }
+
+    // ── RC-17.3: recurring-aware refusal ──
+    // tracker_complete_step is the project-step sequencer: it does a bare
+    // updateTask(status='complete') with ZERO run bookkeeping. On a scheduled
+    // recurring task that is fatal, it flips the row to 'complete' while the
+    // scheduler's occurrence (task_runs row + schedule_status='running') stays
+    // open, orphaning the run and skipping the per-run advance / PM validation.
+    // Refuse and route the agent to the recurring-aware path instead of silently
+    // corrupting the schedule state.
+    const isScheduledRecurring = task.scheduleStatus !== 'unscheduled' && !!task.repeatInterval;
+    if (isScheduledRecurring) {
+      return (
+        `Error: "${task.title}" (${taskId.slice(0, 8)}) is a scheduled recurring task, so it is not a project step to sequence. ` +
+        `Do NOT use tracker_complete_step on it (that would leave the scheduler's run open and skip the per-run advance). ` +
+        `To finish THIS run, call tracker_update_status(task_id="${taskId}", status="complete", result="...", evidence=[...]); the engine advances the schedule to the next run. ` +
+        `To stop the whole recurring schedule (no more runs), call tracker_update_status(task_id="${taskId}", status="complete", complete_all_runs=true).`
+      );
     }
 
     // Mark current task as complete
@@ -3076,9 +3324,10 @@ export async function trackerValidateComplete(
       //   - calls calculateNextRun
       //   - sets status=on_deck + schedule_status=waiting (more runs), OR
       //     status=complete + schedule_status=completed (terminal)
+      let advanced = false;
       try {
         const { onTaskRunComplete } = await import('../scheduler/runner.js');
-        await onTaskRunComplete(taskId, 'complete', '(PM validated this run)');
+        advanced = await onTaskRunComplete(taskId, 'complete', '(PM validated this run)');
       } catch (err) {
         logger.warn('onTaskRunComplete failed during recurring validate (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
       }
@@ -3087,7 +3336,25 @@ export async function trackerValidateComplete(
       if (!after) {
         return `Error: task ${taskId} disappeared during recurring validate.`;
       }
-      const wasTerminal = after.scheduleStatus === 'completed' || after.status === 'complete';
+      // ── RC-17.7: terminal misdetection fix ──
+      // onTaskRunComplete NO-OPS when there is no open run (already closed /
+      // advanced elsewhere) and leaves the row at its pre-existing 'complete'.
+      // The old detector used `after.status === 'complete'`, so a no-op read as a
+      // fresh terminal close and killed the ENTIRE recurring schedule
+      // (complete_validated=1). Require a REAL advance: onTaskRunComplete must
+      // have actually closed a run (advanced===true). If it did not, leave the
+      // schedule fully intact and report the no-op honestly.
+      if (!advanced) {
+        logger.info('Recurring validate found no open run to advance (no-op); schedule left intact', { taskId, pmAgentId }, pmAgentId);
+        return (
+          `[NO-OP] No open run to validate on "${task.title}" (${taskId.slice(0, 8)}). ` +
+          `This occurrence was already closed or advanced, so nothing changed and the recurring schedule was left intact. ` +
+          `You do not need to re-validate already-closed runs; wait for the next scheduled fire if one is due.`
+        );
+      }
+      // A genuine terminal close is signalled by schedule_status='completed'
+      // (no further runs). A per-run advance leaves schedule_status='waiting'.
+      const wasTerminal = after.scheduleStatus === 'completed';
       if (wasTerminal) {
         // Terminal close: flip complete_validated=1, run dep cascade.
         db.prepare(`UPDATE tasks SET complete_validated = 1, updated_at = datetime('now') WHERE id = ?`).run(taskId);
@@ -3456,6 +3723,11 @@ export async function trackerOverride(
     // D-K: an approved override to 'fallen' can be the transition that empties
     // the project of open tasks; run the fail-open check (idempotent).
     if (req.requested_status === 'fallen') {
+      // RC-17.5: also STOP a live schedule so it cannot keep firing after the
+      // override lands it in 'fallen' (mirror of the tool + dashboard paths).
+      try {
+        terminateLiveScheduleOnFallen(req.task_id, 'a PM override marked the task fallen (given up on)');
+      } catch { /* best-effort */ }
       try {
         checkProjectCompletion(freshOverride?.projectId ?? null, pmAgentId);
       } catch { /* best-effort */ }
@@ -3658,6 +3930,11 @@ export async function trackerApplyUserVerdict(
   // D-K: a user verdict of 'fallen' can likewise be the transition that
   // empties the project of open tasks; run the fail-open check (idempotent).
   if (status === 'fallen') {
+    // RC-17.5: also STOP a live schedule so it cannot keep firing after the
+    // user verdict lands it in 'fallen' (mirror of the tool + dashboard paths).
+    try {
+      terminateLiveScheduleOnFallen(taskId, 'the owner marked the task fallen (given up on)');
+    } catch { /* best-effort */ }
     try {
       checkProjectCompletion(task.project_id, agentId);
     } catch { /* best-effort */ }

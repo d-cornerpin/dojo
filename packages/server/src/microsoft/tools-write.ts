@@ -944,10 +944,12 @@ export async function executeMicrosoftWriteTool(
       {
         const recips = parseRecipients(args.to as string).map(r => r.emailAddress.address);
         const foundId = await refetchOutlookSentId({ agentId, agentName, slot, recipientAddresses: recips, subjectExact: args.subject as string });
+        // RC-12: sent_text = subject + first 300 chars of body (bounded further in the store).
+        const outlookSentText = `${String(args.subject ?? '')}: ${String(args.body ?? '').slice(0, 300)}`;
         if (foundId) {
-          writeToolReceipt({ agentId, tool: 'outlook_send', tier: 2, verified: true, basis: 'refetch', providerId: foundId, recipient: args.to as string, detail: { status: 'sent' } });
+          writeToolReceipt({ agentId, tool: 'outlook_send', tier: 2, verified: true, basis: 'refetch', providerId: foundId, recipient: args.to as string, sentText: outlookSentText, detail: { status: 'sent' } });
         } else {
-          writeToolReceipt({ agentId, tool: 'outlook_send', tier: 2, verified: false, basis: 'http-status', recipient: args.to as string, detail: { status: 202, accepted: true } });
+          writeToolReceipt({ agentId, tool: 'outlook_send', tier: 2, verified: false, basis: 'http-status', recipient: args.to as string, sentText: outlookSentText, detail: { status: 202, accepted: true } });
         }
       }
 

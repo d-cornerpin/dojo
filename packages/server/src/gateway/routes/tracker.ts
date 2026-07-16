@@ -693,6 +693,13 @@ trackerRouter.put('/tasks/:id', async (c) => {
         // ORPHANED_PROJECT backstop; fallen-containing ones have no backstop,
         // so the needs-attention label must land at transition time.
         if (body.status === 'fallen') {
+          // RC-17.5: a drag to 'fallen' on a live schedule must also STOP the
+          // schedule, or the scheduler keeps firing it (the due query filters
+          // only schedule_status/is_paused, not status). Mirror the tool path.
+          try {
+            const { terminateLiveScheduleOnFallen } = await import('../../scheduler/runner.js');
+            terminateLiveScheduleOnFallen(id, 'the task was marked fallen from the dashboard');
+          } catch { /* best-effort */ }
           try {
             const { checkProjectCompletion } = await import('../../tracker/tools.js');
             checkProjectCompletion(existing.projectId, 'user:dashboard');

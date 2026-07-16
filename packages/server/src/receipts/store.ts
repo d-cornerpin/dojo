@@ -21,7 +21,14 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { noteTurnReceipt } from '../agent/turn-state.js';
+import { noteTurnReceipt, currentTurnConvKey, currentTurnNumber } from '../agent/turn-state.js';
+
+// RC-12: bound the sent_text copy. The full body already lives in the messages
+// tool_use args; the receipt only needs enough to quote the agent's own recent
+// message back to it (the pending-question header caps display at 300). Storing a
+// little more than the display cap keeps the column bounded without truncating a
+// short message.
+const SENT_TEXT_MAX_CHARS = 500;
 
 const logger = createLogger('receipts');
 
@@ -89,6 +96,10 @@ export interface WriteReceiptParams {
   providerId?: string | null;   // Gmail message id, Twilio SID, Graph/event id, ...
   threadId?: string | null;
   recipient?: string | null;
+  // RC-12: a bounded copy of WHAT was sent (imessage/sms: the body; email:
+  // subject + first 300 chars of body). Used by the pending-question header +
+  // delivery-claim guard. The engine passes it; NEVER a secret / credential.
+  sentText?: string | null;
   // Status / anomaly data only. NEVER message bodies, NEVER secrets.
   detail?: Record<string, unknown> | null;
   sim?: boolean;
@@ -112,6 +123,11 @@ export interface ToolReceiptRow {
   audit_id: string | null;
   task_id: string | null;
   sim: number;
+  // RC-12 (migration 106): conversation + turn + sent-text context. Nullable
+  // for legacy rows and receipts written outside a turn.
+  conv_key: string | null;
+  turn_number: number | null;
+  sent_text: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -126,12 +142,21 @@ export function writeToolReceipt(params: WriteReceiptParams): string {
   const {
     agentId, tool, tier, verified, basis,
     providerId = null, threadId = null, recipient = null,
-    detail = null, sim = false, skipAudit = false,
+    sentText = null, detail = null, sim = false, skipAudit = false,
   } = params;
 
   const receiptId = uuidv4();
   const auditId = skipAudit ? null : uuidv4();
   const detailJson = detail ? JSON.stringify(detail) : null;
+  // RC-12: attribute the receipt to the turn that produced it. Resolved from the
+  // live turn state (engine facts, never model input), so send executors don't
+  // have to thread conv_key / turn_number through every call. A missing entry
+  // (receipt written outside a turn) leaves the column NULL.
+  const convKey = currentTurnConvKey.get(agentId) ?? null;
+  const turnNumber = currentTurnNumber.get(agentId) ?? null;
+  const boundedSentText = sentText != null && sentText.length > 0
+    ? sentText.slice(0, SENT_TEXT_MAX_CHARS)
+    : null;
 
   try {
     const db = getDb();
@@ -149,11 +174,13 @@ export function writeToolReceipt(params: WriteReceiptParams): string {
       INSERT INTO tool_receipts (
         id, agent_id, tool, tier, verified, basis,
         provider_id, thread_id, recipient, detail, audit_id, sim,
+        conv_key, turn_number, sent_text,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     `).run(
       receiptId, agentId, tool, tier, verified ? 1 : 0, basis,
       providerId, threadId, recipient, detailJson, auditId, sim ? 1 : 0,
+      convKey, turnNumber, boundedSentText,
     );
 
     noteTurnReceipt(agentId, receiptId);

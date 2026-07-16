@@ -113,6 +113,20 @@ function applyMinimalSchema(db: Database.Database): void {
       sent_at TEXT NOT NULL,
       response_received INTEGER NOT NULL DEFAULT 0
     );
+
+    CREATE TABLE task_runs (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      run_number INTEGER NOT NULL,
+      scheduled_for TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      assigned_to TEXT,
+      started_at TEXT,
+      completed_at TEXT,
+      result_summary TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 }
 
@@ -297,6 +311,43 @@ describe('Phase D scenario suite', () => {
     const entries = testDb.prepare(`SELECT task_id, reason FROM task_log WHERE entry_kind = 'transition' AND action_taken LIKE 'bulk-closed%'`).all() as Array<{ task_id: string; reason: string }>;
     expect(entries.length).toBe(2);
     expect(entries.every((e) => e.reason === reason)).toBe(true);
+  });
+
+  it('Scenario M: open-occurrence gate distinguishes a live run from a stale trigger (RC-17.1)', () => {
+    // A recurring per-run complete may only advance when there is an actually-
+    // open occurrence: a 'running' task_runs row AND schedule_status='running'.
+    // The engine gate returns the [NO-OP] stale-trigger text otherwise, which is
+    // what stops run-counter inflation (P-5) and wrong-task closes (F-16). This
+    // encodes exactly that predicate against the table state the scheduler writes.
+    const gatePasses = (taskId: string): boolean => {
+      const openRun = testDb.prepare(
+        `SELECT id FROM task_runs WHERE task_id = ? AND status = 'running' ORDER BY run_number DESC LIMIT 1`,
+      ).get(taskId) as { id: string } | undefined;
+      const scheduleStatus = (
+        testDb.prepare('SELECT schedule_status FROM tasks WHERE id = ?').get(taskId) as { schedule_status: string } | undefined
+      )?.schedule_status;
+      return !!openRun && scheduleStatus === 'running';
+    };
+
+    // Stale trigger: the prior run already advanced back to 'waiting' and no run
+    // is open. A complete call here must NOT be treated as an open occurrence.
+    const staleTask = makeTask(testDb, {
+      status: 'on_deck', repeat_interval: 1, repeat_unit: 'days',
+      schedule_status: 'waiting', run_count: 3,
+    });
+    expect(gatePasses(staleTask)).toBe(false);
+
+    // Live occurrence: the scheduler fired this run (schedule_status='running')
+    // and there is a matching 'running' task_runs row. The gate lets it advance.
+    const liveTask = makeTask(testDb, {
+      status: 'in_progress', repeat_interval: 1, repeat_unit: 'days',
+      schedule_status: 'running', run_count: 3,
+    });
+    testDb.prepare(`
+      INSERT INTO task_runs (id, task_id, run_number, status, started_at, created_at)
+      VALUES (?, ?, 4, 'running', datetime('now'), datetime('now'))
+    `).run(`run-${liveTask}`, liveTask);
+    expect(gatePasses(liveTask)).toBe(true);
   });
 
   it('Scenario K: user observation via task_log shows from_entity=user', () => {

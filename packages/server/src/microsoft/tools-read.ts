@@ -16,7 +16,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
     input_schema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: "Search query (e.g., 'from:john@example.com', 'subject:invoice')" },
+        query: { type: 'string', description: 'Search query. Use a plain keyword (invoice), a field filter (from:john@example.com, subject:invoice), or a quoted phrase for an exact multi-word match (subject:"Weekly Brief"). Quotes and backslashes inside the query are escaped for you.' },
         max_results: { type: 'number', description: 'Maximum number of results (default: 10)' },
         verbose: { type: 'boolean', description: 'If true, include the body preview per email. Default false (one line per result).' },
       },
@@ -602,6 +602,31 @@ export async function fetchAgendaItemsForAccountMs(
   return { ok: true, items };
 }
 
+/**
+ * Escape a query for use inside Graph's OData `$search="..."` quoted string.
+ * Graph's KQL parser treats an unescaped `"` as the closing wrapper quote, so a
+ * phrase like subject:"Weekly Brief - Monday" closes the wrapper early and the
+ * bare `-` becomes an invalid NOT operator at that position (the deterministic
+ * RC-6 failure). Backslash-escape `\` first (so the escapes we add are not
+ * themselves re-escaped), then `"`. Runs before encodeURIComponent so the
+ * literal backslash and quote survive URL encoding into the request.
+ */
+function escapeGraphSearch(q: string): string {
+  return q.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
+ * Map Graph's "Syntax error:" KQL/$search parser class (e.g. character '-' is
+ * not valid at position N) to a corrective tool-error that names the accepted
+ * syntax, so a floor-model retry converges in one step instead of re-sending
+ * the same malformed phrase. Returns null for any other error class. The
+ * returned sentence has no leading "Error:" because callers wrap it.
+ */
+function graphSearchSyntaxHelp(rawError: string | undefined): string | null {
+  if (!rawError || !/syntax error/i.test(rawError)) return null;
+  return 'that search text confused the Microsoft search parser (KQL). Retry with a plain keyword (invoice), a field filter (from:jane@example.com, subject:invoice), or a full quoted phrase for an exact multi-word match (subject:"Weekly Brief"). Avoid stray punctuation such as - or : outside a field filter.';
+}
+
 /** Search one account's Outlook mail. */
 export async function searchMailForAccountMs(
   accountId: string,
@@ -611,10 +636,10 @@ export async function searchMailForAccountMs(
   agentName: string,
 ): Promise<{ ok: true; items: MsMailFetchItem[] } | { ok: false; error: string }> {
   const result = await msGraphRead(
-    `me/messages?$search="${encodeURIComponent(query)}"&$top=${maxResults}&$select=id,from,subject,receivedDateTime,bodyPreview,isRead`,
+    `me/messages?$search="${encodeURIComponent(escapeGraphSearch(query))}"&$top=${maxResults}&$select=id,from,subject,receivedDateTime,bodyPreview,isRead`,
     agentId, agentName, 'outlook_search', { query, maxResults }, accountId,
   );
-  if (!result.ok) return { ok: false, error: result.error ?? 'unknown error' };
+  if (!result.ok) return { ok: false, error: graphSearchSyntaxHelp(result.error) ?? result.error ?? 'unknown error' };
 
   const data = result.data as { value?: Array<{ id: string; from: { emailAddress: { name: string; address: string } }; subject: string; receivedDateTime: string; bodyPreview: string; isRead: boolean }> };
   const { formatTimeForAgent } = await import('../services/format-time.js');
@@ -1423,9 +1448,9 @@ export async function executeMicrosoftReadTool(
     case 'contacts_search': {
       const query = args.query as string;
       const maxResults = Math.min((args.max_results as number) ?? 20, 100);
-      const url = `me/contacts?$search="${encodeURIComponent(query)}"&$top=${maxResults}&$select=id,displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones,homePhones,companyName,jobTitle`;
+      const url = `me/contacts?$search="${encodeURIComponent(escapeGraphSearch(query))}"&$top=${maxResults}&$select=id,displayName,givenName,surname,emailAddresses,mobilePhone,businessPhones,homePhones,companyName,jobTitle`;
       const result = await msGraphRead(url, agentId, agentName, 'contacts_search', { query, maxResults }, slot);
-      if (!result.ok) return `Error searching contacts: ${result.error}`;
+      if (!result.ok) return `Error searching contacts: ${graphSearchSyntaxHelp(result.error) ?? result.error}`;
       const data = result.data as { value?: Array<MicrosoftContact> };
       const contacts = data?.value ?? [];
       if (contacts.length === 0) return `No contacts matched "${query}".`;

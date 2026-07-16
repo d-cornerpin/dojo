@@ -14,6 +14,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { spawnAgent } from '../agent/spawner.js';
 import { getAgentRuntime } from '../agent/runtime.js';
+import { activeRuns, pendingWakeups } from '../agent/shared-state.js';
 import { rehomeUnclaimedEngineEvents } from '../agent/v2/counterparty.js';
 import {
   getPrimaryAgentId,
@@ -39,6 +40,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const logger = createLogger('vault-dreaming');
 
 export type DreamMode = 'full' | 'light' | 'off';
+
+// ── Dreamer liveness (RC-15 unstick) ──
+//
+// The dream cycle advances only via a terminal complete_task, so a Dreamer that
+// dies mid-batch leaves its status at 'working' with no live run and blocks
+// every scheduled AND manual cycle. Liveness is detected exactly like the
+// runtime's stuck-agent reaper: a genuinely running turn keeps the row's
+// updated_at fresh via the 30s status heartbeat AND holds an activeRuns entry
+// in this process. Absent both past this window, there is no live run.
+const DREAMER_STALE_MINUTES = 30;
+// Don't re-arm the continuation sweep on top of a batch that was woken within
+// this window (matches the staleness window, so a live-but-slow batch is never
+// double-woken). Set on every wake in wakeupDreamer, the single choke point.
+const DREAMER_CONTINUATION_QUIET_MS = DREAMER_STALE_MINUTES * 60 * 1000;
+let lastDreamerWakeMs = 0;
 
 // ── Dreaming Config ──
 
@@ -953,6 +969,10 @@ function wakeupDreamer(cycleMessage: string): void {
     },
   });
 
+  // Single wake choke point: record when a batch was last handed to the Dreamer
+  // so the continuation sweep never re-arms on top of a live-but-slow batch.
+  lastDreamerWakeMs = Date.now();
+
   const runtime = getAgentRuntime();
   runtime.handleMessage(dreamerId, cycleMessage).catch(err => {
     logger.error('Dreamer cycle failed', {
@@ -1071,11 +1091,21 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
   ensureDreamerAgentRunning();
 
   const dreamerId = getDreamerAgentId();
-  const dreamerState = db.prepare('SELECT status FROM agents WHERE id = ?').get(dreamerId) as { status: string } | undefined;
+  const dreamerState = db.prepare(`
+    SELECT status,
+      (updated_at < datetime('now', '-${DREAMER_STALE_MINUTES} minutes')) AS is_stale
+    FROM agents WHERE id = ?
+  `).get(dreamerId) as { status: string; is_stale: number } | undefined;
 
   if (dreamerState?.status === 'working') {
-    logger.warn('Dreamer is already running, skipping cycle');
-    return { dreamerId };
+    // RC-15: distinguish a genuinely mid-batch Dreamer from a stuck one; the
+    // shared helper resets a corpse (no live run past the staleness window)
+    // and leaves a genuinely mid-batch Dreamer alone, in which case we skip
+    // the cycle exactly as before.
+    if (!resetStuckDreamerIfDead(dreamerId, dreamerState.is_stale === 1)) {
+      logger.warn('Dreamer is already running, skipping cycle', { dreamerId, liveInProcess: activeRuns.has(dreamerId) });
+      return { dreamerId };
+    }
   }
 
   // Store remaining batches for sequential processing, plus the cycle-
@@ -1871,6 +1901,113 @@ async function runNightlyEngineMaintenance(): Promise<void> {
   }
 }
 
+// ── Dreamer Continuation Sweep (RC-15 unstick) ──
+
+/**
+ * Reset a Dreamer whose 'working' status is a corpse: no live in-process run
+ * AND updated_at past the staleness window (a live run holds an activeRuns
+ * entry and keeps updated_at fresh via the 30s heartbeat). Returns true when
+ * the caller may proceed (corpse reset, or the row was not stuck at all);
+ * false when the Dreamer is genuinely mid-batch and must be left alone.
+ * Shared by runDreamingCycle (nightly) and sweepDreamerHealth (5-min hook).
+ */
+function resetStuckDreamerIfDead(dreamerId: string, isStale: boolean): boolean {
+  const liveInProcess = activeRuns.has(dreamerId);
+  if (liveInProcess || !isStale) return false;
+  logger.warn('Dreamer stuck in working state with no live run past staleness window, resetting to idle', {
+    dreamerId,
+    staleMinutes: DREAMER_STALE_MINUTES,
+  });
+  const db = getDb();
+  db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(dreamerId);
+  activeRuns.delete(dreamerId);
+  pendingWakeups.delete(dreamerId);
+  broadcast({ type: 'agent:status', agentId: dreamerId, status: 'idle' });
+  return true;
+}
+
+/**
+ * RC-15 follow-up (owner ruled 2026-07-16): the mid-day unstick hook. Called
+ * from the runtime's periodic stuck-agent recovery sweep so a Dreamer stall
+ * recovers within minutes instead of waiting for the nightly window. Two
+ * checks, both cheap and idempotent:
+ *   1. corpse reset: a 'working' row with no live run past the staleness window;
+ *   2. continuation re-arm: unprocessed archives with an idle Dreamer and no
+ *      recent wake (runDreamerContinuationSweep's own guards).
+ * Never touches a genuinely live batch.
+ */
+export async function sweepDreamerHealth(): Promise<void> {
+  try {
+    if (getDreamingConfig().dreamMode === 'off') return;
+    const dreamerId = getDreamerAgentId();
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT status,
+        (updated_at < datetime('now', '-${DREAMER_STALE_MINUTES} minutes')) AS is_stale
+      FROM agents WHERE id = ?
+    `).get(dreamerId) as { status: string; is_stale: number } | undefined;
+    if (row?.status === 'working') {
+      resetStuckDreamerIfDead(dreamerId, row.is_stale === 1);
+      return; // reset or genuinely live; either way the continuation sweep waits for idle
+    }
+    await runDreamerContinuationSweep();
+  } catch (err) {
+    logger.warn('sweepDreamerHealth failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
+ * Re-arm the stateless DB-driven continuation when a prior cycle's batch
+ * advance was dropped. The cycle normally advances only via a terminal
+ * complete_task (spawner -> markDreamerArchivesProcessed -> spawnNextDreamer-
+ * Batch); if that never fires (a Dreamer that died mid-cycle, a lost in-memory
+ * map after a restart), unprocessed archives can sit idle until the next nightly
+ * window. This sweep re-arms spawnNextDreamerBatch when, and only when:
+ *   - dreaming is enabled and setup is complete,
+ *   - non-poisoned, non-trivial archives still remain,
+ *   - the Dreamer is idle (status not 'working' AND no live in-process run), and
+ *   - no batch was woken within the quiet window (never stack on a live cycle).
+ * spawnNextDreamerBatch -> wakeNextBatchFromDb re-derives the next batch from the
+ * DB (FA-V4), so calling it here is idempotent and safe if a cycle is in fact
+ * already draining the same archives. Deliberately no new timer: this piggybacks
+ * the nightly scheduler tick below.
+ */
+async function runDreamerContinuationSweep(): Promise<void> {
+  try {
+    if (getDreamingConfig().dreamMode === 'off') return;
+    if (!isSetupCompleted()) return;
+
+    const primaryId = getPrimaryAgentId();
+    if (!primaryId) return;
+
+    // Non-trivial work must remain; trivial archives are left for the normal
+    // triage to mark processed so the sweep never wakes the Dreamer to discard
+    // junk (and never writes a spurious resumed-cycle report).
+    const remaining = getUnprocessedConversations();
+    if (!remaining.some(conv => classifyTrivial(conv) === null)) return;
+
+    const dreamerId = getDreamerAgentId();
+    if (activeRuns.has(dreamerId)) return; // a batch is live in this process
+    const db = getDb();
+    const row = db.prepare('SELECT status FROM agents WHERE id = ?').get(dreamerId) as { status: string } | undefined;
+    if (row?.status === 'working') return; // genuinely mid-batch (staleness handled by runDreamingCycle)
+
+    if (Date.now() - lastDreamerWakeMs < DREAMER_CONTINUATION_QUIET_MS) return; // a batch woke recently
+
+    logger.warn('Dreamer continuation sweep: unprocessed archives remain with an idle Dreamer, re-arming batch continuation', {
+      dreamerId,
+      remaining: remaining.length,
+    });
+    await spawnNextDreamerBatch(primaryId);
+  } catch (err) {
+    logger.warn('Dreamer continuation sweep failed (non-fatal)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 // ── Dreaming Scheduler ──
 
 let dreamTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1921,6 +2058,10 @@ export function scheduleDreamingCycle(): void {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+    // RC-15: safety net on the same tick. If the cycle above (or a prior one)
+    // left archives unprocessed with an idle Dreamer, re-arm the continuation.
+    // Its guards make it a no-op whenever the cycle just woke a batch.
+    await runDreamerContinuationSweep();
     // Reschedule for next day
     scheduleDreamingCycle();
   }, delay);

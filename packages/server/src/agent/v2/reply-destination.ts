@@ -37,10 +37,18 @@ export interface ResolveReplyDestinationParams {
   state: Pick<AgentTurnState, 'inboundChannel'>;
   presence: 'in_dojo' | 'away';
   imessageBridgeConfigured: boolean;
+  // RC-10: owner-channel affinity. When the turn counterparty is the owner AND the
+  // natural destination is 'dashboard', route to the channel the owner actually
+  // converses on instead of the invisible dashboard. `counterpartyIsOwner` gates it to
+  // the owner (never a contact); `ownerAffinityChannel` is the resolved channel from
+  // resolveOwnerAffinityChannel AFTER the caller applied the per-conversation rate
+  // limit (null = no promotion this turn). The presence-away override stays stronger.
+  counterpartyIsOwner?: boolean;
+  ownerAffinityChannel?: 'imessage' | null;
 }
 
 export function resolveReplyDestination(params: ResolveReplyDestinationParams): ReplyDestination {
-  const { state, presence, imessageBridgeConfigured } = params;
+  const { state, presence, imessageBridgeConfigured, counterpartyIsOwner, ownerAffinityChannel } = params;
 
   // Layer 1: bind to the inbound channel when one is set. The away override
   // never applies to these — if the user reached out via Teams, the reply
@@ -61,7 +69,17 @@ export function resolveReplyDestination(params: ResolveReplyDestinationParams): 
   // promotes to iMessage — Teams/email require a specific recipient
   // context that proactive turns don't carry.)
   const base: ReplyDestination = 'dashboard';
+  // Away override stays the STRONGER promotion: the owner is explicitly not at the
+  // dashboard, so every dashboard-default reply reaches their phone.
   if (presence === 'away' && imessageBridgeConfigured) {
+    return 'imessage';
+  }
+  // RC-10: owner-channel affinity. Only for the owner (never a contact), only when the
+  // owner's live conversation channel resolved to a routed one, and only when the
+  // caller's per-conversation rate limit allowed the promotion (ownerAffinityChannel
+  // is null otherwise). Follows the channel the conversation lives on instead of the
+  // invisible dashboard, so a follow-up reaches the owner where they actually are.
+  if (counterpartyIsOwner && ownerAffinityChannel === 'imessage' && imessageBridgeConfigured) {
     return 'imessage';
   }
   return base;

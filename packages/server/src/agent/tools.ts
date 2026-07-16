@@ -15,6 +15,7 @@ import { setCurrentCanvas, getCurrentCanvas, viewCanvas } from './canvas-view.js
 import { isEmbeddable, captureSiteScreenshot } from './site-snapshot.js';
 import { queueCanvasDoc, queueScreenChip } from './pending-attachments.js';
 import { memoryGrep, memoryDescribe, memoryExpand } from '../memory/retrieval.js';
+import { resolveOpenLoopByPrefix } from '../memory/open-loops.js';
 import { checkRequired, friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer } from './tool-helpers.js';
 // Phase 3.5 (2026-05-04), `shouldIntercept` / `interceptLargeFile` removed
 // from the executeTool path. See agent/tools.ts:executeTool for the explanation.
@@ -71,6 +72,23 @@ import type { ToolCall, ToolResult } from '@dojo/shared';
 const logger = createLogger('tools');
 
 const EXEC_TIMEOUT_MS = 30000;
+
+// RC-3 item 2: per-turn recall budget. Cumulative recall_recent_thread +
+// history_search EMITTED output tokens are tracked per turn (agent/turn-state.ts);
+// past this budget the tools return a short engine notice instead of another dump.
+// Deterministic brake on the recall doom loop (the excavation itself creates the
+// context pressure that forces the compaction the agent is flailing to recover
+// from). Tokens are estimated as chars/4 at the dispatch site.
+const RECALL_BUDGET_TOKENS = 8000;
+
+function recallBudgetNotice(usedTokens: number): string {
+  const k = Math.round(usedTokens / 1000);
+  return (
+    `You have recalled ~${k}k tokens this turn. The current conversation is already in ` +
+    `your context; if you are looking for a specific message, use history_search with a ` +
+    `narrow pattern, or ask the person directly.`
+  );
+}
 
 /** Build a full download URL that works from anywhere, tunnel if active, localhost otherwise */
 function getDownloadUrl(fileId: string): string {
@@ -2007,6 +2025,24 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
+    name: 'loop_resolve',
+    description: 'Close an OPEN LOOP once it has been answered or fulfilled. Open loops are the still-unresolved questions and unfulfilled requests the engine tracks for you and shows in the "OPEN LOOPS (unresolved; resolve when answered)" block. The moment you deliver the answer or complete the request for one, call this with its id prefix (the short code in [brackets], e.g. "a1b2c3d4") so it stops being re-surfaced to you. Resolving is silent bookkeeping, do NOT write a user-facing message about it. If you are unsure whether a loop is truly done, leave it open, an unanswered question is meant to survive until it is actually answered.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        id: {
+          type: 'string',
+          description: 'The open-loop id prefix shown in [brackets] in the OPEN LOOPS block (at least 4 characters).',
+        },
+        note: {
+          type: 'string',
+          description: 'Optional short note on how it was resolved (for the log; not shown to the user).',
+        },
+      },
+      required: ['id'],
+    },
+  },
+  {
     name: 'tracker_edit_project',
     description: 'Rename a project or change its description. Use this when a project was auto-named badly (the engine\'s multi-step classifier names projects with a slice of the user prompt, which often reads poorly on the kanban) or when scope shifts and the title no longer describes the work. For task-level edits use tracker_edit_task; for status changes use tracker_update_status or tracker_close_project.',
     input_schema: {
@@ -2519,6 +2555,10 @@ export const toolDefinitions: ToolDefinition[] = [
         description: {
           type: 'string',
           description: 'Optional note about who this person is. Required when sharing_level=project_only, name the specific project.',
+        },
+        is_agent: {
+          type: 'boolean',
+          description: 'Set true ONLY when this contact is another AI agent / Dojo assistant (not a human). Lets the engine skip work-acks and damp content-free courtesy volleys on machine-to-machine iMessage threads. Defaults false. iMessage only.',
         },
       },
       required: ['channel', 'address', 'user_request_quote'],
@@ -3083,6 +3123,7 @@ export const toolDefinitions: ToolDefinition[] = [
         pin: { type: 'boolean', description: 'If true, this memory is always included in context regardless of relevance. Set true when the user explicitly tells you to remember something.' },
         permanent: { type: 'boolean', description: 'If true, this fact never decays over time (use for definitionally stable truths like names, relationships, birth dates).' },
         verbatim: { type: 'boolean', description: 'If true, the DOJO preserves your content exactly, no bloat-phrase stripping, no date prefix, no compression. Use when capturing the user\'s explicit memory instruction word-for-word ("remember that…", "always X", "never Y", "from now on…").' },
+        distinct: { type: 'boolean', description: 'Set true ONLY after a near-duplicate bounce, when the new fact is genuinely DIFFERENT from the existing entry it resembles (not a correction of it). This tells the engine to save it as a separate entry even though it reads similar. If instead your new fact corrects or replaces the existing one, do NOT set distinct, call vault_update(entry_id=…) on that entry.' },
         source_ref: { type: 'string', description: 'Optional. Where this fact came from: a URL (https://...) or a file / document path (e.g. "doctor-report-2026.pdf"). Pass it whenever the fact was read from a specific source, so it can be cited and reopened later. Does not count against entry length.' },
         source_page: { type: 'number', description: 'Optional. Page number within source_ref, when the fact came from a specific page of a document (e.g. 3).' },
         source_section: { type: 'string', description: 'Optional. Section or heading within source_ref, when known (e.g. "Assessment").' },
@@ -4944,6 +4985,18 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         break;
       }
       case 'recall_recent_thread': {
+        // RC-3 item 2: per-turn recall budget (deterministic doom-loop brake). Once
+        // cumulative recall/history output for THIS turn crosses the budget, return a
+        // short engine notice instead of another 12-16k-char dump (the excavation
+        // itself is what forces the compaction the agent is flailing to recover from).
+        {
+          const { getRecallBudgetUsed } = await import('./turn-state.js');
+          const used = getRecallBudgetUsed(agentId);
+          if (used >= RECALL_BUDGET_TOKENS) {
+            content = recallBudgetNotice(used);
+            break;
+          }
+        }
         const turnCount = Math.min(30, Math.max(1, Math.floor(coerceNumberArg(args.turn_count) ?? 8)));
         const includeToolCalls = args.include_tool_calls === false ? false : true;
         const includeToolResults = args.include_tool_results === true;
@@ -4980,6 +5033,11 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
           scope: recallScope,
           turnConvKey,
         });
+        // RC-3: bill the emitted output against this turn's recall budget.
+        {
+          const { addRecallBudgetUsed } = await import('./turn-state.js');
+          addRecallBudgetUsed(agentId, Math.ceil(content.length / 4));
+        }
         break;
       }
       case 'history_search': {
@@ -4996,6 +5054,16 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
           isError = true;
           break;
         }
+        // RC-3: history_search shares the per-turn recall budget with
+        // recall_recent_thread (both are the doom-loop excavation fuel).
+        {
+          const { getRecallBudgetUsed } = await import('./turn-state.js');
+          const used = getRecallBudgetUsed(agentId);
+          if (used >= RECALL_BUDGET_TOKENS) {
+            content = recallBudgetNotice(used);
+            break;
+          }
+        }
         content = memoryGrep(agentId, {
           pattern: grepPattern,
           mode: args.mode as 'full_text' | 'regex' | undefined,
@@ -5004,6 +5072,10 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
           before: args.before as string | undefined,
           limit: args.limit as number | undefined,
         });
+        {
+          const { addRecallBudgetUsed } = await import('./turn-state.js');
+          addRecallBudgetUsed(agentId, Math.ceil(content.length / 4));
+        }
         break;
       }
       case 'history_get': {
@@ -5409,6 +5481,11 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
             auditLog(agentId, 'tool_call', 'send_to_agent', 'success',
               `to:${agentRef} intent:${effectiveIntent}${result.autoPromotedFromFyi ? '(promoted from FYI)' : ''} thread:${result.threadId.slice(0, 8)} requires_response:${requiresResponse}${result.autoCreatedTaskId ? ` task:${result.autoCreatedTaskId.slice(0, 8)}` : ''}`,
             );
+            // RC-12: a delivered inter-agent send is a real delivery; record a receipt
+            // so the grounding ledger recognizes "I told <agent>" as grounded across
+            // turns (recipient = target agent name; the A2A thread id is the provider
+            // id). skipAudit: the auditLog row above is the provenance row.
+            writeToolReceipt({ agentId, tool: 'send_to_agent', tier: 1, verified: true, basis: 'provider-id', providerId: result.threadId, threadId: result.threadId, recipient: agentRef, sentText: payload, detail: { intent: effectiveIntent }, skipAudit: true });
             content = `[A2A:${effectiveIntent}] Message delivered to "${agentRef}" on thread ${result.threadId.slice(0, 8)}.` +
               (requiresResponse || result.autoPromotedFromFyi
                 ? ` Their reply is ASYNCHRONOUS, it arrives on a LATER turn, NOT now, and you do NOT have it yet. ` +
@@ -5457,6 +5534,17 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
                 content = intent === 'ASSIGN'
                   ? `Assignment not re-sent: you already assigned essentially this same work to "${agentRef}" moments ago (thread ${result.threadId.slice(0, 8)}). The engine tracks it as a tracker task and you will be woken when they reply or complete it. Do not re-assign; end your turn and wait.`
                   : 'Message not sent, your last few messages on this thread are too similar to this one. The platform thinks you are repeating yourself. Options: (a) if you are reporting work completion, use intent="ANSWER" or intent="DELIVERABLE", those bypass dedup because completion notices need to land regardless of phrasing; (b) rephrase substantively (not just word swaps); (c) start a fresh thread by omitting thread_id.';
+                break;
+              case 'AWAITING_REPLY':
+                // RC-14: the receiver still owes a reply to this sender's last
+                // wake-intent on this thread and we are inside the cooldown.
+                // Re-sending does not speed the reply up; it is dropped
+                // deterministically. Rendered like the ASSIGN-duplicate refusal:
+                // do NOT advise a fresh thread for the re-ask (that just spawns
+                // a parallel open loop).
+                content = intent === 'ASSIGN'
+                  ? `Assignment not re-sent: you already assigned this to "${agentRef}" on thread ${result.threadId.slice(0, 8)} and they have not replied yet. The engine tracks it as a tracker task and will wake you when they reply or complete it. Do not re-assign; end your turn and wait.`
+                  : `Message not sent: you already have an open ${intent} awaiting a reply from "${agentRef}" on thread ${result.threadId.slice(0, 8)}, and they have not answered yet. Re-asking does not speed it up. End your turn; you will be woken when they reply. (If this is genuinely new, unrelated work, start a fresh thread by omitting thread_id.)`;
                 break;
               case 'AGENT_NOT_FOUND':
                 content = `No agent found with ID or name "${agentRef}".`;
@@ -5561,7 +5649,14 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
             toAgent: member.id,
             fromAgent: agentId,
           });
-          if (bcResult.delivered) sent.push(member.name);
+          if (bcResult.delivered) {
+            sent.push(member.name);
+            // RC-12: one receipt per delivered recipient (recipient = that agent's
+            // name) so the grounding ledger recognizes the broadcast as a real
+            // cross-turn delivery. skipAudit: the fan-out audit is handled by the
+            // transport / the summary content below.
+            writeToolReceipt({ agentId, tool: 'broadcast_to_group', tier: 1, verified: true, basis: 'provider-id', providerId: bcResult.threadId, threadId: bcResult.threadId, recipient: member.name, sentText: broadcastPayload, detail: { intent: bcIntent, groupId }, skipAudit: true });
+          }
         }
 
         content = `Broadcast sent to ${sent.length} agent(s): ${sent.join(', ')}`;
@@ -5999,6 +6094,18 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           content = trackerListActive(agentId, { scope: 'all', verbose });
         }
         isError = content.startsWith('Error');
+        break;
+      }
+      case 'loop_resolve': {
+        const lrErr = checkRequired([{ name: 'id', value: args.id, type: 'string' }]);
+        if (lrErr) { content = lrErr; isError = true; break; }
+        const lr = resolveOpenLoopByPrefix(
+          agentId,
+          args.id as string,
+          (args.note as string | undefined) ?? undefined,
+        );
+        content = lr.message;
+        isError = !lr.ok;
         break;
       }
       case 'tracker_complete_step': {
@@ -7582,6 +7689,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         const name = ((args.name as string | undefined) ?? address).trim() || address;
         const description = (args.description as string | undefined)?.trim() || undefined;
         const sharingLevel = (args.sharing_level as string | undefined) ?? 'dont_overshare';
+        const isAgent = args.is_agent === true;
         const validLevels = ['open_book', 'dont_overshare', 'cautious', 'project_only'];
         if (!validLevels.includes(sharingLevel)) {
           content = `Error: sharing_level must be one of: ${validLevels.join(', ')}`;
@@ -7606,6 +7714,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           description,
           is_primary: false,
           sharing_level: sharingLevel as 'open_book' | 'dont_overshare' | 'cautious' | 'project_only',
+          is_agent: isAgent,
         };
 
         try {
@@ -8004,7 +8113,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         // PM and the user-facing story never pretend it was confirmed. This
         // imposes NO new gate requirement (tier-3-only turns are unchanged).
         // skipAudit: the rich over-share audit row above is the provenance row.
-        writeToolReceipt({ agentId, tool: 'imessage_send', tier: 3, verified: false, basis: 'exit-code', recipient, detail: { textSent: result.textSent, attachmentsSent: result.sentFiles.length }, skipAudit: true });
+        writeToolReceipt({ agentId, tool: 'imessage_send', tier: 3, verified: false, basis: 'exit-code', recipient, sentText: message, detail: { textSent: result.textSent, attachmentsSent: result.sentFiles.length }, skipAudit: true });
         content = `iMessage sent to ${recipientLabel}${attachSummary}.${switchNote}`;
         break;
       }
@@ -8085,11 +8194,11 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           // SID as the provider id, so we no longer double-write an audit row.
           // A 2xx with no SID cannot be confirmed: fail the turn.
           if (!result.sid) {
-            writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: false, basis: 'http-status', recipient: args.to as string, detail: { anomaly: 'sms send ok but no Twilio SID' } });
+            writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: false, basis: 'http-status', recipient: args.to as string, sentText: args.body as string, detail: { anomaly: 'sms send ok but no Twilio SID' } });
             content = `Error: the SMS to ${args.to} was accepted but Twilio returned no message SID, so it could not be verified. It may still have been delivered: verify whether it went out (check the thread/recipient) BEFORE any re-send; do not blindly retry.`;
             isError = true;
           } else {
-            writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: true, basis: 'provider-id', providerId: result.sid, recipient: args.to as string, detail: { status: 'sent' } });
+            writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: true, basis: 'provider-id', providerId: result.sid, recipient: args.to as string, sentText: args.body as string, detail: { status: 'sent' } });
           }
         } else {
           auditLog(agentId, 'sms_send', args.to as string, 'error', result.message.slice(0, 200));
@@ -9213,7 +9322,13 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         ]);
         if (remErr) { content = remErr; isError = true; break; }
         content = await executeVaultRemember(agentId, args);
-        isError = content.startsWith('Error');
+        // RC-13: vault_remember bounces return plain refusal strings that do NOT
+        // start with "Error" ("Too long…", "Reads like narrative prose…",
+        // "Refused:…", "Near-duplicate:…"). Left as startsWith('Error') they read
+        // as SUCCESS to every downstream mechanism (the bookkeeping "reply
+        // 'Saved.'" nudge, recordToolOutcome's failure ledger). Treat every bounce
+        // shape as a real tool error so a rejected save never masquerades as done.
+        isError = /^(Error|Too long|Reads like narrative prose|Refused|Near-duplicate)/.test(content);
         break;
       }
       case 'vault_search': {

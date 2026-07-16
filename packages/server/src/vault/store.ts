@@ -8,7 +8,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { generateEmbedding } from '../memory/embeddings.js';
 import { estimateTokens } from '../memory/store.js';
-import { getHouseholdAgentIds } from '../config/platform.js';
+import { getHouseholdAgentIds, isPMAgent, isHealerAgent } from '../config/platform.js';
 
 const logger = createLogger('vault-store');
 
@@ -45,6 +45,18 @@ export function resolveRecallScope(callerAgentId: string): string[] {
   try {
     const household = getHouseholdAgentIds();
     if (household.includes(callerAgentId)) {
+      for (const id of household) ids.add(id);
+    } else if (isPMAgent(callerAgentId) || isHealerAgent(callerAgentId)) {
+      // RC-15: the PM audits deliverables whose content IS vault entries (an
+      // extract-memories task's output is household-authored evidence), so it
+      // must be able to READ the full household scope to verify them. The
+      // Healer's diagnostics likewise reference vault_search/vault_get (its
+      // SOUL directs it to dereference evidence), so it gets the same read
+      // extension (owner ruled 2026-07-16). This is READ-for-validation ONLY:
+      // mutation (vault_update / vault_forget) stays author-gated at the tool
+      // layer, and neither overseer is added to a household MEMBER's scope, so
+      // the W3-4 harness-peer exclusion for spawned workers is untouched (a
+      // non-member's id is still in no member's scope).
       for (const id of household) ids.add(id);
     }
   } catch {
@@ -698,6 +710,54 @@ async function findSemanticDuplicate(
   }
 
   return null;
+}
+
+// RC-7: pre-save near-duplicate band check for the vault_remember TOOL path.
+// The >=0.92 supersede (findSemanticDuplicate, inside createEntry) already
+// handles "same fact re-saved / corrected"; this reports the best hit in the
+// 0.78-0.92 "same topic, different words" band so executeVaultRemember can
+// BOUNCE before saving and steer the model to vault_update the existing entry
+// (rather than accumulate a near-duplicate). Self-scoped for the same reason as
+// findSemanticDuplicate: the returned entry must be one the caller can actually
+// vault_update (cross-agent edits are author-gated). Returns null when an
+// upper-band (>= high) hit exists (that case is the supersede path's job, not a
+// bounce) or on an embed outage (fail open, never block a save). Computes the
+// embedding once; createEntry recomputes its own for the insert, matching the
+// prior two-embedding cost (this replaces the old post-save FYI search).
+export async function findNearDuplicateEntry(
+  content: string,
+  agentId: string,
+  low = 0.78,
+  high = 0.92,
+): Promise<(VaultEntry & { similarity: number }) | null> {
+  let newEmb: Float32Array;
+  try {
+    newEmb = await generateEmbedding(content);
+  } catch {
+    return null; // embed outage: fail open, do not block the save
+  }
+
+  const db = getDb();
+  const rows = db.prepare(
+    'SELECT * FROM vault_entries WHERE is_obsolete = 0 AND embedding IS NOT NULL AND agent_id = ?'
+  ).all(agentId) as VaultEntryRow[];
+
+  let best: (VaultEntry & { similarity: number }) | null = null;
+  for (const row of rows) {
+    if (!row.embedding) continue;
+    const existing = new Float32Array(
+      row.embedding.buffer,
+      row.embedding.byteOffset,
+      row.embedding.length / 4,
+    );
+    const sim = cosineSimilarity(newEmb, existing);
+    if (sim >= high) return null; // supersede-class dup, defer to createEntry
+    if (sim >= low && (!best || sim > best.similarity)) {
+      best = { ...rowToEntry(row), similarity: sim };
+    }
+  }
+
+  return best;
 }
 
 // ── Retrieval Tracking ──

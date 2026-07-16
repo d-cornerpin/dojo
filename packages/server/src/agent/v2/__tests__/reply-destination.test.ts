@@ -95,4 +95,79 @@ describe('resolveReplyDestination', () => {
       }),
     ).toBe('imessage');
   });
+
+  // ── RC-10: owner-channel affinity ──
+  describe('RC-10 owner-channel affinity', () => {
+    it('owner dashboard-default turn (in_dojo) with iMessage affinity → iMessage', () => {
+      expect(
+        resolveReplyDestination({
+          state: { inboundChannel: 'dashboard' },
+          presence: 'in_dojo',
+          imessageBridgeConfigured: true,
+          counterpartyIsOwner: true,
+          ownerAffinityChannel: 'imessage',
+        }),
+      ).toBe('imessage');
+    });
+
+    it('NON-owner counterparty never gets affinity promotion (stays dashboard)', () => {
+      expect(
+        resolveReplyDestination({
+          state: { inboundChannel: 'dashboard' },
+          presence: 'in_dojo',
+          imessageBridgeConfigured: true,
+          counterpartyIsOwner: false,
+          ownerAffinityChannel: 'imessage',
+        }),
+      ).toBe('dashboard');
+    });
+
+    it('owner with NO affinity (rate-limited / no recent iMessage) stays dashboard', () => {
+      expect(
+        resolveReplyDestination({
+          state: { inboundChannel: 'dashboard' },
+          presence: 'in_dojo',
+          imessageBridgeConfigured: true,
+          counterpartyIsOwner: true,
+          ownerAffinityChannel: null,
+        }),
+      ).toBe('dashboard');
+    });
+
+    it('affinity requires the bridge configured', () => {
+      expect(
+        resolveReplyDestination({
+          state: { inboundChannel: 'dashboard' },
+          presence: 'in_dojo',
+          imessageBridgeConfigured: false,
+          counterpartyIsOwner: true,
+          ownerAffinityChannel: 'imessage',
+        }),
+      ).toBe('dashboard');
+    });
+
+    it('a bound routed channel (email) is unaffected by owner affinity', () => {
+      expect(
+        resolveReplyDestination({
+          state: { inboundChannel: 'email' },
+          presence: 'in_dojo',
+          imessageBridgeConfigured: true,
+          counterpartyIsOwner: true,
+          ownerAffinityChannel: 'imessage',
+        }),
+      ).toBe('email');
+    });
+
+    it('away override remains stronger (away + affinity both resolve to iMessage)', () => {
+      expect(
+        resolveReplyDestination({
+          state: { inboundChannel: 'dashboard' },
+          presence: 'away',
+          imessageBridgeConfigured: true,
+          counterpartyIsOwner: true,
+          ownerAffinityChannel: null,
+        }),
+      ).toBe('imessage');
+    });
+  });
 });

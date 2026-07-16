@@ -8,6 +8,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getTask } from '../tracker/schema.js';
+import { writeTaskLog } from '../tracker/task-log.js';
 import { calculateNextRun, normalizeDbTimestamp, type ScheduledTask } from './engine.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';
@@ -764,7 +765,7 @@ export async function checkScheduledTasks(): Promise<void> {
 
 // ── Called when a task run completes ──
 
-export async function onTaskRunComplete(taskId: string, status: string, summary: string): Promise<void> {
+export async function onTaskRunComplete(taskId: string, status: string, summary: string): Promise<boolean> {
   const db = getDb();
 
   // Find the latest running run for this task
@@ -773,17 +774,28 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   `).get(taskId) as Record<string, unknown> | undefined;
 
   if (!run) {
-    // No active run — might be a non-scheduled task, just return
-    return;
+    // No active run, either a non-scheduled task or the occurrence was already
+    // closed by another path. Nothing to advance. RC-17: report the no-op with a
+    // boolean so callers (tracker_validate) don't misread an unchanged, already-
+    // 'complete' row as a fresh terminal close and kill the whole schedule.
+    return false;
   }
 
   const runId = run.id as string;
   const now = new Date().toISOString();
 
-  // Update run
-  db.prepare(`
-    UPDATE task_runs SET status = ?, completed_at = ?, result_summary = ? WHERE id = ?
+  // Update the run BY ID, but only while it is still 'running'. RC-17: .changes
+  // === 1 is the close token. If a concurrent tick or a duplicate dev process
+  // already closed this exact occurrence, we lose the race and must NOT advance
+  // run_count / recompute next_run_at again (that is the P-5 run-counter
+  // inflation class). Bail as a no-op instead.
+  const closed = db.prepare(`
+    UPDATE task_runs SET status = ?, completed_at = ?, result_summary = ? WHERE id = ? AND status = 'running'
   `).run(status, now, summary, runId);
+  if (closed.changes !== 1) {
+    logger.info('Scheduler: run already closed elsewhere, skipping advance', { taskId, runId });
+    return false;
+  }
 
   // Update task run count
   db.prepare('UPDATE tasks SET run_count = run_count + 1, updated_at = datetime(\'now\') WHERE id = ?').run(taskId);
@@ -957,6 +969,125 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   } catch { /* ignore */ }
 
   logger.info('Scheduler: run completed', { taskId, runId, status, nextRun });
+  return true;
+}
+
+// ── Skipped-reminder owner heads-up (RC-17.6) ──
+//
+// When a reminder occurrence is dropped (its schedule is terminated on a
+// 'fallen' transition, or an orphaned run is swept), the owner asked to be
+// reminded of something and it is NOT going to happen. Tell them, in plain
+// language, using the exact idiom the failed-final-run branch uses above
+// (role='system' straight into the primary agent's chat + a chat:message
+// broadcast, so it renders in the owner's chat history without waking any
+// agent turn, since role='system' rows are dropped by the model-message builder
+// and matched by neither the pending-engine-event nor the waiting-human
+// selector). The "Heads up:" prefix is load-bearing: it makes the note render
+// in the owner's DEFAULT (non-wordy) chat, not just wordy mode.
+export function postSkippedReminderHeadsUp(taskId: string, reason: string): void {
+  try {
+    const db = getDb();
+    const row = db.prepare(
+      'SELECT title, kind, description, scheduled_start, anchor_time FROM tasks WHERE id = ?',
+    ).get(taskId) as {
+      title: string; kind: string | null; description: string | null;
+      scheduled_start: string | null; anchor_time: string | null;
+    } | undefined;
+    if (!row || row.kind !== 'reminder') return;
+    const what = (row.description && row.description.trim()) ? row.description.trim() : row.title;
+    const when = row.scheduled_start ?? row.anchor_time;
+    const ownerMsg =
+      `Heads up: I skipped a reminder${when ? ` (set for ${when})` : ''}, "${what}", because ${reason}. ` +
+      `Let me know if you still want it and I will set it up again.`;
+    const primaryId = getPrimaryAgentId();
+    const ownerMsgId = uuidv4();
+    db.prepare(`
+      INSERT INTO messages (id, agent_id, role, content, created_at)
+      VALUES (?, ?, 'system', ?, datetime('now'))
+    `).run(ownerMsgId, primaryId, ownerMsg);
+    broadcast({
+      type: 'chat:message',
+      agentId: primaryId,
+      message: {
+        id: ownerMsgId, agentId: primaryId, role: 'system' as const,
+        content: ownerMsg,
+        tokenCount: null, modelId: null, cost: null, latencyMs: null,
+        createdAt: new Date().toISOString(),
+      },
+    });
+  } catch (err) {
+    logger.warn('postSkippedReminderHeadsUp failed (non-fatal)', {
+      taskId, error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+// ── Fallen-terminates-schedule (RC-17.5) ──
+//
+// A task marked 'fallen' (given up on) must never fire again, but the due
+// query filters only on schedule_status/is_paused, not status, so a 'fallen'
+// transition alone leaves a live recurring/one-shot schedule armed and it keeps
+// firing (F-17: a cancelled reminder fired anyway two hours later). Terminate
+// the schedule here: stop it (schedule_status='completed', is_paused=1, drop
+// next_run_at), close any still-open run as 'skipped', and, for a reminder,
+// tell the owner it was skipped. Synchronous so callers can report the outcome
+// in the same tool result. Returns whether it actually terminated a live
+// schedule and how many runs it skipped, so callers can SAY so.
+export function terminateLiveScheduleOnFallen(
+  taskId: string,
+  reason = 'the task was marked fallen (given up on)',
+): { terminated: boolean; runsSkipped: number; isReminder: boolean } {
+  const db = getDb();
+  const row = db.prepare(
+    'SELECT title, kind, schedule_status FROM tasks WHERE id = ?',
+  ).get(taskId) as { title: string; kind: string | null; schedule_status: string } | undefined;
+  if (!row) return { terminated: false, runsSkipped: 0, isReminder: false };
+  const isReminder = row.kind === 'reminder';
+  // Only 'waiting' (armed, awaiting the next fire) and 'running' (fired, a run
+  // is in flight) schedules can still fire. 'completed'/'unscheduled'/'idle'
+  // are already inert.
+  const scheduleIsLive = row.schedule_status === 'waiting' || row.schedule_status === 'running';
+  if (!scheduleIsLive) return { terminated: false, runsSkipped: 0, isReminder };
+
+  const stopped = db.prepare(`
+    UPDATE tasks
+    SET schedule_status = 'completed', is_paused = 1, next_run_at = NULL, updated_at = datetime('now')
+    WHERE id = ? AND schedule_status IN ('waiting', 'running')
+  `).run(taskId);
+  if (stopped.changes !== 1) {
+    // Raced with another terminator; leave the winner's outcome intact.
+    return { terminated: false, runsSkipped: 0, isReminder };
+  }
+
+  const skipped = db.prepare(`
+    UPDATE task_runs
+    SET status = 'skipped', completed_at = datetime('now'),
+        result_summary = ?
+    WHERE task_id = ? AND status IN ('pending', 'running')
+  `).run(`Skipped: ${reason}; schedule stopped`, taskId);
+  const runsSkipped = skipped.changes;
+
+  writeTaskLog({
+    taskId,
+    fromEntity: 'engine',
+    entryKind: 'auto_sweep',
+    actionTaken: 'schedule terminated on fallen',
+    reason: `${reason}; schedule stopped so it cannot fire again${runsSkipped > 0 ? `, ${runsSkipped} open run(s) skipped` : ''}`,
+  });
+
+  if (isReminder && runsSkipped > 0) {
+    postSkippedReminderHeadsUp(taskId, reason);
+  }
+
+  try {
+    const fresh = getTask(taskId);
+    if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
+  } catch { /* dashboard refresh is best-effort */ }
+
+  logger.warn('Scheduler: terminated live schedule on fallen transition', {
+    taskId, title: row.title, runsSkipped,
+  });
+  return { terminated: true, runsSkipped, isReminder };
 }
 
 // ── Orphan cleanup ──
@@ -1017,6 +1148,45 @@ function cleanupStaleRuns(): void {
   // than this without activity is structurally stuck regardless of which
   // schedule_status combination got it there. v2.3.8.
   const HARD_STUCK_THRESHOLD_MINUTES = 120;
+
+  // ── RC-17.4: task_runs-keyed orphan sweep ──
+  // The recovery machinery below keys on TASKS (schedule_status='running'),
+  // so it cannot see runs that were orphaned when a path reset the task row
+  // WITHOUT closing the run: tracker_complete_step closes a fired recurring
+  // task with zero run bookkeeping, and the force-reset / missed-runs paths
+  // rewrite schedule_status directly. Those 'running' task_runs rows then
+  // accumulate forever (transcript-proven pool drain: runs 42/43/44/45 never
+  // closed), and onTaskRunComplete's "newest running run" selection can grab a
+  // stale one. Invariant: a legitimately in-flight run always has its parent at
+  // schedule_status='running' (the claim sets both atomically, and close-out
+  // closes the run BEFORE moving schedule_status). So any open run whose parent
+  // is NOT schedule_status='running' is an orphan. Close them 'skipped'. Silent
+  // by design (no owner heads-up): this drains stale bookkeeping, it is not a
+  // live reminder the owner needs told about. A short age guard avoids racing an
+  // in-flight advance.
+  const orphanRuns = db.prepare(`
+    SELECT tr.id AS run_id, tr.task_id, tr.run_number
+    FROM task_runs tr
+    LEFT JOIN tasks t ON t.id = tr.task_id
+    WHERE tr.status IN ('pending', 'running')
+      AND (t.id IS NULL OR t.schedule_status != 'running')
+      AND COALESCE(tr.started_at, tr.created_at) < datetime('now', '-5 minutes')
+  `).all() as Array<{ run_id: string; task_id: string; run_number: number }>;
+  if (orphanRuns.length > 0) {
+    for (const o of orphanRuns) {
+      // Close BY ID and only while still open, so a concurrent advance wins
+      // the race instead of us clobbering its close.
+      const closed = db.prepare(`
+        UPDATE task_runs
+        SET status = 'skipped', completed_at = datetime('now'),
+            result_summary = 'Auto-skipped: orphaned run (parent task not running this occurrence)'
+        WHERE id = ? AND status IN ('pending', 'running')
+      `).run(o.run_id);
+      if (closed.changes === 1) {
+        logger.warn('Scheduler: swept orphaned task_run', { taskId: o.task_id, runId: o.run_id, runNumber: o.run_number });
+      }
+    }
+  }
 
   // 1. Standard stale-running detection. Use the OLDER of (per-task
   // updated_at, agent last message) — same per-task pattern as PM's poke

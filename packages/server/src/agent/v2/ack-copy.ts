@@ -35,7 +35,9 @@ export const DEFAULT_ACK_COMPOSE_TIMEOUT_MS = 2000;
 // ── Pools ──
 
 // Fresh start: the person just asked, the agent is picking it up.
-const START_ACK_POOL: readonly string[] = [
+// Exported (read-only) so the inbound-courtesy classifier can exact-match an
+// inbound against our own emitted lines; contents unchanged.
+export const START_ACK_POOL: readonly string[] = [
   "On it. I'll let you know when it's done.",
   "Working on it now, I'll report back shortly.",
   "Got it, starting on this now.",
@@ -50,7 +52,7 @@ const START_ACK_POOL: readonly string[] = [
 
 // Mid-work flavor: the engine noticed in-flight work is project-worthy and
 // opened a task for it, so the note reads "already in progress", not "starting".
-const PROGRESS_ACK_POOL: readonly string[] = [
+export const PROGRESS_ACK_POOL: readonly string[] = [
   "Quick note, I've got this in progress and I'll let you know when it's done.",
   "Just so you know, I'm working through this now.",
   "Still on this, I'll follow up once it's wrapped up.",
@@ -62,7 +64,7 @@ const PROGRESS_ACK_POOL: readonly string[] = [
 // handed to another agent (whose reply is asynchronous) and the model sent the
 // user nothing at the end. The engine delivers one of these so the user is
 // never left in silence; the model was already steered once and did not send.
-const A2A_HANDOFF_ACK_POOL: readonly string[] = [
+export const A2A_HANDOFF_ACK_POOL: readonly string[] = [
   "I've pulled in another agent on part of this and I'll report back as soon as they answer.",
   "Part of this is now with another agent; I'll follow up the moment I hear back.",
   "I've handed a piece of this off and will let you know as soon as the answer comes back.",
@@ -70,7 +72,7 @@ const A2A_HANDOFF_ACK_POOL: readonly string[] = [
 
 // Finished. The caller appends the result line after this sentence, so each
 // line has to read cleanly both on its own and with a result trailing it.
-const COMPLETION_ACK_POOL: readonly string[] = [
+export const COMPLETION_ACK_POOL: readonly string[] = [
   "Done, that's all wrapped up.",
   "All set, that's finished.",
   "Done, that's taken care of.",

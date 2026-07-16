@@ -10,7 +10,7 @@
 // Phase 3 computes + surfaces the counterparty and the header. Phase 4 uses the
 // same counterparty to SCOPE the live conversation (fresh tail) down to it.
 // ════════════════════════════════════════
-import { deriveOrigin, type Channel, type Relation } from '@dojo/shared';
+import { deriveOrigin, type Channel, type Relation, type InboundMeta } from '@dojo/shared';
 import { getOwnerName } from '../../config/platform.js';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
@@ -509,6 +509,28 @@ export interface TurnCounterparty {
   senderId: string | null;
   /** A2A thread (for agent turns), null for human turns. */
   threadId: string | null;
+  /**
+   * RC-4.2: this user-kind counterparty is itself another Dojo agent texting over a
+   * human channel (an iMessage safe-sender flagged `is_agent`). Read from the trigger
+   * row's structured inbound_meta (senderIsAgent). The engine gates channel-delivered
+   * start / completion / handoff acks on `!senderIsAgent`: another agent does not need
+   * "on it" reassurance, and each such ack is a fresh inbound that wakes the peer box
+   * (the ack ping-pong, H-5). Always false on A2A turns (kind='agent', a different
+   * lane) and on ordinary human turns.
+   */
+  senderIsAgent: boolean;
+}
+
+/** RC-4.2: read the structured `senderIsAgent` flag off a trigger row's inbound_meta
+ *  JSON (stamped by the iMessage bridge). Best-effort, defaults to false. */
+function readSenderIsAgent(inboundMeta: string | null | undefined): boolean {
+  if (!inboundMeta) return false;
+  try {
+    const meta = JSON.parse(inboundMeta) as InboundMeta;
+    return meta?.senderIsAgent === true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -554,6 +576,9 @@ export function resolveTurnCounterparty(args: ResolveCounterpartyArgs): TurnCoun
       channel: 'a2a',
       senderId: args.a2aFromName ?? null,
       threadId: args.a2aThreadShort,
+      // The A2A lane is a separate structural entity; senderIsAgent flags a
+      // user-CHANNEL sender that happens to be an agent, which never applies here.
+      senderIsAgent: false,
     };
   }
   // Human turn, derive the sender's origin from the triggering message.
@@ -574,6 +599,9 @@ export function resolveTurnCounterparty(args: ResolveCounterpartyArgs): TurnCoun
     channel: args.inboundChannel ?? origin.channel ?? 'dashboard',
     senderId: origin.senderId,
     threadId: origin.threadId,
+    // RC-4.2: the sender is another Dojo agent iff the trigger row's inbound_meta
+    // stamped senderIsAgent (iMessage bridge). Used to gate channel-delivered acks.
+    senderIsAgent: readSenderIsAgent(args.triggerInboundMeta),
   };
 }
 
@@ -603,8 +631,31 @@ function relationLabel(relation: Relation): string {
  * The explicit turn header. Small, volatile (changes per counterparty), so the
  * caller appends it AFTER the cached system-prompt prefix to avoid cache churn.
  */
-export function renderCounterpartyHeader(cp: TurnCounterparty, opts?: { isEngineTurn?: boolean }): string {
+export function renderCounterpartyHeader(
+  cp: TurnCounterparty,
+  opts?: { isEngineTurn?: boolean; isNotificationTurn?: boolean; resolvedDestination?: Channel },
+): string {
+  // RC-10: the model must never be told "dashboard" on a turn the engine will actually
+  // text. When the reply-destination resolver promoted an owner dashboard-default turn
+  // to a routed channel (owner-channel affinity, presence-away), render the RESOLVED
+  // destination as the reply channel instead of the raw inbound channel.
+  const replyChannelKey = opts?.resolvedDestination ?? cp.channel;
   const channel = CHANNEL_LABEL[cp.channel] ?? cp.channel;
+  const replyChannel = CHANNEL_LABEL[replyChannelKey] ?? replyChannelKey;
+  // RC-5.2: a notification-only wake (no trigger row; the newest inbound is an
+  // unauthorized mailbox/channel notice) has no person on the other end. Without this
+  // it fell through to the owner-on-dashboard header ("You are responding to <owner>…
+  // your reply goes back to them"), which the awareness lane directly contradicts; on
+  // the weak model the header won every notification looked like an open channel to the
+  // owner. Render a dedicated notification variant that REPLACES that framing.
+  if (opts?.isNotificationTurn) {
+    return (
+      `## What triggered this turn\n` +
+      `This turn was triggered by a mailbox/channel notification, NOT a person messaging ` +
+      `you. Do NOT greet or message the user unless the item genuinely matters to them ` +
+      `right now; if there is nothing to surface, end with [no-reply].`
+    );
+  }
   // C-4 (comms-audit): an engine turn synthesizes a user-shaped counterparty, so
   // without this it printed "you are talking to <owner> over dashboard" even though
   // the turn was a scheduler/reminder/system event, not a person. Render an
@@ -645,7 +696,7 @@ export function renderCounterpartyHeader(cp: TurnCounterparty, opts?: { isEngine
   return (
     `## Who you are talking to this turn\n` +
     `You are responding to **${cp.name}** (${relationLabel(cp.relation)}) over ${channel}. ` +
-    `Your reply goes back to them on ${channel}. Anything in your context marked as memory, an event, ` +
+    `Your reply goes back to them on ${replyChannel}. Anything in your context marked as memory, an event, ` +
     `or another agent's message is background, it is NOT ${cp.name} talking.` +
     closeTheLoop
   );

@@ -5,7 +5,7 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { createEntry, semanticSearch, markObsolete, getEntry, updateEntry, listEntries, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
+import { createEntry, semanticSearch, findNearDuplicateEntry, markObsolete, getEntry, updateEntry, listEntries, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
 import { searchUnfiledArchives, UNFILED_ARCHIVE_LABEL, type UnfiledArchiveSnippet } from './retrieval.js';
 
 const logger = createLogger('vault-tools');
@@ -175,6 +175,10 @@ export async function executeVaultRemember(
   const pin = (args.pin as boolean) ?? false;
   const permanent = (args.permanent as boolean) ?? false;
   const verbatim = (args.verbatim as boolean) ?? false;
+  // RC-7: the model sets this true after a near-duplicate bounce to assert the
+  // new fact is genuinely different from the entry it resembles (not a
+  // correction of it), overriding the pre-save near-duplicate bounce below.
+  const distinct = (args.distinct as boolean) ?? false;
 
   if (!content) return 'Error: content is required.';
   if (!type) return 'Error: type is required (fact, preference, decision, procedure, relationship, event, or note).';
@@ -202,7 +206,8 @@ export async function executeVaultRemember(
       `version. Vaulting technique text would re-introduce the staleness this is ` +
       `built to prevent. If you need to remember something ABOUT applying the ` +
       `technique (a decision, a parameter you chose, a result), vault that, not the ` +
-      `technique body. Re-call technique_read whenever you need the steps again.`
+      `technique body. Re-call technique_read whenever you need the steps again. ` +
+      `Do not report this as saved or stored; nothing was written.`
     );
   }
 
@@ -214,7 +219,8 @@ export async function executeVaultRemember(
       `Use credential_add(service_name, credentials, description) instead, values are encrypted at rest, never decay, ` +
       `never appear in vault_search or Dreamer summaries, and are read on-demand at API-call time via credential_get. ` +
       `If you are saving a NOTE about a credential (e.g. "user prefers OAuth over PATs for GitHub"), rephrase to remove the ` +
-      `credential-shaped substring and try again.`
+      `credential-shaped substring and try again. ` +
+      `Do not report this as saved or stored; nothing was written.`
     );
   }
 
@@ -252,7 +258,8 @@ export async function executeVaultRemember(
         `Too long for a [${type}] vault entry: ${content.length} chars, cap is ${cap}. ` +
         `Vault entries are compressed shorthand, not prose. Rewrite it shorter: lead with the noun, ` +
         `cut filler words, keep only the durable fact (example shape: "Tunnel: Cloudflare named. Reason: self-hosted integration."), ` +
-        `then call vault_remember again. (If the user told you to remember something word-for-word, pass verbatim: true to save it exactly.)`
+        `then call vault_remember again. (If the user told you to remember something word-for-word, pass verbatim: true to save it exactly.) ` +
+        `Do not report this as saved or stored; nothing was written.`
       );
     }
     const terminators = countSentenceTerminators(content);
@@ -261,7 +268,8 @@ export async function executeVaultRemember(
         `Reads like narrative prose for a [${type}] vault entry (${terminators} sentences). ` +
         `Vault entries are one telegraphic line, not a story. Rewrite it as a single compressed line: lead with the noun, ` +
         `drop the "the user/we/I did X" framing, keep only the durable fact under ${cap} chars, ` +
-        `then call vault_remember again. (If the user told you to remember something word-for-word, pass verbatim: true to save it exactly.)`
+        `then call vault_remember again. (If the user told you to remember something word-for-word, pass verbatim: true to save it exactly.) ` +
+        `Do not report this as saved or stored; nothing was written.`
       );
     }
   }
@@ -278,6 +286,31 @@ export async function executeVaultRemember(
   // if the caller provided one. Built from CONTENT-free params, so it never
   // affected the cap gate above.
   const citation = buildCitationJson(args);
+
+  // ── RC-7: pre-save near-duplicate bounce (the FA-V5 corrective pattern) ──
+  // The 0.78-0.92 band was previously checked AFTER saving and produced only an
+  // FYI the floor model ignored, so near-duplicates accumulated. Check it BEFORE
+  // createEntry and refuse the save: name the existing entry and steer the model
+  // to vault_update it (the right primitive) or re-affirm with distinct:true for
+  // a genuinely different fact. Same exemptions as the compression gate (verbatim
+  // / owner-authored / standing-instruction), plus distinct:true. The >=0.92
+  // auto-supersede inside createEntry is unchanged, and non-tool writers
+  // (Dreamer/extraction) call createEntry directly, so they never bounce here.
+  if (!exemptFromCompression && !distinct) {
+    const near = await findNearDuplicateEntry(content, agentId);
+    if (near) {
+      return (
+        `Near-duplicate: a similar [${near.type}] entry already exists, ` +
+        `"${near.content.slice(0, 120)}${near.content.length > 120 ? '…' : ''}" ` +
+        `(id ${near.id}, similarity ${near.similarity.toFixed(2)}). Nothing was saved. ` +
+        `If your new fact CORRECTS or REPLACES that entry, call ` +
+        `vault_update(entry_id="${near.id}", new_content=…, reason=…). ` +
+        `If it is a genuinely DIFFERENT fact that only sounds similar, re-call ` +
+        `vault_remember with distinct: true. ` +
+        `Do not report this as saved or stored; nothing was written.`
+      );
+    }
+  }
 
   // Get agent name
   const db = getDb();
@@ -301,20 +334,9 @@ export async function executeVaultRemember(
     if (permanent) flags.push('permanent');
     const flagStr = flags.length > 0 ? ` (${flags.join(', ')})` : '';
 
-    // Near-duplicate alert (informational, never blocking). The 0.92
-    // auto-supersede path in createEntry handles near-identical paraphrases;
-    // this catches the 0.78–0.92 zone where two entries are about the
-    // same topic but worded differently. Helps the agent self-correct
-    // toward dedup without us forcing it.
-    let nearDupNote = '';
-    try {
-      const hits = await semanticSearch(content, { limit: 3, agentId });
-      const sameSubject = hits.filter(h => h.id !== entry.id && h.similarity >= 0.78 && h.similarity < 0.92);
-      if (sameSubject.length > 0) {
-        const top = sameSubject[0];
-        nearDupNote = `\n\nFYI: similar entry already exists, "${top.content.slice(0, 80)}…" (id ${top.id}, similarity ${top.similarity.toFixed(2)}). Consider vault_forget on the older one if yours supersedes it.`;
-      }
-    } catch { /* best effort */ }
+    // RC-7: the 0.78-0.92 near-duplicate band is now a PRE-save bounce above
+    // (findNearDuplicateEntry), so a successful save is known not to collide with
+    // an existing entry in that band. No post-save FYI is emitted.
 
     const compressionNote = charsRemoved > 0
       ? `\n(Engine stripped ${charsRemoved} chars of narrative filler before saving.)`
@@ -323,7 +345,7 @@ export async function executeVaultRemember(
     // FU-2: echo the captured source so the agent can confirm it stuck.
     const citationSuffix = formatCitationSuffix(entry.citation);
 
-    return `Remembered [${type}]${flagStr}: "${entry.content.slice(0, 120)}${entry.content.length > 120 ? '…' : ''}"${citationSuffix}\nEntry ID: ${entry.id}${nearDupNote}${compressionNote}`;
+    return `Remembered [${type}]${flagStr}: "${entry.content.slice(0, 120)}${entry.content.length > 120 ? '…' : ''}"${citationSuffix}\nEntry ID: ${entry.id}${compressionNote}`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('vault_remember failed', { error: msg }, agentId);

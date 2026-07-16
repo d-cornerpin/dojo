@@ -18,6 +18,7 @@ import { v4 as uuidv4 } from 'uuid';
 import Database from 'better-sqlite3';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
+import { isContentFreeCourtesy } from '../agent/v2/classifiers/inbound-courtesy.js';
 import { appleMessageDateToUnixMs } from './imessage-date.js';
 
 // ── iMessage attachment pipeline ────────────────────────────────────────────
@@ -412,6 +413,14 @@ export interface SafeSender {
   description?: string;
   is_primary: boolean;
   sharing_level: SharingLevel;
+  /**
+   * RC-4/RC-8: true when this safe-sender is another Dojo agent (not a human).
+   * Lets the engine gate machine-to-machine behavior (skip start-acks, damp
+   * content-free courtesy volleys) on structured data instead of free-text in
+   * `description`. Optional + defaults false in parseSafeSenders so legacy
+   * records and the config JSON need no migration.
+   */
+  is_agent?: boolean;
 }
 
 function defaultSharingLevelFor(isPrimary: boolean): SharingLevel {
@@ -438,6 +447,16 @@ function sanitizeFramingField(value: string): string {
     .trim();
 }
 
+// RC-4/RC-8 one-time backfill: safe-sender records saved before the structured
+// `is_agent` flag existed only say "AI agent" in their free-text description.
+// When the flag is ABSENT (not merely false) and the description matches this,
+// treat the sender as an agent so the machine-to-machine gates apply without a
+// manual re-save. Explicit `is_agent: false` always wins (never re-promoted).
+const IS_AGENT_DESCRIPTION_RE = /\bAI agent\b/i;
+// Log the heuristic firing once per address (parseSafeSenders runs on every
+// poll) so the info line is a one-time signal, not per-tick noise.
+const backfillHeuristicLogged = new Set<string>();
+
 export function parseSafeSenders(raw: string | null | undefined): SafeSender[] {
   if (!raw) return [];
   let parsed: unknown;
@@ -462,6 +481,7 @@ export function parseSafeSenders(raw: string | null | undefined): SafeSender[] {
         description: undefined,
         is_primary: isPrimary,
         sharing_level: defaultSharingLevelFor(isPrimary),
+        is_agent: false,
       });
       continue;
     }
@@ -479,7 +499,23 @@ export function parseSafeSenders(raw: string | null | undefined): SafeSender[] {
       const description = cleanedDescription || undefined;
       const is_primary = obj.is_primary === true;
       const sharing_level = normalizeSharingLevel(obj.sharing_level, is_primary);
-      normalized.push({ address, name, description, is_primary, sharing_level });
+      // is_agent: honor an explicit boolean; when the field is absent, apply
+      // the one-time description heuristic (defaults false otherwise).
+      let is_agent: boolean;
+      if (typeof obj.is_agent === 'boolean') {
+        is_agent = obj.is_agent;
+      } else if (rawDescription && IS_AGENT_DESCRIPTION_RE.test(rawDescription)) {
+        is_agent = true;
+        if (!backfillHeuristicLogged.has(address)) {
+          backfillHeuristicLogged.add(address);
+          logger.info('Safe-sender is_agent backfilled from description heuristic', {
+            address, matched: 'AI agent',
+          });
+        }
+      } else {
+        is_agent = false;
+      }
+      normalized.push({ address, name, description, is_primary, sharing_level, is_agent });
     }
   }
 
@@ -552,8 +588,12 @@ export function findSafeSenderByAddress(records: readonly SafeSender[], query: s
 function buildSharingPolicyLine(sender: SafeSender, records: readonly SafeSender[]): string {
   const primary = records.find(s => s.is_primary);
   const primaryName = primary?.name?.trim() || 'the primary user';
+  // RC-11: never point the agent at "ask the primary user" when the SENDER is
+  // the primary user, that hatch would tell the agent to ask the owner about
+  // the owner. (Owners normally sit at open_book anyway, but a non-open_book
+  // owner record must still skip it.)
   const askPrimary =
-    sender.sharing_level === 'open_book'
+    sender.is_primary || sender.sharing_level === 'open_book'
       ? ''
       : ` If in doubt about whether something is OK to share, ask ${primaryName} first - reach them via BOTH the dashboard chat AND iMessage so they see your question on whichever channel they're checking. Wait for their answer before responding to the sender.`;
 
@@ -1054,8 +1094,17 @@ export async function processInboundIMessage(
   const primaryName = primary?.name?.trim() || 'the primary user';
   const exampleName = senderRecord?.name ?? 'Alex';
   const exampleRelationship = senderRecord?.description ? ` (${senderRecord.description})` : '';
-  const updateDiscipline =
-    `UPDATING THE PRIMARY USER: After you finish texting ${senderRecord?.name ?? 'this person'} back, do NOT send a separate update to ${primaryName} - NOT in the dashboard, and NOT as a separate iMessage to ${primaryName}'s address - UNLESS one of these is true: (a) you need to ASK ${primaryName} something to handle this conversation, or (b) there's specific information ${primaryName} genuinely needs to know. ${primaryName} does NOT see the iMessage thread between you and ${senderRecord?.name ?? 'this person'}; an unprompted "Sent." or "Standing by." or "Just the schedule, nothing else." reads as meaningless and confusing because they have no idea what you're referring to. If you DO send an update, ALWAYS lead with full context: who you were texting (name + relationship), what they asked you, and what you did or are waiting on. GOOD: "${exampleName}${exampleRelationship} just asked for your schedule this week - I sent her the calendar entries, no other personal details, and I'll let you know when she replies." BAD: "Sent. Just the schedule." Most iMessage exchanges should resolve silently from ${primaryName}'s perspective; only break that silence with real signal and real context.`;
+  // RC-11: when the sender IS the primary user, the third-party
+  // "updating the primary user" paragraph renders self-referential nonsense
+  // ("<owner> does NOT see the iMessage thread between you and <owner>") and
+  // its GOOD/BAD examples use third-party her/she pronouns. Branch on
+  // is_primary: the owner texting directly needs neither the update-discipline
+  // rule nor the ask-permission hatch, just one plain framing line. Every other
+  // sender keeps the paragraph, with the hardcoded her/she fixed to they/them.
+  const ownerSenderName = senderRecord?.name?.trim() || primaryName;
+  const updateDiscipline = senderRecord?.is_primary
+    ? `This is ${ownerSenderName}, your primary user, texting you directly via iMessage. Reply here; no separate update or permission is needed.`
+    : `UPDATING THE PRIMARY USER: After you finish texting ${senderRecord?.name ?? 'this person'} back, do NOT send a separate update to ${primaryName} - NOT in the dashboard, and NOT as a separate iMessage to ${primaryName}'s address - UNLESS one of these is true: (a) you need to ASK ${primaryName} something to handle this conversation, or (b) there's specific information ${primaryName} genuinely needs to know. ${primaryName} does NOT see the iMessage thread between you and ${senderRecord?.name ?? 'this person'}; an unprompted "Sent." or "Standing by." or "Just the schedule, nothing else." reads as meaningless and confusing because they have no idea what you're referring to. If you DO send an update, ALWAYS lead with full context: who you were texting (name + relationship), what they asked you, and what you did or are waiting on. GOOD: "${exampleName}${exampleRelationship} just asked for your schedule this week - I sent them the calendar entries, no other personal details, and I'll let you know when they reply." BAD: "Sent. Just the schedule." Most iMessage exchanges should resolve silently from ${primaryName}'s perspective; only break that silence with real signal and real context.`;
   // v2.7.23, the giant `══ INBOUND IMESSAGE, MUST GO VIA imessage_send ══`
   // delivery header was removed. The engine now auto-routes the model's
   // terminal text back via iMessage (see reply-destination.ts), so the
@@ -1092,6 +1141,9 @@ export async function processInboundIMessage(
       : senderRecord
         ? 'known_contact'
         : 'third_party') as 'owner' | 'known_contact' | 'third_party',
+    // RC-4/RC-8: structured agent-ness of the sender, so downstream gates
+    // (ack suppression, courtesy damping) branch on data, not description prose.
+    senderIsAgent: !!senderRecord?.is_agent,
   };
 
   // ── Atomic persist (+ optional cursor advance) ──
@@ -1151,7 +1203,48 @@ export async function processInboundIMessage(
       },
     });
 
-    if (wakeAgent) {
+    // RC-8 courtesy damping: a KNOWN AGENT sender volleying content-free
+    // courtesy (a stock sign-off, or one of our own ack-pool lines bounced
+    // back) must not wake a full turn, that is the machine-to-machine
+    // pleasantry loop the iMessage lane has no terminal-intent structure to
+    // stop. The inbound row is already persisted above (invariant untouched);
+    // here we skip the dispatch entirely and drop a visible system marker so
+    // the exchange is still legible in history. Human senders, and any agent
+    // message that carries real content, are unaffected and fall through to
+    // the normal wake path below.
+    const dampCourtesy =
+      wakeAgent &&
+      !!senderRecord?.is_agent &&
+      !!cleanedText &&
+      isContentFreeCourtesy(cleanedText);
+
+    if (dampCourtesy && senderRecord) {
+      const markerId = uuidv4();
+      const markerContent = `[Courtesy reply from ${senderRecord.name} received; no turn taken]`;
+      try {
+        db.prepare(`
+          INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
+          VALUES (?, ?, 'system', ?, datetime('now'))
+        `).run(markerId, primaryId, markerContent);
+        broadcast({
+          type: 'chat:message',
+          agentId: primaryId,
+          message: {
+            id: markerId, agentId: primaryId, role: 'system' as const,
+            content: markerContent,
+            tokenCount: null, modelId: null, cost: null, latencyMs: null,
+            createdAt: new Date().toISOString(),
+          },
+        });
+      } catch (markerErr) {
+        logger.warn('Failed to persist courtesy-damping marker (non-fatal)', {
+          error: markerErr instanceof Error ? markerErr.message : String(markerErr),
+        });
+      }
+      logger.info('RC-8: damped content-free courtesy from agent sender (no turn taken)', {
+        sender, name: senderRecord.name,
+      });
+    } else if (wakeAgent) {
       // Flag that the primary agent next response is sent back over iMessage
       // to this sender.
       pendingIMResponseMap.set(primaryId, { sender });

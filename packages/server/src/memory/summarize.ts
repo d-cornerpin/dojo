@@ -63,7 +63,7 @@ ABSOLUTE RULES — NEVER VIOLATE THESE:
 - Preserve ALL technical specifics: error messages, config values, commands run, API responses
 - When the user says "X is Y", write "X is Y" — do not generalize to "discussed X"
 - Capability / tool availability is VOLATILE state, not a durable fact. Record what was ATTEMPTED and the OUTCOME ("tried to download from the user's account, got a 'no such tool' error"), but NEVER write a standing verdict like "the agent cannot download user attachments" or "that feature isn't supported" — the platform gains tools over time and such verdicts silently go false. Keep the dated attempt, drop the conclusion.
-- Note any unresolved questions, pending tasks, or open decisions — AND tag each with the party/conversation it belongs to
+- Note any unresolved questions, pending tasks, or open decisions, AND tag each with the party/conversation it belongs to. Emit these in the fenced OPEN-LOOPS section described below; do NOT scatter them through the narrative prose.
 - Attribute every fact to the correct person AND the correct conversation, using the [ROLE · PARTY] tags. Carry the party label into the summary text so whose-request-is-whose survives compression.
 - CRITICAL — Preserve resolution state. At the end of the summary, include a section:
   RESOLVED: [issue] — fixed [how/when]
@@ -71,6 +71,12 @@ ABSOLUTE RULES — NEVER VIOLATE THESE:
   CLOSED: [task/project name] — completed
   DEFERRED: [item] — [reason it was deprioritized]
   This prevents the agent from re-raising issues that are already handled.
+- CRITICAL: Emit still-OPEN items in a fenced section so the engine can track them and retire them later. AFTER the RESOLVED/DECIDED/CLOSED/DEFERRED section, add:
+  OPEN-LOOPS:
+  - (<party>) <one genuinely unresolved item: a question you still owe someone, or a request not yet fulfilled>
+  - (<party>) <...>
+  END-OPEN-LOOPS
+  Rules for this section: list ONLY items that are still open right now. Tag each with the party it belongs to in parentheses, using the same party label as the [ROLE · PARTY] tags. If an item also appears under RESOLVED/CLOSED, do NOT list it here. If there are no open items, write a single line "- none". Never invent an open item, and never record "I could not see / read / received a message" as an open item, that is a transient context state, not an unanswered question.
 - Target approximately ${targetTokens} tokens — use the space to keep details, not to pad
 - Do NOT include preamble — write the factual summary directly
 

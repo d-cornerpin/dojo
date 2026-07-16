@@ -189,6 +189,13 @@ export interface InboundMeta {
    * Relation; kept inline to avoid a shared-package import cycle.)
    */
   relation?: 'owner' | 'known_contact' | 'third_party' | 'agent' | 'engine';
+  /**
+   * RC-4/RC-8: the sender is itself another Dojo agent (a safe-sender flagged
+   * `is_agent`). Stamped by the iMessage bridge so downstream engine gates (start-ack
+   * suppression, courtesy damping) branch on data, not free-text description prose.
+   * Absent/false = an ordinary human sender.
+   */
+  senderIsAgent?: boolean;
   // Reply-addressing context (mirrors the server-side ChannelInboundContext).
   recipientAddress?: string;
   emailMessageId?: string;

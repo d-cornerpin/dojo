@@ -132,13 +132,21 @@ export function ensurePMAgentRunning(): void {
     // Ensure permissions are up to date on every boot
     const syncToolsPolicy = JSON.stringify({
       allow: [
-        'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
-        'tracker_add_notes', 'tracker_complete_step',
+        // RC-16: the PM is an OVERSEER, not a worker. It validates, overrides,
+        // retasks, and reassigns; it never edits task CONTENT or flips a worker's
+        // status directly. The worker verbs (tracker_update_status,
+        // tracker_complete_step, tracker_edit_task) are intentionally absent so a
+        // stale copy sitting in the PM's long-lived context can't silently rewrite
+        // a task's description or re-close already-closed work (P-1 / F-15).
+        // tracker_retask + tracker_reassign_task are the PM's corrective verbs
+        // (its own closeout-miss escalation prompt already directs tracker_retask).
+        'tracker_list_active', 'tracker_get_status',
+        'tracker_add_notes',
         'tracker_pause_schedule', 'tracker_resume_schedule',
-        'tracker_validate',
+        'tracker_validate', 'tracker_retask', 'tracker_reassign_task',
         'tracker_override', 'tracker_request_override',
         'tracker_apply_user_verdict',
-        'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
+        'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
         'vault_search', 'vault_remember', 'history_search', 'history_get',
         'load_tool_docs', 'get_current_time',
@@ -193,13 +201,21 @@ export function ensurePMAgentRunning(): void {
     const reactivatePermissions = PM_PERMISSIONS_JSON;
     const reactivateToolsPolicy = JSON.stringify({
       allow: [
-        'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
-        'tracker_add_notes', 'tracker_complete_step',
+        // RC-16: the PM is an OVERSEER, not a worker. It validates, overrides,
+        // retasks, and reassigns; it never edits task CONTENT or flips a worker's
+        // status directly. The worker verbs (tracker_update_status,
+        // tracker_complete_step, tracker_edit_task) are intentionally absent so a
+        // stale copy sitting in the PM's long-lived context can't silently rewrite
+        // a task's description or re-close already-closed work (P-1 / F-15).
+        // tracker_retask + tracker_reassign_task are the PM's corrective verbs
+        // (its own closeout-miss escalation prompt already directs tracker_retask).
+        'tracker_list_active', 'tracker_get_status',
+        'tracker_add_notes',
         'tracker_pause_schedule', 'tracker_resume_schedule',
-        'tracker_validate',
+        'tracker_validate', 'tracker_retask', 'tracker_reassign_task',
         'tracker_override', 'tracker_request_override',
         'tracker_apply_user_verdict',
-        'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
+        'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
         'vault_search', 'vault_remember', 'history_search', 'history_get',
         'load_tool_docs', 'get_current_time',
@@ -232,13 +248,21 @@ export function ensurePMAgentRunning(): void {
     // Allow only the tools the PM needs
     const pmToolsPolicy = JSON.stringify({
       allow: [
-        'tracker_list_active', 'tracker_get_status', 'tracker_update_status',
-        'tracker_add_notes', 'tracker_complete_step',
+        // RC-16: the PM is an OVERSEER, not a worker. It validates, overrides,
+        // retasks, and reassigns; it never edits task CONTENT or flips a worker's
+        // status directly. The worker verbs (tracker_update_status,
+        // tracker_complete_step, tracker_edit_task) are intentionally absent so a
+        // stale copy sitting in the PM's long-lived context can't silently rewrite
+        // a task's description or re-close already-closed work (P-1 / F-15).
+        // tracker_retask + tracker_reassign_task are the PM's corrective verbs
+        // (its own closeout-miss escalation prompt already directs tracker_retask).
+        'tracker_list_active', 'tracker_get_status',
+        'tracker_add_notes',
         'tracker_pause_schedule', 'tracker_resume_schedule',
-        'tracker_validate',
+        'tracker_validate', 'tracker_retask', 'tracker_reassign_task',
         'tracker_override', 'tracker_request_override',
         'tracker_apply_user_verdict',
-        'tracker_edit_task', 'tracker_edit_project', 'tracker_close_project',
+        'tracker_edit_project', 'tracker_close_project',
         'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
         'vault_search', 'vault_remember', 'history_search', 'history_get',
         'load_tool_docs', 'get_current_time',

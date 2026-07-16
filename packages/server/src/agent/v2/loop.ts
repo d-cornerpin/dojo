@@ -38,7 +38,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { broadcast } from '../../gateway/ws.js';
-import type { Message, ToolCall } from '@dojo/shared';
+import type { Message, ToolCall, Channel } from '@dojo/shared';
 // classifyTool is the canonical effectful/retrieval/bookkeeping classifier
 // (test-covered against the full tool registry); the closeout machinery
 // derives "did this turn do real work" from it instead of a hand list that
@@ -67,7 +67,10 @@ import { queueEmbedding } from '../../memory/embeddings.js';
 import { isPrimaryAgent, isTrainerAgent, isPMAgent, isHealerAgent } from '../../config/platform.js';
 import os from 'node:os';
 import path from 'node:path';
-import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, continuationContext, clearTurnReceipts } from '../turn-state.js';
+import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, currentTurnNumber, continuationContext, clearTurnReceipts, clearRecallBudget, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
+import { persistEngineSteer } from './engine-steer.js';
+import { pushEngineMessage } from './engine-message.js';
+import { findRecentDeliveries, getRecentOutbound, mostRecentDeliveryTo, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
 import { writeToolReceipt } from '../../receipts/store.js';
 import { resolveToolAlias } from '../../tools/aliases.js';
 
@@ -119,11 +122,14 @@ import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, TOOL_AND_OUTPUT_RESERVE } from '../../memory/compaction.js';
 import { estimateTokens } from '../../memory/store.js';
 import { insertInterAgentEngineRow, insertInterAgentOwnOutput, tagInterAgentOwnOutputConvKey } from '../../memory/interagent.js';
+import { buildOpenLoopsInjection } from '../../memory/open-loops.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
-import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, claimAssembledSiblings, getOwedMidTurnArrivals, type TurnCounterparty, type EngineEventSrc } from './counterparty.js';
+import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, claimAssembledSiblings, getOwedMidTurnArrivals, conversationKey, type TurnCounterparty, type EngineEventSrc } from './counterparty.js';
+import { resolveOwnerAffinityChannel, affinityPromotionAllowed, recordAffinityPromotion } from './owner-affinity.js';
+import { getProactiveSendStreak, bumpProactiveSendStreak, resetProactiveSendStreak, PROACTIVE_SEND_DEMOTE_THRESHOLD } from './proactive-budget.js';
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
 import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout } from './classifiers/output.js';
-import { detectUngroundedDeliveryClaim } from './classifiers/grounding.js';
+import { detectUngroundedDeliveryClaim, detectDeliveryDenial } from './classifiers/grounding.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
 import { permissionAlternativeFinder } from './classifiers/permission.js';
 import { semanticTechniqueMatches, SEMANTIC_STRONG_THRESHOLD, buildTechniqueMatchQuery } from './classifiers/technique.js';
@@ -475,6 +481,12 @@ const ACK_DEFAULT_TEXT = 'Working on it…';
 // ceremony-free (the battery praised that), anything longer acks before the user
 // starts wondering whether the agent heard them.
 const ENGINE_START_ACK_AFTER_MS = 12000;
+// RC-4.4: streaming-race grace. When the start-ack timer / first-tool hook is about to
+// fire but a model call is still streaming, wait up to this long for the real reply to
+// land (startAckRepliedNow suppresses the ack then). Kills the F-11 double-ack (ack at
+// +12s, model reply at +13s) while keeping the guarantee: a stalled model still gets the
+// ack after the grace expires.
+const ENGINE_START_ACK_STREAM_GRACE_MS = 5000;
 
 // ── Task-thrash detector ──
 // Catches the "agent re-runs the SAME canonical tool call over and over"
@@ -829,7 +841,7 @@ export function setAgentStatus(agentId: string, status: string): void {
         UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?
       `).run(status, agentId);
     }
-    if (status === 'idle') { currentTurnKind.delete(agentId); currentTurnConvKey.delete(agentId); currentTurnImRecipient.delete(agentId); clearTurnReceipts(agentId); }
+    if (status === 'idle') { currentTurnKind.delete(agentId); currentTurnConvKey.delete(agentId); currentTurnImRecipient.delete(agentId); currentTurnNumber.delete(agentId); clearTurnReceipts(agentId); clearRecallBudget(agentId); }
     // On 'working', carry the turn kind so the composer can stay quiet on pure
     // A2A turns (unless wordy mode). Defaults to 'user' until the counterparty
     // is resolved early in the turn.
@@ -1151,12 +1163,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // the source table so the terminal-wake claim UPDATE below hits the right one; the
   // messages arm dedups against store ids so a backfilled row is not seen twice.
   const mostRecentInbound = db.prepare(`
-    SELECT rowid, content, origin_kind, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, conv_key, created_at, 0 AS _tag, 'm' AS _src
+    SELECT rowid, content, origin_kind, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, conv_key, created_at, 0 AS _tag, 'm' AS _src
       FROM messages
      WHERE agent_id = @agentId AND role = 'user'
        AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
     UNION ALL
-    SELECT rowid, content, origin_kind, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, conv_key, created_at, 1 AS _tag, 'ia' AS _src
+    SELECT rowid, content, origin_kind, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, NULL AS inbound_meta, conv_key, created_at, 1 AS _tag, 'ia' AS _src
       FROM inter_agent_messages
      WHERE agent_id = @agentId AND role = 'user'
     ORDER BY created_at DESC, _tag DESC, rowid DESC
@@ -1164,7 +1176,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   `).get({ agentId }) as {
     rowid: number; content: string; origin_kind: string | null; origin_intent: string | null;
     source_agent_id: string | null; a2a_thread_id: string | null; a2a_intent: string | null;
-    a2a_requires_response: number | null; conv_key: string | null; _src: 'm' | 'ia';
+    a2a_requires_response: number | null; inbound_meta: string | null; conv_key: string | null; _src: 'm' | 'ia';
   } | undefined;
   // A reply-needed peer A2A (QUESTION/ASSIGN/BLOCK) is most-recent. Engine-origin
   // rows (fromAgent='system') are NOT peer A2A, they drive an engine turn instead,
@@ -1276,6 +1288,34 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // [Engine hint] is injected at the context tail (see the assembly site) and a
   // turn-end tripwire logs any user-facing outbound for calibration.
   const settledContextWakeTurn = !hasUnansweredUser;
+  // RC-5.2: a NOTIFICATION turn, a wake with no trigger row, not A2A, not an engine
+  // event, whose newest inbound row is an UNAUTHORIZED human notice (a mailbox event
+  // about the owner's inbox, an unknown sender). resolveTurnCounterparty on a null
+  // trigger falls through to the owner-on-dashboard header, which the awareness lane
+  // contradicts; on the weak model the header won and every notification read as an
+  // open channel to the owner. isNotificationTurn drives a dedicated header variant
+  // (renderCounterpartyHeader) that tells the model NOT to greet/message the user
+  // unless the item genuinely matters, and to end with [no-reply] otherwise. Distinct
+  // from isEngineTurn (a scheduler/reminder the agent must act on) and from a settled
+  // wake whose newest inbound was an already-answered authorized ask.
+  const isNotificationTurn =
+    !triggerRow &&
+    !isA2ATurn &&
+    !isEngineTurn &&
+    mostRecentInbound != null &&
+    mostRecentInbound.origin_kind !== 'engine' &&
+    !mostRecentInbound.a2a_thread_id &&
+    deriveOrigin({
+      role: 'user',
+      content: mostRecentInbound.content,
+      sourceAgentId: mostRecentInbound.source_agent_id,
+      a2aThreadId: mostRecentInbound.a2a_thread_id,
+      a2aIntent: mostRecentInbound.a2a_intent,
+      a2aRequiresResponse: mostRecentInbound.a2a_requires_response,
+      inboundMeta: mostRecentInbound.inbound_meta,
+      originKind: mostRecentInbound.origin_kind,
+      originIntent: mostRecentInbound.origin_intent,
+    }).authorized === false;
   // Mark the engine event PROCESSED at pickup (mirrors the human pickup-stamp) so it
   // can't re-fire and so getPendingEngineEvent stops returning it. conv_key='engine'
   // is a non-human sentinel (the human waiting-set ignores engine rows by origin).
@@ -1314,6 +1354,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // count for the turn that produced them (a later poked turn keeps the
   // prose-evidence path). Cleared again on idle at the boundary above.
   clearTurnReceipts(agentId);
+  // RC-3: start each turn with a fresh recall budget (per-turn doom-loop brake).
+  clearRecallBudget(agentId);
   broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: isA2ATurn ? 'a2a' : 'user', userFacing: !!chosenConvKey });
 
   // Enforcer arms ONLY on A2A turns AND only for reply-needed intents. On a user
@@ -1367,6 +1409,41 @@ export async function runV2Turn(agentId: string): Promise<void> {
     currentTurnImRecipient.delete(agentId);
   }
 
+  // RC-10: owner-channel affinity, resolved ONCE here so the SAME value drives both the
+  // counterparty header (so the model is never told "dashboard" on a turn the engine
+  // will text) and the end-of-turn reply routing. Applies only when: the counterparty
+  // is the owner (never a contact), the natural destination would be the dashboard (not
+  // a bound routed channel, and never voice/phone), the owner's most recent contact was
+  // iMessage within 48h, the bridge is configured, and the per-conversation rate limit
+  // allows a promotion. The presence-away override at end-of-turn remains stronger.
+  // RC-5.3: an authorized owner inbound (the owner is present and engaging) resets the
+  // proactive-send backoff. A settled-context wake has no trigger row, so only a genuine
+  // owner message clears the streak; every unanswered proactive ping keeps it climbing.
+  if (triggerRow && counterparty.kind === 'user' && counterparty.relation === 'owner') {
+    resetProactiveSendStreak(agentId);
+  }
+
+  const ownerAffinityConvKey = conversationKey(
+    counterparty.channel, counterparty.senderId, counterparty.name, counterparty.threadId,
+  );
+  let ownerAffinityDestination: 'imessage' | null = null;
+  {
+    const destinationWouldBeDashboard =
+      counterparty.channel !== 'imessage' && counterparty.channel !== 'teams' &&
+      counterparty.channel !== 'email' && counterparty.channel !== 'sms' &&
+      counterparty.channel !== 'phone' && counterparty.channel !== 'voice';
+    if (counterparty.kind === 'user' && counterparty.relation === 'owner' && destinationWouldBeDashboard) {
+      try {
+        const { isImessageConfigured } = await import('../../services/presence.js');
+        const bridgeConfigured = isImessageConfigured();
+        const affinity = resolveOwnerAffinityChannel(agentId, { imessageBridgeConfigured: bridgeConfigured });
+        if (affinity === 'imessage' && affinityPromotionAllowed(agentId, ownerAffinityConvKey)) {
+          ownerAffinityDestination = 'imessage';
+        }
+      } catch { /* best effort; a resolution failure just leaves the reply on the dashboard */ }
+    }
+  }
+
   // Determine v2 turn_number, read max from messages, increment.
   // Per Part XVIII §E: turn_number is per-agent, monotonically increasing,
   // resets to 0 on session reset (handled elsewhere).
@@ -1374,6 +1451,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
     'SELECT MAX(turn_number) as max_turn FROM messages WHERE agent_id = ?',
   ).get(agentId) as { max_turn: number | null } | undefined;
   const turnNumber = (lastTurn?.max_turn ?? 0) + 1;
+  // RC-12: publish the turn number so writeToolReceipt can stamp turn_number on
+  // engine receipts without threading it through every send executor. Cleared at
+  // the turn boundary (idle), like currentTurnConvKey.
+  currentTurnNumber.set(agentId, turnNumber);
 
   // Snapshot turn boundary so context assembly excludes mid-run user messages
   const turnStartedAt = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
@@ -1472,6 +1553,51 @@ export async function runV2Turn(agentId: string): Promise<void> {
         createdAt: new Date().toISOString(),
       },
     });
+  };
+
+  // RC-1: dual-home a cross-recipient send. When the agent sends to someone who is
+  // NOT this turn's counterparty (asking the owner for a datum while replying to a
+  // contact), the send's text lives only in the current conversation's tool rows and
+  // is filtered out of the RECIPIENT's next turn by scopeToHumanConversation. So the
+  // recipient answers a question with no visible trace of it ever being asked (the
+  // "easily confused" bug, F-1/F-3/K-1). This persists ONE additive assistant echo
+  // row INTO the recipient's conversation (conv_key = recipient's key) carrying the
+  // verbatim sent text, so on the recipient's next turn the model sees its own
+  // question and can bind the bare answer. Additive and side-effect-free: it does NOT
+  // retro-stamp the tool rows (that would destabilise the SENDING turn's own
+  // assembly). origin_intent='cross_conv_send_echo' keeps it OUT of the start-ack
+  // "did I reply" check (which requires origin_intent IS NULL) and lets the dashboard
+  // render it as a routing chip. NOT broadcast live (it belongs to a different
+  // conversation than the one on screen); it surfaces on the recipient's turn + on
+  // reload. Skipped when the echo would land in this turn's own conversation.
+  const persistCrossConvSendEcho = (
+    channel: Channel,
+    recipientId: string | null,
+    recipientName: string,
+    channelWord: string,
+    sentText: string,
+  ): void => {
+    try {
+      const text = (sentText ?? '').trim();
+      if (!text) return;
+      const echoKey = conversationKey(channel, recipientId, recipientName, null);
+      // Defensive: never echo into the conversation this turn is already serving
+      // (the toCp guard at the call site already excludes recipient==counterparty).
+      if (!echoKey || echoKey === chosenConvKey) return;
+      const echoId = uuidv4();
+      const content = `[Sent via ${channelWord} to ${recipientName}]: ${text}`;
+      db.prepare(`
+        INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, conv_key, origin_intent, created_at)
+        VALUES (?, ?, 'assistant', ?, ?, ?, 'cross_conv_send_echo', datetime('now'))
+      `).run(echoId, agentId, content, turnNumber, echoKey);
+      logger.info('RC-1: dual-homed cross-recipient send echo into recipient conversation', {
+        agentId, turnNumber, echoKey, channel: channelWord,
+      }, agentId);
+    } catch (err) {
+      logger.debug('RC-1 cross-conv echo failed (non-fatal, additive)', {
+        agentId, error: err instanceof Error ? err.message : String(err),
+      }, agentId);
+    }
   };
 
   // ── Engine-enforced human acknowledgment (NEXT-WAVE item 1) ──
@@ -1584,7 +1710,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // which fires this same routine the moment real work starts.
   let startAckTimer: ReturnType<typeof setTimeout> | null = null;
   let anyToolStartedThisTurn = false;
-  const startAckArmed = counterparty.kind === 'user' && !!triggerRow;
+  // RC-4.4: true while a model call is streaming for this turn. The start-ack timer /
+  // first-tool hook consults it to add a bounded streaming-race grace before firing, so
+  // an ack does not land 1s before the model's real reply (the F-11 double-ack). Set
+  // around the callModel await below.
+  let modelCallInFlight = false;
+  // RC-4.2: the turn counterparty is another Dojo agent texting over a human channel
+  // (an iMessage safe-sender flagged is_agent). Channel-delivered engine acks (start /
+  // completion / A2A-handoff) are gated OFF for such a counterparty: another agent does
+  // not need "on it" reassurance, and each ack is a fresh inbound that wakes the peer
+  // box, the ack ping-pong (H-5) that produced the duplicate texts to the owner. The
+  // human owner's OWN engine acks about her agent's work are unaffected, those go to
+  // her dashboard/owner conversation, not to an agent-flagged counterparty.
+  const counterpartyIsAgentSender = counterparty.kind === 'user' && !!counterparty.senderIsAgent;
+  const startAckArmed = counterparty.kind === 'user' && !!triggerRow && !counterpartyIsAgentSender;
   const startAckArmedAtMs = Date.now();
   // The person has heard something the moment EITHER a user-visible
   // assistant text row landed this turn (the DB check) OR the agent
@@ -1609,6 +1748,24 @@ export async function runV2Turn(agentId: string): Promise<void> {
     try {
       if (engineStartAckDeliveredThisTurn || startAckRepliedNow()) return;
       engineStartAckDeliveredThisTurn = true;
+      // RC-4.4: streaming-race grace. If a model call is in flight right now, the real
+      // reply may be one second away (the F-11 double-ack: ack at +12s, reply at +13s).
+      // Defer up to ENGINE_START_ACK_STREAM_GRACE_MS, polling for the reply, so
+      // startAckRepliedNow() can suppress this ack when the in-flight reply lands. The
+      // guarantee holds: if the model stalls (no reply after the grace) or the call
+      // finishes with no user text, the ack still fires below.
+      if (modelCallInFlight) {
+        const graceDeadline = Date.now() + ENGINE_START_ACK_STREAM_GRACE_MS;
+        while (modelCallInFlight && Date.now() < graceDeadline) {
+          await new Promise((r) => setTimeout(r, 250));
+          if (startAckRepliedNow()) {
+            logger.info('v2 F10 / RC-4.4: start ack skipped, the in-flight reply landed within the streaming-race grace', {
+              agentId, turnNumber, via,
+            }, agentId);
+            return;
+          }
+        }
+      }
       // Seconds of slack here (the threshold already passed), so the wording
       // call is awaited inline; the pool fallback guarantees a line.
       const ackText = await composeStartAck({ userMessage: lastUserMessageContent ?? '', agentId });
@@ -1771,6 +1928,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
       const gateMsgId = uuidv4();
       if (!recentGateMsg) {
         try {
+          // engine-steer-exempt (RC-19): the pre-turn close-out gate is ENFORCED at
+          // the tool-execution layer (the engine REFUSES non-tracker tool calls until
+          // a tracker call lands), so its behavior does not depend on the model seeing
+          // this row. It also runs in the pre-turn setup, outside the loop's per-turn
+          // pendingNudge scope. Guidance-only text; not dashboard-only theater.
           db.prepare(`
             INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
             VALUES (?, ?, 'system', ?, datetime('now'))
@@ -2480,7 +2642,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // (system) AND the message-injection mctx, so the msg.turn-context entry can
       // read counterparty / othersWaiting / conversationalTurn / isEngineTurn (they
       // are not recomputed).
-      const sharedTurnContext = { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn, engineEventKeepFullId };
+      const sharedTurnContext = { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, isNotificationTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn, engineEventKeepFullId, resolvedReplyChannel: ownerAffinityDestination ?? undefined };
       // LIVE = RELOAD, pre-model half (incident 2026-07-06): the persisted-output
       // visibility keys on the six-way interAgentTurn union (computed post-model,
       // below), but the dashboard's live suppression needs the turn kind BEFORE the
@@ -2930,7 +3092,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   // here (not left to the model) so it survives the exact
                   // production failure where the floor model ended the turn on an
                   // A2A send and the owner heard nothing. One per turn.
-                  if (counterparty.kind === 'user' && !engineStartAckDeliveredThisTurn) {
+                  // RC-4.2: never start-ack an agent-flagged counterparty (ack ping-pong).
+                  if (counterparty.kind === 'user' && !counterpartyIsAgentSender && !engineStartAckDeliveredThisTurn) {
                     // Flag set synchronously at the fire decision so a second
                     // site can never double-ack. Wording is composed fire-and-
                     // forget (best-effort model, guaranteed pool fallback) so it
@@ -3206,6 +3369,69 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // header, bridge state, waiting/conversational hints) injects HERE, right
       // before current-time, so the volatile route sits past the cached prefix.
       injectRegistryMessage('msg.turn-context', messages, mctx);
+
+      // ── RC-12 / RC-1: engine-verified outbound facts (volatile lane) ──
+      // Injected HERE, in the same volatile region as turn-context / current-time
+      // (after the fresh tail, past the cached prefix), so they never break the
+      // prompt-cache prefix. Human turns only: an engine fact that survives the
+      // conversation scoping the model context is subject to, so the model can
+      // answer truthfully about what it did send and bind a bare answer to the
+      // question it asked. Rebuilt each iteration with the rest of this block, so a
+      // single copy lands per model call.
+      if (counterparty.kind === 'user') {
+        try {
+          // RECENT OUTBOUND (RC-12 item 7): the last N sends in 24h, engine-verified.
+          // Survives scoping (receipts are not conversation rows), so a denial or a
+          // "did you send it" is answerable from fact, not scoped-away memory.
+          const recentOut = getRecentOutbound(agentId, 24, 5);
+          if (recentOut.length > 0) {
+            const outLines = recentOut.map(
+              (d) => `${relativeTimeAgo(d.createdAt)} ${channelLabel(d.channel)} -> ${d.recipient ?? 'unknown'}`,
+            );
+            pushEngineMessage(messages, `RECENT OUTBOUND (engine-verified):\n${outLines.join('\n')}`);
+          }
+
+          // Pending-question header (RC-1 item 2): quote the agent's own most-recent
+          // message TO THIS counterparty (never another conversation's content) so a
+          // bare answer ("5550001234") is bindable even by the weakest model. Dedup:
+          // a CROSS-recipient send (receipt convKey != this turn's key) already put an
+          // echo row into this counterparty's fresh tail carrying the same text, so the
+          // header would duplicate it, skip it while that echo is recent (still in the
+          // live tail); inject it for a same-conversation send (never echoed) or an old
+          // cross-recipient send whose echo has aged out of the tail window.
+          const pendHints = [counterparty.senderId, counterparty.name].filter(
+            (h): h is string => !!h && h.trim().length > 0,
+          );
+          let pend: ReturnType<typeof mostRecentDeliveryTo> = null;
+          for (const h of pendHints) { pend = mostRecentDeliveryTo(agentId, h, 48); if (pend) break; }
+          if (pend && pend.sentText && pend.sentText.trim()) {
+            const echoMade = !!pend.convKey && !!chosenConvKey && pend.convKey !== chosenConvKey;
+            const ageMs = Date.now() - Date.parse(pend.createdAt.replace(' ', 'T') + 'Z');
+            const echoLikelyInTail = Number.isFinite(ageMs) && ageMs <= 2 * 60 * 60 * 1000;
+            if (!(echoMade && echoLikelyInTail)) {
+              const quoted = pend.sentText.trim().slice(0, 300);
+              pushEngineMessage(
+                messages,
+                `[Your most recent message to ${counterparty.name}, sent ${relativeTimeAgo(pend.createdAt)}: "${quoted}"]`,
+              );
+            }
+          }
+
+          // OPEN LOOPS (RC-2): the CURRENT conversation's still-open loops (plus up
+          // to 3 cross-conversation loops labeled by party), as a compact numbered
+          // block. Structured, retirable rows replace the old immortal open-loop
+          // prose in summaries; only status='open' rows are injected (stale loops go
+          // to the daily brief, never per-turn). Same volatile lane as the outbound
+          // facts above, so it never breaks the prompt-cache prefix.
+          const loopsBlock = buildOpenLoopsInjection(agentId, chosenConvKey);
+          if (loopsBlock) pushEngineMessage(messages, loopsBlock);
+        } catch (err) {
+          logger.debug('RC-12/RC-1 volatile outbound injection failed (non-fatal)', {
+            agentId, error: err instanceof Error ? err.message : String(err),
+          }, agentId);
+        }
+      }
+
       injectRegistryMessage('msg.current-time', messages, mctx);
 
       // ── Context receipt (debug-gated, fire-and-forget) ──
@@ -3244,6 +3470,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
         activeAbortControllers.set(agentId, abortController);
 
         try {
+          // RC-4.4: mark the model call in flight so the start-ack streaming-race grace
+          // can defer firing while the reply is still streaming. Cleared in the finally.
+          modelCallInFlight = true;
           result = await callModel({
             agentId,
             modelId,
@@ -3430,6 +3659,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
           if (phoneStreamCallSid) { phoneStreamBuffer = ''; phoneStreamFlushedAny = false; }
           modelId = fallback.modelId;
           state = advance(state, { modelId });
+        } finally {
+          // RC-4.4: the model call for this attempt has settled (success break, retry
+          // continue, or throw); it is no longer in flight. A retry sets it true again.
+          modelCallInFlight = false;
         }
       }
 
@@ -3780,6 +4013,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
         if (!interAgentTurn) {
           try {
             const noteId = uuidv4();
+            // RC-9: channel-aware demotion. On a ROUTED-channel human turn (iMessage /
+            // SMS / Teams / email) exactly ONE routing pass delivers exactly ONE string
+            // to the channel, while the dashboard live-mirrors EVERY iteration. A demoted
+            // narration line here was NOT delivered to that channel, so a visible working
+            // note reads as a second, contradictory reply (F-22: the dashboard showing
+            // "Not yet, sending now" that never reached iMessage). Mark such notes
+            // INTERNAL: prefix them [working-note:internal] and flag the broadcast so the
+            // dashboard hides them by default (shown only in wordy/verbose mode). Owner
+            // dashboard/voice turns are unchanged (there is one lane, nothing to confuse).
+            const routedHumanChannel =
+              counterparty.kind === 'user' &&
+              (counterparty.relation === 'owner' || counterparty.relation === 'known_contact') &&
+              (counterparty.channel === 'imessage' || counterparty.channel === 'sms' ||
+               counterparty.channel === 'teams' || counterparty.channel === 'email');
+            const notePrefix = routedHumanChannel ? '[working-note:internal] ' : '[working-note] ';
             // Chat-native system note: prefix-marked, NO origin stamp, same
             // convention as routing markers and dividers. An origin_kind of
             // 'engine' here would make the row inter-agent-shaped, and those
@@ -3788,13 +4036,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
             db.prepare(`
               INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
               VALUES (?, ?, 'system', ?, ?, datetime('now'))
-            `).run(noteId, agentId, `[working-note] ${persistedContent}`, turnNumber);
+            `).run(noteId, agentId, `${notePrefix}${persistedContent}`, turnNumber);
             broadcast({
               type: 'chat:workingnote',
               agentId,
               messageId,
               noteId,
               content: persistedContent,
+              ...(routedHumanChannel ? { internal: true } : {}),
             });
           } catch { /* cosmetic; never block the turn */ }
         }
@@ -3829,7 +4078,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
             .map((r) => ({ name: r.name })),
           counterpartyName: counterparty.name,
         });
-        if (grounding.ungrounded) {
+        // RC-12: consult the durable receipt ledger BEFORE firing. A real prior send
+        // to the claimed recipient (this turn OR an earlier one, within 24h) GROUNDS
+        // the claim, so the guard must not fire into a duplicate send. The within-turn
+        // tool check above only sees THIS turn; the ledger closes the cross-turn hole
+        // (the admitted false positive: it really sent in an earlier turn and is just
+        // referencing it). Engine fact, survives conversation scoping.
+        const groundedByLedger =
+          grounding.ungrounded &&
+          findRecentDeliveries(agentId, grounding.recipient, 24).length > 0;
+        if (grounding.ungrounded && groundedByLedger) {
+          logger.info('v2 grounding guard suppressed by receipt ledger (real prior send)', {
+            agentId, recipient: grounding.recipient,
+          }, agentId);
+        }
+        if (grounding.ungrounded && !groundedByLedger) {
           const nudgeText =
             `[System: your reply says you already delivered something to ${grounding.recipient} ("${grounding.verbHint}…"), ` +
             `but no send/message tool was called this turn, so that delivery did NOT happen here. ` +
@@ -3837,24 +4100,90 @@ export async function runV2Turn(agentId: string): Promise<void> {
             `If you have NOT actually sent it, do it NOW with the correct tool (send_to_agent for another agent, ` +
             `imessage_send / the email-send tool for a person) BEFORE telling the user it is done. ` +
             `Never tell the user something is sent or handled that you have not actually done.]`;
-          const nudgeId = uuidv4();
-          db.prepare(
-            `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at) VALUES (?, ?, 'system', ?, ?, datetime('now'))`,
-          ).run(nudgeId, agentId, nudgeText, turnNumber);
-          broadcast({
-            type: 'chat:message',
-            agentId,
-            message: {
-              id: nudgeId, agentId, role: 'system' as const, content: nudgeText,
-              tokenCount: null, modelId: null, cost: null, latencyMs: null,
-              createdAt: new Date().toISOString(),
-            },
-          });
-          state = advance(state, { nudgedForUngroundedClaimThisTurn: true });
+          // RC-19: deliver the correction via persistEngineSteer so it reaches the
+          // model (pendingNudge) AND keeps the dashboard row. A bare role='system'
+          // row is stripped by the assembler, so pre-fix the agent re-entered without
+          // ever seeing the correction and re-posted the same false claim.
+          state = persistEngineSteer(
+            state,
+            { agentId, content: nudgeText, turnNumber, extra: { nudgedForUngroundedClaimThisTurn: true } },
+            { db, broadcast },
+          );
           logger.info('v2 grounding guard fired, ungrounded delivery claim, re-entering', {
             agentId, recipient: grounding.recipient,
           }, agentId);
           continue; // re-enter so the agent actually sends or corrects the claim
+        }
+      }
+
+      // ── RC-12 DENIAL direction ── The inverse of the positive guard: the terminal
+      // reply DENIES a delivery ("Not yet", "sending now", "haven't sent it") that the
+      // engine receipt ledger proves already happened (F-5, F-22). The denial text
+      // detection is deliberately generous; the durable receipt is the true gate, so a
+      // steer only fires when a real send is on record. Steer with the receipt fact and
+      // re-enter once so the agent answers truthfully AND does not re-send.
+      if (
+        persistedContent &&
+        result.toolCalls.length === 0 &&
+        !interAgentTurn &&
+        !state.nudgedForDeliveryDenialThisTurn
+      ) {
+        const denial = detectDeliveryDenial({ responseText: persistedContent });
+        if (denial.denied) {
+          // Named recipient → 24h window (a specific past send); bare "not yet" → a
+          // short 1h window so an unrelated older send cannot spuriously ground it.
+          const matches = denial.recipient
+            ? findRecentDeliveries(agentId, denial.recipient, 24)
+            : findRecentDeliveries(agentId, null, 1);
+          const receipt = matches[0];
+          if (receipt) {
+            const who = receipt.recipient ?? denial.recipient ?? 'them';
+            const nudgeText =
+              `[Engine receipt: you DID send ${channelLabel(receipt.channel)} to ${who} ${relativeTimeAgo(receipt.createdAt)}. ` +
+              `Answer truthfully; do not re-send.]`;
+            state = persistEngineSteer(
+              state,
+              { agentId, content: nudgeText, turnNumber, extra: { nudgedForDeliveryDenialThisTurn: true } },
+              { db, broadcast },
+            );
+            logger.info('v2 delivery-denial guard fired, receipt contradicts denial, re-entering', {
+              agentId, recipient: who, channel: receipt.channel,
+            }, agentId);
+            continue; // re-enter so the agent corrects the denial instead of re-sending
+          }
+        }
+      }
+
+      // ── RC-13.2 failed-save-claim floor ── The reply claims something was saved /
+      // stored / remembered, but every vault_remember THIS turn was REJECTED (isError,
+      // the RC-13 bounce fix) and nothing was stored. On the floor model, F-6's false
+      // "Saved." was the INSTRUCTED behavior (the bookkeeping nudge stapled "reply
+      // 'Saved.'" onto a rejection). Steer truthfully once so a rejected save can never
+      // masquerade as done.
+      if (
+        persistedContent &&
+        result.toolCalls.length === 0 &&
+        !interAgentTurn &&
+        !state.nudgedForFailedSaveClaimThisTurn &&
+        /\b(saved|stored|remembered|noted it|added (it|that) to (memory|the vault)|put it in (memory|the vault))\b/i.test(persistedContent)
+      ) {
+        const vaultRemembers = state.toolResults.filter((r) => r.name === 'vault_remember');
+        const rejected = vaultRemembers.filter((r) => r.isError).length;
+        const succeeded = vaultRemembers.filter((r) => !r.isError).length;
+        if (succeeded === 0 && rejected >= 1) {
+          const nudgeText =
+            `You told the user you saved that, but all ${rejected} vault_remember call${rejected === 1 ? '' : 's'} this turn ` +
+            `${rejected === 1 ? 'was' : 'were'} REJECTED and nothing was stored. Either retry with the correction the tool ` +
+            `gave you, or tell the counterpart truthfully that it is not saved yet. Do not claim it was saved.`;
+          state = persistEngineSteer(
+            state,
+            { agentId, content: nudgeText, turnNumber, extra: { nudgedForFailedSaveClaimThisTurn: true } },
+            { db, broadcast },
+          );
+          logger.info('v2 RC-13.2 save-claim floor fired, all vault saves rejected this turn, re-entering', {
+            agentId, rejected,
+          }, agentId);
+          continue; // re-enter so the agent retries the save or tells the truth
         }
       }
 
@@ -4233,6 +4562,47 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }, agentId);
       }
 
+      // ── RC-5.3: proactive-send budget (backoff on unanswered background chatter) ──
+      // A settled-context wake (no human waiting, not a deliberate surface) that produces
+      // a terminal user-facing reply is an UNPROMPTED ping. Production fired ~10 of these
+      // at a silent owner in 24h with no backoff (F-10). Track consecutive such pings in a
+      // persistent per-agent streak (reset on any authorized owner inbound); once the
+      // agent has already sent PROACTIVE_SEND_DEMOTE_THRESHOLD in a row, DEMOTE the next
+      // one to a quiet dashboard working-note row instead of sending, still visible, no
+      // ping. Deliberate surfaces (scheduler digests, reminders, completion reports) are
+      // exempt (deliberateSurfaceTurn) and never counted. This is lane-attribution, not
+      // suppression: the commentary lands in the notices lane, just not as a ping.
+      if (
+        settledContextWakeTurn &&
+        !deliberateSurfaceTurn &&
+        !interAgentTurn &&
+        result.toolCalls.length === 0 &&
+        persistedContent && persistedContent.trim().length > 0
+      ) {
+        const streak = getProactiveSendStreak(agentId);
+        if (streak >= PROACTIVE_SEND_DEMOTE_THRESHOLD) {
+          logger.info('v2 RC-5.3: proactive-send budget reached; demoting unsolicited settled-wake outbound to a quiet notices-lane row instead of sending', {
+            agentId, turnNumber, streak, threshold: PROACTIVE_SEND_DEMOTE_THRESHOLD,
+            preview: persistedContent.slice(0, 80),
+          }, agentId);
+          try {
+            const noteId = uuidv4();
+            db.prepare(`
+              INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+              VALUES (?, ?, 'system', ?, ?, datetime('now'))
+            `).run(noteId, agentId, `[working-note] ${persistedContent}`, turnNumber);
+            // Convert the already-streamed dashboard bubble in place into the dimmed note
+            // (same demote mechanism as the RC-9 text-with-tools path).
+            broadcast({ type: 'chat:workingnote', agentId, messageId, noteId, content: persistedContent });
+          } catch { /* cosmetic; never block the turn */ }
+          persistedContent = null;
+        } else {
+          // Allowed proactive delivery: count it toward the streak. It flows through to
+          // the persist + routing below and pings as normal.
+          bumpProactiveSendStreak(agentId);
+        }
+      }
+
       // Arm the floor: once any user-facing reply surfaces this turn, later
       // generic closeouts get suppressed (above). Set AFTER the suppression
       // checks so a just-swallowed closeout (now null) doesn't arm it.
@@ -4579,22 +4949,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   `update the task status to "blocked" or "paused" with a clear reason, OR write one sentence in your reply telling the user what you are waiting for. ` +
                   `Silently going idle after tracker_add_notes leaves the user with no idea what is happening.]`
                 );
-                const nudgeId = uuidv4();
-                db.prepare(`
-                  INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-                  VALUES (?, ?, 'system', ?, ?, datetime('now'))
-                `).run(nudgeId, agentId, nudgeText, turnNumber);
-                broadcast({
-                  type: 'chat:message',
-                  agentId,
-                  message: {
-                    id: nudgeId, agentId, role: 'system' as const,
-                    content: nudgeText,
-                    tokenCount: null, modelId: null, cost: null, latencyMs: null,
-                    createdAt: new Date().toISOString(),
-                  },
-                });
-                state = advance(state, { nudgedForAddNotesStopThisTurn: true });
+                // RC-19: via persistEngineSteer so the nudge reaches the model
+                // (pendingNudge) AND keeps its dashboard row. The prior bare
+                // role='system' row was stripped by the assembler, so the re-entered
+                // model never saw "keep going / say what you are waiting for".
+                state = persistEngineSteer(
+                  state,
+                  { agentId, content: nudgeText, turnNumber, extra: { nudgedForAddNotesStopThisTurn: true } },
+                  { db, broadcast },
+                );
                 logger.info('v2 add-notes-stop nudge fired', { agentId, taskId: nudgedTaskId }, agentId);
                 continue; // re-enter the loop so the model sees the nudge
               }
@@ -4862,6 +5225,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
             );
             const escId = uuidv4();
             try {
+              // engine-steer-exempt (RC-19): retrospective note, not a same-turn
+              // steer. The engine ALREADY reconciled the tracker (engineCloseDeliveredTask)
+              // and the turn ends right after (break below). The "next time, call
+              // tracker_update_status BEFORE your closeout" text is after-the-fact
+              // advice; there is no model action expected on this (ending) turn.
               db.prepare(`
                 INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
                 VALUES (?, ?, 'system', ?, ?, datetime('now'))
@@ -5148,7 +5516,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
             }, agentId);
             continue; // one more round to report to the user
           }
-          if (state.nudgedForA2AHandoffFloorThisTurn) {
+          // RC-4.2: the hard-floor handoff notice is a channel-delivered A2A-handoff
+          // ack. Never push it to an agent-flagged counterparty (ack ping-pong); a peer
+          // box handles a silent handoff on its own lane and does not need the notice.
+          if (state.nudgedForA2AHandoffFloorThisTurn && !counterpartyIsAgentSender) {
             // Hard floor: the steer did not produce a user-facing send, so the
             // engine says the honest minimum itself. Deterministic, model-free.
             try {
@@ -5273,27 +5644,23 @@ export async function runV2Turn(agentId: string): Promise<void> {
             !!a2aReplyContext?.threadShort && hasPriorReplyOnThread(agentId, a2aReplyContext.threadShort, unrepliedAssign?.threadId ?? null),
         });
         if (replyDecision.decision === 'nudge') {
-          const nudgeId = uuidv4();
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-            VALUES (?, ?, 'system', ?, ?, datetime('now'))
-          `).run(nudgeId, agentId, replyDecision.nudgeText, turnNumber);
-          broadcast({
-            type: 'chat:message',
-            agentId,
-            message: {
-              id: nudgeId, agentId, role: 'system' as const,
+          // RC-19: via persistEngineSteer so the retry nudge reaches the model
+          // (pendingNudge) AND keeps its dashboard row. The bare role='system' row
+          // was stripped by the assembler, so the "you wrote text instead of
+          // send_to_agent, retry" steer never reached the model it addressed; only
+          // the hardcap above actually bounded the loop. Mark the nudge fired for
+          // this assign id (extra) so the next enforcer call returns no_action and
+          // the hardcap engages if the agent doubles down on text.
+          state = persistEngineSteer(
+            state,
+            {
+              agentId,
               content: replyDecision.nudgeText,
-              tokenCount: null, modelId: null, cost: null, latencyMs: null,
-              createdAt: new Date().toISOString(),
+              turnNumber,
+              extra: a2aReplyAssignMessageId ? { nudgedForMissedReplyOnAssignId: a2aReplyAssignMessageId } : undefined,
             },
-          });
-          // Mark the nudge as fired for this assign id so the next
-          // iteration's enforcer call returns no_action and the hardcap
-          // above engages if the agent doubles down on text.
-          if (a2aReplyAssignMessageId) {
-            state = advance(state, { nudgedForMissedReplyOnAssignId: a2aReplyAssignMessageId });
-          }
+            { db, broadcast },
+          );
           // Continue loop so the agent reads the nudge and retries
           continue;
         }
@@ -5417,6 +5784,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 );
                 const closeOutMsgId = uuidv4();
                 try {
+                  // engine-steer-exempt (RC-19): retrospective note, not a same-turn
+                  // steer. The engine ALREADY reconciled the danglers (auto-paused /
+                  // reset) and the turn ends right after (break below). The "next time
+                  // the gate fires, call a tracker tool" text is after-the-fact advice;
+                  // no model action is expected on this (ending) turn.
                   db.prepare(`
                     INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
                     VALUES (?, ?, 'system', ?, ?, datetime('now'))
@@ -5529,22 +5901,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 `REQUIRED ACTION: call tracker_complete_step (for multi-step projects) or tracker_update_status (complete | blocked | paused) on each task above. Make ONLY the tool call(s). Do NOT write any user-facing text, the user already received your previous response and a duplicate reply is worse than a stale tracker. ` +
                 `If a task is genuinely still in progress, end your turn now with NO text output (no tool call, no message); the engine will continue you on the next user turn.]`
               );
-              const nudgeId = uuidv4();
-              db.prepare(`
-                INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-                VALUES (?, ?, 'system', ?, ?, datetime('now'))
-              `).run(nudgeId, agentId, nudgeText, turnNumber);
-              broadcast({
-                type: 'chat:message',
-                agentId,
-                message: {
-                  id: nudgeId, agentId, role: 'system' as const,
-                  content: nudgeText,
-                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
-                  createdAt: new Date().toISOString(),
-                },
-              });
-              state = advance(state, { nudgedForTrackerCloseThisTurn: true });
+              // RC-19: via persistEngineSteer so the close-out directive reaches the
+              // model (pendingNudge) AND keeps its dashboard row. This branch is
+              // non-user turns only (any resulting text is routed to the agent-internal
+              // lane, see the lane note above), so the bare role='system' row the
+              // assembler strips meant the re-prompt never actually reached the model.
+              state = persistEngineSteer(
+                state,
+                { agentId, content: nudgeText, turnNumber, extra: { nudgedForTrackerCloseThisTurn: true } },
+                { db, broadcast },
+              );
               logger.info('v2: tracker close-out nudge fired', {
                 agentId, openTaskCount: openTasks.length,
               }, agentId);
@@ -6179,6 +6545,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 explicitSendThisTurn: { ...state.explicitSendThisTurn, imessage: true },
                 repliedToCounterpartyThisTurn: { ...state.repliedToCounterpartyThisTurn, imessage: state.repliedToCounterpartyThisTurn.imessage || toCp },
               });
+              // RC-1: cross-recipient iMessage → dual-home the sent text into the
+              // recipient's conversation so their next turn can see the question.
+              if (!toCp && imArgRecip != null) {
+                const recip = String(imArgRecip).trim();
+                persistCrossConvSendEcho('imessage', recip, resolveRecipientDisplay('imessage', recip), 'iMessage',
+                  String(tc.arguments?.message ?? tc.arguments?.text ?? tc.arguments?.body ?? ''));
+              }
             } else if (tc.name === 'teams_send_message') {
               const cpChat = state.inboundContext?.chatId ?? null;
               const teamsArgChat = tc.arguments?.chat_id ?? tc.arguments?.chatId;
@@ -6201,6 +6574,29 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 explicitSendThisTurn: { ...state.explicitSendThisTurn, sms: true },
                 repliedToCounterpartyThisTurn: { ...state.repliedToCounterpartyThisTurn, sms: state.repliedToCounterpartyThisTurn.sms || toCp },
               });
+              // RC-1: cross-recipient SMS → dual-home the sent text.
+              if (!toCp && smsArgNum != null) {
+                const recip = String(smsArgNum).trim();
+                persistCrossConvSendEcho('sms', recip, resolveRecipientDisplay('sms', recip), 'SMS',
+                  String(tc.arguments?.body ?? tc.arguments?.message ?? tc.arguments?.text ?? ''));
+              }
+            } else if (tc.name === 'gmail_send' || tc.name === 'outlook_send') {
+              // RC-1: an explicit email SEND (not a reply) to someone other than an
+              // email counterparty. Replies (gmail_reply/outlook_reply) inherently
+              // target the inbound thread and are handled above; a fresh send names
+              // its own recipient, so dual-home it when that recipient isn't the
+              // person this turn is answering. Does NOT touch explicitSendThisTurn
+              // (email auto-route is reply-only; a fresh send never triggers it).
+              const cpEmail = counterparty.kind === 'user' && counterparty.channel === 'email' ? counterparty.senderId : null;
+              const emailArgTo = tc.arguments?.to;
+              const toCp = cpEmail == null || emailArgTo == null || String(emailArgTo).trim() === '' || recipientIdsMatch(emailArgTo, cpEmail);
+              if (!toCp && emailArgTo != null) {
+                const recip = String(emailArgTo).trim();
+                const subject = String(tc.arguments?.subject ?? '').trim();
+                const body = String(tc.arguments?.body ?? '').trim();
+                const sentText = subject ? `${subject}: ${body.slice(0, 300)}` : body.slice(0, 300);
+                persistCrossConvSendEcho('email', recip, resolveRecipientDisplay('email', recip), 'email', sentText);
+              }
             }
           }
 
@@ -6593,6 +6989,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
           trackerWriteThisTurn: state.trackerWriteThisTurn || trackerWriteInThisIter,
           trackerStatusUpdatedThisTurn: state.trackerStatusUpdatedThisTurn || trackerStatusInThisIter,
         });
+        // RC-19 item 3: mirror this iteration's untracked-work delta into the
+        // cross-turn counter for the agent's current human conversation, so an A2A
+        // send that breaks the turn can't reset the >=6 auto-scaffold floor. A tracker
+        // write clears it (work is now tracked); a conversation change resets it (via
+        // the conv_key tag inside accumulate). a2a/engine turns (conv_key null) are
+        // transparent, so an interleaved A2A detour never clobbers the human total.
+        if (trackerWriteInThisIter) {
+          clearUntrackedWorkAcrossTurns(agentId);
+        } else if (nonTrackerInThisIter > 0) {
+          const turnConv = currentTurnConvKey.get(agentId);
+          if (typeof turnConv === 'string' && turnConv.length > 0) {
+            accumulateUntrackedWorkAcrossTurns(agentId, turnConv, nonTrackerInThisIter);
+          }
+        }
       }
       // START ACK (NEXT-WAVE item 1, agent-created path): the owner rule is that
       // the user hears "on it" whenever their request is judged project-worthy.
@@ -6604,6 +7014,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // is set, so there is never a double ack.
       if (
         counterparty.kind === 'user' &&
+        !counterpartyIsAgentSender && // RC-4.2: no start-ack to an agent-flagged sender
         !engineStartAckDeliveredThisTurn &&
         result.toolCalls.some((tc) => tc.name === 'tracker_create_project')
       ) {
@@ -6625,6 +7036,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
       //   weakest model the work is tracked regardless of what the model chooses.
       const TRACKER_NUDGE_THRESHOLD = 3;
       const TRACKER_AUTO_SCAFFOLD_AT = 6;
+      // RC-19 item 3: the >=6 auto-scaffold FLOOR keys on the CROSS-TURN untracked-work
+      // total for this human conversation (accumulated above), so an A2A send that
+      // breaks the turn can no longer drop the count below the floor. Falls back to the
+      // per-turn count on a2a/engine turns (conv_key null). The per-turn count is a
+      // subset of the cross-turn total on a human turn, so Math.max is just defensive.
+      // The >3 NUDGE tier stays per-turn (it is a within-turn model-choice assist).
+      const turnConvForFloor = currentTurnConvKey.get(agentId);
+      const effectiveUntracked =
+        typeof turnConvForFloor === 'string' && turnConvForFloor.length > 0
+          ? Math.max(state.nonTrackerToolCalls, getUntrackedWorkAcrossTurns(agentId, turnConvForFloor))
+          : state.nonTrackerToolCalls;
       if (
         // D-B v2: the Healer is tracker-exempt (no tracker tools; SOUL forbids
         // touching it). Neither nudge it nor auto-open a task it cannot tend,
@@ -6633,7 +7055,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         !isHealerAgent(agentId) &&
         !state.trackerWriteThisTurn &&
         ((!state.nudgedForTrackerThisTurn && state.nonTrackerToolCalls > TRACKER_NUDGE_THRESHOLD) ||
-          state.nonTrackerToolCalls >= TRACKER_AUTO_SCAFFOLD_AT)
+          effectiveUntracked >= TRACKER_AUTO_SCAFFOLD_AT)
       ) {
         // Secondary check: the agent may have a RECENTLY-TENDED task from a
         // previous turn that they're just continuing. Don't nudge them either.
@@ -6693,7 +7115,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // current, rather than opening a duplicate. Only genuinely-untracked
           // work (zero in_progress tasks) reaches the engine floor here.
           !hasAnyInProgressTask &&
-          state.nonTrackerToolCalls >= TRACKER_AUTO_SCAFFOLD_AT &&
+          effectiveUntracked >= TRACKER_AUTO_SCAFFOLD_AT &&
           state.lastUserMessageContent &&
           !isPMAgent(agentId)
         ) {
@@ -6759,13 +7181,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
               pendingNudge: autoNoteText,
               autoScaffoldedTaskIdThisTurn: scaffoldTaskId,
             });
+            // RC-19 item 3: the floor just tracked the work (createProject), so reset
+            // the cross-turn untracked-work total. This is an engine-side tracker
+            // write that never flows through the per-iteration accumulate/clear above,
+            // so clear it explicitly or the count would re-trip the floor next turn.
+            clearUntrackedWorkAcrossTurns(agentId);
             logger.info('v2: tracker auto-scaffold fired (engine floor)', {
               agentId, nonTrackerToolCalls: state.nonTrackerToolCalls, projectId: created.projectId,
             }, agentId);
             // START ACK (NEXT-WAVE item 1): second project-auto-creation site.
             // The engine just decided this in-flight work is project-worthy, so
             // the person who asked hears it is being tracked, once per turn.
-            if (counterparty.kind === 'user' && !engineStartAckDeliveredThisTurn) {
+            // RC-4.2: never start-ack an agent-flagged counterparty (ack ping-pong).
+            if (counterparty.kind === 'user' && !counterpartyIsAgentSender && !engineStartAckDeliveredThisTurn) {
               // Flag set synchronously; wording composed fire-and-forget. This
               // site fires MID-WORK (the engine just opened a task for in-flight
               // work), so it uses the 'inprogress' flavor ("already working on
@@ -6816,22 +7244,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
               `Then update each task as you complete it via tracker_update_status, and use scratchpad_set to keep a running outline that survives compaction. ` +
               `Resume the work after the project is opened.]`
             );
-          const nudgeId = uuidv4();
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-            VALUES (?, ?, 'system', ?, ?, datetime('now'))
-          `).run(nudgeId, agentId, nudgeText, turnNumber);
-          broadcast({
-            type: 'chat:message',
-            agentId,
-            message: {
-              id: nudgeId, agentId, role: 'system' as const,
-              content: nudgeText,
-              tokenCount: null, modelId: null, cost: null, latencyMs: null,
-              createdAt: new Date().toISOString(),
-            },
-          });
-          state = advance(state, { nudgedForTrackerThisTurn: true });
+          // RC-19 (F-18): via persistEngineSteer so the STOP/open-a-project directive
+          // reaches the model (pendingNudge) AND keeps its dashboard row. This is the
+          // site the owner remembered "ignoring the STOP": the bare role='system' row was
+          // stripped by the assembler, so the model was never actually told to stop.
+          state = persistEngineSteer(
+            state,
+            { agentId, content: nudgeText, turnNumber, extra: { nudgedForTrackerThisTurn: true } },
+            { db, broadcast },
+          );
           logger.info('v2: tracker nudge fired', {
             agentId, nonTrackerToolCalls: state.nonTrackerToolCalls,
           }, agentId);
@@ -7094,22 +7515,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
           spinningNudgeCount: state.spinningNudgeCount,
           loopCount: state.loopCount,
         }, agentCanSelfCompleteById(agentId));
-        const nudgeId = uuidv4();
-        db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-          VALUES (?, ?, 'system', ?, ?, datetime('now'))
-        `).run(nudgeId, agentId, nudgeText, turnNumber);
-        broadcast({
-          type: 'chat:message',
-          agentId,
-          message: {
-            id: nudgeId, agentId, role: 'system' as const,
-            content: nudgeText,
-            tokenCount: null, modelId: null, cost: null, latencyMs: null,
-            createdAt: new Date().toISOString(),
-          },
-        });
-        state = advance(state, { spinningNudgeCount: state.spinningNudgeCount + 1 });
+        // RC-19: via persistEngineSteer so the "you seem stuck, here is what to do"
+        // question reaches the model (pendingNudge) AND keeps its dashboard row. The
+        // comment above ("engine asks model before breaking") only works if the model
+        // actually hears the question; the bare role='system' row the assembler strips
+        // meant it never did. Bump the ignored-nudge count via extra.
+        state = persistEngineSteer(
+          state,
+          { agentId, content: nudgeText, turnNumber, extra: { spinningNudgeCount: state.spinningNudgeCount + 1 } },
+          { db, broadcast },
+        );
       }
 
       // Loop continues, model will see tool results and respond
@@ -7175,6 +7590,26 @@ export async function runV2Turn(agentId: string): Promise<void> {
     if (deferredUserReplyWithTools && !state.lastAssistantTextForIM) {
       const recoveredId = uuidv4();
       try {
+        // RC-12 item 6: the recovery path used to route deferred text WITHOUT the
+        // grounding detector (it only runs on tool-LESS terminal replies above), so a
+        // false "sent it" that rode with a tool call slipped straight to the channel.
+        // The loop has exited here (no re-entry to correct), so we run the detector +
+        // receipt ledger and, if the claim is genuinely ungrounded (no receipt), log a
+        // LOUD tripwire. We still deliver: a waiting human must not be left in silence
+        // (the very failure G-SUP-2 exists to prevent), and the tool-less terminal gate
+        // is the model-visible correction path for the common case.
+        try {
+          const g = detectUngroundedDeliveryClaim({
+            responseText: deferredUserReplyWithTools,
+            toolCallsThisTurn: state.toolResults.filter((r) => !r.isError).map((r) => ({ name: r.name })),
+            counterpartyName: counterparty.name,
+          });
+          if (g.ungrounded && findRecentDeliveries(agentId, g.recipient, 24).length === 0) {
+            logger.warn('v2 G-SUP-2 recovery: delivered text asserts an UNGROUNDED delivery (no receipt); no re-entry available at finalize', {
+              agentId, turnNumber, recipient: g.recipient,
+            }, agentId);
+          }
+        } catch { /* detection is best-effort; never block the recovery delivery */ }
         db.prepare(
           `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at) VALUES (?, ?, 'assistant', ?, ?, datetime('now'))`,
         ).run(recoveredId, agentId, deferredUserReplyWithTools, turnNumber);
@@ -7223,6 +7658,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // send), so the engine still speaks there.
     if (
       counterparty.kind === 'user' &&
+      !counterpartyIsAgentSender && // RC-4.2: no engine completion-ack to an agent-flagged sender
       !state.lastAssistantTextForIM &&
       !state.surfacedReplyThisTurn &&
       !Object.values(state.explicitSendThisTurn).some(Boolean)
@@ -7468,13 +7904,27 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // (observed: the PM agent's A2A question answered by texting the owner). Force the
         // no-auto-route value ('dashboard' matches none of the channel branches
         // below) when this turn's counterparty is an agent.
+        const presenceNow = getPresence();
         const destination = counterparty.kind === 'agent'
           ? 'dashboard'
           : resolveReplyDestination({
               state,
-              presence: getPresence(),
+              presence: presenceNow,
               imessageBridgeConfigured: isImessageConfigured(),
+              // RC-10: owner-channel affinity, resolved once at turn start (rate limited
+              // per conversation). Only the owner qualifies, never a contact.
+              counterpartyIsOwner: counterparty.kind === 'user' && counterparty.relation === 'owner',
+              ownerAffinityChannel: ownerAffinityDestination,
             });
+        // RC-10: if the affinity promotion is what put this reply on iMessage (the away
+        // override would have promoted regardless, but affinity is a distinct, rate-
+        // limited mechanism), record it so a background-wake storm can't become a text
+        // storm. Recorded only when the promotion actually resolves to iMessage AND
+        // affinity was available this turn AND the owner is not away; the per-
+        // conversation cooldown starts now.
+        if (destination === 'imessage' && ownerAffinityDestination === 'imessage' && presenceNow !== 'away') {
+          recordAffinityPromotion(agentId, ownerAffinityConvKey);
+        }
 
         // Outbound routing markers are written via the hoisted
         // persistRoutingMarker helper (defined near deliverEngineUserAck), the
@@ -7518,7 +7968,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // UNVERIFIABLE (AppleScript/imsg exit code only). Write an
             // exit-code receipt so PM/the user story never pretend delivery
             // was confirmed. Tier 3 imposes no new gate requirement.
-            writeToolReceipt({ agentId, tool: 'imessage_send', tier: 3, verified: false, basis: 'exit-code', recipient: delivered.address, detail: { route: 'auto', textLength: state.lastAssistantTextForIM.length } });
+            writeToolReceipt({ agentId, tool: 'imessage_send', tier: 3, verified: false, basis: 'exit-code', recipient: delivered.address, sentText: state.lastAssistantTextForIM, detail: { route: 'auto', textLength: state.lastAssistantTextForIM.length } });
             persistRoutingMarker(`iMessage to ${delivered.name}`);
             logger.info('v2.7.23: routed reply via iMessage', {
               agentId,
@@ -7692,7 +8142,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 // the SID (sendSms returns { ok, data }, not a flat r.sid). This cannot block a
                 // completion, the gate only demands receipts for turns that ran a send TOOL.
                 const smsSid = r.data.sid;
-                writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: !!smsSid, basis: smsSid ? 'provider-id' : 'http-status', providerId: smsSid ?? null, recipient: state.inboundContext.smsFromNumber, detail: { route: 'auto', textLength: state.lastAssistantTextForIM.length } });
+                writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: !!smsSid, basis: smsSid ? 'provider-id' : 'http-status', providerId: smsSid ?? null, recipient: state.inboundContext.smsFromNumber, sentText: state.lastAssistantTextForIM, detail: { route: 'auto', textLength: state.lastAssistantTextForIM.length } });
                 persistRoutingMarker(`SMS to ${resolveRecipientDisplay('sms', state.inboundContext.smsFromNumber)}`);
                 logger.info('v2.9.18: routed reply via SMS', {
                   agentId,
