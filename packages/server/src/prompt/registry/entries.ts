@@ -34,7 +34,7 @@ import {
   renderPhoneConduct,
   renderVoiceConduct,
 } from '../assembler.js';
-import { assembleGroupContext } from '../../agent/groups.js';
+import { assembleGroupContext, renderPeerStatusLine } from '../../agent/groups.js';
 import { generateTechniqueIndex, generateDraftTechniqueContext } from '../../techniques/index-builder.js';
 import { detectContextGap } from '../../agent/v2/classifiers/context-gap.js';
 
@@ -458,6 +458,22 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
       'channel/presence/waiting-count change no longer invalidates it (all-provider ' +
       'cache fix, P-1). Sits just before the current-time tail.',
     render: (ctx) => renderTurnContext(ctx),
+  },
+  {
+    id: 'msg.peer-status',
+    target: 'messages',
+    slot: MessageSlot.PeerStatus,
+    precedenceTier: 7,
+    reason:
+      'Live group-peer statuses as a near-tail volatile message. The cached ' +
+      'group roster (sys.group) carries member NAMES only; the idle/working ' +
+      'state changes with every peer turn and every Dreamer batch, so it lives ' +
+      'here where its churn costs no cache (2026-07-16 finding, same relocation ' +
+      'pattern as msg.current-time).',
+    render: (ctx) => {
+      const line = renderPeerStatusLine(ctx.agentId);
+      return line ? { role: 'user', content: line } : null;
+    },
   },
   {
     id: 'msg.current-time',

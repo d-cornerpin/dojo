@@ -59,6 +59,10 @@ describe('R8 — engine injection only via the registry (enforcement guard)', ()
       lines.forEach((line, i) => {
         const trimmed = line.trim();
         if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return;
+        // Line-level escape hatch: a DATED trailing tag exempts one line, keeps
+        // the exemption visible at the site, and stays greppable for the
+        // migrate-to-registry backlog. Never exempt a whole file for this.
+        if (/registry-exempt\(\d{4}-\d{2}-\d{2}\):/.test(line)) return;
         for (const { name, re } of FORBIDDEN) {
           if (re.test(line)) violations.push(`${rel}:${i + 1} — ${name}`);
         }

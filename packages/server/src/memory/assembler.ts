@@ -150,6 +150,75 @@ function scrubSummariesAgainstFreshTechniques<S extends SummaryLike>(
 
 type LoopMsg = { role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] };
 
+// ── Per-message time stamps (time-awareness, owner ruled 2026-07-16) ──
+//
+// The model receives exactly one time datum per call: the current-time line at
+// the END of the volatile lane. Every conversation message renders bare, so the
+// model cannot compute elapsed time ("how long have I been at this") and
+// confabulates durations ("working for hours" two minutes in). Fix: prefix each
+// TEXT message in the assembled view with the message's own recorded time, so
+// duration questions become subtraction against the current-time footer.
+//
+// Cache safety, the load-bearing property: a message's created_at never changes
+// and the box timezone is stable, so a given row renders BYTE-IDENTICAL on
+// every future call. The message lane stays append-only and incremental prompt
+// caching is unaffected (unlike relative forms, "2 min ago", which would churn
+// every message every turn). Date and year are ALWAYS included: any "today"/
+// "yesterday" relativity would mutate a rendered row at midnight and break the
+// append-only property. A box timezone change re-forms the cache once, which is
+// correct and acceptable.
+//
+// Scope: plain-text user/assistant rows only. Tool-call/tool-result rows and
+// attachment (array-content) rows are NOT stamped: inserting text blocks into
+// provider-structured content risks breaking tool_use/tool_result pairing, and
+// tool activity's timing is visible from the surrounding stamped turns.
+
+/** SQLite stores "YYYY-MM-DD HH:MM:SS" (UTC, no marker); ISO rows carry T/Z.
+ *  Normalize both to an ISO-UTC string Date can parse unambiguously. */
+function normalizeCreatedAtUtc(createdAt: string): string {
+  let s = createdAt.trim();
+  if (!s.includes('T')) s = s.replace(' ', 'T');
+  if (!/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s)) s += 'Z';
+  return s;
+}
+
+/**
+ * Render a message's recorded time as a compact, deterministic stamp in the
+ * box's local timezone: `[Jul 16, 2026, 11:41 AM]`. Same en-US 12-hour family
+ * as renderCurrentTimeMessage so the model compares like with like. Returns
+ * null for missing/unparseable timestamps (row renders unstamped, never throws).
+ */
+export function renderMessageTimeStamp(createdAt: string | null | undefined): string | null {
+  if (!createdAt) return null;
+  const d = new Date(normalizeCreatedAtUtc(createdAt));
+  if (Number.isNaN(d.getTime())) return null;
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const localStr = d.toLocaleString('en-US', {
+    timeZone: tz,
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
+  return `[${localStr}]`;
+}
+
+/**
+ * Prefix a plain-text message body with its time stamp. Array content
+ * (tool blocks, attachments) and empty/missing stamps pass through untouched.
+ */
+export function stampTextContent(
+  content: string | Anthropic.ContentBlockParam[],
+  createdAt: string | null | undefined,
+): string | Anthropic.ContentBlockParam[] {
+  if (typeof content !== 'string' || content.length === 0) return content;
+  const stamp = renderMessageTimeStamp(createdAt);
+  if (!stamp) return content;
+  return `${stamp} ${content}`;
+}
+
 /**
  * Integrity pass (R6), the post-combine repairs that make the message array a
  * valid provider request, by construction. Run as one named stage after the
@@ -1074,7 +1143,11 @@ async function assembleMessageContext(
       // preview; fall back to the raw slice when there is no structured meta.
       const structured = o?.kind === 'user' ? buildAwarenessGist(m.inboundMeta, rawContent) : null;
       const gist = structured ?? body.slice(0, 400);
-      return `• [${label}] ${gist}`;
+      // Time-awareness: stamp each event with when it happened so notification
+      // staleness ("arrived 3 hours ago" vs "just now") is subtraction, not a
+      // guess. Deterministic per row, same cache property as the tail stamps.
+      const at = renderMessageTimeStamp(m.createdAt);
+      return `• ${at ?? ''}[${label}] ${gist}`;
     });
     messages.push({
       role: 'user',
@@ -1161,7 +1234,9 @@ async function assembleMessageContext(
       // ignore the field harmlessly.
       const out: { role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string } = {
         role: msg.role,
-        content: parsed,
+        // Time-awareness: text rows carry their recorded time so the model can
+        // subtract against the current-time footer (see the stamp helpers above).
+        content: stampTextContent(parsed, msg.createdAt),
       };
       if (msg.role === 'assistant' && msg.reasoningContent) {
         out.reasoningContent = msg.reasoningContent;

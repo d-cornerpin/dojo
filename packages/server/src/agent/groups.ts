@@ -197,20 +197,49 @@ export function assembleGroupContext(agentId: string): string {
   if (!group) return '';
 
   const members = db.prepare(`
-    SELECT id, name, status FROM agents
+    SELECT id, name FROM agents
     WHERE group_id = ? AND id != ? AND status != 'terminated'
-  `).all(agent.group_id, agentId) as Array<{ id: string; name: string; status: string }>;
+  `).all(agent.group_id, agentId) as Array<{ id: string; name: string }>;
 
+  // Cache discipline (2026-07-16 finding, DOJO-ISSUES-LOG): this block renders
+  // into the CACHED system prefix, so it must contain only STABLE facts. Live
+  // member status used to be inlined here ("- Name (working)"), which meant any
+  // peer's status flip (each Dreamer batch start/end, for example) invalidated
+  // the primary's entire prompt cache mid-conversation. Names/roster only now;
+  // live status rides in the volatile tail via renderPeerStatusLine below
+  // (msg.peer-status), the same relocation the clock got (msg.current-time).
   return `
 === Group: ${group.name} ===
 ${group.description ?? ''}
 
 Group Members:
-${members.map(m => `- ${m.name} (${m.status})`).join('\n')}
+${members.map(m => `- ${m.name}`).join('\n')}
 
 You can communicate with other members of your group using the send_to_agent tool.
+Each member's live status (idle/working) appears in the [Peer status: ...] line near the end of your context.
 === End Group Context ===
 `;
+}
+
+/**
+ * Live peer statuses for the volatile tail (msg.peer-status). The stable
+ * roster above names the members; this line says what they are doing RIGHT
+ * NOW. It changes freely per call at zero cache cost, exactly like the
+ * current-time line. Returns '' when the agent has no group peers.
+ */
+export function renderPeerStatusLine(agentId: string): string {
+  const db = getDb();
+  const agent = db.prepare('SELECT group_id FROM agents WHERE id = ?').get(agentId) as { group_id: string | null } | undefined;
+  if (!agent?.group_id) return '';
+
+  const members = db.prepare(`
+    SELECT name, status FROM agents
+    WHERE group_id = ? AND id != ? AND status != 'terminated'
+    ORDER BY name
+  `).all(agent.group_id, agentId) as Array<{ name: string; status: string }>;
+  if (members.length === 0) return '';
+
+  return `[Peer status: ${members.map(m => `${m.name} ${m.status}`).join(', ')}]`;
 }
 
 // ── Check if agents can message each other (intra-group) ──

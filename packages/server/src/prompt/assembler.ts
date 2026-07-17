@@ -834,7 +834,12 @@ export function renderCurrentTimeMessage(): string {
     hour12: true,
     timeZoneName: 'short',
   });
-  return `[Current time: ${localStr} (${now.toISOString()})]`;
+  // The second sentence is the legend for the per-message time stamps the
+  // memory assembler prefixes onto text rows (renderMessageTimeStamp): it tells
+  // the model what the brackets mean, licenses subtraction for "how long"
+  // questions, and heads off the model imitating the stamp in its own replies.
+  // Lives here in the volatile lane, so it costs nothing against the cached prefix.
+  return `[Current time: ${localStr} (${now.toISOString()}). Bracketed times like [Jul 16, 2026, 11:41 AM] before earlier messages are when EACH message happened; subtract from the current time for any "how long ago / how long have I been at this" question instead of guessing. Never prefix your own replies with a bracketed time.]`;
 }
 
 /** The `precedence-ladder` slot. Defines the instruction-precedence order so a

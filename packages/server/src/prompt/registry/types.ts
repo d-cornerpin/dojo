@@ -122,6 +122,10 @@ export enum MessageSlot {
   // prefix into this near-tail engine message, so nothing volatile lives in the
   // system string (all-provider cache fix, P-1). Sits just before CurrentTime.
   TurnContext = 1850,
+  // Live peer statuses (2026-07-16 cache finding): the group roster in the
+  // cached prefix carries NAMES only; the volatile idle/working state renders
+  // here so a peer's status flip never invalidates the cached prefix.
+  PeerStatus = 1875,
   CurrentTime = 1900, // precise clock time, most volatile, always last (cache tail)
 }
 

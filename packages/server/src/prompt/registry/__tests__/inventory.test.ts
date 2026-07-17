@@ -58,6 +58,9 @@ const EXPECTED_MESSAGE = [
   'msg.pending-nudge',
   'msg.tool-note',
   'msg.turn-context',
+  // Live peer statuses in the volatile lane (2026-07-16 cache finding): the
+  // cached group roster carries names only; idle/working churn lands here.
+  'msg.peer-status',
   'msg.current-time',
 ];
 

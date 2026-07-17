@@ -2708,7 +2708,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             tail.content.push({ type: 'text', text: SETTLED_HINT });
           }
         } else {
-          messages.push({ role: 'user', content: SETTLED_HINT });
+          messages.push({ role: 'user', content: SETTLED_HINT }); // registry-exempt(2026-07-16): settled-hint fallback needs the in-flight messages array; migrate with the volatile-injection registry refactor
         }
       }
 
@@ -3388,7 +3388,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             const outLines = recentOut.map(
               (d) => `${relativeTimeAgo(d.createdAt)} ${channelLabel(d.channel)} -> ${d.recipient ?? 'unknown'}`,
             );
-            pushEngineMessage(messages, `RECENT OUTBOUND (engine-verified):\n${outLines.join('\n')}`);
+            pushEngineMessage(messages, `RECENT OUTBOUND (engine-verified):\n${outLines.join('\n')}`); // registry-exempt(2026-07-16): RC-12 receipts block reads per-iteration ledger state; migrate with the volatile-injection registry refactor
           }
 
           // Pending-question header (RC-1 item 2): quote the agent's own most-recent
@@ -3410,7 +3410,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             const echoLikelyInTail = Number.isFinite(ageMs) && ageMs <= 2 * 60 * 60 * 1000;
             if (!(echoMade && echoLikelyInTail)) {
               const quoted = pend.sentText.trim().slice(0, 300);
-              pushEngineMessage(
+              pushEngineMessage( // registry-exempt(2026-07-16): RC-1 pending-question header reads per-iteration receipt state; migrate with the volatile-injection registry refactor
                 messages,
                 `[Your most recent message to ${counterparty.name}, sent ${relativeTimeAgo(pend.createdAt)}: "${quoted}"]`,
               );
@@ -3424,7 +3424,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // to the daily brief, never per-turn). Same volatile lane as the outbound
           // facts above, so it never breaks the prompt-cache prefix.
           const loopsBlock = buildOpenLoopsInjection(agentId, chosenConvKey);
-          if (loopsBlock) pushEngineMessage(messages, loopsBlock);
+          if (loopsBlock) pushEngineMessage(messages, loopsBlock); // registry-exempt(2026-07-16): RC-2 open-loops block reads conv-scoped rows mid-iteration; migrate with the volatile-injection registry refactor
         } catch (err) {
           logger.debug('RC-12/RC-1 volatile outbound injection failed (non-fatal)', {
             agentId, error: err instanceof Error ? err.message : String(err),
