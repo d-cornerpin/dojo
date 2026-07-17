@@ -128,7 +128,7 @@ import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngine
 import { resolveOwnerAffinityChannel, affinityPromotionAllowed, recordAffinityPromotion } from './owner-affinity.js';
 import { getProactiveSendStreak, bumpProactiveSendStreak, resetProactiveSendStreak, PROACTIVE_SEND_DEMOTE_THRESHOLD } from './proactive-budget.js';
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
-import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout } from './classifiers/output.js';
+import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout, stripLeadingTimeStamp } from './classifiers/output.js';
 import { detectUngroundedDeliveryClaim, detectDeliveryDenial } from './classifiers/grounding.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
 import { permissionAlternativeFinder } from './classifiers/permission.js';
@@ -1628,6 +1628,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // originIntent defaults to null so a non-ack caller (e.g. the thrash-block
   // user notice) keeps origin_intent NULL and stays a substantive reply. The
   // start-ack sites pass 'engine_start_ack' explicitly.
+  // Captured text-with-tools that MIGHT be the user's genuine answer (set by the
+  // demotion block, consumed by G-SUP-2 / the start-ack / the [no-reply]
+  // promotion). Declared HERE, above the ack closures, so the start-ack timer
+  // can capture it (2026-07-16, the trivial-save sequence).
+  let deferredUserReplyWithTools: string | null = null;
+  // True when the start-ack already delivered the deferred text as the turn's
+  // user-visible answer; gates the terminal promotion and the redundant-closeout
+  // floor so the answer can never double-send.
+  let deferredDeliveredByAck = false;
+
   const deliverEngineUserAck = async (text: string, originIntent: string | null = null): Promise<void> => {
     const ackId = uuidv4();
     try {
@@ -1748,6 +1758,24 @@ export async function runV2Turn(agentId: string): Promise<void> {
     try {
       if (engineStartAckDeliveredThisTurn || startAckRepliedNow()) return;
       engineStartAckDeliveredThisTurn = true;
+      // Trivial-save fix (2026-07-16): if the model already WROTE the user's
+      // answer this turn (text riding with its tool calls, captured by the
+      // demotion block), the ack the engine owes is THAT text, not a canned
+      // start line. Observed live: "Cool, diving into this now." fired three
+      // seconds AFTER the save completed, while the real answer ("Saved.") sat
+      // demoted as a working note. Deliver the model's own words with no
+      // origin stamp (it IS the reply, so startAckRepliedNow and the terminal
+      // floors count it) and mark it consumed so nothing double-sends.
+      if (deferredUserReplyWithTools && deferredUserReplyWithTools.trim().length > 0) {
+        const answer = deferredUserReplyWithTools.trim();
+        deferredUserReplyWithTools = null;
+        deferredDeliveredByAck = true;
+        await deliverEngineUserAck(answer, null);
+        logger.info('v2: start-ack delivered the captured text-with-tools answer instead of a canned line', {
+          agentId, turnNumber, via, preview: answer.slice(0, 60),
+        }, agentId);
+        return;
+      }
       // RC-4.4: streaming-race grace. If a model call is in flight right now, the real
       // reply may be one second away (the F-11 double-ack: ack at +12s, reply at +13s).
       // Defer up to ENGINE_START_ACK_STREAM_GRACE_MS, polling for the reply, so
@@ -2025,7 +2053,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // tool calls and was deferred (suppressed as possible narration). Recovered at
   // turn-end ONLY if the turn delivered no proper tool-less reply, so a genuine
   // answer the weak model paired with a closing tool is never silently lost.
-  let deferredUserReplyWithTools: string | null = null;
 
   // F3 owed-interrupt round contract: the already-delivered main reply captured at
   // the moment the F3 re-prompt fires (see ~:4510). Stays null unless F3 actually
@@ -3963,6 +3990,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
         const cleaned = stripSystemTags(persistedContent);
         persistedContent = cleaned || null;
       }
+      // Same class of copied-markup strip for the per-message time stamps
+      // (2026-07-16): the floor model prefixes its own replies with the
+      // bracket-time it sees on every historical message. Strip at the source
+      // so persist, demotion capture, deferred delivery, and channel routing
+      // all see clean text (see stripLeadingTimeStamp for the observed case).
+      if (persistedContent) {
+        const destamped = stripLeadingTimeStamp(persistedContent).trim();
+        persistedContent = destamped.length > 0 ? destamped : null;
+      }
       // On an inter-agent turn, suppress the text even when it accompanies tool
       // calls (intermediate planning text leaks otherwise). On normal turns keep
       // the long-standing "only suppress standalone trailing text" behavior.
@@ -4338,7 +4374,32 @@ export async function runV2Turn(agentId: string): Promise<void> {
         !triggerRow &&
         DECLINE_OPENER_RE.test(persistedContent);
 
-      if ((isBareNoReply || isDeclineNonReply) && (latestUserSource === 'voice' || state.inboundChannel === 'phone')) {
+      // REG-3 refinement (2026-07-16, the trivial-save sequence): intentional
+      // silence stands on turns nobody is waiting on (the narration-resurrection
+      // case REG-3 protects). But a bare [no-reply] on a turn SERVING A HUMAN
+      // TRIGGER, with NO surfaced reply and a captured text-with-tools answer,
+      // means "I already answered" while the answer only exists as a demoted
+      // note. Contract #1 (every authorized human message gets exactly one
+      // substantive answer) outranks the sentinel: promote the model's own
+      // captured words as the terminal reply. isDeclineNonReply already
+      // requires !triggerRow (N-2), so only the bare sentinel can reach here.
+      let noReplyOverridden = false;
+      if (
+        isBareNoReply &&
+        triggerRow &&
+        !state.surfacedReplyThisTurn &&
+        !deferredDeliveredByAck &&
+        deferredUserReplyWithTools &&
+        deferredUserReplyWithTools.trim().length > 0
+      ) {
+        persistedContent = deferredUserReplyWithTools.trim();
+        deferredUserReplyWithTools = null;
+        noReplyOverridden = true;
+        logger.info('v2: [no-reply] on a served human turn with an undelivered captured answer; promoting it as the reply', {
+          agentId, turnNumber, preview: persistedContent.slice(0, 60),
+        }, agentId);
+      }
+      if (!noReplyOverridden && (isBareNoReply || isDeclineNonReply) && (latestUserSource === 'voice' || state.inboundChannel === 'phone')) {
         // Voice AND phone are LIVE conversations, so going silent reads as a dropped
         // call. (comms-audit B-1/phone: phone utterances persist with NO `source`, so
         // they read as 'text' and were EXCLUDED from this guard, a bare [no-reply] on
@@ -4357,7 +4418,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         logger.info('v2: [no-reply] on a voice turn, substituted a brief spoken acknowledgment to avoid dead air', {
           agentId, loopCount: state.loopCount,
         }, agentId);
-      } else if (isBareNoReply || isDeclineNonReply) {
+      } else if (!noReplyOverridden && (isBareNoReply || isDeclineNonReply)) {
         if (isDeclineNonReply) {
           logger.info('v2: agent declined in prose ("no reply needed…"), honoring intent as no-reply (not routing it)', {
             agentId, turnNumber, preview: (persistedContent ?? '').slice(0, 60),
@@ -4501,7 +4562,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       if (
         persistedContent &&
         result.toolCalls.length === 0 &&
-        state.surfacedReplyThisTurn &&
+        (state.surfacedReplyThisTurn || deferredDeliveredByAck) &&
         isGenericCloseout(persistedContent)
       ) {
         persistedContent = null;

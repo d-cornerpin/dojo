@@ -161,3 +161,22 @@ export function sanitizeAssistantText(content: string | null): string | null {
     .replace(/\n{3,}/g, '\n\n')   // collapse 3+ newlines to 2
     .trim();
 }
+
+// ── Leading time-stamp mimicry strip (2026-07-16) ──
+//
+// The assembler prefixes historical messages with their recorded time
+// ("[Jul 16, 2026, 10:58 PM] ..."), and the floor model imitates the costume
+// on its own replies despite the current-time footer legend telling it not to
+// (observed in production the night the stamps shipped: "[Jul 16, 2026,
+// 10:58 PM] Saved."). The stamp is context markup, not message content, so
+// stripping a leading run of them at the persist source is lane attribution,
+// not suppression: engine-enforced, same class as stripSystemTags. Tolerates
+// the narrow/no-break spaces Intl inserts before AM/PM.
+const LEADING_TIME_STAMP_RE =
+  /^\s*\[(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s\d{1,2},\s\d{4},\s\d{1,2}:\d{2}[\s\u202F\u00A0]?(?:AM|PM)\]\s*/;
+
+export function stripLeadingTimeStamp(text: string): string {
+  let out = text;
+  while (LEADING_TIME_STAMP_RE.test(out)) out = out.replace(LEADING_TIME_STAMP_RE, '');
+  return out;
+}
