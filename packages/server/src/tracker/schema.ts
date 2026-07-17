@@ -779,8 +779,17 @@ export function formatResolveError(
       return `Error: ${kind} id is required.`;
     case 'too_short':
       return `Error: ${kind} id '${input}' is too short. Provide at least 4 characters of the id (8-char prefixes from tracker_list_active work fine).`;
-    case 'not_found':
-      return `Error: ${Kind} not found: '${input}'. It may have been deleted or completed. Use tracker_list_active to see current ${kind}s.`;
+    case 'not_found': {
+      // 2026-07-17 (the PM 189-call spin): a title-shaped input deserves an
+      // explicit title-vs-id correction, or the floor model retries the same
+      // title forever. Title resolution is also scoped to the CALLER's own
+      // tasks, so a cross-agent title can list-match yet not resolve here.
+      const titleShaped = /\s/.test(input.trim());
+      const titleHint = titleShaped
+        ? ` That looks like a TITLE, not an id: pass the id (or its first 8 characters) shown in [brackets] by tracker_list_active.`
+        : '';
+      return `Error: ${Kind} not found: '${input}'.${titleHint} It may have been deleted or completed. Use tracker_list_active to see current ${kind}s.`;
+    }
     case 'ambiguous': {
       const shown = (resolution.matches ?? []).map(m => m.slice(0, 12)).join(', ');
       return `Error: ${kind} id prefix '${input}' matches multiple ${kind}s. Use a longer prefix or the full id. Candidates: ${shown}`;

@@ -129,6 +129,7 @@ import { resolveOwnerAffinityChannel, affinityPromotionAllowed, recordAffinityPr
 import { getProactiveSendStreak, bumpProactiveSendStreak, resetProactiveSendStreak, PROACTIVE_SEND_DEMOTE_THRESHOLD } from './proactive-budget.js';
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
 import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout, stripLeadingTimeStamp } from './classifiers/output.js';
+import { identicalCallSignature, checkIdenticalCallRefusal, recordIdenticalCallResult, type RepeatCallState } from './identical-call-brake.js';
 import { detectUngroundedDeliveryClaim, detectDeliveryDenial } from './classifiers/grounding.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
 import { permissionAlternativeFinder } from './classifiers/permission.js';
@@ -1637,6 +1638,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // user-visible answer; gates the terminal promotion and the redundant-closeout
   // floor so the answer can never double-send.
   let deferredDeliveredByAck = false;
+  // Identical-call brake state (2026-07-17): consecutive identical failing
+  // tool calls this turn, keyed by exact call signature. See identical-call-brake.ts.
+  const identicalCallState: RepeatCallState = new Map();
 
   const deliverEngineUserAck = async (text: string, originIntent: string | null = null): Promise<void> => {
     const ackId = uuidv4();
@@ -6484,8 +6488,30 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }
           // Execute (with safety wrapper)
           let toolResult;
+          // Identical-call brake, pre-execution half: an exact call that has
+          // already failed REFUSE_AT times this turn is not executed again
+          // (no side effects, no provider cost); the refusal text is the result.
+          const brakeSig = identicalCallSignature(tc.name, tc.arguments);
+          const refusal = checkIdenticalCallRefusal(identicalCallState, brakeSig);
           try {
-            toolResult = await executeTool(agentId, tc);
+            if (refusal) {
+              toolResult = { toolCallId: tc.id, name: tc.name, content: refusal, isError: true };
+              logger.warn('v2: identical-call brake refused re-execution', {
+                agentId, tool: tc.name, sig: brakeSig.slice(0, 120),
+              }, agentId);
+            } else {
+              toolResult = await executeTool(agentId, tc);
+            }
+            // Identical-call brake, post-result half: count consecutive identical
+            // failures; at WARN_AT append the corrective notice so the model
+            // changes course; a success resets the signature.
+            {
+              const errText = typeof toolResult.content === 'string' ? toolResult.content : JSON.stringify(toolResult.content ?? '');
+              const brakeNotice = recordIdenticalCallResult(identicalCallState, brakeSig, toolResult.isError === true, errText);
+              if (brakeNotice && typeof toolResult.content === 'string') {
+                toolResult = { ...toolResult, content: toolResult.content + brakeNotice };
+              }
+            }
             // Transfer content blocks from the tool call (set by file_read for images/PDFs)
             const contentBlocks = (tc as unknown as Record<string, unknown>).__contentBlocks as
               | Array<{ type: string; [key: string]: unknown }>
