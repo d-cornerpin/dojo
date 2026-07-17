@@ -481,13 +481,21 @@ const ACK_DEFAULT_TEXT = 'Working on it…';
 // floor keys off the USER'S WAIT instead: quick lookups that finish in ~12s stay
 // ceremony-free (the battery praised that), anything longer acks before the user
 // starts wondering whether the agent heard them.
-const ENGINE_START_ACK_AFTER_MS = 12000;
+// Owner directive 2026-07-17: the ack is for work that takes LONGER than a
+// person would normally wait for a reply, not for every turn that crosses a
+// short threshold ("it fires for almost everything, even the smallest tasks").
+// 12s acked nearly every tool-using turn on the floor model; 30s is roughly
+// where a texting human starts wondering if they were heard.
+const ENGINE_START_ACK_AFTER_MS = 30000;
 // RC-4.4: streaming-race grace. When the start-ack timer / first-tool hook is about to
 // fire but a model call is still streaming, wait up to this long for the real reply to
 // land (startAckRepliedNow suppresses the ack then). Kills the F-11 double-ack (ack at
 // +12s, model reply at +13s) while keeping the guarantee: a stalled model still gets the
 // ack after the grace expires.
-const ENGINE_START_ACK_STREAM_GRACE_MS = 5000;
+// Cap on waiting out an in-flight model call before the ack may speak anyway.
+// Generous on purpose (the wait usually ends in the reply landing, which
+// silences the ack entirely); the stream-idle watchdog owns truly hung calls.
+const ENGINE_START_ACK_STREAM_GRACE_MS = 60000;
 
 // ── Task-thrash detector ──
 // Catches the "agent re-runs the SAME canonical tool call over and over"
@@ -1780,23 +1788,28 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }, agentId);
         return;
       }
-      // RC-4.4: streaming-race grace. If a model call is in flight right now, the real
-      // reply may be one second away (the F-11 double-ack: ack at +12s, reply at +13s).
-      // Defer up to ENGINE_START_ACK_STREAM_GRACE_MS, polling for the reply, so
-      // startAckRepliedNow() can suppress this ack when the in-flight reply lands. The
-      // guarantee holds: if the model stalls (no reply after the grace) or the call
-      // finishes with no user text, the ack still fires below.
+      // RC-4.4 + owner directive 2026-07-17: NEVER fire while a model call is in
+      // flight; wait for the call's OUTCOME instead of a fixed grace. If the call
+      // ends with the reply, the ack is moot (skip silently). If it ends with more
+      // tool work, execution resumes and the ack fires then, while tools are
+      // actually grinding, which is the only moment a start ack is honest.
+      // Observed pre-fix: "Got it, starting on this now." landed AFTER the work
+      // finished, five seconds before the composed answer. Bounded by a hard cap
+      // so a hung call (stream-idle watchdog territory) can't defer forever.
       if (modelCallInFlight) {
-        const graceDeadline = Date.now() + ENGINE_START_ACK_STREAM_GRACE_MS;
-        while (modelCallInFlight && Date.now() < graceDeadline) {
+        const capDeadline = Date.now() + ENGINE_START_ACK_STREAM_GRACE_MS;
+        while (modelCallInFlight && Date.now() < capDeadline) {
           await new Promise((r) => setTimeout(r, 250));
           if (startAckRepliedNow()) {
-            logger.info('v2 F10 / RC-4.4: start ack skipped, the in-flight reply landed within the streaming-race grace', {
+            logger.info('v2 F10 / RC-4.4: start ack skipped, the in-flight reply landed while waiting for the call outcome', {
               agentId, turnNumber, via,
             }, agentId);
             return;
           }
         }
+        // Call completed without a reply (more tool work queued), or the hard
+        // cap elapsed on a genuinely wedged call: fall through and speak.
+        if (startAckRepliedNow()) return;
       }
       // Seconds of slack here (the threshold already passed), so the wording
       // call is awaited inline; the pool fallback guarantees a line.
