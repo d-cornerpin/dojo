@@ -735,9 +735,12 @@ class AgentRuntime {
 
 
   // When a sub-agent transitions into 'error' or 'paused' (injured/paused),
-  // drop a [SYSTEM] message into the primary agent's chat so it finds out
-  // its delegate stalled. Injected as role='system' so the primary sees it
-  // on its next turn but is not forced to reply.
+  // make the primary agent AWARE that its delegate stalled. Delivered via
+  // postAgentNotice (role='user' origin_kind='engine', the awareness lane), so the
+  // primary's model actually sees it on its next turn and may act or surface it,
+  // but is not forced to reply. (This site formerly dropped a bare role='system'
+  // row, which the model-message builder strips, so the alert was invisible to the
+  // model; see the comms-audit note on the postAgentNotice call below.)
   //
   // This is now called from injury-recovery's notifyHealerOfInjury AFTER
   // the engine auto-wake + grace period have run, so the primary is only

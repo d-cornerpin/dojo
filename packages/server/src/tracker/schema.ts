@@ -201,66 +201,76 @@ export function createProject(params: {
 
   const { title, description, level, createdBy, tasks } = params;
 
-  db.prepare(`
-    INSERT INTO projects (id, title, description, level, status, created_by, phase_count, current_phase, created_at, updated_at)
-    VALUES (?, ?, ?, ?, 'active', ?, 1, 1, datetime('now'), datetime('now'))
-  `).run(projectId, title, description ?? null, level, createdBy);
+  // One transaction for the project row AND its inline tasks: a failed task
+  // insert (e.g. an FK reject on assigned_to) must not strand an empty
+  // project (2026-07-17 run bmrpkqai2v6: two orphan zero-task projects from
+  // exactly that; the PM had no row to poke and the model "reused" an empty
+  // shell). Broadcasts fire after commit so a rollback never announces
+  // phantom rows.
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO projects (id, title, description, level, status, created_by, phase_count, current_phase, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'active', ?, 1, 1, datetime('now'), datetime('now'))
+    `).run(projectId, title, description ?? null, level, createdBy);
 
-  if (tasks && tasks.length > 0) {
-    const totalSteps = tasks.length;
+    if (tasks && tasks.length > 0) {
+      const totalSteps = tasks.length;
 
-    for (const task of tasks) {
-      const taskId = uuidv4();
-      taskIds.push(taskId);
+      for (const task of tasks) {
+        const taskId = uuidv4();
+        taskIds.push(taskId);
 
-      const assignee = task.assignedTo ?? createdBy;
-      const stepNum = task.stepNumber ?? null;
-      // Status default: all subtasks land in 'in_progress'. The previous
-      // model (only the first-step task assigned to the creator started
-      // in_progress, everything else 'on_deck') routinely produced the
-      // failure mode where the agent finished the first task and then
-      // never returned to the on_deck pile, those tasks went unseen
-      // forever. New rule: 'on_deck' is reserved for "scheduled for
-      // later". A task with no future scheduled_start belongs in
-      // 'in_progress' so the assigned agent (and the PM) keep seeing it
-      // as work to do. Project subtasks created here have no per-task
-      // scheduled_start under the current API, so all of them are
-      // in_progress. Sequencing is still expressed via step_number for
-      // the agent to read, but the engine does not gate visibility.
-      const status = 'in_progress';
+        const assignee = task.assignedTo ?? createdBy;
+        const stepNum = task.stepNumber ?? null;
+        // Status default: all subtasks land in 'in_progress'. The previous
+        // model (only the first-step task assigned to the creator started
+        // in_progress, everything else 'on_deck') routinely produced the
+        // failure mode where the agent finished the first task and then
+        // never returned to the on_deck pile, those tasks went unseen
+        // forever. New rule: 'on_deck' is reserved for "scheduled for
+        // later". A task with no future scheduled_start belongs in
+        // 'in_progress' so the assigned agent (and the PM) keep seeing it
+        // as work to do. Project subtasks created here have no per-task
+        // scheduled_start under the current API, so all of them are
+        // in_progress. Sequencing is still expressed via step_number for
+        // the agent to read, but the engine does not gate visibility.
+        const status = 'in_progress';
 
-      // Phase 7: original_description is an immutable copy of the user's
-      // original ask. Mirrors the standalone createTask path. tracker_create_project
-      // creates tasks via this code path; without this column being set the
-      // onTaskComplete hook surfaces "(none recorded)" to the parent.
-      db.prepare(`
-        INSERT INTO tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, priority,
-                           step_number, total_steps, phase, depends_on, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-      `).run(
-        taskId,
-        projectId,
-        task.title,
-        task.description ?? null,
-        task.description ?? null,
-        status,
-        assignee,
-        createdBy,
-        task.priority ?? 'normal',
-        stepNum,
-        totalSteps,
-        task.phase ?? 1,
-        JSON.stringify(task.dependsOn ?? []),
-      );
-
-      // Broadcast the new task
-      const createdTask = getTask(taskId);
-      if (createdTask) {
-        broadcast({
-          type: 'tracker:task_updated',
-          data: createdTask,
-        });
+        // Phase 7: original_description is an immutable copy of the user's
+        // original ask. Mirrors the standalone createTask path. tracker_create_project
+        // creates tasks via this code path; without this column being set the
+        // onTaskComplete hook surfaces "(none recorded)" to the parent.
+        db.prepare(`
+          INSERT INTO tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, priority,
+                             step_number, total_steps, phase, depends_on, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+        `).run(
+          taskId,
+          projectId,
+          task.title,
+          task.description ?? null,
+          task.description ?? null,
+          status,
+          assignee,
+          createdBy,
+          task.priority ?? 'normal',
+          stepNum,
+          totalSteps,
+          task.phase ?? 1,
+          JSON.stringify(task.dependsOn ?? []),
+        );
       }
+    }
+  })();
+
+  // Post-commit broadcasts (the rows are real now).
+  for (const taskId of taskIds) {
+    const createdTask = getTask(taskId);
+    if (createdTask) {
+      broadcast({
+        type: 'tracker:task_updated',
+        data: createdTask,
+      });
     }
   }
 

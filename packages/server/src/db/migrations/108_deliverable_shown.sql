@@ -1,0 +1,24 @@
+-- 108 (Demolition Phase 1, two-key restoration): deliverable_shown flag.
+--
+-- Before this, when an assignee delivered a user-facing result but skipped the
+-- formal tracker_update_status, the engine forged a terminal close on the task:
+-- engineCloseDeliveredTask wrote status='complete' AND complete_validated=1
+-- (an engine-authored "PM-blessed" flag) so the PM's two-key validation could
+-- never re-open it, and the C2 retask-block keyed on that forged flag to refuse
+-- regeneration. That collapsed the two-key contract (agent REQUESTS a close with
+-- evidence -> lands complete_validated=0; PM VALIDATES against the goal): no
+-- engine path may close or stamp.
+--
+-- deliverable_shown replaces the "protect delivered work" purpose the
+-- complete_validated=1 forgery was serving. It is a neutral fact marker set by
+-- markDeliverableShown: "the assignee delivered this task's result to the user
+-- in a reply." It carries NO completion authority. The task stays open
+-- (in_progress) with complete_validated=0, so the PM still sees it and the
+-- two-key close still requires the agent's request + the PM's validation. The
+-- retask verb keys on this flag (refuse regeneration unless allow_regenerate is
+-- passed) so delivered work is not clobbered, WITHOUT pretending the task closed.
+--
+-- Backfill: none. Only deliveries observed after this migration carry the flag;
+-- pre-existing rows keep the default 0, which is the honest "not observed" value.
+
+ALTER TABLE tasks ADD COLUMN deliverable_shown INTEGER DEFAULT 0;

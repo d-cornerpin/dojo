@@ -18,6 +18,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
 import { insertInterAgentMessage } from '../memory/interagent.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
+import { postAgentNotice } from './agent-notice.js';
 // A2A protocol constants and helpers, inlined here to avoid runtime
 // imports from @dojo/shared (which points at .ts source and can't be
 // loaded by Node.js in production without a TS loader).
@@ -727,7 +728,12 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
     // apart. Suppress the hint when a park row exists; the engine owns delivery on that thread.
     const parkHandlesDelivery = !!db.prepare(
       `SELECT 1 FROM messages WHERE agent_id = ? AND role = 'user' AND conv_key IN (?, ?) LIMIT 1`,
-    ).get(target.id, `park:${threadId}`, `park:${threadShort}`);
+    ).get(target.id, `park:${threadId}`, `park:${threadShort}`)
+      // Fan-out (multi) park (2026-07-17): suppress the "iMessage the gist" hint while
+      // the join is still open too, so the model is never nudged to surface a PARTIAL
+      // piece to the owner. When the LAST piece lands, close-the-loop posts its own
+      // compile steer (below) in place of this hint.
+      || !!findOpenMultiParkForThread(target.id, threadId, threadShort);
     if (targetIsPrimary && !senderIsOps && isDeliverableShape && !parkHandlesDelivery) {
       const ownerName = getOwnerName();
       // v2.9.21, Engine hint, not Engine order. The previous wording
@@ -785,10 +791,66 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   // better than never closing, and the payload is still relayed to the owner.)
   const isReplyIntent =
     effectiveIntent === 'ANSWER' || effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'COMPLETE' || effectiveIntent === 'FAIL';
+
+  // ── Fan-out (multi-thread) park: join across ALL delegated threads (2026-07-17) ──
+  // When one owner ask fanned out to N>1 A2A threads in a turn, the owner's question is
+  // parked on the WHOLE set (park:~<full>#<remaining>, see buildOwnerParkKey). A single
+  // returning piece is NOT the answer, so we must NOT engine-relay it (relaying the
+  // first piece as THE answer, then dropping the rest, IS the fan-out bug). Only a
+  // TERMINAL reply advances the join: remove this thread from the remaining set. While
+  // others remain we HOLD (no relay, the question stays unanswered). When the LAST piece
+  // lands we consume the park and steer the model (a VISIBLE awareness notice, the same
+  // model-visible channel the tracker/scheduler subsystems use) to VERIFY each piece's
+  // real content and reply to the owner with the COMBINED result, never an engine digest
+  // (the final piece is partial by construction). The deliverable's own wake (unchanged,
+  // it is a wake intent) carries the steer to the model. Single parks stay UNTOUCHED.
+  let handledByMultiPark = false;
+  if (isReplyIntent) {
+    const multiPark = findOpenMultiParkForThread(target.id, threadId, threadShort);
+    if (multiPark) {
+      handledByMultiPark = true;
+      try {
+        const step = advanceMultiParkOnReply(target.id, multiPark.rowid, threadId, threadShort);
+        if (step.outcome === 'held') {
+          logger.info('fan-out park: piece landed, holding for the rest', {
+            agentId: target.id, thread: threadShort, landed: step.landed, total: step.total,
+          });
+        } else if (step.outcome === 'completed') {
+          // Receipts-verification wording, floor-model-proof revision (2026-07-18
+          // run bmrplgdg33l): the first wording said "verify each piece's ACTUAL
+          // content by reading the thread messages yourself", and the weak model
+          // read that as "go re-open the source files": it exec'd a blocked loop
+          // over the staged files, spun 45 tool calls, and never delivered the
+          // combined reply. The content it needs is ALREADY in its context (the
+          // deliverable messages), so the steer says exactly that and forbids
+          // tool use. The receipts principle is unchanged: quote what was
+          // DELIVERED, never trust a task row that says "complete".
+          const steer =
+            `All ${step.total} delegated pieces for the owner's request are now back ` +
+            `(threads ${shortThreadList(step.full)}). The owner has NOT been answered yet. ` +
+            `The deliverable messages ABOVE in this conversation already contain each piece's actual content. ` +
+            `Compose ONE reply to the owner now that includes each piece's delivered content exactly as it arrived ` +
+            `(quote it; do not summarize it away, and do not trust a tracker row that says "complete" over the message itself). ` +
+            `Do NOT open files, run commands, or call any tools first; everything you need is already in the messages above. ` +
+            `If a piece came back as a failure, say so honestly in the same reply.`;
+          postAgentNotice({ toAgentId: target.id, fromName: 'Coordinator', selfIntro: false, intent: 'fanout_join', brief: steer });
+          logger.info('fan-out park: all pieces landed, steered model to compile the combined reply', {
+            agentId: target.id, thread: threadShort, total: step.total,
+          });
+        }
+        // 'noop' (duplicate piece / already consumed / question retired by other means): nothing to do.
+      } catch (err) {
+        logger.warn('fan-out park: advance failed', {
+          agentId: target.id, thread: threadShort, error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
   const parkExistsForThread = !!db.prepare(
     `SELECT 1 FROM messages WHERE agent_id = ? AND role = 'user' AND (conv_key = ? OR conv_key = ?) LIMIT 1`,
   ).get(target.id, `park:${threadId}`, `park:${threadShort}`);
-  if (isReplyIntent || parkExistsForThread) {
+  if (!handledByMultiPark && (isReplyIntent || parkExistsForThread)) {
     try {
       // BUG-4 (comms-audit): read the FULL-id park key first (loop.ts now parks under the
       // full thread id via the structural path, collision-free), then fall back to the
@@ -1145,6 +1207,179 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
 }
 
 // ════════════════════════════════════════
+// Fan-out (multi-thread) park encoding (2026-07-17)
+//
+// When ONE owner ask fans out to N>1 A2A threads in a single turn, the owner's
+// question must join on ALL of them, not just one. A single park:<thread> serves the
+// FIRST returning deliverable as THE answer and drops the rest (the fan-out bug). A
+// multi park keeps the whole set in the conv_key and holds until the LAST piece lands,
+// then wakes the model to COMPILE (never engine-relays a partial).
+//
+// Encoding deliberately keeps the 'park:' / 'relayed:' PREFIXES so every existing scan
+// (sweepExpiredParks / resolveParksAtBoot LIKE 'park:%', the boot crash-reconciliation
+// exclusion `conv_key NOT LIKE 'park:%'` / `NOT LIKE 'relayed:%'` in index.ts, and the
+// relayed:%-consumed guards) picks these rows up UNCHANGED, no cross-file edits needed:
+//
+//   OPEN:     park:~<t1>|<t2>|...|<tN>#<r1>|<r2>|...   (~ right after 'park:' marks a
+//             fan-out; the segment before '#' is the FULL immutable set, after '#' the
+//             REMAINING not-yet-landed threads; remaining shrinks as pieces land)
+//   CONSUMED: relayed:~<t1>|...|<tN>                   (all pieces landed, model steered)
+//             relayed:failed:~<...>                    (join stuck, failed closed by sweep)
+//
+// The separators ~ # | cannot appear in a UUID (fresh delegation threads) or a
+// makeThreadId ('thread-'+base36+seed) id; buildOwnerParkKey drops any thread that
+// carries one and falls back to a single park, so the encoding can never be corrupted.
+// Single parks (park:<thread>) are UNTOUCHED: the deterministic engine relay that
+// shipped for floor models (which failed to relay on their own) stays exactly as-is.
+//
+// No in-memory join state: the remaining set lives entirely in conv_key (DB), so a
+// restart mid-join resumes from the row when the next piece lands.
+// ════════════════════════════════════════
+
+const MULTI_PARK_MARK = '~';        // right after 'park:' / 'relayed:' -> this is a fan-out park
+const MP_FULL_REMAIN_SEP = '#';     // divides the full set from the remaining set
+const MP_THREAD_SEP = '|';          // between thread ids within a segment
+
+/** A thread id is safe to multi-encode only if it carries none of the separators. */
+export function isThreadSafeForMultiPark(threadId: string): boolean {
+  return !!threadId
+    && !threadId.includes(MULTI_PARK_MARK)
+    && !threadId.includes(MP_FULL_REMAIN_SEP)
+    && !threadId.includes(MP_THREAD_SEP);
+}
+
+/**
+ * Build the owner-question park key for a delegation turn.
+ *   0 threads  -> null (caller falls back to the single-thread prose regex).
+ *   1 thread   -> today's single `park:<thread>` (deterministic engine relay preserved).
+ *   2+ threads -> a fan-out `park:~<full>#<remaining>` (remaining starts equal to full).
+ * Threads carrying an encoding separator are dropped from the multi set; if that leaves
+ * fewer than two, we single-park the first surviving (or, last resort, the first) thread.
+ */
+export function buildOwnerParkKey(threads: string[]): string | null {
+  const distinct: string[] = [];
+  for (const t of threads) if (t && !distinct.includes(t)) distinct.push(t);
+  if (distinct.length === 0) return null;
+  if (distinct.length === 1) return `park:${distinct[0]}`;
+  const safe = distinct.filter(isThreadSafeForMultiPark);
+  if (safe.length >= 2) {
+    const joined = safe.join(MP_THREAD_SEP);
+    return `park:${MULTI_PARK_MARK}${joined}${MP_FULL_REMAIN_SEP}${joined}`;
+  }
+  return `park:${safe[0] ?? distinct[0]}`;
+}
+
+interface ParsedMultiPark { full: string[]; remaining: string[] }
+
+/** Parse a fan-out park conv_key ('park:~<full>#<remaining>'); null if not a multi park. */
+export function parseMultiPark(convKey: string): ParsedMultiPark | null {
+  const prefix = `park:${MULTI_PARK_MARK}`;
+  if (!convKey.startsWith(prefix)) return null;
+  const body = convKey.slice(prefix.length);
+  const hashAt = body.indexOf(MP_FULL_REMAIN_SEP);
+  const fullStr = hashAt >= 0 ? body.slice(0, hashAt) : body;
+  const remStr = hashAt >= 0 ? body.slice(hashAt + 1) : '';
+  return {
+    full: fullStr.split(MP_THREAD_SEP).filter(Boolean),
+    remaining: remStr.split(MP_THREAD_SEP).filter(Boolean),
+  };
+}
+
+/** True when this conv_key is a fan-out (multi) park. */
+function isMultiParkKey(convKey: string | null | undefined): boolean {
+  return !!convKey && convKey.startsWith(`park:${MULTI_PARK_MARK}`);
+}
+
+/** Does a thread list contain this reply's thread (full id or its 8-char short form)? */
+function listHasThread(list: string[], threadId: string, threadShort: string): boolean {
+  return list.includes(threadId) || list.some((t) => t.slice(0, 8) === threadShort);
+}
+
+/** Short (8-char) thread ids for a steer / log line, from the full fan-out set. */
+function shortThreadList(full: string[]): string {
+  return full.map((t) => t.slice(0, 8)).join(', ');
+}
+
+interface OpenMultiParkMatch {
+  rowid: number;
+  conv_key: string;
+  content: string;
+  inbound_meta: string | null;
+  full: string[];
+  remaining: string[];
+}
+
+/**
+ * Find the OPEN fan-out park (if any) on `agentId` whose set contains this reply's
+ * thread. Bounded scan of the agent's open 'park:~%' rows (only ever a handful open at
+ * once). Membership is checked against the FULL set so a duplicate reply for an
+ * already-landed thread still resolves to the row (the caller decides hold vs. no-op
+ * from the REMAINING set).
+ */
+function findOpenMultiParkForThread(agentId: string, threadId: string, threadShort: string): OpenMultiParkMatch | null {
+  const db = getDb();
+  let rows: Array<{ rowid: number; conv_key: string; content: string; inbound_meta: string | null }> = [];
+  try {
+    rows = db.prepare(
+      `SELECT rowid, conv_key, content, inbound_meta FROM messages
+         WHERE agent_id = ? AND role = 'user' AND conv_key LIKE 'park:~%'
+         ORDER BY rowid DESC LIMIT 25`,
+    ).all(agentId) as typeof rows;
+  } catch { return null; }
+  for (const r of rows) {
+    const parsed = parseMultiPark(r.conv_key);
+    if (!parsed) continue;
+    if (listHasThread(parsed.full, threadId, threadShort)) {
+      return { rowid: r.rowid, conv_key: r.conv_key, content: r.content, inbound_meta: r.inbound_meta, full: parsed.full, remaining: parsed.remaining };
+    }
+  }
+  return null;
+}
+
+type MultiParkStep =
+  | { outcome: 'held'; landed: number; total: number }
+  | { outcome: 'completed'; full: string[]; total: number }
+  | { outcome: 'noop' };
+
+/**
+ * Advance a fan-out park by ONE landed piece, atomically. Removes `threadId` from the
+ * remaining set via a CAS on conv_key (WHERE conv_key = the value we read), so two
+ * pieces landing concurrently can neither lose an update nor double-complete: the loser
+ * re-reads and retries. If others remain the park stays open (park:~<full>#<rest>); if
+ * this was the LAST piece the park is consumed (park:~ -> relayed:~, out of every
+ * open-park scan) and the caller steers the model. Returns 'noop' when the thread was
+ * already removed (duplicate reply) or the row is no longer a multi park (retired /
+ * answered / consumed by other means) - the park update no-ops gracefully.
+ */
+function advanceMultiParkOnReply(agentId: string, rowid: number, threadId: string, threadShort: string): MultiParkStep {
+  const db = getDb();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const row = db.prepare(`SELECT conv_key FROM messages WHERE agent_id = ? AND rowid = ? LIMIT 1`)
+      .get(agentId, rowid) as { conv_key: string | null } | undefined;
+    const oldKey = row?.conv_key ?? null;
+    const parsed = oldKey ? parseMultiPark(oldKey) : null;
+    if (!parsed || !oldKey) return { outcome: 'noop' };
+    const total = parsed.full.length;
+    const nextRemaining = parsed.remaining.filter((t) => t !== threadId && t.slice(0, 8) !== threadShort);
+    if (nextRemaining.length === parsed.remaining.length) return { outcome: 'noop' }; // already landed
+    if (nextRemaining.length > 0) {
+      const newKey = `park:${MULTI_PARK_MARK}${parsed.full.join(MP_THREAD_SEP)}${MP_FULL_REMAIN_SEP}${nextRemaining.join(MP_THREAD_SEP)}`;
+      const res = db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ? AND conv_key = ?`)
+        .run(newKey, agentId, rowid, oldKey);
+      if (res.changes === 0) continue; // concurrent land moved the key; re-read
+      return { outcome: 'held', landed: total - nextRemaining.length, total };
+    }
+    // Last piece: consume park:~ -> relayed:~ (idempotent; excluded from open-park scans).
+    const relayedKey = `relayed:${MULTI_PARK_MARK}${parsed.full.join(MP_THREAD_SEP)}`;
+    const res = db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ? AND conv_key = ?`)
+      .run(relayedKey, agentId, rowid, oldKey);
+    if (res.changes === 0) continue; // someone else advanced; re-read (likely 'noop' next)
+    return { outcome: 'completed', full: parsed.full, total };
+  }
+  return { outcome: 'noop' };
+}
+
+// ════════════════════════════════════════
 // Park lifecycle, engine-enforced fail-closed (D13)
 //
 // When an agent asks another agent something on the owner's behalf, the owner's
@@ -1348,6 +1583,11 @@ function resolveAgentDisplayName(idOrName: string | null | undefined): string | 
  * lookup rides idx_messages_agent_created (messages has no thread index).
  */
 function findUnrelayedInboundReply(parked: OpenParkRow): { payload: string; senderName: string } | null {
+  // Single-thread parks only: a fan-out (multi) park must never relay ONE stranded
+  // piece as the answer (that is the fan-out bug). resolveOpenPark branches multi parks
+  // away before reaching here, but guard so a garbage ~<full>#<remaining> ref is never
+  // sliced into parkThreadCondition.
+  if (isMultiParkKey(parked.conv_key)) return null;
   const db = getDb();
   const ref = parked.conv_key.slice('park:'.length);
   const cond = parkThreadCondition(ref);
@@ -1395,6 +1635,11 @@ function findUnrelayedInboundReply(parked: OpenParkRow): { payload: string; send
  * are created_at-bounded so they ride the created_at indexes.
  */
 function findAskedAgentForPark(parked: OpenParkRow): { name: string; status: string } | null {
+  // Single-thread parks only. A fan-out (multi) park has N asked agents, not one; its
+  // ~<full>#<remaining> body is not a single thread ref, so return null (the boot
+  // re-drain reads this to short-circuit a terminated asked agent; for a fan-out it
+  // simply falls through to the normal TTL path).
+  if (isMultiParkKey(parked.conv_key)) return null;
   const db = getDb();
   const ref = parked.conv_key.slice('park:'.length);
   const cond = parkThreadCondition(ref);
@@ -1462,6 +1707,26 @@ function questionSnippet(content: string): string {
  *   3. Otherwise leave it open for the TTL sweep.
  */
 async function resolveOpenPark(parked: OpenParkRow, opts: { failIfUnanswered: boolean; askedNameHint?: string }): Promise<ParkResolution> {
+  // Fan-out (multi) park: a single stranded reply is NOT the answer (relaying one piece
+  // as THE answer is the fan-out bug), so we never relay from here. The live
+  // close-the-loop join completes a healthy fan-out; this safety net only FAILS a stuck
+  // one CLOSED (a piece never came back within TTL, or the asked agent is gone) with ONE
+  // honest owner notice on their own channel. A late straggler piece arriving after this
+  // fail-closed is dropped (the row is no longer an open park:~ row), the same accepted
+  // tradeoff the single-park fail-closed makes.
+  if (isMultiParkKey(parked.conv_key)) {
+    if (!opts.failIfUnanswered) return 'left-open';
+    const snippet = questionSnippet(parked.content);
+    const notice =
+      `I split this across several agents but could not get all the pieces back in time to give you a complete answer.` +
+      (snippet ? ` (Your question was: "${snippet}")` : '');
+    const ok = await consumeParkAndDeliver(
+      { rowid: parked.rowid, agent_id: parked.agent_id, conv_key: parked.conv_key, inbound_meta: parked.inbound_meta },
+      notice,
+      { failedClosed: true },
+    );
+    return ok ? 'failed-closed' : 'already-consumed';
+  }
   const reply = findUnrelayedInboundReply(parked);
   if (reply) {
     const answer = reply.payload.replace(/\s+/g, ' ').trim().slice(0, 1200);
@@ -1579,6 +1844,11 @@ export async function failParksForAbandonedAsk(inboundAskMessageId: string, thre
        SELECT a2a_thread_id FROM inter_agent_messages WHERE id = ?
        LIMIT 1`,
     ).get(inboundAskMessageId, inboundAskMessageId) as { a2a_thread_id: string | null } | undefined)?.a2a_thread_id ?? null;
+    // Single-park exact keys only. A fan-out (multi) park's conv_key is
+    // park:~<full>#<remaining>, which never equals park:<one-thread>, so an abandoned
+    // PIECE of a fan-out does not fail the whole join closed here (other pieces may still
+    // land). A genuine terminal FAIL reply advances the join (close-the-loop); a silently
+    // abandoned piece leaves the join stuck, and the TTL sweep fails it closed once.
     const keys = [...new Set([full ? `park:${full}` : '', threadShort ? `park:${threadShort}` : ''].filter(Boolean))];
     if (keys.length === 0) return;
     const parks = db.prepare(

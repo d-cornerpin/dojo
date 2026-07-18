@@ -64,7 +64,7 @@ import {
 import { resolveInbound } from './inbound-channel.js';
 // recordCost intentionally NOT imported, callModel records cost internally.
 import { queueEmbedding } from '../../memory/embeddings.js';
-import { isPrimaryAgent, isTrainerAgent, isPMAgent, isHealerAgent } from '../../config/platform.js';
+import { isPrimaryAgent, isTrainerAgent, isPMAgent, isHealerAgent, isDreamerAgent } from '../../config/platform.js';
 import os from 'node:os';
 import path from 'node:path';
 import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, currentTurnNumber, continuationContext, clearTurnReceipts, clearRecallBudget, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
@@ -3000,7 +3000,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // the tracker (its SOUL forbids it), so an engine-opened task it cannot
       // tend would go stale and trip the PM poke ladder against it, which is
       // exactly the state a held destructive consent must not leave behind.
-      if (state.loopCount === 1 && lastUserMessageContent && !isPMAgent(agentId) && !isHealerAgent(agentId)) {
+      // P2b: also skip the Dreamer. Its cycle message (wakeupDreamer) is an
+      // engine-synthetic role='user' row, not a user ask; its work is engine-
+      // orchestrated memory maintenance. Auto-scaffolding it manufactured a
+      // tracker project + task on the Dreamer every batch, which then same-turn-
+      // closed and fired a notifyPrimaryAgent completion pair onto the primary's
+      // chat (production transcript 2026-07-17). The tracker is the wrong
+      // instrument for engine-lane maintenance, so the trigger simply skips it.
+      if (state.loopCount === 1 && lastUserMessageContent && !isPMAgent(agentId) && !isHealerAgent(agentId) && !isDreamerAgent(agentId)) {
         try {
           const { detectMultistep, getMultistepConfig } = await import('./classifiers/multistep.js');
           const cfg = getMultistepConfig();
@@ -5224,18 +5231,22 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }
         }
 
-        // Hardcap: if the going-idle-with-in_progress nudge already fired this
-        // turn and the model STILL produced a user-facing closeout ("Done" /
-        // "All set") without calling tracker_update_status, sync the tracker to
-        // what the user was shown. persistedContent is non-empty here, so the
-        // user HAS been shown a reply this turn, that reply is the delivery.
-        // C2 invariant: the artifact the user saw is the source of truth and is
-        // NEVER regenerated/overwritten by reconciliation. So the engine CLOSES
-        // the dangling one-shot task(s) complete against that delivered reply
-        // (engineCloseDeliveredTask), instead of the pre-fix pause + escalate
-        // whose PM retask verb re-drove the assignee to regenerate the
-        // deliverable and clobber the file the user was already shown (a
-        // divergent second version + a second "done"). The reply stays visible.
+        // Going-idle reconciliation (demolition Phase 1.3): the going-idle nudge
+        // already fired this turn and the model STILL ended with a user-facing
+        // closeout ("Done" / "All set") without calling a tracker close verb.
+        // persistedContent is non-empty here, so the user HAS been shown a reply
+        // this turn, that reply is the delivery. C2 invariant: the artifact the
+        // user saw is the source of truth and is NEVER regenerated/overwritten by
+        // reconciliation. But the engine no longer CLOSES the dangling one-shot:
+        // closing it with a forged complete_validated=1 collapsed the two-key
+        // contract and is exactly what stopped the PM from re-adjudicating. The
+        // engine now records the neutral FACT that the deliverable was shown
+        // (markDeliverableShown) and leaves the task in_progress for the PM sweep,
+        // the designed owner of danglers. deliverable_shown is what protects the
+        // delivered artifact now: the PM retask verb refuses regeneration on a
+        // deliverable_shown task unless allow_regenerate is explicitly passed, so
+        // nothing clobbers the file the user was already shown WITHOUT pretending
+        // the task closed.
         if (
           state.nudgedForGoingIdleWithInProgressThisTurn &&
           !state.toolResults.some(
@@ -5243,7 +5254,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           ) &&
           persistedContent && persistedContent.trim().length > 0
         ) {
-          // Re-query in-progress tasks at the moment of escalation.
+          // Re-query in-progress tasks at the moment of reconciliation.
           const danglerRows = db.prepare(`
             SELECT id, title FROM tasks
             WHERE assigned_to = ?
@@ -5253,31 +5264,30 @@ export async function runV2Turn(agentId: string): Promise<void> {
             LIMIT 10
           `).all(agentId) as Array<{ id: string; title: string }>;
           if (danglerRows.length > 0) {
-            // KEEP the agent's closeout visible to the user (never suppressed):
-            // the weaker model usually DID the work (wrote the file, set the
-            // reminders) and just wrote its wrap-up without the separate formal
-            // tracker_update_status call. The user reads the chat, not the task
-            // table, so the reply they already saw IS the delivery.
-            //
-            // C2 fix: because the user was already shown the deliverable this
-            // turn, the engine CLOSES the dangling one-shot task(s) complete
-            // against that delivered reply (engineCloseDeliveredTask, which sets
-            // complete_validated=1 so the close is engine-authoritative and the
-            // PM has nothing to chase). This replaces the pre-fix pause +
-            // escalateCloseoutMissToPM, whose retask verb re-drove the assignee
-            // to regenerate the deliverable and overwrite the file the user was
-            // already shown (a divergent version B + a second "done"). The
-            // invariant: a task whose deliverable was already shown is never
-            // regenerated by reconciliation.
+            // One-shots: record deliverable_shown and STOP (markDeliverableShown
+            // sets deliverable_shown=1 + a per-task task_log entry, no status
+            // write, no stamp). The task stays in_progress and the turn ends; the
+            // PM sweep owns the close-out. The weaker model usually DID the work
+            // (wrote the file, set the reminders) and just skipped the formal
+            // tracker_update_status, so the reply the user already saw IS the
+            // delivery, and deliverable_shown keeps the PM retask verb from
+            // clobbering it, without forging a terminal close.
             //
             // RECURRING TASKS CARVE-OUT (unchanged): a recurring schedule is
-            // never terminally completed here, a single missed close-out fails
+            // never terminally completed here. A single missed close-out fails
             // THIS run via forceResetStuckRecurringTask (recompute next_run_at,
             // fire normally next time), never pausing/closing the whole schedule.
+            // This is janitorial scheduler bookkeeping, not a model-obligation
+            // forgery, so it stays.
+            //
+            // No INVISIBLE retrospective note: the old engine-steer-exempt
+            // "[System: ... the engine synced the tracker ...]" row is gone.
+            // markDeliverableShown writes the per-task task_log entry, and nothing
+            // user- or model-facing is owed on this (ending) turn.
             const { forceResetStuckRecurringTask } = await import('../../scheduler/runner.js');
-            const { engineCloseDeliveredTask } = await import('../../tracker/tools.js');
+            const { markDeliverableShown } = await import('../../tracker/tools.js');
             const recurringResetIds: string[] = [];
-            const closedIds: string[] = [];
+            const markedIds: string[] = [];
             for (const r of danglerRows) {
               const isRecurring = db.prepare(`SELECT repeat_interval FROM tasks WHERE id = ?`).get(r.id) as { repeat_interval: number | null } | undefined;
               if (isRecurring?.repeat_interval) {
@@ -5285,65 +5295,35 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 continue;
               }
               try {
-                const closed = await engineCloseDeliveredTask(agentId, r.id, persistedContent ?? '');
-                if (closed) closedIds.push(r.id);
+                const marked = await markDeliverableShown(agentId, r.id, persistedContent ?? '');
+                if (marked) markedIds.push(r.id);
               } catch { /* best effort */ }
             }
-
-            const parts: string[] = [];
-            if (closedIds.length > 0) {
-              parts.push(`${closedIds.length} task${closedIds.length === 1 ? '' : 's'} closed complete against the reply you just sent the user (ids: ${closedIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ')}${closedIds.length > 5 ? '...' : ''})`);
-            }
-            if (recurringResetIds.length > 0) {
-              parts.push(`${recurringResetIds.length} recurring task${recurringResetIds.length === 1 ? '' : 's'} reset to fire on schedule (ids: ${recurringResetIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ')}${recurringResetIds.length > 5 ? '...' : ''}), your missed close-out failed THIS run, not the whole schedule`);
-            }
-            const escMsg = (
-              `[System: you sent the user a closeout without first calling tracker_update_status. Your reply stands (the user saw it), and the engine has synced the tracker to match it: ${parts.join('; ')}. ` +
-              `Nothing you delivered was re-run or overwritten. Next time, call tracker_update_status(status="complete", result="...", evidence=[...]) BEFORE your closeout so the tracker matches your reply without the engine stepping in.]`
-            );
-            const escId = uuidv4();
-            try {
-              // engine-steer-exempt (RC-19): retrospective note, not a same-turn
-              // steer. The engine ALREADY reconciled the tracker (engineCloseDeliveredTask)
-              // and the turn ends right after (break below). The "next time, call
-              // tracker_update_status BEFORE your closeout" text is after-the-fact
-              // advice; there is no model action expected on this (ending) turn.
-              db.prepare(`
-                INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-                VALUES (?, ?, 'system', ?, ?, datetime('now'))
-              `).run(escId, agentId, escMsg, turnNumber);
-              broadcast({
-                type: 'chat:message',
-                agentId,
-                message: {
-                  id: escId, agentId, role: 'system' as const,
-                  content: escMsg,
-                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
-                  createdAt: new Date().toISOString(),
-                },
-              });
-            } catch { /* best effort */ }
-            logger.info('v2 idle-with-in_progress hardcap: engine-closed the delivered task(s) against the user-visible reply, no PM escalation, no redo', {
-              agentId, closedCount: closedIds.length, closedIds, recurringResetCount: recurringResetIds.length, recurringResetIds,
+            logger.info('v2 idle-with-in_progress reconciliation: marked deliverable_shown on delivered one-shot(s) (left in_progress for the PM sweep), reset recurring on schedule; no engine close, no stamp, no escalation, no INVISIBLE note', {
+              agentId, markedCount: markedIds.length, markedIds, recurringResetCount: recurringResetIds.length, recurringResetIds,
             }, agentId);
             setAgentStatus(agentId, 'idle');
             break;
           }
         }
 
-        // F2.1: same-turn engine close of an engine-auto-scaffolded task on a
-        // read-only conversation turn. The mid-turn floor opens a task after 6 work
-        // calls of ANY kind, including pure reads. On a read-only turn (e.g. an inbox
-        // sweep) the going-idle machinery above never fires (it requires a scheduler /
-        // A2A / side-effecting turn), so the task the ENGINE itself opened would
-        // dangle and later trip the PM poke chain into re-delivering the old answer as
-        // a "ghost done". Requirement satisfied: the engine owns the lifecycle of the
-        // tasks it opens. Scope is deliberately narrow, ONLY this turn's scaffolded
-        // task, closed against the reply the user already saw (engineCloseDeliveredTask,
-        // complete_validated=1). Unrelated danglers keep their existing handling; a
-        // read-only turn must NOT bulk-close unrelated work against an unrelated reply.
-        // The !nudgedForGoingIdle guard means the worked-task path (hardcap above)
-        // already swept it, so this only runs when nothing else did. Natural turn end
+        // F2.1 (demolition Phase 1.7 #2): same-turn engine close of an
+        // engine-auto-scaffolded task on a read-only conversation turn. The
+        // mid-turn floor opens a task after 6 work calls of ANY kind, including
+        // pure reads. On a read-only turn (e.g. an inbox sweep) the going-idle
+        // machinery above never fires (it requires a scheduler / A2A /
+        // side-effecting turn), so the task the ENGINE itself opened would dangle
+        // and later trip the PM poke chain into re-delivering the old answer as a
+        // "ghost done". Requirement satisfied: the engine owns the lifecycle of
+        // the tasks it opens. Scope is deliberately narrow, and the demolition
+        // narrows it further: closeEngineScaffoldSameTurn verifies the task
+        // carries the ENGINE_AUTO_MARKER and was created THIS turn, and closes it
+        // complete_validated=0 (UNVALIDATED) so the PM sweep still validates it,
+        // instead of the forged complete_validated=1 the old engineCloseDeliveredTask
+        // wrote. Unrelated danglers keep their existing handling; a read-only turn
+        // must NOT bulk-close unrelated work against an unrelated reply. The
+        // !nudgedForGoingIdle guard means the worked-task path above already
+        // reconciled it, so this only runs when nothing else did. Natural turn end
         // only (inside result.toolCalls.length === 0), never the turn-budget path.
         if (
           state.autoScaffoldedTaskIdThisTurn &&
@@ -5356,10 +5336,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
           ).get(scaffoldId);
           if (stillOpen) {
             try {
-              const { engineCloseDeliveredTask } = await import('../../tracker/tools.js');
-              const closed = await engineCloseDeliveredTask(agentId, scaffoldId, persistedContent);
+              const { closeEngineScaffoldSameTurn } = await import('../../tracker/tools.js');
+              const closed = await closeEngineScaffoldSameTurn(agentId, scaffoldId, persistedContent);
               if (closed) {
-                logger.info('v2 same-turn scaffold close: engine-closed the auto-scaffolded task against the delivered reply (read-only turn)', {
+                logger.info('v2 same-turn scaffold close: engine closed its own auto-scaffolded task against the delivered reply, unvalidated (read-only turn)', {
                   agentId, taskId: scaffoldId,
                 }, agentId);
               }
@@ -5756,17 +5736,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // tracker status, end the turn cleanly. Don't loop forever.
         const agentProducedText = !!(persistedContent && persistedContent.trim().length > 0);
         if (agentProducedText) {
-          // ── v2.5.46: pre-turn close-out gate, one-shot enforcement ──
-          // The pre-turn system message already gave the agent a chance
-          // to engage with the tracker BEFORE generating any response.
-          // If they produced text instead of calling a tracker tool,
-          // they've forfeited the chance. Auto-pause the danglers
-          // immediately and end the turn.
+          // ── v2.5.46 / demolition Phase 1.4: pre-turn close-out gate ──
+          // The pre-turn system message already gave the agent a chance to
+          // engage with the tracker BEFORE generating any response. If they
+          // produced text instead of calling a tracker tool, they forfeited the
+          // chance. The gate USED TO auto-pause the danglers here and pre-bless
+          // the pause (pause_validated=1) so the PM could never re-flag it, a
+          // forgery of the PM's key. De-fanged: the danglers keep their TRUE
+          // status (one-shots stay in_progress), the recurring janitorial reset
+          // stays, and the miss is escalated to the PM (visible A2A) to decide
+          // per task. The turn then ends.
           //
-          // No "second chance" hard nudge: the prior implementation
-          // streamed a second response to the user before the duplicate
-          // detector could suppress it, the user saw two responses.
-          // One shot, then engine takeover.
+          // No "second chance" hard nudge: the prior implementation streamed a
+          // second response to the user before the duplicate detector could
+          // suppress it, the user saw two responses. One shot, then the turn ends.
           if (
             state.danglingTaskIds.length > 0 &&
             !state.closeOutGateSatisfied
@@ -5785,18 +5768,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // invariant the user never sees (they read the chat, not the task table)
             // is NOT worth suppressing a real reply. The reply was already persisted
             // AND streamed earlier this turn, so we simply let it stand and STILL
-            // reconcile the danglers below (pause one-shot / leave on_deck). No
-            // duplicate risk: there is no second-chance re-prompt here (only one
-            // reply was ever generated).
+            // reconcile the danglers below (one-shots stay in_progress + escalate to
+            // PM / recurring reset / on_deck left in place). No duplicate risk: there
+            // is no second-chance re-prompt here (only one reply was ever generated).
             logger.info('v2: pre-turn close-out gate, keeping the agent reply visible, reconciling danglers in the background', {
               agentId, danglingCount: state.danglingTaskIds.length,
             }, agentId);
 
             try {
-              // Distinguish the two kinds of danglers so the auto-pause
-              // logic only touches in_progress rows (paused makes sense
-              // there); on_deck stragglers stay on_deck, the user can
-              // decide whether to reassign or close the project.
+              // Distinguish the two kinds of danglers. One-shot in_progress rows
+              // keep their TRUE status (no pause, no stamp); on_deck stragglers
+              // stay on_deck, the user can decide whether to reassign or close
+              // the project.
               const inProgressIds = db
                 .prepare(
                   `SELECT id FROM tasks WHERE id IN (${state.danglingTaskIds.map(() => '?').join(',')}) AND status = 'in_progress'`,
@@ -5806,82 +5789,34 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 (id) => !inProgressIds.some((r) => r.id === id),
               );
 
-              const noteTemplate = `[${new Date().toISOString()}] Auto-paused by engine: agent "${agentId}" ignored the pre-turn close-out gate (produced a user-facing response without calling tracker_update_status / tracker_complete_step / tracker_add_notes / tracker_close_project). User: reassign or resolve manually from the dashboard.`;
-              // v2.9.22, pause_validated=1 for the same reason as the
-              // going-idle hardcap path above. Engine pause is the
-              // authority; PM gets a dedicated closeout_miss A2A
-              // (below) and doesn't need to re-flag via UNVALIDATED_PAUSE.
-              const updateStmt = db.prepare(`
-                UPDATE tasks
-                SET status = 'paused', is_paused = 1, status_before_pause = 'in_progress',
-                    pause_validated = 1,
-                    notes = COALESCE(notes, '') || ? || char(10),
-                    updated_at = datetime('now')
-                WHERE id = ? AND status = 'in_progress'
-                  AND repeat_interval IS NULL
-              `);
-              // Same recurring carve-out as the going-idle hardcap above.
-              // Single missed close-out on a recurring task fails THIS
-              // run via forceResetStuckRecurringTask, not the whole
-              // schedule.
+              // Demolition Phase 1.4: the gate no longer PAUSES one-shot danglers
+              // or pre-blesses a pause (pause_validated=1). That flag was an
+              // engine-authored "PM-blessed" verdict the PM sweep could never
+              // re-flag, a forgery of the PM's key. One-shot danglers now stay
+              // in_progress and are escalated to the PM (which decides per task).
+              // Recurring danglers keep the janitorial reset (a single missed
+              // close-out fails THIS run via forceResetStuckRecurringTask, never
+              // pausing/closing the whole schedule).
               const { forceResetStuckRecurringTask } = await import('../../scheduler/runner.js');
               const recurringResetIds: string[] = [];
-              let pausedCount = 0;
-              const pausedIds: string[] = [];
+              const oneShotDanglerIds: string[] = [];
               for (const tid of inProgressIds.map((r) => r.id)) {
                 const isRecurring = db.prepare(`SELECT repeat_interval FROM tasks WHERE id = ?`).get(tid) as { repeat_interval: number | null } | undefined;
                 if (isRecurring?.repeat_interval) {
                   try { forceResetStuckRecurringTask(tid); recurringResetIds.push(tid); } catch { /* best effort */ }
                   continue;
                 }
-                const res = updateStmt.run(noteTemplate, tid);
-                if (res.changes > 0) {
-                  pausedCount++;
-                  pausedIds.push(tid);
-                }
+                oneShotDanglerIds.push(tid);
               }
 
-              if (pausedCount > 0 || recurringResetIds.length > 0 || onDeckIds.length > 0) {
-                const parts: string[] = [];
-                if (pausedCount > 0) {
-                  parts.push(
-                    `${pausedCount} one-shot in_progress dangler${pausedCount === 1 ? '' : 's'} auto-paused (ids: ${inProgressIds.slice(0, 5).map((r) => r.id.slice(0, 8)).join(', ')}${inProgressIds.length > 5 ? '...' : ''})`,
-                  );
-                }
-                if (recurringResetIds.length > 0) {
-                  parts.push(`${recurringResetIds.length} recurring task${recurringResetIds.length === 1 ? '' : 's'} reset to fire on schedule (ids: ${recurringResetIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ')}${recurringResetIds.length > 5 ? '...' : ''}), your missed close-out failed THIS run, not the whole schedule`);
-                }
-                if (onDeckIds.length > 0) {
-                  parts.push(
-                    `${onDeckIds.length} stranded on_deck task${onDeckIds.length === 1 ? '' : 's'} left in place for you to resolve next turn (ids: ${onDeckIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ')}${onDeckIds.length > 5 ? '...' : ''}), call tracker_close_project on the parent project, or reassign the tasks`,
-                  );
-                }
-                const closeOutMsg = (
-                  `[System: pre-turn close-out gate was unsatisfied. Your reply to the user was kept visible, and the engine reconciled the danglers for you: ${parts.join('; ')}. ` +
-                  `These tasks were unrelated leftovers, next time the gate fires, call a tracker tool (tracker_update_status / tracker_complete_step / tracker_close_project) to close them yourself instead of leaving it to the engine. Replying to the user was fine; just keep the tracker in sync too.]`
-                );
-                const closeOutMsgId = uuidv4();
-                try {
-                  // engine-steer-exempt (RC-19): retrospective note, not a same-turn
-                  // steer. The engine ALREADY reconciled the danglers (auto-paused /
-                  // reset) and the turn ends right after (break below). The "next time
-                  // the gate fires, call a tracker tool" text is after-the-fact advice;
-                  // no model action is expected on this (ending) turn.
-                  db.prepare(`
-                    INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-                    VALUES (?, ?, 'system', ?, ?, datetime('now'))
-                  `).run(closeOutMsgId, agentId, closeOutMsg, turnNumber);
-                  broadcast({
-                    type: 'chat:message',
-                    agentId,
-                    message: {
-                      id: closeOutMsgId, agentId, role: 'system' as const,
-                      content: closeOutMsg,
-                      tokenCount: null, modelId: null, cost: null, latencyMs: null,
-                      createdAt: new Date().toISOString(),
-                    },
-                  });
-                } catch { /* best effort */ }
+              if (oneShotDanglerIds.length > 0 || recurringResetIds.length > 0 || onDeckIds.length > 0) {
+                // Repaint the board (recurring rows changed; one-shots are
+                // unchanged but harmless to re-broadcast). No INVISIBLE
+                // retrospective note: the old engine-steer-exempt "[System: ...
+                // the engine reconciled the danglers ...]" row is deleted. The
+                // going-idle menu steer already gave the model its (visible)
+                // instruction this turn, and the PM escalation below is a visible
+                // A2A; nothing model-facing is owed on this (ending) turn.
                 try {
                   const { getTask } = await import('../../tracker/schema.js');
                   for (const tid of state.danglingTaskIds) {
@@ -5891,17 +5826,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
                     }
                   }
                 } catch { /* best effort */ }
-                logger.warn('v2: close-out one-shot escalation, auto-paused danglers, reply kept visible', {
-                  agentId, pausedCount, onDeckCount: onDeckIds.length, totalDangling: state.danglingTaskIds.length,
+                logger.warn('v2: pre-turn close-out gate unsatisfied, reply kept visible, one-shot danglers left in_progress (no pause, no stamp), recurring reset on schedule', {
+                  agentId, oneShotDanglerCount: oneShotDanglerIds.length, recurringResetCount: recurringResetIds.length, onDeckCount: onDeckIds.length, totalDangling: state.danglingTaskIds.length,
                 }, agentId);
-                // v2.9.13: notify PM with the suppressed text + verbs.
-                if (pausedIds.length > 0) {
+                // Escalate the one-shot danglers to the PM (visible A2A). They
+                // keep their true in_progress status until the PM decides.
+                if (oneShotDanglerIds.length > 0) {
                   try {
                     const { escalateCloseoutMissToPM } = await import('../../tracker/pm-agent.js');
                     await escalateCloseoutMissToPM({
                       agentId,
-                      pausedTaskIds: pausedIds,
-                      suppressedText: persistedContent ?? '',
+                      danglingTaskIds: oneShotDanglerIds,
+                      agentText: persistedContent ?? '',
                       source: 'pre-turn-gate',
                     });
                   } catch (escErr) {
@@ -6213,28 +6149,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
               `are facts here you'll rely on, jot them into scratchpad_set / a file_write / a tracker note now so ` +
               `they survive. This is advice, not a block, keep going.]`
             );
-            const nudgeMsgId = uuidv4();
-            try {
-              db.prepare(`
-                INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-                VALUES (?, ?, 'system', ?, ?, datetime('now'))
-              `).run(nudgeMsgId, agentId, nudge, turnNumber);
-              broadcast({
-                type: 'chat:message',
-                agentId,
-                message: {
-                  id: nudgeMsgId, agentId, role: 'system' as const,
-                  content: nudge,
-                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
-                  createdAt: new Date().toISOString(),
-                },
-              });
-            } catch (sysErr) {
-              logger.warn('v2: hoarding advisory insert failed', {
-                agentId, err: sysErr instanceof Error ? sysErr.message : String(sysErr),
-              }, agentId);
-            }
-            state = advance(state, { nudgedForHoardingThisTurn: true });
+            // Phase 0.4: route the [Engine hint] through persistEngineSteer so the
+            // advice reaches the model (pendingNudge, injected as a synthetic user
+            // message next iteration) AND keeps the dashboard row. The old bare
+            // role='system' INSERT was stripped by the assembler, so the advisory
+            // never reached the model at all (INVISIBLE by choice, but the model
+            // could not act on advice it never saw). This stays ADVICE, not a block:
+            // the tool still executes below (no refusal, no `continue`), the nudge
+            // just rides along to the next iteration. Already gated once per turn by
+            // nudgedForHoardingThisTurn.
+            state = persistEngineSteer(
+              state,
+              { agentId, content: nudge, turnNumber, extra: { nudgedForHoardingThisTurn: true } },
+              { db, broadcast },
+            );
             logger.info('v2: hoarding advisory nudged (non-blocking)', {
               agentId, tool: tc.name, heavyLoads: state.heavyLoadsThisTurn, ratio: state.lastContextRatio,
             }, agentId);
@@ -7217,7 +7145,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
           !hasAnyInProgressTask &&
           effectiveUntracked >= TRACKER_AUTO_SCAFFOLD_AT &&
           state.lastUserMessageContent &&
-          !isPMAgent(agentId)
+          !isPMAgent(agentId) &&
+          // P2b: the Dreamer's batch turns make dozens of vault_remember work
+          // calls, so this >=6 floor fired EVERY batch and auto-created a tracker
+          // project on it, which same-turn-closed and posted a notifyPrimaryAgent
+          // completion pair to the primary's chat. Its cycle work is engine-
+          // orchestrated maintenance, not a user ask, so the floor skips it (same
+          // reasoning as the turn-start classifier skip above).
+          !isDreamerAgent(agentId)
         ) {
           // ENGINE FLOOR: the model has done 6+ real work calls with no tracker
           // engagement (the exact point where the old anti-hoarding gate used to
@@ -7416,30 +7351,33 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // the model, that proved flaky (the weak model re-reads "ask X" and re-asks,
         // an ask→park→answer→re-ask loop). Deterministic delivery, regardless of the model.
         if (triggerRow && chosenConvKey) {
-          let parkThread: string | null = null;
-          // T-2 (comms-audit): derive the asked thread STRUCTURALLY from the A2A row
-          // the send just created (source_agent_id = this agent, this turn), not by
-          // regex-scraping the tool-result prose. If the result wording ever changed,
-          // the regex would miss and the owner's question would be SILENTLY DROPPED
-          // (it keeps its served conv_key and never re-fires). Regex kept as fallback.
+          let parkKey: string | null = null;
+          const parkThreads: string[] = [];
+          // T-2 (comms-audit): derive the asked thread(s) STRUCTURALLY from the A2A rows
+          // the sends just created (source_agent_id = this agent, this turn), not by
+          // regex-scraping the tool-result prose. If the result wording ever changed, the
+          // regex would miss and the owner's question would be SILENTLY DROPPED (it keeps
+          // its served conv_key and never re-fires). Regex kept as a single-thread fallback.
+          //
+          // Fan-out delegation (2026-07-17): ONE owner ask can hand off to N>1 threads in a
+          // single response's tool batch, so we collect EVERY reply-warranting thread of the
+          // turn (dropping the old LIMIT 1) and park the owner's question on the WHOLE set.
+          // buildOwnerParkKey encodes one thread as today's single park:<thread>
+          // (deterministic engine relay preserved) and two+ as a multi park:~<full>#<remaining>
+          // that a2a-transport close-the-loop holds until the LAST piece lands, then steers the
+          // model to compile the combined reply, never relaying a partial. Ordering is ASC
+          // (oldest first) so the encoded set reads in hand-off order.
           try {
-            // C9: constrain to reply-warranting intents and pick the OLDEST such send
-            // this turn. The weak model routinely batches a real QUESTION→worker AND a
-            // STATUS/FYI→PM in one response; without the intent filter a trailing
-            // STATUS/FYI/broadcast wins `ORDER BY rowid DESC` and the owner's question
-            // gets parked on the WRONG thread → the real ANSWER finds no park (owner's
-            // question dropped) or an unrelated payload is relayed as "Heard back from X".
-            // The first (oldest) reply-warranting send of the turn is the delegation of
-            // the owner's ask being handed off, park on that (ASC).
-            // D-A: this agent's own outbound wake-ask is persisted as the RECIPIENT's
-            // inbound row, and for peer A2A that row now lives in inter_agent_messages,
-            // not `messages`. Read the MERGED source so the structural park-thread
-            // derivation still finds the send it just made (a messages-only read would
-            // miss it and silently fall back to the fragile prose regex). The messages
-            // arm dedups against store ids; the cross-table tiebreak (created_at, then
-            // messages-first on a tie, then rowid) keeps the OLDEST reply-warranting
-            // send of the turn (ASC), matching the legacy single-table rowid ASC.
-            const sent = db.prepare(
+            // C9: constrain to reply-warranting intents. The weak model routinely batches a
+            // real QUESTION/ASSIGN/BLOCK to a worker AND a STATUS/FYI to the PM in one
+            // response; the intent filter keeps only the delegations that actually await a reply.
+            // D-A: this agent's own outbound wake-ask is persisted as the RECIPIENT's inbound
+            // row, and for peer A2A that row now lives in inter_agent_messages, not `messages`.
+            // Read the MERGED source so the structural derivation still finds the sends it just
+            // made (a messages-only read would miss them and silently fall back to the fragile
+            // prose regex). The messages arm dedups against store ids; the cross-table tiebreak
+            // (created_at, then messages-first on a tie, then rowid) preserves hand-off order.
+            const sentRows = db.prepare(
               `SELECT a2a_thread_id, created_at, rowid AS _rowid, 0 AS _tag FROM messages
                  WHERE source_agent_id = @agentId AND a2a_thread_id IS NOT NULL
                    AND a2a_intent IN ('QUESTION','ASSIGN','BLOCK') AND created_at >= @turnStartedAt
@@ -7448,32 +7386,41 @@ export async function runV2Turn(agentId: string): Promise<void> {
                SELECT a2a_thread_id, created_at, rowid AS _rowid, 1 AS _tag FROM inter_agent_messages
                  WHERE source_agent_id = @agentId AND a2a_thread_id IS NOT NULL
                    AND a2a_intent IN ('QUESTION','ASSIGN','BLOCK') AND created_at >= @turnStartedAt
-               ORDER BY created_at ASC, _tag ASC, _rowid ASC LIMIT 1`,
-            ).get({ agentId, turnStartedAt }) as { a2a_thread_id: string } | undefined;
-            // BUG-4 (comms-audit): park under the FULL thread id (not an 8-char prefix).
-            // Two parked questions from one agent that share an 8-hex prefix would
-            // otherwise collide, the relay's `ORDER BY rowid DESC LIMIT 1` would return
-            // the newest, relay answer B against question A, mark A relayed, and silently
-            // drop A's real answer (wrong-answer + drop). Full id makes the structural
-            // path collision-free; the relay reads the full key first, then the 8-char key
-            // for the rare regex-fallback below (whose source prose only carries 8 chars).
-            if (sent?.a2a_thread_id) parkThread = sent.a2a_thread_id;
+               ORDER BY created_at ASC, _tag ASC, _rowid ASC`,
+            ).all({ agentId, turnStartedAt }) as Array<{ a2a_thread_id: string }>;
+            // BUG-4 (comms-audit): park under FULL thread ids (never an 8-char prefix). Two
+            // threads sharing an 8-hex prefix would otherwise collide in the relay. Full ids
+            // make both the single and the multi encoding collision-free (the relay reads the
+            // full key; the 8-char key is only the rare regex-fallback below, single-thread).
+            for (const r of sentRows) {
+              if (r.a2a_thread_id && !parkThreads.includes(r.a2a_thread_id)) parkThreads.push(r.a2a_thread_id);
+            }
+            if (parkThreads.length > 0) {
+              // Canonical encoder lives in a2a-transport (the reader), imported here so the
+              // park key format has a single source of truth. Dynamic import keeps this within
+              // the park block (module is already loaded; the call returns the cached export).
+              const { buildOwnerParkKey } = await import('../a2a-transport.js');
+              parkKey = buildOwnerParkKey(parkThreads);
+            }
           } catch { /* best effort, fall back to the prose regex */ }
-          if (!parkThread) {
+          if (!parkKey) {
+            // Regex fallback: single thread only (the tool-result prose carries one 8-char
+            // thread token). Fan-out never reaches here (the structural read above finds the
+            // sends); this only covers the rare prose-only case.
             for (let i = state.toolResults.length - 1; i >= 0; i--) {
               const tr = state.toolResults[i];
               if (tr.name === 'send_to_agent' && typeof tr.content === 'string') {
                 const m = tr.content.match(/on thread ([a-z0-9]{6,})/i);
-                if (m) { parkThread = m[1].slice(0, 8); break; }
+                if (m) { parkKey = `park:${m[1].slice(0, 8)}`; break; }
               }
             }
           }
-          if (parkThread) {
+          if (parkKey) {
             try {
               db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ?`)
-                .run(`park:${parkThread}`, agentId, triggerRow.rowid);
+                .run(parkKey, agentId, triggerRow.rowid);
               logger.info('v2: parked owner question awaiting agent reply', {
-                agentId, thread: parkThread, ownerRowid: triggerRow.rowid,
+                agentId, park: parkKey, threads: parkThreads.length, ownerRowid: triggerRow.rowid,
               }, agentId);
             } catch { /* best effort */ }
           }

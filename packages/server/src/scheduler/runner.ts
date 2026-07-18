@@ -1,6 +1,14 @@
 // ════════════════════════════════════════
 // Task Scheduler Runner (Phase 6)
 // Checks for due tasks and triggers execution
+//
+// DEAD-CHANNEL DOCTRINE (RC-19 / demolition Phase 0): model-directed text from this
+// subsystem rides NOTICE (postAgentNotice, role='user' origin_kind='engine', VISIBLE
+// to the model), never role='system' (STRIPPED by the model-context builder). Bare
+// role='system' rows here may carry only dashboard/owner-only informational notes,
+// never an imperative the model is expected to ACT on. The RC-19 conformance test
+// (agent/v2/__tests__/engine-steer.test.ts) source-scans this file for bare
+// role='system' INSERTs carrying imperative model-directed text.
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
@@ -80,22 +88,25 @@ function alertMissedRuns(taskRow: Record<string, unknown>, missedSlots: number):
   // first. The UPDATE is guarded on is_paused = 0 so overlapping ticks or
   // processes pause and notify exactly once.
   //
-  // FA-S3: stamp pause_validated = 1. This is an ENGINE-owned pause, not an
-  // agent's claim that it paused something, so there is nothing for the PM
-  // moral-hazard validation to check. Without this the pause lands
-  // pause_validated=0 and the 5-minute validation sweep
-  // (sweepUnvalidatedTasksForUserEscalation) matches it and asks the owner to
-  // validate a pause the engine made, mis-attributed to the assigned agent,
-  // during the 5..10 minute window before D12's auto-resolve clears it. Same
-  // convention the other engine-driven pauses already use (agent/spawner.ts,
-  // agent/v2/loop.ts): engine pause => pause_validated=1. Genuine
-  // agent-authored pauses still go through updateTask (status='paused'), which
-  // resets pause_validated=0, so migration-048's guard is preserved for them.
+  // Demolition Phase 1 (two-key restoration): this pause lands UNVALIDATED
+  // (pause_validated stays 0). It used to stamp pause_validated=1, an
+  // engine pre-blessing that made the pause authoritative so the PM's two-key
+  // validation could never re-flag it. Per the restoration, no engine path
+  // pre-blesses: the pause lands unvalidated so the PM sweep SEES it and can
+  // adjudicate it (validate or reject). The engine still OWNS the resolution of
+  // this specific pause via D12: autoResolveStaleMissedRunPauses keys ONLY on
+  // is_paused + missed_runs_paused_at (never pause_validated) and skips to the
+  // next future anchor within MISSED_RUNS_AUTO_RESOLVE_MINUTES, so it is a
+  // transient pause, not a forever-unvalidated dangler. The OWNER-facing
+  // validation sweep (sweepUnvalidatedTasksForUserEscalation) still skips it via
+  // its missed_runs_paused_at guard (now load-bearing, see there), so the owner
+  // is never asked to validate an engine missed-runs pause; the PM is the one
+  // that sees and adjudicates it. The PM sweep's stableId dedup keeps this from
+  // pathological re-poking.
   const paused = db.prepare(`
     UPDATE tasks
     SET is_paused = 1, schedule_status = 'paused', status = 'paused',
         missed_runs_paused_at = datetime('now'),
-        pause_validated = 1,
         updated_at = datetime('now')
     WHERE id = ? AND is_paused = 0
   `).run(taskId);
@@ -305,13 +316,17 @@ async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
         AND awaiting_user_verdict = 0
         AND (
           (status = 'complete' AND complete_validated = 0)
-          -- FA-S3: an active missed_runs_paused_at means the ENGINE paused this
-          -- task for missed runs (alertMissedRuns), not the agent. It already
-          -- lands pause_validated=1, so this clause is belt-and-suspenders:
-          -- never escalate an engine missed-runs pause for validation, even if
-          -- some future path forgets the flag. D12's auto-resolve owns that
-          -- pause and clears the stamp within 10 minutes. Genuine agent pauses
-          -- carry no missed_runs_paused_at, so they still escalate here.
+          -- An active missed_runs_paused_at means the ENGINE paused this task for
+          -- missed runs (alertMissedRuns), not the agent. Demolition Phase 1
+          -- stopped alertMissedRuns pre-blessing it (it now lands
+          -- pause_validated=0), so this missed_runs_paused_at guard is now
+          -- LOAD-BEARING (no longer belt-and-suspenders): without it, this
+          -- OWNER-facing sweep would ask the owner to validate an engine
+          -- missed-runs pause, which is not the owner's call. The PM sweep is the
+          -- one that adjudicates that unvalidated pause; the ENGINE still owns its
+          -- resolution via D12 (autoResolveStaleMissedRunPauses, keyed on
+          -- missed_runs_paused_at) within 10 minutes. Genuine agent pauses carry
+          -- no missed_runs_paused_at, so they still escalate to the owner here.
           OR (status = 'paused' AND pause_validated = 0 AND missed_runs_paused_at IS NULL)
           OR (status = 'blocked' AND blocked_validated = 0)
         )
@@ -342,29 +357,23 @@ async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
         `**Primary agent**: when ${getOwnerName()} replies, call tracker_apply_user_validation(task_id="${t.id}", validated=<true if yes / false if no>, user_quote="<the user's exact reply>", feedback="<optional details if validated=false>"). ` +
         `validated=true clears the bug icon; validated=false reverts to in_progress and notifies the assigned agent with the user's feedback.`;
 
-      // Post as a user-facing system message in the primary agent's chat
-      // so the user sees the question alongside their normal chat history.
-      const msgId = uuidv4();
-      db.prepare(`
-        INSERT INTO messages (id, agent_id, role, content, created_at)
-        VALUES (?, ?, 'system', ?, datetime('now'))
-      `).run(msgId, primaryId, askText);
-      broadcast({
-        type: 'chat:message',
-        agentId: primaryId,
-        message: {
-          id: msgId, agentId: primaryId, role: 'system' as const,
-          content: askText,
-          tokenCount: null, modelId: null, cost: null, latencyMs: null,
-          createdAt: new Date().toISOString(),
-        },
+      // Dead-channel demolition (Phase 0.2): deliver the validation question AND the
+      // primary's tracker_apply_user_validation instruction as a model-VISIBLE
+      // awareness NOTICE (role='user' origin_kind='engine'), the same idiom
+      // alertMissedRuns uses above, NOT a bare role='system' row. role='system' rows
+      // are stripped by the model-context builder, so the primary's model never saw
+      // the "when the owner replies, call tracker_apply_user_validation(...)"
+      // instruction and the validation-relay flow was silently dead. As a NOTICE the
+      // primary sees it, relays the question to the owner in its own voice (dashboard
+      // chat, or imessage_send when the owner is away), and calls the tool when the
+      // owner answers. The note text is unchanged.
+      postAgentNotice({
+        toAgentId: primaryId,
+        fromName: 'Scheduler',
+        selfIntro: false,
+        intent: 'validation_check',
+        brief: askText,
       });
-
-      // For iMessage delivery when the owner is away from the dojo: the system
-      // message above is also broadcast to the primary agent, who has the
-      // imessage_send tool. When the primary is woken by the message they
-      // can forward via iMessage naturally. We do not call iMessage
-      // directly from the engine because it requires the agent tool path.
 
       stamp.run(threadId, t.id);
       writeTaskLog({
@@ -385,6 +394,19 @@ async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
         broadcast({ type: 'tracker:task_updated', data: fresh });
       }
     }
+    // Wake the primary once so it sees the validation NOTICE(s) and relays the
+    // question(s) to the owner this turn instead of waiting for an unrelated
+    // trigger. Best-effort: the notices are already persisted in the awareness
+    // lane and will surface on the next assembled context regardless. Copies the
+    // alertMissedRuns wake idiom above.
+    try {
+      const runtime = getAgentRuntime();
+      runtime.handleMessage(primaryId, '[scheduler: validation check pending]').catch((err) => {
+        logger.warn('sweepUnvalidatedTasksForUserEscalation: primary wake failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    } catch { /* runtime not ready, notices are in the store, read next time */ }
     logger.info('Validation escalation: asked user about unvalidated tasks', { count: stale.length });
   } catch (err) {
     logger.warn('sweepUnvalidatedTasksForUserEscalation failed (non-fatal)', {
@@ -844,15 +866,14 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   // (migration 012: failed -> fallen; the dashboard counts 'fallen' as failed and
   // the PM treats it as terminal, so there is no re-fire and no PM churn), with
   // schedule_status='completed' still recording that the schedule itself has no
-  // more runs. The owner is told two ways (FA-S2): a plain-language role='system'
-  // message posted straight into the primary agent's chat + broadcast (the lane
-  // the owner actually watches, mirroring the validation escalation at
-  // sweepUnvalidatedTasksForUserEscalation), plus an assigned-agent awareness
-  // notice via the agent-notice path so the assigned agent can relay/follow up.
-  // The chat message is role='system': the model-message builder drops those and
-  // neither the pending-engine-event nor the waiting-human selector picks them up
-  // (both require role='user'), so it renders for the owner without waking any
-  // agent turn. Recurring tasks and successful one-shots are byte-for-byte unchanged.
+  // more runs. The owner is told two ways: a plain-language owner-facing NOTICE
+  // (postAgentNotice, role='user' origin_kind='engine') to the primary so its model
+  // sees the failure and surfaces it to the owner in its own voice, PLUS an
+  // assigned-agent awareness notice via the same path so the assigned agent can
+  // relay/follow up. Phase 0.1 dead-channel demolition: this used to be a bare
+  // role='system' chat row (dropped by the model-message builder, so the primary's
+  // model never saw it and could never relay it, e.g. via iMessage when the owner is
+  // away). Recurring tasks and successful one-shots are byte-for-byte unchanged.
   const failedFinalRun = !nextRun && status === 'failed';
 
   // Phase B.0/B.1: audit the per-run completion with whatever
@@ -894,36 +915,38 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
       const title = String(task.title ?? 'untitled task');
       const noun = (task.kind as string | null) === 'reminder' ? 'reminder' : 'task';
 
-      // FA-S2: put the failure where the owner will actually see it. A role='system'
-      // message straight into the PRIMARY agent's chat + a chat:message broadcast,
-      // the exact idiom sweepUnvalidatedTasksForUserEscalation uses, so it renders
-      // in the owner's chat history without waking any agent turn (role='system'
-      // rows are dropped by the model-message builder and matched by neither the
-      // pending-engine-event nor the waiting-human selector). Plain language for a
-      // non-technical owner, naming the task and its scheduled time.
+      // Dead-channel demolition (Phase 0.1): deliver the owner-facing failure note as
+      // a model-VISIBLE awareness NOTICE (role='user' origin_kind='engine'), the same
+      // idiom alertMissedRuns uses, NOT a bare role='system' row. role='system' rows
+      // are stripped by the model-context builder, so a note posted that way never
+      // reached the primary's model and could never be relayed to the owner (e.g. via
+      // imessage_send when the owner is away). As a NOTICE the primary sees it and
+      // surfaces the failure to the owner in its own voice. Plain language for a
+      // non-technical owner, naming the task and its scheduled time. Note text unchanged.
       const when = (task.scheduled_start as string | null) ?? (task.anchor_time as string | null);
-      // The "Heads up:" prefix is load-bearing: it makes this note render in the
-      // owner's DEFAULT (non-wordy) chat, not just wordy mode (dashboard
-      // OWNER_ALERT_SYSTEM_PREFIXES). Keep the prefix if you reword the message.
       const ownerMsg =
         `Heads up: a scheduled ${noun}, "${title}"${when ? ` (set for ${when})` : ''}, failed on its final attempt and was not delivered. ` +
         `Nothing more is scheduled for it, so it will not try again. Let me know if you want me to set it up again.`;
       const primaryId = getPrimaryAgentId();
-      const ownerMsgId = uuidv4();
-      db.prepare(`
-        INSERT INTO messages (id, agent_id, role, content, created_at)
-        VALUES (?, ?, 'system', ?, datetime('now'))
-      `).run(ownerMsgId, primaryId, ownerMsg);
-      broadcast({
-        type: 'chat:message',
-        agentId: primaryId,
-        message: {
-          id: ownerMsgId, agentId: primaryId, role: 'system' as const,
-          content: ownerMsg,
-          tokenCount: null, modelId: null, cost: null, latencyMs: null,
-          createdAt: new Date().toISOString(),
-        },
+      postAgentNotice({
+        toAgentId: primaryId,
+        fromName: 'Scheduler',
+        selfIntro: false,
+        intent: 'schedule_run_failed_owner',
+        brief: ownerMsg,
       });
+      // Wake the primary so it sees the failure NOTICE and relays it to the owner this
+      // turn instead of waiting for an unrelated trigger. Best-effort: the notice is
+      // already persisted in the awareness lane and surfaces on the next assembled
+      // context regardless. Copies the alertMissedRuns wake idiom above.
+      try {
+        const runtime = getAgentRuntime();
+        runtime.handleMessage(primaryId, '[scheduler: failed-run owner note pending]').catch((err) => {
+          logger.warn('scheduler: failed-final-run owner note wake failed', {
+            taskId, error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      } catch { /* runtime not ready, notice is in the store, read next time */ }
 
       // Keep the assigned-agent awareness notice so the assigned agent (which may
       // own the follow-up) still learns the delivery failed and can relay.
@@ -977,13 +1000,17 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
 // When a reminder occurrence is dropped (its schedule is terminated on a
 // 'fallen' transition, or an orphaned run is swept), the owner asked to be
 // reminded of something and it is NOT going to happen. Tell them, in plain
-// language, using the exact idiom the failed-final-run branch uses above
-// (role='system' straight into the primary agent's chat + a chat:message
-// broadcast, so it renders in the owner's chat history without waking any
-// agent turn, since role='system' rows are dropped by the model-message builder
-// and matched by neither the pending-engine-event nor the waiting-human
+// language: a role='system' message straight into the primary agent's chat + a
+// chat:message broadcast, so it renders in the owner's chat history without
+// waking any agent turn (role='system' rows are dropped by the model-message
+// builder and matched by neither the pending-engine-event nor the waiting-human
 // selector). The "Heads up:" prefix is load-bearing: it makes the note render
 // in the owner's DEFAULT (non-wordy) chat, not just wordy mode.
+// NOTE: unlike the failed-final-run owner note above (converted to a model-visible
+// NOTICE in Phase 0.1), this owner heads-up still rides role='system' (owner-facing
+// only, the primary's model does not relay it). This site is outside the Phase 0
+// scope; if the demolition is extended here, convert it to postAgentNotice the
+// same way.
 export function postSkippedReminderHeadsUp(taskId: string, reason: string): void {
   try {
     const db = getDb();

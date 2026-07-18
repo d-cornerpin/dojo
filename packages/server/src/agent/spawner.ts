@@ -4,7 +4,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
 import { getAgentPermissions, checkPermission } from './permissions.js';
-import { isPrimaryAgent } from '../config/platform.js';
+import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
 import { sendAgentMessage } from './agent-bus.js';
 import { postAgentNotice } from './agent-notice.js';
 import { memoryGrep } from '../memory/retrieval.js';
@@ -34,11 +34,15 @@ function broadcastMessage(agentId: string, msg: { id: string; role: string; cont
 
 // ── Config (reads from DB config table, falls back to defaults) ──
 
+// P3 (spawn contract): there is NO default timeout. A timeout is a decision the
+// CREATOR owns, so it MUST be set explicitly at spawn (the spawn_agent tool
+// requires timeout_minutes for non-ronin spawns; ronin has none). The old 900s
+// `defaultTimeout` / `spawn_default_timeout` config is gone: silently defaulting
+// a lifetime is exactly the ownership the owner moved to the creator.
 const SPAWN_DEFAULTS = {
   maxChildrenPerAgent: 3,
   maxConcurrent: 5,
   maxSpawnDepth: 2,
-  defaultTimeout: 900, // 15 minutes
 };
 
 function getSpawnConfig() {
@@ -56,7 +60,6 @@ function getSpawnConfig() {
       maxChildrenPerAgent: get('spawn_max_children', SPAWN_DEFAULTS.maxChildrenPerAgent),
       maxConcurrent: get('spawn_max_concurrent', SPAWN_DEFAULTS.maxConcurrent),
       maxSpawnDepth: get('spawn_max_depth', SPAWN_DEFAULTS.maxSpawnDepth),
-      defaultTimeout: get('spawn_default_timeout', SPAWN_DEFAULTS.defaultTimeout),
     };
   } catch {
     return SPAWN_DEFAULTS;
@@ -218,8 +221,10 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
 
   // Create agent record
   const agentId = uuidv4();
-  // Ronin agents don't get a timeout -- they persist until the user dismisses them
-  const timeoutSeconds = classification === 'ronin' ? null : (timeout ?? spawnConfig.defaultTimeout);
+  // Ronin agents don't get a timeout -- they persist until the user dismisses them.
+  // P3: there is no engine default; a non-ronin spawn only gets a timeout when the
+  // caller passes one explicitly (the spawn_agent tool enforces this at the surface).
+  const timeoutSeconds = classification === 'ronin' ? null : (timeout ?? null);
   const timeoutAt = timeoutSeconds ? new Date(Date.now() + timeoutSeconds * 1000).toISOString().replace('T', ' ').replace('Z', '') : null;
 
   const permissionsJson = JSON.stringify(permissions ?? getAgentPermissions(parentId));
@@ -309,7 +314,10 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     data: agentData,
   });
 
-  // Set timeout timer -- ronin agents never timeout, persist agents get cleared, apprentices get terminated
+  // Set timeout timer -- ronin agents never timeout, persist agents get cleared,
+  // apprentices reach a CREATOR DECISION (P3): the timer no longer terminates,
+  // it fires fireSpawnTimeoutDecision (notify the creator, keep the sub-agent
+  // running until an authorized hand extends or ends it).
   if (timeoutSeconds && classification !== 'ronin') {
     if (persist) {
       const timer = setTimeout(() => {
@@ -320,8 +328,7 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
       timeoutTimers.set(agentId, timer);
     } else {
       const timer = setTimeout(() => {
-        logger.warn('Agent timed out', { agentId, name, timeout: timeoutSeconds }, agentId);
-        terminateAgent(agentId, 'Timeout reached');
+        fireSpawnTimeoutDecision(agentId);
       }, timeoutSeconds * 1000);
       timeoutTimers.set(agentId, timer);
     }
@@ -445,15 +452,19 @@ export function terminateAgent(agentId: string, reason?: string): void {
     `).all(agentId) as Array<{ id: string; title: string }>;
     if (danglers.length > 0) {
       const note = `[${new Date().toISOString()}] Auto-paused: assigned agent "${agent.name}" was terminated (reason: ${reason ?? 'manual'}). Reassign or close from the dashboard.`;
-      // v2.9.22, pause_validated=1 because the engine, not the agent,
-      // initiated the pause (agent termination). PM doesn't need to
-      // re-validate; the user resolves these from the dashboard.
-      // Same loop-prevention as the v2 close-out paths.
+      // Demolition Phase 1.4 (B-1 follow-up): the pause lands UNVALIDATED
+      // (pause_validated stays 0). This engine-initiated pause used to
+      // pre-bless itself (pause_validated=1) so the PM sweep could never
+      // re-flag it, the same forgery pattern the two-key restoration removes
+      // from the loop and scheduler. The assignee was terminated so it can
+      // never turn its own key, but the pause is still an engine verdict the PM
+      // sweep should SEE (surfaced as UNVALIDATED_PAUSE) and adjudicate
+      // (reassign / close / leave), not one the engine forges. The user can
+      // also resolve these from the dashboard.
       for (const dt of danglers) {
         db.prepare(`
           UPDATE tasks
           SET status = 'paused', is_paused = 1, status_before_pause = 'in_progress',
-              pause_validated = 1,
               notes = COALESCE(notes, '') || ? || char(10),
               updated_at = datetime('now')
           WHERE id = ?
@@ -960,8 +971,10 @@ export function extendAgentTimeout(agentId: string, newTimeoutAtIso: string): vo
   if (!Number.isNaN(currentMs) && currentMs >= newAtMs) return;
 
   // Same shape spawnAgent writes (space-separated, no Z) so the DB sweep compares cleanly.
+  // Extending also clears any pending timeout decision: this worker's life was just
+  // stretched, so it is no longer waiting on a creator verdict.
   const dbTimeoutAt = newTimeoutAtIso.replace('T', ' ').replace('Z', '');
-  db.prepare(`UPDATE agents SET timeout_at = ?, updated_at = datetime('now') WHERE id = ?`).run(dbTimeoutAt, agentId);
+  db.prepare(`UPDATE agents SET timeout_at = ?, timeout_decision_pending = 0, updated_at = datetime('now') WHERE id = ?`).run(dbTimeoutAt, agentId);
 
   // Re-arm the in-memory timer.
   const existing = timeoutTimers.get(agentId);
@@ -982,8 +995,8 @@ export function extendAgentTimeout(agentId: string, newTimeoutAtIso: string): vo
     timeoutTimers.set(agentId, timer);
   } else {
     const timer = setTimeout(() => {
-      logger.warn('Held agent extended timeout reached, terminating', { agentId, name: agent.name }, agentId);
-      terminateAgent(agentId, 'Timeout reached');
+      // P3: reaching the extended timeout is a creator DECISION, not a kill.
+      fireSpawnTimeoutDecision(agentId);
     }, delayMs);
     timeoutTimers.set(agentId, timer);
   }
@@ -993,16 +1006,303 @@ export function extendAgentTimeout(agentId: string, newTimeoutAtIso: string): vo
   }, agentId);
 }
 
+// ── Spawn timeout: creator-owned decision (P3) ──
+//
+// Owner contract: "the timeout MUST be set by the agent who creates the sub
+// agent. When the timeout is reached, the creating agent is notified and MUST
+// respond with an extension or allow the timeout to kill the sub agent." So
+// expiry is a DECISION POINT, never an execution. At timeout_at the engine
+// posts an awareness notice to the CREATOR (or the primary if the creator is
+// gone) and the sub-agent KEEPS RUNNING until spawn_timeout_decision resolves
+// it. timeout_decision_pending (migration 109) makes this reboot-safe:
+//   0 = nothing pending   1 = creator notified, awaiting   2 = escalated to
+// the primary once (undecided ladder), never notified again.
+
+// If no decision lands within this window after the creator notice, escalate
+// once to the primary so the owner hears about it in-voice. Never auto-kill.
+const SPAWN_TIMEOUT_UNDECIDED_GRACE_MS = 15 * 60 * 1000;
+
+/**
+ * The timeout fired: request the creator's decision. Idempotent (guards on
+ * timeout_decision_pending) so the in-memory timer, the 30s DB sweep, and the
+ * boot re-arm can all reach it and notify exactly once. The sub-agent stays
+ * running; the fired timer slot is re-used for the undecided ladder.
+ */
+export function fireSpawnTimeoutDecision(agentId: string): void {
+  const db = getDb();
+  const agent = db.prepare(`
+    SELECT id, name, status, classification, config, created_by, parent_agent, task_id,
+           timeout_at, max_runtime, created_at, timeout_decision_pending
+    FROM agents WHERE id = ?
+  `).get(agentId) as {
+    id: string; name: string; status: string; classification: string | null;
+    config: string; created_by: string | null; parent_agent: string | null;
+    task_id: string | null; timeout_at: string | null; max_runtime: number | null;
+    created_at: string; timeout_decision_pending: number | null;
+  } | undefined;
+
+  if (!agent || agent.status === 'terminated') { timeoutTimers.delete(agentId); return; }
+  // Ronin/sensei are never on this flow; persist agents are exempt (their timer
+  // clears timeout_at and they stay alive).
+  if (agent.classification === 'sensei' || agent.classification === 'ronin') return;
+  try { if (JSON.parse(agent.config || '{}').persist === true) return; } catch { /* not persist */ }
+  // Already awaiting/decided -- fire once.
+  if ((agent.timeout_decision_pending ?? 0) !== 0) return;
+
+  // Stamp pending BEFORE posting so a concurrent sweep/boot re-arm can't double-notify.
+  db.prepare(`UPDATE agents SET timeout_decision_pending = 1, updated_at = datetime('now') WHERE id = ?`).run(agentId);
+
+  // The creator owns the decision. Fall back to the primary if the creator is
+  // gone so the decision never lands nowhere.
+  const primaryId = getPrimaryAgentId();
+  const creatorId = agent.created_by ?? agent.parent_agent ?? primaryId;
+  const creatorRow = db.prepare(`SELECT id FROM agents WHERE id = ? AND status != 'terminated'`).get(creatorId) as { id: string } | undefined;
+  const recipientId = creatorRow ? creatorId : primaryId;
+
+  const chosenMinutes = agent.max_runtime ? Math.round(agent.max_runtime / 60) : null;
+  const createdMs = new Date(agent.created_at.replace(' ', 'T') + (agent.created_at.includes('Z') ? '' : 'Z')).getTime();
+  const elapsedMinutes = Number.isNaN(createdMs) ? null : Math.max(1, Math.round((Date.now() - createdMs) / 60000));
+
+  let taskLine = 'no tracker task linked';
+  if (agent.task_id) {
+    const t = db.prepare('SELECT title, status FROM tasks WHERE id = ?').get(agent.task_id) as { title: string; status: string } | undefined;
+    if (t) taskLine = `linked task "${t.title}" (status: ${t.status})`;
+  }
+
+  const chosenPhrase = chosenMinutes ? `${chosenMinutes}-minute ` : '';
+  const elapsedPhrase = elapsedMinutes ? ` after about ${elapsedMinutes} min` : '';
+  const brief = `Sub-agent "${agent.name}" (id ${agentId.slice(0, 8)}) reached its ${chosenPhrase}timeout${elapsedPhrase} and is still running; ${taskLine}. You created it, so the call is yours: spawn_timeout_decision(agent_id="${agentId}", action="extend", extend_minutes=<n>) to give it more time, or action="terminate" to let it stop. It keeps running until you decide.`;
+
+  postAgentNotice({
+    toAgentId: recipientId,
+    fromName: 'Spawn control',
+    selfIntro: false,
+    intent: 'spawn_timeout_decision',
+    brief,
+  });
+
+  // One-shot wake so the creator's model sees the notice this turn.
+  try {
+    getAgentRuntime().handleMessage(recipientId, '[spawn: timeout decision pending]').catch((err) => {
+      logger.warn('fireSpawnTimeoutDecision: creator wake failed', { agentId, recipientId, error: err instanceof Error ? err.message : String(err) }, agentId);
+    });
+  } catch { /* runtime not ready -- notice is stored, read next turn */ }
+
+  // The fired decision timer is spent; re-use its slot for the undecided ladder.
+  const existing = timeoutTimers.get(agentId);
+  if (existing) clearTimeout(existing);
+  timeoutTimers.set(agentId, setTimeout(() => { fireSpawnTimeoutUndecided(agentId); }, SPAWN_TIMEOUT_UNDECIDED_GRACE_MS));
+
+  logger.warn('Spawn timeout reached: creator decision requested (agent still running)', {
+    agentId, name: agent.name, recipientId, chosenMinutes, elapsedMinutes, taskId: agent.task_id,
+  }, agentId);
+}
+
+/**
+ * The creator still hasn't decided a grace window after being notified: escalate
+ * ONCE to the primary so the owner hears about it in-voice. Never auto-kills,
+ * never fires twice (guards on timeout_decision_pending === 1 -> 2).
+ */
+export function fireSpawnTimeoutUndecided(agentId: string): void {
+  const db = getDb();
+  const agent = db.prepare(`SELECT id, name, status, timeout_decision_pending FROM agents WHERE id = ?`).get(agentId) as {
+    id: string; name: string; status: string; timeout_decision_pending: number | null;
+  } | undefined;
+  timeoutTimers.delete(agentId);
+  if (!agent || agent.status === 'terminated') return;
+  if ((agent.timeout_decision_pending ?? 0) !== 1) return; // resolved or already escalated
+
+  db.prepare(`UPDATE agents SET timeout_decision_pending = 2, updated_at = datetime('now') WHERE id = ?`).run(agentId);
+
+  const primaryId = getPrimaryAgentId();
+  postAgentNotice({
+    toAgentId: primaryId,
+    fromName: 'Spawn control',
+    selfIntro: false,
+    intent: 'spawn_timeout_undecided',
+    brief: `Sub-agent "${agent.name}" (id ${agentId.slice(0, 8)}) passed its timeout about 15 minutes ago and its creator still hasn't decided whether to extend or stop it. It's still running. Resolve it with spawn_timeout_decision, or the owner can dismiss it from the dashboard.`,
+  });
+  try {
+    getAgentRuntime().handleMessage(primaryId, '[spawn: timeout still undecided]').catch(() => { /* stored, read next turn */ });
+  } catch { /* runtime not ready */ }
+
+  logger.warn('Spawn timeout still undecided after grace: escalated to primary (agent still running)', {
+    agentId, name: agent.name,
+  }, agentId);
+}
+
+export interface SpawnTimeoutDecisionResult { ok: boolean; message: string }
+
+/**
+ * Apply the creator's decision. Creator-only (the user path is the dashboard).
+ * extend: new timeout_at + re-armed decision timer + decision recorded.
+ * terminate: flows through terminateAgent (its danglers land unvalidated for PM).
+ */
+export async function applySpawnTimeoutDecision(opts: {
+  callerAgentId: string;
+  agentId: string;
+  action: 'extend' | 'terminate';
+  extendMinutes?: number;
+}): Promise<SpawnTimeoutDecisionResult> {
+  const { callerAgentId, agentId, action, extendMinutes } = opts;
+  const db = getDb();
+  const agent = db.prepare(`
+    SELECT id, name, status, classification, created_by, parent_agent, task_id
+    FROM agents WHERE id = ?
+  `).get(agentId) as {
+    id: string; name: string; status: string; classification: string | null;
+    created_by: string | null; parent_agent: string | null; task_id: string | null;
+  } | undefined;
+
+  if (!agent) return { ok: false, message: `No agent found for id ${agentId}.` };
+
+  // Creator-only. The user path is the dashboard, not this tool.
+  const creatorId = agent.created_by ?? agent.parent_agent;
+  if (creatorId !== callerAgentId) {
+    return { ok: false, message: `Only the agent that created "${agent.name}" can decide its timeout, and you did not create it. If you are the owner, extend or dismiss it from the dashboard instead.` };
+  }
+
+  if (agent.status === 'terminated') {
+    db.prepare(`UPDATE agents SET timeout_decision_pending = 0, updated_at = datetime('now') WHERE id = ?`).run(agentId);
+    const t = timeoutTimers.get(agentId); if (t) { clearTimeout(t); timeoutTimers.delete(agentId); }
+    return { ok: true, message: `Sub-agent "${agent.name}" is already stopped. Nothing to decide.` };
+  }
+
+  if (action === 'terminate') {
+    db.prepare(`UPDATE agents SET timeout_decision_pending = 0, updated_at = datetime('now') WHERE id = ?`).run(agentId);
+    terminateAgent(agentId, `Timeout decision: creator chose terminate`);
+    await recordTimeoutDecision(agent.task_id, callerAgentId, agentId, agent.name, 'terminate', null);
+    return { ok: true, message: `Sub-agent "${agent.name}" (${agentId.slice(0, 8)}) stopped, as you decided. Any in-progress tasks it held were auto-paused for reassignment.` };
+  }
+
+  // extend
+  const minutes = typeof extendMinutes === 'number' && Number.isFinite(extendMinutes) ? Math.round(extendMinutes) : 0;
+  if (minutes <= 0) {
+    return { ok: false, message: `To extend "${agent.name}", pass extend_minutes as a positive number of minutes (e.g. extend_minutes=15). To stop it instead, call action="terminate".` };
+  }
+  const newTimeoutAtIso = new Date(Date.now() + minutes * 60_000).toISOString();
+  const dbTimeoutAt = newTimeoutAtIso.replace('T', ' ').replace('Z', '');
+  db.prepare(`UPDATE agents SET timeout_at = ?, max_runtime = ?, timeout_decision_pending = 0, updated_at = datetime('now') WHERE id = ?`)
+    .run(dbTimeoutAt, minutes * 60, agentId);
+
+  // Re-arm the decision timer for the new window (persist agents never reach here).
+  const existing = timeoutTimers.get(agentId);
+  if (existing) { clearTimeout(existing); timeoutTimers.delete(agentId); }
+  timeoutTimers.set(agentId, setTimeout(() => { fireSpawnTimeoutDecision(agentId); }, minutes * 60_000));
+
+  await recordTimeoutDecision(agent.task_id, callerAgentId, agentId, agent.name, 'extend', minutes);
+  logger.info('Spawn timeout extended by creator', { agentId, name: agent.name, callerAgentId, minutes }, callerAgentId);
+  return { ok: true, message: `Extended "${agent.name}" (${agentId.slice(0, 8)}) by ${minutes} more minute${minutes === 1 ? '' : 's'}. You'll be asked again if it runs out.` };
+}
+
+// Record a timeout decision on the linked task's log (if any), else to the logger.
+async function recordTimeoutDecision(
+  taskId: string | null,
+  callerAgentId: string,
+  subAgentId: string,
+  subAgentName: string,
+  action: 'extend' | 'terminate',
+  minutes: number | null,
+): Promise<void> {
+  if (taskId) {
+    try {
+      const { writeTaskLog } = await import('../tracker/task-log.js');
+      writeTaskLog({
+        taskId,
+        fromEntity: `agent:${callerAgentId}`,
+        entryKind: 'observation',
+        actionTaken: `spawn timeout ${action}`,
+        reason: action === 'extend'
+          ? `creator extended sub-agent "${subAgentName}" (${subAgentId.slice(0, 8)}) by ${minutes} min at its timeout`
+          : `creator let sub-agent "${subAgentName}" (${subAgentId.slice(0, 8)}) stop at its timeout`,
+      });
+      return;
+    } catch (err) {
+      logger.warn('recordTimeoutDecision: task_log write failed, falling back to logger', {
+        taskId, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  logger.info('Spawn timeout decision recorded', { subAgentId, subAgentName, action, minutes, callerAgentId });
+}
+
+/**
+ * Boot re-arm (P3 item 5). In-memory timers vanish on restart. Rebuild them from
+ * the DB for live non-ronin spawned agents: overdue-and-undecided fires the
+ * decision now; a future timeout re-arms the decision timer; an agent already
+ * awaiting a decision (pending===1) re-arms only the undecided ladder; a fully
+ * escalated one (pending===2) is left running. Idempotent with the 30s sweep.
+ */
+export function reArmSpawnTimeouts(): void {
+  const db = getDb();
+  type ReArmRow = {
+    id: string; name: string; classification: string | null; config: string;
+    timeout_at: string | null; timeout_decision_pending: number | null;
+  };
+  let rows: ReArmRow[];
+  try {
+    rows = db.prepare(`
+      SELECT id, name, classification, config, timeout_at, timeout_decision_pending
+      FROM agents
+      WHERE status NOT IN ('terminated')
+        AND timeout_at IS NOT NULL
+        AND classification NOT IN ('ronin', 'sensei')
+    `).all() as ReArmRow[];
+  } catch (err) {
+    logger.warn('reArmSpawnTimeouts: query failed (skipping boot re-arm)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+
+  let reArmed = 0, firedNow = 0, laddered = 0;
+  for (const a of rows) {
+    if (timeoutTimers.has(a.id)) continue; // already armed this boot
+    try { if (JSON.parse(a.config || '{}').persist === true) continue; } catch { /* not persist */ }
+
+    const pending = a.timeout_decision_pending ?? 0;
+    if (pending >= 2) continue; // fully escalated; still running, nothing to do
+
+    if (pending === 1) {
+      timeoutTimers.set(a.id, setTimeout(() => { fireSpawnTimeoutUndecided(a.id); }, SPAWN_TIMEOUT_UNDECIDED_GRACE_MS));
+      laddered++;
+      continue;
+    }
+
+    // pending === 0
+    if (!a.timeout_at) continue;
+    const atMs = new Date(a.timeout_at.replace(' ', 'T') + (a.timeout_at.includes('Z') ? '' : 'Z')).getTime();
+    if (Number.isNaN(atMs)) continue;
+    const delay = atMs - Date.now();
+    if (delay <= 0) {
+      fireSpawnTimeoutDecision(a.id);
+      firedNow++;
+    } else {
+      timeoutTimers.set(a.id, setTimeout(() => { fireSpawnTimeoutDecision(a.id); }, delay));
+      reArmed++;
+    }
+  }
+
+  if (reArmed || firedNow || laddered) {
+    logger.info('reArmSpawnTimeouts: restored spawn timeout timers on boot', { reArmed, firedNow, laddered, scanned: rows.length });
+  }
+}
+
 // ── Timeout Checker ──
 
 export function checkTimeouts(): void {
   const db = getDb();
 
+  // Only rows with no decision pending yet (timeout_decision_pending = 0). Once
+  // an apprentice's decision notice has fired (>=1) the in-memory ladder (or the
+  // boot re-arm) owns it; excluding it here keeps the 30s sweep from re-selecting
+  // it every tick and prevents any double-notify.
   const expiredAgents = db.prepare(`
     SELECT id, name, timeout_at, config, classification FROM agents
     WHERE status NOT IN ('terminated')
       AND timeout_at IS NOT NULL
       AND timeout_at <= datetime('now')
+      AND COALESCE(timeout_decision_pending, 0) = 0
   `).all() as Array<{ id: string; name: string; timeout_at: string; config: string; classification: string }>;
 
   for (const agent of expiredAgents) {
@@ -1029,11 +1329,11 @@ export function checkTimeouts(): void {
       }
     } catch { /* ignore parse errors */ }
 
-    logger.warn('Agent timeout, terminating', {
-      agentId: agent.id,
-      name: agent.name,
-      timeoutAt: agent.timeout_at,
-    }, agent.id);
-    terminateAgent(agent.id, 'Timeout reached');
+    // P3: a non-ronin, non-persist apprentice reaching its timeout is a CREATOR
+    // DECISION, not a kill. This is the restart-safe backstop for the in-memory
+    // timer (lost on reboot): fire the decision notice; the sub-agent keeps
+    // running. Idempotent (guards on timeout_decision_pending), so a concurrent
+    // boot re-arm firing the same agent notifies exactly once.
+    fireSpawnTimeoutDecision(agent.id);
   }
 }

@@ -10,7 +10,7 @@ import { runMigrations } from './db/migrations.js';
 import { loadSecrets } from './config/loader.js';
 import { createServer } from './gateway/server.js';
 import { broadcast } from './gateway/ws.js';
-import { checkTimeouts } from './agent/spawner.js';
+import { checkTimeouts, reArmSpawnTimeouts } from './agent/spawner.js';
 import { killTunnelSync } from './services/tunnel.js';
 import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, isPMEnabled, setPlatformConfig, HOUSEHOLD_AGENT_IDS_KEY } from './config/platform.js';
 import { recordBootAttempt, markMigrationsRan, confirmHealthy, readMarker, synthesizeMigrationBootEpisode } from './update-state.js';
@@ -1152,6 +1152,14 @@ async function main(): Promise<void> {
     });
   } catch (err) {
     logger.warn('Destructive-approval boot sweep import failed', { error: err instanceof Error ? err.message : String(err) });
+  }
+
+  // P3 boot re-arm: spawn timeout timers are in-memory and vanish on restart.
+  // Rebuild them from agents.timeout_at so a pending creator decision survives a
+  // reboot (overdue-at-boot fires the decision notice immediately). Idempotent
+  // with the 30s checkTimeouts sweep below.
+  try { reArmSpawnTimeouts(); } catch (err) {
+    logger.warn('Spawn timeout boot re-arm failed', { error: err instanceof Error ? err.message : String(err) });
   }
 
   const timeoutInterval = setInterval(() => {

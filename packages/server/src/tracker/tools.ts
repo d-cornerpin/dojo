@@ -1,3 +1,12 @@
+// ════════════════════════════════════════════════════════════════════════
+// DEAD-CHANNEL DOCTRINE (RC-19 / demolition Phase 0): model-directed text from this
+// subsystem rides NOTICE (postAgentNotice, role='user' origin_kind='engine', VISIBLE
+// to the model), never role='system' (STRIPPED by the model-context builder). Bare
+// role='system' rows here may carry only dashboard/owner-only informational notes or
+// an agent's own system prompt, never an imperative the model is expected to ACT on.
+// The RC-19 conformance test (agent/v2/__tests__/engine-steer.test.ts) source-scans
+// this file for bare role='system' INSERTs carrying imperative model-directed text.
+// ════════════════════════════════════════════════════════════════════════
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import {
@@ -130,58 +139,161 @@ function scheduleEchoLines(scheduledStartIso: string | null, nextRunIso: string 
   return lines;
 }
 
-// ── Engine close-out against a delivered reply (C2 invariant) ──
+// ── Mark a task's deliverable as shown to the user (two-key restoration) ──
 //
-// Owner-intent invariant: the artifact the user was already shown is the
-// source of truth and is NEVER regenerated or overwritten by reconciliation.
-// When the assignee produced a user-facing closeout this turn but skipped the
-// formal tracker_update_status, the engine closes the dangling one-shot task
-// COMPLETE against the reply the user already saw, rather than pausing +
-// escalating to the project manager agent (whose retask verb would re-drive
-// the assignee to regenerate the deliverable and clobber the file the user
-// was shown, producing a divergent second version and a second "done").
+// Demolition Phase 1: this used to be engineCloseDeliveredTask, the forgery
+// primitive. When the assignee delivered a user-facing result but skipped the
+// formal tracker_update_status, the engine forged a terminal close: it wrote
+// status='complete' AND complete_validated=1 (an engine-authored "PM-blessed"
+// flag), suppressed the assignment notice, and the C2 retask-block keyed on the
+// forged flag to refuse regeneration. That collapsed the two-key contract:
+// completion must be REQUESTED by the agent (with evidence, landing
+// complete_validated=0) and VALIDATED by the PM against the goal. No engine path
+// may close or stamp.
 //
-// complete_validated=1 makes this an engine-authoritative terminal close,
-// mirroring the pause_validated=1 authority the sibling hardcap uses: the
-// user saw the result, so the PM has nothing to chase, no CLOSEOUT_MISS is
-// raised, and the redo path cannot start. One-shot, non-recurring only;
-// recurring schedules keep their own carve-out at the call site and must
-// never be terminally completed here. Returns true when a task was closed.
-export async function engineCloseDeliveredTask(
+// New behavior: record the neutral FACT that the deliverable was shown, and stop.
+// It sets deliverable_shown=1 and appends a task_log observation. It does NOT
+// write status, does NOT write complete_validated, does NOT suppress the
+// assignment notice, and runs no completion cascade. The task stays open
+// (in_progress, complete_validated=0) so the PM sweep still owns the dangler and
+// the two-key close still requires the agent's request + the PM's validation. The
+// deliverable_shown flag is what protects the delivered artifact now: the retask
+// verb refuses regeneration on a deliverable_shown task unless allow_regenerate is
+// explicitly passed, so delivered work is not clobbered WITHOUT pretending the
+// task closed. One-shot, non-recurring only (recurring schedules are advanced by
+// the scheduler, never touched here). Returns true when the flag was set.
+export async function markDeliverableShown(
   callingAgentId: string,
   taskId: string,
   deliveredReply: string,
 ): Promise<boolean> {
   const db = getDb();
   const task = db.prepare(
-    `SELECT id, title, status, project_id, repeat_interval, assigned_to FROM tasks WHERE id = ?`,
-  ).get(taskId) as { id: string; title: string; status: string; project_id: string | null; repeat_interval: number | null; assigned_to: string | null } | undefined;
+    `SELECT id, title, status, project_id, repeat_interval, assigned_to, deliverable_shown FROM tasks WHERE id = ?`,
+  ).get(taskId) as { id: string; title: string; status: string; project_id: string | null; repeat_interval: number | null; assigned_to: string | null; deliverable_shown: number } | undefined;
   if (!task) return false;
-  // Only close a task that is genuinely open (in_progress) and one-shot.
+  // Only mark a task that is genuinely open (in_progress) and one-shot.
   if (task.status !== 'in_progress') return false;
   if (task.repeat_interval !== null) return false;
+  // Idempotent: already marked, nothing to do.
+  if (task.deliverable_shown === 1) return false;
+
+  const preview = (deliveredReply.replace(/\s+/g, ' ').trim().slice(0, 200))
+    || '(delivered to the user in chat this turn)';
+
+  // The ONLY write: the neutral fact marker. No status, no complete_validated,
+  // no cascade. updated_at is bumped so the PM poke grace/idle clocks see the
+  // touch, but the row stays in_progress and unvalidated on purpose.
+  db.prepare(`
+    UPDATE tasks
+    SET deliverable_shown = 1,
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(taskId);
+
+  try {
+    writeTaskLog({
+      taskId,
+      fromEntity: 'engine',
+      entryKind: 'observation',
+      actionTaken: 'marked deliverable_shown=1',
+      reason: 'assignee delivered the result to the user without a formal tracker_update_status',
+      note: `deliverable delivered to user in reply "${preview}"; engine did NOT close; awaiting agent close-out or PM adjudication`,
+    });
+  } catch { /* best effort */ }
+
+  const fresh = getTask(taskId);
+  if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
+  logger.info('Marked deliverable_shown on a delivered task (no close, no stamp; PM/agent still own the close-out)', {
+    callingAgentId, taskId,
+  }, callingAgentId);
+  return true;
+}
+
+// Deprecated alias: loop.ts still calls engineCloseDeliveredTask at a few sites
+// (loop.ts:5278, 5288, 5359 and the pm-agent poke chain until those are updated
+// by the loop.ts-owning demolition pass). The alias routes to the NEW,
+// authority-free markDeliverableShown behavior so those call sites keep
+// compiling and behave correctly (mark, don't close) until they are renamed.
+// Remove this alias once every call site references markDeliverableShown.
+export const engineCloseDeliveredTask = markDeliverableShown;
+
+// ── Close an engine-owned same-turn scaffold (demolition Phase 1.7 #2) ──
+//
+// Narrow carve-out from the two-key contract, and the ONLY engine path that may
+// write status='complete' on a task. The turn-start / mid-turn multistep
+// classifier opens a tracker project+task FOR the model (an ENGINE_AUTO_MARKER
+// scaffold) when a user request looks project-worthy but the model has not
+// opened the tracker itself. On a read-only conversation turn the going-idle
+// machinery never fires, so the engine's OWN scaffold would dangle in_progress
+// and later trip the PM poke chain into re-delivering the answer as a "ghost
+// done". The engine owns the lifecycle of the tasks IT opens, so it may close
+// THIS one, but only under three guards and WITHOUT forging the PM's key:
+//
+//   1. the task's PROJECT carries the ENGINE_AUTO_MARKER (the marker rides the
+//      project description, not the task): it is an engine scaffold, not agent-
+//      or user-authored work, AND
+//   2. the task was created within THIS turn. There is no turn_number column on
+//      tasks, so we bound "this turn" by created_at recency using the same
+//      "-5 minutes" window findRecentNearDuplicateProject uses to define the
+//      same-turn case; an older scaffold belongs to a prior turn and is the PM
+//      sweep's to adjudicate, AND
+//   3. the close lands complete_validated=0 (UNVALIDATED). The PM sweep still
+//      validates it against the goal exactly like an agent-requested close. The
+//      engine RECORDS the delivery; it does not adjudicate success. This is the
+//      difference from the demolished forgery (which stamped complete_validated=1
+//      so the PM's key could never turn).
+//
+// One-shot, non-recurring only. Runs the same terminal cascade an agent-requested
+// close runs (dependency release + project rollup + assignment-notice neutralize,
+// so the still-pending notice can't re-fire as a fresh "begin working" prompt and
+// re-drive a redo). Returns true when it closed the task.
+export async function closeEngineScaffoldSameTurn(
+  agentId: string,
+  taskId: string,
+  deliveredReply: string,
+): Promise<boolean> {
+  const db = getDb();
+  const task = db.prepare(`
+    SELECT t.id, t.status, t.project_id, t.repeat_interval, t.assigned_to, t.created_at,
+           p.description AS project_description
+    FROM tasks t
+    LEFT JOIN projects p ON p.id = t.project_id
+    WHERE t.id = ?
+  `).get(taskId) as {
+    id: string; status: string; project_id: string | null; repeat_interval: number | null;
+    assigned_to: string | null; created_at: string; project_description: string | null;
+  } | undefined;
+  if (!task) return false;
+  // Genuinely open, one-shot only (a recurring schedule is advanced by the
+  // scheduler, never terminally closed here).
+  if (task.status !== 'in_progress') return false;
+  if (task.repeat_interval !== null) return false;
+  // Guard 1: must be an engine scaffold (marker rides the PROJECT description).
+  if (!task.project_description || !task.project_description.startsWith(ENGINE_AUTO_MARKER)) return false;
+  // Guard 2: created within this turn (created_at recency; see header).
+  const createdMs = new Date(task.created_at.includes('Z') ? task.created_at : task.created_at + 'Z').getTime();
+  if (Number.isNaN(createdMs) || Date.now() - createdMs > 5 * 60 * 1000) return false;
 
   const resultText = (deliveredReply.replace(/\s+/g, ' ').trim().slice(0, 2000))
-    || 'Delivered to the user in chat this turn (engine close-out).';
+    || 'Delivered to the user in chat this turn (engine same-turn scaffold close).';
   const evidenceJson = JSON.stringify([
     {
       kind: 'user_visible_reply',
-      claim: 'assignee delivered the result to the user in chat this turn; the engine closed the task against that delivered reply so the artifact the user saw is preserved',
+      claim: 'engine-scaffolded task; the model delivered the result to the user in chat this turn; the engine closed its own scaffold against that delivered reply, UNVALIDATED (the PM sweep validates it against the goal)',
     },
   ]);
 
-  const updated = updateTask(taskId, { status: 'complete' });
-  if (!updated) return false;
-  // complete_validated=1: engine-authoritative terminal close (see header).
-  // result/evidence set directly since updateTask does not carry them.
-  db.prepare(`
+  // Guard 3: land complete_validated=0. The two-key contract holds, the PM's key
+  // still turns. Single writer line (door-lock allow-listed in
+  // two-key-conformance.test.ts as the sole engine status='complete' writer).
+  const res = db.prepare(`
     UPDATE tasks
-    SET complete_validated = 1,
-        result = ?,
-        evidence_json = ?,
-        updated_at = datetime('now')
-    WHERE id = ?
+    SET status = 'complete', complete_validated = 0, completed_at = datetime('now'),
+        result = ?, evidence_json = ?, updated_at = datetime('now')
+    WHERE id = ? AND status = 'in_progress' AND repeat_interval IS NULL
   `).run(resultText, evidenceJson, taskId);
+  if (res.changes === 0) return false;
 
   try {
     writeTaskLog({
@@ -190,35 +302,28 @@ export async function engineCloseDeliveredTask(
       entryKind: 'auto_sweep',
       fromStatus: 'in_progress',
       toStatus: 'complete',
-      actionTaken: 'engine close-out against delivered reply',
-      reason: 'assignee produced a user-facing closeout without tracker_update_status; the user was already shown the deliverable, so the engine closes the task against it rather than re-driving a regenerate that would overwrite what the user saw',
+      actionTaken: 'engine closed its own same-turn scaffold',
+      reason: 'engine closed its own same-turn scaffold; unvalidated; PM sweep validates',
       note: resultText,
       evidenceJson,
     });
   } catch { /* best effort */ }
 
-  // Same terminal cascade the PM validate-complete path runs: dependency
-  // release + project rollup. Do NOT call noteTransitionForReview, the task
-  // is already complete_validated=1 so there is nothing for the PM to review.
+  // Same terminal cascade an agent-requested close runs.
   try {
     const { checkDependencies } = await import('./pm-agent.js');
     checkDependencies(taskId);
   } catch { /* best effort */ }
   try {
-    checkProjectCompletion(task.project_id, callingAgentId);
+    checkProjectCompletion(task.project_id, agentId);
   } catch { /* best effort */ }
-
-  // Neutralize the still-pending assignment notice for this task so the runtime
-  // drain cannot re-deliver it as a fresh "begin working on this task" prompt and
-  // re-drive a redo that overwrites the delivered artifact (the surviving C2 redo
-  // vector). Runs BEFORE the turn's finally-block drain check.
-  claimAssignmentNoticeForTerminalTask(task.assigned_to ?? callingAgentId, taskId);
+  claimAssignmentNoticeForTerminalTask(task.assigned_to ?? agentId, taskId);
 
   const fresh = getTask(taskId);
   if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
-  logger.info('Engine closed a delivered task against the user-visible reply (no redo, no PM escalation)', {
-    callingAgentId, taskId,
-  }, callingAgentId);
+  logger.info('Engine closed its own same-turn scaffold against the delivered reply (unvalidated; PM sweep validates)', {
+    agentId, taskId,
+  }, agentId);
   return true;
 }
 
@@ -528,6 +633,24 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
         `A project with zero tasks is a stuck project, PM has no row to poke, you have nothing to mark complete, ` +
         `and the tracker can't tell whether the work is done.`
       );
+    }
+
+    // Resolve inline task assignees (name / short id -> full agent id) BEFORE
+    // anything is written. tasks.assigned_to carries a FOREIGN KEY to agents(id);
+    // the standalone tracker_create_task verb resolves refs (below, ~:790) but
+    // this inline path passed them through raw, so an agent NAME failed the FK
+    // mid-create and stranded an empty project row (2026-07-17 run bmrpkqai2v6:
+    // two orphan projects, raw "FOREIGN KEY constraint failed" to the model).
+    // Same resolver, same teaching error, and nothing is written on a bad ref.
+    for (const t of tasksInput) {
+      const raw = t as Record<string, unknown>;
+      const ref = (typeof raw.assignedTo === 'string' && raw.assignedTo) ||
+                  (typeof raw.assigned_to === 'string' && raw.assigned_to) || '';
+      if (ref.trim().length > 0) {
+        const r = resolveAgentName(ref);
+        if (!r.ok) return r.error;
+        t.assignedTo = r.id;
+      }
     }
 
     // Duplicate guard. Catches the most common failure shape: agent gets
@@ -2469,7 +2592,16 @@ export function trackerEditProject(agentId: string, args: Record<string, unknown
     updates.title = trimmed.slice(0, 200);
   }
   if (description !== undefined) {
-    updates.description = description === null || description === '' ? null : String(description);
+    let next = description === null || description === '' ? null : String(description);
+    // ENGINE_AUTO_MARKER is engine metadata, not model-editable: mechanisms key
+    // on it structurally (same-turn scaffold close guard, the near-dup steer,
+    // the unanswered-scaffold probe). If the CURRENT description carries the
+    // marker, any rewrite keeps it as the prefix (2026-07-17: a PM description
+    // rewrite stripped it and the scaffold stopped reading as engine-created).
+    if (project.description?.startsWith(ENGINE_AUTO_MARKER) && (next === null || !next.startsWith(ENGINE_AUTO_MARKER))) {
+      next = ENGINE_AUTO_MARKER + (next ?? '');
+    }
+    updates.description = next;
   }
 
   try {
@@ -2683,7 +2815,7 @@ export async function trackerValidatePause(
 
 export async function trackerRetask(
   pmAgentId: string,
-  args: { task_id: string; directive: string; target_status?: string },
+  args: { task_id: string; directive: string; target_status?: string; allow_regenerate?: boolean },
 ): Promise<string> {
   const rawTaskId = args.task_id;
   if (!rawTaskId) return 'Error: task_id is required.';
@@ -2699,21 +2831,24 @@ export async function trackerRetask(
 
   const db = getDb();
   const task = db.prepare(
-    "SELECT id, title, status, assigned_to, goal, complete_validated FROM tasks WHERE id = ?",
-  ).get(taskId) as { id: string; title: string; status: string; assigned_to: string | null; goal: string | null; complete_validated: number } | undefined;
+    "SELECT id, title, status, assigned_to, goal, complete_validated, deliverable_shown FROM tasks WHERE id = ?",
+  ).get(taskId) as { id: string; title: string; status: string; assigned_to: string | null; goal: string | null; complete_validated: number; deliverable_shown: number } | undefined;
 
   if (!task) return `Error: task ${taskId} not found.`;
   if (task.status === 'cancelled') {
     return `Error: task "${task.title}" (${taskId}) is cancelled. Cancelled tasks cannot be retasked. Create a new task instead.`;
   }
-  // C2 structural backstop: a complete + complete_validated=1 task is a
-  // terminal, blessed delivered state (an engine close-out against a reply the
-  // user already saw, or a PM-validated complete). Re-driving the assignee on
-  // it would regenerate/overwrite work the user was already shown, the exact
-  // clobber the C2 fix removes. Never retask it; direct the PM to open a fresh
-  // task instead. This holds regardless of which path tried to retask.
-  if (task.status === 'complete' && task.complete_validated === 1) {
-    return `Error: task "${task.title}" (${taskId.slice(0, 8)}) is complete and validated, its deliverable was already accepted / shown to the user. Retasking it would regenerate and overwrite delivered work. If more is needed, create a NEW task with tracker_create_task instead.`;
+  // Delivered-work backstop (two-key restoration; replaces the old C2 block that
+  // keyed on the forged complete_validated=1 flag). deliverable_shown=1 means the
+  // assignee already delivered this task's result to the user in a reply.
+  // Re-driving the assignee on it regenerates/overwrites work the user was already
+  // shown, producing a divergent second version and a second "done". Refuse UNLESS
+  // the PM explicitly opts in with allow_regenerate=true (the PM has judged the
+  // delivered work genuinely misses the goal and a fresh pass is warranted). This
+  // keys on the neutral fact marker, never on a completion flag, so it protects the
+  // artifact without pretending the task closed.
+  if (task.deliverable_shown === 1 && args.allow_regenerate !== true) {
+    return `Error: task "${task.title}" (${taskId.slice(0, 8)}) already had its deliverable delivered to the user (deliverable_shown=1). Retasking it would regenerate and overwrite delivered work, producing a divergent second version. If the delivered work genuinely misses the goal and you want the assignee to redo it, re-call tracker_retask with allow_regenerate=true. Otherwise, if the delivery meets the goal, let the assignee close it out (tracker_update_status) and validate that with tracker_validate; if entirely new work is needed, create a NEW task with tracker_create_task.`;
   }
   if (!task.assigned_to) {
     return `Error: task "${task.title}" (${taskId}) has no assigned agent. Use tracker_reassign_task first, then retask.`;

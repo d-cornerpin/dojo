@@ -81,6 +81,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
       // Creating and ending sub-agents
       'spawn_agent',
       'kill_agent',
+      'spawn_timeout_decision',
       // Reading sub-agent state
       'get_agent_profile',
       // Editing an existing sub-agent in place (non-destructive)

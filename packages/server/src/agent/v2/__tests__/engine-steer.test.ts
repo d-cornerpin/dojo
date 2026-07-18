@@ -180,3 +180,73 @@ describe('RC-19: no bare-system imperative steer in loop.ts (build-enforced inva
     expect(helperCalls).toBeGreaterThanOrEqual(6);
   });
 });
+
+// ── Source-scan invariant: tracker + scheduler subsystems (Phase 0.5) ───────────
+//
+// The same dead-channel rule the loop.ts scan enforces applies to the tracker and
+// scheduler subsystems. Model-directed text from those subsystems must ride the
+// VISIBLE awareness NOTICE (postAgentNotice, role='user' origin_kind='engine') or an
+// engine steer, never a bare role='system' row (stripped by the model-context
+// builder). A NEW bare role='system' INSERT carrying imperative model-directed text
+// in tracker/*.ts or scheduler/*.ts fails CI here, the same way loop.ts is guarded.
+
+const SERVER_SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
+
+// For these subsystems the sanctioned model-visible channel is the awareness NOTICE
+// (postAgentNotice), in addition to the loop-level steer helpers / exempt sentinel.
+const SUBSYSTEM_PAIRED = /postAgentNotice|persistEngineSteer|pendingNudge|engine-steer-exempt/;
+
+function subsystemFiles(dir: string): string[] {
+  const abs = path.join(SERVER_SRC, dir);
+  return fs
+    .readdirSync(abs)
+    .filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts'))
+    .map((f) => path.join(abs, f));
+}
+
+function scanBareImperativeSystemInserts(file: string, paired: RegExp): string[] {
+  const rel = `${path.basename(path.dirname(file))}/${path.basename(file)}`;
+  const lines = fs.readFileSync(file, 'utf8').split('\n');
+  const found: string[] = [];
+  lines.forEach((line, i) => {
+    if (!SYSTEM_INSERT.test(line)) return;
+    // Same window + comment-filtering rules as the loop.ts scan: content literals
+    // sit above the INSERT; the NOTICE / steer / exempt sentinel sits nearby.
+    const start = Math.max(0, i - 40);
+    const end = Math.min(lines.length, i + 20);
+    const window = lines.slice(start, end);
+    const codeText = window.filter((l) => !isCommentLine(l)).join('\n');
+    if (!IMPERATIVE.test(codeText)) return;
+    if (paired.test(window.join('\n'))) return;
+    found.push(`${rel}:${i + 1} | bare role='system' imperative steer (no postAgentNotice / persistEngineSteer / pendingNudge / engine-steer-exempt in block)`);
+  });
+  return found;
+}
+
+describe('RC-19: no bare-system imperative steer in tracker/ + scheduler/ (build-enforced invariant)', () => {
+  const files = [...subsystemFiles('tracker'), ...subsystemFiles('scheduler')];
+
+  it('every role=system INSERT with imperative content pairs a visible NOTICE / steer or is documented exempt', () => {
+    const violations = files.flatMap((f) => scanBareImperativeSystemInserts(f, SUBSYSTEM_PAIRED));
+    // If this fails: route the model-directed text through postAgentNotice (the
+    // visible awareness NOTICE) or persistEngineSteer, or, if the row is genuinely
+    // NOT a model-visible directive (an owner-only heads-up, an agent's own system
+    // prompt, a task-update notification), add an `engine-steer-exempt: <reason>`
+    // comment in the block documenting why. See engine-steer.ts and RC-19.
+    expect(violations).toEqual([]);
+  });
+
+  it('the scan actually finds role=system INSERTs across the subsystems (guards against silently matching nothing)', () => {
+    let systemInsertCount = 0;
+    for (const f of files) {
+      const lines = fs.readFileSync(f, 'utf8').split('\n');
+      systemInsertCount += lines.filter((l) => SYSTEM_INSERT.test(l)).length;
+    }
+    // Known non-imperative role='system' writers still present after Phase 0:
+    // pm-agent.ts (PM soul prompt, x2), tools.ts (task-update notification),
+    // runner.ts (skipped-reminder owner heads-up). If this regex ever stops matching
+    // them, the imperative scan above would silently pass. Lower this floor only if a
+    // future phase legitimately migrates those sites off role='system'.
+    expect(systemInsertCount).toBeGreaterThanOrEqual(3);
+  });
+});

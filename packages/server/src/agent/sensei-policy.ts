@@ -129,6 +129,7 @@ export const SEND_TO_PEOPLE_NA: Readonly<Record<string, string>> = {
   'list_models': 'agent management',
   'spawn_agent': 'agent management',
   'kill_agent': 'agent management',
+  'spawn_timeout_decision': 'agent management',
   'get_agent_profile': 'agent management',
   'update_agent': 'agent management',
   'create_agent_group': 'agent management',

@@ -24,7 +24,7 @@ import { checkRequired, friendlyDbError, resolveAgentRef, resolveGroupRef, compa
 // don't intercept.
 import { checkPermission, getAgentPermissions } from './permissions.js';
 import { isPrimaryAgent, isPMAgent, isImaginerAgent, getPrimaryAgentId, isDreamerAgent, isHealerAgent } from '../config/platform.js';
-import { spawnAgent, terminateAgent, completeAgent } from './spawner.js';
+import { spawnAgent, terminateAgent, completeAgent, applySpawnTimeoutDecision } from './spawner.js';
 import { getAgentRuntime } from './runtime.js';
 import { isAwaitingIMResponse, clearIMResponseFlag } from '../services/imessage-bridge.js';
 import {
@@ -42,6 +42,9 @@ import {
   trackerCloseProject,
   trackerEditProject,
 } from '../tracker/tools.js';
+// Single source of truth for the PM overseer allow-list; re-checked at the
+// executor chokepoint (demolition Phase 1.7 PM verb enforcement).
+import { PM_ALLOWED_TOOLS_SET } from '../tracker/pm-agent.js';
 import { webSearch, webFetch } from './web-tools.js';
 import { mouseClick, mouseMove, keyboardType, screenRead, applescriptRun } from './system-control.js';
 import { executeWebBrowse } from './browser.js';
@@ -540,6 +543,73 @@ function getAgentDenySet(agentId: string): Set<string> {
   return deny;
 }
 
+// ── P4: mandatory squad resolution for agent spawns ──
+// Every agent-spawned agent lands in a squad so the owner can see which spawned
+// agents belong to which work. Resolution order:
+//   1. explicit group_id  -> must exist AND be creator-owned or already stamped
+//      on a project (an existing project squad the caller is joining)
+//   2. linked task's project already has a squad -> reuse it
+//   3. linked task's project has no squad -> auto-create one NAMED AFTER THE
+//      PROJECT and stamp projects.group_id (migration 109) so later spawns join
+//   4. no project linkage -> auto-create a squad named after the caller
+// Returns the resolved group id + a user-facing squad name, or an error string.
+// (Only the spawn_agent TOOL path calls this; internal engine spawns do not.)
+async function resolveSpawnSquad(opts: {
+  callerAgentId: string;
+  rawTaskId?: string;
+  explicitGroupId?: string;
+}): Promise<{ groupId: string; squadName: string; note: string } | { error: string }> {
+  const db = getDb();
+
+  // 1. Explicit group_id: must exist and be creator-owned or project-stamped.
+  if (opts.explicitGroupId) {
+    const ref = resolveGroupRef(opts.explicitGroupId, 'spawn_agent');
+    if (!ref.ok) return { error: ref.error };
+    const grp = db.prepare('SELECT id, name, created_by FROM agent_groups WHERE id = ?').get(ref.id) as { id: string; name: string; created_by: string | null } | undefined;
+    if (!grp) return { error: `Squad "${opts.explicitGroupId}" doesn't exist. Omit group_id to auto-create a squad, or pass one you created.` };
+    const ownsIt = grp.created_by === opts.callerAgentId;
+    const projectStamped = !!db.prepare('SELECT 1 FROM projects WHERE group_id = ? LIMIT 1').get(ref.id);
+    if (!ownsIt && !projectStamped) {
+      return { error: `You can only spawn into a squad you created or a project's squad. "${grp.name}" is neither. Omit group_id to auto-create your own squad.` };
+    }
+    return { groupId: grp.id, squadName: grp.name, note: '' };
+  }
+
+  // 2/3. Linked task -> project -> squad.
+  if (opts.rawTaskId) {
+    try {
+      const { resolveTaskId } = await import('../tracker/schema.js');
+      const rt = resolveTaskId(opts.rawTaskId);
+      if (rt.ok) {
+        const task = db.prepare('SELECT project_id FROM tasks WHERE id = ?').get(rt.id) as { project_id: string | null } | undefined;
+        if (task?.project_id) {
+          const proj = db.prepare('SELECT id, title, group_id FROM projects WHERE id = ?').get(task.project_id) as { id: string; title: string; group_id: string | null } | undefined;
+          if (proj) {
+            if (proj.group_id) {
+              const existing = db.prepare('SELECT id, name FROM agent_groups WHERE id = ?').get(proj.group_id) as { id: string; name: string } | undefined;
+              if (existing) return { groupId: existing.id, squadName: existing.name, note: ' (project squad)' };
+              // Stale stamp (group was deleted): fall through and re-create below.
+            }
+            const group = createGroup(proj.title, `Squad for project "${proj.title}".`, opts.callerAgentId);
+            db.prepare("UPDATE projects SET group_id = ?, updated_at = datetime('now') WHERE id = ?").run(group.id, proj.id);
+            return { groupId: group.id, squadName: group.name, note: ` (created for project "${proj.title}")` };
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn('resolveSpawnSquad: project squad resolution failed, falling back to caller squad', {
+        callerAgentId: opts.callerAgentId, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // 4. No project linkage: a squad named after the caller groups its ad-hoc spawns.
+  const caller = db.prepare('SELECT name FROM agents WHERE id = ?').get(opts.callerAgentId) as { name: string } | undefined;
+  const callerName = caller?.name ?? 'Agent';
+  const group = createGroup(`${callerName}'s squad`, `Ad-hoc squad for agents spawned by ${callerName}.`, opts.callerAgentId);
+  return { groupId: group.id, squadName: group.name, note: '' };
+}
+
 function computeFilteredTools(agentId: string): ToolDefinition[] {
   const manifest = getAgentPermissions(agentId);
 
@@ -598,7 +668,7 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
   if (!hasNetwork) removeTools.push('web_search', 'web_fetch');
   if (!hasSysControl) removeTools.push('mouse_click', 'mouse_move', 'keyboard_type', 'screen_screenshot', 'applescript_run');
   if (!hasWebBrowse) removeTools.push('web_browse');
-  if (!manifest.can_spawn_agents) removeTools.push('spawn_agent', 'kill_agent');
+  if (!manifest.can_spawn_agents) removeTools.push('spawn_agent', 'kill_agent', 'spawn_timeout_decision');
 
   // C27: update_agent (merged) self-gates its permissions/tools fields on
   // can_assign_permissions inside the handler, so it stays available for
@@ -1475,7 +1545,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Multi-Agent Tools ──
   {
     name: 'spawn_agent',
-    description: 'Create a new sub-agent to work on a task. This is THE tool for spawning sub-agents, do NOT try to create agents by writing files or inserting into the database. BEFORE spawning, call list_agents to check whether an agent with that name already exists and is still running; if so, use send_to_agent instead of spawning a duplicate. Returns the new agent ID for tracking.\n\nTASK LINKAGE, IMPORTANT: if the apprentice is meant to do work tracked in the tracker, you MUST link the task to the agent OR the agent\'s work won\'t update the task on completion. Two valid patterns:\n  1. Pass `task_id` here at spawn time → the agent.task_id is set, complete_task auto-marks the task complete.\n  2. After spawning, call tracker_create_task (or tracker_reassign_task) with `assigned_to=<this agent_id>` → completeAgent\'s fallback finds the task by assignment.\nIf you create tasks before spawning the apprentices, those tasks default to assigned_to=YOU (the parent), and the apprentices\' work will silently fail to update them. Always one of: assign the task to the apprentice, or pass task_id at spawn.',
+    description: 'Create a new sub-agent to work on a task. This is THE tool for spawning sub-agents, do NOT try to create agents by writing files or inserting into the database. BEFORE spawning, call list_agents to check whether an agent with that name already exists and is still running; if so, use send_to_agent instead of spawning a duplicate. Returns the new agent ID for tracking.\n\nTIMEOUT (you own it): non-ronin sub-agents REQUIRE `timeout_minutes`, the number of minutes the sub-agent may run before YOU (its creator) are asked to decide. There is no default. When the timeout is reached the engine does NOT kill it, it notifies you and the sub-agent keeps running until you call spawn_timeout_decision(action="extend"|"terminate"). Size timeout_minutes to the task (a quick lookup ~5, a longer build ~30-60). For open-ended/scheduled work that should have no timeout, use classification="ronin" (ronin has no timeout and is dismissed only by the user).\n\nSQUADS (mandatory): every agent you spawn lands in a squad, so the owner can see which spawned agents belong to which work. If you pass a `task_id` linked to a project, the sub-agent joins (or the engine auto-creates) a squad NAMED AFTER THAT PROJECT and stamps the squad on the project; later spawns for the same project auto-join it. With no project link, pass `group_id` for a squad you own, or the engine auto-creates one named after you. The tool result names the squad it landed in. You can only dismiss squads you created (delete_group); user-created squads are dismissed only from the dashboard.\n\nTASK LINKAGE, IMPORTANT: if the apprentice is meant to do work tracked in the tracker, you MUST link the task to the agent OR the agent\'s work won\'t update the task on completion. Two valid patterns:\n  1. Pass `task_id` here at spawn time → the agent.task_id is set AND the task is REASSIGNED to the spawned agent (assigned_to = new agent), because you are delegating the work; complete_task then auto-marks the task complete. Pass keep_assignment=true to keep the task assigned to yourself.\n  2. After spawning, call tracker_create_task (or tracker_reassign_task) with `assigned_to=<this agent_id>` → completeAgent\'s fallback finds the task by assignment.\nIf you create tasks before spawning the apprentices, those tasks default to assigned_to=YOU (the parent); passing task_id at spawn now hands the task off to the apprentice for you. Always one of: assign the task to the apprentice, or pass task_id at spawn.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1511,13 +1581,17 @@ export const toolDefinitions: ToolDefinition[] = [
             },
           },
         },
-        timeout: {
+        timeout_minutes: {
           type: 'number',
-          description: 'Auto-termination timeout in seconds. The agent will be killed after this many seconds. Default is 900 (15 min). Set this longer than the expected task duration, if the agent has a scheduled task 10 minutes from now that takes 5 minutes, set timeout to at least 1200 (20 min). Set to 0 or omit for the default. For long-running or scheduled tasks, consider using classification="ronin" instead, which has no timeout.',
+          description: 'REQUIRED for non-ronin sub-agents: how many minutes this sub-agent may run before YOU (its creator) are asked to extend it or let it stop. There is no default. When it is reached the sub-agent is NOT killed, you are notified and must call spawn_timeout_decision. Size it to the task (a quick lookup ~5, a longer build ~30-60). Omit only for classification="ronin", which has no timeout and is dismissed only by the user.',
         },
         task_id: {
           type: 'string',
-          description: 'Optional tracker task ID to associate with this agent',
+          description: 'Optional tracker task ID to associate with this agent. By default, linking a task here also REASSIGNS that task to the new agent (assigned_to = the spawned agent), because you are delegating the work to it, so the task tracks the agent actually doing it. Pass keep_assignment=true to keep the task assigned to you.',
+        },
+        keep_assignment: {
+          type: 'boolean',
+          description: 'Only meaningful with task_id. If true, the linked task stays assigned to YOU (the caller) instead of being reassigned to the spawned agent. Default false: spawning with a task_id hands that task off to the new agent. Use true when you are the one who will finish the task and the sub-agent is only a helper.',
         },
         context_hints: {
           type: 'array',
@@ -1565,7 +1639,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'kill_agent',
-    description: 'Terminate, kill, delete, or remove a sub-agent immediately. This is THE tool for ending a sub-agent\'s life, do NOT try to delete database rows or kill processes manually. Also terminates any of its children. Use when a sub-agent is stuck, no longer needed, or misbehaving.',
+    description: 'Terminate, kill, delete, or remove a sub-agent immediately. This is THE tool for ending a sub-agent\'s life, do NOT try to delete database rows or kill processes manually. Also terminates any of its children. Use when a sub-agent is stuck, no longer needed, or misbehaving.\n\nOWNERSHIP: you can only kill sub-agents YOU created. Agents created by the user (from the dashboard) are dismissed only by the user; kill_agent refuses them. Ronin and sensei agents are also protected.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1575,6 +1649,29 @@ export const toolDefinitions: ToolDefinition[] = [
         },
       },
       required: ['agent_id'],
+    },
+  },
+  {
+    name: 'spawn_timeout_decision',
+    description: 'Decide what happens to a sub-agent YOU spawned that reached its timeout. When a sub-agent hits its timeout the engine does NOT kill it, it notifies you (its creator) and keeps the sub-agent running until you decide here. Only the sub-agent\'s creator may call this (the user decides from the dashboard). Two actions:\n  - action="extend": give the sub-agent more time. Pass extend_minutes (a positive number). The timeout is reset and you will be asked again if it runs out.\n  - action="terminate": let the sub-agent stop. It is torn down cleanly and any in-progress tasks it held are auto-paused for reassignment.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        agent_id: {
+          type: 'string',
+          description: 'The ID of the sub-agent whose timeout you are deciding (the one named in the timeout notice you received).',
+        },
+        action: {
+          type: 'string',
+          enum: ['extend', 'terminate'],
+          description: '"extend" to give it more time (requires extend_minutes), or "terminate" to let it stop.',
+        },
+        extend_minutes: {
+          type: 'number',
+          description: 'Only with action="extend": how many more minutes to give the sub-agent (a positive number). Ignored for terminate.',
+        },
+      },
+      required: ['agent_id', 'action'],
     },
   },
   {
@@ -2072,13 +2169,14 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'tracker_retask',
-    description: '**PM AGENT ONLY.** Send a task back to its assigned agent with explicit corrective instructions. Use when the agent\'s outcome is wrong (work skipped, wrong channel, evidence doesn\'t match goal, claim doesn\'t match actual artifact) and you want them to redo it, instead of just confirming a pause or rejecting a complete. Works from any non-terminal status (in_progress, on_deck, paused, blocked, complete). Resets validation flags, increments revert_count, delivers the directive over A2A. directive must be at least 30 chars and concrete (what they did wrong + what to do instead). Distinct from validate_pause(valid=false): that\'s reactive (PM adjudicating an existing pause); retask is proactive (PM redirecting the agent\'s effort).',
+    description: '**PM AGENT ONLY.** Send a task back to its assigned agent with explicit corrective instructions. Use when the agent\'s outcome is wrong (work skipped, wrong channel, evidence doesn\'t match goal, claim doesn\'t match actual artifact) and you want them to redo it, instead of just confirming a pause or rejecting a complete. Works from any non-terminal status (in_progress, on_deck, paused, blocked, complete). Resets validation flags, increments revert_count, delivers the directive over A2A. directive must be at least 30 chars and concrete (what they did wrong + what to do instead). Distinct from validate_pause(valid=false): that\'s reactive (PM adjudicating an existing pause); retask is proactive (PM redirecting the agent\'s effort). PROTECTED: if the task\'s deliverable was already delivered to the user (deliverable_shown=1), retask REFUSES unless you pass allow_regenerate=true, so delivered work is not silently regenerated and overwritten.',
     input_schema: {
       type: 'object',
       properties: {
         task_id: { type: 'string', description: 'Task ID (full or 8-char prefix).' },
         directive: { type: 'string', description: 'At least 30 characters. Tell the agent concretely what they did wrong and what to do instead (e.g. "you posted the brief in chat but the task specifies email delivery; call send_email with the same content").' },
         target_status: { type: 'string', enum: ['in_progress', 'on_deck'], description: 'Optional. Where to land the task after retask. Default in_progress.' },
+        allow_regenerate: { type: 'boolean', description: 'Optional. Set true ONLY when the task\'s deliverable was already delivered to the user (deliverable_shown=1) AND you have judged it genuinely misses the goal, so the assignee should redo and overwrite it. Without this, retask refuses a deliverable_shown task to protect delivered work. Default false.' },
       },
       required: ['task_id', 'directive'],
     },
@@ -2429,7 +2527,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'delete_group',
-    description: 'Delete an agent group entirely. This is THE tool for removing a group, do NOT try to update the database directly. By default, member agents are moved to ungrouped (not terminated). Pass terminate_members=true to also kill every member in the group as part of the cleanup. Cannot delete the System group.',
+    description: 'Delete an agent group (squad) entirely. This is THE tool for removing a group, do NOT try to update the database directly. By default, member agents are moved to ungrouped (not terminated). Pass terminate_members=true to also kill every member in the group as part of the cleanup. Cannot delete the System group.\n\nOWNERSHIP: you can only delete squads YOU created. Squads created by the user (from the dashboard) are dismissed only by the user; delete_group refuses them.',
     input_schema: {
       type: 'object',
       properties: {
@@ -4500,6 +4598,27 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     };
   }
 
+  // ── PM overseer verb enforcement (demolition Phase 1.7) ──
+  // The PM is an OVERSEER, not a worker: it validates, overrides, retasks,
+  // reassigns, and inspects; it never executes or edits the work itself, and
+  // never flips a worker's status directly. computeFilteredTools already strips
+  // non-allow-list tools from the PM's advertised surface, but per Architecture
+  // Rule 1 that strip is advice only: the floor model can emit a worker verb
+  // (tracker_update_status, spawn_agent, an exec/send) from free text and reach
+  // here. Re-check the SAME single-source allow-list (PM_ALLOWED_TOOLS_SET, owned
+  // by tracker/pm-agent.ts) at the executor and refuse anything outside it,
+  // naming the overseer verbs so the PM redirects instead of doing the work.
+  if (isPMAgent(agentId) && !PM_ALLOWED_TOOLS_SET.has(name)) {
+    auditLog(agentId, name, null, 'denied', `${name} is outside the PM overseer allow-list`);
+    logger.warn('Blocked PM tool call outside overseer allow-list', { tool: name }, agentId);
+    return {
+      toolCallId: id,
+      name,
+      content: `[BLOCKED by engine] You are the project manager (overseer), so "${name}" is not available to you. You do NOT execute or edit work; you oversee it. Your overseer verbs are: tracker_validate (bless or reject a close-out), tracker_retask (send work back with a directive), tracker_reassign_task, tracker_override and tracker_apply_user_verdict (adjudicate), tracker_pause_schedule / tracker_resume_schedule, plus read-only inspection (tracker_get_status, tracker_list_active, file_read/file_list, history_search, vault_search) and messaging (send_to_agent, broadcast_to_group). If a worker needs to do "${name}", direct the assigned agent to do it via send_to_agent or tracker_retask.`,
+      isError: true,
+    };
+  }
+
   let content: string = '';
   let isError = false;
 
@@ -4668,6 +4787,51 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
       content: `Permission denied: reset_session is reserved for the primary agent and the platform Healer. The request was not performed.`,
       isError: true,
     };
+  }
+
+  // ── Dismissal ownership (P4): agents dismiss only what THEY created ──
+  // Owner contract: "only the user dismisses user-created squads/agents." An
+  // agent may kill a sub-agent or delete a squad ONLY when it is the creator
+  // (created_by matches this caller). User/dashboard-created targets refuse with
+  // the rule named; the user dismisses those from the dashboard. Enforced at the
+  // executor per Architecture Rule 1 (the surface strip is advice; the floor
+  // model can still emit these verbs). Engine cascades call terminateAgent /
+  // deleteGroup directly and never pass through here, so they are unaffected.
+  // Only checked when the target resolves; an unresolved ref falls through to the
+  // handler's own friendlier not-found error.
+  if (name === 'kill_agent') {
+    const kaRef = resolveAgentRef(args.agent_id as string, 'kill_agent');
+    if (kaRef.ok) {
+      const owner = getDb().prepare('SELECT created_by, name FROM agents WHERE id = ?').get(kaRef.id) as { created_by: string | null; name: string | null } | undefined;
+      if (owner && owner.created_by !== agentId) {
+        const byUser = owner.created_by === 'dashboard' || owner.created_by === 'user' || owner.created_by === 'system';
+        auditLog(agentId, name, kaRef.id, 'denied', `not the creator (created_by=${owner.created_by})`);
+        logger.warn('Blocked kill_agent of an agent this caller did not create', { tool: name, target: kaRef.id, createdBy: owner.created_by }, agentId);
+        return {
+          toolCallId: id,
+          name,
+          content: `You can only dismiss sub-agents you created. "${owner.name ?? kaRef.id}" was created by ${byUser ? 'the user' : 'a different agent'}, so it is not yours to kill. ${byUser ? 'The user dismisses it from the dashboard.' : 'Ask its creator, or the user can dismiss it from the dashboard.'}`,
+          isError: true,
+        };
+      }
+    }
+  }
+  if (name === 'delete_group') {
+    const dgRef = resolveGroupRef(args.group_id as string, 'delete_group');
+    if (dgRef.ok) {
+      const grp = getDb().prepare('SELECT created_by, name FROM agent_groups WHERE id = ?').get(dgRef.id) as { created_by: string | null; name: string | null } | undefined;
+      if (grp && grp.created_by !== agentId) {
+        const byUser = grp.created_by === 'dashboard' || grp.created_by === 'user' || grp.created_by === 'system';
+        auditLog(agentId, name, dgRef.id, 'denied', `not the creator (created_by=${grp.created_by})`);
+        logger.warn('Blocked delete_group of a group this caller did not create', { tool: name, target: dgRef.id, createdBy: grp.created_by }, agentId);
+        return {
+          toolCallId: id,
+          name,
+          content: `You can only delete squads you created. "${grp.name ?? dgRef.id}" was created by ${byUser ? 'the user' : 'a different agent'}, so it is not yours to delete. ${byUser ? 'The user dismisses it from the dashboard.' : 'Ask its creator, or the user can dismiss it from the dashboard.'}`,
+          isError: true,
+        };
+      }
+    }
   }
 
   if (name === 'dreamer_run_now' || name === 'cost_summary') {
@@ -5249,6 +5413,38 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
             break;
           }
         }
+        // P3 (spawn contract): the creator owns the timeout. A non-ronin spawn
+        // REQUIRES timeout_minutes, there is no engine default. Reject a missing/
+        // invalid value with a teaching error naming the parameter and pointing
+        // at ronin for open-ended work.
+        const spawnClassification: 'ronin' | 'apprentice' = args.classification === 'ronin' ? 'ronin' : 'apprentice';
+        let timeoutSecondsArg: number | undefined;
+        if (spawnClassification !== 'ronin') {
+          const tm = args.timeout_minutes;
+          if (typeof tm !== 'number' || !Number.isFinite(tm) || tm <= 0) {
+            content = `spawn_agent needs timeout_minutes for this sub-agent: how many minutes it may run before you (its creator) are asked to extend it or let it stop. There is no default. Size it to the task (a quick lookup ~5, a longer build ~30-60). If the work should run open-ended with no timeout, spawn it with classification="ronin" instead (ronin has no timeout and is dismissed only by the user).`;
+            isError = true;
+            auditLog(agentId, 'spawn_agent', args.name as string | null, 'denied', 'missing timeout_minutes');
+            break;
+          }
+          timeoutSecondsArg = Math.round(tm * 60);
+        }
+
+        // P4 (mandatory squads): resolve the squad this spawn lands in before
+        // creating the agent, so its group_id is set at insert and the tool
+        // result can name the squad.
+        const squad = await resolveSpawnSquad({
+          callerAgentId: agentId,
+          rawTaskId: args.task_id as string | undefined,
+          explicitGroupId: args.group_id as string | undefined,
+        });
+        if ('error' in squad) {
+          content = squad.error;
+          isError = true;
+          auditLog(agentId, 'spawn_agent', args.name as string | null, 'denied', 'squad resolution failed');
+          break;
+        }
+
         // v2.3.19 (Scenario 7 finding), wrap in try/catch so raw SQLite
         // errors ("FOREIGN KEY constraint failed", etc.) don't leak to
         // the agent. friendlyDbError translates them into actionable
@@ -5261,19 +5457,58 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
             modelId: args.model_id as string | undefined,
             permissions: args.permissions as Parameters<typeof spawnAgent>[0]['permissions'],
             toolsPolicy: args.tools as { allow: string[]; deny: string[] } | undefined,
-            timeout: args.timeout as number | undefined,
+            timeout: timeoutSecondsArg,
             taskId: args.task_id as string | undefined,
             contextHints: args.context_hints as string[] | undefined,
             persist: args.persist as boolean | undefined,
-            classification: args.classification as 'ronin' | 'apprentice' | undefined,
+            classification: spawnClassification,
             shareUserProfile: args.share_user_profile as boolean | undefined,
-            groupId: args.group_id as string | undefined,
+            groupId: squad.groupId,
             initialMessage: args.initial_message as string | undefined,
             equippedTechniques: args.techniques as string[] | undefined,
             alwaysLoadedTools: args.always_loaded_tools as string[] | undefined,
             autoStart: args.auto_start as boolean | undefined,
           });
-          content = `Agent spawned successfully.\nAgent ID: ${result.agentId}\nName: ${result.name}\nStatus: ${result.status}\nPersistent: ${result.persist ? 'yes' : 'no'}`;
+          // Delegation assignment (demolition Phase 1.7, the Brookstom modeling
+          // fix): spawning WITH a task_id means the caller is delegating that task
+          // to the new agent, so reassign it (assigned_to = the spawned agent)
+          // unless keep_assignment=true. Tasks pre-created by the parent default to
+          // assigned_to=parent; without this, the tracker would model the parent as
+          // the doer while the sub-agent actually does the work. spawnAgent already
+          // set agents.task_id but does NOT touch tasks.assigned_to, so we do it
+          // here. Resolve the id the same way the tracker verbs do, and skip
+          // silently if it no longer resolves (the FK on spawn would already have
+          // failed a bad id).
+          let reassignNote = '';
+          if (args.task_id && args.keep_assignment !== true) {
+            try {
+              const { resolveTaskId } = await import('../tracker/schema.js');
+              const resolvedTask = resolveTaskId(args.task_id as string);
+              if (resolvedTask.ok) {
+                const reDb = getDb();
+                reDb.prepare(
+                  "UPDATE tasks SET assigned_to = ?, assigned_to_group = NULL, updated_at = datetime('now') WHERE id = ?",
+                ).run(result.agentId, resolvedTask.id);
+                const { writeTaskLog } = await import('../tracker/task-log.js');
+                writeTaskLog({
+                  taskId: resolvedTask.id,
+                  fromEntity: `agent:${agentId}`,
+                  entryKind: 'observation',
+                  actionTaken: 'reassigned on delegation (spawn_agent with task_id)',
+                  reason: `work delegated to newly spawned agent ${result.name} (${result.agentId})`,
+                });
+                const { getTask } = await import('../tracker/schema.js');
+                const freshTask = getTask(resolvedTask.id);
+                if (freshTask) broadcast({ type: 'tracker:task_updated', data: freshTask });
+                reassignNote = `\nTask ${resolvedTask.id.slice(0, 8)} reassigned to ${result.name}.`;
+              }
+            } catch (reassignErr) {
+              logger.warn('spawn_agent: task reassignment failed (non-fatal, agent still spawned)', {
+                taskId: args.task_id, error: reassignErr instanceof Error ? reassignErr.message : String(reassignErr),
+              }, agentId);
+            }
+          }
+          content = `Agent spawned successfully.\nAgent ID: ${result.agentId}\nName: ${result.name}\nStatus: ${result.status}\nPersistent: ${result.persist ? 'yes' : 'no'}\nSquad: ${squad.squadName}${squad.note}${reassignNote}`;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           // FK constraint failure usually means a bad model_id, group_id,
@@ -5316,6 +5551,31 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         }
         terminateAgent(targetId, `Killed by agent ${agentId}`);
         content = `Agent ${targetId} has been terminated.`;
+        break;
+      }
+      case 'spawn_timeout_decision': {
+        const stdErr = checkRequired([
+          { name: 'agent_id', value: args.agent_id, type: 'string' },
+          { name: 'action', value: args.action, type: 'string' },
+        ]);
+        if (stdErr) { content = stdErr; isError = true; break; }
+        const stdAction = args.action as string;
+        if (stdAction !== 'extend' && stdAction !== 'terminate') {
+          content = 'Error: action must be "extend" or "terminate".';
+          isError = true;
+          break;
+        }
+        const stdResolved = resolveAgentRef(args.agent_id as string, 'spawn_timeout_decision');
+        if (!stdResolved.ok) { content = stdResolved.error; isError = true; break; }
+        const stdResult = await applySpawnTimeoutDecision({
+          callerAgentId: agentId,
+          agentId: stdResolved.id,
+          action: stdAction as 'extend' | 'terminate',
+          extendMinutes: typeof args.extend_minutes === 'number' ? (args.extend_minutes as number) : undefined,
+        });
+        content = stdResult.message;
+        isError = !stdResult.ok;
+        auditLog(agentId, 'spawn_timeout_decision', stdResolved.id, stdResult.ok ? 'success' : 'denied', stdAction);
         break;
       }
       case 'send_to_agent': {
@@ -6168,6 +6428,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           task_id: args.task_id as string,
           directive: args.directive as string,
           target_status: args.target_status as string | undefined,
+          allow_regenerate: args.allow_regenerate as boolean | undefined,
         });
         isError = content.startsWith('Error');
         break;

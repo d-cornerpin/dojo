@@ -176,6 +176,7 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   // ── agent (multi-agent coordination, sequential) ──
   spawn_agent: 'agent',
   kill_agent: 'agent',
+  spawn_timeout_decision: 'agent',
   send_to_agent: 'agent',
   broadcast_to_group: 'agent',
   create_agent_group: 'agent',

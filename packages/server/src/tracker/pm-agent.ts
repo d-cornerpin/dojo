@@ -96,6 +96,52 @@ const PM_PERMISSIONS_JSON = JSON.stringify({
   can_assign_permissions: false,
 });
 
+// ── PM tool allow-list (single source of truth) ──
+//
+// RC-16: the PM is an OVERSEER, not a worker. It validates, overrides, retasks,
+// and reassigns; it never edits task CONTENT or flips a worker's status directly.
+// The worker verbs (tracker_update_status, tracker_complete_step,
+// tracker_edit_task) are intentionally ABSENT so a stale copy sitting in the PM's
+// long-lived context can't silently rewrite a task's description or re-close
+// already-closed work (P-1 / F-15). tracker_retask + tracker_reassign_task are
+// the PM's corrective verbs; the read-only / utility tools below are what the PM
+// legitimately needs to do oversight (list, inspect, message, read artifacts for
+// close-out verification, search memory/history).
+//
+// This constant is the ONE place the list lives. All three tools_policy write
+// sites (create / reactivate / boot-sync) read it, so the advertised surface
+// (computeFilteredTools' allow filter) cannot drift. It is also EXPORTED and
+// re-checked at the executor chokepoint (agent/tools.ts executeToolInner): per
+// Architecture Rule 1 the surface strip is only advice (the floor model can emit
+// a tool name from free text and reach the executor), so the PM verb enforcement
+// re-checks this same set and rejects any tool outside it with a TOOL-RESULT
+// error naming the overseer verbs.
+export const PM_ALLOWED_TOOLS: readonly string[] = [
+  'tracker_list_active', 'tracker_get_status',
+  'tracker_add_notes',
+  'tracker_pause_schedule', 'tracker_resume_schedule',
+  'tracker_validate', 'tracker_retask', 'tracker_reassign_task',
+  'tracker_override', 'tracker_request_override',
+  'tracker_apply_user_verdict',
+  // tracker_edit_task is REQUIRED by the engine's scaffold rename handoff
+  // (loop.ts dispatchPMRenameHandoff explicitly instructs the PM to call it).
+  // Omitting it (2026-07-17 battery, untracked-multistep-floor red) made the
+  // executor gate refuse the rename; the PM's local model then compensated by
+  // rewriting the PROJECT description via tracker_edit_project (stripping the
+  // ENGINE_AUTO_MARKER) and FYI-ing the primary to do the task rename for it.
+  'tracker_edit_project', 'tracker_edit_task', 'tracker_close_project',
+  'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
+  'vault_search', 'vault_remember', 'history_search', 'history_get',
+  'load_tool_docs', 'get_current_time',
+  // Read-only artifact verification for close-out validation (C2 sub-finding):
+  // confirm the actual deliverable instead of trusting the agent's claim.
+  // Read only, never file_write / file_delete / exec / network.
+  'file_read', 'file_list',
+];
+
+// O(1) membership check for the executor gate.
+export const PM_ALLOWED_TOOLS_SET: ReadonlySet<string> = new Set(PM_ALLOWED_TOOLS);
+
 // ── Ensure PM Agent Running ──
 
 export function ensurePMAgentRunning(): void {
@@ -129,33 +175,10 @@ export function ensurePMAgentRunning(): void {
 
   if (pm && pm.status !== 'terminated') {
     logger.info('PM agent already running', { status: pm.status });
-    // Ensure permissions are up to date on every boot
-    const syncToolsPolicy = JSON.stringify({
-      allow: [
-        // RC-16: the PM is an OVERSEER, not a worker. It validates, overrides,
-        // retasks, and reassigns; it never edits task CONTENT or flips a worker's
-        // status directly. The worker verbs (tracker_update_status,
-        // tracker_complete_step, tracker_edit_task) are intentionally absent so a
-        // stale copy sitting in the PM's long-lived context can't silently rewrite
-        // a task's description or re-close already-closed work (P-1 / F-15).
-        // tracker_retask + tracker_reassign_task are the PM's corrective verbs
-        // (its own closeout-miss escalation prompt already directs tracker_retask).
-        'tracker_list_active', 'tracker_get_status',
-        'tracker_add_notes',
-        'tracker_pause_schedule', 'tracker_resume_schedule',
-        'tracker_validate', 'tracker_retask', 'tracker_reassign_task',
-        'tracker_override', 'tracker_request_override',
-        'tracker_apply_user_verdict',
-        'tracker_edit_project', 'tracker_close_project',
-        'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
-        'vault_search', 'vault_remember', 'history_search', 'history_get',
-        'load_tool_docs', 'get_current_time',
-        // Read-only artifact verification for close-out validation (C2 sub-finding):
-        // confirm the actual deliverable instead of trusting the agent's claim.
-        // Read only, never file_write / file_delete / exec / network.
-        'file_read', 'file_list',
-      ],
-    });
+    // Ensure permissions are up to date on every boot. Allow-list from the single
+    // source (PM_ALLOWED_TOOLS) so the surface strip never drifts from the
+    // executor gate.
+    const syncToolsPolicy = JSON.stringify({ allow: [...PM_ALLOWED_TOOLS] });
     // Sync BOTH tools_policy and permissions on every boot so an already-running
     // PM picks up the read-only file_read grant (C2) without needing a reactivate.
     db.prepare("UPDATE agents SET tools_policy = ?, permissions = ?, updated_at = datetime('now') WHERE id = ?").run(syncToolsPolicy, PM_PERMISSIONS_JSON, pmId);
@@ -199,32 +222,7 @@ export function ensurePMAgentRunning(): void {
   if (pm) {
     // PM exists but was terminated, reactivate with correct name, model, and permissions
     const reactivatePermissions = PM_PERMISSIONS_JSON;
-    const reactivateToolsPolicy = JSON.stringify({
-      allow: [
-        // RC-16: the PM is an OVERSEER, not a worker. It validates, overrides,
-        // retasks, and reassigns; it never edits task CONTENT or flips a worker's
-        // status directly. The worker verbs (tracker_update_status,
-        // tracker_complete_step, tracker_edit_task) are intentionally absent so a
-        // stale copy sitting in the PM's long-lived context can't silently rewrite
-        // a task's description or re-close already-closed work (P-1 / F-15).
-        // tracker_retask + tracker_reassign_task are the PM's corrective verbs
-        // (its own closeout-miss escalation prompt already directs tracker_retask).
-        'tracker_list_active', 'tracker_get_status',
-        'tracker_add_notes',
-        'tracker_pause_schedule', 'tracker_resume_schedule',
-        'tracker_validate', 'tracker_retask', 'tracker_reassign_task',
-        'tracker_override', 'tracker_request_override',
-        'tracker_apply_user_verdict',
-        'tracker_edit_project', 'tracker_close_project',
-        'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
-        'vault_search', 'vault_remember', 'history_search', 'history_get',
-        'load_tool_docs', 'get_current_time',
-        // Read-only artifact verification for close-out validation (C2 sub-finding):
-        // confirm the actual deliverable instead of trusting the agent's claim.
-        // Read only, never file_write / file_delete / exec / network.
-        'file_read', 'file_list',
-      ],
-    });
+    const reactivateToolsPolicy = JSON.stringify({ allow: [...PM_ALLOWED_TOOLS] });
     db.prepare(`
       UPDATE agents SET
         name = ?,
@@ -245,33 +243,8 @@ export function ensurePMAgentRunning(): void {
   } else {
     // Create PM agent with permissions for tracker, messaging, and monitoring
     const pmPermissions = PM_PERMISSIONS_JSON;
-    // Allow only the tools the PM needs
-    const pmToolsPolicy = JSON.stringify({
-      allow: [
-        // RC-16: the PM is an OVERSEER, not a worker. It validates, overrides,
-        // retasks, and reassigns; it never edits task CONTENT or flips a worker's
-        // status directly. The worker verbs (tracker_update_status,
-        // tracker_complete_step, tracker_edit_task) are intentionally absent so a
-        // stale copy sitting in the PM's long-lived context can't silently rewrite
-        // a task's description or re-close already-closed work (P-1 / F-15).
-        // tracker_retask + tracker_reassign_task are the PM's corrective verbs
-        // (its own closeout-miss escalation prompt already directs tracker_retask).
-        'tracker_list_active', 'tracker_get_status',
-        'tracker_add_notes',
-        'tracker_pause_schedule', 'tracker_resume_schedule',
-        'tracker_validate', 'tracker_retask', 'tracker_reassign_task',
-        'tracker_override', 'tracker_request_override',
-        'tracker_apply_user_verdict',
-        'tracker_edit_project', 'tracker_close_project',
-        'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
-        'vault_search', 'vault_remember', 'history_search', 'history_get',
-        'load_tool_docs', 'get_current_time',
-        // Read-only artifact verification for close-out validation (C2 sub-finding):
-        // confirm the actual deliverable instead of trusting the agent's claim.
-        // Read only, never file_write / file_delete / exec / network.
-        'file_read', 'file_list',
-      ],
-    });
+    // Allow only the tools the PM needs (single source: PM_ALLOWED_TOOLS).
+    const pmToolsPolicy = JSON.stringify({ allow: [...PM_ALLOWED_TOOLS] });
     db.prepare(`
       INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by,
                           parent_agent, spawn_depth, agent_type, classification, max_runtime, timeout_at,
@@ -413,36 +386,34 @@ export function noteTransitionForReview(taskId: string, toStatus: string): void 
 /**
  * Engine-to-PM escalation for close-out misses.
  *
- * When the engine's close-out gate or idle-with-in_progress hardcap
- * fires, the danglers are still auto-paused (existing behavior) BUT we
- * additionally:
+ * When the engine's pre-turn close-out gate fires, the dangling one-shot tasks
+ * are left in_progress (demolition Phase 1.4: the engine no longer auto-pauses
+ * or pre-blesses a pause, and the reply stays visible to the user) BUT we:
  *   - write a `closeout_miss` entry into task_log per affected task
- *   - send a direct A2A message to the PM with the suppressed text,
- *     the task goals, and the explicit verb menu
- *     (validate_pause / retask / override-complete)
+ *   - send a direct A2A message to the PM with what the agent said, the task
+ *     goals + deliverable_shown state, and the explicit verb menu
+ *     (accept-complete / retask / dispose)
  *
- * Before this, the PM only learned about close-out misses indirectly
- * via the periodic situation report, which surfaced the pause as
- * "UNVALIDATED_PAUSE" with no context about what the agent actually
- * said or what they should have done. PM had no real basis to do
- * anything except validate the pause, which is exactly the rubber-
- * stamp behavior the user called out.
+ * Before this, the PM only learned about close-out misses indirectly via the
+ * periodic situation report, which surfaced the pause as "UNVALIDATED_PAUSE"
+ * with no context about what the agent actually said or what they should have
+ * done. PM had no real basis to do anything except validate the pause, which is
+ * exactly the rubber-stamp behavior the user called out.
  *
- * Fire-and-forget: PM acting takes a real LLM call; if PM is offline
- * or capped the task stays paused and the user can resolve from the
- * dashboard.
+ * Fire-and-forget: PM acting takes a real LLM call; if PM is offline or capped
+ * the task stays in_progress and the user can resolve from the dashboard.
  */
 export async function escalateCloseoutMissToPM(ctx: {
   agentId: string;
-  pausedTaskIds: string[];
-  suppressedText: string;
+  danglingTaskIds: string[];
+  agentText: string;
   source: 'idle-hardcap' | 'pre-turn-gate';
 }): Promise<void> {
-  if (!ctx.pausedTaskIds || ctx.pausedTaskIds.length === 0) return;
+  if (!ctx.danglingTaskIds || ctx.danglingTaskIds.length === 0) return;
 
   const pmId = getPMAgentId();
   if (!pmId) {
-    logger.info('Closeout-miss escalation skipped: no PM configured', { source: ctx.source, taskCount: ctx.pausedTaskIds.length });
+    logger.info('Closeout-miss escalation skipped: no PM configured', { source: ctx.source, taskCount: ctx.danglingTaskIds.length });
     return;
   }
   if (pmId === ctx.agentId) {
@@ -451,9 +422,9 @@ export async function escalateCloseoutMissToPM(ctx: {
   }
 
   const db = getDb();
-  const rows = ctx.pausedTaskIds
-    .map((id) => db.prepare(`SELECT id, title, goal FROM tasks WHERE id = ?`).get(id) as { id: string; title: string; goal: string | null } | undefined)
-    .filter((r): r is { id: string; title: string; goal: string | null } => Boolean(r));
+  const rows = ctx.danglingTaskIds
+    .map((id) => db.prepare(`SELECT id, title, goal, deliverable_shown FROM tasks WHERE id = ?`).get(id) as { id: string; title: string; goal: string | null; deliverable_shown: number } | undefined)
+    .filter((r): r is { id: string; title: string; goal: string | null; deliverable_shown: number } => Boolean(r));
   if (rows.length === 0) return;
 
   const sourceLabel = ctx.source === 'idle-hardcap' ? 'idle-with-in_progress hardcap' : 'pre-turn close-out gate';
@@ -466,8 +437,8 @@ export async function escalateCloseoutMissToPM(ctx: {
         fromEntity: 'engine',
         entryKind: 'closeout_miss',
         actionTaken: `escalated to PM via ${sourceLabel}`,
-        reason: 'agent produced user-facing text without calling tracker_update_status; bubble suppressed and task auto-paused pending PM review',
-        note: ctx.suppressedText.slice(0, 4000),
+        reason: 'agent produced user-facing text without calling tracker_update_status; the reply was shown to the user and the task remains in_progress pending PM review',
+        note: ctx.agentText.slice(0, 4000),
       });
     }
   } catch (err) {
@@ -477,11 +448,11 @@ export async function escalateCloseoutMissToPM(ctx: {
   }
 
   const taskLines = rows
-    .map((r) => `  - ${r.id.slice(0, 8)} "${r.title}" (goal: ${r.goal ?? '(none recorded)'})`)
+    .map((r) => `  - ${r.id.slice(0, 8)} "${r.title}" (goal: ${r.goal ?? '(none recorded)'}; deliverable_shown=${r.deliverable_shown ? 'true' : 'false'})`)
     .join('\n');
-  const truncatedSaid = ctx.suppressedText.length > 1500
-    ? ctx.suppressedText.slice(0, 1500) + '...'
-    : ctx.suppressedText;
+  const truncatedSaid = ctx.agentText.length > 1500
+    ? ctx.agentText.slice(0, 1500) + '...'
+    : ctx.agentText;
 
   // v2.10.2, receipts in the A2A body. Pre-fix, PM only saw the
   // agent's suppressed text ("08 done"), not the tool-call rows from
@@ -550,24 +521,24 @@ export async function escalateCloseoutMissToPM(ctx: {
   const payload =
     `[Engine notice - CLOSEOUT MISS]\n\n` +
     `Agent "${ctx.agentId}" finished a turn without calling tracker_update_status / tracker_complete_step. The engine ` +
-    `auto-paused the one-shot dangling task(s) below as a temporary measure. Your job: don't rubber-stamp. Decide per task.\n\n` +
-    `Paused task(s):\n${taskLines}\n\n` +
-    `What the agent said (suppressed from the user, they did NOT see this):\n` +
+    `did NOT pause or close the dangling one-shot task(s) below; they remain in_progress with their true status. Your job: don't rubber-stamp. Decide per task.\n\n` +
+    `Dangling task(s) (still in_progress):\n${taskLines}\n\n` +
+    `What the agent said to the user (shown in chat this turn):\n` +
     `> ${truncatedSaid.split('\n').join('\n> ')}\n\n` +
     receiptsBlock +
     `Trigger: ${sourceLabel}\n\n` +
     `Your verbs:\n` +
     `  (a) tracker_retask(task_id, directive), push the agent back at it with concrete corrective guidance ` +
     `(e.g. "you wrote the brief in chat but the task spec is email; call send_email with this same content to <recipient>"). USE THIS WHEN the agent did the wrong thing and you can name what they should do instead.\n` +
-    `  (b) tracker_validate(kind="pause", task_id, valid=true), confirm the pause stands. USE THIS WHEN the work genuinely can't proceed without user input you can name, or when the task is no longer relevant.\n` +
-    `  (c) tracker_override(...) or tracker_validate(kind="complete", ...), accept as complete. USE THIS WHEN you can verify (via the audit-log excerpts above + the suppressed text + a quick tracker_get_status / file check / etc.) that the work actually got done and the agent just forgot to close the tracker.\n\n` +
+    `  (b) leave it in_progress or dispose of it, the engine did NOT pause it. If the assignee is legitimately still mid-flight, do nothing (it stays in_progress and continues). If the work genuinely can't proceed without user input you can name, or the task is no longer relevant, tracker_close_project on the parent project or tracker_reassign_task. USE THIS WHEN the task is stuck or dead, not done.\n` +
+    `  (c) tracker_override(...) or tracker_validate(kind="complete", ...), accept as complete. USE THIS WHEN you can verify (via the audit-log excerpts above + what the agent said + a quick tracker_get_status / file check / etc.) that the work actually got done and the agent just forgot to close the tracker.\n\n` +
     `**Non-idempotent tools demand option (c), not (a).** If the audit log shows a successful call to gmail_send, outlook_send, ` +
     `imessage_send, sms_send, teams_send_message, voice_call, calendar_create, drive_upload, docs_create, sheets_create, share_publicly, ` +
     `or an exec that hit a live external API, the action already happened. Re-running it would duplicate the side effect (double email, ` +
     `double text, double charge). Accept as complete via tracker_override / tracker_validate, citing the audit row as evidence. ` +
     `Do NOT use tracker_retask on these; that produces duplicates.\n\n` +
     `For everything else, inspect the goal against what the agent said. If they delivered the wrong artifact OR in the wrong channel, retask. ` +
-    `Rubber-stamping the pause means the recurring task / user-promised work dies silently. Be a PM, not a status forwarder.`;
+    `Rubber-stamping means the recurring task / user-promised work dies silently. Be a PM, not a status forwarder.`;
 
   try {
     const { deliverA2AMessage } = await import('../agent/a2a-transport.js');
@@ -1586,60 +1557,49 @@ async function runPokeCheck(): Promise<void> {
 
     if (!pokeType) continue;
 
-    // F2 (ghost re-announce): before poking, silently close an engine-scaffolded
-    // one-shot task whose answer the user already has. The mid-turn auto-scaffold
-    // opens a task after 6 work calls of ANY kind (including pure reads); a read-only
-    // turn's closeout machinery never closed it, and 30 min later this chain would
-    // wake the assignee, which on the weak model re-delivers the whole old answer as
-    // a "ghost done". Requirement satisfied: the engine owns the lifecycle of the
-    // tasks IT opened. Narrow to engine-scaffolded work ONLY (project description
-    // carries ENGINE_AUTO_MARKER): the PM must keep chasing AGENT-created tasks,
-    // which is this chain's reason for existing.
+    // Deliverable-already-shown redirect (demolition Phase 1, replaces the F2
+    // ghost-reannounce pre-close). The old code silently engine-closed a
+    // scaffolded one-shot whose answer the user already had (a forged terminal
+    // close via engineCloseDeliveredTask), to avoid waking the weak model into a
+    // "ghost done" re-delivery. That forged the two-key contract. Now: when the
+    // task carries deliverable_shown=1 (markDeliverableShown recorded that the
+    // assignee already delivered the result to the user), we do NOT poke the
+    // assignee (which would re-drive them into a redo / re-delivery) and we do NOT
+    // close anything. Instead the PM's poke for this task becomes a VALIDATE
+    // directive to the PM's own model: judge the delivered work against the goal
+    // as-is, using the overseer verbs (validate the assignee's close-out, or
+    // retask with allow_regenerate=true only if it genuinely misses). logPoke at
+    // the current rung dedups so this fires at most once per escalation step (no
+    // hard loop); the assignee-poke branches below (including the destructive
+    // auto_reset) are short-circuited for a deliverable_shown task.
     try {
-      const scaffoldMeta = pokeDb.prepare(`
-        SELECT t.repeat_interval AS repeat_interval, t.created_at AS created_at, p.description AS proj_desc
-        FROM tasks t LEFT JOIN projects p ON p.id = t.project_id
-        WHERE t.id = ?
-      `).get(task.id) as { repeat_interval: number | null; created_at: string | null; proj_desc: string | null } | undefined;
-      const { ENGINE_AUTO_MARKER } = await import('../agent/v2/classifiers/multistep.js');
-      if (
-        scaffoldMeta &&
-        scaffoldMeta.repeat_interval == null &&
-        scaffoldMeta.proj_desc &&
-        scaffoldMeta.proj_desc.startsWith(ENGINE_AUTO_MARKER)
-      ) {
-        // Adapted from the completion-ack dedup query in loop.ts: a substantive,
-        // model-authored user-visible reply after the task was created, excluding
-        // tool_use/tool_result JSON rows and engine ack rows. Engine acks are
-        // excluded STRUCTURALLY via their origin_intent tag (so the varied wording
-        // can't break this check); the three prose NOT LIKEs are kept ONLY for
-        // historical ack rows written before the tag existed (origin_intent NULL).
-        const afterTs = scaffoldMeta.created_at ?? '1970-01-01';
-        const deliveredReply = pokeDb.prepare(`
-          SELECT content FROM messages
-          WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?
-            AND (source IS NULL OR source != 'a2a')
-            AND content NOT LIKE '[{%'
-            AND origin_intent IS NULL
-            AND content NOT LIKE 'On it.%'
-            AND content NOT LIKE 'Quick note, I%'
-            AND content NOT LIKE 'Done, I finished what you asked for.%'
-            AND length(trim(content)) > 40
-          ORDER BY created_at DESC LIMIT 1
-        `).get(task.assignedTo, afterTs) as { content: string } | undefined;
-        if (deliveredReply) {
-          const { engineCloseDeliveredTask } = await import('./tools.js');
-          const closed = await engineCloseDeliveredTask(task.assignedTo, task.id, deliveredReply.content);
-          if (closed) {
-            logger.info('PM poke chain: engine-closed a scaffolded one-shot task whose answer the user already has; skipping poke', {
-              taskId: task.id, assignedTo: task.assignedTo,
-            });
-            continue;
-          }
-        }
+      const shownRow = pokeDb.prepare(
+        `SELECT deliverable_shown AS deliverable_shown, goal AS goal FROM tasks WHERE id = ?`,
+      ).get(task.id) as { deliverable_shown: number | null; goal: string | null } | undefined;
+      if (shownRow && shownRow.deliverable_shown === 1) {
+        const pmId = getPMAgentId();
+        const assigneeName = task.assignedToName ?? task.assignedTo;
+        const validateDirective =
+          `Task "${task.title}" (${task.id.slice(0, 8)}) [assignee: ${assigneeName}]: its deliverable was already delivered to ${getOwnerName()} in an earlier reply (deliverable_shown=1). ` +
+          `Judge that delivered work against the task goal AS-IS. Do NOT re-drive ${assigneeName} to redo or re-deliver it (that produces a divergent second version and a second "done"). ` +
+          `Goal: ${shownRow.goal ?? '(none recorded)'}. ` +
+          `If the delivered work meets the goal, let the assignee's tracker_update_status close it out and validate that with tracker_validate; if it genuinely misses the goal, tracker_retask requires allow_regenerate=true (it refuses otherwise, to protect delivered work).`;
+        postAgentNotice({
+          toAgentId: pmId,
+          fromName: 'Tracker',
+          selfIntro: false,
+          intent: 'validate_deliverable',
+          brief: validateDirective,
+        });
+        logPoke(task.id, task.assignedTo, pokeNumber, 'validate_deliverable');
+        broadcast({ type: 'tracker:poke', data: { taskId: task.id, agentId: task.assignedTo, pokeType: 'validate_deliverable' } });
+        logger.info('PM poke chain: task deliverable already shown; sent VALIDATE directive to PM instead of poking the assignee (no close, no re-drive)', {
+          taskId: task.id, assignedTo: task.assignedTo, pokeNumber,
+        });
+        continue;
       }
     } catch (err) {
-      logger.warn('PM poke chain: scaffold-close pre-check failed (non-fatal, proceeding to poke)', {
+      logger.warn('PM poke chain: deliverable-shown pre-check failed (non-fatal, proceeding to poke)', {
         taskId: task.id, error: err instanceof Error ? err.message : String(err),
       });
     }

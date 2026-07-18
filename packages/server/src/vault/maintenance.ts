@@ -90,6 +90,41 @@ export function setDreamingConfig(config: { modelId?: string; dreamTime?: string
   }
 }
 
+// ── Dream cycle in-flight marker (P2a cadence gate) ──
+//
+// A DB-persisted flag that a NIGHTLY dream cycle is currently draining archives.
+// Set when runDreamingCycle commits to waking the first batch; cleared in
+// finalizeDreamCycle (both the rich-state and the resumed-after-restart paths).
+// Persisted in the config table (NOT in-memory) on purpose: FA-V4's whole point
+// is surviving a mid-cycle restart, so the marker must too.
+//
+// Owner rule (2026-07-17): "dreamer cycles are once per night". The mid-day
+// continuation sweep (runDreamerContinuationSweep) exists ONLY to recover a
+// STALLED nightly cycle, never to START a fresh drain. It proceeds only while
+// this marker is open, so archives produced during the day wait for tonight's
+// window instead of re-entering drain mode every few minutes. The nightly tick
+// self-heals a leaked marker because runDreamingCycle sets it fresh each night.
+const DREAM_CYCLE_OPEN_KEY = 'dream_cycle_open';
+
+// Exported for the P2a unit tests (dream-cycle-marker.test.ts) and available for
+// diagnostics; the marker is otherwise driven only by runDreamingCycle (set) and
+// finalizeDreamCycle (clear).
+export function isDreamCycleOpen(): boolean {
+  const db = getDb();
+  const row = db.prepare('SELECT value FROM config WHERE key = ?').get(DREAM_CYCLE_OPEN_KEY) as
+    | { value: string }
+    | undefined;
+  return row?.value === '1';
+}
+
+export function setDreamCycleOpen(open: boolean): void {
+  const db = getDb();
+  db.prepare(`
+    INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+    ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
+  `).run(DREAM_CYCLE_OPEN_KEY, open ? '1' : '0', open ? '1' : '0');
+}
+
 // ── Get Default Model for Dreaming ──
 
 function getDefaultDreamModel(): string | null {
@@ -948,6 +983,15 @@ function wakeupDreamer(cycleMessage: string): void {
   logger.debug('Dreamer session reset for fresh context', { dreamerId });
 
   const msgId = uuidv4();
+  // The cycle message is stored as a plain role='user' row (origin_kind left
+  // NULL). It is NOT stamped origin_kind='engine' even though it is engine-
+  // synthetic: the assembler lifts engine-origin user rows OUT of the live tail
+  // into the EVENTS lane (memory/assembler.ts scopeTo* ), which would divert the
+  // Dreamer's actual batch input away from the message it must process. Engine-
+  // cycle scoping of the Dreamer's scaffolding is instead handled on the TRIGGER
+  // side by the isDreamerAgent skips in loop.ts, so no origin stamp is needed
+  // here (P2b). Marking it would require a Dreamer-specific assembler exemption
+  // first, which is out of scope for the cadence fix.
   db.prepare(`
     INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
     VALUES (?, ?, 'user', ?, datetime('now'))
@@ -1141,6 +1185,13 @@ export async function runDreamingCycle(): Promise<{ dreamerId: string | null }> 
   // Build cycle message: vault state + archives + instructions
   const cycleMessage = buildDreamerCycleMessage(firstBatch.text, 0, batches.length, stats, profilePath, soulPath, config.dreamMode, unprocessed);
 
+  // P2a: a nightly cycle is now committing to a drain. Open the cycle-in-flight
+  // marker so the mid-day continuation sweep may recover this cycle if it
+  // stalls, but never START a new one for daytime archives. Cleared at finalize.
+  // Setting it here (reached only via runDreamingCycle, the nightly tick's cycle
+  // entrypoint) also self-heals a marker leaked by a crashed prior finalize.
+  setDreamCycleOpen(true);
+
   wakeupDreamer(cycleMessage);
 
   logger.info('Dreamer agent woken', {
@@ -1270,6 +1321,11 @@ async function finalizeDreamCycle(primaryId: string, state: PendingBatchState | 
   // own tools; that IS the injection path the primary reads.
 
   pendingBatches.delete(primaryId);
+  // P2a: the drain is finished, close the cycle-in-flight marker. Reached from
+  // both the in-memory-state path and the resumed-after-restart (state === null)
+  // path, so a cycle started tonight can no longer be re-armed by the mid-day
+  // sweep. The next nightly tick opens a fresh marker for the next drain.
+  setDreamCycleOpen(false);
   logger.info('All Dreamer batches complete', { totalBatches: state?.batches.length ?? 'resumed' });
   broadcast({ type: 'dream:complete', data: { batches: state?.batches.length ?? 0 } });
 }
@@ -1974,7 +2030,7 @@ export async function sweepDreamerHealth(): Promise<void> {
  * already draining the same archives. Deliberately no new timer: this piggybacks
  * the nightly scheduler tick below.
  */
-async function runDreamerContinuationSweep(): Promise<void> {
+export async function runDreamerContinuationSweep(): Promise<void> {
   try {
     if (getDreamingConfig().dreamMode === 'off') return;
     if (!isSetupCompleted()) return;
@@ -1982,11 +2038,13 @@ async function runDreamerContinuationSweep(): Promise<void> {
     const primaryId = getPrimaryAgentId();
     if (!primaryId) return;
 
-    // Non-trivial work must remain; trivial archives are left for the normal
-    // triage to mark processed so the sweep never wakes the Dreamer to discard
-    // junk (and never writes a spurious resumed-cycle report).
-    const remaining = getUnprocessedConversations();
-    if (!remaining.some(conv => classifyTrivial(conv) === null)) return;
+    // P2a cycle-in-flight gate (owner rule: dreamer cycles are once per night).
+    // This mid-day sweep RECOVERS a stalled nightly cycle; it must never START a
+    // fresh drain for archives produced during the day. A nightly cycle opens the
+    // marker when it commits to a drain (runDreamingCycle) and finalizeDreamCycle
+    // clears it; with no cycle open, today's archives wait for tonight's window.
+    // Checked BEFORE any other work so a closed marker costs one config read.
+    if (!isDreamCycleOpen()) return;
 
     const dreamerId = getDreamerAgentId();
     if (activeRuns.has(dreamerId)) return; // a batch is live in this process
@@ -1994,9 +2052,22 @@ async function runDreamerContinuationSweep(): Promise<void> {
     const row = db.prepare('SELECT status FROM agents WHERE id = ?').get(dreamerId) as { status: string } | undefined;
     if (row?.status === 'working') return; // genuinely mid-batch (staleness handled by runDreamingCycle)
 
+    // Marker open, Dreamer idle. Non-trivial work must remain; trivial archives
+    // are left for the normal triage to mark processed so the sweep never wakes
+    // the Dreamer to discard junk. If NOTHING non-trivial remains, a prior
+    // finalize crashed (or a restart landed) after the last batch was filed but
+    // before the marker was cleared: the marker leaked open. Finalize now to
+    // close it instead of spinning on nothing every sweep.
+    const remaining = getUnprocessedConversations();
+    if (!remaining.some(conv => classifyTrivial(conv) === null)) {
+      logger.warn('Dream cycle marker open but no non-trivial archives remain; finalizing leaked-open cycle', { dreamerId });
+      await finalizeDreamCycle(primaryId, pendingBatches.get(primaryId) ?? null);
+      return;
+    }
+
     if (Date.now() - lastDreamerWakeMs < DREAMER_CONTINUATION_QUIET_MS) return; // a batch woke recently
 
-    logger.warn('Dreamer continuation sweep: unprocessed archives remain with an idle Dreamer, re-arming batch continuation', {
+    logger.warn('Dreamer continuation sweep: nightly cycle in flight with unprocessed archives and an idle Dreamer, re-arming batch continuation', {
       dreamerId,
       remaining: remaining.length,
     });
