@@ -10,7 +10,7 @@ import { postAgentNotice } from '../agent/agent-notice.js';
 import { listTasks, getTask, getLastPoke, logPoke, clearPokeLog } from './schema.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { getRecentObservations, getRecentTransitions, formatEntryLine } from './task-log.js';
-import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, isSetupCompleted, getOwnerName } from '../config/platform.js';
+import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, isSetupCompleted, getOwnerName, isSystemServiceAgent, isDreamerAgent } from '../config/platform.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('pm-agent');
@@ -1115,6 +1115,61 @@ async function runPMReview(): Promise<void> {
   `);
 
   for (const cTask of unvalidatedCompleteRows) {
+    // ── Engine-maintenance adjudication (owner ruling 2026-07-18) ──
+    // Service-agent maintenance tasks (memory-cycle batches, healer/trainer/
+    // imaginer housekeeping, PM self-tasks) must be adjudicated by the ENGINE
+    // against its own receipts, deterministically, never by the PM model chain
+    // (which cannot inspect internal machinery and stalls in poke ping-pong)
+    // and never by the user (who cannot observe it at all). Production chain:
+    // churn-era dreamer tasks sat complete+unvalidated for days, then the
+    // newly-visible escalation tier asked the OWNER yes/no questions about
+    // archive batches. The escalation skip alone would leave the stall in
+    // place forever; this branch RESOLVES it through the sanctioned Key-2 door
+    // (trackerValidateComplete as the PM), with the basis recorded:
+    //   1. the task carries its own receipt (result or evidence from the
+    //      service agent's completion), validate on that receipt;
+    //   2. a dreamer task with no receipt but an EMPTY archive queue: the
+    //      maintenance outcome is globally satisfied, validate on that basis;
+    //   3. no receipt and no engine basis: validate=false would re-open churn
+    //      on a shell nobody can work, so validate with the leftover basis
+    //      RECORDED as unverifiable, keeping the ledger honest about what was
+    //      and was not proven. Every path logs; nothing reaches the model chain.
+    if (cTask.assigned_to && isSystemServiceAgent(cTask.assigned_to)) {
+      try {
+        const { trackerValidateComplete } = await import('./tools.js');
+        const hasReceipt = Boolean((cTask.result && cTask.result.trim()) || (cTask.evidence_json && cTask.evidence_json !== '[]'));
+        let basis: string;
+        if (hasReceipt) {
+          basis = `engine-maintenance receipt on the task itself: ${(cTask.result ?? '').slice(0, 160) || 'evidence array recorded'}`;
+        } else if (isDreamerAgent(cTask.assigned_to)) {
+          const { getUnprocessedConversations } = await import('../vault/store.js');
+          const backlog = getUnprocessedConversations().length;
+          basis = backlog === 0
+            ? 'no task-level receipt, but the archive queue is empty: the maintenance outcome this task names is globally satisfied'
+            : `no task-level receipt; archive queue holds ${backlog} unprocessed item(s), adjudicated as an unverifiable maintenance leftover (the live queue is owned by the nightly cycle, not this shell)`;
+        } else {
+          basis = 'no task-level receipt; unverifiable maintenance leftover, adjudicated closed by engine jurisdiction rule';
+        }
+        await trackerValidateComplete(getPMAgentId(), { task_id: cTask.id, valid: true });
+        const { writeTaskLog } = await import('./task-log.js');
+        writeTaskLog({
+          taskId: cTask.id,
+          fromEntity: 'pm',
+          entryKind: 'observation',
+          actionTaken: 'engine-maintenance adjudication',
+          reason: basis,
+        });
+        logger.info('PM sweep: engine-maintenance task adjudicated deterministically (never via model chain or user)', {
+          taskId: cTask.id, assignedTo: cTask.assigned_to, basis: basis.slice(0, 200),
+        });
+      } catch (err) {
+        logger.warn('PM sweep: engine-maintenance adjudication failed (will retry next sweep)', {
+          taskId: cTask.id, error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      continue;
+    }
+
     const agentName = cTask.assigned_to
       ? agents.find(a => a.id === cTask.assigned_to)?.name ?? cTask.assigned_to
       : 'unassigned';
