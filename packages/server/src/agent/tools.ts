@@ -9862,9 +9862,9 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         // Dreamer agent and returns once that agent is started, but the
         // actual extraction is async on that agent's loop.
         const { runDreamingCycle } = await import('../vault/maintenance.js');
-        const { getUnprocessedConversations } = await import('../vault/store.js');
-        const unprocessed = getUnprocessedConversations();
-        if (unprocessed.length === 0) {
+        const { getUnprocessedConversationCount } = await import('../vault/store.js');
+        const unprocessedCount = getUnprocessedConversationCount();
+        if (unprocessedCount === 0) {
           content = 'No unprocessed conversation archives, nothing for the Dreamer to do right now. The next archive will trigger a cycle on the normal schedule.';
           isError = false;
           break;
@@ -9872,7 +9872,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         try {
           const { dreamerId } = await runDreamingCycle();
           if (dreamerId) {
-            content = `Dream cycle started in the background. Dreamer agent: ${dreamerId}. Processing ${unprocessed.length} unprocessed archive(s). The Dreamer will write a dream_reports row when done, typically 30s-3m.`;
+            content = `Dream cycle started in the background. Dreamer agent: ${dreamerId}. Processing ${unprocessedCount} unprocessed archive(s). The Dreamer will write a dream_reports row when done, typically 30s-3m.`;
             isError = false;
           } else {
             content = 'Dream cycle did NOT start, dreaming is disabled, no model is configured, or the primary agent is missing. Check ~/.dojo/config.yaml.';

@@ -1372,25 +1372,18 @@ function writeResumedDreamReport(): void {
 async function wakeNextBatchFromDb(primaryId: string, state: PendingBatchState | null): Promise<boolean> {
   const db = getDb();
 
-  // Remaining, non-poisoned archives. getUnprocessedConversations already
-  // excludes poisoned rows (see store.ts).
-  const allRemaining = getUnprocessedConversations();
-  if (allRemaining.length === 0) return false;
-
-  // Same engine triage as runDreamingCycle: auto-skip trivial archives (mark
-  // them processed) so the Dreamer is not woken merely to discard junk.
-  const { markConversationProcessed } = await import('./store.js');
-  const remaining: VaultConversation[] = [];
-  for (const conv of allRemaining) {
-    const reason = classifyTrivial(conv);
-    if (reason) {
-      markConversationProcessed(conv.id);
-      logger.debug('Auto-skipped trivial archive during continuation', { archiveId: conv.id, reason });
-    } else {
-      remaining.push(conv);
-    }
-  }
-  if (remaining.length === 0) return false;
+  // Event-loop discipline (2026-07-19): only ONE batch is used per call
+  // (batches[0] below), so never load the whole queue's message blobs, the
+  // full load once froze every in-flight request for minutes on a day-sized
+  // queue. Walk the metadata list ASC and load content per row: trivial rows
+  // are marked processed as before; non-trivial rows accumulate ONLY until we
+  // hold comfortably more than one batch's worth (2x the context window by
+  // raw token_count is a guaranteed superset of batches[0], whose budget is
+  // always below one context window), then stop. Batch composition is
+  // identical to the full-queue result because order and budget are unchanged.
+  const { markConversationProcessed, getUnprocessedConversationMeta, getUnprocessedConversationById } = await import('./store.js');
+  const queueMeta = getUnprocessedConversationMeta();
+  if (queueMeta.length === 0) return false;
 
   const modelId = state?.modelId ?? getDreamingConfig().modelId ?? getDefaultDreamModel();
   if (!modelId) {
@@ -1400,6 +1393,25 @@ async function wakeNextBatchFromDb(primaryId: string, state: PendingBatchState |
   const modelRow = db.prepare('SELECT context_window FROM models WHERE id = ?').get(modelId) as
     | { context_window: number } | undefined;
   const contextWindow = modelRow?.context_window ?? 32000;
+
+  // Bounded per-row load: triage trivials (marked processed, exactly the old
+  // behavior) and collect non-trivial rows until the raw token superset bound.
+  const remaining: VaultConversation[] = [];
+  let subsetTokens = 0;
+  for (const meta of queueMeta) {
+    if (subsetTokens > contextWindow * 2 && remaining.length > 0) break;
+    const conv = getUnprocessedConversationById(meta.id);
+    if (!conv) continue;
+    const reason = classifyTrivial(conv);
+    if (reason) {
+      markConversationProcessed(conv.id);
+      logger.debug('Auto-skipped trivial archive during continuation', { archiveId: conv.id, reason });
+      continue;
+    }
+    remaining.push(conv);
+    subsetTokens += Math.max(1, meta.tokenCount);
+  }
+  if (remaining.length === 0) return false;
 
   const batches = batchArchives(remaining, contextWindow);
   const batch = batches[0];
@@ -1437,7 +1449,7 @@ async function wakeNextBatchFromDb(primaryId: string, state: PendingBatchState |
       cycleStartedAtMs: Date.now(),
       archivesProcessedThisCycle: 0,
       autoSkippedThisCycle: 0,
-      totalArchivesAtStart: remaining.length,
+      totalArchivesAtStart: queueMeta.length,
       maintenanceAtStart: { pruned: 0, decayed: 0, unpinned: 0, agedOut: 0 },
       vaultStatsBefore: stats,
     });
@@ -1452,7 +1464,7 @@ async function wakeNextBatchFromDb(primaryId: string, state: PendingBatchState |
   );
   wakeupDreamer(cycleMessage);
   logger.info('Dreamer woken for next batch (stateless DB continuation)', {
-    dreamerId, archivesInBatch: batch.ids.length, remaining: remaining.length, resumedAfterRestart: !state,
+    dreamerId, archivesInBatch: batch.ids.length, remaining: queueMeta.length, resumedAfterRestart: !state,
   });
   return true;
 }
@@ -2058,8 +2070,19 @@ export async function runDreamerContinuationSweep(): Promise<void> {
     // finalize crashed (or a restart landed) after the last batch was filed but
     // before the marker was cleared: the marker leaked open. Finalize now to
     // close it instead of spinning on nothing every sweep.
-    const remaining = getUnprocessedConversations();
-    if (!remaining.some(conv => classifyTrivial(conv) === null)) {
+    // Event-loop discipline (2026-07-19): this runs on a 5-minute tick, so it
+    // must NEVER load the whole queue's message blobs (a day's accumulation is
+    // hundreds of megabyte-scale rows, and the full load froze every request
+    // in flight: minutes-long dashboard loads). Walk the metadata list and
+    // load content ONE row at a time, stopping at the first non-trivial hit.
+    const { getUnprocessedConversationMeta, getUnprocessedConversationById } = await import('./store.js');
+    const remainingMeta = getUnprocessedConversationMeta();
+    let nonTrivialFound = false;
+    for (const meta of remainingMeta) {
+      const conv = getUnprocessedConversationById(meta.id);
+      if (conv && classifyTrivial(conv) === null) { nonTrivialFound = true; break; }
+    }
+    if (!nonTrivialFound) {
       logger.warn('Dream cycle marker open but no non-trivial archives remain; finalizing leaked-open cycle', { dreamerId });
       await finalizeDreamCycle(primaryId, pendingBatches.get(primaryId) ?? null);
       return;
@@ -2069,7 +2092,7 @@ export async function runDreamerContinuationSweep(): Promise<void> {
 
     logger.warn('Dreamer continuation sweep: nightly cycle in flight with unprocessed archives and an idle Dreamer, re-arming batch continuation', {
       dreamerId,
-      remaining: remaining.length,
+      remaining: remainingMeta.length,
     });
     await spawnNextDreamerBatch(primaryId);
   } catch (err) {

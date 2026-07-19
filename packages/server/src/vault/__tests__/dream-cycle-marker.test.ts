@@ -55,6 +55,9 @@ vi.mock('../../agent/v2/counterparty.js', () => ({ rehomeUnclaimedEngineEvents: 
 // count is the clean observable for whether the gate let execution through.
 const store = vi.hoisted(() => ({
   getUnprocessedConversations: vi.fn(),
+  getUnprocessedConversationMeta: vi.fn(),
+  getUnprocessedConversationById: vi.fn(),
+  getUnprocessedConversationCount: vi.fn(),
   getVaultStats: vi.fn(() => ({ totalEntries: 0, pinnedCount: 0, permanentCount: 0 })),
   createDreamReport: vi.fn(),
   getConversation: vi.fn(() => null),
@@ -161,12 +164,14 @@ describe('runDreamerContinuationSweep marker gate (P2a)', () => {
   it('no-ops when the marker is CLOSED even with unprocessed archives + idle Dreamer', async () => {
     // Marker closed (default). Real work is waiting and the Dreamer is idle: the
     // ONLY thing that must stop the sweep is the once-per-night cadence gate.
-    store.getUnprocessedConversations.mockReturnValue([makeNonTrivialConversation()]);
+    store.getUnprocessedConversationMeta.mockReturnValue([{ id: 'm1', agentId: 'a', agentName: null, messageCount: 9, tokenCount: 900, createdAt: '2026-07-19' }]);
+    store.getUnprocessedConversationById.mockReturnValue(makeNonTrivialConversation());
     expect(isDreamCycleOpen()).toBe(false);
 
     await runDreamerContinuationSweep();
 
     // The gate returns before any archive is inspected: no drain is started.
+    expect(store.getUnprocessedConversationMeta).not.toHaveBeenCalled();
     expect(store.getUnprocessedConversations).not.toHaveBeenCalled();
     expect(store.markConversationProcessed).not.toHaveBeenCalled();
     // The sweep never opens the marker itself (only the nightly cycle may).
@@ -178,12 +183,15 @@ describe('runDreamerContinuationSweep marker gate (P2a)', () => {
     // archives remain (a finalize that leaked the marker, e.g. a mid-cycle
     // restart after the last batch filed). The sweep must close it, not spin.
     setDreamCycleOpen(true);
-    store.getUnprocessedConversations.mockReturnValue([]);
+    store.getUnprocessedConversationMeta.mockReturnValue([]);
 
     await runDreamerContinuationSweep();
 
     // Passed the gate (reached the archive query) ...
-    expect(store.getUnprocessedConversations).toHaveBeenCalled();
+    // Event-loop discipline (2026-07-19): the sweep reads METADATA, never the
+    // full-blob loader, on its 5-minute tick.
+    expect(store.getUnprocessedConversationMeta).toHaveBeenCalled();
+    expect(store.getUnprocessedConversations).not.toHaveBeenCalled();
     // ... and finalized the leaked-open cycle: report written, marker cleared.
     expect(store.createDreamReport).toHaveBeenCalledTimes(1);
     expect(isDreamCycleOpen()).toBe(false);

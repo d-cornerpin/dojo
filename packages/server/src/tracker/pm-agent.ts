@@ -1142,8 +1142,8 @@ async function runPMReview(): Promise<void> {
         if (hasReceipt) {
           basis = `engine-maintenance receipt on the task itself: ${(cTask.result ?? '').slice(0, 160) || 'evidence array recorded'}`;
         } else if (isDreamerAgent(cTask.assigned_to)) {
-          const { getUnprocessedConversations } = await import('../vault/store.js');
-          const backlog = getUnprocessedConversations().length;
+          const { getUnprocessedConversationCount } = await import('../vault/store.js');
+          const backlog = getUnprocessedConversationCount();
           basis = backlog === 0
             ? 'no task-level receipt, but the archive queue is empty: the maintenance outcome this task names is globally satisfied'
             : `no task-level receipt; archive queue holds ${backlog} unprocessed item(s), adjudicated as an unverifiable maintenance leftover (the live queue is owned by the nightly cycle, not this shell)`;

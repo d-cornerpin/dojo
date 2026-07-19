@@ -884,10 +884,59 @@ export function getUnprocessedConversations(): VaultConversation[] {
   // bounded retry) are excluded from the work queue so the engine stops
   // re-feeding a pathological archive to the model forever. They are surfaced
   // by the DREAM_POISONED Healer diagnostic instead.
+  //
+  // COST WARNING (2026-07-19): this materializes every archive's FULL messages
+  // JSON (megabytes per row) synchronously. Once the nightly-only cadence let
+  // the queue grow through the day, hot-path callers froze the event loop and
+  // the dashboard took minutes to load. Anything needing counts, ids, or
+  // sizing must use getUnprocessedConversationMeta /
+  // getUnprocessedConversationCount, loading content per row via
+  // getUnprocessedConversationById for only the rows it actually examines.
   const rows = db.prepare(
     'SELECT * FROM vault_conversations WHERE is_processed = 0 AND poisoned = 0 ORDER BY created_at ASC'
   ).all() as VaultConversationRow[];
   return rows.map(rowToConversation);
+}
+
+/** Metadata-only view of the unprocessed queue: everything EXCEPT the
+ *  messages blob. Same filter and order as getUnprocessedConversations. */
+export interface VaultConversationMeta {
+  id: string;
+  agentId: string;
+  agentName: string | null;
+  messageCount: number;
+  tokenCount: number;
+  createdAt: string;
+}
+
+export function getUnprocessedConversationMeta(): VaultConversationMeta[] {
+  const db = getDb();
+  const rows = db.prepare(
+    `SELECT id, agent_id, agent_name, message_count, token_count, created_at
+     FROM vault_conversations WHERE is_processed = 0 AND poisoned = 0 ORDER BY created_at ASC`
+  ).all() as Array<{ id: string; agent_id: string; agent_name: string | null; message_count: number; token_count: number; created_at: string }>;
+  return rows.map((r) => ({
+    id: r.id, agentId: r.agent_id, agentName: r.agent_name,
+    messageCount: r.message_count, tokenCount: r.token_count, createdAt: r.created_at,
+  }));
+}
+
+export function getUnprocessedConversationCount(): number {
+  const db = getDb();
+  const row = db.prepare(
+    'SELECT COUNT(*) AS n FROM vault_conversations WHERE is_processed = 0 AND poisoned = 0'
+  ).get() as { n: number };
+  return row.n;
+}
+
+/** Full single-row load (blob included) for a row the caller is actually
+ *  examining. Returns null if the row is gone or no longer unprocessed. */
+export function getUnprocessedConversationById(id: string): VaultConversation | null {
+  const db = getDb();
+  const row = db.prepare(
+    'SELECT * FROM vault_conversations WHERE id = ? AND is_processed = 0 AND poisoned = 0'
+  ).get(id) as VaultConversationRow | undefined;
+  return row ? rowToConversation(row) : null;
 }
 
 // ── FA-V4: bounded Dreamer retry + poison escalation ──
