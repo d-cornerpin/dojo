@@ -1523,6 +1523,11 @@ export function startIMBridge(recipientId: string): void {
     return;
   }
 
+  // Say at BOOT whether the attachment sender is healthy, not at the first
+  // failed send in the middle of the night (2026-07-18: a broken imsg install
+  // hid behind per-send warnings for a full day of delivery mysteries).
+  checkImsgHealth();
+
   // Load approved senders from config, falling back to legacy single recipient.
   // parseSafeSenders accepts both the legacy string[] shape and the new
   // SafeSender[] shape, so an install that hasn't yet re-saved Settings keeps
@@ -1628,14 +1633,27 @@ export function reloadApprovedSenders(): void {
 // attachments require imsg, AppleScript's POSIX file handling is
 // broken on newer macOS.
 
+const IMSG_CANDIDATE_PATHS = ['/opt/homebrew/bin/imsg', '/usr/local/bin/imsg', `${os.homedir()}/.dojo/bin/imsg`];
+
 function findImsg(): string | null {
-  for (const p of ['/opt/homebrew/bin/imsg', '/usr/local/bin/imsg', `${os.homedir()}/.dojo/bin/imsg`]) {
+  // Select the first candidate that actually RUNS, not the first that exists.
+  // Production 2026-07-18: a root-owned broken install at /opt/homebrew/bin
+  // (resource bundle missing, crashes at launch) shadowed the healthy copy the
+  // boot self-heal had planted lower in this list, because the unprivileged
+  // repair cannot overwrite a sudo-installed file and existence-first selection
+  // kept choosing the crasher. Any invocation loads the PhoneNumberKit bundle,
+  // so a --help probe discriminates broken from healthy; the result is cached
+  // by getImsgPath, so the probe cost is paid once per process.
+  for (const p of IMSG_CANDIDATE_PATHS) {
     try {
-      if (fs.existsSync(p)) return p;
-    } catch { /* continue */ }
+      if (!fs.existsSync(p)) continue;
+      execFileSync(p, ['--help'], { timeout: 10000, encoding: 'utf-8', stdio: 'pipe' });
+      return p;
+    } catch { /* exists but broken, or probe failed: try the next candidate */ }
   }
   try {
     execSync('which imsg', { encoding: 'utf-8', stdio: 'pipe' });
+    execFileSync('imsg', ['--help'], { timeout: 10000, encoding: 'utf-8', stdio: 'pipe' });
     return 'imsg';
   } catch {
     return null;
@@ -1687,6 +1705,82 @@ function sendIMessageViaAppleScript(recipient: string, text: string): void {
     timeout: 10000,
     encoding: 'utf-8',
   });
+}
+
+// The corrected imsg install command, shown wherever imsg is missing/broken.
+// The PhoneNumberKit resource bundle MUST sit next to the binary: a bare
+// `cp bin/imsg /opt/homebrew/bin/` produces a binary that crashes at launch
+// ("could not load resource bundle", observed in production 2026-07-18), which
+// is worse than not installing it because the failure looks like a send bug.
+const IMSG_INSTALL_HINT =
+  'git clone https://github.com/steipete/imsg.git && cd imsg && make build && ' +
+  'sudo cp bin/imsg /opt/homebrew/bin/ && ' +
+  'sudo cp .build/*/release/PhoneNumberKit_PhoneNumberKit.bundle /opt/homebrew/bin/ ' +
+  '(the bundle must sit NEXT TO the binary or imsg crashes at launch)';
+
+/**
+ * AppleScript file send: Messages.app can send a POSIX file by script, so a
+ * missing or broken imsg no longer means attachments cannot be delivered at
+ * all (production 2026-07-18: a crashed imsg silently killed the finished-
+ * image auto-text while plain text sailed through on the AppleScript path).
+ * Two-bubble limitation vs imsg: the file goes alone; any caption is sent as
+ * its own text bubble by the caller. Same Sequoia-safe positional service
+ * selection as sendIMessageViaAppleScript. Throws on failure.
+ */
+function sendIMessageFileViaAppleScript(recipient: string, filePath: string): void {
+  const escapedRecipient = recipient.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const escapedPath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const script = `
+    tell application "Messages"
+      set targetService to missing value
+      repeat with s in services
+        try
+          if (service type of s) is iMessage then
+            set targetService to s
+            exit repeat
+          end if
+        end try
+      end repeat
+      if targetService is missing value then set targetService to item 1 of services
+      set targetBuddy to buddy "${escapedRecipient}" of targetService
+      send POSIX file "${escapedPath}" to targetBuddy
+    end tell
+  `;
+  execSync(`osascript -e '${script.replace(/'/g, "'\"'\"'")}'`, {
+    timeout: 15000,
+    encoding: 'utf-8',
+  });
+}
+
+/**
+ * Boot-time imsg health probe. A broken imsg (binary present, resource bundle
+ * missing) previously surfaced only as a per-send warning nobody reads; text
+ * kept working via the AppleScript fallback, so the breakage masqueraded as an
+ * attachments-only delivery bug for a full day. Probe once at bridge start and
+ * say it LOUDLY with the repair command. Non-fatal either way: the AppleScript
+ * file fallback now covers delivery.
+ */
+export function checkImsgHealth(): void {
+  const imsg = getImsgPath();
+  if (imsg) {
+    // findImsg only returns binaries that passed the runnability probe, so a
+    // non-null path IS the health signal. Name it so the boot log shows which
+    // copy won (a broken sudo-installed one can shadow a healthy self-healed
+    // one; selection now skips crashers, but the operator should see the pick).
+    logger.info('imsg CLI healthy', { path: imsg });
+    return;
+  }
+  const brokenPresent = IMSG_CANDIDATE_PATHS.some((p) => {
+    try { return fs.existsSync(p); } catch { return false; }
+  });
+  if (brokenPresent) {
+    logger.warn('imsg CLI is INSTALLED BUT BROKEN everywhere it was found (crashes at launch, likely a ' +
+      'missing PhoneNumberKit bundle). Sends fall back to AppleScript so delivery still works; repair for ' +
+      'single-bubble captioned attachments: ' + IMSG_INSTALL_HINT);
+  } else {
+    logger.warn('imsg CLI not installed. Text and attachments both deliver via the AppleScript fallback; ' +
+      'install imsg for single-bubble captioned attachments: ' + IMSG_INSTALL_HINT);
+  }
 }
 
 // v2.3.19, returns true if the send actually succeeded, false if every
@@ -1778,21 +1872,45 @@ export function sendIMessageWithAttachment(
   }
   const imsg = getImsgPath();
 
-  if (!imsg) {
-    logger.warn('imsg CLI not found - cannot send file attachment. Install via: git clone https://github.com/steipete/imsg.git && cd imsg && make build && sudo cp bin/imsg /usr/local/bin/');
-    return false;
+  // Preferred path: imsg (single bubble, caption rides the file).
+  if (imsg) {
+    try {
+      const args = ['send', '--to', recipient];
+      if (caption) args.push('--text', caption);
+      args.push('--file', filePath, '--service', 'imessage');
+      execFileSync(imsg, args, { timeout: 30000, encoding: 'utf-8', stdio: 'pipe' });
+      logger.info('iMessage attachment sent', { recipient, filePath, via: 'imsg', hasCaption: Boolean(caption) });
+      return true;
+    } catch (err) {
+      logger.warn('imsg attachment send failed, falling back to AppleScript file send. Repair imsg: ' + IMSG_INSTALL_HINT, {
+        error: err instanceof Error ? err.message.slice(0, 300) : String(err),
+        recipient,
+        filePath,
+      });
+    }
+  } else {
+    logger.warn('imsg CLI not found, using AppleScript file send. For single-bubble captions install imsg: ' + IMSG_INSTALL_HINT);
   }
 
+  // Fallback: AppleScript file send (production 2026-07-18: a broken imsg
+  // silently killed every attachment send while text survived on its own
+  // AppleScript fallback; attachments deserve the same resilience). File goes
+  // FIRST so a caption never announces a file that failed; the caption then
+  // rides as its own bubble via sendIMessage (which sanitizes markdown and has
+  // its own delivery chain).
   try {
-    const args = ['send', '--to', recipient];
-    if (caption) args.push('--text', caption);
-    args.push('--file', filePath, '--service', 'imessage');
-    execFileSync(imsg, args, { timeout: 30000, encoding: 'utf-8', stdio: 'pipe' });
-    logger.info('iMessage attachment sent', { recipient, filePath, hasCaption: Boolean(caption) });
+    sendIMessageFileViaAppleScript(recipient, filePath);
+    logger.info('iMessage attachment sent', { recipient, filePath, via: 'applescript', hasCaption: Boolean(caption) });
+    if (caption && caption.trim()) {
+      const captionOk = sendIMessage(recipient, caption);
+      if (!captionOk) {
+        logger.warn('attachment caption send failed (the file itself was delivered)', { recipient, filePath });
+      }
+    }
     return true;
   } catch (err) {
-    logger.error('imsg attachment send failed', {
-      error: err instanceof Error ? err.message : String(err),
+    logger.error('iMessage attachment send failed on every path (imsg and AppleScript)', {
+      error: err instanceof Error ? err.message.slice(0, 300) : String(err),
       recipient,
       filePath,
     });
