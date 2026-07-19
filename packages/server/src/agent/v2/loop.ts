@@ -131,7 +131,6 @@ import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-repli
 import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout, stripLeadingTimeStamp } from './classifiers/output.js';
 import { identicalCallSignature, checkIdenticalCallRefusal, recordIdenticalCallResult, type RepeatCallState } from './identical-call-brake.js';
 import { detectUngroundedDeliveryClaim, detectDeliveryDenial } from './classifiers/grounding.js';
-import { detectDeliverableClaim, hadReceiptToolThisTurn, RECEIPT_TOOLS as DELIVERABLE_RECEIPT_TOOLS } from './classifiers/deliverable-claim.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
 import { permissionAlternativeFinder } from './classifiers/permission.js';
 import { semanticTechniqueMatches, SEMANTIC_STRONG_THRESHOLD, buildTechniqueMatchQuery } from './classifiers/technique.js';
@@ -4248,72 +4247,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }
       }
 
-      // ── Deliverable-claim floor (2026-07-18 confabulation incident) ── Sibling
-      // of the RC-13.2 save-claim floor, one rung broader: the terminal reply
-      // asserts completed/delivered WORK ("Longhorizon report is compiled", "the
-      // photo is done and posted") but ZERO receipt-tier tools SUCCEEDED this turn,
-      // so nothing this turn produced the artifact it names. The observed case: the
-      // agent answered a time question, swept leftover tracker/vault state, and
-      // narrated a task row it never worked as its own finished report. Steer once,
-      // visibly, and re-enter so the agent verifies against a real artifact or
-      // corrects the reply. HARD LAWS: prose classification never gains authority,
-      // this may steer + re-enter ONCE, it may NEVER block/suppress/rewrite the
-      // reply; if the model repeats the claim after the steer the reply STANDS
-      // (log-only below). Skip A2A (interAgentTurn) + engine surfaces (isEngineTurn
-      // / deliberateSurfaceTurn) so a completion-report turn's legitimate "done"
-      // never trips it, and skip repeat answers (the claim already appears in an
-      // earlier persisted reply, so it is a restatement, not a fresh fabrication).
-      if (
-        persistedContent &&
-        result.toolCalls.length === 0 &&
-        !interAgentTurn &&
-        !isEngineTurn &&
-        !deliberateSurfaceTurn
-      ) {
-        const claim = detectDeliverableClaim(persistedContent);
-        if (claim.matched && !hadReceiptToolThisTurn(state.toolResults)) {
-          // Repeat-answer skip: a near-identical claim in an earlier persisted
-          // reply is a restatement of already-done (or already-steered) work, not a
-          // new fabrication. Mirrors the cross-turn respond-once read below.
-          let isRepeatAnswer = false;
-          try {
-            const priorReplies = db
-              .prepare(
-                "SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' AND content NOT LIKE '[{%' ORDER BY rowid DESC LIMIT 5",
-              )
-              .all(agentId) as Array<{ content: string }>;
-            isRepeatAnswer = priorReplies.some((r) => isNearDuplicateText(r.content, persistedContent!));
-          } catch {
-            // best-effort; never block a reply on a dedup read failure
-          }
-          if (!isRepeatAnswer) {
-            const receiptToolsSucceeded = state.toolResults
-              .filter((r) => !r.isError && DELIVERABLE_RECEIPT_TOOLS.has(r.name))
-              .map((r) => r.name);
-            if (state.nudgedForDeliverableClaimThisTurn) {
-              // Already steered once this turn and the model repeated the claim.
-              // Prose classification never gains authority: the reply STANDS; record it.
-              logger.info('v2 deliverable-claim floor: claim repeated after steer, reply stands (log-only)', {
-                agentId, pattern: claim.pattern, receiptToolsSucceeded,
-              }, agentId);
-            } else {
-              const nudgeText =
-                `[Engine: your reply claims completed work, but no tool this turn produced any artifact or receipt. ` +
-                `If the work is genuinely done from an earlier turn, say WHEN it was done and point at the artifact; ` +
-                `if it is not done, correct your reply honestly; never present intention as completion.]`;
-              state = persistEngineSteer(
-                state,
-                { agentId, content: nudgeText, turnNumber, extra: { nudgedForDeliverableClaimThisTurn: true } },
-                { db, broadcast },
-              );
-              logger.info('v2 deliverable-claim floor fired, completion claim with no receipt this turn, re-entering', {
-                agentId, pattern: claim.pattern, receiptToolsSucceeded,
-              }, agentId);
-              continue; // re-enter so the agent verifies the artifact or corrects the claim
-            }
-          }
-        }
-      }
+      // ── Deliverable-claim floor: REMOVED same day it landed (2026-07-19) ──
+      // The first full battery with it live proved the design law it violated:
+      // prose classification must never gain authority. The floor steered a
+      // TRUTHFUL completion (a checklist task whose work WAS its technique_read
+      // calls, reads are not in any artifact-receipt list) and the floor model
+      // answered the steer by spiraling re-reads until turns blew their windows
+      // (run bmrrg3lk3db: use-technique loop, simple-reply timeout). Claims
+      // honesty is enforced where it can be DETERMINISTIC instead: delivery
+      // outcomes are handed to the model at the source (image completion, fan-
+      // out steer payloads, attachment give-up notes), and the behavioral
+      // harness keeps the SURFACE-ONLY claims:completion_without_receipts
+      // invariant, which observes and reports but never acts on prose.
 
       // Cross-turn respond-once (attribution redesign §4.5). The within-turn dedup
       // above only compares against the single most-recent assistant message and is

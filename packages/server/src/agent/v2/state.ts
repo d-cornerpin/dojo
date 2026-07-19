@@ -368,7 +368,6 @@ export interface AgentTurnState {
    * prose classification never gains authority). Sibling of
    * nudgedForFailedSaveClaimThisTurn.
    */
-  nudgedForDeliverableClaimThisTurn: boolean;
   /**
    * Set true the first time the thrash-gate DRIFT path nudges this turn
    * (comms-audit G-BLK-1). Drift (gate on while the agent varies call signatures)
@@ -572,7 +571,6 @@ export function initState(params: InitStateParams): AgentTurnState {
     nudgedForUngroundedClaimThisTurn: false,
     nudgedForDeliveryDenialThisTurn: false,
     nudgedForFailedSaveClaimThisTurn: false,
-    nudgedForDeliverableClaimThisTurn: false,
     nudgedForThrashDriftThisTurn: false,
     nudgedForGoingIdleWithInProgressThisTurn: false,
     autoScaffoldedTaskIdThisTurn: null,
