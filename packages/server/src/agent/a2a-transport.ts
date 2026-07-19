@@ -16,9 +16,8 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
-import { insertInterAgentMessage } from '../memory/interagent.js';
+import { insertInterAgentMessage, insertInterAgentEngineRow } from '../memory/interagent.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
-import { postAgentNotice } from './agent-notice.js';
 // A2A protocol constants and helpers, inlined here to avoid runtime
 // imports from @dojo/shared (which points at .ts source and can't be
 // loaded by Node.js in production without a TS loader).
@@ -799,11 +798,13 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   // first piece as THE answer, then dropping the rest, IS the fan-out bug). Only a
   // TERMINAL reply advances the join: remove this thread from the remaining set. While
   // others remain we HOLD (no relay, the question stays unanswered). When the LAST piece
-  // lands we consume the park and steer the model (a VISIBLE awareness notice, the same
-  // model-visible channel the tracker/scheduler subsystems use) to VERIFY each piece's
-  // real content and reply to the owner with the COMBINED result, never an engine digest
-  // (the final piece is partial by construction). The deliverable's own wake (unchanged,
-  // it is a wake intent) carries the steer to the model. Single parks stay UNTOUCHED.
+  // lands we consume the park and steer the model on the IMPERATIVE engine-steer channel
+  // (owner option B, 2026-07-18: the persisted directive idiom the loop's F2.2 auto-
+  // scaffold / thrash steers use, so the steer lands as the compile wake's PRIMARY input
+  // rather than an ambient awareness gist) to VERIFY each piece's real content and reply
+  // to the owner with the COMBINED result, never an engine digest (the final piece is
+  // partial by construction). The deliverable's own wake (unchanged, it is a wake intent)
+  // carries the steer to the model. Single parks stay UNTOUCHED.
   let handledByMultiPark = false;
   if (isReplyIntent) {
     const multiPark = findOpenMultiParkForThread(target.id, threadId, threadShort);
@@ -861,7 +862,20 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
             `and do not trust a tracker row that says "complete" over the delivered text itself). ` +
             `Do NOT search, open files, run commands, or call any tools first; everything you need is quoted above. ` +
             `If a piece reads as a failure, say so honestly in the same reply.`;
-          postAgentNotice({ toAgentId: target.id, fromName: 'Coordinator', selfIntro: false, intent: 'fanout_join', brief: steer });
+          // Owner option B (2026-07-18): ride the IMPERATIVE engine-steer channel, not
+          // the ambient awareness NOTICE. Same shape the loop consumes (F2.2 auto-
+          // scaffold / thrash steers): an origin_kind='engine' row on the 'engine-steer'
+          // conv_key sentinel (kept out of the pending-event pool, so it never drives
+          // its OWN turn; the deliverable's own wake carries it to the model). The steer
+          // TEXT is unchanged, only the channel. INSERT OR IGNORE keeps the store idiom.
+          insertInterAgentEngineRow({
+            id: uuidv4(),
+            agentId: target.id,
+            content: steer,
+            sourceAgentId: null,
+            originIntent: 'fanout_join',
+            convKey: 'engine-steer',
+          });
           logger.info('fan-out park: all pieces landed, steered model to compile the combined reply', {
             agentId: target.id, thread: threadShort, total: step.total,
           });

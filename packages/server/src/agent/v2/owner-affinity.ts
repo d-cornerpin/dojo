@@ -129,6 +129,34 @@ export function affinityPromotionAllowed(
   }
 }
 
+// ── Turn-anchored auto-route basis (phantom-outreach fix, 2026-07-18) ──
+//
+// The 3:32 AM phantom incident: a background wake with NO inbound this turn produced
+// user-facing text, and the v2.7.23 auto-route promoted it to the owner's phone on
+// channel AFFINITY ALONE (the owner's most-recent channel), inboundChannel null,
+// presence in_dojo. Affinity is a convenience, not consent: it must never be the SOLE
+// basis for a proactive text. This predicate answers "must the affinity-driven
+// iMessage promotion be refused this turn for lack of an affirmative basis?" It is
+// refused exactly when affinity resolved to iMessage but there was NO inbound this
+// turn AND the owner is NOT away. The two affirmative bases that KEEP an iMessage
+// promotion live in resolveReplyDestination and are unaffected here: a human iMessage
+// counterparty (inbound bound to iMessage, Layer 1) and the away-owner promotion
+// (presence 'away', Layer 2). Pure + deterministic so the route-basis decision is
+// unit-testable in isolation.
+export function affinityPromotionRefusedNoBasis(params: {
+  ownerAffinityChannel: 'imessage' | null;
+  inboundChannel: string | null;
+  presence: 'in_dojo' | 'away';
+}): boolean {
+  // Only meaningful when affinity actually resolved to a proactive channel this turn;
+  // with no affinity there is nothing to refuse.
+  if (params.ownerAffinityChannel !== 'imessage') return false;
+  // Refused when the promotion would rest on affinity ALONE: no inbound this turn and
+  // the owner is not away. (An away owner keeps the promotion via the away override;
+  // a real inbound this turn is itself the affirmative basis.)
+  return params.inboundChannel === null && params.presence !== 'away';
+}
+
 /** Record that an affinity promotion just fired for this conversation (starts the cooldown). */
 export function recordAffinityPromotion(agentId: string, convKey: string): void {
   try {

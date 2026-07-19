@@ -21,6 +21,7 @@ import {
   resolveOwnerAffinityChannel,
   affinityPromotionAllowed,
   recordAffinityPromotion,
+  affinityPromotionRefusedNoBasis,
 } from '../owner-affinity.js';
 
 let rowid = 0;
@@ -106,5 +107,40 @@ describe('RC-10 promotion rate-limit', () => {
       `INSERT INTO config (key, value, updated_at) VALUES (?, datetime('now', '-5 hours'), datetime('now'))`,
     ).run('owner_affinity_last_promo:a1:owner');
     expect(affinityPromotionAllowed('a1', 'owner')).toBe(true);
+  });
+});
+
+// Turn-anchored auto-route basis (phantom-outreach fix, 2026-07-18). Pure predicate:
+// the affinity-only iMessage promotion is refused exactly when affinity resolved to
+// iMessage but there was NO inbound this turn AND the owner is not away.
+describe('affinityPromotionRefusedNoBasis (route-basis decision)', () => {
+  it('REFUSES the phantom shape: affinity iMessage, no inbound this turn, owner not away', () => {
+    expect(
+      affinityPromotionRefusedNoBasis({ ownerAffinityChannel: 'imessage', inboundChannel: null, presence: 'in_dojo' }),
+    ).toBe(true);
+  });
+
+  it('keeps the promotion when the owner is away (away override is an affirmative basis)', () => {
+    expect(
+      affinityPromotionRefusedNoBasis({ ownerAffinityChannel: 'imessage', inboundChannel: null, presence: 'away' }),
+    ).toBe(false);
+  });
+
+  it('keeps the promotion when there is a real inbound this turn (inbound is an affirmative basis)', () => {
+    expect(
+      affinityPromotionRefusedNoBasis({ ownerAffinityChannel: 'imessage', inboundChannel: 'dashboard', presence: 'in_dojo' }),
+    ).toBe(false);
+    expect(
+      affinityPromotionRefusedNoBasis({ ownerAffinityChannel: 'imessage', inboundChannel: 'imessage', presence: 'in_dojo' }),
+    ).toBe(false);
+  });
+
+  it('is vacuously not-refused when no affinity resolved (nothing to promote)', () => {
+    expect(
+      affinityPromotionRefusedNoBasis({ ownerAffinityChannel: null, inboundChannel: null, presence: 'in_dojo' }),
+    ).toBe(false);
+    expect(
+      affinityPromotionRefusedNoBasis({ ownerAffinityChannel: null, inboundChannel: null, presence: 'away' }),
+    ).toBe(false);
   });
 });

@@ -896,7 +896,12 @@ export async function completeAgent(
     name: agent.name,
     status,
     summary: summary.slice(0, 200),
-    stats: {
+    // The queries above are unbounded (WHERE agent_id only), so these are the
+    // agent's LIFETIME totals. For a one-shot apprentice that equals the job;
+    // for a RESIDENT (the memory-cycle agent completes hundreds of batches)
+    // they accumulate across months. Labeled accordingly after a production
+    // trace read a resident's lifetime cost as one night's bill (2026-07-18).
+    lifetimeStats: {
       messages: messageStats.count,
       tokens: messageStats.total_tokens,
       cost: costStats.total_cost,

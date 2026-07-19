@@ -378,6 +378,48 @@ function fetchImessageAttachments(
   return result;
 }
 
+// When the attachment-readiness race is lost (retries exhausted, files never
+// finished downloading from iCloud), we still owe the MODEL an honest note
+// that something was sent but did not arrive, rather than forwarding a bare
+// caption and letting the model confabulate a platform limitation. This builds
+// mention-only entries for exactly the attachments whose file is STILL missing
+// on disk (any that arrived in the meantime are handled normally by
+// fetchImessageAttachments, so run this AFTER it to avoid duplicating them).
+// Invisible-channel law: the engine may not silently drop what it knows about.
+function describeUnreadyAttachments(
+  chatDb: Database.Database,
+  messageRowid: number,
+): MentionedAttachment[] {
+  const rows = chatDb.prepare(`
+    SELECT a.ROWID, a.filename, a.mime_type, a.transfer_name, a.total_bytes
+    FROM message_attachment_join maj
+    JOIN attachment a ON a.ROWID = maj.attachment_id
+    WHERE maj.message_id = ?
+    ORDER BY a.ROWID ASC
+  `).all(messageRowid) as Array<{
+    ROWID: number;
+    filename: string | null;
+    mime_type: string | null;
+    transfer_name: string | null;
+    total_bytes: number | null;
+  }>;
+
+  const out: MentionedAttachment[] = [];
+  for (const row of rows) {
+    const srcPath = row.filename ? expandHomedir(row.filename) : null;
+    // Only mention the ones that never landed; a file already on disk is
+    // delivered normally by fetchImessageAttachments.
+    if (srcPath && fs.existsSync(srcPath)) continue;
+    out.push({
+      name: row.transfer_name || (srcPath ? path.basename(srcPath) : `attachment ${row.ROWID}`),
+      mimeType: (row.mime_type ?? 'application/octet-stream').toLowerCase(),
+      size: row.total_bytes ?? 0,
+      reason: 'sent but never finished downloading to this Mac (iCloud sync); tell the sender it did not arrive and ask them to resend',
+    });
+  }
+  return out;
+}
+
 const logger = createLogger('imessage');
 
 // ── Safe-sender records ──────────────────────────────────────────────────
@@ -640,6 +682,22 @@ let pollInFlight = false;
 // is the OLD behavior (advance-then-drop) made deliberate and bounded.
 const MAX_PERSIST_RETRIES = 12;
 const persistRetries = new Map<number, number>();
+
+// ── Sync-re-insert guid dedup ──
+// iCloud Messages sync can re-insert an OLD message under a fresh, higher
+// ROWID. The monotonic lastSeenRowId cursor treats that fresh ROWID as brand-
+// new inbound and re-forwards a message the owner sent (and we answered) hours
+// or days ago. ROWID-based newness cannot see this; the stable per-message
+// identity is chat.db's `guid`. We keep a bounded ring of the last N processed
+// guids and skip any row whose guid we have already handled. The ring is
+// mirrored into the `config` table (same idiom as imessage_last_rowid) so a
+// restart still recognizes recently-processed messages, and bounded so the
+// stored JSON never grows without limit.
+const RECENT_GUID_LIMIT = 200;
+const RECENT_GUIDS_CONFIG_KEY = 'imessage_recent_guids';
+let recentGuids: string[] = []; // insertion order, oldest first
+let recentGuidSet = new Set<string>();
+let recentGuidsLoaded = false;
 
 // ── D10 busy-ack ──
 // When an authorized sender's iMessage lands while a LONG turn (>60s old) is
@@ -933,6 +991,51 @@ function saveLastSeenRowId(rowId: number): void {
     `).run(String(rowId), String(rowId));
   } catch (err) {
     logger.error('Failed to save last seen rowid', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+// Load the persisted recent-guid ring into memory once per process. Mirrors
+// loadLastSeenRowId: read the config row, tolerate a missing/garbled value by
+// starting empty. Bounded on read so an oversized stored array is trimmed.
+function loadRecentGuids(): void {
+  if (recentGuidsLoaded) return;
+  recentGuidsLoaded = true;
+  try {
+    const db = getDb();
+    const row = db.prepare(`SELECT value FROM config WHERE key = ?`).get(RECENT_GUIDS_CONFIG_KEY) as { value: string } | undefined;
+    if (!row) return;
+    const parsed: unknown = JSON.parse(row.value);
+    if (!Array.isArray(parsed)) return;
+    recentGuids = parsed.filter((g): g is string => typeof g === 'string').slice(-RECENT_GUID_LIMIT);
+    recentGuidSet = new Set(recentGuids);
+  } catch (err) {
+    logger.warn('Failed to load recent iMessage guids, starting empty', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+// Record a guid as processed and persist the trimmed ring. Idempotent: a guid
+// already in the set is a no-op. Mirrors saveLastSeenRowId's config upsert.
+function rememberProcessedGuid(guid: string | null): void {
+  if (!guid || recentGuidSet.has(guid)) return;
+  recentGuids.push(guid);
+  recentGuidSet.add(guid);
+  while (recentGuids.length > RECENT_GUID_LIMIT) {
+    const evicted = recentGuids.shift();
+    if (evicted !== undefined) recentGuidSet.delete(evicted);
+  }
+  try {
+    const db = getDb();
+    const json = JSON.stringify(recentGuids);
+    db.prepare(`
+      INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now')
+    `).run(RECENT_GUIDS_CONFIG_KEY, json, json);
+  } catch (err) {
+    logger.warn('Failed to persist recent iMessage guids', {
       error: err instanceof Error ? err.message : String(err),
     });
   }
@@ -1298,8 +1401,16 @@ async function pollMessages(): Promise<void> {
       const placeholders = approvedSenders.map(() => 'c.chat_identifier LIKE ?').join(' OR ');
       const likeParams = approvedSenders.map(s => `%${s.address}%`);
 
+      // associated_message_type / item_type / guid are pulled alongside the
+      // existing columns (one query, not a second read) so the contentless-
+      // artifact filter and the sync-re-insert guid dedup below have what they
+      // need: associated_message_type flags reactions/edits/unsends/stickers,
+      // item_type flags group/system events, guid is the stable per-message
+      // identity that survives an iCloud re-insert under a fresh ROWID.
       const messages = chatDb.prepare(`
-        SELECT m.ROWID, m.text, m.is_from_me, m.date, m.cache_has_attachments, c.chat_identifier
+        SELECT m.ROWID, m.text, m.is_from_me, m.date, m.cache_has_attachments,
+               COALESCE(m.associated_message_type, 0) AS associated_message_type,
+               COALESCE(m.item_type, 0) AS item_type, m.guid, c.chat_identifier
         FROM message m
         JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
         JOIN chat c ON c.ROWID = cmj.chat_id
@@ -1314,6 +1425,9 @@ async function pollMessages(): Promise<void> {
         is_from_me: number;
         date: number;
         cache_has_attachments: number;
+        associated_message_type: number;
+        item_type: number;
+        guid: string | null;
         chat_identifier: string;
       }>;
 
@@ -1362,6 +1476,60 @@ async function pollMessages(): Promise<void> {
           continue;
         }
 
+        // ── Contentless-artifact ingest filter ──
+        // chat.db holds far more than user messages: tapbacks/reactions,
+        // message edits, unsends, and stickers all ride associated_message_type
+        // in the 2000-3007 band with no user text of their own, and group-
+        // membership / other system events ride item_type != 0. A row with
+        // neither text nor attachments carries nothing for the model to read.
+        // Forwarding any of these produces a hollow envelope ("you messaged me
+        // but I can't see the text"), so drop them here and advance the cursor
+        // (a deliberate, consumed skip, never an advance-block). Placed BEFORE
+        // the attachment gate so an artifact row never triggers deferral or
+        // attachment copying.
+        if (msg.associated_message_type !== 0) {
+          logger.debug('iMessage skipped, reaction/edit/unsend artifact row (advancing cursor past it)', {
+            rowid: msg.ROWID,
+            associatedMessageType: msg.associated_message_type,
+          });
+          advancePastRow(msg.ROWID);
+          continue;
+        }
+        if (msg.item_type !== 0) {
+          logger.debug('iMessage skipped, non-message system/group event (advancing cursor past it)', {
+            rowid: msg.ROWID,
+            itemType: msg.item_type,
+          });
+          advancePastRow(msg.ROWID);
+          continue;
+        }
+        if (stripAttachmentPlaceholder(msg.text) === '' && msg.cache_has_attachments === 0) {
+          logger.debug('iMessage skipped, empty text with no attachments (advancing cursor past it)', {
+            rowid: msg.ROWID,
+          });
+          advancePastRow(msg.ROWID);
+          continue;
+        }
+
+        // ── Sync-re-insert guid dedup ──
+        // If an iCloud re-insert brought back a message we already forwarded
+        // (fresh ROWID, same guid), skip it and advance the cursor rather than
+        // re-forwarding a stale exchange. Placed BEFORE the attachment gate so
+        // a re-inserted message whose old attachment file is long gone cannot
+        // wedge the gate on a doomed download either.
+        if (msg.guid && recentGuidSet.has(msg.guid)) {
+          logger.info('iMessage skipped, guid already processed (likely iCloud sync re-insert, advancing cursor past it)', {
+            rowid: msg.ROWID,
+            guid: msg.guid,
+          });
+          advancePastRow(msg.ROWID);
+          continue;
+        }
+
+        // Set when the attachment-readiness race is lost below, so the never-
+        // downloaded files can be surfaced to the model after the fetch runs.
+        let attachmentDownloadGaveUp = false;
+
         // ── Attachment-readiness gate ──
         // If chat.db claims this message has attachments but the files
         // aren't on disk yet (iCloud sync, slow download, etc.), defer
@@ -1391,6 +1559,7 @@ async function pollMessages(): Promise<void> {
               reason: readiness.reason,
             });
             deferredAttachmentRetries.delete(msg.ROWID);
+            attachmentDownloadGaveUp = true;
           }
         }
 
@@ -1420,6 +1589,25 @@ async function pollMessages(): Promise<void> {
         // memory), or mention-only metadata (video/audio/office/unknown ,
         // the model is told they exist so it can decide how to respond).
         const attachmentResult = fetchImessageAttachments(chatDb, msg.ROWID, primaryId);
+
+        // Download-race give-up made model-visible: if we exhausted the
+        // readiness retries above, tell the MODEL (via the same mention-only
+        // mechanism used for undeliverable formats) that an attachment was sent
+        // but never finished downloading, so it asks the sender to resend
+        // instead of confabulating that "attachments don't come through". Run
+        // AFTER the fetch so any file that landed late is delivered normally
+        // and not double-listed.
+        if (attachmentDownloadGaveUp) {
+          const neverArrived = describeUnreadyAttachments(chatDb, msg.ROWID);
+          if (neverArrived.length > 0) {
+            attachmentResult.mentionedAttachments.push(...neverArrived);
+            logger.info('iMessage give-up: surfaced never-downloaded attachments to the model', {
+              rowid: msg.ROWID,
+              count: neverArrived.length,
+            });
+          }
+        }
+
         const totalAttachmentCount =
           attachmentResult.uploadedFiles.length +
           attachmentResult.inlinedTextBlocks.length +
@@ -1492,6 +1680,7 @@ async function pollMessages(): Promise<void> {
         if (inboundOutcome.outcome === 'command') {
           // Command fully handled (reply already texted inside the processor);
           // advance past the row exactly as before.
+          rememberProcessedGuid(msg.guid); // dedup a later iCloud re-insert
           advancePastRow(msg.ROWID);
           continue;
         }
@@ -1499,6 +1688,7 @@ async function pollMessages(): Promise<void> {
         // Dispatched: the processor transaction already advanced
         // imessage_last_rowid atomically with the INSERT. Sync the in-memory
         // cursor + clear the per-row retry counters, matching prior semantics.
+        rememberProcessedGuid(msg.guid); // dedup a later iCloud re-insert
         lastSeenRowId = msg.ROWID;
         deferredAttachmentRetries.delete(msg.ROWID);
         persistRetries.delete(msg.ROWID);
@@ -1546,6 +1736,7 @@ export function startIMBridge(recipientId: string): void {
   }
 
   lastSeenRowId = loadLastSeenRowId();
+  loadRecentGuids();
 
   // If no stored lastSeenRowId (first run or reset), seed from the current max ROWID
   // so we only process messages received AFTER the bridge starts, not the entire history

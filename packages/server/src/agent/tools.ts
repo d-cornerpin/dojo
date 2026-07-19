@@ -8925,7 +8925,42 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
                   // delivery-time re-read (which idle has since wiped → owner/wrong person).
                   const recipient = requesterIMessage ?? getDefaultSender();
                   if (recipient) {
-                    sendIMessageWithAttachment(recipient, result.filePath, 'Here you go!');
+                    // Capture the ACTUAL delivery outcome and thread it back to the
+                    // model (2026-07-18 incident: the agent told an iMessage requester
+                    // "posted in the dashboard, go check it out" while this auto-text
+                    // silently failed on a broken imsg, so the requester got nothing
+                    // and could not see the dashboard). sendIMessageWithAttachment
+                    // returns true only when the file actually went out.
+                    const iMessageDelivered = sendIMessageWithAttachment(recipient, result.filePath, 'Here you go!');
+                    const deliveryOutcome = iMessageDelivered
+                      ? 'the finished image was texted to the requester over iMessage'
+                      : 'texting the image to the requester failed (the iMessage attachment channel is unavailable), it is available in the dashboard only';
+                    logger.info('image_create: iMessage delivery outcome', {
+                      requestId, requesterId: agentId, delivered: iMessageDelivered,
+                    });
+                    // Only surface a model-visible correction on FAILURE. On success
+                    // the synchronous tool result already told the model the finished
+                    // image would be texted to the requester, so that completion line
+                    // is already truthful and a second note would be redundant chatter.
+                    // On failure the model must correct: postAgentNotice is the
+                    // sanctioned model-visible awareness channel (role='user'
+                    // origin_kind='engine', out of the human chat), so the agent's
+                    // next reply can tell the requester it is in the dashboard and why,
+                    // rather than presenting a failed send as done.
+                    if (!iMessageDelivered) {
+                      try {
+                        const { postAgentNotice } = await import('./agent-notice.js');
+                        postAgentNotice({
+                          toAgentId: agentId,
+                          fromName: 'Image delivery',
+                          brief:
+                            `${deliveryOutcome}. If you reply to the requester, tell them the image is in the dashboard and could not be texted, ` +
+                            `do not tell them it was sent.`,
+                          intent: 'image_delivery_outcome',
+                          selfIntro: false,
+                        });
+                      } catch { /* awareness note is best-effort */ }
+                    }
                   }
                 }
               }
@@ -8963,8 +8998,19 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           }
         } catch { /* skip tail on lookup failure */ }
 
+        // Tell the model WHERE the finished image will be delivered so any
+        // completion line it writes is truthful about the destination. On an
+        // iMessage-origin turn the engine auto-texts the finished file to the
+        // requester (see the delivery block above), so telling that requester to
+        // "check the dashboard" they cannot see was the 2026-07-18 confabulation.
+        // On a dashboard turn it lands in the chat. The ACTUAL iMessage send
+        // outcome is threaded back separately (an awareness note on failure) so a
+        // silent send failure can never read as success.
+        const deliveryClause = triggeredByIMessage
+          ? `When the image is ready in 10-60 s, the engine will post it to the dashboard AND text it to the person who asked over iMessage, no second turn from you. If you do write a line, do not tell them to "check the dashboard" (they are on iMessage and will receive the image itself), just say it is on the way.`
+          : `When the image is ready in 10-60 s, the engine will post it directly to the chat with a short caption, no second turn from you.`;
         content =
-          `Image generation kicked off (request_id: ${requestId}). The engine has already posted a brief acknowledgment to the user; you do NOT need to write any text. When the image is ready in 10-60 s, the engine will post it directly to the chat with a short caption, no second turn from you. ` +
+          `Image generation kicked off (request_id: ${requestId}). The engine has already posted a brief acknowledgment to the user; you do NOT need to write any text. ${deliveryClause} ` +
           `End your turn now.` +
           visionTail;
         break;

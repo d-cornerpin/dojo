@@ -125,12 +125,13 @@ import { insertInterAgentEngineRow, insertInterAgentOwnOutput, tagInterAgentOwnO
 import { buildOpenLoopsInjection } from '../../memory/open-loops.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
 import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, claimAssembledSiblings, getOwedMidTurnArrivals, conversationKey, type TurnCounterparty, type EngineEventSrc } from './counterparty.js';
-import { resolveOwnerAffinityChannel, affinityPromotionAllowed, recordAffinityPromotion } from './owner-affinity.js';
+import { resolveOwnerAffinityChannel, affinityPromotionAllowed, recordAffinityPromotion, affinityPromotionRefusedNoBasis } from './owner-affinity.js';
 import { getProactiveSendStreak, bumpProactiveSendStreak, resetProactiveSendStreak, PROACTIVE_SEND_DEMOTE_THRESHOLD } from './proactive-budget.js';
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
 import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout, stripLeadingTimeStamp } from './classifiers/output.js';
 import { identicalCallSignature, checkIdenticalCallRefusal, recordIdenticalCallResult, type RepeatCallState } from './identical-call-brake.js';
 import { detectUngroundedDeliveryClaim, detectDeliveryDenial } from './classifiers/grounding.js';
+import { detectDeliverableClaim, hadReceiptToolThisTurn, RECEIPT_TOOLS as DELIVERABLE_RECEIPT_TOOLS } from './classifiers/deliverable-claim.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
 import { permissionAlternativeFinder } from './classifiers/permission.js';
 import { semanticTechniqueMatches, SEMANTIC_STRONG_THRESHOLD, buildTechniqueMatchQuery } from './classifiers/technique.js';
@@ -4247,6 +4248,73 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }
       }
 
+      // ── Deliverable-claim floor (2026-07-18 confabulation incident) ── Sibling
+      // of the RC-13.2 save-claim floor, one rung broader: the terminal reply
+      // asserts completed/delivered WORK ("Longhorizon report is compiled", "the
+      // photo is done and posted") but ZERO receipt-tier tools SUCCEEDED this turn,
+      // so nothing this turn produced the artifact it names. The observed case: the
+      // agent answered a time question, swept leftover tracker/vault state, and
+      // narrated a task row it never worked as its own finished report. Steer once,
+      // visibly, and re-enter so the agent verifies against a real artifact or
+      // corrects the reply. HARD LAWS: prose classification never gains authority,
+      // this may steer + re-enter ONCE, it may NEVER block/suppress/rewrite the
+      // reply; if the model repeats the claim after the steer the reply STANDS
+      // (log-only below). Skip A2A (interAgentTurn) + engine surfaces (isEngineTurn
+      // / deliberateSurfaceTurn) so a completion-report turn's legitimate "done"
+      // never trips it, and skip repeat answers (the claim already appears in an
+      // earlier persisted reply, so it is a restatement, not a fresh fabrication).
+      if (
+        persistedContent &&
+        result.toolCalls.length === 0 &&
+        !interAgentTurn &&
+        !isEngineTurn &&
+        !deliberateSurfaceTurn
+      ) {
+        const claim = detectDeliverableClaim(persistedContent);
+        if (claim.matched && !hadReceiptToolThisTurn(state.toolResults)) {
+          // Repeat-answer skip: a near-identical claim in an earlier persisted
+          // reply is a restatement of already-done (or already-steered) work, not a
+          // new fabrication. Mirrors the cross-turn respond-once read below.
+          let isRepeatAnswer = false;
+          try {
+            const priorReplies = db
+              .prepare(
+                "SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' AND content NOT LIKE '[{%' ORDER BY rowid DESC LIMIT 5",
+              )
+              .all(agentId) as Array<{ content: string }>;
+            isRepeatAnswer = priorReplies.some((r) => isNearDuplicateText(r.content, persistedContent!));
+          } catch {
+            // best-effort; never block a reply on a dedup read failure
+          }
+          if (!isRepeatAnswer) {
+            const receiptToolsSucceeded = state.toolResults
+              .filter((r) => !r.isError && DELIVERABLE_RECEIPT_TOOLS.has(r.name))
+              .map((r) => r.name);
+            if (state.nudgedForDeliverableClaimThisTurn) {
+              // Already steered once this turn and the model repeated the claim.
+              // Prose classification never gains authority: the reply STANDS; record it.
+              logger.info('v2 deliverable-claim floor: claim repeated after steer, reply stands (log-only)', {
+                agentId, pattern: claim.pattern, receiptToolsSucceeded,
+              }, agentId);
+            } else {
+              const nudgeText =
+                `[Engine: your reply claims completed work, but no tool this turn produced any artifact or receipt. ` +
+                `If the work is genuinely done from an earlier turn, say WHEN it was done and point at the artifact; ` +
+                `if it is not done, correct your reply honestly; never present intention as completion.]`;
+              state = persistEngineSteer(
+                state,
+                { agentId, content: nudgeText, turnNumber, extra: { nudgedForDeliverableClaimThisTurn: true } },
+                { db, broadcast },
+              );
+              logger.info('v2 deliverable-claim floor fired, completion claim with no receipt this turn, re-entering', {
+                agentId, pattern: claim.pattern, receiptToolsSucceeded,
+              }, agentId);
+              continue; // re-enter so the agent verifies the artifact or corrects the claim
+            }
+          }
+        }
+      }
+
       // Cross-turn respond-once (attribution redesign §4.5). The within-turn dedup
       // above only compares against the single most-recent assistant message and is
       // exempt on tool-bearing turns, so it misses the real leak: the agent
@@ -5621,26 +5689,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }
         }
 
-        // Settled-context tripwire (calibration for the 2026-07-09 re-answer
-        // class, log-only by design). This turn started with every visible user
-        // conversation already answered AND the engine hint injected; any
-        // user-facing outbound it produced is either a legitimate delivery (a
-        // peer's result relayed, a reminder's message) or exactly the re-answer
-        // disease the hint targets. Log every instance so the hint's real-world
-        // effectiveness on the weak model is measurable from production logs
-        // before deciding whether a harder structural floor is needed. NEVER
-        // suppresses or alters the outbound.
-        if (settledContextWakeTurn) {
-          const sentExplicitThisTurn = Object.values(state.explicitSendThisTurn).some(Boolean);
-          const persistedVisible = !!(persistedContent && persistedContent.trim().length > 0) && !interAgentTurn;
-          if (sentExplicitThisTurn || persistedVisible) {
-            logger.warn('settled-context tripwire: user-facing outbound from a wake turn whose visible conversations were all answered (engine hint was in context); verify it is a genuine delivery and not a re-answer', {
-              agentId, turnNumber, convKey: chosenConvKey ?? null,
-              explicitSend: sentExplicitThisTurn,
-              snippet: (persistedContent ?? '').replace(/\s+/g, ' ').slice(0, 140),
-            }, agentId);
-          }
-        }
+        // Settled-context tripwire: MOVED to the end-of-turn route site (search
+        // "Settled-context hold"). The tripwire fires when a wake turn whose visible
+        // conversations were all answered produces user-facing outbound; its 2026-07-18
+        // upgrade (phantom-outreach fix) HOLDS the auto-route channel push for the
+        // narrow phantom shape, which can only be done where the destination is
+        // resolved. Keeping it here (inside the model loop, log-only, on the
+        // loop-local persistedContent) would leave two implementations that could
+        // drift, so the single implementation now lives at the route decision.
 
         // v2.5.31, Hardcap: if the missed-reply nudge already fired once
         // for this assign id and the LLM STILL produced text-no-tool, end
@@ -7703,6 +7759,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // duplicate completion line on top of the model's own send. A genuine
     // silent drift-to-A2A sets none of these (send_to_agent is not a channel
     // send), so the engine still speaks there.
+    // Set when THIS turn composed an engine "done" ack for just-finished scaffolded
+    // work. The settled-context hold at the route site reads it to NEVER withhold a
+    // genuine completion push (always-acknowledge-user-work is a hard rule): a real
+    // deliverable must still reach an away owner's phone even on a background wake.
+    let engineCompletionAckThisTurn = false;
     if (
       counterparty.kind === 'user' &&
       !counterpartyIsAgentSender && // RC-4.2: no engine completion-ack to an agent-flagged sender
@@ -7812,6 +7873,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // obligations" guarantee: the person hears "done" as part of ending the
           // turn even when the model tried to end on a send_to_agent.
           state = advance(state, { lastAssistantTextForIM: ackText });
+          engineCompletionAckThisTurn = true;
           logger.info('v2: engine-composed completion ack (owed human reply for engine-scaffolded work)', {
             agentId, turnNumber, taskCount: justCompletedScaffold.length,
           }, agentId);
@@ -7952,6 +8014,27 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // no-auto-route value ('dashboard' matches none of the channel branches
         // below) when this turn's counterparty is an agent.
         const presenceNow = getPresence();
+        // ── Turn-anchored auto-route (phantom-outreach fix, 2026-07-18) ──
+        // The 3:32 AM phantom: a background wake with NO inbound this turn produced
+        // user-facing text, and this auto-route promoted it to the owner's phone on
+        // channel AFFINITY ALONE (owner's recent channel), inboundChannel null, owner
+        // not away. Affinity is not consent. Refuse the affinity-only promotion here,
+        // at the destination computation (not the send site): downgrade to dashboard.
+        // The two affirmative bases survive untouched inside resolveReplyDestination,
+        // a human iMessage counterparty (Layer 1) and the away-owner promotion (Layer
+        // 2), and the model-initiated imessage_send TOOL path is a separate, explicit
+        // act that never reaches here.
+        const affinityRefused = affinityPromotionRefusedNoBasis({
+          ownerAffinityChannel: ownerAffinityDestination,
+          inboundChannel: state.inboundChannel,
+          presence: presenceNow,
+        });
+        if (affinityRefused) {
+          logger.info('v2.7.23 route: affinity-only iMessage promotion refused, no inbound this turn and owner not away; text stays in dashboard', {
+            agentId, turnNumber, convKey: chosenConvKey ?? null, presence: presenceNow,
+          }, agentId);
+        }
+        const effectiveOwnerAffinity = affinityRefused ? null : ownerAffinityDestination;
         const destination = counterparty.kind === 'agent'
           ? 'dashboard'
           : resolveReplyDestination({
@@ -7959,18 +8042,53 @@ export async function runV2Turn(agentId: string): Promise<void> {
               presence: presenceNow,
               imessageBridgeConfigured: isImessageConfigured(),
               // RC-10: owner-channel affinity, resolved once at turn start (rate limited
-              // per conversation). Only the owner qualifies, never a contact.
+              // per conversation). Only the owner qualifies, never a contact. Nulled
+              // above when affinity would be the sole basis (phantom-outreach fix).
               counterpartyIsOwner: counterparty.kind === 'user' && counterparty.relation === 'owner',
-              ownerAffinityChannel: ownerAffinityDestination,
+              ownerAffinityChannel: effectiveOwnerAffinity,
             });
         // RC-10: if the affinity promotion is what put this reply on iMessage (the away
         // override would have promoted regardless, but affinity is a distinct, rate-
         // limited mechanism), record it so a background-wake storm can't become a text
         // storm. Recorded only when the promotion actually resolves to iMessage AND
-        // affinity was available this turn AND the owner is not away; the per-
-        // conversation cooldown starts now.
-        if (destination === 'imessage' && ownerAffinityDestination === 'imessage' && presenceNow !== 'away') {
+        // affinity DROVE it this turn (effectiveOwnerAffinity, so a refused promotion
+        // never starts a cooldown) AND the owner is not away; the per-conversation
+        // cooldown starts now.
+        if (destination === 'imessage' && effectiveOwnerAffinity === 'imessage' && presenceNow !== 'away') {
           recordAffinityPromotion(agentId, ownerAffinityConvKey);
+        }
+
+        // ── Settled-context hold (phantom-outreach fix, 2026-07-18) ──
+        // The single settled-context tripwire implementation (moved here from the
+        // in-loop calibration site so the hold can reach the route decision). This turn
+        // started with every visible user conversation already answered; a user-facing
+        // outbound with NO inbound this turn (inboundChannel null) and no active human
+        // conversation is the phantom shape. For it we withhold the auto-route CHANNEL
+        // PUSH: no iMessage/SMS/etc. push fires. This is channel discipline, NOT reply
+        // suppression, the reply text stays persisted and visible in the dashboard chat
+        // exactly as it already is (design law: never suppress agent replies; only the
+        // outbound PUSH is withheld). Carve-outs keep genuine proactive deliveries
+        // flowing to an away owner: an A2A turn (forced to dashboard anyway), an engine
+        // turn (a scheduler/reminder the agent must deliver), and an engine completion
+        // ack (a real "done" for just-finished work, always-ack hard rule) are never
+        // held.
+        const settledContextHold =
+          settledContextWakeTurn &&
+          state.inboundChannel === null &&
+          counterparty.kind !== 'agent' &&
+          !isEngineTurn &&
+          !engineCompletionAckThisTurn;
+        // Calibration log (2026-07-09 re-answer class + the phantom outcome), one line
+        // per settled-wake user-facing outbound, carrying the routing outcome.
+        if (settledContextWakeTurn && counterparty.kind !== 'agent') {
+          const heldNow = settledContextHold && destination !== 'dashboard';
+          logger.warn('settled-context tripwire: user-facing outbound from a wake turn whose visible conversations were all answered; verify it is a genuine delivery and not a re-answer', {
+            agentId, turnNumber, convKey: chosenConvKey ?? null,
+            inboundChannel: state.inboundChannel, presence: presenceNow, destination,
+            outcome: heldNow ? 'held' : (destination === 'dashboard' ? 'dashboard' : `channel:${destination}`),
+            explicitSend: Object.values(state.explicitSendThisTurn).some(Boolean),
+            snippet: (state.lastAssistantTextForIM ?? '').replace(/\s+/g, ' ').slice(0, 140),
+          }, agentId);
         }
 
         // Outbound routing markers are written via the hoisted
@@ -7991,7 +8109,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // reply was addressed to the CONTACT, so a contact-bound message ended up
         // dropped into the owner's chat (the exact failure observed). Removed:
         // a reply to a contact always routes to that contact.
-        if (destination === 'imessage' && !state.repliedToCounterpartyThisTurn.imessage && isImessageConfigured()) {
+        if (settledContextHold && destination !== 'dashboard') {
+          // Held: on this settled wake there is no active conversation to push into,
+          // so the auto-route CHANNEL PUSH is withheld. The reply already lives in the
+          // dashboard chat (persisted + broadcast above); nothing is deleted or
+          // reclassified. Mark it so the dashboard pill reads "held" instead of
+          // claiming a channel delivery that never happened.
+          persistRoutingMarker('held in dashboard: no active conversation');
+          logger.warn('settled-context hold: withheld auto-route channel push (no active conversation); reply stays visible in dashboard', {
+            agentId, turnNumber, destination, presence: presenceNow,
+          }, agentId);
+        } else if (destination === 'imessage' && !state.repliedToCounterpartyThisTurn.imessage && isImessageConfigured()) {
           // Label the badge with the recipient the bridge ACTUALLY delivered
           // to, never a hardcoded default. If the send was suppressed (sender
           // no longer authorized, empty body), skip the marker entirely so we

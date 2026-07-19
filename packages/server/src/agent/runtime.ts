@@ -170,6 +170,18 @@ export async function enforceModelCapabilities(
             });
             imagesCaptioned++;
           } else {
+            // Model-VISIBLE residue for a stripped image (2026-07-18 incident):
+            // a silent strip left the model with a photo-edit request and no
+            // photo, so it invented false platform limits ("iMessage attachments
+            // don't come through to me"). Same invisible-engine-action disease as
+            // the rest of that wave: the engine changed the model's context and
+            // told the model nothing. Leave an honest note in the image's place
+            // instead of removing it silently. Counters/banner/nudge are unchanged;
+            // only the residue goes from nothing to this note.
+            kept.push({
+              type: 'text',
+              text: '[An image attachment arrived here. Your current model cannot view images and no vision description was available, so you have NOT seen it. Say so honestly if it matters to the request; do not claim attachments cannot reach you.]',
+            });
             imagesStripped++;
           }
           continue;
