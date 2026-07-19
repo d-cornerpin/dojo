@@ -309,11 +309,31 @@ const VALIDATION_ESCALATION_MIN = 5;
 async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
   const db = getDb();
   try {
+    // OWNER-SCOPE RULE (owner ruling, 2026-07-18): the ask-the-user escalation
+    // exists for USER-meaningful work: the user asked for something, the PM
+    // cannot verify it, so the user adjudicates. Engine-resident maintenance
+    // (dreamer archive batches, healer/trainer/imaginer housekeeping, PM
+    // self-tasks) is categorically NOT the user's to sign off: the user has no
+    // way to know whether an archive batch distilled correctly, and the engine
+    // holds its own receipts (the dream report records archives processed).
+    // Those tasks stay in the PM sweep's jurisdiction and NEVER escalate here.
+    // Production incident: first boot on the release that made this sweep's
+    // channel visible surfaced stale churn-era dreamer tasks to the owner as
+    // "was it actually done?" yes/no questions the owner cannot answer.
+    const { getSystemServiceAgentIds } = await import('../config/platform.js');
+    const serviceIds = getSystemServiceAgentIds().filter((id): id is string => Boolean(id));
+    // Impossible-sentinel fallback so an empty list yields NOT IN ('__none__'),
+    // which matches nothing (a bare '' would wrongly exclude NULL assignees via
+    // the COALESCE below).
+    const serviceParams = serviceIds.length > 0 ? serviceIds : ['__none__'];
+    const servicePlaceholders = serviceParams.map(() => '?').join(',');
     const stale = db.prepare(`
       SELECT id, title, status, assigned_to, datetime(updated_at) as updated
       FROM tasks
       WHERE validation_escalated_at IS NULL
         AND awaiting_user_verdict = 0
+        AND COALESCE(assigned_to, '') NOT IN (${servicePlaceholders})
+        AND COALESCE(created_by, '') NOT IN (${servicePlaceholders})
         AND (
           (status = 'complete' AND complete_validated = 0)
           -- An active missed_runs_paused_at means the ENGINE paused this task for
@@ -332,7 +352,7 @@ async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
         )
         AND datetime(updated_at) < datetime('now', '-${VALIDATION_ESCALATION_MIN} minutes')
       LIMIT 20
-    `).all() as Array<{ id: string; title: string; status: string; assigned_to: string | null; updated: string }>;
+    `).all(...serviceParams, ...serviceParams) as Array<{ id: string; title: string; status: string; assigned_to: string | null; updated: string }>;
     if (stale.length === 0) return;
 
     const { writeTaskLog } = await import('../tracker/task-log.js');
