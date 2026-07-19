@@ -816,6 +816,33 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
             agentId: target.id, thread: threadShort, landed: step.landed, total: step.total,
           });
         } else if (step.outcome === 'completed') {
+          // Gather each piece's DELIVERED CONTENT to embed in the steer. The
+          // separate-lane architecture keeps A2A deliverables out of the
+          // recipient's chat context, and history_search reads the chat store,
+          // so a steer that says "read the messages above" points at content
+          // the model cannot reach (2026-07-18 run bmrpxzuhxvh: four empty
+          // history_search calls, then the compile never happened). The engine
+          // holds the join state, so the engine hands over the pieces verbatim:
+          // the compile turn is self-contained and the quotes ARE the receipts.
+          const PIECE_CAP = 1200;
+          const pieces: string[] = [];
+          for (const t of step.full) {
+            const piece = db.prepare(`
+              SELECT content, source_agent_id FROM (
+                SELECT content, source_agent_id, created_at FROM inter_agent_messages
+                  WHERE agent_id = ? AND a2a_thread_id = ? AND source_agent_id IS NOT NULL
+                UNION ALL
+                SELECT content, source_agent_id, created_at FROM messages
+                  WHERE agent_id = ? AND a2a_thread_id = ? AND source_agent_id IS NOT NULL
+              ) ORDER BY created_at DESC LIMIT 1
+            `).get(target.id, t, target.id, t) as { content: string; source_agent_id: string | null } | undefined;
+            const senderName = piece?.source_agent_id
+              ? ((db.prepare('SELECT name FROM agents WHERE id = ?').get(piece.source_agent_id) as { name: string } | undefined)?.name ?? 'a delegated agent')
+              : 'a delegated agent';
+            const body = (piece?.content ?? '(no delivered content found for this thread)').replace(/\s+/g, ' ').trim();
+            const capped = body.length > PIECE_CAP ? body.slice(0, PIECE_CAP) + ' [truncated]' : body;
+            pieces.push(`Piece ${pieces.length + 1} (from ${senderName}, thread ${t.slice(0, 8)}): "${capped}"`);
+          }
           // Receipts-verification wording, floor-model-proof revision (2026-07-18
           // run bmrplgdg33l): the first wording said "verify each piece's ACTUAL
           // content by reading the thread messages yourself", and the weak model
@@ -826,13 +853,14 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
           // tool use. The receipts principle is unchanged: quote what was
           // DELIVERED, never trust a task row that says "complete".
           const steer =
-            `All ${step.total} delegated pieces for the owner's request are now back ` +
-            `(threads ${shortThreadList(step.full)}). The owner has NOT been answered yet. ` +
-            `The deliverable messages ABOVE in this conversation already contain each piece's actual content. ` +
-            `Compose ONE reply to the owner now that includes each piece's delivered content exactly as it arrived ` +
-            `(quote it; do not summarize it away, and do not trust a tracker row that says "complete" over the message itself). ` +
-            `Do NOT open files, run commands, or call any tools first; everything you need is already in the messages above. ` +
-            `If a piece came back as a failure, say so honestly in the same reply.`;
+            `All ${step.total} delegated pieces for the owner's request are now back. ` +
+            `The owner has NOT been answered yet. Here is each piece's delivered content, verbatim:\n\n` +
+            pieces.join('\n') +
+            `\n\nCompose ONE reply to the owner now that carries each piece's content exactly as delivered above ` +
+            `(quote the key results, e.g. any codes or figures, character for character; do not summarize them away, ` +
+            `and do not trust a tracker row that says "complete" over the delivered text itself). ` +
+            `Do NOT search, open files, run commands, or call any tools first; everything you need is quoted above. ` +
+            `If a piece reads as a failure, say so honestly in the same reply.`;
           postAgentNotice({ toAgentId: target.id, fromName: 'Coordinator', selfIntro: false, intent: 'fanout_join', brief: steer });
           logger.info('fan-out park: all pieces landed, steered model to compile the combined reply', {
             agentId: target.id, thread: threadShort, total: step.total,
