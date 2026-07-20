@@ -172,8 +172,15 @@ export function sanitizeAssistantText(content: string | null): string | null {
 // stripping a leading run of them at the persist source is lane attribution,
 // not suppression: engine-enforced, same class as stripSystemTags. Tolerates
 // the narrow/no-break spaces Intl inserts before AM/PM.
+// Format-drift hardening (2026-07-20, production): the model paraphrased the
+// stamp convention into ISO format ("[2026-07-20 07:40]") which the original
+// month-name-only pattern missed, so the mimicked stamp reached the user in
+// non-wordy chat. Both dialects are stripped now: the engine month-name shape
+// and bracketed ISO date-times (optional seconds, T separator, AM/PM/UTC/Z
+// tail). Still anchored at the reply start and strictly date-shaped, so real
+// bracketed content is never touched.
 const LEADING_TIME_STAMP_RE =
-  /^\s*\[(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s\d{1,2},\s\d{4},\s\d{1,2}:\d{2}[\s\u202F\u00A0]?(?:AM|PM)\]\s*/;
+  /^\s*\[(?:(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s\d{1,2},\s\d{4},\s\d{1,2}:\d{2}[\s\u202F\u00A0]?(?:AM|PM)|\d{4}-\d{2}-\d{2}[T ]\d{1,2}:\d{2}(?::\d{2})?[\s\u202F\u00A0]?(?:AM|PM|UTC|Z)?)\]\s*/;
 
 export function stripLeadingTimeStamp(text: string): string {
   let out = text;
