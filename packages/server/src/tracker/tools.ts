@@ -327,6 +327,88 @@ export async function closeEngineScaffoldSameTurn(
   return true;
 }
 
+/**
+ * Owner ruling (2026-07-19): file the assignee's KEY-1 close request from the
+ * deliverable receipt itself. When the ASSIGNED worker returns a terminal
+ * success reply on the very thread its ASSIGN auto-task was created from, the
+ * delivered content IS the close-out in substance; the weakest model routinely
+ * delivers the work and then skips the tracker_update_status form. The engine
+ * files ONLY Key 1: status='complete' with complete_validated = 0 and the
+ * delivered text attached as result/evidence; the PM independently validates
+ * (Key 2 untouched) and rejects/reopens garbage. This is NOT the demolished
+ * forgery: that GUESSED doneness from prose adjacency and STAMPED
+ * complete_validated=1 so nothing ever verified anything. Worst case here is a
+ * poor deliverable sitting visibly in the validation queue where the checker
+ * catches it. Success intents only (never FAIL), the exact assignee only, the
+ * exact thread only, one-shots only.
+ */
+export async function fileAssignDeliverableCloseRequest(
+  senderAgentId: string,
+  threadId: string,
+  deliveredText: string,
+): Promise<boolean> {
+  const db = getDb();
+  const task = db.prepare(`
+    SELECT id, title, assigned_to, project_id FROM tasks
+    WHERE a2a_thread_id = ? AND assigned_to = ? AND status = 'in_progress'
+      AND repeat_interval IS NULL AND is_paused = 0
+    LIMIT 1
+  `).get(threadId, senderAgentId) as { id: string; title: string; assigned_to: string | null; project_id: string | null } | undefined;
+  if (!task) return false;
+
+  const resultText = deliveredText.replace(/s+/g, ' ').trim().slice(0, 2000)
+    || 'Terminal deliverable returned on the assignment thread.';
+  const evidenceJson = JSON.stringify([
+    {
+      kind: 'a2a_deliverable',
+      claim: 'the assignee returned a terminal deliverable on the assignment thread; the engine filed this close request from that receipt; the PM validates it against the goal',
+      pointer: `thread ${threadId.slice(0, 8)}`,
+    },
+  ]);
+
+  // Same sanctioned Key-1 landing as every agent-request close: unvalidated.
+  const res = db.prepare(`
+    UPDATE tasks
+    SET status = 'complete', complete_validated = 0, completed_at = datetime('now'),
+        result = ?, evidence_json = ?, updated_at = datetime('now')
+    WHERE id = ? AND status = 'in_progress' AND repeat_interval IS NULL
+  `).run(resultText, evidenceJson, task.id);
+  if (res.changes === 0) return false;
+
+  try {
+    writeTaskLog({
+      taskId: task.id,
+      fromEntity: 'engine',
+      entryKind: 'transition',
+      fromStatus: 'in_progress',
+      toStatus: 'complete',
+      actionTaken: 'close request filed from assignment-thread deliverable',
+      reason: 'assignee returned a terminal deliverable on its ASSIGN thread; Key 1 filed from that receipt with the delivered content as evidence; unvalidated, the PM sweep validates',
+      note: resultText,
+      evidenceJson,
+    });
+  } catch { /* best effort */ }
+
+  try {
+    const { checkDependencies } = await import('./pm-agent.js');
+    checkDependencies(task.id);
+  } catch { /* best effort */ }
+  try {
+    checkProjectCompletion(task.project_id, senderAgentId);
+  } catch { /* best effort */ }
+  // The assigner is the deliverable's RECIPIENT in the same delivery, so no
+  // hand-back relay here (it would duplicate the content they just received);
+  // only the pending assignment notice is claimed.
+  claimAssignmentNoticeForTerminalTask(senderAgentId, task.id);
+
+  const fresh = getTask(task.id);
+  if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
+  logger.info('Filed Key-1 close request from assignment-thread deliverable (unvalidated; PM validates)', {
+    taskId: task.id, threadId: threadId.slice(0, 8), assignee: senderAgentId,
+  }, senderAgentId);
+  return true;
+}
+
 // D-K (owner decision): a project auto-completes AS SUCCESS only when every
 // task is 'complete'. When it runs out of open tasks but at least one task
 // FELL, we do NOT close it as a success. We leave it OPEN (status stays

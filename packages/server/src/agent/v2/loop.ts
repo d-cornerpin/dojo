@@ -129,7 +129,7 @@ import { resolveOwnerAffinityChannel, affinityPromotionAllowed, recordAffinityPr
 import { getProactiveSendStreak, bumpProactiveSendStreak, resetProactiveSendStreak, PROACTIVE_SEND_DEMOTE_THRESHOLD } from './proactive-budget.js';
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
 import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout, stripLeadingTimeStamp } from './classifiers/output.js';
-import { identicalCallSignature, checkIdenticalCallRefusal, recordIdenticalCallResult, type RepeatCallState } from './identical-call-brake.js';
+import { identicalCallSignature, checkIdenticalCallRefusal, recordIdenticalCallResult, isSignatureTerminal, type RepeatCallState } from './identical-call-brake.js';
 import { detectUngroundedDeliveryClaim, detectDeliveryDenial } from './classifiers/grounding.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
 import { permissionAlternativeFinder } from './classifiers/permission.js';
@@ -1649,6 +1649,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // Identical-call brake state (2026-07-17): consecutive identical failing
   // tool calls this turn, keyed by exact call signature. See identical-call-brake.ts.
   const identicalCallState: RepeatCallState = new Map();
+  // Terminal spin-brake state (owner ruling 2026-07-19): once ANY signature
+  // goes terminal, the whole tool phase is over for this turn; every further
+  // tool call returns a short note without executing, and after a small grace
+  // of model iterations the loop concludes. The model's TEXT is never touched.
+  let toolPhaseEndedBySpinBrake = false;
+  let spinBrakeGraceCalls = 2;
 
   const deliverEngineUserAck = async (text: string, originIntent: string | null = null): Promise<void> => {
     const ackId = uuidv4();
@@ -3799,6 +3805,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
       }
 
       state = advance(state, { lastResponse: result, toolCalls: result.toolCalls });
+
+      // Spin-brake grace (owner ruling 2026-07-19): once the tool phase has
+      // been ended by the terminal brake, every further tool call returns an
+      // instant note without executing; allow a small grace of model
+      // iterations to converge to text, then conclude the turn. The model's
+      // text is never suppressed, whatever it has said stands.
+      if (toolPhaseEndedBySpinBrake && result.toolCalls.length > 0) {
+        spinBrakeGraceCalls -= 1;
+        if (spinBrakeGraceCalls < 0) {
+          logger.warn('v2: spin brake grace exhausted, concluding the turn', { agentId, turnNumber }, agentId);
+          state = advance(state, { phase: 'done' });
+        }
+      }
 
       // ── Phase: post-call classification ──
       state = advance(state, { phase: 'postCallClassify' });
@@ -6434,13 +6453,26 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // already failed REFUSE_AT times this turn is not executed again
           // (no side effects, no provider cost); the refusal text is the result.
           const brakeSig = identicalCallSignature(tc.name, tc.arguments);
-          const refusal = checkIdenticalCallRefusal(identicalCallState, brakeSig);
+          const refusal = toolPhaseEndedBySpinBrake
+            ? '[Engine: the tool phase for this turn ended after an identical call was refused repeatedly. No further tools will run this turn. Answer in text with what you have.]'
+            : checkIdenticalCallRefusal(identicalCallState, brakeSig);
           try {
             if (refusal) {
               toolResult = { toolCallId: tc.id, name: tc.name, content: refusal, isError: true };
-              logger.warn('v2: identical-call brake refused re-execution', {
-                agentId, tool: tc.name, sig: brakeSig.slice(0, 120),
-              }, agentId);
+              if (!toolPhaseEndedBySpinBrake) {
+                logger.warn('v2: identical-call brake refused re-execution', {
+                  agentId, tool: tc.name, sig: brakeSig.slice(0, 120),
+                }, agentId);
+                if (isSignatureTerminal(identicalCallState, brakeSig)) {
+                  // Refused, taught, and resubmitted unchanged three times:
+                  // nothing real is blocked (nothing was executing); stop
+                  // paying for attempts that cannot succeed. Text untouched.
+                  toolPhaseEndedBySpinBrake = true;
+                  logger.warn('v2: spin brake TERMINAL, tool phase ended for this turn (identical refused call resubmitted repeatedly)', {
+                    agentId, tool: tc.name, sig: brakeSig.slice(0, 200),
+                  }, agentId);
+                }
+              }
             } else {
               toolResult = await executeTool(agentId, tc);
             }

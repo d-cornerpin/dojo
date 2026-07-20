@@ -889,6 +889,22 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
     }
   }
 
+  // Owner ruling (2026-07-19): a terminal SUCCESS reply from the assignee on
+  // its assignment thread files the worker's Key-1 close request from the
+  // receipt itself (the weakest model delivers the work, then skips the
+  // tracker form). Success intents only; FAIL leaves the task open for the PM
+  // chase. Key 2 stays entirely with the PM.
+  if (effectiveIntent === 'ANSWER' || effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'COMPLETE') {
+    try {
+      const { fileAssignDeliverableCloseRequest } = await import('../tracker/tools.js');
+      await fileAssignDeliverableCloseRequest(envelope.fromAgent, threadId, envelope.payload ?? '');
+    } catch (err) {
+      logger.warn('assign-deliverable close request failed (non-fatal)', {
+        threadId: threadShort, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   const parkExistsForThread = !!db.prepare(
     `SELECT 1 FROM messages WHERE agent_id = ? AND role = 'user' AND (conv_key = ? OR conv_key = ?) LIMIT 1`,
   ).get(target.id, `park:${threadId}`, `park:${threadShort}`);

@@ -21,9 +21,21 @@
 
 export const IDENTICAL_CALL_WARN_AT = 3;
 export const IDENTICAL_CALL_REFUSE_AT = 6;
+// Terminal rung (owner ruling 2026-07-19): after the SAME refused signature is
+// resubmitted unchanged this many times, the whole tool phase ends for the
+// turn. Counting REFUSALS (not calls) is what keeps legitimate work safe: a
+// fan-out to different recipients, a retry with corrected arguments, and a
+// merely-similar ask never reach this rung, because none of them accumulate
+// refusals of one exact signature. By the time it fires, the model has been
+// warned at 3 failures, refused-with-teaching at 6, and has still resubmitted
+// the identical call 3 more times: nothing real is being blocked, because
+// nothing was executing anyway; the engine just stops paying for attempts
+// that cannot succeed. Every fire is logged with the full signature.
+export const IDENTICAL_CALL_TERMINAL_AT = 3;
 
 export interface RepeatEntry {
   failures: number;
+  refusals: number;
   lastError: string;
 }
 
@@ -49,6 +61,7 @@ export function identicalCallSignature(tool: string, args: unknown): string {
 export function checkIdenticalCallRefusal(state: RepeatCallState, sig: string): string | null {
   const entry = state.get(sig);
   if (!entry || entry.failures < IDENTICAL_CALL_REFUSE_AT) return null;
+  entry.refusals += 1;
   return (
     `[Engine: this exact tool call has failed identically ${entry.failures} times this turn and was NOT re-executed. ` +
     `Repeating it cannot change the result. Change the arguments or the approach ` +
@@ -73,7 +86,7 @@ export function recordIdenticalCallResult(
     state.delete(sig);
     return null;
   }
-  const entry = state.get(sig) ?? { failures: 0, lastError: '' };
+  const entry = state.get(sig) ?? { failures: 0, refusals: 0, lastError: '' };
   entry.failures += 1;
   entry.lastError = errorText;
   state.set(sig, entry);
@@ -85,4 +98,11 @@ export function recordIdenticalCallResult(
     );
   }
   return null;
+}
+
+/** True once a signature has been refused TERMINAL_AT times: the turn's tool
+ *  phase should end (the loop enforces it). */
+export function isSignatureTerminal(state: RepeatCallState, sig: string): boolean {
+  const entry = state.get(sig);
+  return !!entry && entry.refusals >= IDENTICAL_CALL_TERMINAL_AT;
 }
