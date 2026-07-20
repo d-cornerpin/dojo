@@ -15,26 +15,19 @@ const logger = createLogger('presence');
 
 export type PresenceStatus = 'in_dojo' | 'away';
 
-// D21: a manual "away" that the owner forgets to clear used to divert every
-// dashboard/proactive reply to iMessage FOREVER. Auto-expire it after this TTL
-// so presence self-heals; the owner can always re-toggle away.
-const AWAY_TTL_MS = 12 * 60 * 60 * 1000;
+// Presence is EXACTLY what it was last set to, for as long as it was set.
+// History: D21 added a 12-hour auto-expiry on manual "away" (a forgotten away
+// diverted every reply to iMessage forever). REMOVED by owner ruling
+// 2026-07-20: the owner kept finding "out of the Dojo" silently flipped back
+// and never asked for a self-expiring setting. A user-visible setting must
+// never change itself; the only writers are the user and the agent acting on
+// the user's explicit ask (set_user_presence, kept as-is by the same ruling).
 
 export function getPresence(): PresenceStatus {
   try {
     const db = getDb();
-    const row = db.prepare("SELECT value, updated_at FROM config WHERE key = 'user_presence'").get() as { value: string; updated_at: string } | undefined;
-    if (row?.value !== 'away') return 'in_dojo';
-    // Auto-expire a stale 'away' (updated_at is UTC 'YYYY-MM-DD HH:MM:SS').
-    const setAt = Date.parse(row.updated_at.replace(' ', 'T') + 'Z');
-    if (Number.isFinite(setAt) && Date.now() - setAt > AWAY_TTL_MS) {
-      try {
-        db.prepare("UPDATE config SET value = 'in_dojo', updated_at = datetime('now') WHERE key = 'user_presence'").run();
-      } catch { /* best effort */ }
-      logger.info('Away presence auto-expired after TTL, reverting to in_dojo');
-      return 'in_dojo';
-    }
-    return 'away';
+    const row = db.prepare("SELECT value FROM config WHERE key = 'user_presence'").get() as { value: string } | undefined;
+    return row?.value === 'away' ? 'away' : 'in_dojo';
   } catch {
     return 'in_dojo';
   }
