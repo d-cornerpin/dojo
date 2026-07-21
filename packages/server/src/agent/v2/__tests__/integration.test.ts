@@ -1625,4 +1625,34 @@ describe('runV2Turn integration', () => {
     await runV2Turn('primary');
     expect(executeToolSpy).toHaveBeenCalledTimes(2);
   });
+  // ── P4 turn record (lanes & lineage, 2026-07-21) ──
+  it('P4 turn record: a served human turn writes a finalized turns row with outcome=answered and stamps the ask', async () => {
+    callModelSpy.mockResolvedValue({
+      content: 'Here is your answer.',
+      toolCalls: [],
+      inputTokens: 50,
+      outputTokens: 8,
+      stopReason: 'end_turn',
+    });
+
+    await runV2Turn('primary');
+
+    const db = mockDb.current!;
+    const turn = db.prepare(
+      "SELECT kind, subject_kind, outcome, answer_message_id, ended_at FROM turns WHERE agent_id = 'primary' ORDER BY turn_number DESC LIMIT 1",
+    ).get() as { kind: string; subject_kind: string; outcome: string; answer_message_id: string | null; ended_at: string | null };
+    expect(turn).toBeTruthy();
+    expect(turn.kind).toBe('user');
+    expect(turn.subject_kind).toBe('conv');
+    expect(turn.outcome).toBe('answered');
+    expect(turn.answer_message_id).toBeTruthy();
+    expect(turn.ended_at).toBeTruthy();
+
+    // Per-ask forward links: the trigger row knows its turn and its answer.
+    const ask = db.prepare(
+      "SELECT served_by_turn, answer_message_id FROM messages WHERE role = 'user' ORDER BY rowid DESC LIMIT 1",
+    ).get() as { served_by_turn: number | null; answer_message_id: string | null };
+    expect(ask.served_by_turn).not.toBeNull();
+    expect(ask.answer_message_id).toBe(turn.answer_message_id);
+  });
 });

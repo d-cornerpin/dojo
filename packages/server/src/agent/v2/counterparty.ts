@@ -157,7 +157,7 @@ export function quarantineWaitingConversation(agentId: string, convKey: string):
  * twice). Rows arriving AFTER the final assembly stay NULL and get their own
  * turn, preserving OPEN-12 ("a genuinely newer message is served next").
  */
-export function claimAssembledSiblings(agentId: string, convKey: string, assembledAtIso: string): number {
+export function claimAssembledSiblings(agentId: string, convKey: string, assembledAtIso: string, turnNumber?: number | null): number {
   const db = getDb();
   const sessionStart = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
   const rows = db.prepare(
@@ -170,7 +170,9 @@ export function claimAssembledSiblings(agentId: string, convKey: string, assembl
         AND (origin_kind IS NULL OR origin_kind != 'engine')
         AND source_agent_id IS NULL AND a2a_thread_id IS NULL`,
   ).all(agentId, sessionStart, assembledAtIso) as Array<WaitingConversation['latest']>;
-  const stamp = db.prepare('UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ? AND conv_key IS NULL');
+  // P4: siblings record WHICH turn served them (forward link), alongside the
+  // claim stamp that hides them from the waiting set.
+  const stamp = db.prepare('UPDATE messages SET conv_key = ?, served_by_turn = COALESCE(?, served_by_turn) WHERE agent_id = ? AND rowid = ? AND conv_key IS NULL');
   let n = 0;
   for (const r of rows) {
     const o = deriveOrigin({
@@ -180,7 +182,7 @@ export function claimAssembledSiblings(agentId: string, convKey: string, assembl
     });
     if (o.kind !== 'user') continue;
     if (conversationKey(o.channel, o.senderId, o.senderName, o.threadId) !== convKey) continue;
-    stamp.run(convKey, agentId, r.rowid);
+    stamp.run(convKey, turnNumber ?? null, agentId, r.rowid);
     n++;
   }
   return n;

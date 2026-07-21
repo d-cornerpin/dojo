@@ -35,7 +35,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, isPrimaryAgent, getOwnerName, isPMAgent } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
-import { getTurnReceipts, getWorkOriginForAgent, currentTurnRoot } from '../agent/turn-state.js';
+import { currentTurnNumber, getTurnReceipts, getWorkOriginForAgent, currentTurnRoot } from '../agent/turn-state.js';
 import { getReceiptsByIds, stampReceiptsTask, type ToolReceiptRow } from '../receipts/store.js';
 import { formatTimeForAgent } from '../services/format-time.js';
 
@@ -187,14 +187,14 @@ export async function closeEngineScaffoldSameTurn(
 ): Promise<boolean> {
   const db = getDb();
   const task = db.prepare(`
-    SELECT t.id, t.status, t.project_id, t.repeat_interval, t.assigned_to, t.created_at,
+    SELECT t.id, t.status, t.project_id, t.repeat_interval, t.assigned_to, t.created_at, t.origin_turn,
            p.description AS project_description
     FROM tasks t
     LEFT JOIN projects p ON p.id = t.project_id
     WHERE t.id = ?
   `).get(taskId) as {
     id: string; status: string; project_id: string | null; repeat_interval: number | null;
-    assigned_to: string | null; created_at: string; project_description: string | null;
+    assigned_to: string | null; created_at: string; origin_turn: number | null; project_description: string | null;
   } | undefined;
   if (!task) return false;
   // Genuinely open, one-shot only (a recurring schedule is advanced by the
@@ -203,9 +203,18 @@ export async function closeEngineScaffoldSameTurn(
   if (task.repeat_interval !== null) return false;
   // Guard 1: must be an engine scaffold (marker rides the PROJECT description).
   if (!task.project_description || !task.project_description.startsWith(ENGINE_AUTO_MARKER)) return false;
-  // Guard 2: created within this turn (created_at recency; see header).
-  const createdMs = new Date(task.created_at.includes('Z') ? task.created_at : task.created_at + 'Z').getTime();
-  if (Number.isNaN(createdMs) || Date.now() - createdMs > 5 * 60 * 1000) return false;
+  // Guard 2, P4 rekey: "created within this turn" is now IDENTITY, not a
+  // clock: the task's origin_turn (P1 spine) equals the live turn number.
+  // The 5-minute created_at window survives only as the pre-spine fallback
+  // for origin_turn NULL rows, and slow turns no longer silently fail this
+  // guard (the old window's confessed defect).
+  const liveTurn = currentTurnNumber.get(agentId) ?? null;
+  if (task.origin_turn != null && liveTurn != null) {
+    if (task.origin_turn !== liveTurn) return false;
+  } else {
+    const createdMs = new Date(task.created_at.includes('Z') ? task.created_at : task.created_at + 'Z').getTime();
+    if (Number.isNaN(createdMs) || Date.now() - createdMs > 5 * 60 * 1000) return false;
+  }
 
   const resultText = (deliveredReply.replace(/\s+/g, ' ').trim().slice(0, 2000))
     || 'Delivered to the user in chat this turn (engine same-turn scaffold close).';

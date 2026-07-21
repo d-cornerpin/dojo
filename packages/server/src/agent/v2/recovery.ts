@@ -18,6 +18,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../logger.js';
+import { markLatestTurnError } from './turn-record.js';
 import { broadcast } from '../../gateway/ws.js';
 import { getDb } from '../../db/connection.js';
 import { recordError, AgentError } from '../errors.js';
@@ -483,6 +484,9 @@ async function recordInjury(
 ): Promise<void> {
   const agentId = state.agentId;
   logger.error(`v2 agent loop failed: ${message}`, { agentId, code, cause }, agentId);
+  // P4 turn record: a turn that died on an exception gets an honest terminal
+  // state instead of an open-ended row.
+  try { markLatestTurnError(agentId); } catch { /* best effort */ }
 
   // v2.3.19 — ALWAYS persist a chat-history system note FIRST so the
   // agent has context on its next turn. Pre-spec the only path that

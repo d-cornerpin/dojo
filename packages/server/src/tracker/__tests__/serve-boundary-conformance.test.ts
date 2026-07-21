@@ -104,3 +104,27 @@ describe('once-per-response guard (P3)', () => {
   });
 });
 
+describe('turn record (P4)', () => {
+  it('every turn start records its subject and root; every exit finalizes', () => {
+    const loop = read('agent/v2/loop.ts');
+    expect(loop).toMatch(/recordTurnStart\(\{/);
+    expect(loop).toMatch(/finalizeTurn\(agentId, turnNumber, outcome/);
+    const rec = read('agent/v2/recovery.ts');
+    expect(rec).toMatch(/markLatestTurnError\(agentId\)/);
+  });
+
+  it('claimed asks carry forward links (served_by_turn at every claim site, answers stamped at teardown)', () => {
+    const loop = read('agent/v2/loop.ts');
+    expect((loop.match(/SET served_by_turn = \?/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    expect(loop).toMatch(/SET answer_message_id = \? WHERE agent_id = \? AND served_by_turn = \?/);
+    const cp = read('agent/v2/counterparty.ts');
+    expect(cp).toMatch(/conv_key = \?, served_by_turn = COALESCE/);
+  });
+
+  it('the scaffold same-turn close keys on origin_turn identity (clock window = pre-spine fallback only)', () => {
+    const tools = read('tracker/tools.ts');
+    expect(tools).toMatch(/task\.origin_turn !== liveTurn\) return false/);
+  });
+});
+
+

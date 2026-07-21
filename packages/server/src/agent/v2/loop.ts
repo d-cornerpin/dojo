@@ -133,6 +133,7 @@ import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssist
 import { identicalCallSignature, checkIdenticalCallRefusal, recordIdenticalCallResult, isSignatureTerminal, type RepeatCallState } from './identical-call-brake.js';
 import { SEND_TO_PEOPLE } from '../sensei-policy.js';
 import { getPresence } from '../../services/presence.js';
+import { recordTurnStart, finalizeTurn } from './turn-record.js';
 const SEND_TO_PEOPLE_SET: ReadonlySet<string> = new Set(SEND_TO_PEOPLE);
 import { detectUngroundedDeliveryClaim, detectDeliveryDenial } from './classifiers/grounding.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
@@ -314,18 +315,24 @@ function userRequestedCloseWantsReply(
   try {
     const db = getDb();
     const task = db.prepare(`
-      SELECT t.created_at AS created_at FROM tasks t
+      SELECT t.created_at AS created_at, t.source_message_id AS source_message_id FROM tasks t
       JOIN projects p ON p.id = t.project_id
       WHERE t.assigned_to = ?
         AND (t.id = ? OR t.id LIKE ?)
-        AND p.description LIKE ?
+        AND (p.origin_kind = 'engine_scaffold' OR p.description LIKE ?)
       LIMIT 1
-    `).get(agentId, id, `${id}%`, `${ENGINE_AUTO_MARKER_MIRROR}%`) as { created_at: string } | undefined;
+    `).get(agentId, id, `${id}%`, `${ENGINE_AUTO_MARKER_MIRROR}%`) as { created_at: string; source_message_id: string | null } | undefined;
     if (!task) return false;
-    // Already answered? Mirror the completion-ack cross-turn dedup: a genuine
-    // model reply (not a tagged engine ack, not a2a, not tool JSON) since the
-    // task was created means silence is correct here, so fall back to the
-    // generic note rather than pushing a duplicate reply.
+    // Already answered, P4 rekey: the ask row that BIRTHED this task records
+    // the reply that answered it (answer_message_id, migration 113). A keyed
+    // read replaces the length>40 adjacency probe; the probe survives only as
+    // the pre-spine fallback for rootless tasks.
+    if (task.source_message_id) {
+      const askAnswered = db.prepare(
+        'SELECT answer_message_id FROM messages WHERE id = ?',
+      ).get(task.source_message_id) as { answer_message_id: string | null } | undefined;
+      if (askAnswered) return askAnswered.answer_message_id == null;
+    }
     const alreadyAnswered = !!db.prepare(`
       SELECT 1 FROM messages
       WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?
@@ -1521,6 +1528,41 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // engine receipts without threading it through every send executor. Cleared at
   // the turn boundary (idle), like currentTurnConvKey.
   currentTurnNumber.set(agentId, turnNumber);
+
+  // ── P4 turn record: what this turn SERVES, forward-linked ──
+  {
+    const root = currentTurnRoot.get(agentId) ?? null;
+    const kind: 'user' | 'a2a' | 'engine' | null =
+      isEngineTurn ? 'engine' : (isA2ATurn ? 'a2a' : (chosenConvKey ? 'user' : null));
+    const subjectKind = isEngineTurn ? 'engine_event' as const
+      : isA2ATurn ? 'a2a_thread' as const
+      : chosenConvKey ? 'conv' as const
+      : isHumanContinuation ? 'continuation' as const
+      : 'none' as const;
+    const subjectId = isEngineTurn ? (pendingEngineEvent?.id ?? null)
+      : isA2ATurn ? ((terminalWakeA2A as unknown as { a2a_thread_id?: string | null } | null)?.a2a_thread_id ?? null)
+      : chosenConvKey;
+    recordTurnStart({
+      agentId, turnNumber, kind, subjectKind, subjectId,
+      rootKind: root?.kind ?? null, rootId: root?.id ?? null,
+      sourceMessageId: root?.sourceMessageId ?? null, convKey: chosenConvKey,
+    });
+    // Per-ask forward link: the claimed trigger row records WHICH turn serves
+    // it (the claim stamps above only made it invisible to the waiting set).
+    try {
+      if (triggerRow) {
+        db.prepare('UPDATE messages SET served_by_turn = ? WHERE rowid = ?').run(turnNumber, triggerRow.rowid);
+      }
+      if (claimedEngineEvent) {
+        db.prepare(`UPDATE ${claimedEngineEvent.src === 'ia' ? 'inter_agent_messages' : 'messages'} SET served_by_turn = ? WHERE rowid = ?`)
+          .run(turnNumber, claimedEngineEvent.rowid);
+      }
+      if (terminalWakeA2A) {
+        const twTable = (terminalWakeA2A as unknown as { src?: string }).src === 'ia' ? 'inter_agent_messages' : 'messages';
+        db.prepare(`UPDATE ${twTable} SET served_by_turn = ? WHERE rowid = ?`).run(turnNumber, terminalWakeA2A.rowid);
+      }
+    } catch { /* best effort */ }
+  }
 
   // Snapshot turn boundary so context assembly excludes mid-run user messages
   const turnStartedAt = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
@@ -8790,13 +8832,46 @@ export async function runV2Turn(agentId: string): Promise<void> {
           const answered = db.prepare(
             `SELECT 1 FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'assistant' AND conv_key = ? LIMIT 1`,
           ).get(agentId, turnNumber, chosenConvKey);
-          const claimed = answered ? claimAssembledSiblings(agentId, chosenConvKey, lastAssembledAtIso) : 0;
+          const claimed = answered ? claimAssembledSiblings(agentId, chosenConvKey, lastAssembledAtIso, turnNumber) : 0;
           if (claimed > 0) {
             logger.info('F9 batch-claim: claimed sibling rows answered by this turn', { agentId, convKey: chosenConvKey, claimed }, agentId);
           }
         } catch { /* best effort, turn teardown must not throw */ }
       }
     }
+
+    // ── P4 turn record finalize: how this turn ENDED, on every exit path ──
+    // Outcome from durable facts + turn-local flags; answer id = this turn's
+    // plain assistant reply row. The runtime recovery site covers turns that
+    // threw before reaching this finally (outcome='error').
+    try {
+      const answerRow = db.prepare(
+        `SELECT id FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'assistant'
+           AND content NOT LIKE '[{%' AND length(trim(content)) > 0
+         ORDER BY rowid DESC LIMIT 1`,
+      ).get(agentId, turnNumber) as { id: string } | undefined;
+      const parkedRow = !answerRow ? db.prepare(
+        `SELECT 1 FROM messages WHERE agent_id = ? AND conv_key LIKE 'park:%' AND created_at >= ? LIMIT 1`,
+      ).get(agentId, turnBoundary.get(agentId) ?? new Date().toISOString()) : undefined;
+      const handoffRow = !answerRow && !parkedRow ? db.prepare(
+        `SELECT 1 FROM inter_agent_messages WHERE agent_id = ? AND turn_number = ? LIMIT 1`,
+      ).get(agentId, turnNumber) : undefined;
+      const outcome = toolPhaseEndedBySpinBrake ? 'brake'
+        : answerRow ? 'answered'
+        : parkedRow ? 'parked'
+        : handoffRow ? 'handoff'
+        : 'no_reply';
+      finalizeTurn(agentId, turnNumber, outcome, answerRow?.id ?? null);
+      // Per-ask outcome: every row this turn served records the reply that
+      // answered it (both stores; sibling rows were stamped served_by_turn in
+      // claimAssembledSiblings above).
+      if (answerRow) {
+        db.prepare('UPDATE messages SET answer_message_id = ? WHERE agent_id = ? AND served_by_turn = ? AND answer_message_id IS NULL')
+          .run(answerRow.id, agentId, turnNumber);
+        db.prepare('UPDATE inter_agent_messages SET answer_message_id = ? WHERE agent_id = ? AND served_by_turn = ? AND answer_message_id IS NULL')
+          .run(answerRow.id, agentId, turnNumber);
+      }
+    } catch { /* best effort, turn teardown must not throw */ }
 
     // FA-TS4: pending-attachments teardown net. The three normal drain sites
     // (:~3187 no-reply, :~3365 text-bearing persist) and the end-of-turn safety
