@@ -5,6 +5,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { dominantMessageLineage } from '../memory/conversations.js';
 import { createLogger } from '../logger.js';
 import { generateEmbedding } from '../memory/embeddings.js';
 import { estimateTokens } from '../memory/store.js';
@@ -852,9 +853,15 @@ export function archiveConversation(params: {
   const db = getDb();
   const id = uuidv4();
 
+  // P5c: the archive carries the dominant conversation of its batch (mig 115).
+  const archiveIds = (params.messages as Array<{ id?: unknown }>)
+    .map(m => (typeof m?.id === 'string' ? m.id : null))
+    .filter((v): v is string => v !== null);
+  const lineage = dominantMessageLineage(archiveIds);
+
   db.prepare(`
-    INSERT INTO vault_conversations (id, agent_id, agent_name, messages, message_count, token_count, earliest_at, latest_at, latest_rowid, latest_ia_rowid, is_processed, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+    INSERT INTO vault_conversations (id, agent_id, agent_name, messages, message_count, token_count, earliest_at, latest_at, latest_rowid, latest_ia_rowid, conversation_id, is_processed, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
   `).run(
     id,
     params.agentId,
@@ -866,6 +873,7 @@ export function archiveConversation(params: {
     params.latestAt,
     params.latestRowid ?? null,
     params.latestIaRowid ?? null,
+    lineage.conversationId,
   );
 
   logger.info('Conversation archived to vault', {

@@ -27,7 +27,6 @@ import { checkPermission, getAgentPermissions } from './permissions.js';
 import { isPrimaryAgent, isPMAgent, isImaginerAgent, getPrimaryAgentId, isDreamerAgent, isHealerAgent } from '../config/platform.js';
 import { spawnAgent, terminateAgent, completeAgent, applySpawnTimeoutDecision } from './spawner.js';
 import { getAgentRuntime } from './runtime.js';
-import { isAwaitingIMResponse, clearIMResponseFlag } from '../services/imessage-bridge.js';
 import {
   trackerCreateProject,
   trackerCreateTask,
@@ -8198,8 +8197,8 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         }
 
         // FA-C1: the omitted-recipient default resolves from the TURN-scoped
-        // iMessage counterparty ONLY. The legacy pendingIMResponseMap (what
-        // getInboundSenderFor falls back to) holds whoever texted this agent most
+        // iMessage counterparty ONLY. The stripped legacy last-inbound map
+        // (P5c) held whoever texted this agent most
         // recently at INGEST time, decoupled from turn execution, so on a
         // proactive/scheduled turn, or the owner on the dashboard saying "text me
         // X", it could deliver the owner's message to a contact who happened to
@@ -8337,26 +8336,10 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           break;
         }
 
-        // Prevent double-sending when the agent is responding to an
-        // incoming iMessage. If the turn was triggered by an iMessage
-        // (bridge set pendingIMResponseMap) and the agent chose to
-        // explicitly call imessage_send as its reply, the runtime's
-        // auto-reply rule in runtime.ts will otherwise ALSO fire at
-        // end-of-turn with the final text content and send a second
-        // iMessage. Clearing the flag here says "the agent took
-        // responsibility, don't auto-reply on top."
-        if (isAwaitingIMResponse(agentId)) {
-          // D10: sender-scoped clear, consume the pending entry only if it
-          // belongs to the recipient the agent just replied to. A newer
-          // inbound from a DIFFERENT sender that landed mid-turn keeps its
-          // pending entry (the bridge no longer serializes ingest behind the
-          // running turn).
-          clearIMResponseFlag(agentId, recipient);
-          logger.info('imessage_send: cleared auto-reply flag - agent is handling iMessage response itself', {
-            agentId,
-            recipient,
-          });
-        }
+        // Double-send prevention is turn-state now (P5c): the executor records
+        // this send in repliedToCounterpartyThisTurn (D16) and the end-of-turn
+        // auto-route checks it, so an explicit reply to the counterparty
+        // suppresses the engine's own.
 
 
         // ── Success string (with recipient-switching warning) ────────
@@ -8641,8 +8624,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         // consumed or was overwritten by a newer inbound (the bridge no longer
         // serializes ingest behind the running turn).
         //
-        // FA-C1: turn-scoped ONLY - the legacy pendingIMResponseMap fallback
-        // (isAwaitingIMResponse / getInboundSenderFor's map branch) is deliberately
+        // FA-C1: turn-scoped ONLY - a last-inbound fallback is deliberately
         // gone here. That map holds whoever texted this agent most recently at
         // ingest time, decoupled from the turn, so on a proactive/dashboard image
         // request a contact who texted mid-generation could receive the finished

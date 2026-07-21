@@ -657,14 +657,20 @@ let approvedSenders: SafeSender[] = [];
 let lastSeenRowId = 0;
 const POLL_INTERVAL_MS = 5000;
 
-// ── Offline-replay age floor ──
-// A box that was offline for days reconnects with a stale cursor; without a floor
-// the first poll would replay EVERY safe-sender text between the cursor and now as
-// a fresh inbound and auto-reply to conversations the sender long since moved on
-// from. Ignore anything older than this: the cursor still advances past it (so it
-// is skipped permanently, never re-read), but the agent is never woken and no
-// reply is sent. Online boxes are unaffected, their inbound rows are seconds old.
+// ── Offline-replay handling (P5c shrink) ──
+// A box that was offline for days reconnects with a stale cursor; without
+// handling, the first poll would replay EVERY safe-sender text between the
+// cursor and now as a fresh inbound and auto-reply to conversations the sender
+// long since moved on from. The old floor DROPPED those rows entirely (skip +
+// advance), losing real texts. Now they are INGESTED as notes: persisted with
+// the real send time in-band, visible in history, claimable as context, but
+// swept from the waiting set (no wake, no command intercept, no auto-reply).
+// The newest IMESSAGE_STALE_BACKLOG_CAP stale rows per poll batch are ingested;
+// anything beyond the cap is skipped-and-advanced as before (a bulk bound so a
+// month-long backlog cannot flood the store in one poll). Online boxes are
+// unaffected, their inbound rows are seconds old.
 const IMESSAGE_MAX_REPLAY_AGE_MS = 48 * 60 * 60 * 1000;
+const IMESSAGE_STALE_BACKLOG_CAP = 25;
 
 // True while pollMessages is mid-flight. setInterval keeps firing every 5s,
 // but if a poll is still reading/persisting inbound rows we skip the next
@@ -737,99 +743,39 @@ function maybeSendBusyAck(agentId: string, sender: string): void {
   });
 }
 
-// Track which sender triggered each agent's current turn so we reply to the right person.
-// No timeout, the flag stays until the agent's response is sent. Slow turns (tool calls,
-// slow models) should still get their iMessage reply.
-//
-// D10: the poll loop no longer serializes behind the running turn, so this
-// single-slot map CAN be overwritten by a newer inbound mid-turn. That is
-// safe because every routing consumer prefers turn-anchored state
-// (currentTurnImRecipient, set from the turn's counterparty which derives
-// from the persisted inbound_meta); the map survives only as (a) the
-// "an iMessage inbound is pending" boolean and (b) a legacy fallback for
-// rows without inbound_meta. To keep it per-message correct, consumption is
-// now sender-scoped: clears pass the sender they are consuming FOR, so a
-// turn finishing for sender A can never eat the entry a newer inbound from
-// sender B just wrote.
-const pendingIMResponseMap = new Map<string, { sender: string }>(); // agentId -> sender
-
-export function isAwaitingIMResponse(agentId: string): boolean {
-  return pendingIMResponseMap.has(agentId);
-}
-
-/**
- * Clear the pending-inbound flag. When `onlyIfSender` is provided, the entry
- * is removed ONLY if it still belongs to that sender (canonical compare), so
- * a consume-once clear scoped to turn A cannot drop the entry a newer
- * inbound B wrote mid-turn. Omit `onlyIfSender` for an unconditional clear.
- */
-export function clearIMResponseFlag(agentId: string, onlyIfSender?: string): void {
-  if (onlyIfSender !== undefined) {
-    const entry = pendingIMResponseMap.get(agentId);
-    if (!entry) return;
-    if (canonicalContactAddress(entry.sender) !== canonicalContactAddress(onlyIfSender)) return;
-  }
-  pendingIMResponseMap.delete(agentId);
-}
-
-/**
- * Raw pending-map read (no currentTurnImRecipient preference, unlike
- * getInboundSenderFor). The v2 loop captures this at run start so its
- * end-of-turn consume-once clear can be scoped to THIS turn's inbound,
- * not a newer one that arrived while the turn ran.
- */
-export function getPendingIMSenderRaw(agentId: string): string | null {
-  return pendingIMResponseMap.get(agentId)?.sender ?? null;
-}
-
-/**
- * The raw address of the sender whose iMessage triggered this agent's
- * current turn, or null if the turn wasn't iMessage-initiated. The
- * outbound `imessage_send` tool uses this to default the recipient, so
- * a reply goes to the person who actually sent the inbound, not the
- * starred default. Critical for setups where multiple safe senders
- * share one Dojo (e.g. sender A messages the agent, agent must not
- * accidentally reply to sender B).
- */
-export function getInboundSenderFor(agentId: string): string | null {
-  // T-4: the LIVE turn's iMessage counterparty wins over the racy last-inbound map.
-  // pendingIMResponseMap holds a single value per agent (the most recent inbound),
-  // so during a multi-conversation drain an explicit no-recipient imessage_send /
-  // image_create could go to the wrong person. The turn publishes its counterparty
-  // to currentTurnImRecipient; prefer it, fall back to the legacy map outside a turn.
-  const turnRecipient = currentTurnImRecipient.get(agentId);
-  if (turnRecipient) return turnRecipient;
-  return pendingIMResponseMap.get(agentId)?.sender ?? null;
-}
+// P5c STRIP (lanes & lineage): the per-agent last-inbound slot
+// (pendingIMResponseMap) and its accessors are gone. Born in the initial
+// commit, rebuilt six times, it was a racy single-value global fully decoupled
+// from turn execution. The requirement it encoded, "a reply routes to the
+// sender of the message it answers", rides structural identity now: the turn's
+// counterparty (currentTurnImRecipient, derived from the persisted
+// inbound_meta / conversation row) addresses replies, the D16
+// repliedToCounterpartyThisTurn turn-state suppresses the end-of-turn
+// auto-route after an explicit send, and rows without a served turn ARE the
+// "pending" signal (messages.served_by_turn). A legacy prose-fallback row
+// (no inbound_meta, so also no conversation row) resolves NO recipient and
+// falls to the owner default rather than guessing from a racy global.
 
 /**
  * FA-C1: the TURN-scoped iMessage counterparty ONLY (currentTurnImRecipient),
- * with NO fallback to the legacy pendingIMResponseMap. Used by the explicit
+ * with NO last-inbound fallback (the legacy map is stripped, P5c). Used by the explicit
  * imessage_send default-recipient path and the image_create delivery path, so an
  * omitted recipient can only ever resolve to the person THIS turn is actually
  * conversing with. Outside a genuine iMessage turn it returns null and the caller
- * MUST refuse to guess: pendingIMResponseMap holds whoever texted this agent most
- * recently at INGEST time, fully decoupled from turn execution, so consulting it
- * on a proactive/dashboard turn could deliver owner-directed content to whatever
- * contact happened to text moments earlier. The broader getInboundSenderFor keeps
- * the map fallback for the resolve-time context read (inbound-channel.ts), a
- * different consumer that must stay unchanged.
+ * MUST refuse to guess: a last-inbound value is decoupled from turn execution,
+ * so consulting one on a proactive/dashboard turn could deliver owner-directed
+ * content to whatever contact happened to text moments earlier.
  */
 export function getTurnScopedImRecipient(agentId: string): string | null {
   return currentTurnImRecipient.get(agentId) ?? null;
 }
 
-// ── Agent-initiated (relay) contact tracking ──
-//
-// When the agent proactively texts someone who ISN'T the person who
-// triggered the current turn (a relay: "the owner asked me to ask a contact"), we
-// record that contact here. When that contact later REPLIES, the agent's
-// end-of-turn text is a report back to the original requester (the
-// dashboard user), NOT an auto-reply to the contact, so the v2.7.23
-// auto-router suppresses iMessage routing for that inbound turn and leaves
-// the text in the dashboard. Consume-once: cleared the first time the
-// relay reply is handled, so a genuine later exchange isn't suppressed.
-const agentInitiatedContacts = new Map<string, Set<string>>(); // agentId -> Set<canonical address>
+// P5c STRIP: the agent-initiated (relay) contact set is gone. Its three
+// accessors had NO callers left (the v2.7.23 auto-router that consumed it was
+// replaced by turn-anchored counterparty routing), so the map was write-only
+// dead state. The requirement it encoded, "a reply to agent-initiated
+// outreach reports back to the originating conversation, not the contact",
+// lives in the turn counterparty + cross-conv send echo (RC-1) lineage.
 
 // Resolve to the stored safe-sender address so a marked recipient and a
 // later inbound sender compare equal despite formatting differences (phone
@@ -837,23 +783,6 @@ const agentInitiatedContacts = new Map<string, Set<string>>(); // agentId -> Set
 function canonicalContactAddress(address: string): string {
   const match = findSafeSenderByAddress(getSafeSenders(), address);
   return (match?.address ?? address).trim().toLowerCase();
-}
-
-export function markAgentInitiatedContact(agentId: string, address: string): void {
-  let set = agentInitiatedContacts.get(agentId);
-  if (!set) {
-    set = new Set<string>();
-    agentInitiatedContacts.set(agentId, set);
-  }
-  set.add(canonicalContactAddress(address));
-}
-
-export function isAgentInitiatedContact(agentId: string, address: string): boolean {
-  return agentInitiatedContacts.get(agentId)?.has(canonicalContactAddress(address)) ?? false;
-}
-
-export function clearAgentInitiatedContact(agentId: string, address: string): void {
-  agentInitiatedContacts.get(agentId)?.delete(canonicalContactAddress(address));
 }
 
 /**
@@ -899,15 +828,10 @@ export function sendResponseViaIMessage(
   if (!agentId) agentId = getPrimaryAgentId();
   // C8: an OWNER-BOUND send (the away-override promoted a dashboard/proactive reply to
   // iMessage precisely to reach the owner who stepped away) must go to the owner/primary,
-  // never to whatever contact the racy pendingIMResponseMap last captured mid-turn, that
-  // was the "owner's private dashboard reply texted to a contact" bug (inv 1 + 4). This is
-  // authoritative, so it's checked before the recipientOverride and map branches.
+  // never to a contact, that was the "owner's private dashboard reply texted to a
+  // contact" bug (inv 1 + 4). Authoritative: checked before the recipientOverride branch.
   if (ownerBound) {
     const owner = getDefaultSender();
-    // Consume only the OWNER's own pending entry (sender-scoped). A newer
-    // contact inbound that landed mid-turn keeps its entry so its pending
-    // signal survives until its own turn serves it.
-    if (owner) clearIMResponseFlag(agentId, owner);
     if (!owner) return null;
     const cleanedOwner = stripSystemTags(text);
     if (!cleanedOwner) return null;
@@ -925,9 +849,7 @@ export function sendResponseViaIMessage(
   //      authorized.
   let sender: string | null = null;
   let recipientName: string | null = null;
-  // The TURN's counterparty wins over pendingIMResponseMap. That in-memory map is
-  // set per inbound and gets overwritten when another iMessage arrives during a
-  // turn, the bug where a reply to a contact routed to the owner under concurrency.
+  // The TURN's counterparty is the only per-person recipient source (P5c).
   // When the loop passes the turn's counterparty address, use it (validated). If
   // it is no longer a safe sender, SUPPRESS, never fall back to texting the
   // owner an answer meant for someone else.
@@ -936,35 +858,20 @@ export function sendResponseViaIMessage(
     if (allowed) { sender = recipientOverride; recipientName = allowed.name; }
     else {
       logger.warn('Auto-reply suppressed: turn counterparty not on safe-sender list', { agentId, recipient: recipientOverride });
-      clearIMResponseFlag(agentId, recipientOverride);
       return null;
     }
-    // Sender-scoped consume: only this recipient's own pending entry.
-    clearIMResponseFlag(agentId, recipientOverride);
     const cleanedOverride = stripSystemTags(text);
     if (!cleanedOverride) return null;
     sendIMessage(sender, cleanedOverride);
     return { address: sender, name: recipientName ?? sender };
   }
-  const entry = pendingIMResponseMap.get(agentId);
-  if (entry?.sender) {
-    const stillAllowed = findSafeSenderByAddress(getSafeSenders(), entry.sender);
-    if (stillAllowed) {
-      sender = entry.sender;
-      recipientName = stillAllowed.name;
-    } else {
-      logger.warn('Auto-reply suppressed: inbound sender no longer on safe-sender list', {
-        agentId,
-        sender: entry.sender,
-      });
-    }
-  } else {
-    sender = getDefaultSender();
-    if (sender) recipientName = findSafeSenderByAddress(getSafeSenders(), sender)?.name ?? null;
-  }
-  // Consume the entry we actually read (sender-scoped); nothing to clear on
-  // the default-sender path where no entry existed.
-  if (entry) clearIMResponseFlag(agentId, entry.sender);
+  // P5c: no recipient override and not owner-bound -> the starred default
+  // (owner). The old branch here guessed from the racy last-inbound map, the
+  // exact "reply meant for A texts B" class; a caller that means a specific
+  // person passes them explicitly (turn counterparty), everything else is
+  // owner-bound by definition.
+  sender = getDefaultSender();
+  if (sender) recipientName = findSafeSenderByAddress(getSafeSenders(), sender)?.name ?? null;
   if (!sender) return null;
   const cleaned = stripSystemTags(text);
   if (!cleaned) return null;
@@ -1075,6 +982,11 @@ export interface InboundIMessageInput {
   // P5: the chat.db guid, stored on the row (external_message_id) so identity
   // is kept instead of ring-buffered; the unique index is the durable dedup.
   externalMessageId?: string | null;
+  /** P5c offline-replay shrink: set to the real send time (ISO) when this row
+   *  is a stale reconnect replay. The row is INGESTED (persisted, visible,
+   *  claimable as context) but treated as a note: no command intercept, no
+   *  wake, no auto-reply, and the content carries the real send time. */
+  staleSentAtIso?: string | null;
 }
 
 export type InboundIMessageOutcome =
@@ -1098,7 +1010,9 @@ export async function processInboundIMessage(
   // Command intercept against the text portion only (an image-only message can
   // never be a command). On a hit the reply goes to the SENDER and the agent
   // is left asleep; handleIMCommand enforces the owner gate for every command.
-  if (cleanedText) {
+  // Stale replays skip it: answering a days-old "status" text on reconnect is
+  // the moved-on-conversation class the replay handling exists to prevent.
+  if (cleanedText && !input.staleSentAtIso) {
     const commandResponse = await handleIMCommand(cleanedText, sender);
     if (commandResponse) {
       sendIMessage(sender, commandResponse);
@@ -1219,15 +1133,20 @@ export async function processInboundIMessage(
   // engine delivers. The remaining SOURCE tag below carries the policy
   // + sender identity. The per-turn `[Reply destination: ...]` line in
   // the assembled system prompt tells the model SMS voice is required.
-  const msgContent = `[SOURCE: IMESSAGE FROM ${senderLabel} - this person texted YOUR OWN iMessage account (the DOJO bridge - YOUR phone, not the user's). The text arrived via iMessage, not the dashboard chat. ${policyLine} ${replyHint} ${updateDiscipline} Respond to THIS topic only; do not pull in unrelated dashboard conversation context.] ${textForModel}`;
+  let msgContent = `[SOURCE: IMESSAGE FROM ${senderLabel} - this person texted YOUR OWN iMessage account (the DOJO bridge - YOUR phone, not the user's). The text arrived via iMessage, not the dashboard chat. ${policyLine} ${replyHint} ${updateDiscipline} Respond to THIS topic only; do not pull in unrelated dashboard conversation context.] ${textForModel}`;
+  if (input.staleSentAtIso) {
+    // P5c: the row keeps its real send time in-band (absolute, cache-safe) so
+    // the model reads it as history, not as a fresh ask awaiting a reply.
+    msgContent = `[Delivered late: sent ${input.staleSentAtIso}, ingested when this Mac reconnected. Old context, not a fresh message; it was NOT answered at the time.] ${msgContent}`;
+  }
 
   // Stamp structured inbound metadata (v3.1.x attribution redesign).
-  // iMessage previously relied on the in-memory pendingIMResponseMap +
+  // iMessage previously relied on an in-memory last-inbound slot +
   // prose [SOURCE: ...] marker. We now ALSO record structured meta so
   // the origin projection can tell "the owner texting" from "a friend
   // texting" (is_primary). recipientAddress mirrors the raw `sender`
-  // that pendingIMResponseMap + getInboundSenderFor use, so reply
-  // routing is byte-identical, this only ADDS the relation signal.
+  // reply routing reads (turn counterparty via inbound_meta), this
+  // only ADDS the relation signal.
   const inboundMetaObj = {
     channel: 'imessage' as const,
     accountKind: 'agent' as const,
@@ -1276,6 +1195,13 @@ export async function processInboundIMessage(
       externalMessageId ?? null,
     );
     recordInboundMeta(msgId, inboundMetaObj);
+    if (input.staleSentAtIso) {
+      // P5c: the reply-vs-note decision, made structurally at ingest. A stale
+      // reconnect replay is a NOTE: visible in history and claimable as
+      // context by later turns, but swept from the waiting set so the drain
+      // never owes it a turn of its own (no days-late auto-reply).
+      db.prepare("UPDATE messages SET swept_at = datetime('now') WHERE id = ?").run(msgId);
+    }
     if (advanceRowId !== null) {
       db.prepare(`
         INSERT INTO config (key, value, updated_at) VALUES ('imessage_last_rowid', ?, datetime('now'))
@@ -1360,9 +1286,6 @@ export async function processInboundIMessage(
         sender, name: senderRecord.name,
       });
     } else if (wakeAgent) {
-      // Flag that the primary agent next response is sent back over iMessage
-      // to this sender.
-      pendingIMResponseMap.set(primaryId, { sender });
       // D10 busy-ack: if this message just queued behind a running turn older
       // than 60s, tell the sender once (deterministic engine send, never a
       // model turn). No-op when no turn is running (the probe path).
@@ -1381,7 +1304,6 @@ export async function processInboundIMessage(
         logger.error('Failed to process iMessage in runtime', {
           error: err instanceof Error ? err.message : String(err),
         });
-        clearIMResponseFlag(primaryId, sender);
       });
     }
   } catch (postErr) {
@@ -1471,16 +1393,29 @@ async function pollMessages(): Promise<void> {
         persistRetries.delete(rowId);
       };
 
+      // P5c: classify the batch's stale rows up front so the bulk-backlog cap
+      // keeps the NEWEST cap-many (rows arrive oldest-first; the ones beyond
+      // the cap are the oldest and least likely to still matter).
+      const staleRowids = new Set<number>();
+      {
+        const staleAll = messages.filter(m => {
+          const t = appleMessageDateToUnixMs(m.date);
+          return t !== null && Date.now() - t > IMESSAGE_MAX_REPLAY_AGE_MS;
+        }).map(m => m.ROWID);
+        for (const rid of staleAll) staleRowids.add(rid);
+        for (const rid of staleAll.slice(-IMESSAGE_STALE_BACKLOG_CAP)) staleRowids.delete(rid);
+        // staleRowids now holds only the beyond-cap overflow (skip these);
+        // capped-in stale rows are detected per-row below and ingested as notes.
+      }
       for (const msg of messages) {
-        // ── Offline-replay age floor ──
-        // Skip (but permanently advance past) any row older than the floor so a
-        // long-offline box does not auto-reply to stale texts on reconnect. Placed
-        // BEFORE the attachment gate so a stale message never triggers attachment
-        // copying either. When the age can't be determined (null), fall through and
-        // process normally, dropping a real text is worse than a rare stale reply.
+        // ── Offline-replay handling (P5c): ingest-as-note or capped skip ──
+        // Placed BEFORE the attachment gate so a beyond-cap stale message never
+        // triggers attachment copying. When the age can't be determined (null),
+        // process normally: dropping a real text is worse than a stale note.
         const sentAtMs = appleMessageDateToUnixMs(msg.date);
-        if (sentAtMs !== null && Date.now() - sentAtMs > IMESSAGE_MAX_REPLAY_AGE_MS) {
-          logger.info('iMessage skipped, older than the offline-replay floor (advancing cursor past it)', {
+        const isStaleReplay = sentAtMs !== null && Date.now() - sentAtMs > IMESSAGE_MAX_REPLAY_AGE_MS;
+        if (isStaleReplay && staleRowids.has(msg.ROWID)) {
+          logger.info('iMessage stale-backlog overflow skipped (beyond the per-poll ingest cap; advancing cursor past it)', {
             rowid: msg.ROWID,
             ageHours: Math.round((Date.now() - sentAtMs) / 3_600_000),
           });
@@ -1661,8 +1596,10 @@ async function pollMessages(): Promise<void> {
             cleanedText,
             attachmentResult,
             advanceRowId: msg.ROWID,
-            wakeAgent: true,
+            // P5c: a stale reconnect replay is ingested as a note, never a turn.
+            wakeAgent: !isStaleReplay,
             externalMessageId: (msg as { guid?: string | null }).guid ?? null,
+            staleSentAtIso: isStaleReplay && sentAtMs !== null ? new Date(sentAtMs).toISOString() : null,
           });
         } catch (err) {
           // Persist failed: the message is NOT in the store and the durable

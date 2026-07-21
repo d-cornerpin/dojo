@@ -3,6 +3,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getMessagesByIds } from './store.js';
 import { queueEmbedding } from './embeddings.js';
+import { dominantMessageLineage } from './conversations.js';
 import type { Message } from '@dojo/shared';
 
 const logger = createLogger('memory-dag');
@@ -63,9 +64,13 @@ export function createLeafSummary(
   const db = getDb();
   const id = `sum_${uuidv4()}`;
 
+  // P5c: the summary CARRIES the dominant lineage of its chunk (mig 115), so
+  // identity survives compression instead of dropping at the boundary.
+  const lineage = dominantMessageLineage(messageIds);
+
   const insertSummary = db.prepare(`
-    INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, earliest_at, latest_at, descendant_count, created_at)
-    VALUES (?, ?, 0, 'leaf', ?, ?, ?, ?, ?, datetime('now'))
+    INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, earliest_at, latest_at, descendant_count, conversation_id, conv_key, a2a_thread_id, created_at)
+    VALUES (?, ?, 0, 'leaf', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `);
 
   const insertLink = db.prepare(`
@@ -73,7 +78,7 @@ export function createLeafSummary(
   `);
 
   const txn = db.transaction(() => {
-    insertSummary.run(id, agentId, content, tokenCount, earliestAt, latestAt, messageIds.length);
+    insertSummary.run(id, agentId, content, tokenCount, earliestAt, latestAt, messageIds.length, lineage.conversationId, lineage.convKey, lineage.a2aThreadId);
 
     for (const messageId of messageIds) {
       insertLink.run(id, messageId);
@@ -125,9 +130,29 @@ export function createCondensedSummary(
     `SELECT COALESCE(SUM(descendant_count), 0) as total FROM summaries WHERE id IN (${parentPlaceholders})`,
   ).get(...parentIds) as { total: number };
 
+  // P5c: condensed summaries inherit the modal lineage of their parents, same
+  // deterministic tie-break as dominantMessageLineage.
+  const parentLineage = db.prepare(
+    `SELECT conversation_id, conv_key, a2a_thread_id FROM summaries WHERE id IN (${parentPlaceholders})`,
+  ).all(...parentIds) as Array<{ conversation_id: string | null; conv_key: string | null; a2a_thread_id: string | null }>;
+  const modal = (vals: Array<string | null>): string | null => {
+    const tally = new Map<string, number>();
+    for (const v of vals) if (v) tally.set(v, (tally.get(v) ?? 0) + 1);
+    let best: string | null = null; let bestCount = 0;
+    for (const [v, c] of [...tally.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
+      if (c > bestCount) { best = v; bestCount = c; }
+    }
+    return best;
+  };
+  const lineage = {
+    conversationId: modal(parentLineage.map(r => r.conversation_id)),
+    convKey: modal(parentLineage.map(r => r.conv_key)),
+    a2aThreadId: modal(parentLineage.map(r => r.a2a_thread_id)),
+  };
+
   const insertSummary = db.prepare(`
-    INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, earliest_at, latest_at, descendant_count, created_at)
-    VALUES (?, ?, ?, 'condensed', ?, ?, ?, ?, ?, datetime('now'))
+    INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, earliest_at, latest_at, descendant_count, conversation_id, conv_key, a2a_thread_id, created_at)
+    VALUES (?, ?, ?, 'condensed', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `);
 
   const insertLink = db.prepare(`
@@ -135,7 +160,7 @@ export function createCondensedSummary(
   `);
 
   const txn = db.transaction(() => {
-    insertSummary.run(id, agentId, depth, content, tokenCount, earliestAt, latestAt, descendantRow.total);
+    insertSummary.run(id, agentId, depth, content, tokenCount, earliestAt, latestAt, descendantRow.total, lineage.conversationId, lineage.convKey, lineage.a2aThreadId);
 
     for (const parentId of parentIds) {
       insertLink.run(id, parentId);

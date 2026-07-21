@@ -57,9 +57,6 @@ import { hasHandedCredentialValues, redactHandedCredentials } from '../../creden
 // pause prematurely.
 import { AgentError, clearErrors } from '../errors.js';
 import {
-  isAwaitingIMResponse,
-  clearIMResponseFlag,
-  getPendingIMSenderRaw,
   parseSafeSenders,
 } from '../../services/imessage-bridge.js';
 import { resolveInbound } from './inbound-channel.js';
@@ -108,6 +105,7 @@ import { recordToolOutcome, crossTurnFailureNote } from './attempt-record.js';
 import { injectRegistryMessage, buildAssemblyContext } from '../../prompt/registry/assembler.js';
 import type { AssemblyContext } from '../../prompt/registry/types.js';
 import { isDestructiveCall, manifestPermitsDestructiveCall, consumeApproval, requestApproval } from '../destructive-gate.js';
+import { recipientIdsMatch } from '../recipient-identity.js';
 import { fileHealerApprovalProposal, markHealerProposalAppliedBySignature, maybeAutoApproveHealerScratch } from '../../healer/approval-routing.js';
 import {
   isStructuringTool,
@@ -681,27 +679,9 @@ async function dispatchPMRenameHandoff(params: {
   }
 }
 
-// D16: normalize a channel recipient id (phone / email / iMessage handle / chat
-// id) for comparison, tolerating formatting differences.
-function normRecipientId(s: unknown): string {
-  const raw = String(s ?? '').trim().toLowerCase();
-  // AUDIT-FIX: strip formatting only for phone-like ids. Stripping hyphens from
-  // emails/handles made distinct ids (a-b@x.com vs ab@x.com) compare equal,
-  // which would suppress a reply that should have been sent.
-  return /^[\d\s()+.-]+$/.test(raw) ? raw.replace(/[\s()+.-]/g, '') : raw;
-}
-// D16: do two channel recipient ids refer to the same target? Exact match, or
-// (for phone-like ids) the last 10 digits match, so a +1 country code or
-// formatting difference isn't read as a different person. Conservative: an
-// uncertain compare returns false, whose only cost is a possible duplicate
-// reply, never a silent drop of the real sender's answer.
-function recipientIdsMatch(a: unknown, b: unknown): boolean {
-  const na = normRecipientId(a), nb = normRecipientId(b);
-  if (!na || !nb) return false;
-  if (na === nb) return true;
-  const da = na.replace(/\D/g, ''), dbb = nb.replace(/\D/g, '');
-  return da.length >= 10 && dbb.length >= 10 && da.slice(-10) === dbb.slice(-10);
-}
+// D16 recipient comparison moved to agent/recipient-identity.ts (P5c rekey:
+// canonical contact/safe-sender identity first, digit-tail heuristic only as
+// the both-unknown fallback).
 
 // Reminder-delivery lane (2026-07-21, battery root-cause find; P1 spine
 // consumer #1). A reminder task is BY DESIGN a delivery to the owner (or a
@@ -1138,13 +1118,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
     }
   }
   const triggeredByIMessage = lastUserMessageContent?.includes('[SOURCE: IMESSAGE FROM') ?? false;
-  const imFlagSetAtRunStart = isAwaitingIMResponse(agentId);
-  // D10: the bridge no longer serializes ingest behind the running turn, so
-  // the pending-IM map can gain a NEWER inbound's entry while this turn runs.
-  // Capture the raw sender the flag belonged to at run start so the
-  // end-of-turn consume-once clear is scoped to THIS turn's inbound and can
-  // never eat an entry a mid-turn inbound just wrote.
-  const imSenderAtRunStart = imFlagSetAtRunStart ? getPendingIMSenderRaw(agentId) : null;
   // v2.9.16: once-per-turn latch for the voice-mode filler phrase.
   // Flipped true the first time we push a filler into the active TTS
   // burst so subsequent tool-using iterations in the same turn don't
@@ -1474,8 +1447,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       });
 
   // T-4: publish this turn's iMessage recipient (the human counterparty) so an
-  // explicit no-recipient imessage_send / image_create reply goes to THIS person,
-  // not the racy last-inbound pendingIMResponseMap.
+  // explicit no-recipient imessage_send / image_create reply goes to THIS person.
   if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
     currentTurnImRecipient.set(agentId, counterparty.senderId);
   } else {
@@ -1496,9 +1468,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
     resetProactiveSendStreak(agentId);
   }
 
-  const ownerAffinityConvKey = conversationKey(
-    counterparty.channel, counterparty.senderId, counterparty.name, counterparty.threadId,
-  );
+  // P5c: the affinity cooldown is keyed by the CONVERSATION ROW. Owner-addressed
+  // dashboard-default turns (the only promotion case) all belong to the owner's
+  // one dashboard conversation per agent, the same identity the chat route
+  // stamps, so resolve that row lazily inside the promotion guard.
+  let ownerAffinityConversationId: string | null = null;
   let ownerAffinityDestination: 'imessage' | null = null;
   {
     const destinationWouldBeDashboard =
@@ -1510,8 +1484,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
         const { isImessageConfigured } = await import('../../services/presence.js');
         const bridgeConfigured = isImessageConfigured();
         const affinity = resolveOwnerAffinityChannel(agentId, { imessageBridgeConfigured: bridgeConfigured });
-        if (affinity === 'imessage' && affinityPromotionAllowed(agentId, ownerAffinityConvKey)) {
-          ownerAffinityDestination = 'imessage';
+        if (affinity === 'imessage') {
+          const { resolveOrCreateConversation } = await import('../../memory/conversations.js');
+          ownerAffinityConversationId = resolveOrCreateConversation(agentId, {
+            channel: 'dashboard', provider: null, counterpartyId: 'owner', threadRoot: null,
+          });
+          if (affinityPromotionAllowed(agentId, ownerAffinityConversationId)) {
+            ownerAffinityDestination = 'imessage';
+          }
         }
       } catch { /* best effort; a resolution failure just leaves the reply on the dashboard */ }
     }
@@ -1587,7 +1567,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
     turnNumber,
     triggeredByIMessage,
     triggeredByA2AReplyIntent: a2aReplyContext,
-    imFlagSetAtRunStart,
     lastUserMessageContent,
     lastUserMessageId,
     inboundChannel,
@@ -8171,7 +8150,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // never starts a cooldown) AND the owner is not away; the per-conversation
         // cooldown starts now.
         if (destination === 'imessage' && effectiveOwnerAffinity === 'imessage' && presenceNow !== 'away') {
-          recordAffinityPromotion(agentId, ownerAffinityConvKey);
+          recordAffinityPromotion(agentId, ownerAffinityConversationId);
         }
 
         // ── Settled-context hold (phantom-outreach fix, 2026-07-18) ──
@@ -8240,9 +8219,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // to, never a hardcoded default. If the send was suppressed (sender
           // no longer authorized, empty body), skip the marker entirely so we
           // don't claim a delivery that didn't happen.
-          // Route to THIS turn's counterparty (stable), not the racy in-memory
-          // pendingIMResponseMap, the fix for a reply to a contact going to the owner
-          // when another iMessage arrived mid-turn. counterparty.senderId is the
+          // Route to THIS turn's counterparty (stable). counterparty.senderId is the
           // iMessage address for a human iMessage turn; null (proactive/away) lets
           // the bridge fall back to the owner.
           const imRecipient = counterparty.kind === 'user' && counterparty.channel === 'imessage' ? counterparty.senderId : undefined;
@@ -8250,8 +8227,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // iMessage contact (imRecipient set → reply to them) OR because the away-override
           // promoted a dashboard/proactive turn to iMessage to reach the OWNER (imRecipient
           // undefined). In the latter case the send is owner-bound by definition, flag it
-          // so the bridge routes to the owner and never adopts a contact's stale
-          // pendingIMResponseMap entry (the "owner's reply texted to a contact" bug).
+          // so the bridge routes to the owner, never to a contact (the "owner's reply
+          // texted to a contact" bug class).
           const ownerBound = imRecipient === undefined;
           const delivered = sendResponseViaIMessage(state.lastAssistantTextForIM, agentId, imRecipient, ownerBound);
           if (delivered) {
@@ -8456,11 +8433,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }, agentId);
       }
     }
-    // D10: sender-scoped consume-once, clear only if the entry still belongs
-    // to the inbound that started THIS turn (a newer mid-turn inbound's entry
-    // must survive until its own turn serves it). Falls back to an
-    // unconditional clear when the run-start sender was unknown.
-    if (imFlagSetAtRunStart) clearIMResponseFlag(agentId, imSenderAtRunStart ?? undefined);
 
     // v2.9.20, show_to_user end-of-turn safety net.
     //

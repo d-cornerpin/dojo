@@ -10,7 +10,7 @@ vi.mock('../../db/connection.js', () => ({
   },
 }));
 
-import { resolveOrCreateConversation } from '../conversations.js';
+import { resolveOrCreateConversation, dominantMessageLineage } from '../conversations.js';
 
 beforeEach(() => {
   const db = new Database(':memory:');
@@ -26,6 +26,18 @@ beforeEach(() => {
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       last_message_at TEXT,
       UNIQUE(agent_id, channel, provider, counterparty_id, thread_root)
+    );
+    CREATE TABLE messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT,
+      conv_key TEXT,
+      a2a_thread_id TEXT
+    );
+    CREATE TABLE inter_agent_messages (
+      id TEXT PRIMARY KEY,
+      conversation_id TEXT,
+      conv_key TEXT,
+      a2a_thread_id TEXT
     );
   `);
   mockDb.current = db;
@@ -57,5 +69,39 @@ describe('resolveOrCreateConversation (P5)', () => {
     const a = resolveOrCreateConversation('agent-1', { channel: 'email', provider: 'gmail', counterpartyId: 'Pat@Example.com', threadRoot: 't' });
     const b = resolveOrCreateConversation('agent-1', { channel: 'email', provider: 'gmail', counterpartyId: 'pat@example.com', threadRoot: 't' });
     expect(b).toBe(a);
+  });
+});
+
+
+// P5c: summaries/archives carry the dominant lineage of their chunk.
+describe('dominantMessageLineage (P5c)', () => {
+  it('returns the modal non-null lineage across both message stores', () => {
+    const db = mockDb.current!;
+    const ins = db.prepare('INSERT INTO messages (id, conversation_id, conv_key, a2a_thread_id) VALUES (?, ?, ?, ?)');
+    ins.run('m1', 'convA', 'imessage:x', null);
+    ins.run('m2', 'convA', 'imessage:x', null);
+    ins.run('m3', 'convB', 'dashboard', null);
+    ins.run('m4', null, null, null);
+    db.prepare('INSERT INTO inter_agent_messages (id, conversation_id, conv_key, a2a_thread_id) VALUES (?, ?, ?, ?)')
+      .run('ia1', 'convA', 'a2a:t', 'thread-9');
+    const l = dominantMessageLineage(['m1', 'm2', 'm3', 'm4', 'ia1']);
+    expect(l.conversationId).toBe('convA');
+    expect(l.convKey).toBe('imessage:x');
+    expect(l.a2aThreadId).toBe('thread-9');
+  });
+
+  it('is all-null on empty input and unknown ids, and never throws without a DB', () => {
+    expect(dominantMessageLineage([])).toEqual({ conversationId: null, convKey: null, a2aThreadId: null });
+    expect(dominantMessageLineage(['nope'])).toEqual({ conversationId: null, convKey: null, a2aThreadId: null });
+    mockDb.current = null;
+    expect(dominantMessageLineage(['m1'])).toEqual({ conversationId: null, convKey: null, a2aThreadId: null });
+  });
+
+  it('breaks ties deterministically (lexicographic smallest wins at equal count)', () => {
+    const db = mockDb.current!;
+    const ins = db.prepare('INSERT INTO messages (id, conversation_id, conv_key, a2a_thread_id) VALUES (?, ?, ?, ?)');
+    ins.run('t1', 'convZ', null, null);
+    ins.run('t2', 'convA', null, null);
+    expect(dominantMessageLineage(['t1', 't2']).conversationId).toBe('convA');
   });
 });

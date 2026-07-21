@@ -18,8 +18,9 @@
 // rate-limited (at most one per conversation per cooldown) so a flurry of background
 // wakes can't turn into a flurry of texts.
 //
-// Reads only for the resolver; the rate-limit last-promotion timestamp is persisted
-// in the config table (per agent + conversation) so it survives a restart.
+// Reads only for the resolver; the rate-limit last-promotion timestamp lives ON
+// the conversation row (conversations.last_affinity_promo_at, P5c) so the
+// cooldown survives a restart and belongs to the identity it limits.
 
 import { deriveOrigin } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
@@ -95,36 +96,32 @@ export function resolveOwnerAffinityChannel(agentId: string, opts: OwnerAffinity
 //
 // This fix makes proactive nags REACH the phone, so it ships with a rate limit: a
 // background-wake storm (settled-context re-chases, mailbox chatter) must not become a
-// text storm. The last-promotion timestamp is persisted per agent + conversation in
-// the config table so the cooldown survives a restart. Judgment call (documented per
-// the brief): config is the right home because these are engine bookkeeping keys, not
-// user-facing settings, and direct SQL bypasses the cached platform-config reader
-// entirely (these keys are never in that cache's key set).
+// text storm. P5c rekey: the last-promotion timestamp is a COLUMN on the conversation
+// row (the identity being limited), not a per-convKey key in the config table.
 
 const DEFAULT_AFFINITY_COOLDOWN_HOURS = 4;
 
-function affinityKey(agentId: string, convKey: string): string {
-  return `owner_affinity_last_promo:${agentId}:${convKey}`;
-}
-
-/** True when no affinity promotion has fired for this conversation within the cooldown. */
+/** True when no affinity promotion has fired for this conversation within the
+ *  cooldown. A null conversation id (identity unresolvable) allows the
+ *  promotion: reaching the owner is the priority; the rate limit is a
+ *  politeness bound, not a correctness gate. */
 export function affinityPromotionAllowed(
   agentId: string,
-  convKey: string,
+  conversationId: string | null,
   cooldownHours: number = DEFAULT_AFFINITY_COOLDOWN_HOURS,
 ): boolean {
+  if (!conversationId) return true;
   try {
     const db = getDb();
-    const row = db.prepare('SELECT value FROM config WHERE key = ?').get(affinityKey(agentId, convKey)) as
-      | { value: string }
+    const row = db.prepare('SELECT last_affinity_promo_at FROM conversations WHERE id = ?').get(conversationId) as
+      | { last_affinity_promo_at: string | null }
       | undefined;
-    if (!row?.value) return true;
-    const lastMs = Date.parse(row.value.replace(' ', 'T') + 'Z');
+    if (!row?.last_affinity_promo_at) return true;
+    const lastMs = Date.parse(row.last_affinity_promo_at.replace(' ', 'T') + 'Z');
     if (!Number.isFinite(lastMs)) return true;
     return Date.now() - lastMs >= Math.max(1, cooldownHours) * 60 * 60 * 1000;
   } catch {
-    // On a read failure, allow the promotion: reaching the owner is the priority; the
-    // rate limit is a politeness bound, not a correctness gate.
+    // On a read failure, allow the promotion (same politeness-bound reasoning).
     return true;
   }
 }
@@ -158,16 +155,16 @@ export function affinityPromotionRefusedNoBasis(params: {
 }
 
 /** Record that an affinity promotion just fired for this conversation (starts the cooldown). */
-export function recordAffinityPromotion(agentId: string, convKey: string): void {
+export function recordAffinityPromotion(agentId: string, conversationId: string | null): void {
+  if (!conversationId) return;
   try {
     const db = getDb();
     db.prepare(
-      `INSERT INTO config (key, value, updated_at) VALUES (?, datetime('now'), datetime('now'))
-         ON CONFLICT(key) DO UPDATE SET value = datetime('now'), updated_at = datetime('now')`,
-    ).run(affinityKey(agentId, convKey));
+      "UPDATE conversations SET last_affinity_promo_at = datetime('now') WHERE id = ?",
+    ).run(conversationId);
   } catch (err) {
     logger.warn('recordAffinityPromotion failed (non-fatal)', {
-      agentId, convKey, error: err instanceof Error ? err.message : String(err),
+      agentId, conversationId, error: err instanceof Error ? err.message : String(err),
     }, agentId);
   }
 }

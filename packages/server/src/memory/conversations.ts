@@ -55,3 +55,58 @@ export function resolveOrCreateConversation(agentId: string, ident: Conversation
     return null;
   }
 }
+
+/** Dominant (modal) non-null lineage across a set of message ids, over BOTH
+ *  message stores (lanes & lineage P5c). Summaries and archives call this so
+ *  conversation identity survives the compaction boundary instead of dropping
+ *  at it. Each field's mode is computed independently: a chunk can carry one
+ *  dominant conversation but several conv_keys, and each is separately useful
+ *  to recall/audits. Ties break deterministically (count, then lexicographic).
+ *  Best-effort by design: any failure returns all-null lineage and never
+ *  blocks the writer. */
+export function dominantMessageLineage(messageIds: string[]): {
+  conversationId: string | null;
+  convKey: string | null;
+  a2aThreadId: string | null;
+} {
+  const empty = { conversationId: null, convKey: null, a2aThreadId: null };
+  if (messageIds.length === 0) return empty;
+  try {
+    const db = getDb();
+    const tallies: Record<'conversation_id' | 'conv_key' | 'a2a_thread_id', Map<string, number>> = {
+      conversation_id: new Map(),
+      conv_key: new Map(),
+      a2a_thread_id: new Map(),
+    };
+    for (let i = 0; i < messageIds.length; i += 500) {
+      const chunk = messageIds.slice(i, i + 500);
+      const ph = chunk.map(() => '?').join(',');
+      for (const table of ['messages', 'inter_agent_messages'] as const) {
+        const rows = db.prepare(
+          `SELECT conversation_id, conv_key, a2a_thread_id FROM ${table} WHERE id IN (${ph})`,
+        ).all(...chunk) as Array<{ conversation_id: string | null; conv_key: string | null; a2a_thread_id: string | null }>;
+        for (const r of rows) {
+          for (const col of ['conversation_id', 'conv_key', 'a2a_thread_id'] as const) {
+            const v = r[col];
+            if (v) tallies[col].set(v, (tallies[col].get(v) ?? 0) + 1);
+          }
+        }
+      }
+    }
+    const mode = (m: Map<string, number>): string | null => {
+      let best: string | null = null;
+      let bestCount = 0;
+      for (const [v, c] of [...m.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
+        if (c > bestCount) { best = v; bestCount = c; }
+      }
+      return best;
+    };
+    return {
+      conversationId: mode(tallies.conversation_id),
+      convKey: mode(tallies.conv_key),
+      a2aThreadId: mode(tallies.a2a_thread_id),
+    };
+  } catch {
+    return empty;
+  }
+}

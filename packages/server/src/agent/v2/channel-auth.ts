@@ -17,7 +17,7 @@
 // Phone is the deliberate exception: a live call is already connected, so
 // the agent speaks back to whoever is on the line (handled by the caller,
 // which passes channel !== 'phone' here). iMessage authorization is owned by
-// the bridge (its own safe-sender parse + pendingIMResponseMap); callers
+// the bridge (its own safe-sender parse + turn-anchored recipient); callers
 // there have already vetted the sender.
 // ════════════════════════════════════════
 import {

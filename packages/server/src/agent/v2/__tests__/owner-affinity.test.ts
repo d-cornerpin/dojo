@@ -56,8 +56,15 @@ beforeEach(() => {
       conv_key TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
-    CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT, updated_at TEXT);
+    CREATE TABLE conversations (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      channel TEXT NOT NULL,
+      last_affinity_promo_at TEXT
+    );
   `);
+  db.prepare("INSERT INTO conversations (id, agent_id, channel) VALUES ('conv-owner', 'a1', 'dashboard')").run();
+  db.prepare("INSERT INTO conversations (id, agent_id, channel) VALUES ('conv-other', 'a1', 'imessage')").run();
   mockDb.current = db;
 });
 
@@ -88,25 +95,31 @@ describe('RC-10 resolveOwnerAffinityChannel', () => {
   });
 });
 
-describe('RC-10 promotion rate-limit', () => {
+describe('RC-10 promotion rate-limit (P5c: cooldown lives on the conversation row)', () => {
   it('allows a promotion when none recorded, then blocks within the cooldown', () => {
-    expect(affinityPromotionAllowed('a1', 'owner')).toBe(true);
-    recordAffinityPromotion('a1', 'owner');
-    expect(affinityPromotionAllowed('a1', 'owner')).toBe(false);
+    expect(affinityPromotionAllowed('a1', 'conv-owner')).toBe(true);
+    recordAffinityPromotion('a1', 'conv-owner');
+    expect(affinityPromotionAllowed('a1', 'conv-owner')).toBe(false);
   });
 
-  it('is scoped per conversation', () => {
-    recordAffinityPromotion('a1', 'owner');
-    expect(affinityPromotionAllowed('a1', 'owner')).toBe(false);
-    expect(affinityPromotionAllowed('a1', 'imessage:someone')).toBe(true);
+  it('is scoped per conversation row', () => {
+    recordAffinityPromotion('a1', 'conv-owner');
+    expect(affinityPromotionAllowed('a1', 'conv-owner')).toBe(false);
+    expect(affinityPromotionAllowed('a1', 'conv-other')).toBe(true);
   });
 
   it('allows again once the cooldown has elapsed', () => {
     // Seed a promotion timestamp older than the 4h cooldown directly.
     mockDb.current!.prepare(
-      `INSERT INTO config (key, value, updated_at) VALUES (?, datetime('now', '-5 hours'), datetime('now'))`,
-    ).run('owner_affinity_last_promo:a1:owner');
-    expect(affinityPromotionAllowed('a1', 'owner')).toBe(true);
+      `UPDATE conversations SET last_affinity_promo_at = datetime('now', '-5 hours') WHERE id = 'conv-owner'`,
+    ).run();
+    expect(affinityPromotionAllowed('a1', 'conv-owner')).toBe(true);
+  });
+
+  it('a null conversation id allows the promotion and records nothing (politeness bound, not a gate)', () => {
+    expect(affinityPromotionAllowed('a1', null)).toBe(true);
+    recordAffinityPromotion('a1', null); // must not throw
+    expect(affinityPromotionAllowed('a1', 'conv-owner')).toBe(true);
   });
 });
 

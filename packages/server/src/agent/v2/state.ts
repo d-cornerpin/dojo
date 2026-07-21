@@ -162,7 +162,6 @@ export interface AgentTurnState {
   // ── Trigger context (read once at preflight) ──
   readonly triggeredByIMessage: boolean;
   readonly triggeredByA2AReplyIntent: A2AReplyContext | null;
-  readonly imFlagSetAtRunStart: boolean;
   readonly lastUserMessageContent: string | null;
   // P1 lineage spine: the row id of the inbound ask this turn serves (null on
   // engine/A2A turns). Scaffold writers stamp it as source_message_id.
@@ -477,7 +476,6 @@ export interface InitStateParams {
   turnNumber: number;
   triggeredByIMessage: boolean;
   triggeredByA2AReplyIntent: A2AReplyContext | null;
-  imFlagSetAtRunStart: boolean;
   lastUserMessageContent: string | null;
   lastUserMessageId: string | null;
   // v2.7.23, structural inbound channel binding; see AgentTurnState fields
@@ -537,7 +535,6 @@ export function initState(params: InitStateParams): AgentTurnState {
 
     triggeredByIMessage: params.triggeredByIMessage,
     triggeredByA2AReplyIntent: params.triggeredByA2AReplyIntent,
-    imFlagSetAtRunStart: params.imFlagSetAtRunStart,
     lastUserMessageContent: params.lastUserMessageContent,
     lastUserMessageId: params.lastUserMessageId,
     inboundChannel: params.inboundChannel,

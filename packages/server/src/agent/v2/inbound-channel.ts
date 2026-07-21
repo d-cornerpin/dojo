@@ -27,7 +27,6 @@
 import type { InboundMeta } from '@dojo/shared';
 import type { ChannelInboundContext } from './state.js';
 import { isSenderAuthorized } from './channel-auth.js';
-import { getInboundSenderFor } from '../../services/imessage-bridge.js';
 import { getDb } from '../../db/connection.js';
 
 /**
@@ -159,10 +158,14 @@ function resolveFromProse(agentId: string, content: string | null): ResolvedInbo
   const triggeredByIMessage = content?.includes('[SOURCE: IMESSAGE FROM') ?? false;
 
   if (triggeredByIMessage) {
-    const pendingSender = getInboundSenderFor(agentId);
+    // P5c: no recipient guess on the prose path. A row without inbound_meta
+    // has no structural sender identity; the old fallback read a racy
+    // last-inbound global. recipientAddress has no iMessage consumer anyway
+    // (the auto-route addresses the turn counterparty; only email reads it),
+    // and an unresolvable reply falls to the owner default at the bridge.
     return {
       inboundChannel: 'imessage',
-      inboundContext: { recipientAddress: pendingSender ?? undefined, chatType: 'dm' },
+      inboundContext: { chatType: 'dm' },
     };
   }
 

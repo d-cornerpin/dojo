@@ -23,8 +23,8 @@ export const currentTurnKind = new Map<string, 'user' | 'a2a'>();
 export const currentTurnConvKey = new Map<string, string | null>();
 
 // T-4: the iMessage address this turn is conversing with (the turn counterparty's
-// senderId, when it's a human iMessage turn). getInboundSenderFor prefers this over
-// the racy per-agent pendingIMResponseMap (a single last-inbound value), so an
+// senderId, when it's a human iMessage turn). This is the ONLY iMessage
+// recipient state (the racy per-agent last-inbound map was stripped, P5c), so an
 // explicit imessage_send with no recipient, and an image_create reply, go to THIS
 // turn's person, not whoever messaged most recently during a multi-conversation
 // drain (the "reply to a contact sent to the owner" class of bug). Cleared on idle.

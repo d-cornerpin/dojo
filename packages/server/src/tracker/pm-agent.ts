@@ -869,25 +869,41 @@ async function runPMReview(): Promise<void> {
   if (validationPending) lastValidationReviewAt = now;
 
   const agents = db.prepare(`
-    SELECT id, name, status, classification, updated_at FROM agents WHERE status != 'terminated'
-  `).all() as Array<{ id: string; name: string; status: string; classification: string; updated_at: string }>;
+    SELECT id, name, status, classification, updated_at, parent_agent, task_id, timeout_at
+      FROM agents WHERE status != 'terminated'
+  `).all() as Array<{ id: string; name: string; status: string; classification: string; updated_at: string; parent_agent: string | null; task_id: string | null; timeout_at: string | null }>;
 
-  // Build a set of dormant agent IDs (no activity in 7+ days) so the PM
-  // doesn't raise false alarms about agents from old test groups or paused projects.
-  const DORMANT_THRESHOLD_MS = 7 * 86400000;
+  // P5c SHRINK: dormancy is LIFECYCLE state, not message recency. The old rule
+  // ("no message in 7 days") inferred lifecycle from quiet and silently
+  // excluded a merely-unused agent's tasks from review, the hidden-state class
+  // the STATUS-TRUTH invariant bans. An agent is out of PM scope exactly when
+  // its lifecycle says so:
+  //   - its runtime window expired (timeout_at in the past), or
+  //   - it is a spawned worker whose spawning task is finished or gone
+  //     (parent_agent set; task_id missing/terminal), the "old test group"
+  //     debris the recency heuristic was actually built for.
+  // A quiet-but-alive agent's tasks are reviewed like anyone else's; the
+  // per-issue dedup bounds any one-time surfacing of long-stale work.
   const dormantAgentIds = new Set<string>();
   const nowMs = Date.now();
   for (const agent of agents) {
-    const lastMsg = db.prepare(
-      'SELECT created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
-    ).get(agent.id) as { created_at: string } | undefined;
-    if (lastMsg) {
-      const lastTs = lastMsg.created_at.includes('Z') ? lastMsg.created_at : lastMsg.created_at + 'Z';
-      if (nowMs - new Date(lastTs).getTime() >= DORMANT_THRESHOLD_MS) {
+    if (agent.timeout_at) {
+      const t = Date.parse(agent.timeout_at.includes('Z') ? agent.timeout_at : agent.timeout_at + 'Z');
+      if (Number.isFinite(t) && t < nowMs) {
+        dormantAgentIds.add(agent.id);
+        continue;
+      }
+    }
+    if (agent.parent_agent) {
+      if (!agent.task_id) {
+        dormantAgentIds.add(agent.id);
+        continue;
+      }
+      const spawnTask = db.prepare('SELECT status FROM tasks WHERE id = ?')
+        .get(agent.task_id) as { status: string } | undefined;
+      if (!spawnTask || spawnTask.status === 'complete' || spawnTask.status === 'fallen') {
         dormantAgentIds.add(agent.id);
       }
-    } else {
-      dormantAgentIds.add(agent.id);
     }
   }
 
