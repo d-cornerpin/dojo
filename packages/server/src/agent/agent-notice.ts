@@ -80,6 +80,7 @@ export function postAgentNotice(opts: AgentNoticeOpts): string | null {
     // pending-event and human-waiting pools while it still surfaces in the EVENTS/awareness
     // lane (which filters on origin_kind, not conv_key) and is excluded from compaction.
     insertInterAgentEngineRow({
+      work: null,
       id,
       agentId: toAgentId,
       content,

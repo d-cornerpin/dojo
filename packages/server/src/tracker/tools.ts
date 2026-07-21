@@ -34,7 +34,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, isPrimaryAgent, getOwnerName, isPMAgent } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
-import { getTurnReceipts } from '../agent/turn-state.js';
+import { getTurnReceipts, getWorkOriginForAgent } from '../agent/turn-state.js';
 import { getReceiptsByIds, stampReceiptsTask, type ToolReceiptRow } from '../receipts/store.js';
 import { formatTimeForAgent } from '../services/format-time.js';
 
@@ -765,6 +765,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
     }
 
     const result = createProject({
+      origin: getWorkOriginForAgent(agentId, 'model'),
       title,
       description,
       level,
@@ -997,6 +998,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     }
 
     const taskId = createTask({
+      origin: getWorkOriginForAgent(agentId, (args.kind as string | undefined) === 'reminder' ? 'reminder' : 'model'),
       projectId,
       title,
       description,

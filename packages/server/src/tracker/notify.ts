@@ -163,6 +163,10 @@ export function injectTaskAssignmentNotification(
       originIntent: 'tracker',
       convKey: null,
       orIgnore: false,
+      // P1 lineage spine: the task this notice assigns, as a COLUMN. The
+      // terminal-task retire (claimAssignmentNoticeForTerminalTask) becomes a
+      // keyed UPDATE at P2 instead of a content LIKE scan.
+      work: { taskId, runId: null, rootKind: 'task', rootId: taskId },
     });
 
     broadcast({

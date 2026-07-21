@@ -642,6 +642,9 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   // Reuses an existing task if one already exists for this thread, so
   // multiple ASSIGN messages on the same thread are clarifications, not
   // duplicate assignments.
+  // P1 lineage spine: mint the delivery message id up front so the auto-created
+  // ASSIGN task can carry it as source_message_id (the row itself persists below).
+  const msgId = uuidv4();
   let autoTask: { taskId: string; isNew: boolean } | null = null;
   if (effectiveIntent === 'ASSIGN') {
     try {
@@ -651,6 +654,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
         receiverId: target.id,
         payload: envelope.payload,
         threadId,
+        assignMessageId: msgId,
       });
     } catch (err) {
       logger.warn('A2A ASSIGN: auto-task creation failed, delivering message anyway', {
@@ -869,6 +873,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
           // its OWN turn; the deliverable's own wake carries it to the model). The steer
           // TEXT is unchanged, only the channel. INSERT OR IGNORE keeps the store idiom.
           insertInterAgentEngineRow({
+      work: null,
             id: uuidv4(),
             agentId: target.id,
             content: steer,
@@ -1091,7 +1096,6 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   const engineOrigin = envelope.origin === 'engine' || envelope.fromAgent === 'system';
   const originKind = engineOrigin ? 'engine' : null;
   const originIntent = engineOrigin ? (requiresResponse ? 'a2a_request' : 'system') : null;
-  const msgId = uuidv4();
   // D-A (owner decision, 2026-07-05): ALL inter-agent inbound gets its OWN physical
   // store (inter_agent_messages), so it can never live in the primary's `messages`
   // chat table where a forgetful downstream filter could leak it into human chat.

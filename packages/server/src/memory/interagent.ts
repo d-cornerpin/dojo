@@ -91,13 +91,21 @@ export function insertInterAgentEngineRow(params: {
   convKey: string | null;
   turnNumber?: number | null;
   orIgnore?: boolean;
+  // P1 lineage spine (migration 112): the WORK this engine row is about, as
+  // COLUMNS the serve boundary can read (until now the task/run reference
+  // lived only as prose inside content). REQUIRED so every writer states its
+  // referent deliberately: pass `work: null` for rows about no specific work
+  // (steers, awareness notices, floors); pass real ids for scheduler fires,
+  // assignment notices, and anything else a premise check must be able to
+  // retire when the referent is spent.
+  work: { taskId: string | null; runId: string | null; rootKind: string | null; rootId: string | null } | null;
 }): { changes: number } {
   const db = getDb();
   const verb = params.orIgnore === false ? 'INSERT' : 'INSERT OR IGNORE';
   const result = db.prepare(`
     ${verb} INTO inter_agent_messages
-      (id, agent_id, role, content, source_agent_id, origin_kind, origin_intent, conv_key, turn_number, created_at)
-    VALUES (?, ?, 'user', ?, ?, 'engine', ?, ?, ?, datetime('now'))
+      (id, agent_id, role, content, source_agent_id, origin_kind, origin_intent, conv_key, turn_number, task_id, run_id, root_kind, root_id, created_at)
+    VALUES (?, ?, 'user', ?, ?, 'engine', ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `).run(
     params.id,
     params.agentId,
@@ -106,6 +114,10 @@ export function insertInterAgentEngineRow(params: {
     params.originIntent,
     params.convKey,
     params.turnNumber ?? null,
+    params.work?.taskId ?? null,
+    params.work?.runId ?? null,
+    params.work?.rootKind ?? null,
+    params.work?.rootId ?? null,
   );
   return { changes: result.changes };
 }

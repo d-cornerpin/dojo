@@ -105,6 +105,7 @@ trackerRouter.post('/projects', async (c) => {
     // dashboard-initiated project. Use the primary agent (the user's
     // surrogate) as the default actor for dashboard mutations.
     const result = createProject({
+      origin: { kind: 'user_direct', sourceMessageId: null, turn: null, convKey: null },
       title: body.title,
       description: body.description ?? undefined,
       level: body.level,
@@ -538,6 +539,7 @@ trackerRouter.post('/tasks', async (c) => {
 
   try {
     const taskId = createTask({
+      origin: { kind: 'user_direct', sourceMessageId: null, turn: null, convKey: null },
       projectId: body.projectId ?? undefined,
       title: body.title,
       description: body.description ?? undefined,

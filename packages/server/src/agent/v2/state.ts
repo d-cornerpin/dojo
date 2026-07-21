@@ -164,6 +164,9 @@ export interface AgentTurnState {
   readonly triggeredByA2AReplyIntent: A2AReplyContext | null;
   readonly imFlagSetAtRunStart: boolean;
   readonly lastUserMessageContent: string | null;
+  // P1 lineage spine: the row id of the inbound ask this turn serves (null on
+  // engine/A2A turns). Scaffold writers stamp it as source_message_id.
+  readonly lastUserMessageId: string | null;
   // v2.7.23, structural inbound channel binding (OpenClaw-inspired). Set
   // once at preflight by inspecting the last user message. Read at end-
   // of-turn by the reply-destination resolver so terminal assistant text
@@ -476,6 +479,7 @@ export interface InitStateParams {
   triggeredByA2AReplyIntent: A2AReplyContext | null;
   imFlagSetAtRunStart: boolean;
   lastUserMessageContent: string | null;
+  lastUserMessageId: string | null;
   // v2.7.23, structural inbound channel binding; see AgentTurnState fields
   inboundChannel: 'imessage' | 'teams' | 'email' | 'sms' | 'phone' | 'voice' | 'dashboard' | null;
   inboundContext: ChannelInboundContext | null;
@@ -535,6 +539,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     triggeredByA2AReplyIntent: params.triggeredByA2AReplyIntent,
     imFlagSetAtRunStart: params.imFlagSetAtRunStart,
     lastUserMessageContent: params.lastUserMessageContent,
+    lastUserMessageId: params.lastUserMessageId,
     inboundChannel: params.inboundChannel,
     inboundContext: params.inboundContext,
 

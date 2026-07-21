@@ -775,6 +775,10 @@ export async function checkScheduledTasks(): Promise<void> {
       sourceAgentId: null,
       originIntent: 'scheduler',
       convKey: null,
+      // P1 lineage spine: the trigger's referent as COLUMNS. The P2 serve
+      // boundary retires this row the moment the run closes or the task goes
+      // terminal, instead of asking the model to "skip stale triggers".
+      work: { taskId, runId, rootKind: 'occurrence', rootId: runId },
     });
 
     broadcast({

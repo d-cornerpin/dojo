@@ -202,3 +202,37 @@ export const MAX_DRAIN_STUCK = 4;
 export const lastTurnWasA2A = new Set<string>();
 /** Max dedicated A2A turns spent on one owed reply before the engine gives up. */
 export const MAX_A2A_TURN_RETRIES = 2;
+
+// ── Lanes & lineage spine (P1, 2026-07-21) ──
+// The ROOT of the current turn per agent: the one origin this turn is serving.
+// Set at trigger claim (human pickup / engine-event claim / A2A wake), cleared
+// at idle with the other per-turn maps. Writers of work records (tracker
+// creates, scaffolds) read this to stamp the origin quad, so a task born from
+// an ask carries the ask's identity instead of a prose copy of its text.
+// kind vocabulary matches migration 112: ask / occurrence / a2a / engine.
+export interface TurnRoot {
+  kind: 'ask' | 'occurrence' | 'a2a' | 'engine';
+  id: string;
+  // The message row id of the inbound human ask, when kind === 'ask'.
+  sourceMessageId: string | null;
+}
+export const currentTurnRoot = new Map<string, TurnRoot | null>();
+
+// The origin quad a work-record writer should stamp for work created by this
+// agent right now. kind is the CREATION PATH (who decided to create the record),
+// not the root kind; the source/turn/conv triple ties it to the live turn.
+export interface WorkOrigin {
+  kind: 'user_ask' | 'engine_scaffold' | 'a2a_assign' | 'model' | 'reminder' | 'user_direct' | 'system' | null;
+  sourceMessageId: string | null;
+  turn: number | null;
+  convKey: string | null;
+}
+export function getWorkOriginForAgent(agentId: string, kind: WorkOrigin['kind']): WorkOrigin {
+  const root = currentTurnRoot.get(agentId) ?? null;
+  return {
+    kind,
+    sourceMessageId: root?.sourceMessageId ?? null,
+    turn: currentTurnNumber.get(agentId) ?? null,
+    convKey: currentTurnConvKey.get(agentId) ?? null,
+  };
+}

@@ -234,6 +234,7 @@ export function resolveHealerProposal(input: {
       // the primary's `messages` chat table. The merged tail + assembler surface it
       // as a pending engine event (conv_key NULL) exactly as the old row did.
       insertInterAgentEngineRow({
+      work: null,
         id: msgId,
         agentId: primaryId,
         content,

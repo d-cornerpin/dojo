@@ -67,7 +67,7 @@ import { queueEmbedding } from '../../memory/embeddings.js';
 import { isPrimaryAgent, isTrainerAgent, isPMAgent, isHealerAgent, isDreamerAgent } from '../../config/platform.js';
 import os from 'node:os';
 import path from 'node:path';
-import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, currentTurnNumber, continuationContext, clearTurnReceipts, clearRecallBudget, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
+import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, currentTurnNumber, currentTurnRoot, continuationContext, clearTurnReceipts, clearRecallBudget, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
 import { persistEngineSteer } from './engine-steer.js';
 import { pushEngineMessage } from './engine-message.js';
 import { findRecentDeliveries, getRecentOutbound, mostRecentDeliveryTo, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
@@ -850,7 +850,7 @@ export function setAgentStatus(agentId: string, status: string): void {
         UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?
       `).run(status, agentId);
     }
-    if (status === 'idle') { currentTurnKind.delete(agentId); currentTurnConvKey.delete(agentId); currentTurnImRecipient.delete(agentId); currentTurnNumber.delete(agentId); clearTurnReceipts(agentId); clearRecallBudget(agentId); }
+    if (status === 'idle') { currentTurnKind.delete(agentId); currentTurnConvKey.delete(agentId); currentTurnImRecipient.delete(agentId); currentTurnNumber.delete(agentId); currentTurnRoot.delete(agentId); clearTurnReceipts(agentId); clearRecallBudget(agentId); }
     // On 'working', carry the turn kind so the composer can stay quiet on pure
     // A2A turns (unless wordy mode). Defaults to 'user' until the counterparty
     // is resolved early in the turn.
@@ -979,6 +979,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // ("are you there?") can never be answered before the request that came before it.
   const triggerRow = waitingConvs[0]?.oldest;
   const lastUserMessageContent = triggerRow?.content ?? null;
+  // P1 lineage spine: the inbound ask's ROW ID, the origin key work records
+  // born this turn will carry (the prose copy in lastUserMessageContent stays
+  // for display; identity travels as this id).
+  const lastUserMessageId: string | null = triggerRow?.id != null ? String(triggerRow.id) : null;
+  currentTurnRoot.set(agentId, lastUserMessageId ? { kind: 'ask', id: lastUserMessageId, sourceMessageId: lastUserMessageId } : null);
   // CLAIM this conversation the moment the turn picks it up: stamp the trigger
   // inbound's conv_key so it reads as SERVED regardless of how this turn ends.
   // The old design only marked a conversation served when the turn delivered a
@@ -1268,6 +1273,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
       db.prepare(`UPDATE ${claimTable} SET conv_key = 'a2a' WHERE agent_id = ? AND rowid = ? AND conv_key IS NULL`)
         .run(agentId, terminalWakeA2A.rowid);
     } catch { /* best effort, exactly-once is a safety net, not a correctness gate */ }
+    // P1 lineage spine: an A2A wake turn's root is its thread.
+    const twThread = (terminalWakeA2A as unknown as { a2a_thread_id?: string | null }).a2a_thread_id;
+    if (twThread) currentTurnRoot.set(agentId, { kind: 'a2a', id: String(twThread), sourceMessageId: null });
   }
 
   // ── Engine turn classification (OPEN-11) ──
@@ -1343,6 +1351,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // D8: remember OUR claim so a no-answer abort can revert it symmetrically with
     // the human trigger stamp (see revertTriggerStampOnAbort above).
     if (engineClaimed) claimedEngineEvent = { rowid: pendingEngineEvent.rowid, src: pendingEngineEvent.src };
+    // P1 lineage spine: this turn serves the engine event; if the row carries a
+    // run/task referent (migration 112 columns), the root is that occurrence.
+    if (engineClaimed) {
+      const evAny = pendingEngineEvent as unknown as { run_id?: string | null; task_id?: string | null; id?: string | number };
+      currentTurnRoot.set(agentId, evAny.run_id
+        ? { kind: 'occurrence', id: String(evAny.run_id), sourceMessageId: null }
+        : { kind: 'engine', id: String(evAny.id ?? pendingEngineEvent.rowid), sourceMessageId: null });
+    }
     if (!engineClaimed) {
       // C24: symmetry with the human pickup-claim above, the atomic engine-event claim
       // affected 0 rows, so ANOTHER process already picked up this engine event. Bail cleanly
@@ -1490,6 +1506,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
     triggeredByA2AReplyIntent: a2aReplyContext,
     imFlagSetAtRunStart,
     lastUserMessageContent,
+    lastUserMessageId,
     inboundChannel,
     inboundContext,
     pendingTechniqueAck: initialPendingTechniqueAck,
@@ -2195,6 +2212,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // 'engine-steer' keeps it un-selectable as a pending event (see the
             // thrash-steer C6 note below).
             insertInterAgentEngineRow({
+      work: null,
               id: driftNudgeId,
               agentId,
               content: driftNudge,
@@ -2290,6 +2308,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // conv_key sentinel keeps it un-selectable as a pending event.
           const agentNoteId = uuidv4();
           insertInterAgentEngineRow({
+      work: null,
             id: agentNoteId,
             agentId,
             content:
@@ -2379,6 +2398,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // not `messages`. conv_key 'engine-steer' (below) keeps it un-selectable
             // as a pending event; the EVENTS lane still surfaces it via origin_kind.
             insertInterAgentEngineRow({
+      work: null,
               id: steerMsgId,
               agentId,
               content: steerMsg,
@@ -3093,6 +3113,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   // toward tracker_edit_task instead of refusing them into
                   // a parallel project.
                   const created = createProject({
+                    origin: { kind: 'engine_scaffold', sourceMessageId: state.lastUserMessageId, turn: turnNumber, convKey: chosenConvKey },
                     title: projectTitle,
                     description: ENGINE_AUTO_MARKER + lastUserMessageContent.slice(0, 2000),
                     level: 1,
@@ -3244,6 +3265,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // leading-bracket strip drops only the label and keeps the body; a
             // single wrapping "[Engine hint: ...]" bracket would be stripped whole.
             insertInterAgentEngineRow({
+      work: null,
               id: uuidv4(),
               agentId,
               content: `[Engine hint] ${DELEGATION_HINT_BODY}`,
@@ -5462,6 +5484,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               // model on the very next iteration. Label form ([System] body) so the
               // events-lane leading-bracket strip keeps the body.
               insertInterAgentEngineRow({
+      work: null,
                 id: rePromptId,
                 agentId,
                 content: rePrompt,
@@ -5554,6 +5577,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 // user already saw is KEPT visible (never delete a user-visible row); the
                 // follow-through lands after it.
                 insertInterAgentEngineRow({
+      work: null,
                   id: steerId,
                   agentId,
                   content: steer,
@@ -5605,6 +5629,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             const steerId = uuidv4();
             try {
               insertInterAgentEngineRow({
+      work: null,
                 id: steerId,
                 agentId,
                 content: steer,
@@ -7218,6 +7243,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             const scaffoldPrompt: string = state.lastUserMessageContent;
             const scaffoldName = deriveScaffoldTitle(scaffoldPrompt) || 'Multi-step task';
             const created = createProject({
+                    origin: { kind: 'engine_scaffold', sourceMessageId: state.lastUserMessageId, turn: turnNumber, convKey: chosenConvKey },
               title: scaffoldName,
               description: ENGINE_AUTO_MARKER + scaffoldPrompt.slice(0, 2000),
               level: 1,
@@ -7241,6 +7267,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             const autoNoteId = uuidv4();
             try {
               insertInterAgentEngineRow({
+      work: null,
                 id: autoNoteId,
                 agentId,
                 content: autoNoteText,
@@ -8476,6 +8503,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // the scheduler/tracker/healer events. The universal NO_INTERAGENT_LEAK
           // battery invariant now holds absolutely (no by-design exceptions).
           insertInterAgentEngineRow({
+      work: null,
             id: reportId,
             agentId,
             content: reportMsg,

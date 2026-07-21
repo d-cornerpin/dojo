@@ -185,6 +185,9 @@ export function createProject(params: {
   description?: string;
   level: number;
   createdBy: string;
+  // P1 lineage spine: see createTask. Applied to the project row AND inherited
+  // by its inline tasks.
+  origin: { kind: string | null; sourceMessageId: string | null; turn: number | null; convKey: string | null };
   tasks?: Array<{
     title: string;
     description?: string;
@@ -209,9 +212,11 @@ export function createProject(params: {
   // phantom rows.
   db.transaction(() => {
     db.prepare(`
-      INSERT INTO projects (id, title, description, level, status, created_by, phase_count, current_phase, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'active', ?, 1, 1, datetime('now'), datetime('now'))
-    `).run(projectId, title, description ?? null, level, createdBy);
+      INSERT INTO projects (id, title, description, level, status, created_by, phase_count, current_phase,
+                            source_message_id, origin_turn, origin_conv_key, origin_kind, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'active', ?, 1, 1, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    `).run(projectId, title, description ?? null, level, createdBy,
+      params.origin.sourceMessageId, params.origin.turn, params.origin.convKey, params.origin.kind);
 
     if (tasks && tasks.length > 0) {
       const totalSteps = tasks.length;
@@ -242,8 +247,9 @@ export function createProject(params: {
         // onTaskComplete hook surfaces "(none recorded)" to the parent.
         db.prepare(`
           INSERT INTO tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, priority,
-                             step_number, total_steps, phase, depends_on, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                             step_number, total_steps, phase, depends_on,
+                             source_message_id, origin_turn, origin_conv_key, origin_kind, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
         `).run(
           taskId,
           projectId,
@@ -258,6 +264,10 @@ export function createProject(params: {
           totalSteps,
           task.phase ?? 1,
           JSON.stringify(task.dependsOn ?? []),
+          params.origin.sourceMessageId,
+          params.origin.turn,
+          params.origin.convKey,
+          params.origin.kind,
         );
       }
     }
@@ -499,6 +509,11 @@ export function createTask(params: {
   dependsOn?: string[];
   phase?: number;
   kind?: string;
+  // P1 lineage spine (migration 112): REQUIRED so every creation path states
+  // its origin deliberately. Values may be null (legacy/no-turn contexts), the
+  // PARAM may not be omitted: a new writer that forgets lineage fails to
+  // compile instead of silently minting origin-less work.
+  origin: { kind: string | null; sourceMessageId: string | null; turn: number | null; convKey: string | null };
 }): string {
   const db = getDb();
   const taskId = uuidv4();
@@ -521,8 +536,9 @@ export function createTask(params: {
   // parent agent at completion time even if the description was edited.
   db.prepare(`
     INSERT INTO tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, priority,
-                       step_number, total_steps, phase, depends_on, kind, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, datetime('now'), datetime('now'))
+                       step_number, total_steps, phase, depends_on, kind,
+                       source_message_id, origin_turn, origin_conv_key, origin_kind, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
   `).run(
     taskId,
     projectId ?? null,
@@ -537,6 +553,11 @@ export function createTask(params: {
     phase ?? 1,
     JSON.stringify(dependsOn ?? []),
     kind ?? null,
+  
+    params.origin.sourceMessageId,
+    params.origin.turn,
+    params.origin.convKey,
+    params.origin.kind,
   );
 
   logger.info('Task created', { taskId, title, projectId, assignedTo }, createdBy);
@@ -572,6 +593,9 @@ export function autoCreateAssignTask(params: {
   receiverId: string;
   payload: string;
   threadId: string;
+  // P1 lineage spine: the id of the ASSIGN message row that births this task
+  // (the one origin key this path always had in hand and never stored).
+  assignMessageId?: string | null;
 }): { taskId: string; isNew: boolean } | null {
   const db = getDb();
   try {
@@ -636,8 +660,9 @@ export function autoCreateAssignTask(params: {
     // transition); auto-ASSIGN has no schedule.
     db.prepare(`
       INSERT INTO tasks (id, project_id, title, description, original_description, goal, status, assigned_to, created_by, priority,
-                         step_number, total_steps, phase, depends_on, a2a_thread_id, created_at, updated_at)
-      VALUES (?, NULL, ?, ?, ?, ?, 'in_progress', ?, ?, 'normal', NULL, NULL, 1, '[]', ?, datetime('now'), datetime('now'))
+                         step_number, total_steps, phase, depends_on, a2a_thread_id,
+                         source_message_id, origin_conv_key, origin_kind, created_at, updated_at)
+      VALUES (?, NULL, ?, ?, ?, ?, 'in_progress', ?, ?, 'normal', NULL, NULL, 1, '[]', ?, ?, ?, 'a2a_assign', datetime('now'), datetime('now'))
     `).run(
       taskId,
       title,
@@ -647,6 +672,8 @@ export function autoCreateAssignTask(params: {
       params.receiverId,
       params.senderId,
       params.threadId,
+      params.assignMessageId ?? null,
+      'a2a:' + params.threadId,
     );
 
     logger.info('Auto-created task for A2A ASSIGN', {
