@@ -230,18 +230,19 @@ describe('two-key KEY 1: TASK status=complete writers limited to the reviewed se
     expect(hits.length).toBeGreaterThanOrEqual(6);
   });
 
-  it('the demolished engine close primitive no longer writes status or complete_validated', () => {
-    const src = readRel('tracker/tools.ts').join('\n');
-    // markDeliverableShown exists and is the authority-free replacement.
-    expect(src).toMatch(/export async function markDeliverableShown/);
-    // Its CODE sets ONLY deliverable_shown, never status='complete' or
-    // complete_validated (comments naming those are stripped before asserting).
-    const fnStart = src.indexOf('export async function markDeliverableShown');
-    const fnBody = codeOnly(src.slice(fnStart, src.indexOf('Close an engine-owned same-turn scaffold')));
-    expect(fnBody).toMatch(/deliverable_shown = 1/);
-    expect(fnBody).not.toMatch(/status\s*=\s*'complete'/);
-    expect(fnBody).not.toMatch(/status:\s*'complete'/);
-    expect(fnBody).not.toMatch(/complete_validated/);
+  it('the hidden-status stamp is fully demolished: no writer of deliverable_shown exists (P2 drive boundary)', () => {
+    // Owner status-truth invariant (2026-07-21): a flag that contradicts the
+    // visible status is banned. markDeliverableShown (the last writer) was
+    // deleted; the column remains as read-only legacy data. A NEW writer
+    // anywhere in the scanned surface is a contract breach.
+    const files = [...KEY1_FILES];
+    for (const rel of files) {
+      const code = codeOnly(readRel(rel).join('\n'));
+      expect(code, `${rel} writes deliverable_shown (banned hidden status)`).not.toMatch(/UPDATE[^;]{0,300}SET[^;]{0,200}deliverable_shown\s*=\s*1/i);
+      expect(code, `${rel} writes deliverable_shown via object param`).not.toMatch(/deliverable_shown:\s*1/);
+    }
+    const tools = readRel('tracker/tools.ts').join('\n');
+    expect(tools).not.toMatch(/export async function markDeliverableShown/);
   });
 
   it('positive control: a synthetic rogue engine close is caught', () => {

@@ -278,6 +278,123 @@ function engineEventTable(src: EngineEventSrc): 'messages' | 'inter_agent_messag
   return src === 'ia' ? 'inter_agent_messages' : 'messages';
 }
 
+// ── P2: the serve boundary (lanes & lineage plan, owner invariant 2026-07-20) ──
+// "See if it is done" before doing: every queued engine event with a work
+// referent (migration 112 columns) gets its PREMISE re-checked against present
+// state before it can become a turn. A spent referent retires the event with a
+// loud log and a task_log observation, never a model turn. Until this gate,
+// eligibility was 100 percent delivery bookkeeping and the model was asked in
+// prose to "skip stale triggers silently" (the confession this replaces).
+function retireOneEngineEvent(
+  src: EngineEventSrc,
+  rowid: number,
+  reason: string,
+  detail: { taskId?: string | null; runId?: string | null; createdAt?: string | null; referentState?: string | null },
+): boolean {
+  try {
+    const db = getDb();
+    const res = db.prepare(
+      `UPDATE ${engineEventTable(src)} SET swept_at = datetime('now') WHERE rowid = ? AND conv_key IS NULL AND swept_at IS NULL`,
+    ).run(rowid);
+    if (res.changes === 0) return false;
+    logger.info('serve boundary: retired a spent engine event (premise no longer holds; never served)', {
+      reason, rowid, src, taskId: detail.taskId ?? null, runId: detail.runId ?? null,
+      triggerBorn: detail.createdAt ?? null, referentState: detail.referentState ?? null,
+    });
+    if (detail.taskId) {
+      // Best-effort audit-trail entry on the task itself: identity plus time,
+      // "trigger born X, referent reached state Y, retired unserved at now".
+      import('../../tracker/task-log.js').then(({ writeTaskLog }) => {
+        try {
+          writeTaskLog({
+            taskId: detail.taskId!,
+            fromEntity: 'engine',
+            entryKind: 'observation',
+            reason: `serve boundary: retired unserved trigger (${reason})`,
+            note: `trigger born ${detail.createdAt ?? '?'}; referent ${detail.referentState ?? 'spent'}; retired ${new Date().toISOString()}`,
+          });
+        } catch { /* audit only */ }
+      }).catch(() => { /* audit only */ });
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function retireSpentEngineEvents(agentId: string): number {
+  let retired = 0;
+  try {
+    const db = getDb();
+    const candidates = db.prepare(
+      `SELECT rowid, task_id, run_id, created_at, 0 AS _tag, 'm' AS _src FROM messages
+         WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} AND (task_id IS NOT NULL OR run_id IS NOT NULL)
+       UNION ALL
+       SELECT rowid, task_id, run_id, created_at, 1 AS _tag, 'ia' AS _src FROM inter_agent_messages
+         WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} AND (task_id IS NOT NULL OR run_id IS NOT NULL)
+       LIMIT 50`,
+    ).all({ agentId }) as Array<{ rowid: number; task_id: string | null; run_id: string | null; created_at: string; _src: EngineEventSrc }>;
+    for (const ev of candidates) {
+      let reason: string | null = null;
+      let referentState: string | null = null;
+      if (ev.run_id) {
+        const run = db.prepare('SELECT status FROM task_runs WHERE id = ?').get(ev.run_id) as { status: string } | undefined;
+        if (!run) { reason = 'run_missing'; referentState = 'run row gone'; }
+        else if (run.status !== 'running') { reason = 'run_closed'; referentState = `run ${run.status}`; }
+      }
+      if (!reason && ev.task_id) {
+        const task = db.prepare('SELECT status, is_paused FROM tasks WHERE id = ?').get(ev.task_id) as { status: string; is_paused: number } | undefined;
+        if (!task) { reason = 'task_missing'; referentState = 'task row gone'; }
+        else if (task.status === 'complete' || task.status === 'fallen') { reason = 'task_terminal'; referentState = `task ${task.status}`; }
+        else if (task.status === 'paused' && task.is_paused === 1) { reason = 'task_paused'; referentState = 'task paused'; }
+      }
+      if (reason) {
+        if (retireOneEngineEvent(ev._src, ev.rowid, reason, {
+          taskId: ev.task_id, runId: ev.run_id, createdAt: ev.created_at, referentState,
+        })) retired++;
+      }
+    }
+  } catch { /* serve boundary is best-effort; eligibility gates still apply */ }
+  return retired;
+}
+
+/**
+ * P2: keyed trigger retirement at CLOSE time (the other direction of the serve
+ * boundary): work retires its drivers the moment it lands, instead of drivers
+ * discovering staleness later. Called from run-close and task-terminal
+ * transitions. Both stores, unclaimed rows only; claimed rows belong to a turn
+ * already running and the serve boundary never yanks a live turn's trigger.
+ */
+export function retireEngineEventsForRun(runId: string, reason = 'run_closed'): number {
+  let n = 0;
+  try {
+    const db = getDb();
+    for (const table of ['messages', 'inter_agent_messages'] as const) {
+      const res = db.prepare(
+        `UPDATE ${table} SET swept_at = datetime('now') WHERE run_id = ? AND conv_key IS NULL AND swept_at IS NULL`,
+      ).run(runId);
+      n += res.changes;
+    }
+    if (n > 0) logger.info('serve boundary: run close retired its unserved trigger(s)', { runId, reason, retired: n });
+  } catch { /* best effort */ }
+  return n;
+}
+
+export function retireEngineEventsForTask(taskId: string, reason = 'task_terminal'): number {
+  let n = 0;
+  try {
+    const db = getDb();
+    for (const table of ['messages', 'inter_agent_messages'] as const) {
+      const res = db.prepare(
+        `UPDATE ${table} SET swept_at = datetime('now') WHERE task_id = ? AND conv_key IS NULL AND swept_at IS NULL`,
+      ).run(taskId);
+      n += res.changes;
+    }
+    if (n > 0) logger.info('serve boundary: task terminal state retired its unserved event(s)', { taskId, reason, retired: n });
+  } catch { /* best effort */ }
+  return n;
+}
+
 /**
  * D8: expire engine events that exhausted their delivery lifecycle, LOUDLY.
  * An event is exhausted after ENGINE_EVENT_MAX_ATTEMPTS failed deliveries or
@@ -458,6 +575,11 @@ export function getPendingEngineEvent(agentId: string): { rowid: number; id: str
   // so every consumer of eligibility (loop pickup, runtime drain, boot owed-check)
   // also drives the once-per-event expiry notice deterministically.
   expireExhaustedEngineEvents(agentId);
+  // P2 serve boundary: premise re-check BEFORE eligibility. A trigger whose run
+  // closed or whose task went terminal/paused since it was queued retires here,
+  // at the one choke point every consumer (drain, retry timer, boot) funnels
+  // through, so a spent intention can never become a turn.
+  retireSpentEngineEvents(agentId);
   const sessionStart = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
   // D-A step 4: engine events now live in EITHER table, `messages` (legacy rows +
   // the still-in-messages completion_report/spawner writers) or inter_agent_messages

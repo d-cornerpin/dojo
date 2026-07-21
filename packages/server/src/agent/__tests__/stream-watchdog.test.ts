@@ -3,11 +3,14 @@ import { makeStreamWatchdog, STREAM_IDLE_TIMEOUT_ERROR } from '../model.js';
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-// Millisecond-scale bounds so the whole file runs in under a second while
-// exercising exactly the production logic (the bounds are injectable params;
-// production uses 90s first-chunk / 60s idle).
-const FIRST = 60;
-const IDLE = 40;
+// Millisecond-scale bounds exercising exactly the production logic (the
+// bounds are injectable params; production uses 90s first-chunk / 60s idle).
+// 2026-07-21: widened from 60/40 after a full-suite parallel-load flake: with
+// IDLE=40 and bumps every 20ms, worker CPU contention could delay a bump past
+// the idle bound and fire the watchdog mid-"healthy" stream. The margins now
+// dwarf scheduler jitter; the file still runs in ~3s.
+const FIRST = 400;
+const IDLE = 300;
 
 describe('stream idle watchdog', () => {
   it('fires when no first chunk ever arrives (the 602s hang shape)', async () => {

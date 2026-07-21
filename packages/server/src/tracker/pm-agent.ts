@@ -995,7 +995,13 @@ async function runPMReview(): Promise<void> {
             const agentName = task.assignedToName ?? task.assignedTo;
             issues.push({
               stableId: `${task.id}|IDLE`,
-              text: `IDLE: "${task.title}" is in_progress but ${agentName} has been sitting idle for ${idleMin} minute(s) without transitioning the task. POKE THEM: send_to_agent(${agentName}, intent="QUESTION", thread_id=new, message="You have task '${task.title}' (${task.id.slice(0, 8)}) still in_progress but you appear to have gone idle. Pick exactly one and act:\\n\\n1. STILL WORKING: if you're in the middle of this task (file read, batch operation, multi-step process, etc.), CONTINUE from EXACTLY where you stopped. Do NOT restart from the beginning. Do NOT re-read or re-process content you've already covered. Just call your next tool on the next item / next line / next step in your sequence.\\n2. WAITING ON THE USER (you already asked them): mark it paused with tracker_update_status(status='paused', notes='waiting for X').\\n3. BLOCKED (you cannot proceed, need attention): mark it blocked with tracker_update_status(status='blocked', notes='specific obstacle').\\n4. DONE: mark complete with tracker_update_status(status='complete', result='...', evidence=[...]).\\n\\nThis poke is a check-in, not a restart signal. Long-running work is fine, just keep going from where you were."). The agent's expected to have already self-marked paused/blocked - if they didn't, this poke straightens them out. Emphasize option 1 if the work looks like a long read/batch in progress.`,
+              // P2 drive boundary: the engine poke LADDER owns driving idle
+              // work (task-staleness clock, working-skip, 4-option check-in,
+              // escalation rungs). The review just surfaces the fact; the old
+              // fully-scripted "POKE THEM ... continue from EXACTLY where you
+              // stopped" duplicate (whose main job was undoing the ladder's own
+              // mid-turn false positives, now impossible) is retired.
+              text: `IDLE: "${task.title}" (${task.id.slice(0, 8)}) is in_progress and ${agentName} has been idle ${idleMin} minute(s). The engine poke ladder is driving this; only act if you see something the ladder cannot fix (wrong assignee, impossible task, needs the user), in which case use the tracker verbs or message ${agentName} with the specific problem.`,
             });
           }
         }
@@ -1403,7 +1409,7 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
   }
 }
 
-async function runPokeCheck(): Promise<void> {
+export async function runPokeCheck(): Promise<void> {
   const db = getDb();
 
   // ── A2A auto-task sweeper ──
@@ -1534,16 +1540,16 @@ async function runPokeCheck(): Promise<void> {
   const inProgressTasks = allActiveTasks.filter(t => t.status === 'in_progress');
   const now = Date.now();
 
-  const POKE_GRACE_PERIOD_MS = 30 * 60 * 1000; // 30 minutes
-
   for (const task of inProgressTasks) {
     if (!task.assignedTo) continue;
 
-    // Grace period: don't poke tasks that were just created. Give agents
-    // time to actually start working before flagging them.
-    // Use updatedAt so auto-resumed and recently-changed tasks also get the grace period
+    // P2 drive boundary: the per-priority threshold table IS the grace. The
+    // old blanket 30-minute POKE_GRACE_PERIOD_MS silently neutered the
+    // ladder's own design (high.first=180s and normal.second=900s could never
+    // fire), which is exactly the "in_progress sits ignored" class the owner
+    // banned. A just-touched task is protected by the same clock: idle below
+    // thresholds.first pokes nothing.
     const taskUpdated = new Date(task.updatedAt.includes('Z') ? task.updatedAt : task.updatedAt + 'Z').getTime();
-    if (now - taskUpdated < POKE_GRACE_PERIOD_MS) continue;
 
     // Skip tasks with a future scheduled_start -- they're waiting for the scheduler, not stale
     if (task.scheduledStart) {
@@ -1570,23 +1576,22 @@ async function runPokeCheck(): Promise<void> {
     // active globally but the task hasn't moved, per-task wins → poke.
     // If both are old, both agree → poke.
     const pokeDb = getDb();
-    const lastAgentMsg = pokeDb.prepare(`
-      SELECT created_at FROM messages
-      WHERE agent_id = ?
-      ORDER BY created_at DESC, rowid DESC
-      LIMIT 1
-    `).get(task.assignedTo) as { created_at: string } | undefined;
+    // P2 drive boundary rekey: idle = TASK staleness, full stop. The old
+    // min(taskUpdated, agentLastMessageAnywhere) inflated idleness for a
+    // fresh task whose agent was merely quiet (false pokes), while the case
+    // it existed for (agent busy elsewhere, task stalled) is already covered
+    // by task staleness alone. "Is the agent active on THIS task" is the task
+    // row's clock, not the agent's chatter.
+    const idleSeconds = Math.max(0, Math.floor((now - taskUpdated) / 1000));
 
-    const taskUpdatedMs = taskUpdated;
-    const agentLastMsgStr = lastAgentMsg?.created_at;
-    const agentLastMsgMs = agentLastMsgStr
-      ? new Date(agentLastMsgStr.includes('Z') ? agentLastMsgStr : agentLastMsgStr + 'Z').getTime()
-      : taskUpdatedMs;
-
-    const idleSeconds = Math.max(
-      0,
-      Math.floor((now - Math.min(taskUpdatedMs, agentLastMsgMs)) / 1000),
-    );
+    // P2 drive boundary: a poke never fires while the assignee is MID-TURN.
+    // A live turn is by definition not idle; poking it produced the false
+    // positives the old "STILL WORKING: continue from EXACTLY where you
+    // stopped" counter-prompt existed to undo. The rung fires on the next
+    // tick after the turn ends if the task still hasn't moved.
+    const assigneeStatus = (pokeDb.prepare('SELECT status FROM agents WHERE id = ?')
+      .get(task.assignedTo) as { status: string } | undefined)?.status;
+    if (assigneeStatus === 'working') continue;
 
     // Get the last poke for this task
     const lastPoke = getLastPoke(task.id);
@@ -1612,53 +1617,13 @@ async function runPokeCheck(): Promise<void> {
 
     if (!pokeType) continue;
 
-    // Deliverable-already-shown redirect (demolition Phase 1, replaces the F2
-    // ghost-reannounce pre-close). The old code silently engine-closed a
-    // scaffolded one-shot whose answer the user already had (a forged terminal
-    // close via engineCloseDeliveredTask), to avoid waking the weak model into a
-    // "ghost done" re-delivery. That forged the two-key contract. Now: when the
-    // task carries deliverable_shown=1 (markDeliverableShown recorded that the
-    // assignee already delivered the result to the user), we do NOT poke the
-    // assignee (which would re-drive them into a redo / re-delivery) and we do NOT
-    // close anything. Instead the PM's poke for this task becomes a VALIDATE
-    // directive to the PM's own model: judge the delivered work against the goal
-    // as-is, using the overseer verbs (validate the assignee's close-out, or
-    // retask with allow_regenerate=true only if it genuinely misses). logPoke at
-    // the current rung dedups so this fires at most once per escalation step (no
-    // hard loop); the assignee-poke branches below (including the destructive
-    // auto_reset) are short-circuited for a deliverable_shown task.
-    try {
-      const shownRow = pokeDb.prepare(
-        `SELECT deliverable_shown AS deliverable_shown, goal AS goal FROM tasks WHERE id = ?`,
-      ).get(task.id) as { deliverable_shown: number | null; goal: string | null } | undefined;
-      if (shownRow && shownRow.deliverable_shown === 1) {
-        const pmId = getPMAgentId();
-        const assigneeName = task.assignedToName ?? task.assignedTo;
-        const validateDirective =
-          `Task "${task.title}" (${task.id.slice(0, 8)}) [assignee: ${assigneeName}]: its deliverable was already delivered to ${getOwnerName()} in an earlier reply (deliverable_shown=1). ` +
-          `Judge that delivered work against the task goal AS-IS. Do NOT re-drive ${assigneeName} to redo or re-deliver it (that produces a divergent second version and a second "done"). ` +
-          `Goal: ${shownRow.goal ?? '(none recorded)'}. ` +
-          `If the delivered work meets the goal, let the assignee's tracker_update_status close it out and validate that with tracker_validate; if it genuinely misses the goal, tracker_retask requires allow_regenerate=true (it refuses otherwise, to protect delivered work).`;
-        postAgentNotice({
-          toAgentId: pmId,
-          fromName: 'Tracker',
-          selfIntro: false,
-          intent: 'validate_deliverable',
-          brief: validateDirective,
-        });
-        logPoke(task.id, task.assignedTo, pokeNumber, 'validate_deliverable');
-        broadcast({ type: 'tracker:poke', data: { taskId: task.id, agentId: task.assignedTo, pokeType: 'validate_deliverable' } });
-        logger.info('PM poke chain: task deliverable already shown; sent VALIDATE directive to PM instead of poking the assignee (no close, no re-drive)', {
-          taskId: task.id, assignedTo: task.assignedTo, pokeNumber,
-        });
-        continue;
-      }
-    } catch (err) {
-      logger.warn('PM poke chain: deliverable-shown pre-check failed (non-fatal, proceeding to poke)', {
-        taskId: task.id, error: err instanceof Error ? err.message : String(err),
-      });
-    }
-
+    // P2 drive boundary (owner status-truth invariant, 2026-07-21): the
+    // deliverable_shown stand-down redirect that lived here was DELETED. A
+    // hidden flag contradicting the visible status silenced the one mechanism
+    // that restarts stalled work (the yacht-research silent hour). in_progress
+    // means the ladder drives, every time; delivered work is protected by the
+    // Key-1 state (complete + complete_validated=0, PM-validated) and the
+    // retask allow_regenerate gate, not by standing the ladder down.
     const primaryId = getPrimaryAgentId();
     const pmId = getPMAgentId();
     const pmName = getPMAgentName();

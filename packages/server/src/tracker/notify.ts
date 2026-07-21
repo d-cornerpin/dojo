@@ -14,6 +14,7 @@
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
+import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -68,6 +69,15 @@ export interface AssignmentNotificationResult {
 export function claimAssignmentNoticeForTerminalTask(assignedAgentId: string, taskId: string): void {
   if (!assignedAgentId || !taskId) return;
   const db = getDb();
+  // P2 serve boundary, KEYED retirement first (migration 112): every unserved
+  // engine event carrying this task_id (assignment notices, triggers, pokes)
+  // retires the moment the task goes terminal. The content-LIKE claim below is
+  // kept ONLY as a legacy fallback for pre-112 rows whose task_id is NULL;
+  // scar-ledger note: delete the LIKE arm once the fleet's pending rows have
+  // aged past the 6-hour event horizon on a post-112 build.
+  try {
+    retireEngineEventsForTask(taskId, 'task_terminal');
+  } catch { /* best effort; the LIKE fallback below still neutralizes */ }
   const like = `%ID: ${taskId}%`;
   try {
     db.prepare(

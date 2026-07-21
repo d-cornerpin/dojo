@@ -8,6 +8,7 @@
 // this file for bare role='system' INSERTs carrying imperative model-directed text.
 // ════════════════════════════════════════════════════════════════════════
 import { getDb } from '../db/connection.js';
+import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { createLogger } from '../logger.js';
 import {
   createProject,
@@ -139,76 +140,15 @@ function scheduleEchoLines(scheduledStartIso: string | null, nextRunIso: string 
   return lines;
 }
 
-// ── Mark a task's deliverable as shown to the user (two-key restoration) ──
-//
-// Demolition Phase 1: this used to be engineCloseDeliveredTask, the forgery
-// primitive. When the assignee delivered a user-facing result but skipped the
-// formal tracker_update_status, the engine forged a terminal close: it wrote
-// status='complete' AND complete_validated=1 (an engine-authored "PM-blessed"
-// flag), suppressed the assignment notice, and the C2 retask-block keyed on the
-// forged flag to refuse regeneration. That collapsed the two-key contract:
-// completion must be REQUESTED by the agent (with evidence, landing
-// complete_validated=0) and VALIDATED by the PM against the goal. No engine path
-// may close or stamp.
-//
-// New behavior: record the neutral FACT that the deliverable was shown, and stop.
-// It sets deliverable_shown=1 and appends a task_log observation. It does NOT
-// write status, does NOT write complete_validated, does NOT suppress the
-// assignment notice, and runs no completion cascade. The task stays open
-// (in_progress, complete_validated=0) so the PM sweep still owns the dangler and
-// the two-key close still requires the agent's request + the PM's validation. The
-// deliverable_shown flag is what protects the delivered artifact now: the retask
-// verb refuses regeneration on a deliverable_shown task unless allow_regenerate is
-// explicitly passed, so delivered work is not clobbered WITHOUT pretending the
-// task closed. One-shot, non-recurring only (recurring schedules are advanced by
-// the scheduler, never touched here). Returns true when the flag was set.
-export async function markDeliverableShown(
-  callingAgentId: string,
-  taskId: string,
-  deliveredReply: string,
-): Promise<boolean> {
-  const db = getDb();
-  const task = db.prepare(
-    `SELECT id, title, status, project_id, repeat_interval, assigned_to, deliverable_shown FROM tasks WHERE id = ?`,
-  ).get(taskId) as { id: string; title: string; status: string; project_id: string | null; repeat_interval: number | null; assigned_to: string | null; deliverable_shown: number } | undefined;
-  if (!task) return false;
-  // Only mark a task that is genuinely open (in_progress) and one-shot.
-  if (task.status !== 'in_progress') return false;
-  if (task.repeat_interval !== null) return false;
-  // Idempotent: already marked, nothing to do.
-  if (task.deliverable_shown === 1) return false;
-
-  const preview = (deliveredReply.replace(/\s+/g, ' ').trim().slice(0, 200))
-    || '(delivered to the user in chat this turn)';
-
-  // The ONLY write: the neutral fact marker. No status, no complete_validated,
-  // no cascade. updated_at is bumped so the PM poke grace/idle clocks see the
-  // touch, but the row stays in_progress and unvalidated on purpose.
-  db.prepare(`
-    UPDATE tasks
-    SET deliverable_shown = 1,
-        updated_at = datetime('now')
-    WHERE id = ?
-  `).run(taskId);
-
-  try {
-    writeTaskLog({
-      taskId,
-      fromEntity: 'engine',
-      entryKind: 'observation',
-      actionTaken: 'marked deliverable_shown=1',
-      reason: 'assignee delivered the result to the user without a formal tracker_update_status',
-      note: `deliverable delivered to user in reply "${preview}"; engine did NOT close; awaiting agent close-out or PM adjudication`,
-    });
-  } catch { /* best effort */ }
-
-  const fresh = getTask(taskId);
-  if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
-  logger.info('Marked deliverable_shown on a delivered task (no close, no stamp; PM/agent still own the close-out)', {
-    callingAgentId, taskId,
-  }, callingAgentId);
-  return true;
-}
+// P2 drive boundary (owner status-truth invariant, 2026-07-21):
+// markDeliverableShown was DELETED. It was the hidden-second-status writer: a
+// flag on an in_progress row that contradicted the visible status and stood
+// the poke ladder down (the yacht-research silent hour). Statuses are promises
+// the engine enforces; delivered work is protected by the Key-1 state
+// (complete + complete_validated=0, filed through the sanctioned receipt paths
+// and PM-validated) plus the retask allow_regenerate gate below. The
+// deliverable_shown COLUMN (migration 108) remains as read-only legacy data
+// for rows stamped before this release; no writer exists.
 
 // ── Close an engine-owned same-turn scaffold (demolition Phase 1.7 #2) ──
 //
@@ -1335,8 +1275,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     ) {
       return (
         `[NO-OP] task_id=${taskId} | status=${status}, already at this status, no change made.\n\n` +
-        `Task: ${taskRow?.title ?? '(unknown title)'}\n\n` +
-        `If a scheduler trigger for this task is showing in your recent context but the task is already ${status}, that is a STALE trigger left over from when the run actually fired, the scheduler is NOT re-firing it. Skip it silently and move on; you do not need to "re-close" already-closed work.`
+        `Task: ${taskRow?.title ?? '(unknown title)'}`
       );
     }
 
@@ -1605,7 +1544,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         return (
           `[NO-OP] task_id=${taskId} | status=complete, no open scheduled run to complete, no change made.\n\n` +
           `Task: ${taskRow?.title ?? '(unknown title)'}\n\n` +
-          `There is no run currently in progress for this recurring task. If a scheduler trigger for it is showing in your recent context, that is a STALE trigger left over from when the run actually fired, the scheduler is NOT re-firing it. Skip it silently and move on; you do not need to "re-close" already-closed work. If you actually want to STOP the whole recurring schedule, call tracker_update_status with complete_all_runs=true.`
+          `To STOP the whole recurring schedule, call tracker_update_status with complete_all_runs=true.`
         );
       }
 
@@ -2923,7 +2862,10 @@ export async function trackerRetask(
   // delivered work genuinely misses the goal and a fresh pass is warranted). This
   // keys on the neutral fact marker, never on a completion flag, so it protects the
   // artifact without pretending the task closed.
-  if (task.deliverable_shown === 1 && args.allow_regenerate !== true) {
+  const deliveredProtection =
+    task.deliverable_shown === 1 /* legacy rows, pre drive-boundary */ ||
+    (task.status === 'complete' && task.complete_validated === 0) /* Key-1 filed, awaiting PM validation */;
+  if (deliveredProtection && args.allow_regenerate !== true) {
     return `Error: task "${task.title}" (${taskId.slice(0, 8)}) already had its deliverable delivered to the user (deliverable_shown=1). Retasking it would regenerate and overwrite delivered work, producing a divergent second version. If the delivered work genuinely misses the goal and you want the assignee to redo it, re-call tracker_retask with allow_regenerate=true. Otherwise, if the delivery meets the goal, let the assignee close it out (tracker_update_status) and validate that with tracker_validate; if entirely new work is needed, create a NEW task with tracker_create_task.`;
   }
   if (!task.assigned_to) {

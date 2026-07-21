@@ -5337,83 +5337,41 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // Going-idle reconciliation (demolition Phase 1.3): the going-idle nudge
         // already fired this turn and the model STILL ended with a user-facing
         // closeout ("Done" / "All set") without calling a tracker close verb.
-        // persistedContent is non-empty here, so the user HAS been shown a reply
-        // this turn, that reply is the delivery. C2 invariant: the artifact the
-        // user saw is the source of truth and is NEVER regenerated/overwritten by
-        // reconciliation. But the engine no longer CLOSES the dangling one-shot:
-        // closing it with a forged complete_validated=1 collapsed the two-key
-        // contract and is exactly what stopped the PM from re-adjudicating. The
-        // engine now records the neutral FACT that the deliverable was shown
-        // (markDeliverableShown) and leaves the task in_progress for the PM sweep,
-        // the designed owner of danglers. deliverable_shown is what protects the
-        // delivered artifact now: the PM retask verb refuses regeneration on a
-        // deliverable_shown task unless allow_regenerate is explicitly passed, so
-        // nothing clobbers the file the user was already shown WITHOUT pretending
-        // the task closed.
+        // P2 drive boundary (owner status-truth invariant, 2026-07-21): the
+        // going-idle deliverable_shown stamp that lived here was DELETED. It
+        // guessed "the reply the user saw IS the delivery" from the mere fact
+        // that a non-empty reply and open tasks coexisted, then marked EVERY
+        // in_progress task delivered, and that hidden flag stood the poke
+        // ladder down (the yacht-research silent hour). Statuses are promises:
+        // an in_progress task stays visibly in_progress and the ladder DRIVES
+        // it (check-in poke: continue, or close with evidence, or self-mark
+        // paused/blocked). Real delivery evidence files Key-1 through the
+        // sanctioned paths; prose never silences the drive.
+        //
+        // RECURRING CARVE-OUT (kept, janitorial not forgery): a recurring
+        // schedule is never terminally completed by a missed close-out; fail
+        // THIS run and keep the schedule alive.
         if (
           state.nudgedForGoingIdleWithInProgressThisTurn &&
-          // A reply the engine itself coerced (loop-detector STOP order or the
-          // spin-brake ending the tool phase) is a status update, not a
-          // delivery: never stamp deliverable_shown from it (2026-07-21
-          // production incident: "Almost done with the doc" got stamped as the
-          // delivered result on all nine tasks and stood the PM down).
-          !loopBlockFiredThisTurn &&
-          !toolPhaseEndedBySpinBrake &&
-          !state.toolResults.some(
-            tr => tr.name === 'tracker_update_status' || tr.name === 'tracker_complete_step' || tr.name === 'tracker_close_project',
-          ) &&
           persistedContent && persistedContent.trim().length > 0
         ) {
-          // Re-query in-progress tasks at the moment of reconciliation.
-          const danglerRows = db.prepare(`
-            SELECT id, title FROM tasks
+          const recurringDanglers = db.prepare(`
+            SELECT id FROM tasks
             WHERE assigned_to = ?
               AND status = 'in_progress'
               AND is_paused = 0
+              AND repeat_interval IS NOT NULL
             ORDER BY updated_at DESC
             LIMIT 10
-          `).all(agentId) as Array<{ id: string; title: string }>;
-          if (danglerRows.length > 0) {
-            // One-shots: record deliverable_shown and STOP (markDeliverableShown
-            // sets deliverable_shown=1 + a per-task task_log entry, no status
-            // write, no stamp). The task stays in_progress and the turn ends; the
-            // PM sweep owns the close-out. The weaker model usually DID the work
-            // (wrote the file, set the reminders) and just skipped the formal
-            // tracker_update_status, so the reply the user already saw IS the
-            // delivery, and deliverable_shown keeps the PM retask verb from
-            // clobbering it, without forging a terminal close.
-            //
-            // RECURRING TASKS CARVE-OUT (unchanged): a recurring schedule is
-            // never terminally completed here. A single missed close-out fails
-            // THIS run via forceResetStuckRecurringTask (recompute next_run_at,
-            // fire normally next time), never pausing/closing the whole schedule.
-            // This is janitorial scheduler bookkeeping, not a model-obligation
-            // forgery, so it stays.
-            //
-            // No INVISIBLE retrospective note: the old engine-steer-exempt
-            // "[System: ... the engine synced the tracker ...]" row is gone.
-            // markDeliverableShown writes the per-task task_log entry, and nothing
-            // user- or model-facing is owed on this (ending) turn.
+          `).all(agentId) as Array<{ id: string }>;
+          if (recurringDanglers.length > 0) {
             const { forceResetStuckRecurringTask } = await import('../../scheduler/runner.js');
-            const { markDeliverableShown } = await import('../../tracker/tools.js');
-            const recurringResetIds: string[] = [];
-            const markedIds: string[] = [];
-            for (const r of danglerRows) {
-              const isRecurring = db.prepare(`SELECT repeat_interval FROM tasks WHERE id = ?`).get(r.id) as { repeat_interval: number | null } | undefined;
-              if (isRecurring?.repeat_interval) {
-                try { forceResetStuckRecurringTask(r.id); recurringResetIds.push(r.id); } catch { /* best effort */ }
-                continue;
-              }
-              try {
-                const marked = await markDeliverableShown(agentId, r.id, persistedContent ?? '');
-                if (marked) markedIds.push(r.id);
-              } catch { /* best effort */ }
+            for (const r of recurringDanglers) {
+              try { forceResetStuckRecurringTask(r.id); } catch { /* best effort */ }
             }
-            logger.info('v2 idle-with-in_progress reconciliation: marked deliverable_shown on delivered one-shot(s) (left in_progress for the PM sweep), reset recurring on schedule; no engine close, no stamp, no escalation, no INVISIBLE note', {
-              agentId, markedCount: markedIds.length, markedIds, recurringResetCount: recurringResetIds.length, recurringResetIds,
+            logger.info('v2 idle-with-in_progress: recurring dangler(s) failed THIS run and rejoined their schedule; one-shot danglers stay visibly in_progress for the drive boundary', {
+              agentId, recurringResetCount: recurringDanglers.length,
             }, agentId);
-            setAgentStatus(agentId, 'idle');
-            break;
           }
         }
 

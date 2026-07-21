@@ -12,6 +12,7 @@
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
+import { retireEngineEventsForRun, retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -758,8 +759,8 @@ export async function checkScheduledTasks(): Promise<void> {
     // delivery to the user. The agent should say the thing in its
     // normal voice and silently close out.
     const message = taskKind === 'reminder'
-      ? `[Reminder due] ${taskDesc ?? taskTitle}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nDeliver this reminder to the user now as a single short chat message in your normal voice. Do NOT prefix with "Reminder:" or "Here's your reminder" — just say the thing naturally (e.g. user asked to be reminded to "go get coffee" → "Hey, time to go get coffee."). When you're done speaking, silently call tracker_update_status with task_id="${taskId}" and status="complete". The close-out is internal bookkeeping — do NOT write any user-facing message about marking the reminder complete ("Task closed", "All done", "Marked complete"). The reminder message itself is the entire user-facing output.`
-      : `[Scheduled Task — Run #${runNumber}${totalRuns}] ${taskTitle}${taskDesc ? '\n' + taskDesc : ''}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nIMPORTANT: Execute this task ONCE for this run only. Do NOT loop or repeat internally — the scheduler handles repetition. When this single run is finished, call tracker_update_status with task_id="${taskId}" and status="complete". The close-out is internal bookkeeping — do NOT write any user-facing message about marking the task complete (e.g. "Task closed", "All done", "Marked complete"). The user already received your reminder/output above; an extra "task closed" line is just noise.`;
+      ? `[Reminder due] ${taskDesc ?? taskTitle}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nDeliver this reminder to the user now as a single short chat message in your normal voice. Do NOT prefix with "Reminder:" or "Here's your reminder", just say the thing naturally (e.g. user asked to be reminded to "go get coffee" → "Hey, time to go get coffee."). When you're done speaking, silently call tracker_update_status with task_id="${taskId}" and status="complete". The close-out is internal bookkeeping; do NOT write any user-facing message about marking the reminder complete ("Task closed", "All done", "Marked complete"). The reminder message itself is the entire user-facing output.`
+      : `[Scheduled Task, Run #${runNumber}${totalRuns}] ${taskTitle}${taskDesc ? '\n' + taskDesc : ''}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nWhen this run is finished, call tracker_update_status with task_id="${taskId}" and status="complete". The close-out is internal bookkeeping; do NOT write any user-facing message about marking the task complete (e.g. "Task closed", "All done", "Marked complete"). The user already received your reminder/output above; an extra "task closed" line is just noise.`;
 
     // Inject as engine event and trigger runtime.
     // D-A step 4: a scheduler fire is inter-agent/engine traffic (origin_kind=
@@ -842,6 +843,11 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
     logger.info('Scheduler: run already closed elsewhere, skipping advance', { taskId, runId });
     return false;
   }
+
+  // P2 serve boundary, close claims its trigger BY KEY: the occurrence is
+  // done, so any unserved trigger row for this run retires now instead of
+  // waking a turn later to redo finished work.
+  retireEngineEventsForRun(runId);
 
   // Update task run count
   db.prepare('UPDATE tasks SET run_count = run_count + 1, updated_at = datetime(\'now\') WHERE id = ?').run(taskId);
@@ -935,6 +941,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
     db.prepare(`
       UPDATE tasks SET schedule_status = 'completed', status = 'fallen', completed_at = datetime('now'), last_run_at = ?, updated_at = datetime('now') WHERE id = ?
     `).run(now, taskId);
+      retireEngineEventsForTask(taskId, 'task_fallen');
     try {
       const title = String(task.title ?? 'untitled task');
       const noun = (task.kind as string | null) === 'reminder' ? 'reminder' : 'task';
