@@ -10,6 +10,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
+import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { handleIMCommand } from './imessage-commands.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { activeRuns, agentStartTimes } from '../agent/shared-state.js';
@@ -1071,6 +1072,9 @@ export interface InboundIMessageInput {
   attachmentResult?: ImessageAttachmentResult;
   advanceRowId: number | null;
   wakeAgent: boolean;
+  // P5: the chat.db guid, stored on the row (external_message_id) so identity
+  // is kept instead of ring-buffered; the unique index is the durable dedup.
+  externalMessageId?: string | null;
 }
 
 export type InboundIMessageOutcome =
@@ -1080,7 +1084,7 @@ export type InboundIMessageOutcome =
 export async function processInboundIMessage(
   input: InboundIMessageInput,
 ): Promise<InboundIMessageOutcome> {
-  const { sender, cleanedText, advanceRowId, wakeAgent } = input;
+  const { sender, cleanedText, advanceRowId, wakeAgent, externalMessageId } = input;
   const attachmentResult: ImessageAttachmentResult =
     input.attachmentResult ?? { uploadedFiles: [], inlinedTextBlocks: [], mentionedAttachments: [] };
   const primaryId = getPrimaryAgentId();
@@ -1253,15 +1257,23 @@ export async function processInboundIMessage(
   // INSERT + inbound_meta stamp (+ the poll loop cursor advance when a ROWID
   // is supplied) commit in ONE transaction on the same connection, so there is
   // no crash window in which the cursor is past a row that was never persisted.
+  // P5: conversation identity resolved BEFORE the transaction; stamped
+  // atomically with the row.
+  const conversationId = resolveOrCreateConversation(primaryId, {
+    channel: 'imessage', provider: 'imessage', counterpartyId: sender,
+    counterpartyName: senderRecord?.name ?? null, threadRoot: null,
+  });
   db.transaction(() => {
     db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)
-      VALUES (?, ?, 'user', ?, ?, datetime('now'))
+      INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, conversation_id, external_message_id, created_at)
+      VALUES (?, ?, 'user', ?, ?, ?, ?, datetime('now'))
     `).run(
       msgId,
       primaryId,
       msgContent,
       attachmentResult.uploadedFiles.length > 0 ? JSON.stringify(attachmentResult.uploadedFiles) : null,
+      conversationId,
+      externalMessageId ?? null,
     );
     recordInboundMeta(msgId, inboundMetaObj);
     if (advanceRowId !== null) {
@@ -1650,6 +1662,7 @@ async function pollMessages(): Promise<void> {
             attachmentResult,
             advanceRowId: msg.ROWID,
             wakeAgent: true,
+            externalMessageId: (msg as { guid?: string | null }).guid ?? null,
           });
         } catch (err) {
           // Persist failed: the message is NOT in the store and the durable

@@ -127,4 +127,52 @@ describe('turn record (P4)', () => {
   });
 });
 
+describe('conversations at ingest (P5)', () => {
+  it('every channel producer stamps conversation_id ATOMICALLY in its INSERT', () => {
+    const producers = [
+      'services/imessage-bridge.ts',
+      'twilio/sms-inbound.ts',
+      'services/gmail-watcher.ts',
+      'services/outlook-watcher.ts',
+      'services/teams-watcher.ts',
+      'twilio/call-session.ts',
+      'gateway/routes/chat.ts',
+    ];
+    for (const rel of producers) {
+      const src = read(rel);
+      expect(src, `${rel} must resolve a conversation`).toMatch(/resolveOrCreateConversation\(/);
+      expect(src, `${rel} must stamp conversation_id in the INSERT itself`).toMatch(/INTO messages[\s\S]{0,300}conversation_id/);
+    }
+    const ia = read('memory/interagent.ts');
+    expect(ia).toMatch(/INTO inter_agent_messages[\s\S]{0,400}conversation_id/);
+  });
+
+  it('conversations rows have exactly one writer (the resolver)', () => {
+    const files = ['memory/conversations.ts'];
+    const resolver = read('memory/conversations.ts');
+    expect(resolver).toMatch(/INSERT OR IGNORE INTO conversations/);
+    // No other module may INSERT INTO conversations.
+    const fs2 = require('node:fs');
+    const path2 = require('node:path');
+    const walk = (d: string, acc: string[] = []): string[] => {
+      for (const e of fs2.readdirSync(d, { withFileTypes: true })) {
+        const fp = path2.join(d, e.name);
+        if (e.isDirectory()) { if (!fp.includes('__tests__')) walk(fp, acc); }
+        else if (e.name.endsWith('.ts')) acc.push(fp);
+      }
+      return acc;
+    };
+    const offenders = walk(SRC).filter((f: string) =>
+      !f.endsWith('memory/conversations.ts') &&
+      fs2.readFileSync(f, 'utf8').includes('INTO conversations'));
+    expect(offenders).toEqual([]);
+  });
+
+  it('the SMS dedup is keyed on the stored external id (prose scan = legacy fallback only)', () => {
+    const sms = read('twilio/sms-inbound.ts');
+    expect(sms).toMatch(/external_message_id = \? AND role = 'user'/);
+  });
+});
+
+
 

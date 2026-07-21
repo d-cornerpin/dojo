@@ -10,6 +10,7 @@
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
+import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { getDb } from '../db/connection.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { isSenderAuthorized } from '../agent/v2/channel-auth.js';
@@ -290,10 +291,15 @@ async function pollForNewMessages(): Promise<void> {
         ].join('\n');
 
         const msgId = uuidv4();
+        // P5: conversation identity = the Teams chat id (thread-true).
+        const conversationId = resolveOrCreateConversation(primaryId, {
+          channel: 'teams', provider: 'teams', counterpartyId: senderEmail ?? senderName ?? null,
+          counterpartyName: senderName ?? null, threadRoot: chat.id ?? null,
+        });
         db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-          VALUES (?, ?, 'user', ?, datetime('now'))
-        `).run(msgId, primaryId, content);
+          INSERT OR IGNORE INTO messages (id, agent_id, role, content, conversation_id, external_message_id, created_at)
+          VALUES (?, ?, 'user', ?, ?, ?, datetime('now'))
+        `).run(msgId, primaryId, content, conversationId, (msg as { id?: string | null }).id ?? null);
         // v3.0.9 — structured routing metadata. Teams is an agent-kind channel
         // (the watcher is agent-only); the shared auth check applies the
         // agent-kind gate, so an unknown sender => authorized:false => the

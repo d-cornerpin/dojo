@@ -5,6 +5,7 @@
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
+import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { getDb } from '../db/connection.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { createLogger } from '../logger.js';
@@ -342,10 +343,17 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
         `Use \`${toolHint}\`${kind === 'user' ? ` (account: ${notifyAccount})` : ''} to read the full body${isDirectToAgent ? ' if you need it' : ' before deciding'}.`;
 
       const msgId = uuidv4();
+      // P5: email conversation identity = provider + sender + THREAD, so two
+      // threads from one sender (or the same sender across providers) are
+      // different conversations; msg.id kept as the external identity.
+      const conversationId = resolveOrCreateConversation(primaryId, {
+        channel: 'email', provider: 'outlook', counterpartyId: fromAddr || from,
+        threadRoot: (msg as { conversationId?: string | null }).conversationId ?? msg.id ?? null,
+      });
       db.prepare(`
-        INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-        VALUES (?, ?, 'user', ?, datetime('now'))
-      `).run(msgId, primaryId, content);
+        INSERT OR IGNORE INTO messages (id, agent_id, role, content, conversation_id, external_message_id, created_at)
+        VALUES (?, ?, 'user', ?, ?, ?, datetime('now'))
+      `).run(msgId, primaryId, content, conversationId, msg.id ?? null);
       // v3.0.9 — structured routing metadata (see gmail-watcher for rationale).
       const inboundMetaObj = {
         channel: 'email' as const,

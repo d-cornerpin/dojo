@@ -16,6 +16,7 @@
 // was sourced from `messages` or the store).
 
 import { getDb } from '../db/connection.js';
+import { resolveOrCreateConversation } from './conversations.js';
 import type { Message } from '@dojo/shared';
 import { rowToMessage, type MessageRow } from './store.js';
 
@@ -42,10 +43,17 @@ export function insertInterAgentMessage(params: {
   originIntent: string | null;
 }): { changes: number } {
   const db = getDb();
+  // P5: a peer A2A thread is a conversation like any other; identity keyed on
+  // the full thread id. Engine-origin rows (no thread) stay conversation-less.
+  const conversationId = params.a2aThreadId
+    ? resolveOrCreateConversation(params.agentId, {
+        channel: 'a2a', provider: null, counterpartyId: params.sourceAgentId, threadRoot: params.a2aThreadId,
+      })
+    : null;
   const result = db.prepare(`
     INSERT OR IGNORE INTO inter_agent_messages
-      (id, agent_id, role, content, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, attachments, origin_kind, origin_intent, created_at)
-    VALUES (?, ?, 'user', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      (id, agent_id, role, content, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, attachments, origin_kind, origin_intent, conversation_id, created_at)
+    VALUES (?, ?, 'user', ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `).run(
     params.id,
     params.agentId,
@@ -57,6 +65,7 @@ export function insertInterAgentMessage(params: {
     params.attachments,
     params.originKind,
     params.originIntent,
+    conversationId,
   );
   return { changes: result.changes };
 }

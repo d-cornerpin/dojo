@@ -22,6 +22,7 @@
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
+import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -526,10 +527,14 @@ export class CallSession {
     const content = `${sourceTag}\n\n${text}\n\n${trailer}`;
     const msgId = uuidv4();
     try {
+      // P5: conversation identity = the caller's number; call sid = external id.
+      const conversationId = resolveOrCreateConversation(primaryId, {
+        channel: 'phone', provider: 'twilio', counterpartyId: this.fromNumber ?? null, threadRoot: null,
+      });
       getDb().prepare(`
-        INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-        VALUES (?, ?, 'user', ?, datetime('now'))
-      `).run(msgId, primaryId, content);
+        INSERT OR IGNORE INTO messages (id, agent_id, role, content, conversation_id, external_message_id, created_at)
+        VALUES (?, ?, 'user', ?, ?, ?, datetime('now'))
+      `).run(msgId, primaryId, content, conversationId, this.callSid ?? null);
       // v3.0.9 — structured routing metadata. Stamped synchronously before
       // handleMessage runs below so the turn reads it. A live call is already
       // connected, so the reply is always spoken back via TTS to whoever is

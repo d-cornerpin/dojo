@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { resolveOrCreateConversation } from '../../memory/conversations.js';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'node:path';
 import { getDb } from '../../db/connection.js';
@@ -119,10 +120,14 @@ export async function submitUserMessage(
   const dashMeta = source === 'voice'
     ? null
     : JSON.stringify({ channel: 'dashboard', accountKind: 'agent', authorized: true, relation: 'owner' });
+  // P5: the owner's dashboard (and voice) is one conversation per agent.
+  const conversationId = resolveOrCreateConversation(agentId, {
+    channel: source === 'voice' ? 'voice' : 'dashboard', provider: null, counterpartyId: 'owner', threadRoot: null,
+  });
   db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, source, inbound_meta, created_at)
-    VALUES (?, ?, 'user', ?, ?, ?, ?, datetime('now'))
-  `).run(messageId, agentId, modelContent, attachments ? JSON.stringify(attachments) : null, source ?? null, dashMeta);
+    INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, source, inbound_meta, conversation_id, created_at)
+    VALUES (?, ?, 'user', ?, ?, ?, ?, ?, datetime('now'))
+  `).run(messageId, agentId, modelContent, attachments ? JSON.stringify(attachments) : null, source ?? null, dashMeta, conversationId);
 
   logger.info('User message persisted', { agentId, messageId, attachmentCount: attachments?.length ?? 0 }, agentId);
 

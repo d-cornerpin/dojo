@@ -6,6 +6,7 @@
 // ════════════════════════════════════════
 
 import fs from 'node:fs';
+import { resolveOrCreateConversation } from '../memory/conversations.js';
 import path from 'node:path';
 import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
@@ -285,18 +286,16 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
     return false;
   }
   const db = getDb();
-  // Idempotency: Twilio may retry on slow ACKs. MessageSid is the
-  // stable de-dup key.
-  // N-6 (comms-audit): anchor the match to the END of content (no trailing
-  // wildcard). buildContent always writes `…\nMessage SID: <sid>` as the final
-  // token (both known-sender and notification shapes), so a tail-anchored match
-  // is exact — it can't false-positive on a SID-looking string quoted earlier in
-  // a message body. (The leading wildcard still scans; for this low-volume channel
-  // that's fine — a dedicated indexed column would be the move only if SMS volume
-  // ever grows.)
-  const existing = db.prepare(
+  // Idempotency: Twilio may retry on slow ACKs. MessageSid is the stable
+  // de-dup key. P5 rekey: the SID is now STORED (external_message_id,
+  // migration 114) instead of serialized into prose and re-found by table
+  // scan; the indexed lookup is the primary check, and the old tail-anchored
+  // content match survives one release as the fallback for pre-114 rows.
+  const existing = (db.prepare(
+    `SELECT id FROM messages WHERE external_message_id = ? AND role = 'user' LIMIT 1`,
+  ).get(payload.messageSid) ?? db.prepare(
     `SELECT id FROM messages WHERE content LIKE ? AND role = 'user' LIMIT 1`,
-  ).get(`%Message SID: ${payload.messageSid}`) as { id: string } | undefined;
+  ).get(`%Message SID: ${payload.messageSid}`)) as { id: string } | undefined;
   if (existing) {
     logger.info('Inbound SMS already ingested, skipping', { messageSid: payload.messageSid });
     return true;
@@ -316,10 +315,16 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
   const content = buildContent(payload, knownSender, ownerName, media);
 
   const msgId = uuidv4();
+  // P5: conversation identity + the channel's own external id (MessageSid),
+  // stamped atomically with the row; the unique index on external_message_id
+  // is the durable dedup.
+  const conversationId = resolveOrCreateConversation(primaryId, {
+    channel: 'sms', provider: 'twilio', counterpartyId: payload.fromNumber, threadRoot: null,
+  });
   db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)
-    VALUES (?, ?, 'user', ?, ?, datetime('now'))
-  `).run(msgId, primaryId, content, media.files.length > 0 ? JSON.stringify(media.files) : null);
+    INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, conversation_id, external_message_id, created_at)
+    VALUES (?, ?, 'user', ?, ?, ?, ?, datetime('now'))
+  `).run(msgId, primaryId, content, media.files.length > 0 ? JSON.stringify(media.files) : null, conversationId, payload.messageSid ?? null);
   // v3.0.9 — structured routing metadata. knownSender already encodes the
   // safe-sender verdict; an unknown number => authorized:false => the agent
   // sees a notification (it decides whether to surface it) and does not
