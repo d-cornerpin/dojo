@@ -27,12 +27,11 @@
 //          pre-blessing was REMOVED so the missed-runs pause lands unvalidated and
 //          the PM sweep adjudicates it.
 //
-// WHY WRITER DEFINITION SITES, NOT CALL SITES: at the time this test lands, loop.ts
-// still CALLS engineCloseDeliveredTask (the alias) at a few sites; the loop.ts-owning
-// demolition pass renames those later. Scanning by the SQL/update writer that
-// actually mutates the row (not by who calls a helper) keeps this test green after
-// the tracker/scheduler/agent changes ALONE. Only a rogue NEW writer (a fresh
-// UPDATE that closes or stamps outside the reviewed set) trips it.
+// WHY WRITER DEFINITION SITES, NOT CALL SITES: scanning by the SQL/update writer
+// that actually mutates the row (not by who calls a helper) keeps this test green
+// across caller renames (the engineCloseDeliveredTask alias was removed 2026-07-21
+// once every call site referenced markDeliverableShown). Only a rogue NEW writer
+// (a fresh UPDATE that closes or stamps outside the reviewed set) trips it.
 //
 // SCOPING NOTE (pause_validated, KEY 2): the scan now covers tracker/ +
 // scheduler/ + agent/ (including agent/v2/loop.ts). Phase 1.4 removed the two
@@ -192,7 +191,7 @@ const KEY1_FILES = [
   ...subsystemFiles('tracker'),
   ...subsystemFiles('scheduler'),
   ...subsystemFiles('agent'),
-  'agent/v2/loop.ts', // the engineCloseDeliveredTask CALL sites live here; prove it holds NO writer
+  'agent/v2/loop.ts', // the markDeliverableShown CALL sites live here; prove it holds NO writer
 ];
 
 // complete_validated is scanned across all three subsystems; pause_validated only in
@@ -238,7 +237,7 @@ describe('two-key KEY 1: TASK status=complete writers limited to the reviewed se
     // Its CODE sets ONLY deliverable_shown, never status='complete' or
     // complete_validated (comments naming those are stripped before asserting).
     const fnStart = src.indexOf('export async function markDeliverableShown');
-    const fnBody = codeOnly(src.slice(fnStart, src.indexOf('export const engineCloseDeliveredTask')));
+    const fnBody = codeOnly(src.slice(fnStart, src.indexOf('Close an engine-owned same-turn scaffold')));
     expect(fnBody).toMatch(/deliverable_shown = 1/);
     expect(fnBody).not.toMatch(/status\s*=\s*'complete'/);
     expect(fnBody).not.toMatch(/status:\s*'complete'/);

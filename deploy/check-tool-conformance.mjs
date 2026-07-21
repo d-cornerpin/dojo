@@ -32,6 +32,7 @@
 //
 // Usage: node check-tool-conformance.mjs [packages-base-dir]
 //   packages-base-dir defaults to <repo>/packages.
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -197,7 +198,75 @@ if (!SEND_TO_PEOPLE_NA || !Array.isArray(USER_TWINNED_SEND_PREFIXES) || !RECEIPT
   if (deadExempt.length) exhaustErrors.push(`RECEIPT_EXEMPT exact entries that are not real tools: ${deadExempt.join(', ')}`);
 }
 
-const allErrors = [...listErrors, ...canaryErrors, ...sendErrors, ...exhaustErrors];
+// ── (e) loop-signature content-field accounting (2026-07-21 incident class) ──
+// The loop detector strips prose-named fields from call signatures. A tool whose
+// operation identity IS its content field (document builders, content-bearing
+// sends) then collapses distinct calls into one signature, and the 4th
+// legitimate call gets STOP-blocked mid-work. Burned twice the same way:
+// file_append (D5, 2026-07-08) and office_append_to_word_document (production
+// incident 2026-07-21, a Word doc abandoned mid-build). This derivation scan
+// makes the classification EXHAUSTIVE over the real tool surface: every
+// registered tool carrying a free-text content-ish arg must either keep that
+// field in its signature via a carve-out set, or be acknowledged with a reason.
+const CONTENT_FIELD_ACK = {
+  canvas_read: 'repeat-reads of the same canvas are the classic verification spiral; collapsing distinct prompts is intended',
+  web_fetch: 'operation identity rides the url arg (non-prose); prompt collapse is harmless',
+  web_browse: 'operation identity rides the url arg (non-prose); text collapse is harmless',
+  history_expand: 'operation identity rides the message-id arg (non-prose); prompt collapse is harmless',
+};
+const PRESERVED_BY_SET = [
+  [loop.SEARCH_TOOLS, new Set(['query'])],
+  [loop.GENERATION_TOOLS, new Set(['description', 'prompt', 'text'])],
+  [loop.COORDINATION_TOOLS, new Set(['payload', 'message'])],
+  [loop.MUTATING_TOOLS, new Set(['content', 'text', 'message'])],
+];
+const CONTENT_FIELD_RE = /\b(content|text|message|payload|prompt)\s*:\s*\{[^}]{0,200}type:\s*['"](?:string|array)['"]/;
+const contentErrors = [];
+const contentHits = new Map();
+{
+  const distRoot = path.join(PKG_BASE, 'server/dist');
+  const jsFiles = [];
+  (function walk(d) {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.js')) jsFiles.push(p);
+    }
+  })(distRoot);
+  for (const f of jsFiles) {
+    const text = fs.readFileSync(f, 'utf8');
+    const nameRe = /name:\s*['"]([a-z0-9_]+)['"]/g;
+    const marks = [];
+    let mm;
+    while ((mm = nameRe.exec(text))) marks.push({ name: mm[1], i: mm.index });
+    for (let k = 0; k < marks.length; k++) {
+      if (!REGISTRY.has(marks[k].name)) continue;
+      const end = k + 1 < marks.length ? marks[k + 1].i : Math.min(text.length, marks[k].i + 9000);
+      const slice = text.slice(marks[k].i, end);
+      if (!slice.includes('input_schema')) continue;
+      const cm = slice.match(CONTENT_FIELD_RE);
+      if (cm && !contentHits.has(marks[k].name)) contentHits.set(marks[k].name, cm[1]);
+    }
+  }
+}
+if (contentHits.size < 10) {
+  contentErrors.push(`content-field derivation scan found only ${contentHits.size} tool(s), the dist scan pattern looks broken.`);
+}
+for (const [name, field] of contentHits) {
+  const preserved = PRESERVED_BY_SET.some(([set, fields]) => set && set.has(name) && fields.has(field));
+  if (!preserved && !(name in CONTENT_FIELD_ACK)) {
+    contentErrors.push(
+      `'${name}' carries operation identity in free-text arg '${field}' but no carve-out set preserves it: ` +
+      `distinct calls collapse to one loop signature and the 4th gets STOP-blocked mid-work (the abandoned-Word-doc class). ` +
+      `Add it to the right set in packages/server/src/agent/v2/classifiers/loop.ts (usually MUTATING_TOOLS) ` +
+      `or acknowledge it in CONTENT_FIELD_ACK here AND in tool-list-conformance.test.ts with a reason.`,
+    );
+  }
+}
+const deadAck = Object.keys(CONTENT_FIELD_ACK).filter((n) => !isRealTool(n));
+if (deadAck.length) contentErrors.push(`CONTENT_FIELD_ACK entries that are not real tools: ${deadAck.join(', ')}`);
+
+const allErrors = [...listErrors, ...canaryErrors, ...sendErrors, ...exhaustErrors, ...contentErrors];
 if (allErrors.length) {
   fail(`a tool-name list drifted from the real tool surface:\n    ` + allErrors.join('\n    '));
 }
@@ -206,6 +275,7 @@ console.log(
   `  ✓ tool-list conformance gate: ${HAND_LISTS.length} hand lists reference real tools, ` +
   `${CANARY.length} derived classifications correct, ${sendTools.length} channel sends covered by SEND_TO_PEOPLE, ` +
   `${REGISTRY.size} registry tools all accounted for (SEND_TO_PEOPLE deny / NA ledger), ` +
-  `receipt tiers + user_ send-twin parity exhaustive`,
+  `receipt tiers + user_ send-twin parity exhaustive, ` +
+  `${contentHits.size} content-bearing tools all loop-signature-classified`,
 );
 process.exit(0);

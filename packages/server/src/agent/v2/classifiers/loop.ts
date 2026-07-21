@@ -118,12 +118,16 @@ export const GENERATION_TOOLS = new Set([
   'image_create',
   'video_create',
   'music_create',
+  // 2026-07-21: tts_create's `text` IS the operation identity (a batch of
+  // distinct utterances is the same shape as the 7-distinct-headshots case).
+  'tts_create',
 ]);
 
 const GENERATION_TOOL_PROSE_FIELDS = (() => {
   const s = new Set(DEFAULT_PROSE_FIELDS);
   s.delete('description');
   s.delete('prompt');
+  s.delete('text');
   return s;
 })();
 
@@ -179,6 +183,26 @@ export const MUTATING_TOOLS = new Set([
   'gmail_send', 'gmail_reply',
   'outlook_send', 'outlook_reply',
   'teams_send_message',
+  // Office document builders (2026-07-21 production incident): building a long
+  // Word doc IS repeated appends to the same file_id with different `content`;
+  // stripping `content` as prose collapsed the 4th legitimate section-append
+  // into a "loop" and the STOP order abandoned the build mid-document. Same
+  // defect, same fix as file_append above (D5).
+  'office_create_word_document', 'office_append_to_word_document',
+  'office_insert_in_word_document',
+  // Full sweep of the same class (2026-07-21, after the incident above): every
+  // registered tool whose operation identity rides a free-text content field,
+  // found by the release-gate derivation scan (check-tool-conformance.mjs)
+  // instead of waiting for each family to burn us one incident at a time.
+  // Document/deck/pdf builders, iterative editors, and content-bearing sends:
+  'docs_create', 'docs_edit', 'docs_insert_text',
+  'office_create_presentation',
+  'slides_add_text_box', 'slides_add_shape', 'slides_update_text',
+  'pdf_create', 'pdf_watermark',
+  'teams_send_channel_message',
+  'keyboard_type', 'scratchpad_set',
+  'save_technique', 'update_technique',
+  'squad_share', 'vault_remember',
 ]);
 
 const MUTATING_TOOL_PROSE_FIELDS = (() => {

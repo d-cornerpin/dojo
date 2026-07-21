@@ -360,15 +360,6 @@ export interface AgentTurnState {
    */
   nudgedForFailedSaveClaimThisTurn: boolean;
   /**
-   * Deliverable-claim floor (2026-07-18 confabulation incident). Set true the
-   * first time the floor fires this turn: the reply asserts completed/delivered
-   * WORK ("the report is compiled", "the photo is done") but ZERO receipt-tier
-   * tools succeeded this turn. One-shot visible steer, then the turn ends normally
-   * (if the model repeats the claim after the steer the reply stands, log-only,
-   * prose classification never gains authority). Sibling of
-   * nudgedForFailedSaveClaimThisTurn.
-   */
-  /**
    * Set true the first time the thrash-gate DRIFT path nudges this turn
    * (comms-audit G-BLK-1). Drift (gate on while the agent varies call signatures)
    * is a false-positive-prone signal, legitimate progress also varies signatures, 

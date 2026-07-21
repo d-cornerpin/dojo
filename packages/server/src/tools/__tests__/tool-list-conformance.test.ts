@@ -129,12 +129,33 @@ describe('tool-list conformance — coverage-critical derived predicates', () =>
     expect(classifyTool('show_to_user')).toBe('delivery');
   });
 
-  // Every name in MUTATING_TOOLS (the signature content-field carve-out) must ALSO
-  // classify effectful-action, so the split "prose-carve-out ⊂ progress set" stays
-  // coherent, no member is a content-bearing write that classifyTool would miss.
-  it('MUTATING_TOOLS is a strict subset of effectful-action (coherent split)', () => {
-    const notEffectful = [...MUTATING_TOOLS].filter((n) => classifyTool(n) !== 'effectful-action');
-    expect(notEffectful, `MUTATING_TOOLS members not effectful: ${notEffectful.join(', ')}`).toEqual([]);
+  // MUTATING_TOOLS membership is an ARG-SCHEMA fact (a free-text content field
+  // that must stay in the loop signature), per the set's own docblock, NOT an
+  // effect classification. Until the 2026-07-21 sweep the set happened to be a
+  // strict subset of effectful-action; the sweep added content-identity tools
+  // whose EFFECT class is bookkeeping (iterative editors and memory writers).
+  // Keep the coherence bound honest: every member is either effectful-action or
+  // named here with the shared reason, so an accidental retrieval/delivery tool
+  // landing in the set still fails the build.
+  it('MUTATING_TOOLS members are effectful-action or acknowledged content-identity bookkeeping', () => {
+    const CONTENT_IDENTITY_BOOKKEEPING = new Set([
+      // Arg shape carries content-identity (distinct calls are distinct work),
+      // effect class is bookkeeping: iterative technique/scratchpad/memory
+      // writers, squad sharing, typing, watermarking.
+      'pdf_watermark', 'keyboard_type', 'scratchpad_set',
+      'save_technique', 'update_technique', 'squad_share', 'vault_remember',
+    ]);
+    const incoherent = [...MUTATING_TOOLS].filter(
+      (n) => classifyTool(n) !== 'effectful-action' && !CONTENT_IDENTITY_BOOKKEEPING.has(n),
+    );
+    expect(incoherent, `MUTATING_TOOLS members neither effectful nor acknowledged: ${incoherent.join(', ')}`).toEqual([]);
+    // The ledger itself stays honest: every acknowledged name is a real tool
+    // actually in the set, and none silently became effectful (if one does,
+    // remove it from the ledger).
+    const stale = [...CONTENT_IDENTITY_BOOKKEEPING].filter(
+      (n) => !MUTATING_TOOLS.has(n) || classifyTool(n) === 'effectful-action' || !isRealTool(n),
+    );
+    expect(stale, `CONTENT_IDENTITY_BOOKKEEPING stale entries: ${stale.join(', ')}`).toEqual([]);
   });
 });
 
@@ -242,5 +263,71 @@ describe('tool-list conformance — RECEIPT_TOOLS covers the whole comms-send su
     const deadExempt = Object.keys(RECEIPT_EXEMPT).filter((p) => !p.endsWith('*') && !isRealTool(p));
     expect(deadTier, `RECEIPT_TOOLS keys not real tools: ${deadTier.join(', ')}`).toEqual([]);
     expect(deadExempt, `RECEIPT_EXEMPT exact entries not real tools: ${deadExempt.join(', ')}`).toEqual([]);
+  });
+  // ── Loop-signature content-field accounting (2026-07-21 incident class) ──
+  // Twin of section (e) in deploy/check-tool-conformance.mjs (which scans the
+  // built dist at release time; this scans src at dev time). A tool whose
+  // operation identity IS its content field must keep that field in its loop
+  // signature via a carve-out set, or be acknowledged here with a reason.
+  // Burned twice the same way: file_append (D5, 2026-07-08) and
+  // office_append_to_word_document (2026-07-21, a Word doc abandoned mid-build
+  // when the 4th legitimate append was STOP-blocked as a "loop").
+  it('every content-bearing tool keeps its identity field in the loop signature (or is acknowledged)', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+    const CONTENT_FIELD_ACK: Record<string, string> = {
+      canvas_read: 'repeat-reads of the same canvas are the classic verification spiral; collapsing distinct prompts is intended',
+      web_fetch: 'operation identity rides the url arg (non-prose); prompt collapse is harmless',
+      web_browse: 'operation identity rides the url arg (non-prose); text collapse is harmless',
+      history_expand: 'operation identity rides the message-id arg (non-prose); prompt collapse is harmless',
+    };
+    const PRESERVED_BY_SET: Array<[Set<string>, Set<string>]> = [
+      [SEARCH_TOOLS, new Set(['query'])],
+      [GENERATION_TOOLS, new Set(['description', 'prompt', 'text'])],
+      [COORDINATION_TOOLS, new Set(['payload', 'message'])],
+      [MUTATING_TOOLS, new Set(['content', 'text', 'message'])],
+    ];
+    const CONTENT_FIELD_RE = /\b(content|text|message|payload|prompt)\s*:\s*\{[^}]{0,200}type:\s*['"](?:string|array)['"]/;
+    const files: string[] = [];
+    (function walk(d: string) {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const fp = path.join(d, e.name);
+        if (e.isDirectory()) { if (!fp.includes('__tests__') && !fp.includes('node_modules')) walk(fp); }
+        else if (e.name.endsWith('.ts')) files.push(fp);
+      }
+    })(srcRoot);
+    const hits = new Map<string, string>();
+    for (const f of files) {
+      const text = fs.readFileSync(f, 'utf8');
+      const nameRe = /name:\s*['"]([a-z0-9_]+)['"]/g;
+      const marks: Array<{ name: string; i: number }> = [];
+      let mm: RegExpExecArray | null;
+      while ((mm = nameRe.exec(text))) marks.push({ name: mm[1], i: mm.index });
+      for (let k = 0; k < marks.length; k++) {
+        if (!REGISTRY.has(marks[k].name)) continue;
+        const end = k + 1 < marks.length ? marks[k + 1].i : Math.min(text.length, marks[k].i + 9000);
+        const slice = text.slice(marks[k].i, end);
+        if (!slice.includes('input_schema')) continue;
+        const cm = slice.match(CONTENT_FIELD_RE);
+        if (cm && !hits.has(marks[k].name)) hits.set(marks[k].name, cm[1]);
+      }
+    }
+    expect(hits.size, 'content-field derivation scan found suspiciously few tools; scan pattern broken?').toBeGreaterThanOrEqual(10);
+    const unclassified: string[] = [];
+    for (const [name, field] of hits) {
+      const preserved = PRESERVED_BY_SET.some(([set, fields]) => set.has(name) && fields.has(field));
+      if (!preserved && !(name in CONTENT_FIELD_ACK)) unclassified.push(`${name} (${field})`);
+    }
+    expect(
+      unclassified,
+      `content-bearing tool(s) whose identity field is stripped from the loop signature: ${unclassified.join(', ')}. ` +
+      `Distinct calls collapse to one signature and the 4th gets STOP-blocked mid-work (the abandoned-Word-doc class). ` +
+      `Add each to the right set in classifiers/loop.ts (usually MUTATING_TOOLS) or acknowledge it here AND in ` +
+      `deploy/check-tool-conformance.mjs with a reason.`,
+    ).toEqual([]);
+    const deadAck = Object.keys(CONTENT_FIELD_ACK).filter((n) => !isRealTool(n));
+    expect(deadAck, `CONTENT_FIELD_ACK entries not real tools: ${deadAck.join(', ')}`).toEqual([]);
   });
 });

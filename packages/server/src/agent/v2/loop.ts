@@ -1655,6 +1655,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // of model iterations the loop concludes. The model's TEXT is never touched.
   let toolPhaseEndedBySpinBrake = false;
   let spinBrakeGraceCalls = 2;
+  // Set when the loop detector hard-blocks a call this turn (set-only-true, so
+  // concurrent runOne callbacks cannot clobber it). Consumed by the going-idle
+  // reconciliation: a reply the engine itself forced with a STOP order is a
+  // status update, not a delivery, and must never stamp deliverable_shown.
+  // Interim guard until the P2 status-truth invariant removes the stamp
+  // mechanism entirely (owner ruling 2026-07-21).
+  let loopBlockFiredThisTurn = false;
 
   const deliverEngineUserAck = async (text: string, originIntent: string | null = null): Promise<void> => {
     const ackId = uuidv4();
@@ -5281,6 +5288,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // the task closed.
         if (
           state.nudgedForGoingIdleWithInProgressThisTurn &&
+          // A reply the engine itself coerced (loop-detector STOP order or the
+          // spin-brake ending the tool phase) is a status update, not a
+          // delivery: never stamp deliverable_shown from it (2026-07-21
+          // production incident: "Almost done with the doc" got stamped as the
+          // delivered result on all nine tasks and stood the PM down).
+          !loopBlockFiredThisTurn &&
+          !toolPhaseEndedBySpinBrake &&
           !state.toolResults.some(
             tr => tr.name === 'tracker_update_status' || tr.name === 'tracker_complete_step' || tr.name === 'tracker_close_project',
           ) &&
@@ -6037,6 +6051,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           const loopCheck = loopDetector(tc, recentSigs);
           recentSigs = bumpLoopSignature(recentSigs, loopCheck.signature, RECENT_TOOL_WINDOW);
           if (loopCheck.decision === 'block' && !isA2AReplyTool) {
+            loopBlockFiredThisTurn = true;
             try {
               broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
               broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: loopCheck.refusalMessage!.slice(0, 500) });
@@ -7785,15 +7800,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
           WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?
             AND (source IS NULL OR source != 'a2a')
             AND content NOT LIKE '[{%'
-            -- Engine acks are excluded STRUCTURALLY by their origin_intent tag,
-            -- so the varied wording can no longer break this dedup. The three
-            -- prose NOT LIKEs below are kept ONLY to catch historical ack rows
-            -- written before the tag existed (origin_intent NULL); new acks rely
-            -- on the tag above.
+            -- Engine acks are excluded STRUCTURALLY by their origin_intent tag.
             AND origin_intent IS NULL
-            AND content NOT LIKE 'On it.%'
-            AND content NOT LIKE 'Quick note, I%'
-            AND content NOT LIKE 'Done, I finished what you asked for.%'
             AND length(trim(content)) > 40
           LIMIT 1
         `).get(agentId, earliestTaskCreatedAt);

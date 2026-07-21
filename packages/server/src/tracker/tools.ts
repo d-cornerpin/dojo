@@ -210,14 +210,6 @@ export async function markDeliverableShown(
   return true;
 }
 
-// Deprecated alias: loop.ts still calls engineCloseDeliveredTask at a few sites
-// (loop.ts:5278, 5288, 5359 and the pm-agent poke chain until those are updated
-// by the loop.ts-owning demolition pass). The alias routes to the NEW,
-// authority-free markDeliverableShown behavior so those call sites keep
-// compiling and behave correctly (mark, don't close) until they are renamed.
-// Remove this alias once every call site references markDeliverableShown.
-export const engineCloseDeliveredTask = markDeliverableShown;
-
 // ── Close an engine-owned same-turn scaffold (demolition Phase 1.7 #2) ──
 //
 // Narrow carve-out from the two-key contract, and the ONLY engine path that may
@@ -356,7 +348,7 @@ export async function fileAssignDeliverableCloseRequest(
   `).get(threadId, senderAgentId) as { id: string; title: string; assigned_to: string | null; project_id: string | null } | undefined;
   if (!task) return false;
 
-  const resultText = deliveredText.replace(/s+/g, ' ').trim().slice(0, 2000)
+  const resultText = deliveredText.replace(/\s+/g, ' ').trim().slice(0, 2000)
     || 'Terminal deliverable returned on the assignment thread.';
   const evidenceJson = JSON.stringify([
     {

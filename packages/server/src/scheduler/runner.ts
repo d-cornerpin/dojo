@@ -1443,61 +1443,10 @@ function recoverMissingNextRun(taskId: string): void {
  * appropriate status/schedule_status directly. Idempotent: skips if the
  * task is no longer in_progress (something else recovered it first).
  */
-/**
- * One-time recovery for recurring tasks that were paused by the
- * (now-fixed) engine close-out hardcap. Pre-fix, the hardcap in
- * agent/v2/loop.ts ran `UPDATE tasks SET is_paused=1, status='paused'`
- * on every dangling in_progress task without checking
- * `repeat_interval`, so a single missed close-out on a daily recurring
- * task (Tomorrow Brief, etc.) silently killed the whole recurring
- * schedule. The fix landed in v2.9.13 but every previously-stuck task
- * still needs to be released.
- *
- * Filter: paused + pause_validated=0 (engine-driven, not user-validated)
- * + repeat_interval set + notes contain the engine's pause signature.
- * For each match: clear is_paused, recompute next_run_at via
- * calculateNextRun, reset to status='on_deck', schedule_status='waiting'.
- * Idempotent — runs once at boot, then no-ops on future boots.
- */
-export function recoverEnginePausedRecurringTasks(): void {
-  try {
-    const db = getDb();
-    const stuck = db.prepare(`
-      SELECT id, title FROM tasks
-      WHERE is_paused = 1
-        AND status = 'paused'
-        AND pause_validated = 0
-        AND repeat_interval IS NOT NULL
-        AND repeat_unit IS NOT NULL
-        AND (notes LIKE '%Auto-paused by engine%' OR notes LIKE '%idle-with-in_progress%' OR notes LIKE '%pre-turn close-out gate%')
-    `).all() as Array<{ id: string; title: string }>;
-    if (stuck.length === 0) return;
-    let recovered = 0;
-    for (const row of stuck) {
-      try {
-        // forceResetStuckRecurringTask's outer guard bails when status
-        // isn't in_progress; flip the row to in_progress first so the
-        // helper's recompute path runs end-to-end.
-        db.prepare(`UPDATE tasks SET status = 'in_progress', is_paused = 0, updated_at = datetime('now') WHERE id = ?`).run(row.id);
-        forceResetStuckRecurringTask(row.id);
-        recovered++;
-      } catch (err) {
-        logger.warn('recover: failed to release engine-paused recurring task', {
-          taskId: row.id, error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-    if (recovered > 0) {
-      logger.info('Released engine-paused recurring tasks back to schedule', {
-        recovered, sample: stuck.slice(0, 5).map((r) => ({ id: r.id.slice(0, 8), title: r.title })),
-      });
-    }
-  } catch (err) {
-    logger.warn('recoverEnginePausedRecurringTasks failed (non-fatal)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
+// The one-time recovery for hardcap-paused recurring tasks (v2.9.13's
+// recoverEnginePausedRecurringTasks) was retired 2026-07-21: its pause-writer
+// was demolished in the two-key wave, so the victim set is fixed and
+// migration 110 releases it once as data instead of a boot-time prose scan.
 
 export function forceResetStuckRecurringTask(taskId: string): void {
   const db = getDb();

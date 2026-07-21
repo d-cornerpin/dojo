@@ -1099,18 +1099,10 @@ async function main(): Promise<void> {
     });
   }
 
-  // v2.9.13, one-shot recovery for recurring tasks that the engine's
-  // close-out hardcap silently paused before the recurring-task
-  // carve-out landed. Releases the user's daily / scheduled tasks back
-  // to their normal cadence without manual intervention.
-  try {
-    const { recoverEnginePausedRecurringTasks } = await import('./scheduler/runner.js');
-    recoverEnginePausedRecurringTasks();
-  } catch (err) {
-    logger.warn('recoverEnginePausedRecurringTasks failed (non-fatal)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  // The v2.9.13 boot-time recovery for engine-paused recurring tasks was
+  // retired 2026-07-21: the auto-pause writer it healed was demolished in the
+  // two-key wave, so the victim set is fixed and migration 110 releases it
+  // once, as data, instead of a prose-signature scan on every boot.
 
   // Schedule the healer cycle (agent spawns on-demand when the cycle fires)
   try {
