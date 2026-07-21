@@ -66,6 +66,7 @@ beforeEach(() => {
       last_retrieved_at TEXT,
       source_conversation_id TEXT,
       source TEXT DEFAULT 'extraction',
+      citation TEXT,
       embedding BLOB,
       namespace TEXT,
       created_at TEXT DEFAULT (datetime('now')),

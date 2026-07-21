@@ -22,7 +22,8 @@ beforeEach(() => {
       id TEXT PRIMARY KEY,
       permissions TEXT,
       spawn_depth INTEGER DEFAULT 0,
-      group_id TEXT
+      group_id TEXT,
+      created_by TEXT
     );
     CREATE TABLE techniques (id TEXT PRIMARY KEY, directory_path TEXT, state TEXT);
     CREATE TABLE squad_memberships (squad_id TEXT, agent_id TEXT);

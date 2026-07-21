@@ -236,3 +236,15 @@ export function getWorkOriginForAgent(agentId: string, kind: WorkOrigin['kind'])
     convKey: currentTurnConvKey.get(agentId) ?? null,
   };
 }
+
+// The WORK the current engine turn is serving (P1 spine consumer #1): set at
+// the engine-event claim from the trigger row's task/run referent columns,
+// cleared at idle. The reminder-delivery lane reads taskKind to know this
+// turn's output belongs to the owner.
+export interface ServedWork {
+  taskId: string | null;
+  runId: string | null;
+  taskKind: string | null;
+  originConvKey: string | null;
+}
+export const currentTurnServedWork = new Map<string, ServedWork | null>();

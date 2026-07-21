@@ -61,7 +61,11 @@ beforeEach(() => {
       classification TEXT,
       tools_policy TEXT NOT NULL DEFAULT '{}',
       config TEXT NOT NULL DEFAULT '{}',
-      status TEXT DEFAULT 'idle'
+      status TEXT DEFAULT 'idle',
+      permissions TEXT,
+      spawn_depth INTEGER DEFAULT 0,
+      created_by TEXT,
+      task_id TEXT
     );
     CREATE TABLE vault_entries (
       id TEXT PRIMARY KEY,
@@ -80,6 +84,7 @@ beforeEach(() => {
       last_retrieved_at TEXT,
       source_conversation_id TEXT,
       source TEXT DEFAULT 'extraction',
+      citation TEXT,
       embedding BLOB,
       namespace TEXT,
       created_at TEXT DEFAULT (datetime('now')),

@@ -60,6 +60,7 @@ import {
   isAwaitingIMResponse,
   clearIMResponseFlag,
   getPendingIMSenderRaw,
+  parseSafeSenders,
 } from '../../services/imessage-bridge.js';
 import { resolveInbound } from './inbound-channel.js';
 // recordCost intentionally NOT imported, callModel records cost internally.
@@ -67,7 +68,7 @@ import { queueEmbedding } from '../../memory/embeddings.js';
 import { isPrimaryAgent, isTrainerAgent, isPMAgent, isHealerAgent, isDreamerAgent } from '../../config/platform.js';
 import os from 'node:os';
 import path from 'node:path';
-import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, currentTurnNumber, currentTurnRoot, continuationContext, clearTurnReceipts, clearRecallBudget, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
+import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, currentTurnNumber, currentTurnRoot, currentTurnServedWork, continuationContext, clearTurnReceipts, clearRecallBudget, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
 import { persistEngineSteer } from './engine-steer.js';
 import { pushEngineMessage } from './engine-message.js';
 import { findRecentDeliveries, getRecentOutbound, mostRecentDeliveryTo, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
@@ -692,6 +693,30 @@ function recipientIdsMatch(a: unknown, b: unknown): boolean {
   return da.length >= 10 && dbb.length >= 10 && da.slice(-10) === dbb.slice(-10);
 }
 
+// Reminder-delivery lane (2026-07-21, battery root-cause find; P1 spine
+// consumer #1). A reminder task is BY DESIGN a delivery to the owner (or a
+// household member the owner named). Production/battery incident: on an
+// engine turn serving a reminder, the floor model resolved "deliver this to
+// the user" to the most RECENT human it had chatted with (a third-party
+// iMessage contact) and texted owner-bound content there, recipient chosen
+// explicitly by the model, so no recency-map fix could catch it. This helper
+// answers "is this recipient the owner?" from the channel's own approved
+// sender records (is_primary), phone-tolerant via recipientIdsMatch.
+function recipientIsChannelOwner(toolName: string, recipient: string): boolean {
+  try {
+    const db = getDb();
+    const raw = (db.prepare("SELECT value FROM config WHERE key = 'imessage_approved_senders'").get() as { value: string } | undefined)?.value ?? null;
+    // Lazy import avoided: parseSafeSenders is a pure parser; require the
+    // bridge module statically below via the existing import surface.
+    const senders = parseSafeSenders(raw);
+    const owners = senders.filter((x) => x.is_primary);
+    for (const o of owners) {
+      if (recipientIdsMatch(recipient, o.address) || recipientIdsMatch(recipient, o.name)) return true;
+    }
+  } catch { /* conservative: unknown = not owner */ }
+  return false;
+}
+
 function detectTaskThrashing(agentId: string): {
   thrashing: boolean;
   toolName?: string;
@@ -850,7 +875,7 @@ export function setAgentStatus(agentId: string, status: string): void {
         UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?
       `).run(status, agentId);
     }
-    if (status === 'idle') { currentTurnKind.delete(agentId); currentTurnConvKey.delete(agentId); currentTurnImRecipient.delete(agentId); currentTurnNumber.delete(agentId); currentTurnRoot.delete(agentId); clearTurnReceipts(agentId); clearRecallBudget(agentId); }
+    if (status === 'idle') { currentTurnKind.delete(agentId); currentTurnConvKey.delete(agentId); currentTurnImRecipient.delete(agentId); currentTurnNumber.delete(agentId); currentTurnRoot.delete(agentId); currentTurnServedWork.delete(agentId); clearTurnReceipts(agentId); clearRecallBudget(agentId); }
     // On 'working', carry the turn kind so the composer can stay quiet on pure
     // A2A turns (unless wordy mode). Defaults to 'user' until the counterparty
     // is resolved early in the turn.
@@ -1352,12 +1377,25 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // the human trigger stamp (see revertTriggerStampOnAbort above).
     if (engineClaimed) claimedEngineEvent = { rowid: pendingEngineEvent.rowid, src: pendingEngineEvent.src };
     // P1 lineage spine: this turn serves the engine event; if the row carries a
-    // run/task referent (migration 112 columns), the root is that occurrence.
+    // run/task referent (migration 112 columns), the root is that occurrence,
+    // and the served task's kind/origin are published to turn-state so lanes
+    // (reminder delivery) can read what this turn's output belongs to.
     if (engineClaimed) {
-      const evAny = pendingEngineEvent as unknown as { run_id?: string | null; task_id?: string | null; id?: string | number };
-      currentTurnRoot.set(agentId, evAny.run_id
-        ? { kind: 'occurrence', id: String(evAny.run_id), sourceMessageId: null }
-        : { kind: 'engine', id: String(evAny.id ?? pendingEngineEvent.rowid), sourceMessageId: null });
+      currentTurnRoot.set(agentId, pendingEngineEvent.runId
+        ? { kind: 'occurrence', id: pendingEngineEvent.runId, sourceMessageId: null }
+        : { kind: 'engine', id: pendingEngineEvent.id, sourceMessageId: null });
+      if (pendingEngineEvent.taskId) {
+        try {
+          const servedTask = db.prepare('SELECT kind, origin_conv_key FROM tasks WHERE id = ?')
+            .get(pendingEngineEvent.taskId) as { kind: string | null; origin_conv_key: string | null } | undefined;
+          currentTurnServedWork.set(agentId, {
+            taskId: pendingEngineEvent.taskId,
+            runId: pendingEngineEvent.runId,
+            taskKind: servedTask?.kind ?? null,
+            originConvKey: servedTask?.origin_conv_key ?? null,
+          });
+        } catch { /* best effort; the lane simply stays inactive */ }
+      }
     }
     if (!engineClaimed) {
       // C24: symmetry with the human pickup-claim above, the atomic engine-event claim
@@ -1679,6 +1717,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // Interim guard until the P2 status-truth invariant removes the stamp
   // mechanism entirely (owner ruling 2026-07-21).
   let loopBlockFiredThisTurn = false;
+  // Reminder-delivery lane refuse-once memory (turn-local): first non-owner
+  // send on a reminder turn is refused with guidance; an identical repeat is
+  // a deliberate confirmation and proceeds.
+  const reminderLaneRefusedSigs = new Set<string>();
 
   const deliverEngineUserAck = async (text: string, originIntent: string | null = null): Promise<void> => {
     const ackId = uuidv4();
@@ -6087,6 +6129,37 @@ export async function runV2Turn(agentId: string): Promise<void> {
               content: loopCheck.refusalMessage! + '\n\n' + ENGINE_BLOCK_ESCAPE_HATCH,
               isError: true,
             };
+          }
+
+          // ── Reminder-delivery lane (owner-bound engine turns) ──
+          // This turn serves a kind='reminder' task (read structurally off the
+          // claimed trigger's task_id, migration 112). Reminder output belongs
+          // to the OWNER; a channel send naming someone who is not the owner is
+          // refused ONCE with guidance. A deliberate identical re-send proceeds
+          // (the owner may genuinely have said "remind my wife"), so legitimate
+          // work costs at most one corrective round and is never blocked.
+          if ((tc.name === 'imessage_send' || tc.name === 'sms_send')) {
+            const served = currentTurnServedWork.get(agentId);
+            if (served?.taskKind === 'reminder') {
+              const a = (tc.arguments ?? {}) as Record<string, unknown>;
+              const recip = String(a.recipient ?? a.to ?? '').trim();
+              if (recip && !recipientIsChannelOwner(tc.name, recip)) {
+                const laneSig = `${tc.name}|${recip}`;
+                if (!reminderLaneRefusedSigs.has(laneSig)) {
+                  reminderLaneRefusedSigs.add(laneSig);
+                  return {
+                    toolCallId: tc.id,
+                    name: tc.name,
+                    content:
+                      `Refused once: this turn is delivering the owner's reminder, and "${recip}" is not the owner. ` +
+                      `Reminders are delivered to the owner: reply in chat (the owner is watching the dashboard conversation this reminder came from), ` +
+                      `or send to the owner's own address. If the owner explicitly asked for this reminder to be delivered to "${recip}", ` +
+                      `repeat the exact same send and it will go through.`,
+                    isError: true,
+                  };
+                }
+              }
+            }
           }
 
           // ── A2A re-send cap (per recipient per turn) ──

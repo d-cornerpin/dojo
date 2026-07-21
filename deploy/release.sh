@@ -290,6 +290,16 @@ step "Tool-list conformance gate (hand lists vs. real tool surface)"
 node "$SCRIPT_DIR/check-tool-conformance.mjs" \
   || fail "Tool-list conformance gate: a tool-name list drifted from the real tool surface. NOT publishing."
 
+# ── Unit-suite gate (2026-07-21, owner ruling: suites in no gate rot silently) ──
+# Every prior era proved it: 8 suites sat red for up to 8 weeks (one carried a
+# real production bug, weekend reminder fires) because nothing ever ran them.
+# The full server vitest suite now runs on EVERY cut, instruments-clean, and a
+# single red refuses the release. It is never skippable; --skip-behavioral-gate
+# does not skip this (unit tests are fast; there is no excuse).
+step "Unit-suite gate (packages/server vitest, full run)"
+( cd "$SCRIPT_DIR/../packages/server" && npx vitest run --reporter=dot ) \
+  || fail "Unit-suite gate: server unit tests are red. Root-cause and fix (owner rule: testing exists to find problems); NOT publishing."
+
 # ── Behavioral suite gate (wave-2 fix loop, 2026-07-03) ──
 # Real-model behavioral runs are slow (~25 min) and cannot run inline here, so
 # the gate checks for a RECENT full-suite green MARKER written only when every

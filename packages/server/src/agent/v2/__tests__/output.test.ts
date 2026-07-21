@@ -103,14 +103,22 @@ describe('outputPersistenceClassifier', () => {
     }
   });
 
-  it('persists text on inter-agent turn when send_to_agent NOT called', () => {
+  it('suppresses all text on inter-agent turns even without send_to_agent', () => {
+    // v3.1.10 (b2027b0, 2026-06-25): inter-agent turns suppress ALL
+    // user-facing text unconditionally, the response belongs to the other
+    // agent (via send_to_agent), never to the user's dashboard. Previously
+    // this only fired once send_to_agent had been called, which leaked
+    // pre-reply planning text into chat.
     const r = outputPersistenceClassifier({
       responseText: 'I cannot help with that.',
       toolCallsThisTurn: [],
       isInterAgentTrigger: true,
       sentToAgentThisTurn: false,
     });
-    expect(r.decision).toBe('persist');
+    expect(r.decision).toBe('suppress');
+    if (r.decision === 'suppress') {
+      expect(r.reason).toContain('inter-agent');
+    }
   });
 });
 

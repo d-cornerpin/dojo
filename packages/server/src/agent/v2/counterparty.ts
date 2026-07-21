@@ -452,7 +452,7 @@ export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string
  * re-triggers while one is pending, so an engine event out-raced by a human still
  * gets its own turn after the human is served.
  */
-export function getPendingEngineEvent(agentId: string): { rowid: number; content: string; originIntent: string | null; src: EngineEventSrc } | null {
+export function getPendingEngineEvent(agentId: string): { rowid: number; id: string; taskId: string | null; runId: string | null; content: string; originIntent: string | null; src: EngineEventSrc } | null {
   const db = getDb();
   // D8: dispose exhausted/overdue events LOUDLY before answering "what's pending",
   // so every consumer of eligibility (loop pickup, runtime drain, boot owed-check)
@@ -474,14 +474,14 @@ export function getPendingEngineEvent(agentId: string): { rowid: number; content
      AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
      AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))`;
   const row = db.prepare(
-    `SELECT rowid, content, origin_intent, created_at, 0 AS _tag, 'm' AS _src FROM messages
+    `SELECT rowid, id, task_id, run_id, content, origin_intent, created_at, 0 AS _tag, 'm' AS _src FROM messages
        WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${engineGates}
          AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
      UNION ALL
-     SELECT rowid, content, origin_intent, created_at, 1 AS _tag, 'ia' AS _src FROM inter_agent_messages
+     SELECT rowid, id, task_id, run_id, content, origin_intent, created_at, 1 AS _tag, 'ia' AS _src FROM inter_agent_messages
        WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${engineGates}
      ORDER BY created_at ASC, _tag ASC, rowid ASC LIMIT 1`,
-  ).get({ agentId, sessionStart }) as { rowid: number; content: string; origin_intent: string | null; _src: EngineEventSrc } | undefined;
+  ).get({ agentId, sessionStart }) as { rowid: number; id: string; task_id: string | null; run_id: string | null; content: string; origin_intent: string | null; _src: EngineEventSrc } | undefined;
   // C6: exclude non-deliverable engine intents (thrash-gate steers, hints, system chatter)
   // so they can never drive an engine turn, a deliverable event (scheduler/reminder/
   // tracker/healer/completion) still qualifies. Belt-and-suspenders on top of the conv_key
@@ -496,7 +496,7 @@ export function getPendingEngineEvent(agentId: string): { rowid: number; content
   // historical unstamped engine rows (migration 076 did not backfill conv_key)
   // can't replay as "pending events" (migration 078 backfilled those; this is the
   // runtime guard for anything the backfill missed).
-  return row ? { rowid: row.rowid, content: row.content, originIntent: row.origin_intent, src: row._src } : null;
+  return row ? { rowid: row.rowid, id: row.id, taskId: row.task_id, runId: row.run_id, content: row.content, originIntent: row.origin_intent, src: row._src } : null;
 }
 
 export interface TurnCounterparty {

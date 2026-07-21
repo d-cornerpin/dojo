@@ -119,7 +119,6 @@ export function permissionAlternativeFinder(
     case 'create_agent_group':
     case 'delete_group':
     case 'assign_to_group':
-    case 'spawn_agent':
     case 'kill_agent':
     case 'set_user_presence':
     case 'tunnel': {

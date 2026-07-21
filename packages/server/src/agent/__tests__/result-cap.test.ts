@@ -24,11 +24,13 @@ describe('applyMaxResultTokensCap', () => {
     expect(applyMaxResultTokensCap('file_write', huge)).toBe(huge);
   });
 
-  it('truncates file_read output above 8000 tokens (~32000 chars)', () => {
-    const huge = 'x'.repeat(50_000);
+  it('truncates file_read output above 60000 tokens (~240000 chars)', () => {
+    // e465cf2 (2026-05-22, v2.7.2): file_read cap raised 8000 → 60000 tokens
+    // so a typical document lands in one call on modern context windows.
+    const huge = 'x'.repeat(250_000);
     const out = applyMaxResultTokensCap('file_read', huge);
-    expect(out.length).toBeLessThanOrEqual(8000 * 4);
-    expect(out).toMatch(/\[Truncated by engine: returned ~8000 tokens of/);
+    expect(out.length).toBeLessThanOrEqual(60000 * 4);
+    expect(out).toMatch(/\[Truncated by engine: returned ~60000 tokens of/);
     // file_read has pagination, so the trailer suggests offset/limit (not the
     // generic "narrow your query" message).
     expect(out).toMatch(/Re-call with offset\/limit/);
@@ -42,11 +44,13 @@ describe('applyMaxResultTokensCap', () => {
     expect(out).not.toMatch(/offset\/limit/);
   });
 
-  it('truncates exec output above 4000 tokens', () => {
-    const huge = 'a'.repeat(20_000);
+  it('truncates exec output above 32000 tokens', () => {
+    // e465cf2 (2026-05-22, v2.7.2): exec cap raised 4000 → 32000 tokens so
+    // logs/grep/JSON dumps stop forcing `| head -N` workarounds.
+    const huge = 'a'.repeat(150_000);
     const out = applyMaxResultTokensCap('exec', huge);
-    expect(out.length).toBeLessThanOrEqual(4000 * 4);
-    expect(out).toMatch(/\[Truncated by engine: returned ~4000 tokens/);
+    expect(out.length).toBeLessThanOrEqual(32000 * 4);
+    expect(out).toMatch(/\[Truncated by engine: returned ~32000 tokens/);
   });
 
   it('truncates web_fetch output above 2000 tokens (Phase 3.5: tightened from 6K → 2K when prompt extraction returns)', () => {
@@ -74,9 +78,9 @@ describe('applyMaxResultTokensCap', () => {
   });
 
   it('reports an approximate original token count in the trailer', () => {
-    const huge = 'x'.repeat(40_000); // ~10K tokens
+    const huge = 'x'.repeat(400_000); // ~100K tokens, over file_read's 60K cap
     const out = applyMaxResultTokensCap('file_read', huge);
-    expect(out).toMatch(/of ~10000 total/);
+    expect(out).toMatch(/of ~100000 total/);
   });
 
   it('Phase 3.5, does not re-truncate content that already has a friendly file_read trailer', () => {
@@ -85,7 +89,10 @@ describe('applyMaxResultTokensCap', () => {
     // when it returns less than the full file. The generic engine cap
     // must NOT re-truncate that output and replace the friendly trailer
     // with a generic one, the per-tool guidance is more useful.
-    const body = 'x'.repeat(40_000); // exceeds file_read's 8K cap on its own
+    // Exceeds file_read's 60K-token (240K-char) budget on its own, but stays
+    // under the 2x hard-overshoot cutoff (480K chars) so the carve-out
+    // actually executes. (Was 40K chars, vacuous once e465cf2 raised the cap.)
+    const body = 'x'.repeat(300_000);
     const friendly =
       body +
       '\n\n[Read lines 0-2000 of 4280 total. 2280 more lines remain.\n' +
@@ -98,7 +105,8 @@ describe('applyMaxResultTokensCap', () => {
   });
 
   it('Phase 3.5, does not re-truncate content with end-of-file trailer', () => {
-    const body = 'y'.repeat(40_000);
+    // Over the 240K-char budget, under the 480K 2x cutoff (see above).
+    const body = 'y'.repeat(300_000);
     const friendly = body + '\n\n[End of file. Read lines 100-180 of 180 total.]';
     const out = applyMaxResultTokensCap('file_read', friendly);
     expect(out).toBe(friendly);

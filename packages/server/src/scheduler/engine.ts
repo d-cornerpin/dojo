@@ -258,6 +258,20 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
         }
       }
     }
+    // Weekdays parity with the D21 specific_days exception above: a weekday
+    // repeat whose scheduled_start lands on a weekend first-runs on Monday at
+    // the same wall time instead of firing on the weekend.
+    if (task.repeat_unit === 'weekdays') {
+      const start = new Date(normalizeDbTimestamp(task.scheduled_start));
+      if (!isNaN(start.getTime())) {
+        let wall = instantToWall(start.getTime(), tz);
+        const dow = wallDayOfWeek(wall);
+        if (dow === 6 || dow === 0) {
+          wall = normalizeWall({ ...wall, day: wall.day + (dow === 6 ? 2 : 1) });
+          return wallToInstant(wall, tz).toISOString();
+        }
+      }
+    }
     return task.scheduled_start;
   }
 
@@ -320,6 +334,18 @@ export function calculateNextRun(task: ScheduledTask, timeZone?: string): string
     steps++;
   }
   if (steps >= MAX_ADVANCE_STEPS) return null;
+
+  // Weekday-result guarantee (2026-07-21, unit-suite root-cause find): the
+  // weekend skip lived ONLY inside the advance step, so the zero-advance path
+  // (anchor already past now/lastSlot after the v2.5.45 anchor rebase) could
+  // return a weekend instant for an every-business-day schedule, and did, the
+  // suite had been failing about it since 2026-05-16. Enforce the constraint
+  // on the RESULT, not just the step: a weekdays schedule never yields Sat/Sun.
+  if (task.repeat_unit === 'weekdays') {
+    const dow = wallDayOfWeek(wall);
+    if (dow === 6) { wall = normalizeWall({ ...wall, day: wall.day + 2 }); candidate = wallToInstant(wall, tz); }
+    else if (dow === 0) { wall = normalizeWall({ ...wall, day: wall.day + 1 }); candidate = wallToInstant(wall, tz); }
+  }
 
   return candidate.toISOString();
 }

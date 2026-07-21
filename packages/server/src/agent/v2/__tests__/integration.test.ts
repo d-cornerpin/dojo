@@ -51,13 +51,22 @@ const estimateAssembledTokensMock = vi.fn(() => ({
   summaryCount: 0,
 }));
 
-vi.mock('../../../db/connection.js', () => ({
-  getDb: () => {
-    if (!mockDb.current) throw new Error('test DB not initialized');
-    return mockDb.current;
-  },
-  closeDb: vi.fn(),
-}));
+vi.mock('../../../db/connection.js', async () => {
+  const os = await import('node:os');
+  const path = await import('node:path');
+  return {
+    getDb: () => {
+      if (!mockDb.current) throw new Error('test DB not initialized');
+      return mockDb.current;
+    },
+    closeDb: vi.fn(),
+    // migrations.ts imports getDbPath for its best-effort pre-chain backup
+    // (VACUUM INTO next to the DB file). Point it at the OS temp dir so the
+    // snapshot never lands in the repo; a failure there is caught and logged
+    // by migrations.ts without failing the chain.
+    getDbPath: () => path.join(os.tmpdir(), 'dojo-integration-test', 'dojo.db'),
+  };
+});
 
 vi.mock('../../../gateway/ws.js', () => ({
   broadcast: (event: unknown) => broadcastSpy(event),
@@ -89,6 +98,12 @@ vi.mock('../../runtime.js', () => ({
 
 vi.mock('../../pending-attachments.js', () => ({
   drainPendingAttachments: () => drainPendingAttachmentsSpy(),
+  // End-of-turn safety net (loop.ts ~8452/8790) drains with captions; an
+  // empty queue result keeps it a no-op here.
+  drainPendingAttachmentsWithCaptions: async () => [],
+  queuePendingAttachments: vi.fn(),
+  queueScreenChip: vi.fn(),
+  queueCanvasDoc: vi.fn(),
 }));
 
 vi.mock('../../../costs/tracker.js', () => ({
@@ -99,10 +114,21 @@ vi.mock('../../../memory/embeddings.js', () => ({
   queueEmbedding: (...args: unknown[]) => queueEmbeddingSpy(...args),
 }));
 
+// The loop's persist path runs stripSystemTags on every text reply and the
+// channel-routing path resolves IM recipients; missing exports here throw
+// mid-turn and silently kill assistant persistence. Neutral no-IM world:
+// no pending sender, no safe senders, tags pass through unchanged.
 vi.mock('../../../services/imessage-bridge.js', () => ({
   isAwaitingIMResponse: () => false,
   clearIMResponseFlag: vi.fn(),
   sendResponseViaIMessage: (...args: unknown[]) => sendResponseViaIMessageSpy(...args),
+  getPendingIMSenderRaw: () => null,
+  parseSafeSenders: () => [],
+  stripSystemTags: (s: string) => s,
+  sendIMessageWithAttachment: vi.fn(),
+  addressesMatch: (a: string, b: string) => a === b,
+  getInboundSenderFor: () => null,
+  sendAlert: vi.fn(),
 }));
 
 vi.mock('../../../memory/compaction.js', async () => {
@@ -126,13 +152,45 @@ vi.mock('../../../memory/assembler.js', () => ({
 
 // (config/runtime.js mock removed in Phase 9 Stage 2, module deleted)
 
+// Mirror the FULL export surface of config/platform.ts (the engine gained
+// isHealerAgent / isTrainerAgent / etc. since this mock was written; a
+// missing export throws mid-turn and kills the loop before the model call).
+// Test world: primary='primary', dreamer='dreamer', all helper roles absent.
 vi.mock('../../../config/platform.js', () => ({
-  isPrimaryAgent: (id: string) => id === 'primary',
-  isPMAgent: () => false,
+  clearPlatformConfigCache: vi.fn(),
+  getPlatformName: () => 'Dojo',
   getOwnerName: () => 'TestUser',
   getPrimaryAgentId: () => 'primary',
   getPrimaryAgentName: () => 'Primary',
+  getPMAgentId: () => 'pm',
+  getPMAgentName: () => 'PM',
+  isPMEnabled: () => false,
+  getTrainerAgentId: () => 'trainer',
+  getTrainerAgentName: () => 'Trainer',
+  isTrainerEnabled: () => false,
+  getImaginerAgentId: () => 'imaginer',
+  getImaginerAgentName: () => 'Imaginer',
+  isImaginerEnabled: () => false,
+  isSetupCompleted: () => true,
+  setPlatformConfig: vi.fn(),
+  getAllPlatformConfig: () => ({}),
+  isPrimaryAgent: (id: string) => id === 'primary',
+  isPMAgent: (id: string) => id === 'pm',
+  isTrainerAgent: (id: string) => id === 'trainer',
+  isImaginerAgent: (id: string) => id === 'imaginer',
+  getHealerAgentId: () => 'healer',
+  getHealerAgentName: () => 'Healer',
+  isHealerAgent: (id: string) => id === 'healer',
   getDreamerAgentId: () => 'dreamer',
+  getDreamerAgentName: () => 'Dreamer',
+  isDreamerAgent: (id: string) => id === 'dreamer',
+  HOUSEHOLD_AGENT_IDS_KEY: 'household_agent_ids',
+  getHouseholdAgentIds: () => [],
+  isPermanentAgent: (id: string) => id === 'primary' || id === 'dreamer',
+  isSystemServiceAgent: () => false,
+  getSystemServiceAgentIds: () => [],
+  getDashboardHiddenAgentIds: () => new Set<string>(),
+  isDashboardHiddenAgent: () => false,
 }));
 
 vi.mock('../../spawner.js', () => ({
@@ -153,6 +211,9 @@ vi.mock('../../errors.js', () => ({
 // reaches the recovery cascade, so they're a no-op in normal-path tests.
 vi.mock('../../../healer/injury-recovery.js', () => ({
   onAgentInjured: (...args: unknown[]) => onAgentInjuredSpy(...args),
+  // Clean-turn-end path (loop.ts ~8636) marks recovery; no-op here.
+  onAgentRecovered: vi.fn(),
+  rehydrateInjuredAgents: vi.fn(),
 }));
 
 vi.mock('../../../vault/maintenance.js', () => ({
@@ -169,11 +230,17 @@ vi.mock('../../../services/capabilities.js', () => ({
 vi.mock('../../../services/presence.js', () => ({
   getPresence: () => 'present',
   maybeForwardToImessage: vi.fn(),
+  isImessageConfigured: () => false,
+  isImessageEnabled: () => false,
+  setPresence: vi.fn(),
 }));
 
 // Router mocks for auto-router fallback tests. Default to a simple stub
 // that picks 'fallback-model'; individual tests override via mockImplementation.
-const scoreQueryMock = vi.fn(() => ({ tier: 'standard', dimensions: {}, score: 0 }));
+// scoreQuery's return mirrors the CURRENT ScoringResult shape (router/scorer.ts:
+// scores/rawScore/tier/confidence/latencyMs); router/decide.js decideTier reads
+// h.confidence off it and the loop calls decision.confidence.toFixed(3).
+const scoreQueryMock = vi.fn(() => ({ tier: 'standard', scores: [], rawScore: 0, confidence: 0.5, latencyMs: 0 }));
 const selectModelMock = vi.fn();
 vi.mock('../../../router/scorer.js', () => ({
   scoreQuery: (...args: unknown[]) => scoreQueryMock(...args),
@@ -181,74 +248,47 @@ vi.mock('../../../router/scorer.js', () => ({
 vi.mock('../../../router/selector.js', () => ({
   selectModel: (...args: unknown[]) => selectModelMock(...args),
   logRouterDecision: vi.fn(),
+  getSystemModel: () => null,
+}));
+
+// No-op the logger: the real module buffers every line into the LIVE
+// ~/.dojo/logs/dojo.log. This suite deliberately drives error paths
+// (injuries, 4xx/5xx classification), so without this mock every test run
+// pollutes the dev box's production log with fake failures. Mirrors the
+// real export surface (createLogger/setLogLevel/setLogBroadcast/readLogEntries).
+vi.mock('../../../logger.js', () => ({
+  createLogger: () => ({
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  }),
+  setLogLevel: vi.fn(),
+  setLogBroadcast: vi.fn(),
+  readLogEntries: () => [],
 }));
 
 // Now import the module under test (after mocks are set up)
 import { runV2Turn } from '../loop.js';
 import { stoppedAgents, recoveryRunStreak, pendingWakeups } from '../../shared-state.js';
+import { runMigrations } from '../../../db/migrations.js';
 
 // ── Test helpers ──
 
 function setupTestDb(): Database.Database {
   const db = new Database(':memory:');
-  db.exec(`
-    CREATE TABLE agents (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      model_id TEXT,
-      status TEXT NOT NULL DEFAULT 'idle',
-      config TEXT NOT NULL DEFAULT '{}',
-      session_started_at TEXT,
-      tools_policy TEXT NOT NULL DEFAULT '{}',
-      group_id TEXT,
-      classification TEXT,
-      parent_agent TEXT,
-      task_id TEXT,
-      last_error TEXT,
-      last_error_at TEXT,
-      recovery_attempts INTEGER DEFAULT 0,
-      dreamer_ignore INTEGER DEFAULT 0,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE messages (
-      id TEXT PRIMARY KEY,
-      agent_id TEXT NOT NULL,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      attachments TEXT,
-      token_count INTEGER,
-      model_id TEXT,
-      cost REAL,
-      latency_ms INTEGER,
-      turn_number INTEGER,
-      reasoning_content TEXT,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE models (
-      id TEXT PRIMARY KEY,
-      provider_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      api_model_id TEXT,
-      capabilities TEXT,
-      context_window INTEGER,
-      input_cost_per_m REAL,
-      output_cost_per_m REAL,
-      is_enabled INTEGER DEFAULT 0
-    );
-    CREATE TABLE providers (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      type TEXT,
-      auth_type TEXT
-    );
-  `);
 
-  // Seed the primary agent
-  db.prepare(`
-    INSERT INTO agents (id, name, model_id, status, config, classification)
-    VALUES ('primary', 'Primary', 'test-model', 'idle', '{}', 'sensei')
-  `).run();
+  // Run the REAL migration chain instead of hand-rolling CREATE TABLE
+  // statements. The previous hand-rolled fixture drifted 4+ weeks behind the
+  // engine (no conv_key, no inter_agent_messages, no tool_receipts, no
+  // open_loops, ...) and every schema addition broke this suite. runMigrations
+  // resolves the DB via the mocked getDb(), so point the mock at this
+  // instance first.
+  mockDb.current = db;
+  runMigrations();
+
+  // Seed in FK order, migrations leave foreign_keys ON:
+  // provider → model → agent → message.
   db.prepare(`
     INSERT INTO providers (id, name, type, auth_type)
     VALUES ('test-provider', 'Test', 'anthropic', 'api_key')
@@ -256,6 +296,11 @@ function setupTestDb(): Database.Database {
   db.prepare(`
     INSERT INTO models (id, provider_id, name, api_model_id, capabilities, context_window, is_enabled)
     VALUES ('test-model', 'test-provider', 'Test Model', 'test-1', '["tools","vision"]', 200000, 1)
+  `).run();
+  // Seed the primary agent
+  db.prepare(`
+    INSERT INTO agents (id, name, model_id, status, config, classification)
+    VALUES ('primary', 'Primary', 'test-model', 'idle', '{}', 'sensei')
   `).run();
   // Seed a user message so assembleContext has something to work with
   db.prepare(`
@@ -309,7 +354,7 @@ beforeEach(() => {
   pendingWakeups.clear();
   scoreQueryMock.mockClear();
   selectModelMock.mockClear();
-  scoreQueryMock.mockImplementation(() => ({ tier: 'standard', dimensions: {}, score: 0 }));
+  scoreQueryMock.mockImplementation(() => ({ tier: 'standard', scores: [], rawScore: 0, confidence: 0.5, latencyMs: 0 }));
   selectModelMock.mockReset();
 });
 
@@ -792,10 +837,15 @@ describe('runV2Turn integration', () => {
     expect(assistantMsgs).toHaveLength(0);
   });
 
-  it('PRESERVATION #40: identical assistant response is not double-persisted', async () => {
-    // v1 behavior: if the model returns text identical to the most recent
-    // assistant message (and no tool calls), break the loop without persisting
-    // the duplicate. Catches model stalls and re-trigger races.
+  it('PRESERVATION #40: identical response on a NO-TRIGGER turn is not double-persisted', async () => {
+    // Scoped by G-SUP-3 (comms-audit, 1f8b9b4 2026-07-02): the identical-
+    // response dedup now fires ONLY on turns with no waiting human (a genuine
+    // mid-stall regeneration). Claim the seeded user message so nothing is
+    // waiting, then have the model regenerate text identical to the most
+    // recent assistant message: break the loop without persisting the dup.
+    mockDb.current!
+      .prepare("UPDATE messages SET conv_key = 'test-claimed' WHERE id = 'msg-user-1'")
+      .run();
     mockDb.current!
       .prepare(
         `INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
@@ -813,11 +863,42 @@ describe('runV2Turn integration', () => {
 
     await runV2Turn('primary');
 
-    // Still exactly one assistant message, the dup was rejected.
+    // The model ran (this is not a vacuous no-turn), but the dup was rejected:
+    // still exactly one assistant message.
+    expect(callModelSpy).toHaveBeenCalledTimes(1);
     const assistantMsgs = mockDb.current!
       .prepare("SELECT id FROM messages WHERE agent_id = 'primary' AND role = 'assistant'")
       .all();
     expect(assistantMsgs).toHaveLength(1);
+  });
+
+  it('PRESERVATION #40 / G-SUP-3: identical reply on a USER turn IS delivered (never eaten)', async () => {
+    // G-SUP-3 (1f8b9b4 2026-07-02, extended b32f4bb 2026-07-03): never
+    // suppress on a turn a human is waiting on. A user re-asking the same
+    // thing gets a necessarily near-identical answer ("capital of France?"
+    // twice), so with the seeded unanswered user message as the trigger, the
+    // identical text persists as a genuine reply.
+    mockDb.current!
+      .prepare(
+        `INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
+         VALUES ('msg-prior-assistant', 'primary', 'assistant', 'Hello back!', 1, datetime('now'))`,
+      )
+      .run();
+
+    callModelSpy.mockResolvedValue({
+      content: 'Hello back!',
+      toolCalls: [],
+      inputTokens: 100,
+      outputTokens: 5,
+      stopReason: 'end_turn',
+    });
+
+    await runV2Turn('primary');
+
+    const assistantMsgs = mockDb.current!
+      .prepare("SELECT id FROM messages WHERE agent_id = 'primary' AND role = 'assistant'")
+      .all();
+    expect(assistantMsgs).toHaveLength(2);
   });
 
   it('PRESERVATION #40: tool-bearing turn with identical text IS persisted', async () => {
