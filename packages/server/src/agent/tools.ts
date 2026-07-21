@@ -1058,6 +1058,20 @@ export interface ToolDefinition {
    */
   concurrency?: 'safe' | 'serial' | 'agent' | 'special';
   /**
+   * Declared comms-to-people tier (lanes & lineage P7b). True = this tool is a
+   * member of the comms-to-people surface: it reaches a real person on an owner
+   * channel (email / Teams / SMS / iMessage / voice), including the auxiliary
+   * channel tools on those surfaces (contact list, call lifecycle/status). The
+   * runtime deny set stays the leaf list in sensei-policy.ts (module has no
+   * imports by design, so it cannot derive from this registry), but the
+   * DECISION is declared here at the definition site: the tool-list conformance
+   * test and the release gate enforce two-way equality between every
+   * `reachesPeople: true` declaration and SEND_TO_PEOPLE, so drift in either
+   * direction fails the build naming the tool. user_ twins inherit the flag via
+   * the twin-generation spread and are covered by the twin-parity check.
+   */
+  reachesPeople?: true;
+  /**
    * Per-tool result cap in tokens. When the tool's content output exceeds
    * this, the tool itself truncates and appends a "[First N tokens of …]"
    * trailer with re-call guidance. Phase 3 added this so context stays
@@ -2666,6 +2680,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── iMessage Tools ──
   {
     name: 'imessage_list_contacts',
+    reachesPeople: true,
     description: 'List ALL of YOUR iMessage contacts. The DOJO iMessage bridge is YOUR own iMessage account (not the user\'s phone) - these are the people YOU are authorized to text from your account. Call this whenever the user asks you to text, message, iMessage, or shoot a message to someone and you do not already know that person\'s address. Returns every contact with name, address, description (who they are), sharing_level, and whether they are the primary user. Pick the most likely match yourself based on the user\'s phrasing, your memory of who is who, and the description field. If two contacts plausibly fit (e.g. the user said "text Alex" and there are two Alexes), ask the user to clarify before sending.',
     input_schema: {
       type: 'object',
@@ -2675,6 +2690,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'imessage_send',
+    reachesPeople: true,
     description: 'Send an iMessage from YOUR OWN iMessage account (the DOJO bridge). **As of v2.7.23, replies to inbound iMessages auto-route via the engine, you do NOT need to call this tool to reply. Just write your reply text; engine delivers it.**\n\n**DEFAULT-CHANNEL RULE, When the primary user is actively talking to you on dashboard, the default is "reply in dashboard."** Do NOT additionally text them on iMessage to "also share on their phone" or "make sure they see it." Their reply belongs in the dashboard they are looking at.\n\n**Exceptions where you SHOULD call imessage_send even though the user is in dashboard:**\n\n- **The user explicitly named iMessage in this turn\'s request.** e.g. "text me the meeting list," "iMessage me when that finishes," "send the summary to my phone." The user choosing the channel overrides the default-channel rule.\n- **A task you are working on explicitly specifies iMessage as the delivery channel.** Tasks frequently encode delivery preferences in their goal or notes ("when this completes, iMessage the owner with the result," "deliver via iMessage, not chat"). The task directive is the authoritative source for that work item; the default-channel rule is for the absence of a task directive, not in addition to it.\n- **The recipient is someone OTHER than the primary user.** Texting the user\'s spouse, a colleague, a third-party contact on the safe-sender list, the default-channel rule is only about the primary user.\n\n**Beyond those exceptions, this tool is for:**\n\n- **PROACTIVE outreach** = the turn was NOT triggered by a user message at all. Examples: a scheduled task fires and you decide to text the user, a watchdog event needs surfacing while the user is offline, a long-running job you started yesterday completes and you let the user know.\n- **RICH actions** = sending with attachments (image, PDF, etc.). The text rides with the first file via the imsg CLI. Use only when an attachment is genuinely needed; sending a link as a "rich action" does not qualify.\n\nVOICE: write like an actual text message. No markdown, no headers, no bullet lists. Short and conversational.\n\nRecipient rule: pass `recipient` explicitly when proactively messaging someone or when sending to a non-default address. The value MUST exactly match a safe-sender address. If you only know the person by name (e.g. user said "text <contact-name>"), call `imessage_list_contacts` first to look up the address. Passing an unknown address is refused. For attachments, pass any local path (e.g. ~/.dojo/uploads/<agent-id>/photo.jpg).',
     input_schema: {
       type: 'object',
@@ -2698,6 +2714,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'sms_send',
+    reachesPeople: true,
     description: 'Send a text message via Twilio SMS. **Replies to inbound SMS auto-route via the engine - you do NOT need to call this tool to reply. Just write your reply text; the engine delivers it.**\n\n**DEFAULT-CHANNEL RULE - When the primary user is actively talking to you on dashboard, the default is "reply in dashboard."** Do NOT also text them via SMS to "make sure they see it."\n\n**Exceptions where you SHOULD call sms_send even when the user is in dashboard:**\n\n- **The user explicitly named SMS / text in this turn\'s request** (e.g. "text Sarah that the meeting moved," "SMS me when that finishes").\n- **A task you are working on explicitly specifies SMS delivery.**\n- **The recipient is someone OTHER than the primary user** (texting a family member, colleague, vendor contact on the safe-sender list).\n\n**Beyond those, this tool is for:**\n\n- **PROACTIVE outreach** = the turn was NOT triggered by a user message at all (scheduled task, watchdog event, long-running job completion).\n\nVOICE: write like an actual text message. No markdown, no headers, no bullet lists. Short and conversational.\n\nRecipient rule: pass `to` as a phone number in E.164 format (e.g. `+15551234567`). The recipient MUST be on the Twilio SMS safe-sender allowlist - sending to an unknown number is refused. Per-number `from` argument is optional; defaults to the configured default Twilio number.\n\nLimits: 1600 character maximum per send (carrier limit). Personal Twilio accounts have throughput caps; high-volume sends may be deferred or rejected by Twilio.',
     input_schema: {
       type: 'object',
@@ -2720,6 +2737,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'voice_call',
+    reachesPeople: true,
     description: 'Place a phone call via Twilio. The agent (you) holds the call: the caller speaks, Twilio streams audio to the dojo, your STT transcribes, you generate a reply, your TTS speaks back over the same call. **Use sparingly**, voice calls are real-time, costly, and demand immediate attention. Prefer SMS or iMessage unless the user asked for a phone call or the situation needs it (urgent, complex back-and-forth, hands-free).\n\nThe recipient MUST be on the Twilio Voice safe-caller allowlist; sending to an unknown number is refused. Personal Twilio accounts only, no robocalls, no campaign sends. The active Cloudflare tunnel must be running so Twilio can connect the audio back to the dojo.\n\n**HOW THE CALL OPENS, IMPORTANT.** When you place an outbound call, the called party answers and speaks FIRST (usually "Hello?"). That is normal human phone etiquette. You wait, hear their hello, and THEN identify yourself and state your purpose on the very next turn (the dojo will give you a turn the moment they speak). **Do NOT pass `opening_message`** in the standard case, it gets spoken the instant the call connects, before they say anything, which makes you sound like a robocall. Leaving silence on the line until they say "Hello?" is the right move. Real people do this on every outbound call.\n\nThe `opening_message` arg is reserved for unusual cases where you really do need audio queued up at connect time, for example, when you know the recipient has asked you to leave a voicemail directly, or when answering machine detection has already resolved to "voicemail" and you are dropping a pre-composed message. In normal person-to-person calling, leave it blank.\n\n`purpose` is a short string describing why you are calling (e.g. "scheduling the Tuesday demo", "following up on the buyer meeting"). It is shown to you in the system prompt on each turn of the call so you can stay on track, and it shapes your opening self-ID once the callee says hello. Provide it for any outbound call with a specific reason.\n\nMax call duration is capped (Settings → Integrations → Twilio → Voice). Calls exceeding the cap are hung up automatically.',
     input_schema: {
       type: 'object',
@@ -2746,6 +2764,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'voice_call_end',
+    reachesPeople: true,
     description: 'Hang up an active phone call you initiated (or are participating in). Use after the conversation has reached a natural conclusion or when the call needs to be terminated (recipient ended verbally but didn\'t hang up, escalating off-topic, etc.). Returns whether the hang-up succeeded.',
     input_schema: {
       type: 'object',
@@ -2764,6 +2783,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'voice_call_status',
+    reachesPeople: true,
     description: 'Check the status of an active phone call, or list all active calls when no call_id is given. Useful for orienting if you\'re unsure whether a call you placed is still active.',
     input_schema: {
       type: 'object',

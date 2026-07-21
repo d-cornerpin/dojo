@@ -28,6 +28,7 @@ const UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3';
 export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'gmail_send',
+    reachesPeople: true,
     description: 'Send an email from the connected Google account. Supports attachments, pass an array of absolute local file paths. Files totalling up to 25MB go inline; anything over auto-uploads to your Google Drive (folder "DOJO Email Attachments/<YYYY-MM>") and the recipient gets a shareable link appended to the body.',
     input_schema: {
       type: 'object',
@@ -44,6 +45,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'gmail_reply',
+    reachesPeople: true,
     description: 'Reply to an existing email thread. **As of v2.7.24, in-thread replies to "Re:" messages from known correspondents auto-route via the engine, you do NOT need to call this tool for those.** Just write your reply text; the engine sends it on the same thread. Call this tool when: replying to a DIFFERENT thread than the inbound, replying to a notification that the engine did NOT auto-route, or when you need attachments / reply_all behavior. Supports attachments, same rules as gmail_send (25MB inline cap, overflow to Drive link).',
     input_schema: {
       type: 'object',
@@ -58,6 +60,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'gmail_forward',
+    reachesPeople: true,
     description: 'Forward an email to new recipients. The original message\'s attachments are preserved automatically. You can also add NEW attachments via the `attachments` parameter; same 25MB inline cap applies to the combined total (original + new), with Drive spillover for any overflow.',
     input_schema: {
       type: 'object',

@@ -174,6 +174,9 @@ export function resolveHealerProposal(input: {
           signature: proposal.approval_signature as string,
           requestText: (proposal.proposed_fix as string | null) ?? (proposal.title as string),
           decidedBy: 'owner',
+          // P7b: the proposal carries the held call's FULL args, so the minted
+          // grant is exact-call like every other approval.
+          argsJson: (proposal.approval_args_json as string | null) ?? null,
         });
       } catch (err) {
         logger.error('Failed to mint bound destructive approval for held Healer proposal', {

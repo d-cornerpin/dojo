@@ -22,6 +22,7 @@ import type { AccountSlot } from './auth.js';
 export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_send',
+    reachesPeople: true,
     description: 'Send an email from the connected Microsoft account (Outlook). Supports attachments, pass an array of absolute local file paths. Files ≤3MB attach inline; anything larger auto-uploads to OneDrive (folder "DOJO Email Attachments/<YYYY-MM>") and the recipient gets a shareable link appended to the body.',
     input_schema: {
       type: 'object',
@@ -37,6 +38,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'outlook_reply',
+    reachesPeople: true,
     description: 'Reply to an existing Outlook email thread. **As of v2.7.24, in-thread replies to "Re:" messages from known correspondents auto-route via the engine, you do NOT need to call this tool for those.** Just write your reply text; the engine sends it on the same thread. Call this tool when: replying to a DIFFERENT thread than the inbound, replying to a notification that the engine did NOT auto-route (e.g., a new email rather than a "Re:"), or when you need attachments / reply_all behavior. Supports attachments, same rules as outlook_send (3MB inline threshold per file, overflow to OneDrive link).',
     input_schema: {
       type: 'object',
@@ -51,6 +53,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'outlook_forward',
+    reachesPeople: true,
     description: 'Forward an Outlook email to new recipients. The original message\'s attachments are preserved automatically by Graph. You can also add NEW attachments via the `attachments` parameter; same 3MB per-file threshold applies (overflow → OneDrive link).',
     input_schema: {
       type: 'object',
@@ -160,6 +163,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'teams_send_message',
+    reachesPeople: true,
     description: 'Send a message to a Teams chat. **As of v2.7.24, replies to inbound Teams DMs auto-route via the engine, you do NOT need to call this tool to reply.** Just write your reply text; the engine sends it back to the inbound chat.\n\n**HARD RULE, When the primary user is actively talking to you on dashboard, DO NOT call this tool to message them.** Their reply belongs in the dashboard. Calling teams_send_message to "also share this on Teams" while they\'re in dashboard is wrong; the engine will refuse.\n\nCall this tool only when:\n\n- **Starting a new chat** with someone (use teams_create_chat first if you don\'t have a chat_id)\n- **Replying to a DIFFERENT chat** than the inbound that triggered this turn\n- **Sending in a group chat** where you\'ve decided to participate proactively\n- **PROACTIVE outreach** where the turn was NOT triggered by a user message at all (scheduled task, watchdog event, etc.), "proactive" does NOT mean "I am choosing to additionally send via another channel"\n\nRequires a Microsoft work/school account (Entra ID). Not available on personal Microsoft accounts.',
     input_schema: {
       type: 'object',
@@ -342,6 +346,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'teams_send_channel_message',
+    reachesPeople: true,
     description: 'Post a message to a Microsoft Teams channel. Requires Entra ID. Use teams_list_teams then teams_list_channels to get the IDs.',
     input_schema: {
       type: 'object',

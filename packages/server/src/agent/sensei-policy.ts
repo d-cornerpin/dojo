@@ -44,7 +44,12 @@
  *   (c) user_ send-twin parity (USER_TWINNED_SEND_PREFIXES below): every denied
  *       base send in a family that generates owner-account twins also has its
  *       user_ twin denied. This is what surfaced the user_teams_* sends that had
- *       been silently missing here.
+ *       been silently missing here;
+ *   (d) declared-tier equality (lanes & lineage P7b): every base name here must
+ *       carry `reachesPeople: true` on its ToolDefinition and vice versa, so the
+ *       comms-to-people DECISION lives at the definition site and this list is a
+ *       build-checked mirror, not a memory. (This module stays the runtime set
+ *       because it is a no-import leaf and cannot derive from the registry.)
  */
 export const SEND_TO_PEOPLE: readonly string[] = [
   // Gmail (agent slot + user slot)

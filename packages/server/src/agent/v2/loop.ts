@@ -6527,6 +6527,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                     signature: gateSig,
                     kind: destructiveKind,
                     callDescription,
+                    argsJson: JSON.stringify(tc.arguments ?? {}),
                     heldDirectDestructiveCall: true,
                   });
                   refusal = held.refusal;

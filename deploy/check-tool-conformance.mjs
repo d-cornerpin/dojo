@@ -266,7 +266,62 @@ for (const [name, field] of contentHits) {
 const deadAck = Object.keys(CONTENT_FIELD_ACK).filter((n) => !isRealTool(n));
 if (deadAck.length) contentErrors.push(`CONTENT_FIELD_ACK entries that are not real tools: ${deadAck.join(', ')}`);
 
-const allErrors = [...listErrors, ...canaryErrors, ...sendErrors, ...exhaustErrors, ...contentErrors];
+// ── (f) declared comms-to-people tier lock (lanes & lineage P7b) ──
+// The comms-to-people decision is DECLARED at the tool definition site
+// (`reachesPeople: true` on the ToolDefinition). sensei-policy.ts stays the
+// runtime deny set (no-import leaf by design, cannot derive from the registry),
+// so this section pins two-way equality between the declarations found in the
+// built dist and SEND_TO_PEOPLE's base names: drift in either direction fails
+// the release naming the tool. user_ twins inherit the flag via the
+// twin-generation spread and are covered by the twin-parity check in (d).
+// Standalone twin of the same assertion in tool-list-conformance.test.ts.
+const tierErrors = [];
+{
+  const distRoot = path.join(PKG_BASE, 'server/dist');
+  const jsFiles = [];
+  (function walk(d) {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.js')) jsFiles.push(p);
+    }
+  })(distRoot);
+  const declared = new Set();
+  for (const f of jsFiles) {
+    const text = fs.readFileSync(f, 'utf8');
+    const nameRe = /name:\s*['"]([a-z0-9_]+)['"]/g;
+    const marks = [];
+    let mm;
+    while ((mm = nameRe.exec(text))) marks.push({ name: mm[1], i: mm.index });
+    for (let k = 0; k < marks.length; k++) {
+      if (!REGISTRY.has(marks[k].name)) continue;
+      const end = k + 1 < marks.length ? marks[k + 1].i : Math.min(text.length, marks[k].i + 9000);
+      const slice = text.slice(marks[k].i, end);
+      if (!slice.includes('input_schema')) continue;
+      if (/reachesPeople:\s*true/.test(slice)) declared.add(marks[k].name);
+    }
+  }
+  const listBases = new Set([...deny].filter((n) => !n.startsWith('user_')));
+  if (declared.size < 5) {
+    tierErrors.push(`reachesPeople declaration scan found only ${declared.size} tool(s), the dist scan pattern looks broken.`);
+  }
+  const undeclared = [...listBases].filter((n) => !declared.has(n)).sort();
+  const unlisted = [...declared].filter((n) => !listBases.has(n)).sort();
+  if (undeclared.length) {
+    tierErrors.push(
+      `SEND_TO_PEOPLE base name(s) with no reachesPeople declaration on the tool definition: ${undeclared.join(', ')}. ` +
+      `Add \`reachesPeople: true\` to each ToolDefinition so the decision lives at the definition site.`,
+    );
+  }
+  if (unlisted.length) {
+    tierErrors.push(
+      `tool(s) declaring reachesPeople: true but missing from SEND_TO_PEOPLE: ${unlisted.join(', ')}. ` +
+      `Add each to SEND_TO_PEOPLE in packages/server/src/agent/sensei-policy.ts (and its user_ twin if the family is twinned).`,
+    );
+  }
+}
+
+const allErrors = [...listErrors, ...canaryErrors, ...sendErrors, ...exhaustErrors, ...contentErrors, ...tierErrors];
 if (allErrors.length) {
   fail(`a tool-name list drifted from the real tool surface:\n    ` + allErrors.join('\n    '));
 }
@@ -276,6 +331,7 @@ console.log(
   `${CANARY.length} derived classifications correct, ${sendTools.length} channel sends covered by SEND_TO_PEOPLE, ` +
   `${REGISTRY.size} registry tools all accounted for (SEND_TO_PEOPLE deny / NA ledger), ` +
   `receipt tiers + user_ send-twin parity exhaustive, ` +
-  `${contentHits.size} content-bearing tools all loop-signature-classified`,
+  `${contentHits.size} content-bearing tools all loop-signature-classified, ` +
+  `reachesPeople declarations equal SEND_TO_PEOPLE bases`,
 );
 process.exit(0);

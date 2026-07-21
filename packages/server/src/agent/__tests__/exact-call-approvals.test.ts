@@ -58,3 +58,37 @@ describe('exact-call approval consumption (P7)', () => {
     expect(consumeApproval('a1', SIG, '{"command":"rm -rf /tmp/build-9999"}')).toBe(true);
   });
 });
+
+// ── P7b: the Healer approval arm is on the same exact-call contract ──
+// The healer proposal flow can't be unit-driven here without dragging in the
+// healing cycle, so these are source-conformance locks on the three links of
+// the chain: the executor files the FULL args with the hold, the proposal row
+// stores them, and owner approval mints the grant WITH them. Breaking any link
+// reverts the Healer to lossy-signature approvals (the collision class the
+// owner ruled out).
+describe('healer approval arm carries full args (P7b conformance)', () => {
+  const read = async (rel: string) => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+    return fs.readFileSync(path.join(srcRoot, rel), 'utf8');
+  };
+
+  it('the loop hold passes argsJson into fileHealerApprovalProposal', async () => {
+    const loop = await read('agent/v2/loop.ts');
+    const holdCall = loop.slice(loop.indexOf('fileHealerApprovalProposal({'));
+    expect(holdCall.slice(0, 600)).toMatch(/argsJson:\s*JSON\.stringify\(tc\.arguments/);
+  });
+
+  it('the proposal INSERT persists approval_args_json', async () => {
+    const routing = await read('healer/approval-routing.ts');
+    expect(routing).toMatch(/INSERT INTO healer_proposals[\s\S]{0,400}approval_args_json/);
+  });
+
+  it('owner approval mints the grant with the stored args', async () => {
+    const route = await read('gateway/routes/healer.ts');
+    const grantCall = route.slice(route.indexOf('grantApprovalForSignature({'));
+    expect(grantCall.slice(0, 600)).toMatch(/argsJson:\s*\(proposal\.approval_args_json/);
+  });
+});

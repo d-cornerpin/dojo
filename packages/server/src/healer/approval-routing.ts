@@ -256,6 +256,8 @@ export interface FileHealerApprovalInput {
   /** Engine diagnostic severity when the call has provenance. Only CRITICAL +
    *  owner-away routes to the iMessage lane; everything else queues in Vitals. */
   engineSeverity?: EngineSeverity | null;
+  // P7b: full argument JSON of the held call (exact-call contract).
+  argsJson?: string | null;
 }
 
 export interface FileHealerApprovalResult {
@@ -330,8 +332,8 @@ export async function fileHealerApprovalProposal(
     getDb().prepare(`
       INSERT INTO healer_proposals
         (id, category, severity, title, description, proposed_fix, status, agent_id,
-         evidence_json, urgency, surface, notified_at, approval_token, approval_signature, created_at)
-      VALUES (?, 'destructive_action', ?, ?, ?, ?, 'pending', ?, ?, ?, ?, datetime('now'), ?, ?, datetime('now'))
+         evidence_json, urgency, surface, notified_at, approval_token, approval_signature, approval_args_json, created_at)
+      VALUES (?, 'destructive_action', ?, ?, ?, ?, 'pending', ?, ?, ?, ?, datetime('now'), ?, ?, ?, datetime('now'))
     `).run(
       proposalId,
       severity,
@@ -344,6 +346,7 @@ export async function fileHealerApprovalProposal(
       routing.surface,
       token,
       input.signature,
+      input.argsJson ?? null,
     );
   } catch (err) {
     logger.error('healer approval-routing: failed to file approval proposal', {
