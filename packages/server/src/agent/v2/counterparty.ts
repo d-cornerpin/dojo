@@ -30,7 +30,7 @@ export interface WaitingConversation {
   key: string;
   /** The conversation's NEWEST unanswered message row (kept for logging/context). */
   latest: {
-    rowid: number; id: string; conv_key: string | null; content: string; source: string | null; source_agent_id: string | null;
+    rowid: number; id: string; conversation_id: string | null; conv_key: string | null; content: string; source: string | null; source_agent_id: string | null;
     a2a_thread_id: string | null; a2a_intent: string | null; a2a_requires_response: number | null;
     inbound_meta: string | null; origin_kind: string | null; origin_intent: string | null; created_at: string;
   };
@@ -60,7 +60,7 @@ export function getWaitingHumanConversations(agentId: string): WaitingConversati
   // is still the final filter (an authorized-human vs mailbox-notification decision the SQL
   // can't make).
   const rows = db.prepare(
-    `SELECT rowid, id, conv_key, content, source, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, origin_kind, origin_intent, created_at
+    `SELECT rowid, id, conversation_id, conv_key, content, source, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, origin_kind, origin_intent, created_at
        FROM messages
       WHERE agent_id = ? AND role = 'user' AND created_at >= ?
         AND conv_key IS NULL

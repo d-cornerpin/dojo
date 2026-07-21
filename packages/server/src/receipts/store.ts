@@ -21,7 +21,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { noteTurnReceipt, currentTurnConvKey, currentTurnNumber } from '../agent/turn-state.js';
+import { currentToolCallId, currentTurnRoot, noteTurnReceipt, currentTurnConvKey, currentTurnNumber } from '../agent/turn-state.js';
 
 // RC-12: bound the sent_text copy. The full body already lives in the messages
 // tool_use args; the receipt only needs enough to quote the agent's own recent
@@ -170,17 +170,21 @@ export function writeToolReceipt(params: WriteReceiptParams): string {
       `).run(auditId, agentId, tool, `receipt=${receiptId}`);
     }
 
+    // P6a: the receipt binds to the EXACT tool_use call and the root the turn
+    // serves (live turn state, same pattern as conv_key/turn_number).
+    const liveCallId = currentToolCallId.get(agentId) ?? null;
+    const liveRoot = currentTurnRoot.get(agentId) ?? null;
     db.prepare(`
       INSERT INTO tool_receipts (
         id, agent_id, tool, tier, verified, basis,
         provider_id, thread_id, recipient, detail, audit_id, sim,
-        conv_key, turn_number, sent_text,
+        conv_key, turn_number, sent_text, call_id, root_kind, root_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     `).run(
       receiptId, agentId, tool, tier, verified ? 1 : 0, basis,
       providerId, threadId, recipient, detailJson, auditId, sim ? 1 : 0,
-      convKey, turnNumber, boundedSentText,
+      convKey, turnNumber, boundedSentText, liveCallId, liveRoot?.kind ?? null, liveRoot?.id ?? null,
     );
 
     noteTurnReceipt(agentId, receiptId);

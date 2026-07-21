@@ -26,6 +26,7 @@
 // ════════════════════════════════════════
 
 import fs from 'node:fs';
+import { currentTurnRoot, currentTurnNumber, currentTurnServedWork } from '../agent/turn-state.js';
 import path from 'node:path';
 import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
@@ -103,10 +104,16 @@ export interface CreateGenerationJobParams {
 export function createGenerationJob(params: CreateGenerationJobParams): string {
   const id = `gen_${uuidv4().replace(/-/g, '').slice(0, 12)}`;
   getDb().prepare(`
-    INSERT INTO generation_jobs (id, kind, agent_id, model_id, provider_id, prompt, title, voice, status, started_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', datetime('now'), datetime('now'))
+    INSERT INTO generation_jobs (id, kind, agent_id, model_id, provider_id, prompt, title, voice, status,
+                                 source_message_id, turn_number, task_id, conversation_id, started_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, datetime('now'), datetime('now'))
   `).run(id, params.kind, params.agentId, params.modelId, params.providerId, params.prompt,
-    params.title ?? null, params.voice ?? null);
+    params.title ?? null, params.voice ?? null,
+    // P6a execution lineage from the live turn (best-effort; NULL outside a turn).
+    currentTurnRoot.get(params.agentId)?.sourceMessageId ?? null,
+    currentTurnNumber.get(params.agentId) ?? null,
+    currentTurnServedWork.get(params.agentId)?.taskId ?? null,
+    currentTurnRoot.get(params.agentId)?.conversationId ?? null);
   const row = getJob(id);
   if (row) emitUpdate(row);
   return id;

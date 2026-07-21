@@ -1,4 +1,5 @@
 import { exec } from 'node:child_process';
+import { currentToolCallId, currentTurnNumber, currentTurnRoot } from './turn-state.js';
 import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
@@ -3703,15 +3704,21 @@ const AUDIT_ACTION_MAP: Record<string, string> = {
   exec: 'exec',
 };
 
-function auditLog(agentId: string, actionType: string, target: string | null, result: 'success' | 'denied' | 'error', detail?: string): void {
+function auditLog(agentId: string, actionType: string, target: string | null, result: 'success' | 'denied' | 'error', detail?: string, callId?: string | null): void {
   try {
     const db = getDb();
     // Normalize action_type to match the CHECK constraint
     const normalizedAction = AUDIT_ACTION_MAP[actionType] ?? 'tool_call';
+    // P6a execution lineage: every audit row carries the turn that ran it and
+    // the root it served, read from the live turn state (the receipts
+    // pattern), plus the exact tool_use call id where the caller has one.
+    const turnNumber = currentTurnNumber.get(agentId) ?? null;
+    const root = currentTurnRoot.get(agentId) ?? null;
     db.prepare(`
-      INSERT INTO audit_log (id, agent_id, action_type, target, result, detail, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-    `).run(uuidv4(), agentId, normalizedAction, target, result, detail ?? null);
+      INSERT INTO audit_log (id, agent_id, action_type, target, result, detail, turn_number, call_id, root_kind, root_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    `).run(uuidv4(), agentId, normalizedAction, target, result, detail ?? null,
+      turnNumber, callId ?? currentToolCallId.get(agentId) ?? null, root?.kind ?? null, root?.id ?? null);
   } catch (err) {
     logger.error('Failed to write audit log', {
       error: err instanceof Error ? err.message : String(err),

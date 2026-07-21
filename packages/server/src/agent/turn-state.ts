@@ -215,6 +215,8 @@ export interface TurnRoot {
   id: string;
   // The message row id of the inbound human ask, when kind === 'ask'.
   sourceMessageId: string | null;
+  // P6a: the conversation the root belongs to (from the trigger row).
+  conversationId?: string | null;
 }
 export const currentTurnRoot = new Map<string, TurnRoot | null>();
 
@@ -248,3 +250,11 @@ export interface ServedWork {
   originConvKey: string | null;
 }
 export const currentTurnServedWork = new Map<string, ServedWork | null>();
+
+// P6a: the tool_use call id currently executing for this agent. Set by the
+// loop's executor immediately before dispatch; read by auditLog and
+// writeToolReceipt so every execution record carries its exact call identity.
+// Parallel-safe by construction: only serial-category tools (sends, gen,
+// mutations) write records that read this; the parallel safe-read batch never
+// does.
+export const currentToolCallId = new Map<string, string>();
