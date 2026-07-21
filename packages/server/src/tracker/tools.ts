@@ -35,7 +35,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, isPrimaryAgent, getOwnerName, isPMAgent } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
-import { getTurnReceipts, getWorkOriginForAgent } from '../agent/turn-state.js';
+import { getTurnReceipts, getWorkOriginForAgent, currentTurnRoot } from '../agent/turn-state.js';
 import { getReceiptsByIds, stampReceiptsTask, type ToolReceiptRow } from '../receipts/store.js';
 import { formatTimeForAgent } from '../services/format-time.js';
 
@@ -531,10 +531,21 @@ function findRecentNearDuplicateProject(
 ): DuplicateMatch | null {
   const db = getDb();
 
-  // (a) Engine-auto-created in the last 5 minutes, short window so we
-  //     only catch the same-turn case, not a stale auto-project from
-  //     half an hour ago that the agent has already moved past.
-  const engineAuto = db.prepare(`
+  // (a) P3 rekey onto the P1 spine: an engine scaffold born from the SAME ask
+  //     as the creating agent's current turn is THE duplicate, by identity
+  //     (source_message_id equality), no clock guessing. The marker+5-minute
+  //     window survives only as the pre-spine fallback for rootless rows.
+  const turnRoot = currentTurnRoot.get(creatorId) ?? null;
+  const rootMatch = turnRoot?.sourceMessageId ? db.prepare(`
+    SELECT id, title, created_at FROM projects
+    WHERE created_by = ?
+      AND status = 'active'
+      AND origin_kind = 'engine_scaffold'
+      AND source_message_id = ?
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(creatorId, turnRoot.sourceMessageId) as { id: string; title: string; created_at: string } | undefined : undefined;
+  const engineAuto = rootMatch ?? db.prepare(`
     SELECT id, title, created_at FROM projects
     WHERE created_by = ?
       AND status = 'active'

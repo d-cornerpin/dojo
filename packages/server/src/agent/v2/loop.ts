@@ -131,6 +131,8 @@ import { getProactiveSendStreak, bumpProactiveSendStreak, resetProactiveSendStre
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
 import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout, stripLeadingTimeStamp } from './classifiers/output.js';
 import { identicalCallSignature, checkIdenticalCallRefusal, recordIdenticalCallResult, isSignatureTerminal, type RepeatCallState } from './identical-call-brake.js';
+import { SEND_TO_PEOPLE } from '../sensei-policy.js';
+const SEND_TO_PEOPLE_SET: ReadonlySet<string> = new Set(SEND_TO_PEOPLE);
 import { detectUngroundedDeliveryClaim, detectDeliveryDenial } from './classifiers/grounding.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
 import { permissionAlternativeFinder } from './classifiers/permission.js';
@@ -6038,6 +6040,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
       let stoppedMidBatch = false;
       let calledCompleteTask = false;
       let calledFireAndForgetGen = false;
+      // P3 once-per-response guard (lanes & lineage): a NON-IDEMPOTENT call
+      // signature (fire-and-forget generation, people-channel send) executes
+      // AT MOST ONCE per model response. Maps signature -> short first-result
+      // note; a second identical call in the SAME response returns a
+      // structured result naming the first execution instead of re-running
+      // the side effect (the four-images / double-send class). Exact
+      // signature only; different args execute; repeats across RESPONSES are
+      // governed by the loop detector and brake, unchanged.
+      const onceGuardExecuted = new Map<string, string>();
       let recentSigs = state.recentToolSignatures;
 
       outer: for (const batch of batches) {
@@ -6085,6 +6096,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
               toolCallId: tc.id,
               name: tc.name,
               content: loopCheck.refusalMessage! + '\n\n' + ENGINE_BLOCK_ESCAPE_HATCH,
+              isError: true,
+            };
+          }
+
+          // ── P3 once-per-response guard (non-idempotent duplicate) ──
+          const isNonIdempotent = FIRE_AND_FORGET_GEN_TOOLS.has(tc.name) || SEND_TO_PEOPLE_SET.has(tc.name);
+          if (isNonIdempotent && onceGuardExecuted.has(loopCheck.signature)) {
+            return {
+              toolCallId: tc.id,
+              name: tc.name,
+              content:
+                `Already executed in this response: an identical ${tc.name} call ran moments ago and its side effect is real ` +
+                `(${onceGuardExecuted.get(loopCheck.signature)}). It was NOT run again; re-running would duplicate the ` +
+                `send/generation. Reference the first result. If you genuinely intend a second identical ${tc.name}, ` +
+                `issue it in your NEXT response.`,
               isError: true,
             };
           }
@@ -6546,6 +6572,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
               }
             } else {
               toolResult = await executeTool(agentId, tc);
+            }
+            // P3 once-guard, post-result half: a SUCCESSFUL non-idempotent
+            // execution registers its signature for the rest of this response.
+            if ((FIRE_AND_FORGET_GEN_TOOLS.has(tc.name) || SEND_TO_PEOPLE_SET.has(tc.name)) && toolResult.isError !== true) {
+              const preview = typeof toolResult.content === 'string' ? toolResult.content.slice(0, 140) : 'executed';
+              onceGuardExecuted.set(loopCheck.signature, preview);
             }
             // Identical-call brake, post-result half: count consecutive identical
             // failures; at WARN_AT append the corrective notice so the model

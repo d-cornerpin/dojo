@@ -1554,4 +1554,75 @@ describe('runV2Turn integration', () => {
     expect(recordErrorMock).not.toHaveBeenCalled();
     expect(onAgentInjuredSpy).not.toHaveBeenCalled();
   });
+  // ── P3 once-per-response guard (lanes & lineage, 2026-07-21) ──
+  it('P3 once-guard: identical non-idempotent duplicate in ONE response executes once, second gets the structured refusal', async () => {
+    const send = (id: string): ToolCall => ({
+      id,
+      name: 'imessage_send',
+      arguments: { recipient: 'contact-a', message: 'the exact same text' },
+    });
+    callModelSpy
+      .mockResolvedValueOnce({
+        content: '',
+        toolCalls: [send('tc1'), send('tc2')],
+        inputTokens: 100,
+        outputTokens: 5,
+        stopReason: 'tool_use',
+      })
+      .mockResolvedValue({
+        content: 'done',
+        toolCalls: [],
+        inputTokens: 50,
+        outputTokens: 5,
+        stopReason: 'end_turn',
+      });
+    executeToolSpy.mockResolvedValue({
+      toolCallId: 'tc1',
+      name: 'imessage_send',
+      content: 'sent',
+      isError: false,
+    });
+
+    await runV2Turn('primary');
+
+    // The side effect ran exactly once; the duplicate never reached the executor.
+    expect(executeToolSpy).toHaveBeenCalledTimes(1);
+    const db = mockDb.current!;
+    const refusal = db.prepare(
+      "SELECT COUNT(*) AS n FROM messages WHERE role = 'tool' AND content LIKE '%Already executed in this response%'",
+    ).get() as { n: number };
+    expect(refusal.n).toBeGreaterThanOrEqual(1);
+  });
+
+  it('P3 once-guard: two DIFFERENT non-idempotent calls in one response both execute', async () => {
+    const mk = (id: string, msg: string): ToolCall => ({
+      id,
+      name: 'imessage_send',
+      arguments: { recipient: 'contact-a', message: msg },
+    });
+    callModelSpy
+      .mockResolvedValueOnce({
+        content: '',
+        toolCalls: [mk('tc1', 'first message'), mk('tc2', 'second, different message')],
+        inputTokens: 100,
+        outputTokens: 5,
+        stopReason: 'tool_use',
+      })
+      .mockResolvedValue({
+        content: 'done',
+        toolCalls: [],
+        inputTokens: 50,
+        outputTokens: 5,
+        stopReason: 'end_turn',
+      });
+    executeToolSpy.mockImplementation(async (_aid: string, tc: ToolCall) => ({
+      toolCallId: tc.id,
+      name: tc.name,
+      content: 'sent',
+      isError: false,
+    }));
+
+    await runV2Turn('primary');
+    expect(executeToolSpy).toHaveBeenCalledTimes(2);
+  });
 });

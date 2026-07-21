@@ -81,3 +81,26 @@ describe('drive boundary (P2)', () => {
     expect(runner).not.toMatch(/Execute this task ONCE for this run only/);
   });
 });
+
+describe('once-per-response guard (P3)', () => {
+  it('non-idempotent duplicates are refused at the executor choke point', () => {
+    const loop = read('agent/v2/loop.ts');
+    expect(loop).toMatch(/onceGuardExecuted = new Map/);
+    expect(loop).toMatch(/onceGuardExecuted\.has\(loopCheck\.signature\)/);
+    expect(loop).toMatch(/Already executed in this response/);
+    // Both non-idempotent families are covered: fire-and-forget generation
+    // and the whole people-channel send surface (sensei's canonical list).
+    expect(loop).toMatch(/FIRE_AND_FORGET_GEN_TOOLS\.has\(tc\.name\) \|\| SEND_TO_PEOPLE_SET\.has\(tc\.name\)/);
+  });
+
+  it('the guard registers ONLY successful executions (a failed call may retry)', () => {
+    const loop = read('agent/v2/loop.ts');
+    expect(loop).toMatch(/toolResult\.isError !== true[\s\S]{0,200}onceGuardExecuted\.set/);
+  });
+
+  it('the engine-scaffold duplicate-project guard keys on ROOT equality first', () => {
+    const tools = read('tracker/tools.ts');
+    expect(tools).toMatch(/origin_kind = 'engine_scaffold'[\s\S]{0,80}source_message_id = \?/);
+  });
+});
+
