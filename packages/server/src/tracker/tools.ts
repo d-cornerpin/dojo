@@ -3175,13 +3175,36 @@ export async function trackerApplyUserValidation(
 
   const db = getDb();
   const task = db.prepare(`
-    SELECT id, title, status, assigned_to, complete_validated, pause_validated, blocked_validated
+    SELECT id, title, status, assigned_to, complete_validated, pause_validated, blocked_validated, validation_thread_id
     FROM tasks WHERE id = ?
   `).get(taskId) as {
     id: string; title: string; status: string; assigned_to: string | null;
     complete_validated: number; pause_validated: number; blocked_validated: number;
+    validation_thread_id: string | null;
   } | undefined;
   if (!task) return `Error: task ${taskId} not found.`;
+  // P5b: the verdict ask recorded WHICH conversation it went to
+  // (validation_thread_id = the owner conversation id). Soft continuity
+  // check, first release: verify the applying turn's served ask lives in that
+  // conversation; log + audit on mismatch, never block (legacy escalations
+  // carry random uuids).
+  try {
+    const root = currentTurnRoot.get(callerAgentId);
+    if (task.validation_thread_id && root?.sourceMessageId) {
+      const askRow = db.prepare('SELECT conversation_id FROM messages WHERE id = ?')
+        .get(root.sourceMessageId) as { conversation_id: string | null } | undefined;
+      if (askRow?.conversation_id && askRow.conversation_id !== task.validation_thread_id) {
+        logger.warn('user-verdict continuity: the applying reply came from a DIFFERENT conversation than the verdict ask', {
+          taskId, askConversation: askRow.conversation_id, verdictConversation: task.validation_thread_id,
+        });
+        const { writeTaskLog } = await import('./task-log.js');
+        try {
+          writeTaskLog({ taskId, fromEntity: 'engine', entryKind: 'observation',
+            reason: 'verdict-continuity mismatch (soft)', note: `reply conv ${askRow.conversation_id} != ask conv ${task.validation_thread_id}` });
+        } catch { /* audit only */ }
+      }
+    }
+  } catch { /* soft check only */ }
 
   let flagColumn: 'complete_validated' | 'pause_validated' | 'blocked_validated' | null = null;
   if (task.status === 'complete') flagColumn = 'complete_validated';

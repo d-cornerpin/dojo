@@ -365,8 +365,16 @@ async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
     const primaryId = getPrimaryAgentId();
     const { v4: uuidv4 } = await import('uuid');
 
+    // P5b: validation_thread_id becomes REAL. Written since 2026-06-01 and
+    // read by nothing, it now records the CONVERSATION the verdict ask goes
+    // to (the owner's dashboard conversation), so the apply side can verify
+    // the reply came from where the question was asked.
+    const { resolveOrCreateConversation } = await import('../memory/conversations.js');
+    const ownerConvId = resolveOrCreateConversation(primaryId, {
+      channel: 'dashboard', provider: null, counterpartyId: 'owner', threadRoot: null,
+    });
     for (const t of stale) {
-      const threadId = uuidv4();
+      const threadId = ownerConvId ?? uuidv4();
       const agentName = t.assigned_to
         ? (db.prepare('SELECT name FROM agents WHERE id = ?').get(t.assigned_to) as { name: string } | undefined)?.name ?? t.assigned_to
         : 'an agent';

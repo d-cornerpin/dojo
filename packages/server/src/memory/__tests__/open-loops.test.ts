@@ -52,7 +52,8 @@ beforeEach(() => {
       turn_number INTEGER,
       conv_key TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
+    ,
+      conversation_id TEXT);
     CREATE TABLE open_loops (
       id TEXT PRIMARY KEY,
       agent_id TEXT NOT NULL,
@@ -61,6 +62,8 @@ beforeEach(() => {
       source_message_id TEXT,
       status TEXT NOT NULL DEFAULT 'open',
       resolved_by_message_id TEXT,
+      conversation_id TEXT,
+      answered_at TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );

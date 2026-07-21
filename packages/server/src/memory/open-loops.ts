@@ -198,9 +198,14 @@ export function insertOpenLoop(params: InsertLoopParams): string | null {
     }
     const id = uuidv4();
     db.prepare(
-      `INSERT INTO open_loops (id, agent_id, conv_key, description, source_message_id, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, 'open', datetime('now'), datetime('now'))`,
-    ).run(id, agentId, convKey, desc, sourceMessageId);
+      `INSERT INTO open_loops (id, agent_id, conv_key, description, source_message_id, conversation_id, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'open', datetime('now'), datetime('now'))`,
+    ).run(id, agentId, convKey, desc, sourceMessageId,
+      // P5b: keyed conversation attribution from the source message row when
+      // it exists; the conv_key heuristic remains the display/legacy fallback.
+      (sourceMessageId
+        ? ((getDb().prepare('SELECT conversation_id FROM messages WHERE id = ?').get(sourceMessageId) as { conversation_id: string | null } | undefined)?.conversation_id ?? null)
+        : null));
     logger.info('open loop recorded', { agentId, convKey, id }, agentId);
     return id;
   } catch (err) {
@@ -230,7 +235,7 @@ export function resolveMatchingLoops(
       .prepare(`SELECT id, description FROM open_loops WHERE agent_id = ? AND status = 'open'`)
       .all(agentId) as Array<{ id: string; description: string }>;
     const upd = db.prepare(
-      `UPDATE open_loops SET status = 'resolved', resolved_by_message_id = ?, updated_at = datetime('now')
+      `UPDATE open_loops SET status = 'resolved', resolved_by_message_id = ?, answered_at = datetime('now'), updated_at = datetime('now')
         WHERE id = ? AND status = 'open'`,
     );
     for (const row of open) {
@@ -285,7 +290,7 @@ export function resolveOpenLoopByPrefix(
       return { ok: false, message: `Ambiguous prefix "${prefix}" matches ${rows.length} loops: ${opts}. Use a longer prefix.` };
     }
     const r = rows[0];
-    db.prepare(`UPDATE open_loops SET status = 'resolved', updated_at = datetime('now') WHERE id = ?`).run(r.id);
+    db.prepare(`UPDATE open_loops SET status = 'resolved', answered_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`).run(r.id);
     logger.info('open loop resolved by agent', { agentId, id: r.id, note: note ?? null }, agentId);
     return { ok: true, message: `Resolved open loop: ${r.description}` };
   } catch (err) {
