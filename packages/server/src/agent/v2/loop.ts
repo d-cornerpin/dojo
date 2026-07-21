@@ -6102,54 +6102,62 @@ export async function runV2Turn(agentId: string): Promise<void> {
             };
           }
 
-          // ── Reminder-delivery lane (owner-bound engine turns) ──
-          // This turn serves a kind='reminder' task (read structurally off the
-          // claimed trigger's task_id, migration 112). Reminder output belongs
-          // to the OWNER; a channel send naming someone who is not the owner is
-          // refused ONCE with guidance. A deliberate identical re-send proceeds
-          // (the owner may genuinely have said "remind my wife"), so legitimate
-          // work costs at most one corrective round and is never blocked.
+          // ── Reminder-delivery lane + owner-drift arm (destination-from-root) ──
+          // Two refuse-once guards on channel sends, each costing legitimate
+          // work at most one corrective round (an identical re-send proceeds):
+          //  1. Reminder lane: this turn serves a kind='reminder' task (read
+          //     structurally off the claimed trigger's task_id, migration 112).
+          //     Reminder output belongs to the OWNER; a send naming someone who
+          //     is not the owner is refused once with guidance ("remind my
+          //     wife" repeats and goes through).
+          //  2. Owner-drift, GENERAL form (P6 destination-from-root; the battery
+          //     found the A2A gap: an A2A-poked turn about owner-rooted work
+          //     texted the owner a completion report while the owner sat at the
+          //     dashboard, and the old engine-served-only arm never fired). Any
+          //     turn, ANY lane (engine, A2A, dashboard): a send TO the owner
+          //     while the owner is IN the dojo belongs in chat, unless the turn
+          //     itself is rooted in the owner's own text conversation (the
+          //     owner texted us; replying in-channel is the conversation).
           if ((tc.name === 'imessage_send' || tc.name === 'sms_send')) {
             const served = currentTurnServedWork.get(agentId);
-            if (served?.taskKind === 'reminder') {
-              const a = (tc.arguments ?? {}) as Record<string, unknown>;
-              const recip = String(a.recipient ?? a.to ?? '').trim();
-              if (recip && !recipientIsChannelOwner(tc.name, recip)) {
-                const laneSig = `${tc.name}|${recip}`;
-                if (!reminderLaneRefusedSigs.has(laneSig)) {
-                  reminderLaneRefusedSigs.add(laneSig);
-                  return {
-                    toolCallId: tc.id,
-                    name: tc.name,
-                    content:
-                      `Refused once: this turn is delivering the owner's reminder, and "${recip}" is not the owner. ` +
-                      `Reminders are delivered to the owner: reply in chat (the owner is watching the dashboard conversation this reminder came from), ` +
-                      `or send to the owner's own address. If the owner explicitly asked for this reminder to be delivered to "${recip}", ` +
-                      `repeat the exact same send and it will go through.`,
-                    isError: true,
-                  };
-                }
-              } else if (recip && served.originConvKey === 'owner' && getPresence() === 'in_dojo') {
-                // Destination-from-root, the piece that is structural TODAY
-                // (P1 origin + presence): the reminder was asked for in the
-                // owner's dashboard conversation and the owner is IN the dojo,
-                // so delivery belongs in chat, not a channel push, even to the
-                // owner's own address. Refuse once; an identical re-send
-                // proceeds (presence flips or the owner asked for a text are
-                // real cases the model may know from context).
-                const driftSig = `owner-drift|${tc.name}|${recip}`;
-                if (!reminderLaneRefusedSigs.has(driftSig)) {
-                  reminderLaneRefusedSigs.add(driftSig);
-                  return {
-                    toolCallId: tc.id,
-                    name: tc.name,
-                    content:
-                      `Refused once: this reminder was set from the owner's dashboard conversation and the owner is currently IN the dojo, ` +
-                      `so deliver it as your chat reply (just say it); no channel send is needed. ` +
-                      `If the owner explicitly asked to be texted, repeat the exact same send and it will go through.`,
-                    isError: true,
-                  };
-                }
+            const a = (tc.arguments ?? {}) as Record<string, unknown>;
+            const recip = String(a.recipient ?? a.to ?? '').trim();
+            const recipIsOwner = recip ? recipientIsChannelOwner(tc.name, recip) : false;
+            if (served?.taskKind === 'reminder' && recip && !recipIsOwner) {
+              const laneSig = `${tc.name}|${recip}`;
+              if (!reminderLaneRefusedSigs.has(laneSig)) {
+                reminderLaneRefusedSigs.add(laneSig);
+                return {
+                  toolCallId: tc.id,
+                  name: tc.name,
+                  content:
+                    `Refused once: this turn is delivering the owner's reminder, and "${recip}" is not the owner. ` +
+                    `Reminders are delivered to the owner: reply in chat (the owner is watching the dashboard conversation this reminder came from), ` +
+                    `or send to the owner's own address. If the owner explicitly asked for this reminder to be delivered to "${recip}", ` +
+                    `repeat the exact same send and it will go through.`,
+                  isError: true,
+                };
+              }
+            } else if (
+              recip && recipIsOwner && getPresence() === 'in_dojo' &&
+              !(counterparty.kind === 'user' && counterparty.relation === 'owner' &&
+                (counterparty.channel === 'imessage' || counterparty.channel === 'sms'))
+            ) {
+              const driftSig = `owner-drift|${tc.name}|${recip}`;
+              if (!reminderLaneRefusedSigs.has(driftSig)) {
+                reminderLaneRefusedSigs.add(driftSig);
+                const rootNote = served?.originConvKey === 'owner'
+                  ? 'This work was asked for in the owner\'s dashboard conversation and the owner is currently IN the dojo'
+                  : 'The owner is currently IN the dojo (at the dashboard)';
+                return {
+                  toolCallId: tc.id,
+                  name: tc.name,
+                  content:
+                    `Refused once: ${rootNote}, so deliver this to the owner as your chat reply (just say it); ` +
+                    `no channel send is needed. ` +
+                    `If the owner explicitly asked to be texted, repeat the exact same send and it will go through.`,
+                  isError: true,
+                };
               }
             }
           }
