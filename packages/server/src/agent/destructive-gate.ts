@@ -18,6 +18,7 @@
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
+import { currentTurnRoot, currentTurnServedWork, currentTurnNumber } from './turn-state.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -142,29 +143,40 @@ export function grantApprovalForSignature(input: {
   signature: string;
   requestText: string;
   decidedBy: string;
+  // P7: full args of the approved call when the approving flow has them; a
+  // NULL keeps the legacy signature-only consumption for that row.
+  argsJson?: string | null;
 }): void {
   const token = uuidv4();
   const toolName = input.signature.slice(0, input.signature.indexOf(':')) || 'unknown';
   getDb().prepare(`
     INSERT INTO destructive_approvals
-      (token, agent_id, tool_name, signature, request_text, status, decided_by, decided_at, wake_delivered)
-    VALUES (?, ?, ?, ?, ?, 'approved', ?, datetime('now'), 1)
-  `).run(token, input.agentId, toolName, input.signature, input.requestText, input.decidedBy);
+      (token, agent_id, tool_name, signature, request_text, args_json, status, decided_by, decided_at, wake_delivered)
+    VALUES (?, ?, ?, ?, ?, ?, 'approved', ?, datetime('now'), 1)
+  `).run(token, input.agentId, toolName, input.signature, input.requestText, input.argsJson ?? null, input.decidedBy);
   logger.info('destructive-gate: minted consumable approval from owner-approved proposal', {
     agentId: input.agentId, token,
   });
 }
 
 /** One-shot check: is there a live approval for this exact call? Consumes it. */
-export function consumeApproval(agentId: string, signature: string): boolean {
+export function consumeApproval(agentId: string, signature: string, argsJson?: string | null): boolean {
   try {
     const db = getDb();
+    // P7 exact-call contract (owner ruling 2026-07-20): the approval covers
+    // PRECISELY the command the approver saw, once. Consumption requires the
+    // FULL argument JSON to match, not just the lossy canonical signature
+    // (which drops prose, truncates long strings, and masks digit runs, so two
+    // different destructive commands could collide). Legacy rows filed before
+    // migration 117 carry NULL args_json and consume by signature alone, one
+    // release only.
     const row = db.prepare(`
       SELECT token FROM destructive_approvals
       WHERE agent_id = ? AND signature = ? AND status = 'approved'
         AND decided_at >= datetime('now', '-${APPROVAL_TTL_MINUTES} minutes')
+        AND (args_json IS NULL OR args_json = ?)
       ORDER BY decided_at DESC LIMIT 1
-    `).get(agentId, signature) as { token: string } | undefined;
+    `).get(agentId, signature, argsJson ?? null) as { token: string } | undefined;
     if (!row) return false;
     db.prepare(`UPDATE destructive_approvals SET status = 'consumed', updated_at = datetime('now') WHERE token = ?`)
       .run(row.token);
@@ -240,13 +252,20 @@ export async function requestApproval(input: {
   signature: string;
   kind: string;
   callDescription: string;
+  // P7: the FULL argument JSON of the held call (exact-call contract) plus
+  // execution lineage so the approval record shows which turn and root asked.
+  argsJson?: string | null;
 }): Promise<string> {
   const token = uuidv4();
   try {
+    const root = currentTurnRoot.get(input.agentId) ?? null;
+    const served = currentTurnServedWork.get(input.agentId) ?? null;
     getDb().prepare(`
-      INSERT INTO destructive_approvals (token, agent_id, tool_name, signature, request_text)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(token, input.agentId, input.toolName, input.signature, input.callDescription);
+      INSERT INTO destructive_approvals (token, agent_id, tool_name, signature, request_text, args_json, root_kind, root_id, task_id, turn_number)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(token, input.agentId, input.toolName, input.signature, input.callDescription,
+      input.argsJson ?? null, root?.kind ?? null, root?.id ?? null,
+      served?.taskId ?? null, currentTurnNumber.get(input.agentId) ?? null);
   } catch (err) {
     logger.error('destructive-gate: failed to file approval request', {
       error: err instanceof Error ? err.message : String(err),

@@ -6505,7 +6505,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   tool: tc.name,
                 }, agentId);
                 // Fall through to executeTool: no hold, no consent ask.
-              } else if (!consumeApproval(agentId, gateSig)) {
+              } else if (!consumeApproval(agentId, gateSig, JSON.stringify(tc.arguments ?? {}))) {
                 const gateAgentRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
                 const callDescription = `${tc.name}(${JSON.stringify(tc.arguments).slice(0, 300)})`;
                 let refusal: string;
@@ -6539,6 +6539,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                     signature: gateSig,
                     kind: destructiveKind,
                     callDescription,
+                    argsJson: JSON.stringify(tc.arguments ?? {}),
                   });
                 }
                 try {
