@@ -132,6 +132,7 @@ import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-repli
 import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout, stripLeadingTimeStamp } from './classifiers/output.js';
 import { identicalCallSignature, checkIdenticalCallRefusal, recordIdenticalCallResult, isSignatureTerminal, type RepeatCallState } from './identical-call-brake.js';
 import { SEND_TO_PEOPLE } from '../sensei-policy.js';
+import { getPresence } from '../../services/presence.js';
 const SEND_TO_PEOPLE_SET: ReadonlySet<string> = new Set(SEND_TO_PEOPLE);
 import { detectUngroundedDeliveryClaim, detectDeliveryDenial } from './classifiers/grounding.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
@@ -5662,6 +5663,38 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }
         }
 
+        // ── Reminder-delivery silence floor (P3 wave, 2026-07-21) ──
+        // A turn serving a kind='reminder' occurrence exists to SAY one thing
+        // to the owner. Observed silent-close: the model closed the run
+        // (correct bookkeeping) and ended without replying, so the reminder
+        // never reached the owner at all. The floor is deterministic and
+        // model-free: the task description IS the reminder text, so if the
+        // turn ends with no user-visible reply and no owner-channel send,
+        // the engine delivers the reminder itself. Same pattern as the
+        // A2A-handoff hard floor (engine states a fact; no prose authority).
+        {
+          const servedRem = currentTurnServedWork.get(agentId);
+          if (
+            servedRem?.taskKind === 'reminder' &&
+            (!persistedContent || persistedContent.trim().length === 0) &&
+            !Object.values(state.explicitSendThisTurn).some(Boolean)
+          ) {
+            try {
+              const remRow = servedRem.taskId
+                ? (db.prepare('SELECT title, description FROM tasks WHERE id = ?')
+                    .get(servedRem.taskId) as { title: string | null; description: string | null } | undefined)
+                : undefined;
+              const remText = (remRow?.description || remRow?.title || '').replace(/^Reminder:?\s*/i, '').trim();
+              if (remText) {
+                await deliverEngineUserAck(`Reminder: ${remText}`, 'engine_reminder_delivery');
+                logger.warn('v2 reminder silence floor: reminder turn ended with no user-visible delivery; engine delivered the reminder text itself', {
+                  agentId, turnNumber, taskId: servedRem.taskId,
+                }, agentId);
+              }
+            } catch { /* best effort; never block turn end */ }
+          }
+        }
+
         // Cross-conversation re-answer floor (2026-07-09 disease, structural
         // stage). The tail [Engine hint] alone did not stop the weakest
         // supported model from re-answering another conversation's settled
@@ -6139,6 +6172,27 @@ export async function runV2Turn(agentId: string): Promise<void> {
                       `Reminders are delivered to the owner: reply in chat (the owner is watching the dashboard conversation this reminder came from), ` +
                       `or send to the owner's own address. If the owner explicitly asked for this reminder to be delivered to "${recip}", ` +
                       `repeat the exact same send and it will go through.`,
+                    isError: true,
+                  };
+                }
+              } else if (recip && served.originConvKey === 'owner' && getPresence() === 'in_dojo') {
+                // Destination-from-root, the piece that is structural TODAY
+                // (P1 origin + presence): the reminder was asked for in the
+                // owner's dashboard conversation and the owner is IN the dojo,
+                // so delivery belongs in chat, not a channel push, even to the
+                // owner's own address. Refuse once; an identical re-send
+                // proceeds (presence flips or the owner asked for a text are
+                // real cases the model may know from context).
+                const driftSig = `owner-drift|${tc.name}|${recip}`;
+                if (!reminderLaneRefusedSigs.has(driftSig)) {
+                  reminderLaneRefusedSigs.add(driftSig);
+                  return {
+                    toolCallId: tc.id,
+                    name: tc.name,
+                    content:
+                      `Refused once: this reminder was set from the owner's dashboard conversation and the owner is currently IN the dojo, ` +
+                      `so deliver it as your chat reply (just say it); no channel send is needed. ` +
+                      `If the owner explicitly asked to be texted, repeat the exact same send and it will go through.`,
                     isError: true,
                   };
                 }
