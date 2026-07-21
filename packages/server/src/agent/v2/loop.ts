@@ -2188,20 +2188,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // turn-end ONLY if the turn delivered no proper tool-less reply, so a genuine
   // answer the weak model paired with a closing tool is never silently lost.
 
-  // F3 owed-interrupt round contract: the already-delivered main reply captured at
-  // the moment the F3 re-prompt fires (see ~:4510). Stays null unless F3 actually
-  // fires this turn, which is what scopes the near-duplicate contract floor below
-  // (~:3810) to the single extra owed-interrupt round and nothing else.
-  let owedInterruptPriorReply: string | null = null;
-  // F3 owed-interrupt RUNWAY tripwire: the one-shot flag only stops RE-prompting;
-  // the granted round can still iterate through unlimited tool calls (live
-  // evidence: the floor model spent it re-running the main task's heavy tool
-  // instead of answering). Record the loopCount when the re-prompt fires; if the
-  // turn keeps iterating >3 loops past it, log once and let the natural-end
-  // machinery take over. Tools are never restricted, a legit quick lookup must
-  // keep working; the log is the tripwire for whether a harder bound is needed.
-  let owedInterruptRePromptLoopCount: number | null = null;
-  let owedInterruptRunwayWarned = false;
+  // P4b: the F3 runway tripwire (a log-only guard on the guard) was DELETED
+  // with the near-dup swallow; the turns record now audits the round.
 
   try {
     // ── Main loop ──
@@ -2221,25 +2209,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
       !state.taskClosedWithTextThisTurn
     ) {
       state = advance(state, { loopCount: state.loopCount + 1, phase: 'preCallGates' });
-
-      // F3 owed-interrupt runway tripwire (log only, never blocks). If the granted
-      // extra round is still iterating >3 loops past the re-prompt, it is almost
-      // certainly re-running the main task's tools instead of answering; surface
-      // it once so we have the evidence, and let the natural-end machinery
-      // (MAX_TOOL_LOOPS / going-idle) end the turn. Once the round produces its
-      // answer the turn ends within a loop, so this never trips on a clean round.
-      if (
-        owedInterruptRePromptLoopCount !== null &&
-        !owedInterruptRunwayWarned &&
-        state.loopCount > owedInterruptRePromptLoopCount + 3
-      ) {
-        owedInterruptRunwayWarned = true;
-        logger.warn('v2 owed-interrupt runway exceeded: the granted re-prompt round is still iterating past its budget without answering; letting natural turn-end proceed', {
-          agentId, turnNumber,
-          rePromptLoopCount: owedInterruptRePromptLoopCount,
-          loopCount: state.loopCount,
-        }, agentId);
-      }
 
       // Stop / preempt checks
       if (stoppedAgents.has(agentId)) {
@@ -4754,46 +4723,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }, agentId);
       }
 
-      // ── Owed-interrupt round contract floor (engine-enforced "answer the ask, do not re-deliver") ──
-      // The F3 owed-interrupt block (below, ~:4510) grants EXACTLY ONE extra round for
-      // ONE purpose: answer the quoted mid-turn message the teardown claim is about to
-      // mark served. A near-copy of the reply the user already received is, by
-      // definition, not that answer, so the engine treats this round's output as its
-      // [no-reply]. This is enforcement of the round's contract, the SAME class as
-      // bare-[no-reply] swallowing, NOT suppression of a genuine agent response:
-      //  - owedInterruptPriorReply is set only when F3 actually fired, so this never
-      //    runs on any turn where the extra round was not granted;
-      //  - the MAIN reply from the earlier iteration is never touched (that text was
-      //    already persisted and is what owedInterruptPriorReply holds, only THIS
-      //    round's fresh output is compared);
-      //  - a genuinely NEW answer (not a near-duplicate) fails isNearDuplicateText and
-      //    flows through completely unchanged.
-      // Swallow it exactly the way a bare [no-reply] / redundant closeout is swallowed
-      // (null persistedContent, clear the streamed bubble), no system marker, the user
-      // already has the real reply.
-      if (
-        persistedContent &&
-        result.toolCalls.length === 0 &&
-        state.nudgedForOwedInterruptThisTurn &&
-        owedInterruptPriorReply &&
-        isNearDuplicateText(owedInterruptPriorReply, persistedContent)
-      ) {
-        persistedContent = null;
-        broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
-        broadcast({
-          type: 'chat:message',
-          agentId,
-          message: {
-            id: messageId, agentId, role: 'assistant' as const,
-            content: '',
-            tokenCount: null, modelId: null, cost: null, latencyMs: null,
-            createdAt: new Date().toISOString(),
-          },
-        });
-        logger.warn('v2: the owed-interrupt round produced a near-duplicate of the already-delivered reply; the engine treated it as [no-reply]', {
-          agentId, loopCount: state.loopCount, turnNumber,
-        }, agentId);
-      }
+      // P4b (owner status-truth family): the owed-interrupt near-duplicate
+      // swallow that lived here was DELETED. It nulled the granted round's
+      // reply on a wording-similarity verdict, prose-as-authority in the
+      // suppression direction, and its known worst case silently ate a
+      // genuinely different short answer. The round's contract is now audited
+      // by identity instead: the owed rows carry served_by_turn +
+      // answer_message_id stamps (migration 113), and the worst case of the
+      // swallow's absence is a visible duplicate paragraph, never a silent
+      // drop. The re-prompt itself (below) is unchanged.
 
       // ── RC-5.3: proactive-send budget (backoff on unanswered background chatter) ──
       // A settled-context wake (no human waiting, not a deliberate surface) that produces
@@ -5540,14 +5478,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
               });
             } catch { /* best effort */ }
             state = advance(state, { nudgedForOwedInterruptThisTurn: true, pendingNudge: rePrompt });
-            // Arm the runway tripwire: the granted round starts here; the check at
-            // the top of the loop warns if it overruns without answering.
-            owedInterruptRePromptLoopCount = state.loopCount;
-            // Capture the reply the user already received so the contract floor above
-            // (~:3810) can treat a near-copy of it on the extra round as [no-reply].
-            // persistedContent here is the delivered main reply (guarded non-empty
-            // above, never reassigned between the persist and this point).
-            owedInterruptPriorReply = persistedContent;
             logger.info('v2 owed-interrupt re-prompt: a mid-turn user message was assembled but may be unanswered; giving the model one more round before the teardown claim marks it served', {
               agentId, turnNumber, owedCount: owed.length, convKey: chosenConvKey,
             }, agentId);
@@ -7955,7 +7885,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // sites set it there; the task carries the user content), so match it via
         // the task's project, not the task's own description.
         const justCompletedScaffold = db.prepare(`
-          SELECT t.title AS title, t.result AS result, t.created_at AS created_at FROM tasks t
+          SELECT t.title AS title, t.result AS result, t.created_at AS created_at, t.source_message_id AS source_message_id FROM tasks t
           JOIN projects p ON p.id = t.project_id
           WHERE t.assigned_to = ?
             AND t.status = 'complete'
@@ -7981,7 +7911,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
           .map((t) => t.created_at)
           .filter((c): c is string => !!c)
           .sort()[0] ?? turnStartedAt;
-        const userAlreadyAnswered = justCompletedScaffold.length > 0 && !!db.prepare(`
+        // P4b keyed read: if every just-completed scaffold's birthing ask
+        // already records an answering reply (answer_message_id, mig 113),
+        // the user has the answer and the ack is redundant, by identity.
+        const rootIds = justCompletedScaffold
+          .map((t) => (t as unknown as { source_message_id?: string | null }).source_message_id)
+          .filter((x): x is string => !!x);
+        const answeredByKey = rootIds.length === justCompletedScaffold.length && rootIds.length > 0 && rootIds.every((mid) => {
+          const row = db.prepare('SELECT answer_message_id FROM messages WHERE id = ?').get(mid) as { answer_message_id: string | null } | undefined;
+          return !!row?.answer_message_id;
+        });
+        const userAlreadyAnswered = answeredByKey || (justCompletedScaffold.length > 0 && !!db.prepare(`
           SELECT 1 FROM messages
           WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?
             AND (source IS NULL OR source != 'a2a')
@@ -7990,7 +7930,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             AND origin_intent IS NULL
             AND length(trim(content)) > 40
           LIMIT 1
-        `).get(agentId, earliestTaskCreatedAt);
+        `).get(agentId, earliestTaskCreatedAt));
         if (justCompletedScaffold.length > 0 && userAlreadyAnswered) {
           logger.info('v2: completion ack skipped, user already received a substantive reply for this work (cross-turn dedup)', {
             agentId, turnNumber,
