@@ -115,6 +115,18 @@ const KEY1_ALLOW: Record<string, string[]> = {
   'agent/tools.ts': [
     "schedule_status = CASE WHEN schedule_status = 'unscheduled'",
   ],
+  // Delivery-receipt close, strike 2 of the drive backup lane (2026-07-22
+  // production incident: a delivered task left in_progress was re-driven into
+  // full re-work; the close steer was tried first and the floor model paused
+  // the task instead). The engine closes ONLY when its own records show an
+  // answered turn on the task's origin + a TANGIBLE handover (artifact or
+  // channel delivery) + no assignee activity since + a prior close steer that
+  // was ignored. Lands complete_validated=0 (the PM's key still turns; the
+  // basis is recorded in result + task_log). The agent's own wrap-up steer at
+  // the turn boundary is the PRIMARY close-out; this is the backup's last rung.
+  'tracker/pm-agent.ts': [
+    "SET status = 'complete', completed_at = datetime('now')",
+  ],
 };
 
 function scanKey1(rel: string, lines: string[]): string[] {

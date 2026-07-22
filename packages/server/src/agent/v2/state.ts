@@ -361,6 +361,9 @@ export interface AgentTurnState {
    * denying can't spin the loop. Mirrors nudgedForUngroundedClaimThisTurn.
    */
   nudgedForDeliveryDenialThisTurn: boolean;
+  /** 2026-07-22 wrap-up-at-the-boundary: one steer per turn when the turn is
+   *  ending answered while its OWN root-tied tasks still say in_progress. */
+  nudgedForWrapUpThisTurn: boolean;
   /**
    * RC-13.2 save-claim floor. Set true the first time the failed-save-claim guard
    * fires this turn: the reply claims something was saved/stored/remembered but every
@@ -571,6 +574,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     nudgedForAddNotesStopThisTurn: false,
     nudgedForUngroundedClaimThisTurn: false,
     nudgedForDeliveryDenialThisTurn: false,
+    nudgedForWrapUpThisTurn: false,
     nudgedForFailedSaveClaimThisTurn: false,
     nudgedForThrashDriftThisTurn: false,
     nudgedForGoingIdleWithInProgressThisTurn: false,

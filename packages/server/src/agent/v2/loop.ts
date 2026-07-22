@@ -2065,6 +2065,25 @@ export async function runV2Turn(agentId: string): Promise<void> {
           `${inProgressDanglers.length} in_progress task${inProgressDanglers.length === 1 ? '' : 's'} from a previous turn you never closed:\n${inProgressList}`
         );
       }
+      // 2026-07-22 production incident: the neutral menu let the floor model
+      // pause a DELIVERED task (a new zombie) and redo finished work. When the
+      // engine's own records show the work was answered/delivered, the gate
+      // says so and names the right disposition instead of offering a menu.
+      try {
+        const { findDeliveryEvidenceForTask, renderDeliveryEvidence } = await import('../../tracker/delivery-evidence.js');
+        const evidenced: string[] = [];
+        for (const r of inProgressDanglers) {
+          const ev = findDeliveryEvidenceForTask(r.id);
+          if (ev) evidenced.push(`  - "${r.title}" (${r.id.slice(0, 8)}): ${renderDeliveryEvidence(ev)}`);
+        }
+        if (evidenced.length > 0) {
+          sections.push(
+            `ENGINE RECORDS show these were already ANSWERED/DELIVERED on their own conversations:\n${evidenced.join('\n')}\n` +
+            `For each of these, the correct call is tracker_update_status(status="complete") with the result (or tracker_complete_step). ` +
+            `Do NOT pause them, do NOT add a "still working" note, and do NOT redo or re-deliver the work.`
+          );
+        }
+      } catch { /* evidence consult is best-effort; the gate still fires */ }
       if (strandedRows.length > 0) {
         sections.push(
           `${strandedRows.length} stranded on_deck task${strandedRows.length === 1 ? '' : 's'} (queued steps on a project you created but stopped working on more than 30 minutes ago, with no in_progress sibling):\n${strandedList}`
@@ -4304,6 +4323,51 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }, agentId);
           continue; // re-enter so the agent actually sends or corrects the claim
         }
+      }
+
+      // ── Wrap-up at the boundary (2026-07-22 production incident; owner
+      // design: "the agent should always wrap up on projects and tasks based
+      // on the IDs; the PM is the BACKUP, not the close-out gate"). The
+      // delivering turn is the ONE moment the identity is fully in hand: the
+      // turn knows its root, and the tasks it created carry origin_turn =
+      // THIS turn. If the turn is ending answered while its own root-tied
+      // tasks still say in_progress, ending now abandons them into the lying
+      // state every downstream consumer then trusts (the yacht re-work).
+      // Steer once with the ids and re-enter, so the model closes them (or
+      // says what remains) BEFORE the turn ends. The PM ladder and close-out
+      // gate remain the backup lanes.
+      if (
+        persistedContent &&
+        result.toolCalls.length === 0 &&
+        !interAgentTurn &&
+        !state.nudgedForWrapUpThisTurn
+      ) {
+        try {
+          const ownRoot = currentTurnRoot.get(agentId);
+          const openOwn = db.prepare(
+            `SELECT id, title FROM tasks
+              WHERE assigned_to = ? AND status = 'in_progress' AND is_paused = 0
+                AND (origin_turn = ? OR (source_message_id IS NOT NULL AND source_message_id = ?))
+              LIMIT 5`,
+          ).all(agentId, turnNumber, ownRoot?.sourceMessageId ?? '') as Array<{ id: string; title: string }>;
+          if (openOwn.length > 0) {
+            const list = openOwn.map((t) => `"${t.title}" (${t.id})`).join(', ');
+            const nudgeText =
+              `[Engine wrap-up: you are ending this turn but YOUR OWN task(s) from this very work still say in_progress: ${list}. ` +
+              `Before you finish: if the work is done and delivered, call tracker_update_status(status="complete") with the result ` +
+              `(or tracker_complete_step) for each; if something genuinely remains, say exactly what remains and keep the task open; ` +
+              `if it cannot proceed, mark it blocked. Do NOT redo or re-deliver anything. Then give your final reply.]`;
+            state = persistEngineSteer(
+              state,
+              { agentId, content: nudgeText, turnNumber, extra: { nudgedForWrapUpThisTurn: true } },
+              { db, broadcast },
+            );
+            logger.info('v2 wrap-up steer: turn ending answered with own in_progress task(s); re-entering once', {
+              agentId, turnNumber, taskIds: openOwn.map((t) => t.id),
+            }, agentId);
+            continue;
+          }
+        } catch { /* wrap-up consult is best-effort; never block the turn end */ }
       }
 
       // ── RC-12 DENIAL direction ── The inverse of the positive guard: the terminal

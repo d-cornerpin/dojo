@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { findDeliveryEvidenceForTask, renderDeliveryEvidence } from './delivery-evidence.js';
 import { currentTurnNumber } from '../agent/turn-state.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1717,8 +1718,56 @@ export async function runPokeCheck(): Promise<void> {
       continue;
     }
 
+    // ── Delivery-evidence consult (2026-07-22 production incident) ──
+    // Before driving the WORK, check the engine's own records: did an
+    // answered turn on this task's originating conversation already happen
+    // since the task existed? If yes, the honest problem is a missing
+    // CLOSE-OUT, not stalled work, and a blind drive re-fires the whole job
+    // (the yacht search was fully redone live). Strike 1: the poke becomes an
+    // evidence-carrying close steer. Strike 2 (a poke was already sent after
+    // the evidence existed and the status still lies): the engine closes the
+    // task itself, complete, with the receipt basis recorded, and the normal
+    // validation flow takes it from there. Engine-enforced, not nudged: the
+    // neutral nudge was tried live and the floor model paused the task.
+    const deliveryEvidence = task.status === 'in_progress' ? findDeliveryEvidenceForTask(task.id) : null;
+    // Strike 2 requires a TANGIBLE handover on record (artifact or channel
+    // delivery), not just an answered reply: the engine only ever closes a
+    // task on evidence it can point at. Text-only deliveries keep getting
+    // the close steer every rung instead (the model closes; the engine
+    // never guesses).
+    const tangibleHandover = !!deliveryEvidence && (deliveryEvidence.artifacts.length > 0 || deliveryEvidence.deliveredVia.length > 0);
+    if (deliveryEvidence && tangibleHandover && lastPoke && lastPoke.sentAt >= deliveryEvidence.answeredAt) {
+      const db = getDb();
+      const basis = `engine close on delivery receipt: ${renderDeliveryEvidence(deliveryEvidence)}; a close steer was already sent (${lastPoke.sentAt} UTC) and the status still said in_progress`;
+      db.prepare(`
+        UPDATE tasks SET status = 'complete', completed_at = datetime('now'),
+          result = COALESCE(NULLIF(result, ''), ?), updated_at = datetime('now')
+        WHERE id = ? AND status = 'in_progress'
+      `).run(`Delivered (engine-recorded): ${renderDeliveryEvidence(deliveryEvidence)}`, task.id);
+      void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
+        taskId: task.id,
+        fromEntity: 'engine',
+        entryKind: 'observation',
+        fromStatus: 'in_progress',
+        toStatus: 'complete',
+        actionTaken: 'delivery-receipt close (strike 2)',
+        reason: basis,
+      }));
+      clearPokeLog(task.id);
+      logger.warn('PM drive: delivered-but-unclosed task engine-closed on receipt basis (strike 2)', {
+        taskId: task.id, title: task.title, turnNumber: deliveryEvidence.turnNumber,
+      });
+      broadcast({ type: 'tracker:poke', data: { taskId: task.id, agentId: task.assignedTo!, pokeType: 'receipt_close' } });
+      continue;
+    }
+
     // ── Normal poke (nudge / urgent / escalate) ──
-    const pokeMessage = buildPokeMessage(task, pokeType, pokeNumber, idleSeconds);
+    const pokeMessage = deliveryEvidence
+      ? `CLOSE-OUT NEEDED, NOT RE-WORK: task "${task.title}" (${task.id}) still says in_progress, but the engine's own records show ${renderDeliveryEvidence(deliveryEvidence)}. ` +
+        `If that delivery completed this task, call tracker_update_status(task_id="${task.id}", status="complete") with the result NOW. ` +
+        `Do NOT redo the work, do NOT pause the task, and do NOT re-deliver what the user already has. ` +
+        `Only if the delivery did NOT actually finish the task should you continue working it (and say what remains).`
+      : buildPokeMessage(task, pokeType, pokeNumber, idleSeconds);
     const recipient = pokeType === 'escalate_primary' ? primaryId : task.assignedTo;
 
     // Deliver poke via A2A transport. Pokes use QUESTION intent (we want

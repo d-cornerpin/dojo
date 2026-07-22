@@ -8,6 +8,7 @@
 // this file for bare role='system' INSERTs carrying imperative model-directed text.
 // ════════════════════════════════════════════════════════════════════════
 import { getDb } from '../db/connection.js';
+import { findDeliveryEvidenceForTask, renderDeliveryEvidence } from './delivery-evidence.js';
 import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { createLogger } from '../logger.js';
 import {
@@ -2319,6 +2320,20 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
         parts.push(`Created: ${task.createdAt}`);
         parts.push(`Updated: ${task.updatedAt}`);
         if (task.completedAt) parts.push(`Completed: ${task.completedAt}`);
+        // 2026-07-22 production incident: the status READ is where the re-work
+        // spiral started (the agent consulted this exact tool, saw a lying
+        // in_progress, and redid a delivered job). The read now consults the
+        // engine's own delivery records and says so in-band.
+        if (task.status === 'in_progress') {
+          const ev = findDeliveryEvidenceForTask(task.id);
+          if (ev) {
+            parts.push(
+              `\n[ENGINE RECORD: this task's work appears ALREADY DELIVERED, ${renderDeliveryEvidence(ev)}. ` +
+              `If that delivery completed the task, close it NOW with tracker_update_status(status="complete") (or tracker_complete_step) ` +
+              `and do NOT redo or re-deliver the work. Only continue working if something genuinely remains.]`
+            );
+          }
+        }
 
         return parts.join('\n');
       }
@@ -2427,7 +2442,14 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
         if (inProgress.length > 0) {
           parts.push('');
           parts.push(`In Progress Tasks (${inProgress.length}):`);
-          for (const t of inProgress) parts.push(taskRow(t as Parameters<typeof taskRow>[0]));
+          for (const t of inProgress) {
+            parts.push(taskRow(t as Parameters<typeof taskRow>[0]));
+            // 2026-07-22: the list read carries the engine's delivery record
+            // in-band, same consult as tracker_get_status (the re-work spiral
+            // started at a status read that repeated the lying in_progress).
+            const ev = findDeliveryEvidenceForTask((t as { id: string }).id);
+            if (ev) parts.push(`      ^ ENGINE RECORD: appears already delivered (${renderDeliveryEvidence(ev)}); close it complete, do not redo.`);
+          }
           totalShown += inProgress.length;
         }
         if (pending.length > 0) {
