@@ -1738,6 +1738,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // promotion). Declared HERE, above the ack closures, so the start-ack timer
   // can capture it (2026-07-16, the trivial-save sequence).
   let deferredUserReplyWithTools: string | null = null;
+  // The TRUTHFUL answer key (2026-07-22 silent-completion root fix): set ONLY
+  // at the persists that genuinely deliver a user-facing reply (the terminal
+  // persist, the G-SUP-2 recovery, the attachment surfacing nets), NEVER at
+  // acks, working notes, or chip echoes. Turn finalize keys outcome='answered'
+  // and answer_message_id on THIS, replacing the old any-text-row SELECT that
+  // counted mid-turn captions as answers (which stamped asks answered, muted
+  // the completion ack, and inflated ticket stamps).
+  let terminalAnswerRowId: string | null = null;
   // True when the start-ack already delivered the deferred text as the turn's
   // user-visible answer; gates the terminal promotion and the redundant-closeout
   // floor so the answer can never double-send.
@@ -4693,6 +4701,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, turn_number, created_at)
               VALUES (?, ?, 'assistant', ?, ?, ?, datetime('now'))
             `).run(messageId, agentId, noReplyCaption, JSON.stringify(noReplyAttachments), turnNumber);
+            terminalAnswerRowId = messageId; // truthful answer key: canvas chip surfaced as the reply
             broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
             broadcast({
               type: 'chat:message',
@@ -5124,6 +5133,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }
         if (persistedContent.trim().length > 0) {
           state = advance(state, { lastAssistantTextForIM: stripOrbMood(persistedContent) });
+          terminalAnswerRowId = messageId; // truthful answer key: a genuine terminal reply
         }
         // Per v1 runtime.ts:1303-1318, text-only response. The streaming
         // chunks already delivered the text live, so we'd dupe-render if we
@@ -7969,6 +7979,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           },
         });
         state = advance(state, { lastAssistantTextForIM: stripOrbMood(deferredUserReplyWithTools) });
+      terminalAnswerRowId = recoveredId; // truthful answer key: recovered reply delivered
         logger.info('v2 G-SUP-2 recovery: delivered deferred text-with-tools reply (turn ended with no tool-less reply)', {
           agentId, turnNumber,
         }, agentId);
@@ -8688,6 +8699,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }
         if (stranded.attachments.length > 0) {
           state = advance(state, { lastAssistantTextForIM: captionText });
+          terminalAnswerRowId = synthId; // truthful answer key: stranded files surfaced
         }
       }
     } catch (err) {
@@ -8925,11 +8937,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // plain assistant reply row. The runtime recovery site covers turns that
     // threw before reaching this finally (outcome='error').
     try {
-      const answerRow = db.prepare(
-        `SELECT id FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'assistant'
-           AND content NOT LIKE '[{%' AND length(trim(content)) > 0
-         ORDER BY rowid DESC LIMIT 1`,
-      ).get(agentId, turnNumber) as { id: string } | undefined;
+      // Truthful answer key (2026-07-22): outcome='answered' means a genuine
+      // user-facing reply was DELIVERED this turn, recorded at the delivery
+      // sites themselves. The old SELECT here counted ANY non-JSON assistant
+      // text (mid-turn captions, narration), which marked silent-ending turns
+      // answered: asks got stamped, the completion ack stood down (the
+      // silent-completion defect), and ticket stamps inflated.
+      const answerRow = terminalAnswerRowId ? { id: terminalAnswerRowId } : undefined;
       const parkedRow = !answerRow ? db.prepare(
         `SELECT 1 FROM messages WHERE agent_id = ? AND conv_key LIKE 'park:%' AND created_at >= ? LIMIT 1`,
       ).get(agentId, turnBoundary.get(agentId) ?? new Date().toISOString()) : undefined;
