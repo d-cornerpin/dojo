@@ -127,6 +127,16 @@ const KEY1_ALLOW: Record<string, string[]> = {
   'tracker/pm-agent.ts': [
     "SET status = 'complete', completed_at = datetime('now')",
   ],
+  // Strike-0 receipt close at the turn boundary (2026-07-22): the SAME-TURN
+  // form of the strike-2 close. A task created by the very turn that is
+  // ending answered with a TANGIBLE recorded delivery is finished work whose
+  // bookkeeping the model forgot; the no-re-prompt rule forbids steering, so
+  // the engine closes on its own receipts at the boundary. Lands
+  // complete_validated=0 (the validation key still turns); basis recorded in
+  // result + task_log. Multi-turn tasks never match (origin_turn scope).
+  'agent/v2/loop.ts': [
+    "SET status = 'complete', completed_at = datetime('now')",
+  ],
 };
 
 function scanKey1(rel: string, lines: string[]): string[] {

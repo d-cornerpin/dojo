@@ -1738,6 +1738,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // promotion). Declared HERE, above the ack closures, so the start-ack timer
   // can capture it (2026-07-16, the trivial-save sequence).
   let deferredUserReplyWithTools: string | null = null;
+  // Ghosted-work-ask floor (2026-07-22): the multistep classifier's verdict on
+  // THIS turn's inbound, hoisted to turn scope so the [no-reply] handling can
+  // tell a work ask (silence is never valid) from chatter (silence is fine).
+  // 'user_creating_explicitly' counts as work: multistep=false there only means
+  // the ENGINE defers scaffolding to the model, not that no work was asked.
+  let inboundClassifiedAsWork = false;
   // The TRUTHFUL answer key (2026-07-22 silent-completion root fix): set ONLY
   // at the persists that genuinely deliver a user-facing reply (the terminal
   // persist, the G-SUP-2 recovery, the attachment surfacing nets), NEVER at
@@ -3186,6 +3192,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
             ).get(agentId, lastUserMessageContent);
             if (!existingTask && !bootstrapTwin) {
               const decision = await detectMultistep(lastUserMessageContent, agentId, cfg);
+              inboundClassifiedAsWork =
+                decision.multistep || decision.source === 'user_creating_explicitly';
               logger.info('v2 multistep classifier ran', {
                 agentId,
                 source: decision.source,
@@ -3653,7 +3661,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   const excerpt = a.content.replace(/^\[[^\]]*\]\s*/g, '').trim().slice(0, 90);
                   return `- answered ${relativeTimeAgo(a.created_at)}: "${excerpt}"`;
                 });
-                pushEngineMessage(messages, `RECENTLY ANSWERED in this conversation (engine record; do NOT answer these again):\n${lines.join('\n')}`); // registry-exempt(2026-07-22): reads per-iteration conv-scoped answer stamps; migrate with the volatile-injection registry refactor
+                pushEngineMessage(messages, `RECENTLY ANSWERED in this conversation (engine record; do NOT re-do this work. If asked about it again, reply with one brief line pointing at the existing answer, never silence and never a re-run):\n${lines.join('\n')}`); // registry-exempt(2026-07-22): reads per-iteration conv-scoped answer stamps; migrate with the volatile-injection registry refactor
               }
             } catch { /* best effort */ }
           }
@@ -4668,135 +4676,204 @@ export async function runV2Turn(agentId: string): Promise<void> {
           agentId, loopCount: state.loopCount,
         }, agentId);
       } else if (!noReplyOverridden && (isBareNoReply || isDeclineNonReply)) {
-        if (isDeclineNonReply) {
-          logger.info('v2: agent declined in prose ("no reply needed…"), honoring intent as no-reply (not routing it)', {
-            agentId, turnNumber, preview: (persistedContent ?? '').slice(0, 60),
-          }, agentId);
-        }
-        persistedContent = null;
-        // REG-3 (comms-audit): the agent INTENTIONALLY went silent ([no-reply] /
-        // prose decline). Discard any deferred text-with-tools narration so the
-        // G-SUP-2 finalize recovery can't resurrect it and override the decision.
-        deferredUserReplyWithTools = null;
-
-        // Silent turn that still opened a canvas (or queued attachments via
-        // show_to_user): surface the pending "Open in canvas" chip / thumbnails
-        // onto this otherwise-empty assistant bubble instead of dropping it. The
-        // user asked the agent to open a canvas; even on [no-reply] they need the
-        // affordance back to it (an explicit canvas_render + [no-reply] otherwise
-        // left NO chip). Draining here also pre-empts the end-of-turn safety net,
-        // so the chip is surfaced exactly once.
-        let surfacedNoReplyAttachments = false;
-        try {
-          const { drainPendingAttachments } = await import('../pending-attachments.js');
-          const noReplyAttachments = drainPendingAttachments(agentId);
-          if (noReplyAttachments.length > 0) {
-            // A short factual line so the bubble renders cleanly (and tells the
-            // user WHAT opened); the "Open in canvas" chip rides on it.
-            const canvasDoc = noReplyAttachments.find((a) => a.openInCanvas);
-            const noReplyCaption = canvasDoc
-              ? `Opened ${canvasDoc.filename ? `"${canvasDoc.filename.replace(/\.[a-z0-9]+$/i, '')}"` : 'a document'} in the canvas.`
-              : 'Here you go.';
+        // ── Ghosted-work-ask floor (2026-07-22, battery catch) ── Contract #1
+        // (every authorized human message gets exactly one substantive answer)
+        // reaches its last unguarded gap here: a bare [no-reply] on a turn
+        // serving a human ask the classifier read as WORK, with nothing
+        // surfaced and nothing captured to promote. Observed: a repeat of an
+        // already-delivered job made the model go silent in one model call
+        // (the settled-work record taught it not to re-answer; it over-read
+        // that as "don't reply at all"). Silence on chatter stays honored
+        // (REG-3); a work ask gets a steer first: reply with a pointer to the
+        // settled delivery, or do the work. If the model ghosts the steer too
+        // and this conversation HAS an engine-recorded settled answer, the
+        // engine re-serves that answer (its own earlier words, not fabrication).
+        const ghostedWorkAsk =
+          isBareNoReply && !!triggerRow && inboundClassifiedAsWork &&
+          !state.surfacedReplyThisTurn && !deferredDeliveredByAck;
+        if (ghostedWorkAsk && !state.steeredForGhostedAskThisTurn) {
+          broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
+          broadcast({
+            type: 'chat:message',
+            agentId,
+            message: {
+              id: messageId, agentId, role: 'assistant' as const, content: '',
+              tokenCount: null, modelId: null, cost: null, latencyMs: null,
+              createdAt: new Date().toISOString(),
+            },
+          });
+          const steerText =
+            '[Engine hint: you ended with [no-reply], but this message is a direct request from the user. ' +
+            'A direct ask never ends in silence. If this exact work was already delivered (check the RECENTLY ANSWERED engine record and your tracker), ' +
+            'reply with ONE brief line pointing to the existing answer or delivery. Otherwise, do the work now, including creating the tracker task first if the user asked for one.]';
+          const steerRowId = uuidv4();
+          try {
             db.prepare(`
-              INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, turn_number, created_at)
-              VALUES (?, ?, 'assistant', ?, ?, ?, datetime('now'))
-            `).run(messageId, agentId, noReplyCaption, JSON.stringify(noReplyAttachments), turnNumber);
-            terminalAnswerRowId = messageId; // truthful answer key: canvas chip surfaced as the reply
-            broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
+              INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+              VALUES (?, ?, 'system', ?, ?, datetime('now'))
+            `).run(steerRowId, agentId, steerText, turnNumber);
+          } catch { /* dashboard row is best effort */ }
+          state = advance(state, { pendingNudge: steerText, steeredForGhostedAskThisTurn: true });
+          logger.info('v2 ghosted-work-ask floor: bare [no-reply] on a work-classified human ask with nothing surfaced; steering once (answer-or-point, never silence)', {
+            agentId, turnNumber, classifierKeyed: true,
+          }, agentId);
+          continue;
+        }
+        let settledRecovery: string | null = null;
+        if (ghostedWorkAsk && state.steeredForGhostedAskThisTurn && chosenConvKey) {
+          try {
+            const prior = db.prepare(`
+              SELECT m2.content AS answer FROM messages m1
+              JOIN messages m2 ON m2.id = m1.answer_message_id
+              WHERE m1.agent_id = ? AND m1.role = 'user' AND m1.conv_key = ?
+                AND m1.answer_message_id IS NOT NULL AND m2.role = 'assistant'
+              ORDER BY m1.created_at DESC LIMIT 1
+            `).get(agentId, chosenConvKey) as { answer: string } | undefined;
+            const excerpt = (prior?.answer ?? '').replace(/\s+/g, ' ').trim().slice(0, 220);
+            if (excerpt.length > 0) {
+              settledRecovery = `Already handled this one a moment ago: ${excerpt}`;
+            }
+          } catch { /* recovery is best effort; the swallow below remains */ }
+        }
+        if (settledRecovery) {
+          // Same shape as the voice-ack substitution above: swap the sentinel
+          // for the recovery line and let it flow through the normal persist
+          // path. The engine is repeating its own recorded answer, nothing new.
+          persistedContent = settledRecovery;
+          logger.info('v2 ghosted-work-ask floor: model ghosted the steer too; re-serving the engine-recorded settled answer for this conversation', {
+            agentId, turnNumber, preview: settledRecovery.slice(0, 80),
+          }, agentId);
+        } else {
+          if (isDeclineNonReply) {
+            logger.info('v2: agent declined in prose ("no reply needed…"), honoring intent as no-reply (not routing it)', {
+              agentId, turnNumber, preview: (persistedContent ?? '').slice(0, 60),
+            }, agentId);
+          }
+          persistedContent = null;
+          // REG-3 (comms-audit): the agent INTENTIONALLY went silent ([no-reply] /
+          // prose decline). Discard any deferred text-with-tools narration so the
+          // G-SUP-2 finalize recovery can't resurrect it and override the decision.
+          deferredUserReplyWithTools = null;
+
+          // Silent turn that still opened a canvas (or queued attachments via
+          // show_to_user): surface the pending "Open in canvas" chip / thumbnails
+          // onto this otherwise-empty assistant bubble instead of dropping it. The
+          // user asked the agent to open a canvas; even on [no-reply] they need the
+          // affordance back to it (an explicit canvas_render + [no-reply] otherwise
+          // left NO chip). Draining here also pre-empts the end-of-turn safety net,
+          // so the chip is surfaced exactly once.
+          let surfacedNoReplyAttachments = false;
+          try {
+            const { drainPendingAttachments } = await import('../pending-attachments.js');
+            const noReplyAttachments = drainPendingAttachments(agentId);
+            if (noReplyAttachments.length > 0) {
+              // A short factual line so the bubble renders cleanly (and tells the
+              // user WHAT opened); the "Open in canvas" chip rides on it.
+              const canvasDoc = noReplyAttachments.find((a) => a.openInCanvas);
+              const noReplyCaption = canvasDoc
+                ? `Opened ${canvasDoc.filename ? `"${canvasDoc.filename.replace(/\.[a-z0-9]+$/i, '')}"` : 'a document'} in the canvas.`
+                : 'Here you go.';
+              db.prepare(`
+                INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, turn_number, created_at)
+                VALUES (?, ?, 'assistant', ?, ?, ?, datetime('now'))
+              `).run(messageId, agentId, noReplyCaption, JSON.stringify(noReplyAttachments), turnNumber);
+              terminalAnswerRowId = messageId; // truthful answer key: canvas chip surfaced as the reply
+              broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
+              broadcast({
+                type: 'chat:message',
+                agentId,
+                message: {
+                  id: messageId, agentId, role: 'assistant' as const,
+                  content: noReplyCaption,
+                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                  createdAt: new Date().toISOString(),
+                  attachments: noReplyAttachments,
+                },
+              });
+              surfacedNoReplyAttachments = true;
+
+              // N-3 (comms-audit): same gap as A-1, on the [no-reply] path. The drain
+              // above surfaces the files onto the DASHBOARD bubble only. If the requester
+              // is on iMessage, the deliverable they asked for never reaches their channel
+              // (the end-of-turn channel router is skipped on a no-reply turn, and the
+              // stranded safety net can't re-find these, they're already drained). Deliver
+              // to the iMessage counterparty here. iMessage user only (a dashboard turn
+              // already rendered them in the bubble).
+              if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
+                try {
+                  const { sendIMessageWithAttachment } = await import('../../services/imessage-bridge.js');
+                  for (const att of noReplyAttachments as Array<{ path?: string }>) {
+                    if (att.path) sendIMessageWithAttachment(counterparty.senderId, att.path, '');
+                  }
+                } catch (err) {
+                  logger.warn('N-3: no-reply attachment iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
+                }
+              }
+            }
+          } catch (err) {
+            logger.warn('v2: failed to surface no-reply canvas chip', {
+              agentId, error: err instanceof Error ? err.message : String(err),
+            }, agentId);
+          }
+
+          if (!surfacedNoReplyAttachments) {
+            // Clear the streaming bubble in the dashboard. We need BOTH events:
+            //  - chat:chunk done:true ends the bubble's streaming state (without
+            //    this the thinking dots stay forever, since the normal done:true
+            //    at line ~923 only fires when persistedContent or tools exist).
+            //  - chat:message with empty content tells the dashboard to drop the
+            //    bubble entirely so the chat doesn't show an empty assistant row.
+            broadcast({
+              type: 'chat:chunk',
+              agentId,
+              messageId,
+              content: '',
+              done: true,
+            });
             broadcast({
               type: 'chat:message',
               agentId,
               message: {
                 id: messageId, agentId, role: 'assistant' as const,
-                content: noReplyCaption,
+                content: '',
                 tokenCount: null, modelId: null, cost: null, latencyMs: null,
                 createdAt: new Date().toISOString(),
-                attachments: noReplyAttachments,
               },
             });
-            surfacedNoReplyAttachments = true;
-
-            // N-3 (comms-audit): same gap as A-1, on the [no-reply] path. The drain
-            // above surfaces the files onto the DASHBOARD bubble only. If the requester
-            // is on iMessage, the deliverable they asked for never reaches their channel
-            // (the end-of-turn channel router is skipped on a no-reply turn, and the
-            // stranded safety net can't re-find these, they're already drained). Deliver
-            // to the iMessage counterparty here. iMessage user only (a dashboard turn
-            // already rendered them in the bubble).
-            if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
-              try {
-                const { sendIMessageWithAttachment } = await import('../../services/imessage-bridge.js');
-                for (const att of noReplyAttachments as Array<{ path?: string }>) {
-                  if (att.path) sendIMessageWithAttachment(counterparty.senderId, att.path, '');
-                }
-              } catch (err) {
-                logger.warn('N-3: no-reply attachment iMessage delivery failed', { agentId, error: err instanceof Error ? err.message : String(err) }, agentId);
-              }
+            const sysId = uuidv4();
+            const sysContent = '[Agent ended turn without replying, conversation closed]';
+            try {
+              db.prepare(`
+                INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+                VALUES (?, ?, 'system', ?, ?, datetime('now'))
+              `).run(sysId, agentId, sysContent, turnNumber);
+              broadcast({
+                type: 'chat:message',
+                agentId,
+                message: {
+                  id: sysId, agentId, role: 'system' as const,
+                  content: sysContent,
+                  tokenCount: null, modelId: null, cost: null, latencyMs: null,
+                  createdAt: new Date().toISOString(),
+                },
+              });
+            } catch (err) {
+              logger.warn('v2: failed to persist no-reply marker', {
+                agentId, error: err instanceof Error ? err.message : String(err),
+              }, agentId);
             }
           }
-        } catch (err) {
-          logger.warn('v2: failed to surface no-reply canvas chip', {
-            agentId, error: err instanceof Error ? err.message : String(err),
+          // Turn continuity: declining ([no-reply]) IS addressing the counterparty.
+          // Tag this turn's own messages with the conversation, that conv_key is
+          // the durable "served" signal (the conversation won't be re-picked) AND
+          // the content-isolation tag (its work won't bleed into another turn).
+          if (chosenConvKey) {
+            try { db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND turn_number = ? AND role IN ('assistant','tool') AND conv_key IS NULL`).run(chosenConvKey, agentId, turnNumber); } catch { /* best effort */ }
+          }
+          logger.info('v2: agent ended turn silently via [no-reply] sentinel', {
+            agentId, loopCount: state.loopCount,
           }, agentId);
         }
-
-        if (!surfacedNoReplyAttachments) {
-          // Clear the streaming bubble in the dashboard. We need BOTH events:
-          //  - chat:chunk done:true ends the bubble's streaming state (without
-          //    this the thinking dots stay forever, since the normal done:true
-          //    at line ~923 only fires when persistedContent or tools exist).
-          //  - chat:message with empty content tells the dashboard to drop the
-          //    bubble entirely so the chat doesn't show an empty assistant row.
-          broadcast({
-            type: 'chat:chunk',
-            agentId,
-            messageId,
-            content: '',
-            done: true,
-          });
-          broadcast({
-            type: 'chat:message',
-            agentId,
-            message: {
-              id: messageId, agentId, role: 'assistant' as const,
-              content: '',
-              tokenCount: null, modelId: null, cost: null, latencyMs: null,
-              createdAt: new Date().toISOString(),
-            },
-          });
-          const sysId = uuidv4();
-          const sysContent = '[Agent ended turn without replying, conversation closed]';
-          try {
-            db.prepare(`
-              INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-              VALUES (?, ?, 'system', ?, ?, datetime('now'))
-            `).run(sysId, agentId, sysContent, turnNumber);
-            broadcast({
-              type: 'chat:message',
-              agentId,
-              message: {
-                id: sysId, agentId, role: 'system' as const,
-                content: sysContent,
-                tokenCount: null, modelId: null, cost: null, latencyMs: null,
-                createdAt: new Date().toISOString(),
-              },
-            });
-          } catch (err) {
-            logger.warn('v2: failed to persist no-reply marker', {
-              agentId, error: err instanceof Error ? err.message : String(err),
-            }, agentId);
-          }
-        }
-        // Turn continuity: declining ([no-reply]) IS addressing the counterparty.
-        // Tag this turn's own messages with the conversation, that conv_key is
-        // the durable "served" signal (the conversation won't be re-picked) AND
-        // the content-isolation tag (its work won't bleed into another turn).
-        if (chosenConvKey) {
-          try { db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND turn_number = ? AND role IN ('assistant','tool') AND conv_key IS NULL`).run(chosenConvKey, agentId, turnNumber); } catch { /* best effort */ }
-        }
-        logger.info('v2: agent ended turn silently via [no-reply] sentinel', {
-          agentId, loopCount: state.loopCount,
-        }, agentId);
       }
 
       // ── Redundant-closeout floor (engine-enforced "respond once") ──
@@ -7931,6 +8008,49 @@ export async function runV2Turn(agentId: string): Promise<void> {
       }, 1000);
     }
 
+    // ── Silent-close completion floor (2026-07-22) ── The v3.1.14 guarantee
+    // (work ALWAYS acked on completion) was scoped to engine-scaffolded tasks;
+    // a MODEL-created task closed this turn with no reply delivered ended in
+    // silence (battery catch). If nothing user-facing was delivered and this
+    // turn completed task(s), compose the one-line completion from the task's
+    // own result. Runs before finalize so the truthful answer key records it.
+    if (!terminalAnswerRowId && !state.lastAssistantTextForIM && counterparty.kind !== 'agent') {
+      try {
+        const closedThisTurn = db.prepare(
+          `SELECT title, result FROM tasks
+            WHERE assigned_to = ? AND status = 'complete'
+              AND completed_at >= ? ORDER BY completed_at DESC LIMIT 2`,
+        ).all(agentId, turnBoundary.get(agentId) ?? new Date(Date.now() - 120_000).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '')) as Array<{ title: string; result: string | null }>;
+        if (closedThisTurn.length > 0) {
+          const first = closedThisTurn[0];
+          const resultBit = (first.result ?? '').replace(/\s+/g, ' ').trim().slice(0, 160);
+          const floorText = resultBit
+            ? `Done: ${resultBit}`
+            : `Done, "${first.title.slice(0, 60)}" is complete.`;
+          const floorId = uuidv4();
+          db.prepare(`
+            INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+            VALUES (?, ?, 'assistant', ?, ?, datetime('now'))
+          `).run(floorId, agentId, floorText, turnNumber);
+          broadcast({
+            type: 'chat:message',
+            agentId,
+            message: {
+              id: floorId, agentId, role: 'assistant' as Message['role'],
+              content: floorText,
+              tokenCount: null, modelId: null, cost: null, latencyMs: null,
+              createdAt: new Date().toISOString(),
+            },
+          });
+          state = advance(state, { lastAssistantTextForIM: floorText });
+          terminalAnswerRowId = floorId; // truthful answer key: the floor line IS the reply
+          logger.info('silent-close completion floor delivered (task completed, no reply was going to land)', {
+            agentId, turnNumber, task: first.title.slice(0, 60),
+          }, agentId);
+        }
+      } catch { /* best effort */ }
+    }
+
     // ── Phase: finalize ──
     state = advance(state, { phase: 'finalize' });
 
@@ -8970,6 +9090,46 @@ export async function runV2Turn(agentId: string): Promise<void> {
           servedTaskId: currentTurnServedWork.get(agentId)?.taskId ?? null,
         });
       } catch { /* stamps are best-effort; never block finalize */ }
+      // Strike-0 receipt close (2026-07-22, the boundary wrap-up in its final
+      // form): a task CREATED THIS TURN whose turn is ending answered with a
+      // TANGIBLE delivery on record is finished work whose bookkeeping the
+      // model forgot; the no-re-prompt rule (v3.1.10) forbids steering it
+      // back, so the ENGINE does the mechanical close right here with the
+      // receipt basis, exactly the strike-2 close without the wait. Scope is
+      // deliberately narrow: origin_turn = THIS turn only (multi-turn tasks
+      // ride the ladder), answered outcome, recorded handover, still open.
+      // complete_validated stays 0: the validation key still turns.
+      if (answerRow) {
+        try {
+          const { composeTurnDeliverySummary } = await import('../../tracker/task-stamps.js');
+          const strike0Summary = composeTurnDeliverySummary(agentId, turnNumber);
+          if (strike0Summary.length > 0) {
+            const sameTurnOpen = db.prepare(
+              `SELECT id, title FROM tasks
+                WHERE assigned_to = ? AND origin_turn = ? AND status = 'in_progress' AND is_paused = 0`,
+            ).all(agentId, turnNumber) as Array<{ id: string; title: string }>;
+            for (const t of sameTurnOpen) {
+              db.prepare(`
+                UPDATE tasks SET status = 'complete', completed_at = datetime('now'),
+                  result = COALESCE(NULLIF(result, ''), ?), updated_at = datetime('now')
+                WHERE id = ? AND status = 'in_progress'
+              `).run(`Delivered (engine-recorded at the turn boundary): ${strike0Summary}`, t.id);
+              void import('../../tracker/task-log.js').then(({ writeTaskLog }) => writeTaskLog({
+                taskId: t.id,
+                fromEntity: 'engine',
+                entryKind: 'observation',
+                fromStatus: 'in_progress',
+                toStatus: 'complete',
+                actionTaken: 'delivery-receipt close (strike 0, same-turn boundary)',
+                reason: `turn ${turnNumber} created this task, answered, and delivered (${strike0Summary}); closed at the boundary on the engine's own receipts`,
+              }));
+              logger.info('strike-0 receipt close: same-turn task closed at the boundary on delivery receipts', {
+                agentId, turnNumber, taskId: t.id, title: t.title.slice(0, 80),
+              }, agentId);
+            }
+          }
+        } catch { /* best effort; the ladder remains the backup */ }
+      }
       // P8 reply binding for the PHONE lane, riding the P4 answer stamp: the
       // spoken reply row is bound by id to its voice session with speaker
       // 'agent' (the dashboard-voice equivalent happens at the TTS burst's

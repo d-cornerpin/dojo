@@ -387,6 +387,7 @@ export interface AgentTurnState {
    * keep-going). One-shot so the model can't loop on it.
    */
   nudgedForGoingIdleWithInProgressThisTurn: boolean;
+  steeredForGhostedAskThisTurn: boolean;  // ghosted-work-ask floor fired once (bare [no-reply] on a work-classified human ask)
   /**
    * The task id of a project the ENGINE itself auto-scaffolded THIS turn
    * (mid-turn floor at 6+ work calls), or null. The engine owns the
@@ -576,6 +577,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     nudgedForFailedSaveClaimThisTurn: false,
     nudgedForThrashDriftThisTurn: false,
     nudgedForGoingIdleWithInProgressThisTurn: false,
+    steeredForGhostedAskThisTurn: false,
     autoScaffoldedTaskIdThisTurn: null,
     nudgedForOwedInterruptThisTurn: false,
     nudgedForPromiseFloorThisTurn: false,
