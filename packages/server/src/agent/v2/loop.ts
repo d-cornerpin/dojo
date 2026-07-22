@@ -132,6 +132,7 @@ import { identicalCallSignature, checkIdenticalCallRefusal, recordIdenticalCallR
 import { SEND_TO_PEOPLE } from '../sensei-policy.js';
 import { getPresence } from '../../services/presence.js';
 import { recordTurnStart, finalizeTurn } from './turn-record.js';
+import { recordDelivery, type DeliveryInput } from './deliveries.js';
 const SEND_TO_PEOPLE_SET: ReadonlySet<string> = new Set(SEND_TO_PEOPLE);
 import { detectUngroundedDeliveryClaim, detectDeliveryDenial } from './classifiers/grounding.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
@@ -1626,7 +1627,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // owner's stream (the observed defect). The <label> always carries the
   // recipient the sender actually resolved (e.g. `iMessage to <name>`), never a
   // bare channel word.
-  const persistRoutingMarker = (label: string): void => {
+  // P6b-2: the marker is the user-visible VIEW; the deliveries ROW (written
+  // first, when the caller passes structured facts) is the RECORD everything
+  // load-bearing reads. A call without facts writes marker-only, no row.
+  const persistRoutingMarker = (label: string, delivery?: Omit<DeliveryInput, 'agentId'>): void => {
+    if (delivery) recordDelivery({ agentId, ...delivery });
     const tagId = uuidv4();
     const tagContent = `[Reply routed via ${label}]`;
     db.prepare(`
@@ -1783,13 +1788,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
       if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
         const { sendResponseViaIMessage } = await import('../../services/imessage-bridge.js');
         const delivered = sendResponseViaIMessage(text, agentId, counterparty.senderId, false);
-        if (delivered) persistRoutingMarker(`iMessage to ${delivered.name}`);
+        if (delivered) persistRoutingMarker(`iMessage to ${delivered.name}`, {
+          tool: 'engine-ack', channel: 'imessage', outcome: 'delivered',
+          recipientId: delivered.address, recipientDisplay: delivered.name,
+          conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+        });
       } else if (counterparty.kind === 'user' && counterparty.channel === 'phone' && state.inboundContext?.phoneCallSid) {
         const { getCallSession } = await import('../../twilio/call-session.js');
         const session = getCallSession(state.inboundContext.phoneCallSid);
         if (session && !session.isEnded()) {
           await session.queueAgentSay(text);
-          persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', state.inboundContext.phoneFromNumber ?? counterparty.senderId ?? '(unknown)')}`);
+          persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', state.inboundContext.phoneFromNumber ?? counterparty.senderId ?? '(unknown)')}`, {
+            tool: 'engine-ack', channel: 'phone', outcome: 'delivered',
+            recipientId: state.inboundContext.phoneFromNumber ?? counterparty.senderId ?? null,
+            conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+          });
         }
       } else if (counterparty.kind === 'user' && counterparty.channel === 'sms' && state.inboundContext?.smsFromNumber) {
         const { sendSms } = await import('../../twilio/client.js');
@@ -1797,7 +1810,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
         const fromNumber = state.inboundContext?.smsToNumber ?? getDefaultFromNumber();
         if (fromNumber) {
           await sendSms(state.inboundContext.smsFromNumber, text, fromNumber);
-          persistRoutingMarker(`SMS to ${resolveRecipientDisplay('sms', state.inboundContext.smsFromNumber)}`);
+          persistRoutingMarker(`SMS to ${resolveRecipientDisplay('sms', state.inboundContext.smsFromNumber)}`, {
+            tool: 'engine-ack', channel: 'sms', outcome: 'delivered',
+            recipientId: state.inboundContext.smsFromNumber,
+            conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+          });
         }
       }
     } catch (err) {
@@ -6807,19 +6824,31 @@ export async function runV2Turn(agentId: string): Promise<void> {
           if (!toolResult.isError) {
             try {
               let sendMarkerLabel: string | null = null;
+              let sendDelivery: Omit<DeliveryInput, 'agentId'> | null = null;
               if (tc.name === 'imessage_send') {
                 const to = String(tc.arguments?.to ?? tc.arguments?.recipient ?? tc.arguments?.handle ?? '').trim()
                   || (counterparty.kind === 'user' && counterparty.channel === 'imessage' ? (counterparty.senderId ?? '') : '');
-                if (to) sendMarkerLabel = `iMessage to ${resolveRecipientDisplay('imessage', to)}`;
+                if (to) {
+                  sendMarkerLabel = `iMessage to ${resolveRecipientDisplay('imessage', to)}`;
+                  sendDelivery = { tool: tc.name, channel: 'imessage', outcome: 'delivered', recipientId: to, recipientDisplay: resolveRecipientDisplay('imessage', to) };
+                }
               } else if (tc.name === 'sms_send') {
                 const to = String(tc.arguments?.to ?? tc.arguments?.number ?? tc.arguments?.recipient ?? '').trim()
                   || (state.inboundContext?.smsFromNumber ?? '');
-                if (to) sendMarkerLabel = `SMS to ${resolveRecipientDisplay('sms', to)}`;
+                if (to) {
+                  sendMarkerLabel = `SMS to ${resolveRecipientDisplay('sms', to)}`;
+                  sendDelivery = { tool: tc.name, channel: 'sms', outcome: 'delivered', recipientId: to, recipientDisplay: resolveRecipientDisplay('sms', to) };
+                }
               } else if (tc.name === 'gmail_send' || tc.name === 'outlook_send') {
                 const to = String(tc.arguments?.to ?? '').trim();
-                if (to) sendMarkerLabel = `email to ${resolveRecipientDisplay('email', to)}`;
+                if (to) {
+                  sendMarkerLabel = `email to ${resolveRecipientDisplay('email', to)}`;
+                  // A fresh outbound email is a NEW thread; its conversation
+                  // resolves at (channel, provider, recipient, null thread).
+                  sendDelivery = { tool: tc.name, channel: 'email', outcome: 'delivered', recipientId: to, recipientDisplay: resolveRecipientDisplay('email', to), provider: tc.name === 'gmail_send' ? 'gmail' : 'outlook' };
+                }
               }
-              if (sendMarkerLabel) persistRoutingMarker(sendMarkerLabel);
+              if (sendMarkerLabel) persistRoutingMarker(sendMarkerLabel, sendDelivery ?? undefined);
             } catch { /* outbound labeling is best-effort; never block a send */ }
           }
 
@@ -8229,7 +8258,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // dashboard chat (persisted + broadcast above); nothing is deleted or
           // reclassified. Mark it so the dashboard pill reads "held" instead of
           // claiming a channel delivery that never happened.
-          persistRoutingMarker('held in dashboard: no active conversation');
+          persistRoutingMarker('held in dashboard: no active conversation', {
+            tool: 'auto-route', channel: 'dashboard', outcome: 'held', detail: 'no active conversation',
+          });
           logger.warn('settled-context hold: withheld auto-route channel push (no active conversation); reply stays visible in dashboard', {
             agentId, turnNumber, destination, presence: presenceNow,
           }, agentId);
@@ -8256,7 +8287,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // exit-code receipt so PM/the user story never pretend delivery
             // was confirmed. Tier 3 imposes no new gate requirement.
             writeToolReceipt({ agentId, tool: 'imessage_send', tier: 3, verified: false, basis: 'exit-code', recipient: delivered.address, sentText: state.lastAssistantTextForIM, detail: { route: 'auto', textLength: state.lastAssistantTextForIM.length } });
-            persistRoutingMarker(`iMessage to ${delivered.name}`);
+            persistRoutingMarker(`iMessage to ${delivered.name}`, {
+              tool: 'auto-route', channel: 'imessage', outcome: 'delivered',
+              recipientId: delivered.address, recipientDisplay: delivered.name,
+              conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+            });
             logger.info('v2.7.23: routed reply via iMessage', {
               agentId,
               inboundChannel: state.inboundChannel,
@@ -8291,7 +8326,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
             if (result.isError) {
               logger.warn('v2.7.24: teams auto-reply failed', { agentId, error: result.content }, agentId);
             } else {
-              persistRoutingMarker(`Teams to chat ${state.inboundContext.chatId.slice(0, 8)}…`);
+              persistRoutingMarker(`Teams to chat ${state.inboundContext.chatId.slice(0, 8)}…`, {
+              tool: 'auto-route', channel: 'teams', outcome: 'delivered',
+              recipientId: state.inboundContext.chatId, threadRoot: state.inboundContext.chatId,
+              conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+            });
               logger.info('v2.7.24: routed reply via Teams', {
                 agentId,
                 chatId: state.inboundContext.chatId,
@@ -8338,6 +8377,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 emailRecipient
                   ? `email to ${resolveRecipientDisplay('email', emailRecipient)}`
                   : `email reply (thread: "${subjectPreview}")`,
+                {
+                  tool: 'auto-route', channel: 'email', outcome: 'delivered',
+                  recipientId: emailRecipient ?? null,
+                  provider: state.inboundContext.emailService ?? null,
+                  conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+                },
               );
               logger.info('v2.7.24: routed reply via email', {
                 agentId,
@@ -8382,7 +8427,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 await session.queueAgentSay(tail);
                 phoneStreamBuffer = '';
               }
-              persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', state.inboundContext.phoneFromNumber ?? '(unknown)')}`);
+              persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', state.inboundContext.phoneFromNumber ?? '(unknown)')}`, {
+                tool: 'auto-route', channel: 'phone', outcome: 'delivered',
+                recipientId: state.inboundContext.phoneFromNumber ?? null,
+                conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+              });
               logger.info('v2.9.23: routed reply via phone TTS (streamed)', {
                 agentId,
                 callSid: state.inboundContext.phoneCallSid,
@@ -8392,7 +8441,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
               }, agentId);
             } else {
               await session.queueAgentSay(state.lastAssistantTextForIM);
-              persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', state.inboundContext.phoneFromNumber ?? '(unknown)')}`);
+              persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', state.inboundContext.phoneFromNumber ?? '(unknown)')}`, {
+                tool: 'auto-route', channel: 'phone', outcome: 'delivered',
+                recipientId: state.inboundContext.phoneFromNumber ?? null,
+                conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+              });
               logger.info('v2.9.18: routed reply via phone TTS', {
                 agentId,
                 callSid: state.inboundContext.phoneCallSid,
@@ -8430,7 +8483,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 // completion, the gate only demands receipts for turns that ran a send TOOL.
                 const smsSid = r.data.sid;
                 writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: !!smsSid, basis: smsSid ? 'provider-id' : 'http-status', providerId: smsSid ?? null, recipient: state.inboundContext.smsFromNumber, sentText: state.lastAssistantTextForIM, detail: { route: 'auto', textLength: state.lastAssistantTextForIM.length } });
-                persistRoutingMarker(`SMS to ${resolveRecipientDisplay('sms', state.inboundContext.smsFromNumber)}`);
+                persistRoutingMarker(`SMS to ${resolveRecipientDisplay('sms', state.inboundContext.smsFromNumber)}`, {
+                tool: 'auto-route', channel: 'sms', outcome: 'delivered',
+                recipientId: state.inboundContext.smsFromNumber,
+                conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+              });
                 logger.info('v2.9.18: routed reply via SMS', {
                   agentId,
                   to: state.inboundContext.smsFromNumber,
