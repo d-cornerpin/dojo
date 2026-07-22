@@ -68,7 +68,7 @@ import path from 'node:path';
 import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, currentModelRequestId, currentTurnNumber, currentTurnRoot, currentTurnServedWork, currentToolCallId, continuationContext, clearTurnReceipts, clearRecallBudget, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
 import { persistEngineSteer } from './engine-steer.js';
 import { pushEngineMessage } from './engine-message.js';
-import { findRecentDeliveries, getRecentOutbound, mostRecentDeliveryTo, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
+import { findRecentDeliveries, findRecentDeliveriesKeyed, getRecentOutbound, mostRecentDeliveryTo, mostRecentDeliveryToConversation, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
 import { writeToolReceipt } from '../../receipts/store.js';
 import { resolveToolAlias } from '../../tools/aliases.js';
 
@@ -3539,16 +3539,30 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // header would duplicate it, skip it while that echo is recent (still in the
           // live tail); inject it for a same-conversation send (never echoed) or an old
           // cross-recipient send whose echo has aged out of the tail window.
-          const pendHints = [counterparty.senderId, counterparty.name].filter(
-            (h): h is string => !!h && h.trim().length > 0,
-          );
-          let pend: ReturnType<typeof mostRecentDeliveryTo> = null;
-          for (const h of pendHints) { pend = mostRecentDeliveryTo(agentId, h, 48); if (pend) break; }
+          // P6b-2: ID-keyed selection first. The turn root carries THIS
+          // conversation's identity; the most recent delivery INTO it comes
+          // from the deliveries rows, no recipient fuzz. The alias-hint path
+          // survives as the legacy prong while pre-121 history ages out.
+          const pendConvId = currentTurnRoot.get(agentId)?.conversationId ?? null;
+          let pend: ReturnType<typeof mostRecentDeliveryTo> = pendConvId
+            ? mostRecentDeliveryToConversation(agentId, pendConvId, 48)
+            : null;
+          if (!pend) {
+            const pendHints = [counterparty.senderId, counterparty.name].filter(
+              (h): h is string => !!h && h.trim().length > 0,
+            );
+            for (const h of pendHints) { pend = mostRecentDeliveryTo(agentId, h, 48); if (pend) break; }
+          }
           if (pend && pend.sentText && pend.sentText.trim()) {
-            const echoMade = !!pend.convKey && !!chosenConvKey && pend.convKey !== chosenConvKey;
-            const ageMs = Date.now() - Date.parse(pend.createdAt.replace(' ', 'T') + 'Z');
-            const echoLikelyInTail = Number.isFinite(ageMs) && ageMs <= 2 * 60 * 60 * 1000;
-            if (!(echoMade && echoLikelyInTail)) {
+            // P6b-2: the 2h "echo probably still in the tail" clock is dead.
+            // We HOLD the assembled context right here, so whether the echo
+            // row duplicates this header is a direct presence check on it.
+            const quotedProbe = pend.sentText.trim().slice(0, 120);
+            const echoInAssembledTail = quotedProbe.length > 0 && messages.some(
+              (mRow) => mRow.role === 'assistant' && typeof mRow.content === 'string' &&
+                mRow.content.includes('[Sent via') && mRow.content.includes(quotedProbe),
+            );
+            if (!echoInAssembledTail) {
               const quoted = pend.sentText.trim().slice(0, 300);
               pushEngineMessage( // registry-exempt(2026-07-16): RC-1 pending-question header reads per-iteration receipt state; migrate with the volatile-injection registry refactor
                 messages,
@@ -4246,9 +4260,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // tool check above only sees THIS turn; the ledger closes the cross-turn hole
         // (the admitted false positive: it really sent in an earlier turn and is just
         // referencing it). Engine fact, survives conversation scoping.
+        // P6b-2: keyed consult first (deliveries rows, canonical identity),
+        // receipts-alias substring as the legacy prong while pre-121 history
+        // ages out.
         const groundedByLedger =
           grounding.ungrounded &&
-          findRecentDeliveries(agentId, grounding.recipient, 24).length > 0;
+          (findRecentDeliveriesKeyed(agentId, grounding.recipient, 24).length > 0 ||
+           findRecentDeliveries(agentId, grounding.recipient, 24).length > 0);
         if (grounding.ungrounded && groundedByLedger) {
           logger.info('v2 grounding guard suppressed by receipt ledger (real prior send)', {
             agentId, recipient: grounding.recipient,
@@ -4294,9 +4312,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
         if (denial.denied) {
           // Named recipient → 24h window (a specific past send); bare "not yet" → a
           // short 1h window so an unrelated older send cannot spuriously ground it.
-          const matches = denial.recipient
-            ? findRecentDeliveries(agentId, denial.recipient, 24)
-            : findRecentDeliveries(agentId, null, 1);
+          // P6b-2: keyed consult first, legacy alias prong second.
+          const keyedMatches = denial.recipient
+            ? findRecentDeliveriesKeyed(agentId, denial.recipient, 24)
+            : findRecentDeliveriesKeyed(agentId, null, 1);
+          const matches = keyedMatches.length > 0
+            ? keyedMatches
+            : denial.recipient
+              ? findRecentDeliveries(agentId, denial.recipient, 24)
+              : findRecentDeliveries(agentId, null, 1);
           const receipt = matches[0];
           if (receipt) {
             const who = receipt.recipient ?? denial.recipient ?? 'them';
@@ -7847,7 +7871,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
             toolCallsThisTurn: state.toolResults.filter((r) => !r.isError).map((r) => ({ name: r.name })),
             counterpartyName: counterparty.name,
           });
-          if (g.ungrounded && findRecentDeliveries(agentId, g.recipient, 24).length === 0) {
+          if (g.ungrounded &&
+              findRecentDeliveriesKeyed(agentId, g.recipient, 24).length === 0 &&
+              findRecentDeliveries(agentId, g.recipient, 24).length === 0) {
             logger.warn('v2 G-SUP-2 recovery: delivered text asserts an UNGROUNDED delivery (no receipt); no re-entry available at finalize', {
               agentId, turnNumber, recipient: g.recipient,
             }, agentId);

@@ -26,6 +26,7 @@ import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { channelOfSendTool, type ChannelKind } from '@dojo/shared';
 import { findMatchingContact } from '../../contacts/store.js';
+import { recipientIdsMatch } from '../recipient-identity.js';
 import type { ToolReceiptRow } from '../../receipts/store.js';
 
 const logger = createLogger('outbound-ledger');
@@ -175,6 +176,114 @@ export function mostRecentDeliveryTo(
   windowHours: number,
 ): OutboundDelivery | null {
   return findRecentDeliveries(agentId, recipientHint, windowHours)[0] ?? null;
+}
+
+/** One deliveries row joined to its receipt for the sent text. */
+interface DeliveryJoinRow {
+  tool: string;
+  channel: string;
+  recipient_id: string | null;
+  recipient_display: string | null;
+  turn_number: number | null;
+  created_at: string;
+}
+
+function joinSentText(db: ReturnType<typeof getDb>, agentId: string, d: DeliveryJoinRow): { sentText: string | null; convKey: string | null; verified: boolean } {
+  if (d.turn_number === null) return { sentText: null, convKey: null, verified: false };
+  const r = db.prepare(
+    `SELECT sent_text, conv_key, verified FROM tool_receipts
+      WHERE agent_id = ? AND turn_number = ? AND tool = ?
+      ORDER BY created_at DESC LIMIT 1`,
+  ).get(agentId, d.turn_number, d.tool) as { sent_text: string | null; conv_key: string | null; verified: number } | undefined;
+  return { sentText: r?.sent_text ?? null, convKey: r?.conv_key ?? null, verified: r?.verified === 1 };
+}
+
+function deliveryJoinToOutbound(db: ReturnType<typeof getDb>, agentId: string, d: DeliveryJoinRow): OutboundDelivery {
+  const joined = joinSentText(db, agentId, d);
+  return {
+    tool: d.tool,
+    // The row carries its channel directly (readers here only see channel
+    // sends; dashboard/voice rows are excluded in the SQL below).
+    channel: d.channel as ChannelKind,
+    recipient: d.recipient_display ?? d.recipient_id,
+    sentText: joined.sentText,
+    convKey: joined.convKey,
+    turnNumber: d.turn_number,
+    verified: joined.verified,
+    createdAt: d.created_at,
+  };
+}
+
+/**
+ * P6b-2: the ID-keyed selection for the pending-question header. The most
+ * recent DELIVERED outbound INTO a conversation, from the deliveries rows
+ * (mig 121), joined to its receipt for the verbatim sent text. No recipient
+ * fuzz: the conversation id IS the identity. Returns null when the
+ * conversation has no delivery rows (the caller falls back to the legacy
+ * hint path while pre-121 history ages out).
+ */
+export function mostRecentDeliveryToConversation(
+  agentId: string,
+  conversationId: string,
+  windowHours: number,
+): OutboundDelivery | null {
+  try {
+    const db = getDb();
+    const hours = Math.max(1, Math.floor(windowHours));
+    const d = db.prepare(
+      `SELECT tool, channel, recipient_id, recipient_display, turn_number, created_at
+         FROM deliveries
+        WHERE agent_id = ? AND conversation_id = ? AND outcome = 'delivered'
+          AND channel NOT IN ('dashboard', 'voice')
+          AND created_at >= datetime('now', ?)
+        ORDER BY created_at DESC LIMIT 1`,
+    ).get(agentId, conversationId, `-${hours} hours`) as DeliveryJoinRow | undefined;
+    if (!d) return null;
+    return deliveryJoinToOutbound(db, agentId, d);
+  } catch (err) {
+    logger.warn('mostRecentDeliveryToConversation failed (non-fatal)', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+    return null;
+  }
+}
+
+/**
+ * P6b-2: ID-keyed variant of findRecentDeliveries for the grounding/denial
+ * guards: matches the hint against deliveries rows via CANONICAL recipient
+ * identity (contacts + safe-sender stores), not substring fuzz. Returns []
+ * when no delivery rows match, letting callers fall back to the legacy
+ * receipts-alias path while pre-121 history ages out.
+ */
+export function findRecentDeliveriesKeyed(
+  agentId: string,
+  recipientHint: string | null | undefined,
+  windowHours: number,
+): OutboundDelivery[] {
+  try {
+    const db = getDb();
+    const hours = Math.max(1, Math.floor(windowHours));
+    const rows = db.prepare(
+      `SELECT tool, channel, recipient_id, recipient_display, turn_number, created_at
+         FROM deliveries
+        WHERE agent_id = ? AND outcome = 'delivered'
+          AND channel NOT IN ('dashboard', 'voice')
+          AND created_at >= datetime('now', ?)
+        ORDER BY created_at DESC`,
+    ).all(agentId, `-${hours} hours`) as DeliveryJoinRow[];
+    const hint = (recipientHint ?? '').trim();
+    const matched = hint
+      ? rows.filter((d) =>
+          (d.recipient_id !== null && recipientIdsMatch(hint, d.recipient_id)) ||
+          (d.recipient_display !== null && recipientIdsMatch(hint, d.recipient_display)))
+      : rows;
+    return matched.map((d) => deliveryJoinToOutbound(db, agentId, d));
+  } catch (err) {
+    logger.warn('findRecentDeliveriesKeyed failed (non-fatal)', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+    return [];
+  }
 }
 
 /** Compact "N minutes/hours ago" for a SQLite UTC timestamp ("YYYY-MM-DD HH:MM:SS"). */
