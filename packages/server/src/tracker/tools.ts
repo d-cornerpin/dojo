@@ -2356,9 +2356,12 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
           }
         }
         if (task.status === 'in_progress') {
+          // Tangibility rule (battery catch 2026-07-22): the ALREADY-DELIVERED
+          // block requires a recorded handover, never a bare reply.
           const st = getTaskStampFields(task.id);
-          const stamped = !!st && st.last_answered_turn !== null;
-          const ev = stamped ? null : findDeliveryEvidenceForTask(task.id);
+          const stamped = !!st && st.last_answered_turn !== null && !!st.last_delivery_summary;
+          const evRaw = stamped ? null : findDeliveryEvidenceForTask(task.id);
+          const ev = evRaw && (evRaw.artifacts.length > 0 || evRaw.deliveredVia.length > 0) ? evRaw : null;
           if (stamped || ev) {
             const evLine = stamped
               ? `answered on turn ${st!.last_answered_turn} (${st!.last_answered_at} UTC)${st!.last_delivery_summary ? `; ${st!.last_delivery_summary}` : ''}`
@@ -2492,9 +2495,11 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
               const steps = renderStepFacts(st);
               parts.push(`      ^ state: ${renderTaskStamps(st)}${steps ? ` | ${steps}` : ''}`);
             }
-            if (!st || st.last_answered_turn === null) {
+            if (!st || st.last_answered_turn === null || !st.last_delivery_summary) {
               const ev = findDeliveryEvidenceForTask(tid);
-              if (ev) parts.push(`      ^ ENGINE RECORD: appears already delivered (${renderDeliveryEvidence(ev)}); close it complete, do not redo.`);
+              if (ev && (ev.artifacts.length > 0 || ev.deliveredVia.length > 0)) {
+                parts.push(`      ^ ENGINE RECORD: appears already delivered (${renderDeliveryEvidence(ev)}); close it complete, do not redo.`);
+              }
             }
           }
           totalShown += inProgress.length;

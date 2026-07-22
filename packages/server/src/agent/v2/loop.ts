@@ -2080,12 +2080,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
                     last_answered_turn, last_answered_at, last_delivery_summary
                FROM tasks WHERE id = ?`,
           ).get(r.id) as import('../../tracker/task-stamps.js').TaskStampFields | undefined;
-          if (st && st.last_answered_turn !== null) {
+          // Tangibility rule (battery catch 2026-07-22): only a recorded
+          // HANDOVER (file or channel delivery) earns the close-this text; a
+          // bare answered reply is often an ack on a task legitimately
+          // waiting (delegation synthesis), and pushing CLOSE on it forged a
+          // wrong close. Same standard as the strike-2 engine close.
+          if (st && st.last_answered_turn !== null && st.last_delivery_summary) {
             evidenced.push(`  - "${r.title}" (${r.id.slice(0, 8)}): ${renderTaskStamps(st)}`);
             continue;
           }
           const ev = findDeliveryEvidenceForTask(r.id);
-          if (ev) evidenced.push(`  - "${r.title}" (${r.id.slice(0, 8)}): ${renderDeliveryEvidence(ev)}`);
+          if (ev && (ev.artifacts.length > 0 || ev.deliveredVia.length > 0)) {
+            evidenced.push(`  - "${r.title}" (${r.id.slice(0, 8)}): ${renderDeliveryEvidence(ev)}`);
+          }
         }
         if (evidenced.length > 0) {
           sections.push(
@@ -4359,51 +4366,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }
       }
 
-      // ── Wrap-up at the boundary (2026-07-22 production incident; owner
-      // design: "the agent should always wrap up on projects and tasks based
-      // on the IDs; the PM is the BACKUP, not the close-out gate"). The
-      // delivering turn is the ONE moment the identity is fully in hand: the
-      // turn knows its root, and the tasks it created carry origin_turn =
-      // THIS turn. If the turn is ending answered while its own root-tied
-      // tasks still say in_progress, ending now abandons them into the lying
-      // state every downstream consumer then trusts (the yacht re-work).
-      // Steer once with the ids and re-enter, so the model closes them (or
-      // says what remains) BEFORE the turn ends. The PM ladder and close-out
-      // gate remain the backup lanes.
-      if (
-        persistedContent &&
-        result.toolCalls.length === 0 &&
-        !interAgentTurn &&
-        !state.nudgedForWrapUpThisTurn
-      ) {
-        try {
-          const ownRoot = currentTurnRoot.get(agentId);
-          const openOwn = db.prepare(
-            `SELECT id, title FROM tasks
-              WHERE assigned_to = ? AND status = 'in_progress' AND is_paused = 0
-                AND (origin_turn = ? OR (source_message_id IS NOT NULL AND source_message_id = ?))
-              LIMIT 5`,
-          ).all(agentId, turnNumber, ownRoot?.sourceMessageId ?? '') as Array<{ id: string; title: string }>;
-          if (openOwn.length > 0) {
-            const list = openOwn.map((t) => `"${t.title}" (${t.id})`).join(', ');
-            const nudgeText =
-              `[Engine wrap-up: you are ending this turn but YOUR OWN task(s) from this very work still say in_progress: ${list}. ` +
-              `Before you finish: if the work is done and delivered, call tracker_update_status(status="complete") with the result ` +
-              `(or tracker_complete_step) for each; if something genuinely remains, say exactly what remains and keep the task open; ` +
-              `if it cannot proceed, mark it blocked. Do NOT redo or re-deliver anything. Then give your final reply.]`;
-            state = persistEngineSteer(
-              state,
-              { agentId, content: nudgeText, turnNumber, extra: { nudgedForWrapUpThisTurn: true } },
-              { db, broadcast },
-            );
-            logger.info('v2 wrap-up steer: turn ending answered with own in_progress task(s); re-entering once', {
-              agentId, turnNumber, taskIds: openOwn.map((t) => t.id),
-            }, agentId);
-            continue;
-          }
-        } catch { /* wrap-up consult is best-effort; never block the turn end */ }
-      }
-
+      // ── Boundary wrap-up (2026-07-22, consolidated) ── The duplicate
+      // wrap-up steer that briefly lived here is GONE: the going-idle nudge
+      // below is the one boundary mechanism (4-option menu on SILENT task-work
+      // stops; never a re-prompt when a reply exists, the v3.1.10 double-reply
+      // rule). For answered turns, the ticket STAMPS land at finalize and the
+      // tangible-gated ladder close-steer / strike-2 close the loop within one
+      // poke cycle; stacking a second steer here chained re-entries and ate
+      // final replies (battery catch).
       // ── RC-12 DENIAL direction ── The inverse of the positive guard: the terminal
       // reply DENIES a delivery ("Not yet", "sending now", "haven't sent it") that the
       // engine receipt ledger proves already happened (F-5, F-22). The denial text

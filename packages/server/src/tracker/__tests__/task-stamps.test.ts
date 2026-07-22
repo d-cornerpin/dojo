@@ -102,6 +102,17 @@ describe('renderTaskStamps / renderStepFacts (caps + owner wording)', () => {
     expect(line.length).toBeLessThanOrEqual(160);
   });
 
+  it('answered WITHOUT delivery renders facts only, no CLOSE instruction (battery catch: ack-strangled delegation)', () => {
+    const line = renderTaskStamps({
+      last_activity_turn: 9, last_activity_at: '2026-07-22 08:00:00', last_activity_outcome: 'answered',
+      last_answered_turn: 9, last_answered_at: '2026-07-22 08:00:00',
+      last_delivery_summary: null,
+    });
+    expect(line).toContain('replied T9');
+    expect(line).toContain('no delivery recorded');
+    expect(line).not.toContain('CLOSE');
+  });
+
   it('unstamped tickets say so plainly', () => {
     expect(renderTaskStamps({
       last_activity_turn: null, last_activity_at: null, last_activity_outcome: null,

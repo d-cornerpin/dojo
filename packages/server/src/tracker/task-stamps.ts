@@ -167,10 +167,15 @@ export interface TaskStampFields {
  *  Owner ruling: facts PLUS instruction on answered tickets. */
 export function renderTaskStamps(t: TaskStampFields): string {
   if (t.last_answered_turn !== null && t.last_answered_at) {
-    let line = `answered T${t.last_answered_turn} ${relAgo(t.last_answered_at)}`;
-    if (t.last_delivery_summary) line += `; ${t.last_delivery_summary}`;
-    line += '; CLOSE if done';
-    return line;
+    // The CLOSE instruction requires a TANGIBLE handover on record, the same
+    // standard as the strike-2 engine close. A reply without a recorded
+    // delivery is often just an ack ("back with you soon"); nudging CLOSE on
+    // it strangled a delegation synthesis task mid-wait (battery catch,
+    // 2026-07-22). Facts only in that case.
+    if (t.last_delivery_summary) {
+      return `answered T${t.last_answered_turn} ${relAgo(t.last_answered_at)}; ${t.last_delivery_summary}; CLOSE if done`;
+    }
+    return `replied T${t.last_answered_turn} ${relAgo(t.last_answered_at)} (no delivery recorded)`;
   }
   if (t.last_activity_turn !== null && t.last_activity_at) {
     return `last activity T${t.last_activity_turn} ${relAgo(t.last_activity_at)} (${t.last_activity_outcome ?? 'unknown'})`;

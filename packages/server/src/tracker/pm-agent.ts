@@ -1763,7 +1763,7 @@ export async function runPokeCheck(): Promise<void> {
     }
 
     // ── Normal poke (nudge / urgent / escalate) ──
-    const pokeMessage = deliveryEvidence
+    const pokeMessage = deliveryEvidence && tangibleHandover
       ? `CLOSE-OUT NEEDED, NOT RE-WORK: task "${task.title}" (${task.id}) still says in_progress, but the engine's own records show ${renderDeliveryEvidence(deliveryEvidence)}. ` +
         `If that delivery completed this task, call tracker_update_status(task_id="${task.id}", status="complete") with the result NOW. ` +
         `Do NOT redo the work, do NOT pause the task, and do NOT re-deliver what the user already has. ` +
