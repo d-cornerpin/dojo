@@ -14,7 +14,7 @@ import { resolveToolAlias } from '../tools/aliases.js';
 import { broadcast } from '../gateway/ws.js';
 import { setCurrentCanvas, getCurrentCanvas, viewCanvas } from './canvas-view.js';
 import { isEmbeddable, captureSiteScreenshot } from './site-snapshot.js';
-import { queueCanvasDoc, queueScreenChip } from './pending-attachments.js';
+import { queueCanvasDoc, queueScreenChip, queueLinkArtifact } from './pending-attachments.js';
 import { memoryGrep, memoryDescribe, memoryExpand } from '../memory/retrieval.js';
 import { resolveOpenLoopByPrefix } from '../memory/open-loops.js';
 import { checkRequired, friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer } from './tool-helpers.js';
@@ -4183,6 +4183,9 @@ async function executeFileWrite(agentId: string, args: Record<string, unknown>):
     auditLog(agentId, 'file_write', filePath, 'success', `${content.length} bytes written`);
 
     const downloadUrl = registerSharedFile(agentId, filePath);
+    // P6b-2: record the minted link as a keyed artifact row so the
+    // never-drop-the-link backstop reads rows, not result prose.
+    if (downloadUrl) queueLinkArtifact(agentId, downloadUrl, filePath);
     // Auto-open documents (html/markdown/text) in the canvas; refresh if already shown.
     const canvas = syncCanvasAfterWrite(agentId, filePath, downloadUrl);
     const canvasNote = canvas.opened
@@ -4253,6 +4256,7 @@ async function executeFileAppend(agentId: string, args: Record<string, unknown>)
     auditLog(agentId, 'file_write', filePath, 'success', `${payload.length} bytes appended (total ${stat.size})`);
 
     const downloadUrl = registerSharedFile(agentId, filePath);
+    if (downloadUrl) queueLinkArtifact(agentId, downloadUrl, filePath);
     // W3 fix loop (run bmr5bymntm5): same refresh-or-AUTO-OPEN treatment as
     // file_write. Pre-fix this only pinged an already-open canvas, so "edit
     // this doc and show me" surfaced or not depending on whether the model

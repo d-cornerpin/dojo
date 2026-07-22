@@ -131,7 +131,7 @@ function drainRows(agentId: string): ArtifactRow[] {
   const db = getDb();
   const rows = db.prepare(
     `SELECT id, caption, payload_json FROM turn_artifacts
-      WHERE agent_id = ? AND delivered_at IS NULL
+      WHERE agent_id = ? AND delivered_at IS NULL AND kind != 'link'
       ORDER BY queued_at ASC, rowid ASC`,
   ).all(agentId) as ArtifactRow[];
   if (rows.length === 0) return [];
@@ -182,5 +182,55 @@ export function drainPendingAttachmentsWithCaptions(
       agentId, error: err instanceof Error ? err.message : String(err),
     }, agentId);
     return { attachments: [], captions: [] };
+  }
+}
+
+
+// ── Download-link artifacts (P6b-2 final batch) ──
+// file_write / file_append record the download URL they minted as a keyed row
+// at the SOURCE (they hold url + path as variables), so the loop's
+// never-drop-the-link backstop reads rows instead of regex-mining tool-result
+// prose. kind='link' rows are excluded from the attachment drains above.
+
+export function queueLinkArtifact(agentId: string, url: string, filePath: string): void {
+  try {
+    getDb().prepare(`
+      INSERT INTO turn_artifacts (id, agent_id, turn_number, kind, path, caption, payload_json, queued_at, created_at, updated_at)
+      VALUES (?, ?, ?, 'link', ?, NULL, ?, datetime('now'), datetime('now'), datetime('now'))
+    `).run(uuidv4(), agentId, currentTurnNumber.get(agentId) ?? null, filePath, JSON.stringify({ url }));
+  } catch (err) {
+    logger.warn('queueLinkArtifact failed (backstop will not see this link)', {
+      agentId, path: filePath, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+}
+
+/** This turn's undelivered link artifacts, marked delivered atomically. */
+export function drainTurnLinkArtifacts(agentId: string, turnNumber: number): Array<{ url: string; path: string | null }> {
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      `SELECT id, path, payload_json FROM turn_artifacts
+        WHERE agent_id = ? AND kind = 'link' AND turn_number = ? AND delivered_at IS NULL
+        ORDER BY queued_at ASC, rowid ASC`,
+    ).all(agentId, turnNumber) as Array<{ id: string; path: string | null; payload_json: string | null }>;
+    if (rows.length === 0) return [];
+    const mark = db.prepare("UPDATE turn_artifacts SET delivered_at = datetime('now'), updated_at = datetime('now') WHERE id = ?");
+    const txn = db.transaction(() => { for (const r of rows) mark.run(r.id); });
+    txn();
+    const out: Array<{ url: string; path: string | null }> = [];
+    for (const r of rows) {
+      if (!r.payload_json) continue;
+      try {
+        const p = JSON.parse(r.payload_json) as { url?: string };
+        if (p.url) out.push({ url: p.url, path: r.path });
+      } catch { /* skip a corrupt row */ }
+    }
+    return out;
+  } catch (err) {
+    logger.warn('drainTurnLinkArtifacts failed (returning empty)', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+    return [];
   }
 }

@@ -527,7 +527,12 @@ const ENGINE_START_ACK_STREAM_GRACE_MS = 60000;
 // LAST RESORT: if the gate has had to refuse THRASH_GATE_BREAKER_LIMIT+
 // calls without the agent transitioning, the engine auto-blocks the task
 // so it reaches a real terminal state instead of looping.
-const THRASH_WINDOW_MS = 2 * 60 * 1000;
+// P6b-2 REKEY: the window is TURN IDENTITY, not wall clock. The old 2-minute
+// clock was load-dependent (a slow provider saw fewer calls in the window and
+// missed thrash; a fast one over-counted); the current turn plus its
+// predecessor (auto-continued spirals span the boundary) is the same
+// semantic window keyed on execution identity.
+const THRASH_TURN_WINDOW = 1; // current turn and this many before it
 const DUPLICATE_SIG_LIMIT = 4;
 const THRASH_GATE_BREAKER_LIMIT = 6;
 // Soft drift threshold: the engine NUDGES the agent once (no block), legitimate
@@ -716,13 +721,16 @@ function detectTaskThrashing(agentId: string): {
 } {
   try {
     const db = getDb();
-    const cutoff = new Date(Date.now() - THRASH_WINDOW_MS).toISOString();
+    // Turn-keyed window (P6b-2). Rows with NULL turn_number (pre-113 or the
+    // odd unstamped write) fall out of the window, which fails SAFE for a
+    // detector (missing one row can only under-count).
+    const minTurn = (currentTurnNumber.get(agentId) ?? 0) - THRASH_TURN_WINDOW;
     const rows = db.prepare(`
       SELECT content FROM messages
       WHERE agent_id = ? AND role = 'assistant'
-        AND datetime(created_at) > datetime(?)
+        AND turn_number >= ?
       ORDER BY created_at ASC, rowid ASC
-    `).all(agentId, cutoff) as Array<{ content: string }>;
+    `).all(agentId, minTurn) as Array<{ content: string }>;
 
     // AUDIT-FIX (D5): mutating-tool progress must be SUCCESS-aware. tool_use blocks
     // carry no result, so a failing file_write counted as "progress" and disabled
@@ -735,8 +743,8 @@ function detectTaskThrashing(agentId: string): {
       const toolRows = db.prepare(`
         SELECT content FROM messages
         WHERE agent_id = ? AND role = 'tool'
-          AND datetime(created_at) > datetime(?)
-      `).all(agentId, cutoff) as Array<{ content: string }>;
+          AND turn_number >= ?
+      `).all(agentId, minTurn) as Array<{ content: string }>;
       for (const tr of toolRows) {
         let blocks: unknown;
         try { blocks = JSON.parse(tr.content); } catch { continue; }
@@ -2432,7 +2440,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // dashboard renders it AND any next assemble cycle keeps seeing
           // it (pendingNudge is single-shot).
           const steerMsg =
-            `[Engine thrash gate] You've called \`${thrash.toolName}(${argsPart})\` ${thrash.count}× in the last ${Math.round(THRASH_WINDOW_MS/60000)} minutes. ` +
+            `[Engine thrash gate] You've called \`${thrash.toolName}(${argsPart})\` ${thrash.count}× on this turn (and its continuation). ` +
             `You already have the result from the first call; further calls with these exact args are refused.\n\n` +
             `Your next action MUST be one of:\n` +
             `  (a) Call \`${thrash.toolName}\` with DIFFERENT args (e.g., a different id / target) if you genuinely have more to read.\n` +
@@ -8074,16 +8082,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // auto-route, they handled it directly.
     if (isPrimaryAgent(agentId) && state.lastAssistantTextForIM) {
       try {
-        // ── File download-link backstop ──
+        // ── File download-link backstop (P6b-2: keyed rows) ──
         // file_write / file_append return the share URL ONLY in the tool
         // result, which the user never sees. Agents under load routinely
         // reply "saved to your desktop" and drop the link, so the deliverable
         // is never actually delivered. The engine guarantees it instead: any
-        // download URL produced this turn that the agent left out of its
+        // download URL minted this turn that the agent left out of its
         // user-facing reply is (a) appended to the channel-routed text so it
         // rides along to iMessage/SMS/etc., and (b) surfaced in the dashboard
         // as its own assistant bubble. Model-independent, the link lands
         // whether or not the agent remembered it (correctness-floor rule).
+        // The links are turn_artifacts rows recorded by the tools at the
+        // source (they hold url + path as variables); the old prose regexes
+        // over tool-result text are dead.
         {
           // A file shown in the canvas already has a download button right
           // there, so a user AT the dashboard doesn't need a follow-up link
@@ -8092,29 +8103,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // the split: channel delivery covers every undelivered URL; the
           // dashboard link bubble is suppressed for the doc currently on canvas.
           const { getCurrentCanvas } = await import('../canvas-view.js');
+          const { drainTurnLinkArtifacts } = await import('../pending-attachments.js');
           const currentCanvasPath = getCurrentCanvas(agentId)?.path ?? null;
           const replyText = state.lastAssistantTextForIM;
           const undeliveredForChannel: string[] = [];
           const undeliveredForDashboard: string[] = [];
           const seen = new Set<string>();
-          for (const tr of state.toolResults) {
-            if (tr.isError) continue;
-            if (tr.name !== 'file_write' && tr.name !== 'file_append') continue;
-            const matches = tr.content.match(/Download:\s*(\S+)/g);
-            if (!matches) continue;
-            const pathMatch =
-              tr.content.match(/File written successfully:\s*(.+?)\s*\(\d+\s*bytes\)/) ||
-              tr.content.match(/Appended \d+ bytes to\s*(.+?)\.\s*Total size/);
-            const filePath = pathMatch ? pathMatch[1].trim() : null;
-            const shownInCanvas = !!filePath && !!currentCanvasPath && filePath === currentCanvasPath;
-            for (const line of matches) {
-              const url = line.replace(/^Download:\s*/, '').trim();
-              if (!url || seen.has(url)) continue;
-              seen.add(url);
-              if (replyText.includes(url)) continue; // the agent already shared it
-              undeliveredForChannel.push(url);
-              if (!shownInCanvas) undeliveredForDashboard.push(url);
-            }
+          for (const link of drainTurnLinkArtifacts(agentId, turnNumber)) {
+            if (!link.url || seen.has(link.url)) continue;
+            seen.add(link.url);
+            if (replyText.includes(link.url)) continue; // the agent already shared it
+            const shownInCanvas = !!link.path && !!currentCanvasPath && link.path === currentCanvasPath;
+            undeliveredForChannel.push(link.url);
+            if (!shownInCanvas) undeliveredForDashboard.push(link.url);
           }
           // Channel safety net: ensure links reach an away user via the routed
           // text (inert when the reply stays on the dashboard).
