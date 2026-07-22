@@ -661,27 +661,30 @@ export async function completeAgent(
     }
   }
 
-  // Resolve the task this agent owns. Prefer the explicit agent.task_id link
-  // (set at spawn time when task_id is passed). Fall back to "any open task
-  // assigned to this agent", covers the case where a task was created or
-  // reassigned to the agent after spawn (assigned_to does NOT auto-sync to
-  // agents.task_id, so without this fallback completeAgent would silently
-  // leave the task in_progress and break dependency chains).
+  // Resolve the task this agent owns. The explicit agent.task_id link (set at
+  // spawn, required by the spawn contract) is the identity. P6b SHRINK of the
+  // fallback: when the link is missing, an assigned task resolves ONLY when it
+  // is unambiguous (exactly one candidate). The old newest-first LIMIT 1 was a
+  // guess that could close the WRONG task when several were assigned; zero
+  // candidates resolves nothing, several logs the ambiguity and resolves
+  // nothing (their disposition is handled by the dangler sweep below, which
+  // never falsely inherits 'complete').
   let resolvedTaskId: string | null = agent.task_id;
   if (!resolvedTaskId) {
-    // Match either an in-flight assigned task OR a just-completed assigned task
-    // with no summary yet (covers the case where the apprentice called
-    // tracker_update_status first and complete_task second, we still want to
-    // write the summary onto the already-completed task).
-    const fallbackTask = db.prepare(`
+    const candidates = db.prepare(`
       SELECT id FROM tasks
        WHERE assigned_to = ?
          AND (status IN ('on_deck','in_progress')
               OR (status = 'complete'
                   AND (completion_summary IS NULL OR completion_summary = '')))
-       ORDER BY created_at DESC LIMIT 1
-    `).get(agentId) as { id: string } | undefined;
-    if (fallbackTask) resolvedTaskId = fallbackTask.id;
+    `).all(agentId) as Array<{ id: string }>;
+    if (candidates.length === 1) {
+      resolvedTaskId = candidates[0].id;
+    } else if (candidates.length > 1) {
+      logger.warn('completeAgent: no explicit task link and MULTIPLE assigned candidates; refusing to guess', {
+        agentId, candidateCount: candidates.length, sample: candidates.slice(0, 3).map(c => c.id.slice(0, 8)),
+      }, agentId);
+    }
   }
 
   // D-K: when this completion fells tasks (status='fallen'), collect the
@@ -769,51 +772,64 @@ export async function completeAgent(
     }
   }
 
-  // ── v2.5.46 Layer 2: auto-close any OTHER in_progress tasks ──
-  // The agent may have had multiple tasks assigned (parent created
-  // several, or agent edited their plan mid-run). complete_task means
-  // "I'm done as an agent", any other in_progress tasks owned by them
-  // would otherwise be orphaned. Auto-close all of them with the same
-  // final status as the primary, plus a clear audit note.
-  //
-  // Skips the primary task (resolvedTaskId), it was just handled above.
-  // Skips paused tasks, those were intentionally set aside.
+  // ── Layer 2 dangler sweep, per-task disposition from lineage (P6b) ──
+  // The completing agent is being torn down, so its other in_progress tasks
+  // cannot progress; leaving them in_progress would violate STATUS-TRUTH.
+  // The old sweep blanket-inherited the PRIMARY's status, which could falsely
+  // mark a genuinely separate co-assigned task 'complete'. Disposition is now
+  // per task, from lineage: a dangler sharing the primary task's work order
+  // (same project, or same originating ask via source_message_id) inherits the
+  // completing status; a FOREIGN-rooted dangler (or any dangler when no
+  // primary resolved) becomes 'blocked' with the reason recorded, never
+  // falsely complete. Skips the primary (handled above) and paused tasks
+  // (intentionally set aside).
   try {
     const bulkStatus = status === 'complete' ? 'complete' : status === 'fallen' ? 'fallen' : 'blocked';
+    const primaryLineage = resolvedTaskId
+      ? db.prepare('SELECT project_id, source_message_id FROM tasks WHERE id = ?')
+          .get(resolvedTaskId) as { project_id: string | null; source_message_id: string | null } | undefined
+      : undefined;
     const otherDanglers = db.prepare(`
-      SELECT id, title, project_id FROM tasks
+      SELECT id, title, project_id, source_message_id FROM tasks
       WHERE assigned_to = ?
         AND status = 'in_progress'
         AND is_paused = 0
         AND id != COALESCE(?, '')
-    `).all(agentId, resolvedTaskId ?? null) as Array<{ id: string; title: string; project_id: string | null }>;
+    `).all(agentId, resolvedTaskId ?? null) as Array<{ id: string; title: string; project_id: string | null; source_message_id: string | null }>;
     const danglerLog = await import('../tracker/task-log.js');
     for (const dt of otherDanglers) {
+      const sameWork = !!primaryLineage && (
+        (dt.project_id !== null && dt.project_id === primaryLineage.project_id) ||
+        (dt.source_message_id !== null && dt.source_message_id === primaryLineage.source_message_id)
+      );
+      const disposition = sameWork ? bulkStatus : 'blocked';
       db.prepare(`
         UPDATE tasks SET status = ?, updated_at = datetime('now'),
           completed_at = CASE WHEN ? = 'complete' THEN datetime('now') ELSE completed_at END
         WHERE id = ?
-      `).run(bulkStatus, bulkStatus, dt.id);
-      if (bulkStatus === 'fallen' && dt.project_id) fallenProjectIds.add(dt.project_id);
+      `).run(disposition, disposition, dt.id);
+      if (disposition === 'fallen' && dt.project_id) fallenProjectIds.add(dt.project_id);
 
       void danglerLog.writeTaskLog({
         taskId: dt.id,
         fromEntity: 'engine',
         entryKind: 'auto_sweep',
         fromStatus: 'in_progress',
-        toStatus: bulkStatus,
-        actionTaken: 'completeAgent layer-2 dangler sweep',
-        reason: `agent "${agent.name}" called complete_task(status="${status}") but did not explicitly close this co-assigned task`,
+        toStatus: disposition,
+        actionTaken: 'completeAgent layer-2 dangler sweep (per-task lineage disposition)',
+        reason: sameWork
+          ? `agent "${agent.name}" called complete_task(status="${status}"); this task shares the primary task's work order (project/ask lineage) and inherits its close`
+          : `agent "${agent.name}" called complete_task(status="${status}") and is being torn down; this task's lineage does NOT tie it to the completed work, so it is blocked (not falsely closed) for reassignment`,
       });
     }
     if (otherDanglers.length > 0) {
-      logger.info('completeAgent: auto-closed dangling in_progress tasks', {
-        agentId, count: otherDanglers.length, status: bulkStatus,
+      logger.info('completeAgent: dispositioned dangling in_progress tasks by lineage', {
+        agentId, count: otherDanglers.length, primaryStatus: bulkStatus,
         sample: otherDanglers.slice(0, 3).map((t) => t.id.slice(0, 8)),
       }, agentId);
     }
   } catch (autocloseErr) {
-    logger.warn('completeAgent: bulk auto-close failed (non-fatal)', {
+    logger.warn('completeAgent: dangler disposition failed (non-fatal)', {
       agentId, error: autocloseErr instanceof Error ? autocloseErr.message : String(autocloseErr),
     }, agentId);
   }
@@ -837,37 +853,12 @@ export async function completeAgent(
     }
   }
 
-  // The Dreamer never links its batches to tracker tasks, so this "you forgot to link a
-  // task" nag would fire on EVERY batch, another per-batch drip. Suppress it for the
-  // Dreamer; its single per-cycle notice (spawnNextDreamerBatch) is the only message it
-  // sends the primary. Every normal sub-agent still gets the orphaned-completion heads-up.
-  const { isDreamerAgent: isDreamerForOrphan } = await import('../config/platform.js');
-  const isDreamerCompletion = agent.name === 'Dreamer' || isDreamerForOrphan(agentId);
-  if (!resolvedTaskId && agent.parent_agent && status === 'complete' && !isDreamerCompletion) {
-    // Apprentice completed but no task was linked. Common pattern: parent
-    // spawned the apprentice and created tasks separately, but defaulted
-    // assigned_to to themselves. The work happened, but no tracker row got
-    // updated. Surface this loudly to the parent so they notice and fix the
-    // setup next time, instead of staring at a "stuck" task that's actually
-    // done.
-    //
-    // Only fires for clean completions (status='complete'); failures and
-    // blocks have their own signal already.
-    // comms-audit rank 10: this used to inject a 5-sentence engine TUTORIAL as a
-    // role='system' row + dashboard broadcast (and its "[SOURCE: ORPHANED COMPLETION"
-    // prefix was NOT in platform-noise, so compaction could fold it into a summary and
-    // re-narrate it, the one role='system' dump with a live re-narration vector). It
-    // also referenced a "completion summary above" that no longer exists after the brief-
-    // note fix. Replace with a brief, self-attributed awareness note; the how-to-link-a-
-    // task guidance belongs in the tracker tool docs the parent reads WHEN it acts, not
-    // dumped into the conversation.
-    postAgentNotice({
-      toAgentId: agent.parent_agent,
-      fromName: agent.name ?? 'sub-agent',
-      brief: `Heads up, I finished, but my work wasn't linked to a tracker task, so no task row updated. If you want it tracked, mark the matching task complete or pass task_id next time.`,
-      intent: 'orphaned_completion',
-    });
-  }
+  // P6b STRIP: the orphaned-completion "you forgot to link a task" nag is
+  // gone. The spawn contract requires the task link at spawn, so the unlinked
+  // case is structurally closed; when it still happens the ambiguity warning
+  // in the resolver above is the engineering signal, and the dangler sweep
+  // dispositions any stranded rows. The per-completion parent drip taught
+  // nothing at the moment it arrived.
 
   // If this is the Dreamer ending a batch, advance the dream chain.
   // FA-V4: fire on ANY terminal status, not just 'complete'. On 'complete' the

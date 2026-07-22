@@ -8591,8 +8591,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           break;
         }
 
-        const requestId = `img_${uuidv4().replace(/-/g, '').slice(0, 12)}`;
-
         // Track this image generation as a generation_job so it shows up in
         // the dashboard's ActiveJobsIndicator alongside audio/music/video.
         // image_create keeps its own delivery path below; we just drive the
@@ -8607,6 +8605,11 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           prompt: description,
           title: rawTitle || null,
         });
+        // P6b: ONE durable identity. The job id (which carries source lineage:
+        // source_message_id / turn / task / conversation) is the request id in
+        // every log line, filename, and the tool result; the separate img_
+        // mint that split one generation across two ids is gone.
+        const requestId = imgJobId;
 
         // Build the full prompt. Append the style hint if the user provided
         // one, so the image model gets stylistic direction inline.
@@ -8799,7 +8802,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
             // id chunk for uniqueness. Falls back to the legacy
             // image_create_<reqId>_<uuid>.png shape when no title given.
             const sourceExt = path.extname(result.filename) || '.png';
-            const shortId = requestId.replace(/^img_/, '').slice(0, 8);
+            const shortId = requestId.replace(/^gen_/, '').slice(0, 8);
             const stableFilename = titleSlug
               ? `${titleSlug}-${shortId}${sourceExt}`
               : `image_create_${requestId}_${result.filename}`;

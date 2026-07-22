@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { currentTurnNumber } from '../agent/turn-state.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { v4 as uuidv4 } from 'uuid';
@@ -567,6 +568,17 @@ export async function escalateCloseoutMissToPM(ctx: {
  * transition (that's the engine hard-gate's job), this is purely an
  * advisory signal.
  */
+/** Humane rendering of the structured smell flag for the PM model's context.
+ *  Legacy prose flags (pre-P6b rows) pass through unchanged. */
+function renderSmellFlag(raw: string): string {
+  try {
+    const f = JSON.parse(raw) as { kind?: string; elapsedSec?: number; cycles?: number; windowMin?: number };
+    if (f.kind === 'complete_dodges_poke') return `closed within ${f.elapsedSec}s of the last poke with no non-tracker tool calls on the closing turn`;
+    if (f.kind === 'pause_resume_thrash') return `pause-resume thrash: ${f.cycles} transitions in last ${f.windowMin} min`;
+  } catch { /* legacy prose flag */ }
+  return raw;
+}
+
 function runSmellDetector(taskId: string, toStatus: string): void {
   const db = getDb();
   if (toStatus === 'complete') {
@@ -579,17 +591,26 @@ function runSmellDetector(taskId: string, toStatus: string): void {
       const elapsedSec = Math.floor((Date.now() - pokeTs) / 1000);
       if (elapsedSec <= SMELL_POKE_WINDOW_SEC) {
         const taskAgent = db.prepare(`SELECT assigned_to FROM tasks WHERE id = ?`).get(taskId) as { assigned_to: string | null } | undefined;
-        if (taskAgent?.assigned_to) {
+        // P6b REKEY: "did any real work ride this close" reads the CLOSING
+        // TURN's own audit set (turn_number lineage, mig 116), not an
+        // agent-global clock window that credited tool calls from unrelated
+        // concurrent conversations. The dodge shape is by definition the
+        // assignee closing its own task in-turn, so the closing turn is the
+        // assignee's live turn; an engine/Key-2 close has no live turn and is
+        // not a dodge, so no flag.
+        const closingTurn = taskAgent?.assigned_to ? currentTurnNumber.get(taskAgent.assigned_to) : undefined;
+        if (taskAgent?.assigned_to && closingTurn !== undefined) {
           const nonTrackerTool = db.prepare(`
             SELECT 1 FROM audit_log
             WHERE agent_id = ?
+              AND turn_number = ?
               AND action_type = 'tool_call'
               AND target NOT LIKE 'tracker_%'
-              AND created_at > ?
             LIMIT 1
-          `).get(taskAgent.assigned_to, lastPoke.sent_at) as { 1: number } | undefined;
+          `).get(taskAgent.assigned_to, closingTurn) as { 1: number } | undefined;
           if (!nonTrackerTool) {
-            const flag = `closed within ${elapsedSec}s of last poke with no non-tracker tool calls in between`;
+            // Structured flag (P6b): readers parse fields, not prose.
+            const flag = JSON.stringify({ kind: 'complete_dodges_poke', elapsedSec, closingTurn });
             db.prepare(`UPDATE tasks SET last_smell_flag = ? WHERE id = ?`).run(flag, taskId);
             void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
               taskId,
@@ -597,7 +618,7 @@ function runSmellDetector(taskId: string, toStatus: string): void {
               entryKind: 'smell_flag',
               reason: flag,
             }));
-            logger.info('Smell flag set: complete dodging poke', { taskId, elapsedSec });
+            logger.info('Smell flag set: complete dodging poke', { taskId, elapsedSec, closingTurn });
           }
         }
       }
@@ -613,7 +634,9 @@ function runSmellDetector(taskId: string, toStatus: string): void {
         AND datetime(created_at) > datetime('now', '-${SMELL_PAUSE_THRASH_WINDOW_MIN} minutes')
     `).get(taskId) as { c: number } | undefined;
     if (cycles && cycles.c >= SMELL_PAUSE_THRASH_CYCLES) {
-      const flag = `pause-resume thrash: ${cycles.c} transitions in last ${SMELL_PAUSE_THRASH_WINDOW_MIN} min`;
+      // The window here is the rate definition of "thrash", not a scar; the
+      // count already reads structured task_log transitions. Structured flag.
+      const flag = JSON.stringify({ kind: 'pause_resume_thrash', cycles: cycles.c, windowMin: SMELL_PAUSE_THRASH_WINDOW_MIN });
       db.prepare(`UPDATE tasks SET last_smell_flag = ? WHERE id = ?`).run(flag, taskId);
       void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
         taskId,
@@ -1147,30 +1170,26 @@ async function runPMReview(): Promise<void> {
     // newly-visible escalation tier asked the OWNER yes/no questions about
     // archive batches. The escalation skip alone would leave the stall in
     // place forever; this branch RESOLVES it through the sanctioned Key-2 door
-    // (trackerValidateComplete as the PM), with the basis recorded:
-    //   1. the task carries its own receipt (result or evidence from the
-    //      service agent's completion), validate on that receipt;
-    //   2. a dreamer task with no receipt but an EMPTY archive queue: the
-    //      maintenance outcome is globally satisfied, validate on that basis;
-    //   3. no receipt and no engine basis: validate=false would re-open churn
-    //      on a shell nobody can work, so validate with the leftover basis
-    //      RECORDED as unverifiable, keeping the ledger honest about what was
-    //      and was not proven. Every path logs; nothing reaches the model chain.
+    // (trackerValidateComplete as the PM), with the basis recorded.
+    // P6b SHRINK: the old bases 2 (dreamer + global archive-queue consult) and
+    // 3 (silent unverifiable leftover) are gone. With receipt-filed closeouts
+    // + execution lineage, every legitimate maintenance completion carries its
+    // own receipt (basis 1). A receipt-LESS one still closes (valid=false
+    // would re-open churn on a shell nobody can work, the days-stall class)
+    // but the basis names it a DEFECT and the log is error-level: the
+    // completing path failed to file its receipt, which is a bug to fix, not
+    // background noise to adjudicate around.
     if (cTask.assigned_to && isSystemServiceAgent(cTask.assigned_to)) {
       try {
         const { trackerValidateComplete } = await import('./tools.js');
         const hasReceipt = Boolean((cTask.result && cTask.result.trim()) || (cTask.evidence_json && cTask.evidence_json !== '[]'));
-        let basis: string;
-        if (hasReceipt) {
-          basis = `engine-maintenance receipt on the task itself: ${(cTask.result ?? '').slice(0, 160) || 'evidence array recorded'}`;
-        } else if (isDreamerAgent(cTask.assigned_to)) {
-          const { getUnprocessedConversationCount } = await import('../vault/store.js');
-          const backlog = getUnprocessedConversationCount();
-          basis = backlog === 0
-            ? 'no task-level receipt, but the archive queue is empty: the maintenance outcome this task names is globally satisfied'
-            : `no task-level receipt; archive queue holds ${backlog} unprocessed item(s), adjudicated as an unverifiable maintenance leftover (the live queue is owned by the nightly cycle, not this shell)`;
-        } else {
-          basis = 'no task-level receipt; unverifiable maintenance leftover, adjudicated closed by engine jurisdiction rule';
+        const basis = hasReceipt
+          ? `engine-maintenance receipt on the task itself: ${(cTask.result ?? '').slice(0, 160) || 'evidence array recorded'}`
+          : 'DEFECT: maintenance completion filed NO receipt (result/evidence empty); closed by engine jurisdiction rule to prevent churn, but the completing path owes a receipt';
+        if (!hasReceipt) {
+          logger.error('PM sweep: maintenance task completed WITHOUT a receipt (receipt-filed closeout contract violated by the completing path)', {
+            taskId: cTask.id, assignedTo: cTask.assigned_to, title: (cTask.title ?? '').slice(0, 120),
+          });
         }
         await trackerValidateComplete(getPMAgentId(), { task_id: cTask.id, valid: true });
         const { writeTaskLog } = await import('./task-log.js');
@@ -1200,7 +1219,7 @@ async function runPMReview(): Promise<void> {
       ? '  Trust hint: this is a SELF-ASSIGNED task. Bias toward validate unless something concretely smells off.'
       : '';
     const smellLine = cTask.last_smell_flag
-      ? `\n  ⚠ SMELL_FLAG: ${cTask.last_smell_flag}`
+      ? `\n  ⚠ SMELL_FLAG: ${renderSmellFlag(cTask.last_smell_flag)}`
       : '';
     const runLine = isRecurringRun
       ? `\n  Per-run completion (recurring task, next fire at ${cTask.next_run_at}). On valid=true the engine archives result/evidence to task_log and resets to on_deck for next fire.`

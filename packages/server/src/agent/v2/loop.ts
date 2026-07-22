@@ -65,7 +65,7 @@ import { queueEmbedding } from '../../memory/embeddings.js';
 import { isPrimaryAgent, isTrainerAgent, isPMAgent, isHealerAgent, isDreamerAgent } from '../../config/platform.js';
 import os from 'node:os';
 import path from 'node:path';
-import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, currentTurnNumber, currentTurnRoot, currentTurnServedWork, currentToolCallId, continuationContext, clearTurnReceipts, clearRecallBudget, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
+import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, currentModelRequestId, currentTurnNumber, currentTurnRoot, currentTurnServedWork, currentToolCallId, continuationContext, clearTurnReceipts, clearRecallBudget, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
 import { persistEngineSteer } from './engine-steer.js';
 import { pushEngineMessage } from './engine-message.js';
 import { findRecentDeliveries, getRecentOutbound, mostRecentDeliveryTo, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
@@ -865,7 +865,7 @@ export function setAgentStatus(agentId: string, status: string): void {
         UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?
       `).run(status, agentId);
     }
-    if (status === 'idle') { currentTurnKind.delete(agentId); currentTurnConvKey.delete(agentId); currentTurnImRecipient.delete(agentId); currentTurnNumber.delete(agentId); currentTurnRoot.delete(agentId); currentTurnServedWork.delete(agentId); currentToolCallId.delete(agentId); clearTurnReceipts(agentId); clearRecallBudget(agentId); }
+    if (status === 'idle') { currentTurnKind.delete(agentId); currentTurnConvKey.delete(agentId); currentTurnImRecipient.delete(agentId); currentModelRequestId.delete(agentId); currentTurnNumber.delete(agentId); currentTurnRoot.delete(agentId); currentTurnServedWork.delete(agentId); currentToolCallId.delete(agentId); clearTurnReceipts(agentId); clearRecallBudget(agentId); }
     // On 'working', carry the turn kind so the composer can stay quiet on pure
     // A2A turns (unless wordy mode). Defaults to 'user' until the counterparty
     // is resolved early in the turn.
@@ -1075,13 +1075,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // (AND conv_key = 'engine' keeps it idempotent against a concurrent re-stamp)
     // and record the failed delivery (attempt counter + backoff, migration 084) so
     // the retry timer / boot re-drain re-serves it, bounded by the 5-attempt /
-    // 6-hour lifecycle. Guarded by the SAME no-tools-executed rule as the C4 human
-    // re-arm below: a turn that already executed tools may have performed a side
-    // effect (sent the reminder via imessage_send, created a task), and re-firing
-    // the event would duplicate it, so the claim is left in place in that case.
+    // 6-hour lifecycle. Guarded by the SAME no-non-idempotent-execution rule as
+    // the C4 human re-arm below (P6b): a turn that performed a side effect
+    // (sent the reminder via imessage_send, created a task) must not re-fire
+    // the event, that would duplicate it; a read-only turn re-arms safely.
     if (claimedEngineEvent != null) {
       try {
-        if (state.toolCallsExecutedThisTurn === 0) {
+        if (state.nonIdempotentCallsThisTurn === 0) {
           // D-A step 4: revert + record against the event's ACTUAL home table.
           const table = claimedEngineEvent.src === 'ia' ? 'inter_agent_messages' : 'messages';
           const res = db.prepare(`UPDATE ${table} SET conv_key = NULL WHERE agent_id = ? AND rowid = ? AND conv_key = 'engine'`)
@@ -1522,6 +1522,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
     const subjectId = isEngineTurn ? (pendingEngineEvent?.id ?? null)
       : isA2ATurn ? ((terminalWakeA2A as unknown as { a2a_thread_id?: string | null } | null)?.a2a_thread_id ?? null)
       : chosenConvKey;
+    currentModelRequestId.set(agentId, `req_${uuidv4().replace(/-/g, '').slice(0, 16)}`);
     recordTurnStart({
       agentId, turnNumber, kind, subjectKind, subjectId,
       rootKind: root?.kind ?? null, rootId: root?.id ?? null,
@@ -1581,14 +1582,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
   //   - no user-facing text (lastAssistantTextForIM), and
   //   - no surfaced reply, and
   //   - no delivery-tool send (explicitSendThisTurn), and
-  //   - NO tools executed at all (toolCallsExecutedThisTurn === 0).
-  // The last clause is the correctness-critical one: a break that reached end-of-turn
-  // AFTER executing tools (stuck-repeating, no-results, spinning-cap, continuation-cap,
-  // empty-after-tools) may have already performed a side effect (created a task, wrote a
-  // file, sent a message), re-serving it would DUPLICATE that side effect. Those
-  // "did work but didn't reply" cases are owned by the note-then-stopped / going-idle
-  // nudges, not by re-serving. So we re-arm only the give-up break, where no work was
-  // done and re-serving is a safe transient-empty retry. Bounded by MAX_DRAIN_STUCK.
+  //   - no NON-IDEMPOTENT execution (nonIdempotentCallsThisTurn === 0; P6b
+  //     refinement of the old any-tools-at-all clause, which stranded asks on
+  //     purely read-only turns).
+  // The last clause is the correctness-critical one: a break after a real side
+  // effect (created a task, wrote a file, sent a message) must never re-serve,
+  // that would DUPLICATE the effect. Reads/lookups load context and nothing
+  // else, so re-serving after them is a safe transient-empty retry. The
+  // "did work but didn't reply" cases are owned by the note-then-stopped /
+  // going-idle nudges, not by re-serving. Bounded by MAX_DRAIN_STUCK.
   // D8: on an ENGINE turn the same call also reverts the engine-event claim and
   // records the failed delivery (attempt counter + backoff), so an empty give-up
   // turn can't strand a reminder as "processed"; bounded by the 5-attempt lifecycle.
@@ -1597,7 +1599,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       !state.lastAssistantTextForIM &&
       !state.surfacedReplyThisTurn &&
       !Object.values(state.explicitSendThisTurn).some(Boolean) &&
-      state.toolCallsExecutedThisTurn === 0
+      state.nonIdempotentCallsThisTurn === 0
     ) {
       revertTriggerStampOnAbort();
     }
@@ -6674,7 +6676,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
             }
           } catch { /* recording is best-effort */ }
 
-          state = advance(state, { toolCallsExecutedThisTurn: state.toolCallsExecutedThisTurn + 1 });
+          state = advance(state, {
+            toolCallsExecutedThisTurn: state.toolCallsExecutedThisTurn + 1,
+            // Success-only, same discipline as the once-guard: a failed call
+            // performed no side effect and must not block the abort re-arm.
+            nonIdempotentCallsThisTurn: state.nonIdempotentCallsThisTurn +
+              ((toolResult.isError !== true &&
+                (classifyTool(tc.name) === 'effectful-action' ||
+                 FIRE_AND_FORGET_GEN_TOOLS.has(tc.name) ||
+                 SEND_TO_PEOPLE_SET.has(tc.name))) ? 1 : 0),
+          });
 
           // ── Anti-hoarding heavy-load accounting (2026-07-08 measured-size) ──
           // The counter ticks on the MEASURED SIZE of the result's text payload,

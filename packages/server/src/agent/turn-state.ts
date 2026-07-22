@@ -30,6 +30,13 @@ export const currentTurnConvKey = new Map<string, string | null>();
 // drain (the "reply to a contact sent to the owner" class of bug). Cleared on idle.
 export const currentTurnImRecipient = new Map<string, string>();
 
+/** P6b: the per-turn model-request id, the JOIN between the router's decision
+ *  (router_log.request_id) and the spend it produced (cost_records.request_id).
+ *  Minted once at turn start, cleared at idle; out-of-turn model calls
+ *  (background summarizers and the like) find no entry and record NULL rather
+ *  than inheriting a stale turn's id. */
+export const currentModelRequestId = new Map<string, string>();
+
 // C26: per-turn register of engine-written tool_receipts ids. writeToolReceipt
 // (receipts/store.ts) appends the receipt id here the moment it persists the
 // row; the tracker complete gate reads getTurnReceipts(agentId) to demand a

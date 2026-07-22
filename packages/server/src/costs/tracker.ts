@@ -4,6 +4,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { currentModelRequestId } from '../agent/turn-state.js';
 import { createLogger } from '../logger.js';
 import { checkAlertsAfterCost } from './budget.js';
 
@@ -168,8 +169,8 @@ export function recordCost(params: RecordCostParams): void {
     db.prepare(`
       INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens, output_tokens,
                                 cost_usd, latency_ms, request_type,
-                                cache_read_tokens, cache_creation_tokens, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                                cache_read_tokens, cache_creation_tokens, request_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `).run(
       uuidv4(),
       agentId,
@@ -185,6 +186,9 @@ export function recordCost(params: RecordCostParams): void {
       // non-reporting provider as a cache miss.
       cacheReadTokens ?? null,
       cacheCreationTokens ?? null,
+      // P6b: joins this spend to the router decision that produced it
+      // (router_log.request_id). NULL for out-of-turn calls by design.
+      currentModelRequestId.get(agentId) ?? null,
     );
 
     // Invalidate daily spend cache so next budget check gets fresh data

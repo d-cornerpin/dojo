@@ -110,6 +110,13 @@ export interface AgentTurnState {
   // ── Loop counters ──
   loopCount: number;
   toolCallsExecutedThisTurn: number;
+  /** P6b abort-revert refinement: successful NON-IDEMPOTENT executions this
+   *  turn (channel sends, fire-and-forget generators, effectful actions). The
+   *  re-arm/revert guards key on THIS, not on any-tools-at-all, so a read-only
+   *  aborted turn re-arms its stranded ask while a turn that performed a real
+   *  side effect still never re-fires (a duplicate send is worse than a
+   *  stranded ask; the direction of error is preserved). */
+  nonIdempotentCallsThisTurn: number;
 
   // ── Model selection ──
   modelId: string;
@@ -503,6 +510,7 @@ export function initState(params: InitStateParams): AgentTurnState {
 
     loopCount: 0,
     toolCallsExecutedThisTurn: 0,
+    nonIdempotentCallsThisTurn: 0,
 
     modelId: params.isAutoRouted ? '__auto__' : params.configuredModelId,
     routerTier: null,
