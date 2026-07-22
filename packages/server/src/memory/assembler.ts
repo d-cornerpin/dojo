@@ -1,4 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
+import { renderTaskStamps, renderStepFacts, type TaskStampFields } from '../tracker/task-stamps.js';
+import { getDb as getStampDb } from '../db/connection.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { type PromptTurnContext } from '../prompt/assembler.js';
@@ -898,8 +900,26 @@ async function assembleMessageContext(
         );
       }
       if (!allMentionedRecently) {
+        // Ticket stamps (2026-07-22): this standing view used to say "work on
+        // this" with zero state, steering the model into re-doing delivered
+        // work. Each line now carries the engine's stamp (one compact line)
+        // plus live step-sequence facts, so the model KNOWS state here.
+        const stampStmt = getStampDb().prepare(
+          `SELECT id, last_activity_turn, last_activity_at, last_activity_outcome,
+                  last_answered_turn, last_answered_at, last_delivery_summary,
+                  step_number, total_steps, project_id
+             FROM tasks WHERE id = ?`,
+        );
         const taskLines = activeTasks.slice(0, 5).map(t => {
           let line = `• ${t.title} (ID: ${t.id.slice(0, 8)}, priority: ${t.priority})`;
+          try {
+            const st = stampStmt.get(t.id) as TaskStampFields | undefined;
+            if (st) {
+              const stamp = renderTaskStamps(st);
+              const steps = renderStepFacts(st);
+              line += `\n  State: ${stamp}${steps ? ` | ${steps}` : ''}`;
+            }
+          } catch { /* stamps are best-effort */ }
           if (t.description) line += `\n  Instructions: ${t.description.slice(0, 300)}${t.description.length > 300 ? '...' : ''}`;
           if (t.notes) {
             const lastNote = t.notes.split('\n').filter(Boolean).pop();

@@ -335,3 +335,62 @@ describe('two-key KEY 2: pause_validated writers limited to verdict paths (track
     expect(violations.length).toBe(1);
   });
 });
+
+
+// ── Ticket-stamp write locks (DOJO-TICKET-STAMPS-PLAN §5, 2026-07-22) ──
+// The stamp writer updates engine-observed state columns on tasks. Two hard
+// rules, each a build-failing scan with a positive control:
+//   1. A stamp UPDATE never touches updated_at: the drive ladder's idle clock
+//      (pm-agent idleSeconds) and both close-out windows read it; touching it
+//      would mark stalled work "fresh" forever and silence every poke.
+//   2. A stamp UPDATE never touches status or any *_validated column: stamps
+//      inform, they never turn either key.
+describe('ticket stamps: stamp writers are updated_at-free and status-free', () => {
+  const STAMP_COLS = /last_activity_|last_answered_|last_delivery_/;
+  const FORBIDDEN = [/\bupdated_at\b/, /\bstatus\s*=/, /complete_validated/, /pause_validated/, /blocked_validated/];
+
+  function stampUpdateBlocks(text: string): string[] {
+    const blocks: string[] = [];
+    const re = /UPDATE\s+tasks\s+SET[\s\S]{0,600}?(?:WHERE[^\n]*)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text))) {
+      if (STAMP_COLS.test(m[0])) blocks.push(m[0]);
+    }
+    return blocks;
+  }
+
+  it('every stamp UPDATE in the tree obeys both rules', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+    const files: string[] = [];
+    (function walk(d: string) {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const fp = path.join(d, e.name);
+        if (e.isDirectory()) { if (!fp.includes('__tests__') && !fp.includes('node_modules')) walk(fp); }
+        else if (e.name.endsWith('.ts')) files.push(fp);
+      }
+    })(srcRoot);
+    const violations: string[] = [];
+    let found = 0;
+    for (const f of files) {
+      const text = fs.readFileSync(f, 'utf8');
+      for (const block of stampUpdateBlocks(text)) {
+        found++;
+        for (const bad of FORBIDDEN) {
+          if (bad.test(block)) violations.push(`${path.relative(srcRoot, f)}: stamp UPDATE touches forbidden pattern ${bad}: ${block.slice(0, 140)}`);
+        }
+      }
+    }
+    expect(found, 'no stamp UPDATE found anywhere; the scan pattern or the writer is missing').toBeGreaterThanOrEqual(1);
+    expect(violations, violations.join('\n')).toEqual([]);
+  });
+
+  it('positive control: a forged stamp UPDATE touching updated_at is caught', () => {
+    const forged = "UPDATE tasks SET last_activity_turn = ?, updated_at = datetime('now') WHERE id = ?";
+    const blocks = stampUpdateBlocks(forged);
+    expect(blocks.length).toBe(1);
+    expect(FORBIDDEN.some((bad) => bad.test(blocks[0]))).toBe(true);
+  });
+});

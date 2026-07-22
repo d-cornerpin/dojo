@@ -14,6 +14,7 @@
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
+import { findTaskOriginChain, renderTaskOriginChain } from './delivery-evidence.js';
 import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -145,6 +146,9 @@ export function injectTaskAssignmentNotification(
     description ? `\nInstructions:\n${description}` : '',
     projectId ? `Project: ${projectId}` : '',
     `Assigned by: ${creatorName}`,
+    // Ticket stamps (2026-07-22): the assignee starts with the CONNECTION,
+    // where this work came from, so the ticket is never a floating title.
+    (() => { try { const o = findTaskOriginChain(taskId); return o ? `Origin: ${renderTaskOriginChain(o)}` : ''; } catch { return ''; } })(),
     ``,
     `Begin working on this task. When finished, call tracker_update_status(task_id="${taskId}", status="complete", notes="what you did").`,
     `If you get stuck, call tracker_update_status(task_id="${taskId}", status="blocked", notes="why you're blocked").`,

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence } from './delivery-evidence.js';
+import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { currentTurnNumber } from '../agent/turn-state.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1813,9 +1814,25 @@ function buildPokeMessage(
   if (!task) return '';
 
   const idleMinutes = Math.floor(idleSeconds / 60);
+  // Ticket stamps (2026-07-22): every poke carries the engine's observed
+  // state + live step facts, so a drive can never read as "start over."
+  let stampLine = '';
+  try {
+    const st = getDb().prepare(
+      `SELECT id, last_activity_turn, last_activity_at, last_activity_outcome,
+              last_answered_turn, last_answered_at, last_delivery_summary,
+              step_number, total_steps, project_id
+         FROM tasks WHERE id = ?`,
+    ).get(task.id) as TaskStampFields | undefined;
+    if (st) {
+      const steps = renderStepFacts(st);
+      stampLine = `Engine state: ${renderTaskStamps(st)}${steps ? ` | ${steps}` : ''}`;
+    }
+  } catch { /* best effort */ }
   const taskInfo = [
     `Task: ${task.title}`,
     `ID: ${task.id}`,
+    ...(stampLine ? [stampLine] : []),
     `Priority: ${task.priority}`,
     `Status: ${task.status}`,
     task.description ? `Description: ${task.description}` : null,

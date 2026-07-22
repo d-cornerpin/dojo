@@ -9,6 +9,7 @@
 // ════════════════════════════════════════════════════════════════════════
 import { getDb } from '../db/connection.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, findTaskOriginChain, renderTaskOriginChain } from './delivery-evidence.js';
+import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { createLogger } from '../logger.js';
 import {
@@ -49,6 +50,22 @@ import { resolveAgentRef as resolveAgentName } from '../agent/tool-helpers.js';
 
 // ── Notify primary agent of task/project completion ──
 
+
+// Ticket stamps (2026-07-22): the tracker read surfaces render the engine's
+// stamp line from the columns; the live delivery-evidence join stays as
+// backfill for rows that predate migration 124.
+function getTaskStampFields(taskId: string): TaskStampFields | null {
+  try {
+    return getDb().prepare(
+      `SELECT id, last_activity_turn, last_activity_at, last_activity_outcome,
+              last_answered_turn, last_answered_at, last_delivery_summary,
+              step_number, total_steps, project_id
+         FROM tasks WHERE id = ?`,
+    ).get(taskId) as TaskStampFields | null;
+  } catch {
+    return null;
+  }
+}
 function notifyPrimaryAgent(message: string, callingAgentId: string, forceNotify = false): void {
   const primaryId = getPrimaryAgentId();
   // Don't notify if the primary agent is the one completing the task (unless forced)
@@ -2328,14 +2345,26 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
         parts.push(`Updated: ${task.updatedAt}`);
         if (task.completedAt) parts.push(`Completed: ${task.completedAt}`);
         // 2026-07-22 production incident: the status READ is where the re-work
-        // spiral started (the agent consulted this exact tool, saw a lying
-        // in_progress, and redid a delivered job). The read now consults the
-        // engine's own delivery records and says so in-band.
+        // spiral started. The read renders the ticket's STAMPS (engine-observed
+        // state) plus live step facts; the delivery-evidence join backfills
+        // rows that predate the stamp columns.
+        {
+          const st = getTaskStampFields(task.id);
+          if (st) {
+            const steps = renderStepFacts(st);
+            parts.push(`State: ${renderTaskStamps(st)}${steps ? ` | ${steps}` : ''}`);
+          }
+        }
         if (task.status === 'in_progress') {
-          const ev = findDeliveryEvidenceForTask(task.id);
-          if (ev) {
+          const st = getTaskStampFields(task.id);
+          const stamped = !!st && st.last_answered_turn !== null;
+          const ev = stamped ? null : findDeliveryEvidenceForTask(task.id);
+          if (stamped || ev) {
+            const evLine = stamped
+              ? `answered on turn ${st!.last_answered_turn} (${st!.last_answered_at} UTC)${st!.last_delivery_summary ? `; ${st!.last_delivery_summary}` : ''}`
+              : renderDeliveryEvidence(ev!);
             parts.push(
-              `\n[ENGINE RECORD: this task's work appears ALREADY DELIVERED, ${renderDeliveryEvidence(ev)}. ` +
+              `\n[ENGINE RECORD: this task's work appears ALREADY DELIVERED, ${evLine}. ` +
               `If that delivery completed the task, close it NOW with tracker_update_status(status="complete") (or tracker_complete_step) ` +
               `and do NOT redo or re-deliver the work. Only continue working if something genuinely remains.]`
             );
@@ -2451,14 +2480,22 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
           parts.push(`In Progress Tasks (${inProgress.length}):`);
           for (const t of inProgress) {
             parts.push(taskRow(t as Parameters<typeof taskRow>[0]));
-            // 2026-07-22: origin + delivery record in-band on every list read,
-            // so the agent can CONNECT the task to its conversation and see
-            // whether it was already answered (the re-work spiral started at
-            // a status read that repeated the lying in_progress).
-            const origin = findTaskOriginChain((t as { id: string }).id);
+            // 2026-07-22: origin + STAMPS in-band on every list read, so the
+            // agent connects the task to its conversation and knows its state
+            // without guessing (the re-work spiral started at a status read
+            // that repeated the lying in_progress).
+            const tid = (t as { id: string }).id;
+            const origin = findTaskOriginChain(tid);
             if (origin) parts.push(`      ^ origin: ${renderTaskOriginChain(origin)}`);
-            const ev = findDeliveryEvidenceForTask((t as { id: string }).id);
-            if (ev) parts.push(`      ^ ENGINE RECORD: appears already delivered (${renderDeliveryEvidence(ev)}); close it complete, do not redo.`);
+            const st = getTaskStampFields(tid);
+            if (st) {
+              const steps = renderStepFacts(st);
+              parts.push(`      ^ state: ${renderTaskStamps(st)}${steps ? ` | ${steps}` : ''}`);
+            }
+            if (!st || st.last_answered_turn === null) {
+              const ev = findDeliveryEvidenceForTask(tid);
+              if (ev) parts.push(`      ^ ENGINE RECORD: appears already delivered (${renderDeliveryEvidence(ev)}); close it complete, do not redo.`);
+            }
           }
           totalShown += inProgress.length;
         }

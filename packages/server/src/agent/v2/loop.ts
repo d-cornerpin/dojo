@@ -2071,8 +2071,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // says so and names the right disposition instead of offering a menu.
       try {
         const { findDeliveryEvidenceForTask, renderDeliveryEvidence } = await import('../../tracker/delivery-evidence.js');
+        const { renderTaskStamps } = await import('../../tracker/task-stamps.js');
         const evidenced: string[] = [];
         for (const r of inProgressDanglers) {
+          // Stamps first (mig 124), live join as backfill for pre-stamp rows.
+          const st = db.prepare(
+            `SELECT id, last_activity_turn, last_activity_at, last_activity_outcome,
+                    last_answered_turn, last_answered_at, last_delivery_summary
+               FROM tasks WHERE id = ?`,
+          ).get(r.id) as import('../../tracker/task-stamps.js').TaskStampFields | undefined;
+          if (st && st.last_answered_turn !== null) {
+            evidenced.push(`  - "${r.title}" (${r.id.slice(0, 8)}): ${renderTaskStamps(st)}`);
+            continue;
+          }
           const ev = findDeliveryEvidenceForTask(r.id);
           if (ev) evidenced.push(`  - "${r.title}" (${r.id.slice(0, 8)}): ${renderDeliveryEvidence(ev)}`);
         }
@@ -3608,6 +3619,29 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // facts above, so it never breaks the prompt-cache prefix.
           const loopsBlock = buildOpenLoopsInjection(agentId, chosenConvKey);
           if (loopsBlock) pushEngineMessage(messages, loopsBlock); // registry-exempt(2026-07-16): RC-2 open-loops block reads conv-scoped rows mid-iteration; migrate with the volatile-injection registry refactor
+
+          // RECENTLY ANSWERED (ticket-stamps plan A4, owner-approved): the
+          // last few asks of THIS conversation that already have answers,
+          // read from the per-ask answer stamps (mig 113), so answered-ness
+          // survives compaction structurally and the model never re-answers
+          // a settled question. Bounded: 3 lines; human turns; volatile lane.
+          if (chosenConvKey) {
+            try {
+              const answeredAsks = db.prepare(
+                `SELECT content, created_at FROM messages
+                  WHERE agent_id = ? AND conv_key = ? AND role = 'user'
+                    AND answer_message_id IS NOT NULL
+                  ORDER BY created_at DESC LIMIT 3`,
+              ).all(agentId, chosenConvKey) as Array<{ content: string; created_at: string }>;
+              if (answeredAsks.length > 0) {
+                const lines = answeredAsks.map((a) => {
+                  const excerpt = a.content.replace(/^\[[^\]]*\]\s*/g, '').trim().slice(0, 90);
+                  return `- answered ${relativeTimeAgo(a.created_at)}: "${excerpt}"`;
+                });
+                pushEngineMessage(messages, `RECENTLY ANSWERED in this conversation (engine record; do NOT answer these again):\n${lines.join('\n')}`); // registry-exempt(2026-07-22): reads per-iteration conv-scoped answer stamps; migrate with the volatile-injection registry refactor
+              }
+            } catch { /* best effort */ }
+          }
         } catch (err) {
           logger.debug('RC-12/RC-1 volatile outbound injection failed (non-fatal)', {
             agentId, error: err instanceof Error ? err.message : String(err),
@@ -8938,6 +8972,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
         : handoffRow ? 'handoff'
         : 'no_reply';
       finalizeTurn(agentId, turnNumber, outcome, answerRow?.id ?? null);
+      // Ticket stamps (owner design 2026-07-22): the ONE stamping point. The
+      // engine writes what it observed onto every ticket this turn's root
+      // touches, so the model reads state instead of guessing it.
+      try {
+        const { stampTasksAtTurnFinalize } = await import('../../tracker/task-stamps.js');
+        const stampRoot = currentTurnRoot.get(agentId);
+        stampTasksAtTurnFinalize({
+          agentId, turnNumber, outcome,
+          answerMessageId: answerRow?.id ?? null,
+          rootSourceMessageId: stampRoot?.sourceMessageId ?? null,
+          convKey: chosenConvKey ?? null,
+          servedTaskId: currentTurnServedWork.get(agentId)?.taskId ?? null,
+        });
+      } catch { /* stamps are best-effort; never block finalize */ }
       // P8 reply binding for the PHONE lane, riding the P4 answer stamp: the
       // spoken reply row is bound by id to its voice session with speaker
       // 'agent' (the dashboard-voice equivalent happens at the TTS burst's
