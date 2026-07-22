@@ -8,7 +8,7 @@
 // this file for bare role='system' INSERTs carrying imperative model-directed text.
 // ════════════════════════════════════════════════════════════════════════
 import { getDb } from '../db/connection.js';
-import { findDeliveryEvidenceForTask, renderDeliveryEvidence } from './delivery-evidence.js';
+import { findDeliveryEvidenceForTask, renderDeliveryEvidence, findTaskOriginChain, renderTaskOriginChain } from './delivery-evidence.js';
 import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { createLogger } from '../logger.js';
 import {
@@ -2294,6 +2294,13 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
           parts.push(`Project: ${proj?.title ?? task.projectId}`);
         }
         if (task.assignedTo) parts.push(`Assigned to: ${task.assignedToName ?? task.assignedTo}`);
+        // The origin chain, in the agent's own view (2026-07-22 owner ruling:
+        // the point of the identity work is that the AGENT can discern where a
+        // task came from and connect it to its conversation and prompt).
+        {
+          const origin = findTaskOriginChain(task.id);
+          if (origin) parts.push(`Origin: ${renderTaskOriginChain(origin)}`);
+        }
         if (task.description) parts.push(`Description: ${task.description}`);
         if (task.stepNumber !== null) parts.push(`Step: ${task.stepNumber}${task.totalSteps ? ` of ${task.totalSteps}` : ''}`);
         if (task.dependsOn.length > 0) {
@@ -2444,9 +2451,12 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
           parts.push(`In Progress Tasks (${inProgress.length}):`);
           for (const t of inProgress) {
             parts.push(taskRow(t as Parameters<typeof taskRow>[0]));
-            // 2026-07-22: the list read carries the engine's delivery record
-            // in-band, same consult as tracker_get_status (the re-work spiral
-            // started at a status read that repeated the lying in_progress).
+            // 2026-07-22: origin + delivery record in-band on every list read,
+            // so the agent can CONNECT the task to its conversation and see
+            // whether it was already answered (the re-work spiral started at
+            // a status read that repeated the lying in_progress).
+            const origin = findTaskOriginChain((t as { id: string }).id);
+            if (origin) parts.push(`      ^ origin: ${renderTaskOriginChain(origin)}`);
             const ev = findDeliveryEvidenceForTask((t as { id: string }).id);
             if (ev) parts.push(`      ^ ENGINE RECORD: appears already delivered (${renderDeliveryEvidence(ev)}); close it complete, do not redo.`);
           }
