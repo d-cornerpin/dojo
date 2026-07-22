@@ -18,6 +18,7 @@
  */
 
 import type { WSContext } from 'hono/ws';
+import { startVoiceSessionRecord, endVoiceSessionRecord, bumpVoiceSessionTurnCount, stampSpokenMessage } from './session-record.js';
 import jwt from 'jsonwebtoken';
 import { getJwtSecret } from '../config/loader.js';
 import { createLogger } from '../logger.js';
@@ -41,6 +42,9 @@ interface VoiceSession {
   ws: WSContext;
   userId: string;
   agentId: string;
+  /** P8: the durable voice_sessions row for this WS session (null if the
+   *  record failed; everything proceeds unrecorded). */
+  recordId: string | null;
   voice: string;
   speed: number;
   /**
@@ -236,7 +240,9 @@ function loadVoiceSettings(): {
  * the SQL only updates rows where source IS NULL, and the broadcast is
  * cheap, so duplicate calls during a burst are a no-op end-to-end.
  */
-function markAssistantMessageVoiced(agentId: string, messageId: string): void {
+function markAssistantMessageVoiced(agentId: string, messageId: string, recordId?: string | null): void {
+  // P8: the spoken reply is bound by id, speaker 'agent', to its session.
+  stampSpokenMessage(messageId, 'agent', recordId ?? null);
   if (!messageId) return;
   try {
     const db = getDb();
@@ -506,7 +512,13 @@ export function verifyAndOpenVoiceSession(ws: WSContext, url: string): boolean {
       openerSpoken: false,
       cloudFallbackNotified: false,
       customVoiceWarned: false,
+      // P8: durable session identity, written before first use.
+      recordId: null,
     };
+    session.recordId = startVoiceSessionRecord({
+      agentId, kind: 'dashboard',
+      sttModel: saved.sttModel, ttsEngine: saved.ttsEngine, voiceId: saved.voice,
+    });
     sessions.set(ws, session);
     // Heartbeat every 25s, under Cloudflare Tunnel's default WS idle timeout
     // and under the typical 30s nginx default if anyone reverse-proxies us.
@@ -570,6 +582,7 @@ export function closeVoiceSession(ws: WSContext): void {
     session.pendingTurnExtension = null;
   }
   sessions.delete(ws);
+  endVoiceSessionRecord(session.recordId, 'ws-closed');
   logger.info('Voice session closed', { userId: session.userId, agentId: session.agentId });
 }
 
@@ -1186,6 +1199,11 @@ async function submitTranscriptAndStartTts(session: VoiceSession, transcript: st
   // Post the transcript through the normal chat pipeline. source='voice'
   // so the dashboard renders a mic icon on this user bubble.
   const submit = await submitUserMessage(session.agentId, transcript, undefined, 'voice');
+  // P8 speaker stamp on the id we hold (no read-back race; the row is ours).
+  if (submit.ok && submit.messageId) {
+    stampSpokenMessage(submit.messageId, 'owner', session.recordId);
+    bumpVoiceSessionTurnCount(session.recordId);
+  }
   if (!submit.ok) {
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'error', detail: submit.error });
     return;
@@ -1681,7 +1699,7 @@ function startTtsForAgent(
         // content chunks the row doesn't exist yet so the UPDATE
         // silently matched 0 rows and no broadcast fired. By `done`
         // the row is persisted.
-        markAssistantMessageVoiced(session.agentId, event.messageId);
+        markAssistantMessageVoiced(session.agentId, event.messageId, session.recordId);
         // If the model ended mid-bracket (e.g. just emitted "[no") and
         // never closed it, flush whatever we held back so the user
         // hears it. Genuine control markers like `[no-reply]` always
@@ -2116,7 +2134,7 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
           // Stamp the assistant message as voice-delivered. Done here
           // (NOT in the content branch) because the row is INSERTed in
           // loop.ts after streaming completes, by `done` it exists.
-          markAssistantMessageVoiced(session.agentId, event.messageId);
+          markAssistantMessageVoiced(session.agentId, event.messageId, session.recordId);
           // Flush any held-back bracket buffer (mid-marker text that
           // never got its closing bracket) so it isn't silently
           // dropped on stream end.

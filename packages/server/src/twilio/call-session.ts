@@ -22,6 +22,7 @@
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
+import { startVoiceSessionRecord, endVoiceSessionRecord, bumpVoiceSessionTurnCount, stampSpokenMessage } from '../voice/session-record.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -148,6 +149,7 @@ export class CallSession {
 
   // Running transcript stitched at the end into twilio_call_log.transcript.
   private transcript: Array<{ at: string; speaker: 'caller' | 'agent'; text: string }> = [];
+  private voiceSessionRecordId: string | null = null;
 
   // v2.9.23 phone-mode call context. Mutable: AMD flips voicemailDetected
   // when the answering-machine result arrives; the rest is set at
@@ -177,6 +179,12 @@ export class CallSession {
     this.agentId = getPrimaryAgentId();
     this.startedAt = Date.now();
     this.persistInitialLog();
+    // P8: one session identity space for the spoken lane. twilio_call_log
+    // stays the call's own record; this row joins the call to voice identity
+    // (speaker stamps + reply binding key on it).
+    this.voiceSessionRecordId = this.agentId ? startVoiceSessionRecord({
+      agentId: this.agentId, kind: 'phone', externalId: this.callSid,
+    }) : null;
     this.armMaxDuration();
     logger.info('CallSession started', {
       callSid: this.callSid, streamSid: this.streamSid, direction: this.direction,
@@ -535,6 +543,9 @@ export class CallSession {
         INSERT OR IGNORE INTO messages (id, agent_id, role, content, conversation_id, external_message_id, created_at)
         VALUES (?, ?, 'user', ?, ?, ?, datetime('now'))
       `).run(msgId, primaryId, content, conversationId, this.callSid ?? null);
+      // P8 speaker stamp on the id we hold (race-free) + session turn count.
+      stampSpokenMessage(msgId, 'caller', this.voiceSessionRecordId);
+      bumpVoiceSessionTurnCount(this.voiceSessionRecordId);
       // v3.0.9 — structured routing metadata. Stamped synchronously before
       // handleMessage runs below so the turn reads it. A live call is already
       // connected, so the reply is always spoken back via TTS to whoever is
@@ -726,6 +737,7 @@ export class CallSession {
       clearTimeout(this.ttsTimer);
       this.ttsTimer = null;
     }
+    endVoiceSessionRecord(this.voiceSessionRecordId, reason);
     const durationSeconds = Math.round((Date.now() - this.startedAt) / 1000);
     const transcriptText = this.transcript.length === 0
       ? null

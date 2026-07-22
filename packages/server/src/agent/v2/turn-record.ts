@@ -24,18 +24,22 @@ export function recordTurnStart(params: {
   rootId: string | null;
   sourceMessageId: string | null;
   convKey: string | null;
+  /** P8: the spoken-stream lane, typed on the record ('voice' in-person,
+   *  'phone' live call, null for text lanes) so consumers stop re-deriving
+   *  it from source flags and prose markers. */
+  lane?: 'voice' | 'phone' | null;
 }): void {
   try {
     getDb().prepare(`
-      INSERT INTO turns (agent_id, turn_number, kind, subject_kind, subject_id, root_kind, root_id, source_message_id, conv_key, started_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      INSERT INTO turns (agent_id, turn_number, kind, subject_kind, subject_id, root_kind, root_id, source_message_id, conv_key, lane, started_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
       ON CONFLICT(agent_id, turn_number) DO UPDATE SET
         kind = excluded.kind, subject_kind = excluded.subject_kind, subject_id = excluded.subject_id,
         root_kind = excluded.root_kind, root_id = excluded.root_id,
-        source_message_id = excluded.source_message_id, conv_key = excluded.conv_key
+        source_message_id = excluded.source_message_id, conv_key = excluded.conv_key, lane = excluded.lane
     `).run(
       params.agentId, params.turnNumber, params.kind, params.subjectKind, params.subjectId,
-      params.rootKind, params.rootId, params.sourceMessageId, params.convKey,
+      params.rootKind, params.rootId, params.sourceMessageId, params.convKey, params.lane ?? null,
     );
   } catch (err) {
     logger.warn('turn record start failed (non-fatal)', { agentId: params.agentId, turnNumber: params.turnNumber, error: err instanceof Error ? err.message : String(err) });

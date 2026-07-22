@@ -1534,6 +1534,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
     currentModelRequestId.set(agentId, `req_${uuidv4().replace(/-/g, '').slice(0, 16)}`);
     recordTurnStart({
       agentId, turnNumber, kind, subjectKind, subjectId,
+      // P8: typed spoken-stream lane on the record.
+      lane: latestUserSource === 'voice' ? 'voice' : inboundChannel === 'phone' ? 'phone' : null,
       rootKind: root?.kind ?? null, rootId: root?.id ?? null,
       sourceMessageId: root?.sourceMessageId ?? null, convKey: chosenConvKey,
     });
@@ -8872,6 +8874,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
         : handoffRow ? 'handoff'
         : 'no_reply';
       finalizeTurn(agentId, turnNumber, outcome, answerRow?.id ?? null);
+      // P8 reply binding for the PHONE lane, riding the P4 answer stamp: the
+      // spoken reply row is bound by id to its voice session with speaker
+      // 'agent' (the dashboard-voice equivalent happens at the TTS burst's
+      // markAssistantMessageVoiced; a call has no burst-side message hook, so
+      // the finalize stamp is its binding point).
+      if (answerRow && inboundChannel === 'phone' && inboundContext?.phoneCallSid) {
+        try {
+          const { getVoiceSessionIdForCall, stampSpokenMessage } = await import('../../voice/session-record.js');
+          stampSpokenMessage(answerRow.id, 'agent', getVoiceSessionIdForCall(inboundContext.phoneCallSid));
+        } catch { /* best effort */ }
+      }
       // Per-ask outcome: every row this turn served records the reply that
       // answered it (both stores; sibling rows were stamped served_by_turn in
       // claimAssembledSiblings above).
