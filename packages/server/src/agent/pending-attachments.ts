@@ -1,16 +1,32 @@
 // ════════════════════════════════════════
-// Pending Attachments
-// Per-agent buffer for files queued via show_to_user that should be
-// attached to the agent's next persisted assistant message.
+// Pending Attachments (P6b-2c: durable turn_artifacts rows, migrations 121/122)
 //
-// Why a buffer instead of inserting an assistant message during the
-// tool call: persisting an extra assistant row mid-tool-loop breaks
-// the strict assistant→tool→assistant alternation the model expects,
-// confuses the model into re-calling show_to_user, and inflates the
-// chat with synthetic bubbles. Letting the runtime drain this buffer
-// onto the agent's *next* assistant write keeps the alternation
-// clean — the user sees a single bubble with text + thumbnail.
+// Files queued via show_to_user (plus canvas-doc and screen chips) that should
+// ride the agent's next persisted assistant message. Why a queue instead of
+// inserting an assistant message during the tool call: persisting an extra
+// assistant row mid-tool-loop breaks the strict assistant→tool→assistant
+// alternation the model expects, confuses the model into re-calling
+// show_to_user, and inflates the chat with synthetic bubbles.
+//
+// P6b-2c rekey: the queue is turn_artifacts ROWS, not an in-memory map. The
+// map could strand its contents on a crash/reload (the 2026-06-06 lost-report
+// incident class); rows survive, carry the queueing turn + payload, and a
+// drain is an UPDATE of delivered_at, so "was this surfaced" is durable state
+// instead of process memory. The end-of-turn surfacing paths in the loop stop
+// being safety nets over fragile state and become plain consumers of the
+// undelivered set. The old per-session filename dedup died with the rekey:
+// delivered_at itself is the once-only guarantee, and a re-generated file in
+// a later turn is a new artifact that legitimately surfaces again.
+//
+// clearPendingAttachments / peekPendingAttachmentCount had no callers left
+// and were dropped in the rekey.
 // ════════════════════════════════════════
+import { v4 as uuidv4 } from 'uuid';
+import { getDb } from '../db/connection.js';
+import { createLogger } from '../logger.js';
+import { currentTurnNumber } from './turn-state.js';
+
+const logger = createLogger('pending-attachments');
 
 export interface PendingAttachment {
   fileId: string;
@@ -28,15 +44,25 @@ export interface PendingAttachment {
   screenShare?: boolean;
 }
 
-const buffers = new Map<string, PendingAttachment[]>();
-
-// v2.9.20 — captions parallel to the attachment buffer. show_to_user's
-// `caption` arg was previously discarded (the model was expected to
-// re-write it as its reply text). Now we capture each call's caption
-// so that if the loop ends without the model writing terminal text,
-// the engine's end-of-turn safety net can synthesize a final message
-// using the caption(s) as the bubble text + the attached files.
-const captionBuffers = new Map<string, string[]>();
+function insertArtifact(
+  agentId: string,
+  kind: 'attachment' | 'canvas' | 'screen',
+  att: PendingAttachment,
+  caption: string | null,
+): void {
+  getDb().prepare(`
+    INSERT INTO turn_artifacts (id, agent_id, turn_number, kind, path, caption, payload_json, queued_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), datetime('now'))
+  `).run(
+    uuidv4(),
+    agentId,
+    currentTurnNumber.get(agentId) ?? null,
+    kind,
+    att.path || null,
+    caption,
+    JSON.stringify(att),
+  );
+}
 
 export function queuePendingAttachments(
   agentId: string,
@@ -44,11 +70,15 @@ export function queuePendingAttachments(
   caption?: string,
 ): void {
   if (attachments.length === 0) return;
-  const existing = buffers.get(agentId) ?? [];
-  buffers.set(agentId, [...existing, ...attachments]);
-  if (caption && caption.trim().length > 0) {
-    const existingCaps = captionBuffers.get(agentId) ?? [];
-    captionBuffers.set(agentId, [...existingCaps, caption.trim()]);
+  try {
+    const cap = caption && caption.trim().length > 0 ? caption.trim() : null;
+    // The caption belongs to the queue CALL; carry it on the first row of the
+    // batch so drains reproduce the old parallel-captions ordering.
+    attachments.forEach((att, i) => insertArtifact(agentId, 'attachment', att, i === 0 ? cap : null));
+  } catch (err) {
+    logger.warn('queuePendingAttachments failed (files will not surface this turn)', {
+      agentId, count: attachments.length, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
   }
 }
 
@@ -57,53 +87,100 @@ export function queuePendingAttachments(
  * message, deduped by path so repeated edits in one turn don't stack chips.
  */
 export function queueCanvasDoc(agentId: string, att: PendingAttachment): void {
-  const existing = buffers.get(agentId) ?? [];
-  if (existing.some((a) => a.openInCanvas && a.path === att.path)) return;
-  buffers.set(agentId, [...existing, att]);
+  try {
+    const dup = getDb().prepare(
+      `SELECT 1 FROM turn_artifacts
+        WHERE agent_id = ? AND kind = 'canvas' AND path = ? AND delivered_at IS NULL LIMIT 1`,
+    ).get(agentId, att.path);
+    if (dup) return;
+    insertArtifact(agentId, 'canvas', att, null);
+  } catch (err) {
+    logger.warn('queueCanvasDoc failed (chip will not surface)', {
+      agentId, path: att.path, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
 }
 
 /**
  * Queue a single "Open screen" chip onto the agent's next assistant message
- * (deduped — one per turn) so the user can re-open the live screen viewer after
- * closing the canvas. Carries no file; just the screenShare flag.
+ * (deduped, one undelivered at a time) so the user can re-open the live screen
+ * viewer after closing the canvas. Carries no file; just the screenShare flag.
  */
 export function queueScreenChip(agentId: string): void {
-  const existing = buffers.get(agentId) ?? [];
-  if (existing.some((a) => a.screenShare)) return;
-  buffers.set(agentId, [...existing, {
-    fileId: 'screen', filename: 'Screen', mimeType: 'application/x-dojo-screen',
-    size: 0, path: '__screen__', category: 'unknown', screenShare: true,
-  }]);
+  try {
+    const dup = getDb().prepare(
+      `SELECT 1 FROM turn_artifacts
+        WHERE agent_id = ? AND kind = 'screen' AND delivered_at IS NULL LIMIT 1`,
+    ).get(agentId);
+    if (dup) return;
+    insertArtifact(agentId, 'screen', {
+      fileId: 'screen', filename: 'Screen', mimeType: 'application/x-dojo-screen',
+      size: 0, path: '__screen__', category: 'unknown', screenShare: true,
+    }, null);
+  } catch (err) {
+    logger.warn('queueScreenChip failed (chip will not surface)', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
 }
 
-export function drainPendingAttachments(agentId: string): PendingAttachment[] {
-  const out = buffers.get(agentId) ?? [];
-  if (out.length === 0) return [];
-  buffers.delete(agentId);
-  captionBuffers.delete(agentId);
+interface ArtifactRow { id: string; caption: string | null; payload_json: string | null }
+
+/** The undelivered set, oldest first, marked delivered atomically. */
+function drainRows(agentId: string): ArtifactRow[] {
+  const db = getDb();
+  const rows = db.prepare(
+    `SELECT id, caption, payload_json FROM turn_artifacts
+      WHERE agent_id = ? AND delivered_at IS NULL
+      ORDER BY queued_at ASC, rowid ASC`,
+  ).all(agentId) as ArtifactRow[];
+  if (rows.length === 0) return [];
+  const mark = db.prepare(
+    "UPDATE turn_artifacts SET delivered_at = datetime('now'), updated_at = datetime('now') WHERE id = ? AND delivered_at IS NULL",
+  );
+  const txn = db.transaction(() => { for (const r of rows) mark.run(r.id); });
+  txn();
+  return rows;
+}
+
+function rowsToAttachments(rows: ArtifactRow[]): PendingAttachment[] {
+  const out: PendingAttachment[] = [];
+  for (const r of rows) {
+    if (!r.payload_json) continue;
+    try { out.push(JSON.parse(r.payload_json) as PendingAttachment); } catch { /* skip a corrupt row */ }
+  }
   return out;
 }
 
+export function drainPendingAttachments(agentId: string): PendingAttachment[] {
+  try {
+    return rowsToAttachments(drainRows(agentId));
+  } catch (err) {
+    logger.warn('drainPendingAttachments failed (returning empty; rows stay undelivered for the next drain)', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+    return [];
+  }
+}
+
 /**
- * Drain attachments AND any captions captured from show_to_user
- * calls in this turn. Used by the engine's end-of-turn safety net
- * when the model finished without writing terminal text.
+ * Drain attachments AND any captions captured from show_to_user calls. Used by
+ * the end-of-turn surfacing paths when the model finished without terminal
+ * text; the captions become the bubble text.
  */
 export function drainPendingAttachmentsWithCaptions(
   agentId: string,
 ): { attachments: PendingAttachment[]; captions: string[] } {
-  const attachments = buffers.get(agentId) ?? [];
-  const captions = captionBuffers.get(agentId) ?? [];
-  buffers.delete(agentId);
-  captionBuffers.delete(agentId);
-  return { attachments, captions };
-}
-
-export function peekPendingAttachmentCount(agentId: string): number {
-  return buffers.get(agentId)?.length ?? 0;
-}
-
-export function clearPendingAttachments(agentId: string): void {
-  buffers.delete(agentId);
-  captionBuffers.delete(agentId);
+  try {
+    const rows = drainRows(agentId);
+    return {
+      attachments: rowsToAttachments(rows),
+      captions: rows.map((r) => r.caption).filter((c): c is string => !!c && c.trim().length > 0),
+    };
+  } catch (err) {
+    logger.warn('drainPendingAttachmentsWithCaptions failed (returning empty; rows stay undelivered)', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+    return { attachments: [], captions: [] };
+  }
 }

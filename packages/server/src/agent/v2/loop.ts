@@ -8549,21 +8549,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
     try {
       const { drainPendingAttachmentsWithCaptions } = await import('../pending-attachments.js');
       const stranded = drainPendingAttachmentsWithCaptions(agentId);
-      // De-dup: the agent sometimes re-generates the SAME deliverable across turns of
-      // a multi-step task (CRM_Recommendation_Top written twice, q3-board-update-v3
-      // re-saved). The stranded-attachment net would then post "Here are the files for
-      // you." for each regeneration → file-surface spam in the owner's chat. Surface
-      // each filename to the owner ONCE per session; drop names already shown.
-      const sessStart = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
-      const shownNames = new Set<string>();
-      try {
-        for (const row of db.prepare(
-          "SELECT attachments FROM messages WHERE agent_id = ? AND role = 'assistant' AND attachments IS NOT NULL AND created_at >= ?",
-        ).all(agentId, sessStart) as Array<{ attachments: string }>) {
-          for (const a of JSON.parse(row.attachments) as Array<{ filename?: string }>) if (a.filename) shownNames.add(a.filename);
-        }
-      } catch { /* best effort */ }
-      stranded.attachments = stranded.attachments.filter((a: { filename?: string }) => !(a.filename && shownNames.has(a.filename)));
+      // P6b-2c: the per-session filename dedup died with the durable-rows
+      // rekey. delivered_at on the artifact row IS the once-only guarantee; a
+      // re-generated file in a later turn is a NEW artifact and legitimately
+      // surfaces again (the old filename-history scan suppressed genuine
+      // updated versions along with the spam it targeted).
       if (stranded.attachments.length > 0 && counterparty.kind !== 'agent') {
         // Caption: prefer the model's own caption. Otherwise derive an INFORMATIVE
         // line from the deliverables themselves, never a content-free generic
