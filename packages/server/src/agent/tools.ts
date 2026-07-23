@@ -5784,6 +5784,20 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
                   `actually received. Do not message "${agentRef}" again about this (re-sending does not speed it up). ` +
                   `End your turn now; you will be woken when they answer.`
                 : ' No response expected (read-only context).');
+            // A2A busy signal (owner request 2026-07-23): the transport knows the
+            // recipient's live state; telling the SENDER prevents the weak-model
+            // re-send/escalate reflex when a queued-behind-busy reply reads as
+            // being ignored. Purely informational, delivery is unchanged.
+            try {
+              const { activeRuns } = await import('./shared-state.js');
+              const { currentTurnKind } = await import('./turn-state.js');
+              if (targetCheck && activeRuns.has(targetCheck.id)) {
+                const humanBusy = currentTurnKind.get(targetCheck.id) === 'user';
+                content += humanBusy
+                  ? ` NOTE: "${agentRef}" is currently in a live conversation with their user, so your message is queued and will be served when they are free. Expect a slower reply; do not re-send and do not escalate.`
+                  : ` NOTE: "${agentRef}" is currently mid-task, so your message is queued and will be served when they are free. Expect a slower reply; do not re-send.`;
+              }
+            } catch { /* best effort; the note is advisory */ }
             if (result.autoPromotedFromFyi) {
               content +=
                 `\nNote: the engine auto-promoted your FYI to DELIVERABLE because the payload looked deliverable-shaped (URL or completion+artefact reference). Your receiver was woken. Use intent="DELIVERABLE" explicitly next time so the routing is unambiguous.`;

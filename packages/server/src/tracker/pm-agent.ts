@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { activeRuns as pmActiveRuns } from '../agent/shared-state.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';
@@ -1770,6 +1771,19 @@ export async function runPokeCheck(): Promise<void> {
         `Only if the delivery did NOT actually finish the task should you continue working it (and say what remains).`
       : buildPokeMessage(task, pokeType, pokeNumber, idleSeconds);
     const recipient = pokeType === 'escalate_primary' ? primaryId : task.assignedTo;
+
+    // Busy deferral (owner request 2026-07-23): a poke landing while the
+    // assignee is mid-run queues up and then collides with that work, and to
+    // the ladder the deferred serve reads like being ignored. If the assignee
+    // is busy RIGHT NOW, skip this tick entirely: no poke, no strike; the next
+    // sweep pokes when they are free. The owner's ruling: pokes are fine "as
+    // long as the agent doesn't go crazy because of it".
+    if (recipient && pmActiveRuns.has(recipient)) {
+      logger.info('PM poke deferred: assignee is mid-run; no poke, no strike this tick', {
+        taskId: task.id, recipient, pokeType,
+      });
+      continue;
+    }
 
     // Deliver poke via A2A transport. Pokes use QUESTION intent (we want
     // a response) with a thread seeded by task ID + poke stage so each
