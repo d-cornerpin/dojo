@@ -1733,6 +1733,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // line surfaced via the capture site). The engine never composes the line.
   let startAckSteerRequested = false;
   let startAckSteerArmedThisTurn = false;
+  let startAckSteersInjected = 0;      // bounded at 2: first steer, one reminder
+  let startAckSteerInjectedAtLoop = 0; // loop index the steer rode; one full response later with nothing delivered = ignored
   // originIntent stamps a machine-readable marker on the ack row so consumers
   // (the completion-ack cross-turn dedup, the PM poke chain, the F10 replied-
   // check) recognize an engine ack STRUCTURALLY instead of by copy prefix,
@@ -1919,23 +1921,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
   const fireStartAckIfOwed = async (via: 'timer' | 'first-tool'): Promise<void> => {
     try {
       if (engineStartAckDeliveredThisTurn || startAckSteerRequested || startAckSteerArmedThisTurn || startAckRepliedNow()) return;
-      // Trivial-save fix (2026-07-16): if the model already WROTE the user's
-      // answer this turn (text riding with its tool calls, captured by the
-      // demotion block), the ack the engine owes is THAT text, the model's own
-      // words. Deliver with no origin stamp (it IS the reply, so
-      // startAckRepliedNow and the terminal floors count it) and mark it
-      // consumed so nothing double-sends.
-      if (deferredUserReplyWithTools && deferredUserReplyWithTools.trim().length > 0) {
-        engineStartAckDeliveredThisTurn = true;
-        const answer = deferredUserReplyWithTools.trim();
-        deferredUserReplyWithTools = null;
-        deferredDeliveredByAck = true;
-        await deliverEngineUserAck(answer, null);
-        logger.info('v2: start-ack delivered the captured text-with-tools answer instead of a canned line', {
-          agentId, turnNumber, via, preview: answer.slice(0, 60),
-        }, agentId);
-        return;
-      }
+      // The captured-narration branch (F10, 2026-07-16) that lived here is
+      // GONE (owner production report 2026-07-23: "not a single ack"). It
+      // delivered whatever mid-work narration was captured ("Let me look at
+      // the structure more closely...") AS the ack, short-circuiting the
+      // steer, so the model was never actually asked to address the user.
+      // Narration is a working note, not an acknowledgment. The trivial-save
+      // contract (captured ANSWER must reach the user) lives at the finalize
+      // recovery, not here.
       // Owner ruling 2026-07-22 (engine detects, agent speaks): no canned
       // engine line, no compose call. Request the steer; the loop injects it
       // at the next iteration boundary (loop-synchronous state write, so this
@@ -3282,6 +3275,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
                     // surfaces it the moment it lands. Armed synchronously so a
                     // second site can never double-steer.
                     startAckSteerArmedThisTurn = true;
+                    startAckSteersInjected = 1;
+                    startAckSteerInjectedAtLoop = state.loopCount;
                     pushEngineMessage(messages, START_ACK_STEER_TEXT); // registry-exempt(2026-07-22): start-ack steer rides the in-flight messages array at the classifier site; migrate with the volatile-injection registry refactor
                   }
 
@@ -3430,8 +3425,31 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // iteration, the request stays pending and retries next boundary.
       if (startAckSteerRequested && !startAckSteerArmedThisTurn && !state.pendingNudge && !startAckRepliedNow()) {
         startAckSteerArmedThisTurn = true;
+        startAckSteersInjected = 1;
+        startAckSteerInjectedAtLoop = state.loopCount;
         state = advance(state, { pendingNudge: START_ACK_STEER_TEXT });
         logger.info('v2 start-ack steer injected; the model speaks the start line itself', {
+          agentId, turnNumber,
+        }, agentId);
+      } else if (
+        // One bounded reminder, IGNORE-keyed not time-keyed (2026-07-23, chore
+        // battery attempt: the model tool-chained straight past the first
+        // steer, and a time-gated reminder only became eligible ~30s later,
+        // right when the final answer was landing anyway). The engine can SEE
+        // the ignore: the steer rode call N, call N's response is processed,
+        // and nothing was delivered. Remind on the very next boundary; after
+        // that the terminal reply is the only remaining voice (never spin).
+        startAckSteersInjected === 1 &&
+        !engineStartAckDeliveredThisTurn &&
+        state.loopCount > startAckSteerInjectedAtLoop &&
+        !state.pendingNudge &&
+        !startAckRepliedNow()
+      ) {
+        startAckSteersInjected = 2;
+        state = advance(state, { pendingNudge:
+          '[Engine hint: reminder, the user has STILL heard nothing from you this turn. Before your next tool call, say one short line to them that you are on it. This is the last reminder.]',
+        });
+        logger.info('v2 start-ack steer reminder injected (first steer ignored, user still waiting)', {
           agentId, turnNumber,
         }, agentId);
       }
