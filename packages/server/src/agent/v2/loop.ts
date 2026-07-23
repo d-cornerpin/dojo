@@ -5431,7 +5431,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 const steerText =
                   `[Engine record: this turn completed ${whichTask}` +
                   (resultBit ? ` with this result on file: "${resultBit}"` : '') +
-                  '. The user has not heard anything about it. The completion must come from you in your own words: reply now with one short message telling them it is done (include the deliverable or link if there is one). Do not re-open or re-do the task.]';
+                  '. The user has not heard anything about it. The completion must come from you in your own words: WRITE one short reply in this conversation telling them it is done (include the deliverable or link if there is one). Do NOT call imessage_send or any other send tool; the engine routes your written reply to the right channel automatically. Do not re-open or re-do the task.]';
                 const steerRowId = uuidv4();
                 try {
                   db.prepare(`
@@ -5973,9 +5973,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
           if (!state.nudgedForA2AHandoffFloorThisTurn && state.loopCount < MAX_TOOL_LOOPS) {
             const steer = (
               `[System] You handed work to another agent and are ending this turn without telling ` +
-              `the user anything. The user is waiting. Send the user a short message NOW: report any ` +
-              `results you already have, and say you have asked another agent for the rest and will ` +
-              `report back when they answer. Do not message the other agent again.`
+              `the user anything. The user is waiting. WRITE the user a short reply NOW, directly in ` +
+              `this conversation (do NOT call imessage_send or any send tool; the engine routes your ` +
+              `reply): report any results you already have, and say you have asked another agent for ` +
+              `the rest and will report back when they answer. Do not message the other agent again.`
             );
             const steerId = uuidv4();
             try {
@@ -8006,7 +8007,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           state.loopCount < MAX_TOOL_LOOPS
         ) {
           const exitSteer =
-            '[Engine hint: you delegated work on the user\'s request and are about to end your turn without telling them anything. Send the user ONE short line first: if you already have their answer, give it now; otherwise say you have handed the pieces off and will report back when they return. Do not message any agent again this turn.]';
+            '[Engine hint: you delegated work on the user\'s request and are about to end your turn without telling them anything. WRITE ONE short line to them first, directly in this conversation: if you already have their answer, give it now; otherwise say you have handed the pieces off and will report back when they return. Do NOT call imessage_send or any send tool (the engine routes your reply), and do not message any agent again this turn.]';
           state = advance(state, { pendingNudge: exitSteer, steeredForDelegationExitThisTurn: true });
           logger.info('v2 delegation-exit steer: user-triggered hand-off ending silently; one steer for the status line before the async exit', {
             agentId, turnNumber,
