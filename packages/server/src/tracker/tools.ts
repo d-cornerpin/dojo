@@ -854,6 +854,12 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       if (!r.ok) return r.error;
       assignedTo = r.id;
     }
+    if (projectId) {
+      const projectRow = getDb().prepare('SELECT 1 FROM projects WHERE id = ?').get(projectId);
+      if (!projectRow) {
+        return `Error: project '${projectId}' does not exist (it may have been deleted or completed). Call tracker_list_projects to see current projects, or omit projectId to start a fresh one.`;
+      }
+    }
     const priority = args.priority as 'high' | 'normal' | 'low' | undefined;
     const stepNumber = args.stepNumber as number | undefined;
     const dependsOn = args.dependsOn as string[] | undefined;
@@ -1089,10 +1095,15 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       `).run(scheduledStart, repeatInterval ?? null, repeatUnit ?? null, repeatEndType, repeatEndValue ?? null, repeatDaysOfWeek ?? null, anchorTime ?? null, nextRun, taskId);
     }
 
-    // Handle group assignment
+    // Handle group assignment (validated: an unknown group id would otherwise
+    // surface as a raw FK error the model cannot act on)
     const assignedToGroup = args.assigned_to_group as string | undefined;
     if (assignedToGroup) {
       const db = getDb();
+      const groupRow = db.prepare('SELECT 1 FROM agent_groups WHERE id = ?').get(assignedToGroup);
+      if (!groupRow) {
+        return `Error: agent group '${assignedToGroup}' does not exist. The task was created assigned to you; use tracker_edit_task to reassign once you have a valid group id.`;
+      }
       db.prepare("UPDATE tasks SET assigned_to_group = ?, assigned_to = NULL, updated_at = datetime('now') WHERE id = ?").run(assignedToGroup, taskId);
     }
 

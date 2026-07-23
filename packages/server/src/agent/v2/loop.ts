@@ -4686,8 +4686,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // that as "don't reply at all"). Silence on chatter stays honored
         // (REG-3); a work ask gets a steer first: reply with a pointer to the
         // settled delivery, or do the work. If the model ghosts the steer too
-        // and this conversation HAS an engine-recorded settled answer, the
-        // engine re-serves that answer (its own earlier words, not fabrication).
+        // and this conversation HAS an engine-recorded settled answer, a second
+        // steer hands the model its own recorded words to restate (the engine
+        // never speaks as the agent, owner ruling 2026-07-22); double-ghosted
+        // silence stands, loudly logged, and the ladder owns the follow-up.
         const ghostedWorkAsk =
           isBareNoReply && !!triggerRow && inboundClassifiedAsWork &&
           !state.surfacedReplyThisTurn && !deferredDeliveredByAck;
@@ -4719,8 +4721,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }, agentId);
           continue;
         }
-        let settledRecovery: string | null = null;
-        if (ghostedWorkAsk && state.steeredForGhostedAskThisTurn && chosenConvKey) {
+        if (ghostedWorkAsk && state.steeredForGhostedAskThisTurn && !state.ghostedAskSecondSteerThisTurn && chosenConvKey) {
+          // Second (last) steer, owner ruling 2026-07-22: the engine never
+          // speaks as the agent, so instead of re-serving the recorded answer
+          // itself, hand the model its own recorded words to restate. If this
+          // is ghosted too, silence stands (marker row + loud log below); the
+          // ladder and stamps own the follow-up.
           try {
             const prior = db.prepare(`
               SELECT m2.content AS answer FROM messages m1
@@ -4731,19 +4737,30 @@ export async function runV2Turn(agentId: string): Promise<void> {
             `).get(agentId, chosenConvKey) as { answer: string } | undefined;
             const excerpt = (prior?.answer ?? '').replace(/\s+/g, ' ').trim().slice(0, 220);
             if (excerpt.length > 0) {
-              settledRecovery = `Already handled this one a moment ago: ${excerpt}`;
+              const steer2 =
+                `[Engine record: you again ended with [no-reply] on the user's direct ask, but you already answered this in this conversation. Your recorded answer: "${excerpt}". Reply now with one brief line in your own words pointing back to that. Do not re-do the work and do not stay silent.]`;
+              const steer2RowId = uuidv4();
+              try {
+                db.prepare(`
+                  INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+                  VALUES (?, ?, 'system', ?, ?, datetime('now'))
+                `).run(steer2RowId, agentId, steer2, turnNumber);
+              } catch { /* dashboard row is best effort */ }
+              broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
+              state = advance(state, { pendingNudge: steer2, ghostedAskSecondSteerThisTurn: true });
+              logger.info('v2 ghosted-work-ask floor: model ghosted the first steer; second steer hands it its own recorded answer to restate', {
+                agentId, turnNumber,
+              }, agentId);
+              continue;
             }
-          } catch { /* recovery is best effort; the swallow below remains */ }
+          } catch { /* best effort; silence falls through to the marker below */ }
         }
-        if (settledRecovery) {
-          // Same shape as the voice-ack substitution above: swap the sentinel
-          // for the recovery line and let it flow through the normal persist
-          // path. The engine is repeating its own recorded answer, nothing new.
-          persistedContent = settledRecovery;
-          logger.info('v2 ghosted-work-ask floor: model ghosted the steer too; re-serving the engine-recorded settled answer for this conversation', {
-            agentId, turnNumber, preview: settledRecovery.slice(0, 80),
+        if (ghostedWorkAsk && state.steeredForGhostedAskThisTurn) {
+          logger.warn('v2 ghosted-work-ask floor: model ghosted the steer(s) on a work-classified human ask; engine does not speak for the agent, silence stands with the marker row', {
+            agentId, turnNumber, secondSteerFired: state.ghostedAskSecondSteerThisTurn,
           }, agentId);
-        } else {
+        }
+        {
           if (isDeclineNonReply) {
             logger.info('v2: agent declined in prose ("no reply needed…"), honoring intent as no-reply (not routing it)', {
               agentId, turnNumber, preview: (persistedContent ?? '').slice(0, 60),
@@ -5267,6 +5284,79 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
       // No tools? Loop is done.
       if (result.toolCalls.length === 0) {
+        // ── Silent-closeout steer (owner ruling 2026-07-22) ── The user speaks
+        // with the AGENT; the engine never speaks for it. So the always-acked
+        // completion guarantee (v3.1.14 hard rule) is enforced as a CHECK plus
+        // a handed-back mic, not as engine-composed text: when this ending turn
+        // completed task(s) and nothing user-facing surfaced, steer once and
+        // let the model say it in its own words. The engine-record facts ride
+        // in the steer so the weakest model only has to phrase, not remember.
+        if (
+          !state.steeredForSilentCloseoutThisTurn &&
+          !isA2ATurn &&
+          counterparty.kind === 'user' &&
+          !counterpartyIsAgentSender &&
+          (!persistedContent || persistedContent.trim().length === 0) &&
+          !state.surfacedReplyThisTurn &&
+          !state.lastAssistantTextForIM &&
+          !deferredUserReplyWithTools &&
+          !Object.values(state.explicitSendThisTurn).some(Boolean)
+        ) {
+          try {
+            const closedThisTurn = db.prepare(`
+              SELECT title, result, created_at, source_message_id FROM tasks
+               WHERE assigned_to = ? AND status = 'complete'
+                 AND repeat_interval IS NULL AND completed_at >= ?
+               ORDER BY completed_at ASC LIMIT 3
+            `).all(agentId, turnStartedAt) as Array<{ title: string; result: string | null; created_at: string; source_message_id: string | null }>;
+            if (closedThisTurn.length > 0) {
+              // Cross-turn dedup, same rule as the teardown detector: if the
+              // birthing ask already records an answer (mig 113 key), or a
+              // substantive model reply landed since the earliest task was
+              // created, the user has the answer and a "done" would be the
+              // repetitive second closeout the owner vetoed.
+              const rootIds = closedThisTurn.map((t) => t.source_message_id).filter((x): x is string => !!x);
+              const answeredByKey = rootIds.length === closedThisTurn.length && rootIds.length > 0 && rootIds.every((mid) => {
+                const row = db.prepare('SELECT answer_message_id FROM messages WHERE id = ?').get(mid) as { answer_message_id: string | null } | undefined;
+                return !!row?.answer_message_id;
+              });
+              const earliestCreatedAt = closedThisTurn.map((t) => t.created_at).filter(Boolean).sort()[0] ?? turnStartedAt;
+              const alreadyAnswered = answeredByKey || !!db.prepare(`
+                SELECT 1 FROM messages
+                 WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?
+                   AND (source IS NULL OR source != 'a2a')
+                   AND content NOT LIKE '[{%'
+                   AND origin_intent IS NULL
+                   AND length(trim(content)) > 40
+                 LIMIT 1
+              `).get(agentId, earliestCreatedAt);
+              if (!alreadyAnswered) {
+                const first = closedThisTurn[0];
+                const resultBit = (first.result ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+                const whichTask = closedThisTurn.length === 1
+                  ? `the task "${first.title.slice(0, 80)}"`
+                  : `${closedThisTurn.length} tasks (first: "${first.title.slice(0, 80)}")`;
+                const steerText =
+                  `[Engine record: this turn completed ${whichTask}` +
+                  (resultBit ? ` with this result on file: "${resultBit}"` : '') +
+                  '. The user has not heard anything about it. The completion must come from you in your own words: reply now with one short message telling them it is done (include the deliverable or link if there is one). Do not re-open or re-do the task.]';
+                const steerRowId = uuidv4();
+                try {
+                  db.prepare(`
+                    INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
+                    VALUES (?, ?, 'system', ?, ?, datetime('now'))
+                  `).run(steerRowId, agentId, steerText, turnNumber);
+                } catch { /* dashboard row is best effort */ }
+                broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
+                state = advance(state, { pendingNudge: steerText, steeredForSilentCloseoutThisTurn: true });
+                logger.info('v2 silent-closeout steer: turn completed task(s) with nothing surfaced; handing the mic to the model for the completion message', {
+                  agentId, turnNumber, taskCount: closedThisTurn.length, firstTask: first.title.slice(0, 60),
+                }, agentId);
+                continue;
+              }
+            }
+          } catch { /* best effort; the teardown detector still logs the miss */ }
+        }
         // ── v2.7.17: "added a note then stopped" detector ──
         // Common failure: agent is mid-project, calls tracker_add_notes as
         // a status checkpoint, then ends the turn silently because the
@@ -8008,48 +8098,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
       }, 1000);
     }
 
-    // ── Silent-close completion floor (2026-07-22) ── The v3.1.14 guarantee
-    // (work ALWAYS acked on completion) was scoped to engine-scaffolded tasks;
-    // a MODEL-created task closed this turn with no reply delivered ended in
-    // silence (battery catch). If nothing user-facing was delivered and this
-    // turn completed task(s), compose the one-line completion from the task's
-    // own result. Runs before finalize so the truthful answer key records it.
-    if (!terminalAnswerRowId && !state.lastAssistantTextForIM && counterparty.kind !== 'agent') {
-      try {
-        const closedThisTurn = db.prepare(
-          `SELECT title, result FROM tasks
-            WHERE assigned_to = ? AND status = 'complete'
-              AND completed_at >= ? ORDER BY completed_at DESC LIMIT 2`,
-        ).all(agentId, turnBoundary.get(agentId) ?? new Date(Date.now() - 120_000).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '')) as Array<{ title: string; result: string | null }>;
-        if (closedThisTurn.length > 0) {
-          const first = closedThisTurn[0];
-          const resultBit = (first.result ?? '').replace(/\s+/g, ' ').trim().slice(0, 160);
-          const floorText = resultBit
-            ? `Done: ${resultBit}`
-            : `Done, "${first.title.slice(0, 60)}" is complete.`;
-          const floorId = uuidv4();
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-            VALUES (?, ?, 'assistant', ?, ?, datetime('now'))
-          `).run(floorId, agentId, floorText, turnNumber);
-          broadcast({
-            type: 'chat:message',
-            agentId,
-            message: {
-              id: floorId, agentId, role: 'assistant' as Message['role'],
-              content: floorText,
-              tokenCount: null, modelId: null, cost: null, latencyMs: null,
-              createdAt: new Date().toISOString(),
-            },
-          });
-          state = advance(state, { lastAssistantTextForIM: floorText });
-          terminalAnswerRowId = floorId; // truthful answer key: the floor line IS the reply
-          logger.info('silent-close completion floor delivered (task completed, no reply was going to land)', {
-            agentId, turnNumber, task: first.title.slice(0, 60),
-          }, agentId);
-        }
-      } catch { /* best effort */ }
-    }
+    // The engine-composed silent-close "Done:" line that briefly lived here is
+    // GONE (owner ruling 2026-07-22: the engine never speaks as the agent). The
+    // in-loop silent-closeout steer is the enforcement now: same check, but the
+    // MODEL says the completion in its own words.
 
     // ── Phase: finalize ──
     state = advance(state, { phase: 'finalize' });
@@ -8203,57 +8255,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
             agentId, turnNumber,
           }, agentId);
         } else if (justCompletedScaffold.length > 0) {
-          // Do NOT splice the task title into the sentence: the auto-scaffold names
-          // the task from a raw, truncated user request, which reads as broken
-          // grammar. The task result (model-written) carries the specifics.
-          const firstResult = justCompletedScaffold.find((t) => t.result && t.result.trim())?.result ?? null;
-          // DELIVERABLE HANDOFF: a silent completion still owes the person the
-          // thing they asked for (the link to the doc/sheet/file just created).
-          // Extract the link(s) FIRST and always in full, from this turn's tool
-          // results (the create tools emit "Link:"/"Open:"/"Share link:" lines)
-          // plus the model-written task results (in case the model pasted the
-          // labeled link into its result). Only THEN condense the prose, at a
-          // word boundary, so a link is never sliced mid-word or before the URL.
-          const deliverableLinks = extractDeliverableLinks([
-            ...state.toolResults.map((tr) => tr.content),
-            ...justCompletedScaffold.map((t) => t.result),
-          ]);
-          const condensed = firstResult
-            ? condenseResultProse(firstResult, { dropUrls: deliverableLinks })
-            : '';
-          const resultLine = condensed ? ` ${condensed}` : '';
-          // Vary the "done" sentence (best-effort model, guaranteed pool
-          // fallback); the caller still appends the model-written result line.
-          // Awaited inline (turn teardown, not the model loop) because the
-          // resolver below routes lastAssistantTextForIM to the away channel.
-          const doneLine = await composeCompletionAck({ resultLine, agentId });
-          // Links go on their own line(s) after the summary sentence, whole and
-          // untruncated, so the person can actually open the deliverable.
-          const linksBlock = deliverableLinks.length ? `\n${deliverableLinks.join('\n')}` : '';
-          const ackText = `${doneLine}${resultLine}${linksBlock}`;
-          const ackId = uuidv4();
-          db.prepare(
-            `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, origin_intent, created_at) VALUES (?, ?, 'assistant', ?, ?, 'engine_completion_ack', datetime('now'))`,
-          ).run(ackId, agentId, ackText, turnNumber);
-          broadcast({
-            type: 'chat:message',
-            agentId,
-            message: {
-              id: ackId, agentId, role: 'assistant' as const,
-              content: ackText,
-              tokenCount: null, modelId: null, cost: null, latencyMs: null,
-              createdAt: new Date().toISOString(),
-            },
-          });
-          // Hand the ack to the reply-destination resolver below so an away user
-          // gets it on their real channel (iMessage / phone / SMS), not only the
-          // dashboard. This is the "human ack blocks turn-end ahead of background
-          // obligations" guarantee: the person hears "done" as part of ending the
-          // turn even when the model tried to end on a send_to_agent.
-          state = advance(state, { lastAssistantTextForIM: ackText });
-          engineCompletionAckThisTurn = true;
-          logger.info('v2: engine-composed completion ack (owed human reply for engine-scaffolded work)', {
+          // Owner ruling 2026-07-22: the engine never speaks as the agent. The
+          // engine-composed ack that lived here (composeCompletionAck + insert +
+          // away-channel handoff) is demoted to detection: reaching this arm
+          // means the in-loop silent-closeout steer was ghosted or bypassed
+          // (error-ended turn). Log loudly; the ticket stamps + the PM ladder
+          // drive the agent to say it in its own voice on the next pass.
+          logger.warn('v2: scaffolded work completed with NO user-facing reply and the closeout steer did not produce one; engine does not speak for the agent, ladder owns the follow-up', {
             agentId, turnNumber, taskCount: justCompletedScaffold.length,
+            steered: state.steeredForSilentCloseoutThisTurn,
           }, agentId);
         }
       } catch (err) {
@@ -8448,7 +8458,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
           state.inboundChannel === null &&
           counterparty.kind !== 'agent' &&
           !isEngineTurn &&
-          !engineCompletionAckThisTurn;
+          !engineCompletionAckThisTurn &&
+          // A steered closeout reply IS the completion ack, in the agent's own
+          // voice (owner ruling 2026-07-22); it keeps the same hold exemption.
+          !state.steeredForSilentCloseoutThisTurn;
         // Calibration log (2026-07-09 re-answer class + the phantom outcome), one line
         // per settled-wake user-facing outbound, carrying the routing outcome.
         if (settledContextWakeTurn && counterparty.kind !== 'agent') {
