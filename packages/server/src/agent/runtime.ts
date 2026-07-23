@@ -460,6 +460,8 @@ export function preemptAgentForUrgentMessage(agentId: string): boolean {
 // only blocks 'terminated') and an explicit dashboard resume/reset still wake the
 // agent, and transient recovery still flows through the injury-recovery auto-wake,
 // all of which enter via handleMessage rather than these gates.
+const wakeDrainHead = new Map<string, { head: string; stuck: number }>();
+
 function isSelfResumeBlockedStatus(status: string | undefined): boolean {
   return status === 'terminated' || status === 'paused' || status === 'error';
 }
@@ -631,6 +633,45 @@ class AgentRuntime {
       // immediately on entering the loop, stalling the queued user
       // message. Cleared here as a hard guarantee.
       preemptedAgents.delete(agentId);
+
+      // ── Unserved-wake drain (2026-07-23) ── pendingWakeups is a SET, so N
+      // queued causes collapse into ONE wakeup, that wakeup serves ONE
+      // trigger, and a still-unserved terminal wake (a deliverable answering
+      // the owner's parked ask) or pending engine event then waited for a
+      // slow periodic (observed 5m20s join->compile gap). If either remains
+      // after this turn, re-queue immediately. Bounded: if the same head row
+      // fails to advance twice, stop self-spinning and let the periodics own
+      // it (mirrors the human-drain MAX_DRAIN_STUCK discipline).
+      try {
+        const wdStatus = (getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
+        if (!isSelfResumeBlockedStatus(wdStatus)) {
+          const { findUnservedTerminalWake, getPendingEngineEvent } = await import('./v2/counterparty.js');
+          const leftoverWake = findUnservedTerminalWake(agentId);
+          const leftoverEngine = leftoverWake ? null : getPendingEngineEvent(agentId);
+          const head = leftoverWake ? `w:${leftoverWake.src}:${leftoverWake.rowid}` : (leftoverEngine ? `e:${leftoverEngine.src}:${leftoverEngine.rowid}` : null);
+          if (head) {
+            const prev = wakeDrainHead.get(agentId);
+            const stuck = prev && prev.head === head ? prev.stuck + 1 : 0;
+            wakeDrainHead.set(agentId, { head, stuck });
+            if (stuck < 2) {
+              pendingWakeups.add(agentId);
+              logger.info('unserved-wake drain: leftover wake/engine event after turn end; queuing immediate re-run', {
+                agentId, head, stuck,
+              }, agentId);
+            } else {
+              logger.warn('unserved-wake drain: head not advancing after re-runs; standing down to the periodics', {
+                agentId, head,
+              }, agentId);
+            }
+          } else {
+            wakeDrainHead.delete(agentId);
+          }
+        }
+      } catch (err) {
+        logger.warn('unserved-wake drain check failed (non-fatal)', {
+          agentId, error: err instanceof Error ? err.message : String(err),
+        }, agentId);
+      }
 
       // ── Human conversation drain (turn continuity) ──
       // A turn serves ONE counterparty. If other human conversations are still

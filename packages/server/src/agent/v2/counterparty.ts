@@ -571,6 +571,41 @@ export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string
  * re-triggers while one is pending, so an engine event out-raced by a human still
  * gets its own turn after the human is served.
  */
+/**
+ * Newest UNSERVED terminal-wake A2A row (DELIVERABLE/ANSWER/COMPLETE/FAIL,
+ * requires_response=1, never claimed by a turn) across both stores. The
+ * turn-start wake detection used to test only the absolute most-recent
+ * inbound for wake shape, so a peer question arriving AFTER a deliverable
+ * BURIED it: the wake run served the question, the deliverable stayed
+ * unserved, and only a slow periodic ever picked it up (observed: a 5m20s
+ * gap between a fan-out join completing and the compile turn). Selection by
+ * unserved-ness fixes the pick; the runtime's turn-end drain uses the same
+ * finder so a leftover wake re-queues immediately instead of waiting.
+ */
+export function findUnservedTerminalWake(agentId: string): { rowid: number; src: 'm' | 'ia' } | null {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT rowid, created_at, 'm' AS _src FROM messages
+     WHERE agent_id = @agentId AND role = 'user'
+       AND (origin_kind IS NULL OR origin_kind != 'engine')
+       AND a2a_thread_id IS NOT NULL
+       AND a2a_intent IN ('DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL')
+       AND a2a_requires_response = 1
+       AND conv_key IS NULL AND swept_at IS NULL
+       AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
+    UNION ALL
+    SELECT rowid, created_at, 'ia' AS _src FROM inter_agent_messages
+     WHERE agent_id = @agentId AND role = 'user'
+       AND (origin_kind IS NULL OR origin_kind != 'engine')
+       AND a2a_thread_id IS NOT NULL
+       AND a2a_intent IN ('DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL')
+       AND a2a_requires_response = 1
+       AND conv_key IS NULL AND swept_at IS NULL
+    ORDER BY created_at DESC LIMIT 1
+  `).get({ agentId }) as { rowid: number; _src: 'm' | 'ia' } | undefined;
+  return row ? { rowid: row.rowid, src: row._src } : null;
+}
+
 export function getPendingEngineEvent(agentId: string): { rowid: number; id: string; taskId: string | null; runId: string | null; content: string; originIntent: string | null; src: EngineEventSrc } | null {
   const db = getDb();
   // D8: dispose exhausted/overdue events LOUDLY before answering "what's pending",

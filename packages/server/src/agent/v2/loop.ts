@@ -1253,6 +1253,37 @@ export async function runV2Turn(agentId: string): Promise<void> {
       src: mostRecentInbound._src,
     };
   }
+  // Buried-wake fallback (2026-07-23): the check above only sees a wake when
+  // it is the absolute most-recent inbound. A peer message landing after a
+  // deliverable buried it, so the wake run served the peer and the
+  // deliverable sat unserved until a slow periodic. Pick the newest UNSERVED
+  // terminal wake instead; the human-wins gate below is unchanged.
+  if (!terminalWakeA2A) {
+    try {
+      const { findUnservedTerminalWake } = await import('./counterparty.js');
+      const buried = findUnservedTerminalWake(agentId);
+      if (buried) {
+        const table = buried.src === 'ia' ? 'inter_agent_messages' : 'messages';
+        const b = db.prepare(`SELECT a2a_intent, a2a_thread_id, source_agent_id FROM ${table} WHERE rowid = ?`)
+          .get(buried.rowid) as { a2a_intent: string; a2a_thread_id: string; source_agent_id: string | null } | undefined;
+        if (b) {
+          const senderRow2 = b.source_agent_id
+            ? (db.prepare('SELECT name FROM agents WHERE id = ?').get(b.source_agent_id) as { name?: string } | undefined)
+            : undefined;
+          terminalWakeA2A = {
+            intent: b.a2a_intent,
+            threadShort: b.a2a_thread_id.slice(0, 8),
+            fromName: senderRow2?.name ?? b.source_agent_id ?? 'another agent',
+            rowid: buried.rowid,
+            src: buried.src,
+          };
+          logger.info('v2: buried terminal wake selected (newer non-wake inbound had hidden it)', {
+            agentId, intent: b.a2a_intent, thread: b.a2a_thread_id.slice(0, 8),
+          }, agentId);
+        }
+      }
+    } catch { /* best effort; the turn falls back to normal classification */ }
+  }
   // The user always wins: if a real user-channel message is still unanswered
   // (newer than our last user-facing text reply), this is a user turn even if
   // an A2A is forced/pending, answer the user now, the A2A re-defers to its
