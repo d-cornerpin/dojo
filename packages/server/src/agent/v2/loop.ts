@@ -1821,8 +1821,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // a deliberate confirmation and proceeds.
   const reminderLaneRefusedSigs = new Set<string>();
 
-  const deliverEngineUserAck = async (text: string, originIntent: string | null = null): Promise<void> => {
-    const ackId = uuidv4();
+  const deliverEngineUserAck = async (text: string, originIntent: string | null = null, reuseId: string | null = null): Promise<void> => {
+    // reuseId (2026-07-23, owner .19 report: doubled bubble): when the text
+    // being delivered ALREADY streamed live under a bubble id, persist and
+    // broadcast under THAT id so the streamed bubble becomes the delivered
+    // message instead of a duplicate appearing next to a demoted note.
+    const ackId = reuseId ?? uuidv4();
     try {
       db.prepare(
         `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, origin_intent, created_at) VALUES (?, ?, 'assistant', ?, ?, ?, datetime('now'))`,
@@ -2616,6 +2620,26 @@ export async function runV2Turn(agentId: string): Promise<void> {
           const effectiveModel =
             state.modelId === '__auto__' ? configuredModelId : state.modelId;
           await checkAndCompact(agentId, effectiveModel, getContextWindow(effectiveModel), { force: true });
+          // In-turn recap after a MID-TURN compaction (2026-07-23, owner .19
+          // transcript: seven near-identical apologies in one long turn). A
+          // rebuild can evict the model's own in-turn speech (giant tool
+          // payloads eat the fresh tail) while the trigger stays pinned, so
+          // every rebuilt context read as "the user just said this and I have
+          // not responded", and the model re-acknowledged from scratch each
+          // time. The engine holds the receipts of what this turn already
+          // did; hand them over so the rebuilt context cannot forget.
+          if (!state.pendingNudge) {
+            const recap =
+              `[Engine recap: memory was just compacted MID-TURN. This is still the SAME turn. So far this turn you have made ${state.toolCalls.length} tool call(s)` +
+              (state.surfacedReplyThisTurn || deferredDeliveredByAck || engineStartAckDeliveredThisTurn
+                ? ' and the user has ALREADY heard your acknowledgment'
+                : '') +
+              '. Continue the work exactly where it stands. Do NOT re-introduce yourself, re-acknowledge, or re-apologize; pick up from the last tool result.]';
+            state = advance(state, { pendingNudge: recap });
+            logger.info('v2 mid-turn compaction recap injected (turn continuity across the rebuild)', {
+              agentId, turnNumber, toolCallsSoFar: state.toolCalls.length,
+            }, agentId);
+          }
         } catch (compErr) {
           logger.warn('v2 forced compaction at turn-budget checkpoint failed', {
             agentId, error: compErr instanceof Error ? compErr.message : String(compErr),
@@ -4284,6 +4308,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // the conversation on normal user turns too. Subsumes the prior
       // send_to_agent/broadcast-only suppression. Deterministic engine enforcement,
       // not prompt-hope (the weak-model correctness floor).
+      let deliveredAsStartLine = false;
       if (persistedContent && result.toolCalls.length > 0) {
         // GOVERNING RULE (comms-audit G-SUP-2): on a turn a HUMAN is waiting on,
         // this text MIGHT be the genuine answer the weak model paired with a
@@ -4309,11 +4334,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
             !startAckRepliedNow()
           ) {
             engineStartAckDeliveredThisTurn = true;
+            deliveredAsStartLine = true;
             const startLine = deferredUserReplyWithTools.trim();
             deferredUserReplyWithTools = null;
             deferredDeliveredByAck = true;
+            // Fresh id on purpose: messageId already holds this iteration's
+            // persisted tool_use row, so reusing it makes the INSERT no-op and
+            // the ack line never reaches the DB (caught by the ack scenario).
+            // The doubled display the owner saw on .19 was ack row + demoted
+            // NOTE of the same text; skipping the demotion below (the text was
+            // promoted whole, nothing to demote) leaves exactly one copy.
             await deliverEngineUserAck(startLine, null);
-            logger.info('v2 start-ack steer: model spoke its start line mid-work; delivered as the visible ack', {
+            logger.info('v2 start-ack steer: model spoke its start line mid-work; delivered as the visible ack (streamed bubble promoted in place)', {
               agentId, turnNumber, preview: startLine.slice(0, 60),
             }, agentId);
           }
@@ -4328,7 +4360,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // turns keep the hard suppression: their narration never streamed to the
         // user (chat:chunk is suppressed on those turns), so there is nothing on
         // screen to demote.
-        if (!interAgentTurn) {
+        if (!interAgentTurn && !deliveredAsStartLine) {
           try {
             const noteId = uuidv4();
             // RC-9: channel-aware demotion. On a ROUTED-channel human turn (iMessage /

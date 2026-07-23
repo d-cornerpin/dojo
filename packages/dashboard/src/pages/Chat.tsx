@@ -543,11 +543,18 @@ const toolChips = (
   msgs: ChatMessage[],
   resultById: Map<string, ToolResultInfo>,
   wordyMode: boolean,
+  // Mid-run in-flight cutoff (2026-07-23, owner report: chips vanish on a
+  // mid-run refresh, return after the run). conv_key is stamped at turn
+  // TEARDOWN, so a REST reload during an active turn sees the turn's own
+  // rows as convKey null and the background test hides their chips. While
+  // the agent is working, rows created at/after the current trigger are the
+  // live turn's; exempt them. Once the run ends the stamp governs again.
+  liveCutoff: string | null = null,
 ): ToolChipData[] =>
   msgs.flatMap((m) =>
     // Background/engine run: drop its tool chips in regular mode (only the chips
     // are hidden; the turn's surfaced text is a separate row that still renders).
-    (!wordyMode && isBackgroundTurnRow(m))
+    (!wordyMode && isBackgroundTurnRow(m) && !(liveCutoff && m.createdAt >= liveCutoff))
       ? []
     : (parseMessageContent(m.content).blocks ?? [])
       .filter((b) => b.type === 'tool_use' && b.name && classifyTool(b.name) !== 'bookkeeping')
@@ -1665,6 +1672,11 @@ export const Chat = ({ panel = null }: ChatProps) => {
   // ONLY for pure background a2a (another agent working, no user waiting): then
   // turnKind==='a2a', awaitingUserReply===false, wordy off → hidden.
   const showWorkingUi = isWorking && (turnKind !== 'a2a' || wordyMode || awaitingUserReply);
+  // In-flight turn cutoff for the chip background test (see toolChips): while
+  // working, rows at/after the last user trigger belong to the live turn.
+  const liveTurnCutoff = isWorking
+    ? ([...messages].reverse().find((m) => m.role === 'user')?.createdAt ?? null)
+    : null;
 
   const composer = (
     <Dojo3Composer
@@ -1922,7 +1934,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
                 <ToolBadgeGroup
                   key={msg.id}
                   items={toolBadgeItems(members, toolResultById, wordyMode)}
-                  chips={toolChips(members, toolResultById, wordyMode)}
+                  chips={toolChips(members, toolResultById, wordyMode, liveTurnCutoff)}
                 />
               );
             }
