@@ -815,7 +815,41 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
     if (multiPark) {
       handledByMultiPark = true;
       try {
+        // Join hygiene (2026-07-23, run bmrwsrsi9gl): an EMPTY terminal reply is
+        // not a deliverable. Advancing the join on one shipped "(no delivered
+        // content found)" into the compile steer 18 seconds after the ASSIGNs
+        // went out (a worker blurted an instant empty DELIVERABLE). The piece
+        // stays outstanding: the real deliverable advances it later, or the
+        // park TTL sweep fails it closed.
+        const piecePayload = (envelope.payload ?? '').trim();
+        if (piecePayload.length === 0) {
+          logger.warn('fan-out park: empty terminal reply on a joined thread; NOT advancing the join (a nothing is not a deliverable)', {
+            agentId: target.id, thread: threadShort, intent: effectiveIntent, from: envelope.fromAgent,
+          });
+          throw new MultiParkEmptyReply();
+        }
         const step = advanceMultiParkOnReply(target.id, multiPark.rowid, threadId, threadShort);
+        // Piece receipt at land time (2026-07-23): the completed-join harvest
+        // used to re-derive piece content from the store and could come up
+        // empty (attribution/thread-id/ingest variance). The transport holds
+        // the piece RIGHT HERE, so it records its own receipt row, keyed by
+        // the park's FULL thread id (the inbound may have carried the short
+        // form). The non-null conv_key keeps it out of the pending-event pool
+        // (same idiom as 'engine-steer'); the store query below stays as the
+        // fallback for pieces landed before this shipped.
+        if (step.outcome === 'held' || step.outcome === 'completed') {
+          try {
+            insertInterAgentEngineRow({
+              work: null,
+              id: uuidv4(),
+              agentId: target.id,
+              content: piecePayload.slice(0, 4000),
+              sourceAgentId: envelope.fromAgent ?? null,
+              originIntent: 'fanout_join_piece',
+              convKey: `join-piece:${step.matchedThread}`,
+            });
+          } catch { /* receipt is best effort */ }
+        }
         if (step.outcome === 'held') {
           logger.info('fan-out park: piece landed, holding for the rest', {
             agentId: target.id, thread: threadShort, landed: step.landed, total: step.total,
@@ -832,7 +866,13 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
           const PIECE_CAP = 1200;
           const pieces: string[] = [];
           for (const t of step.full) {
-            const piece = db.prepare(`
+            // Receipts first (recorded at each land, full-thread key); the raw
+            // store row only as the legacy fallback.
+            const piece = (db.prepare(`
+              SELECT content, source_agent_id FROM inter_agent_messages
+               WHERE agent_id = ? AND conv_key = ? AND origin_intent = 'fanout_join_piece'
+               ORDER BY created_at DESC LIMIT 1
+            `).get(target.id, `join-piece:${t}`) ?? db.prepare(`
               SELECT content, source_agent_id FROM (
                 SELECT content, source_agent_id, created_at FROM inter_agent_messages
                   WHERE agent_id = ? AND a2a_thread_id = ? AND source_agent_id IS NOT NULL
@@ -840,7 +880,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
                 SELECT content, source_agent_id, created_at FROM messages
                   WHERE agent_id = ? AND a2a_thread_id = ? AND source_agent_id IS NOT NULL
               ) ORDER BY created_at DESC LIMIT 1
-            `).get(target.id, t, target.id, t) as { content: string; source_agent_id: string | null } | undefined;
+            `).get(target.id, t, target.id, t)) as { content: string; source_agent_id: string | null } | undefined;
             const senderName = piece?.source_agent_id
               ? ((db.prepare('SELECT name FROM agents WHERE id = ?').get(piece.source_agent_id) as { name: string } | undefined)?.name ?? 'a delegated agent')
               : 'a delegated agent';
@@ -887,9 +927,11 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
         }
         // 'noop' (duplicate piece / already consumed / question retired by other means): nothing to do.
       } catch (err) {
-        logger.warn('fan-out park: advance failed', {
-          agentId: target.id, thread: threadShort, error: err instanceof Error ? err.message : String(err),
-        });
+        if (!(err instanceof MultiParkEmptyReply)) {
+          logger.warn('fan-out park: advance failed', {
+            agentId: target.id, thread: threadShort, error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
     }
   }
@@ -1398,9 +1440,13 @@ function findOpenMultiParkForThread(agentId: string, threadId: string, threadSho
   return null;
 }
 
+// Control-flow marker: an empty terminal reply on a joined thread exits the
+// multipark block without advancing (and without the error-path warn).
+class MultiParkEmptyReply extends Error {}
+
 type MultiParkStep =
-  | { outcome: 'held'; landed: number; total: number }
-  | { outcome: 'completed'; full: string[]; total: number }
+  | { outcome: 'held'; landed: number; total: number; matchedThread: string }
+  | { outcome: 'completed'; full: string[]; total: number; matchedThread: string }
   | { outcome: 'noop' };
 
 /**
@@ -1422,21 +1468,22 @@ function advanceMultiParkOnReply(agentId: string, rowid: number, threadId: strin
     const parsed = oldKey ? parseMultiPark(oldKey) : null;
     if (!parsed || !oldKey) return { outcome: 'noop' };
     const total = parsed.full.length;
+    const matchedThread = parsed.remaining.find((t) => t === threadId || t.slice(0, 8) === threadShort) ?? null;
     const nextRemaining = parsed.remaining.filter((t) => t !== threadId && t.slice(0, 8) !== threadShort);
-    if (nextRemaining.length === parsed.remaining.length) return { outcome: 'noop' }; // already landed
+    if (nextRemaining.length === parsed.remaining.length || !matchedThread) return { outcome: 'noop' }; // already landed
     if (nextRemaining.length > 0) {
       const newKey = `park:${MULTI_PARK_MARK}${parsed.full.join(MP_THREAD_SEP)}${MP_FULL_REMAIN_SEP}${nextRemaining.join(MP_THREAD_SEP)}`;
       const res = db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ? AND conv_key = ?`)
         .run(newKey, agentId, rowid, oldKey);
       if (res.changes === 0) continue; // concurrent land moved the key; re-read
-      return { outcome: 'held', landed: total - nextRemaining.length, total };
+      return { outcome: 'held', landed: total - nextRemaining.length, total, matchedThread };
     }
     // Last piece: consume park:~ -> relayed:~ (idempotent; excluded from open-park scans).
     const relayedKey = `relayed:${MULTI_PARK_MARK}${parsed.full.join(MP_THREAD_SEP)}`;
     const res = db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ? AND conv_key = ?`)
       .run(relayedKey, agentId, rowid, oldKey);
     if (res.changes === 0) continue; // someone else advanced; re-read (likely 'noop' next)
-    return { outcome: 'completed', full: parsed.full, total };
+    return { outcome: 'completed', full: parsed.full, total, matchedThread };
   }
   return { outcome: 'noop' };
 }

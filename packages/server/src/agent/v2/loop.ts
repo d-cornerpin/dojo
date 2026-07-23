@@ -3647,7 +3647,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   const excerpt = a.content.replace(/^\[[^\]]*\]\s*/g, '').trim().slice(0, 90);
                   return `- answered ${relativeTimeAgo(a.created_at)}: "${excerpt}"`;
                 });
-                pushEngineMessage(messages, `RECENTLY ANSWERED in this conversation (engine record; do NOT re-do this work. If asked about it again, reply with one brief line pointing at the existing answer, never silence and never a re-run):\n${lines.join('\n')}`); // registry-exempt(2026-07-22): reads per-iteration conv-scoped answer stamps; migrate with the volatile-injection registry refactor
+                pushEngineMessage(messages, `RECENTLY ANSWERED in this conversation (engine record; do NOT re-execute this work. If asked about it again, a brief restatement of the answer's content is fine, or point at the earlier answer; never silence, and never re-run the work itself):\n${lines.join('\n')}`); // registry-exempt(2026-07-22): reads per-iteration conv-scoped answer stamps; migrate with the volatile-injection registry refactor
               }
             } catch { /* best effort */ }
           }
