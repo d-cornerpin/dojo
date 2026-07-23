@@ -5366,32 +5366,33 @@ export async function runV2Turn(agentId: string): Promise<void> {
                ORDER BY completed_at ASC LIMIT 3
             `).all(agentId, turnStartedAt) as Array<{ title: string; result: string | null; created_at: string; source_message_id: string | null }>;
             if (closedThisTurn.length > 0) {
-              // Cross-turn dedup, same rule as the teardown detector: if the
-              // birthing ask already records an answer (mig 113 key), or a
-              // substantive model reply landed since the earliest task was
-              // created, the user has the answer and a "done" would be the
-              // repetitive second closeout the owner vetoed.
-              const rootIds = closedThisTurn.map((t) => t.source_message_id).filter((x): x is string => !!x);
-              const answeredByKey = rootIds.length === closedThisTurn.length && rootIds.length > 0 && rootIds.every((mid) => {
-                const row = db.prepare('SELECT answer_message_id FROM messages WHERE id = ?').get(mid) as { answer_message_id: string | null } | undefined;
-                return !!row?.answer_message_id;
+              // Receipt-keyed owe, PER TASK (2026-07-23, owner production
+              // transcript: duplicate status reply after the real answer). The
+              // old time-window dedup ("any substantive reply since the
+              // earliest task was created") failed exactly when a bookkeeping
+              // task was born AFTER the real answer went out: the window was
+              // empty, the steer fired on a settled conversation, and the
+              // model re-announced work the user already had, on a WAKE turn
+              // nobody was waiting on. The receipts say who is owed what:
+              //   - a task WITH an origin ask owes a closeout only while that
+              //     ask records no answer (mig 113 answer_message_id);
+              //   - a task WITHOUT an origin ask (self/bookkeeping) owes one
+              //     only when this turn is serving a live human ask; on a
+              //     wake/bookkeeping turn its close is incidental, exactly
+              //     what the tracker engine-note tells the model to [no-reply].
+              const owedTasks = closedThisTurn.filter((t) => {
+                if (t.source_message_id) {
+                  const row = db.prepare('SELECT answer_message_id FROM messages WHERE id = ?').get(t.source_message_id) as { answer_message_id: string | null } | undefined;
+                  return !row?.answer_message_id;
+                }
+                return hasUnansweredUser;
               });
-              const earliestCreatedAt = closedThisTurn.map((t) => t.created_at).filter(Boolean).sort()[0] ?? turnStartedAt;
-              const alreadyAnswered = answeredByKey || !!db.prepare(`
-                SELECT 1 FROM messages
-                 WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?
-                   AND (source IS NULL OR source != 'a2a')
-                   AND content NOT LIKE '[{%'
-                   AND origin_intent IS NULL
-                   AND length(trim(content)) > 40
-                 LIMIT 1
-              `).get(agentId, earliestCreatedAt);
-              if (!alreadyAnswered) {
-                const first = closedThisTurn[0];
+              if (owedTasks.length > 0) {
+                const first = owedTasks[0];
                 const resultBit = (first.result ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
-                const whichTask = closedThisTurn.length === 1
+                const whichTask = owedTasks.length === 1
                   ? `the task "${first.title.slice(0, 80)}"`
-                  : `${closedThisTurn.length} tasks (first: "${first.title.slice(0, 80)}")`;
+                  : `${owedTasks.length} tasks (first: "${first.title.slice(0, 80)}")`;
                 const steerText =
                   `[Engine record: this turn completed ${whichTask}` +
                   (resultBit ? ` with this result on file: "${resultBit}"` : '') +
@@ -5405,8 +5406,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 } catch { /* dashboard row is best effort */ }
                 broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
                 state = advance(state, { pendingNudge: steerText, steeredForSilentCloseoutThisTurn: true });
-                logger.info('v2 silent-closeout steer: turn completed task(s) with nothing surfaced; handing the mic to the model for the completion message', {
-                  agentId, turnNumber, taskCount: closedThisTurn.length, firstTask: first.title.slice(0, 60),
+                logger.info('v2 silent-closeout steer: turn completed task(s) whose origin ask is unanswered; handing the mic to the model for the completion message', {
+                  agentId, turnNumber, taskCount: owedTasks.length, firstTask: first.title.slice(0, 60),
                 }, agentId);
                 continue;
               }
@@ -5919,6 +5920,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
         if (
           counterparty.kind === 'user' &&
           !isEngineTurn &&
+          // 2026-07-23 (owner production transcript, duplicate status reply):
+          // the floor's own law is "a turn the USER TRIGGERED may never end
+          // in silence because work was delegated". A wake/bookkeeping turn
+          // that happens to send an A2A serves nobody who is waiting; firing
+          // there steered the model into re-announcing settled work. The
+          // trigger row is the receipt that a human is actually waiting.
+          !!triggerRow &&
           (!persistedContent || persistedContent.trim().length === 0) &&
           chosenConvKey &&
           chosenConvKey !== 'engine' &&
