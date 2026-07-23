@@ -634,6 +634,13 @@ class AgentRuntime {
       // message. Cleared here as a hard guarantee.
       preemptedAgents.delete(agentId);
 
+      // Compile-pending fan-out parks: close the loop no matter what the
+      // model did with the compile steer (see resolveCompilePendingParks).
+      try {
+        const { resolveCompilePendingParks } = await import('./a2a-transport.js');
+        await resolveCompilePendingParks(agentId);
+      } catch { /* best effort; the TTL sweep backstops */ }
+
       // ── Unserved-wake drain (2026-07-23) ── pendingWakeups is a SET, so N
       // queued causes collapse into ONE wakeup, that wakeup serves ONE
       // trigger, and a still-unserved terminal wake (a deliverable answering

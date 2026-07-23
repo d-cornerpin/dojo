@@ -1478,8 +1478,16 @@ function advanceMultiParkOnReply(agentId: string, rowid: number, threadId: strin
       if (res.changes === 0) continue; // concurrent land moved the key; re-read
       return { outcome: 'held', landed: total - nextRemaining.length, total, matchedThread };
     }
-    // Last piece: consume park:~ -> relayed:~ (idempotent; excluded from open-park scans).
-    const relayedKey = `relayed:${MULTI_PARK_MARK}${parsed.full.join(MP_THREAD_SEP)}`;
+    // Last piece: park:~ -> park:!~ COMPILE-PENDING (2026-07-23, runs
+    // bmrx65w40bu/bmrx6enavgu: consuming straight to relayed: here ASSUMED
+    // the steered compile would answer the owner; when the model ghosted the
+    // compile, the park was already spent, the TTL sweep saw nothing open,
+    // and the owner got NOTHING, permanently. The fail-closed invariant must
+    // not depend on the model. The '!' form stays inside the 'park:' open
+    // scans but no longer matches the multipark matcher (late pieces noop);
+    // resolveCompilePendingParks flips it to relayed: once the ask records an
+    // answer, or relays the recorded join pieces itself after a short grace.
+    const relayedKey = `park:!${MULTI_PARK_MARK}${parsed.full.join(MP_THREAD_SEP)}`;
     const res = db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ? AND conv_key = ?`)
       .run(relayedKey, agentId, rowid, oldKey);
     if (res.changes === 0) continue; // someone else advanced; re-read (likely 'noop' next)
@@ -1815,6 +1823,74 @@ function questionSnippet(content: string): string {
  *      is consumed (relayed:) so it can never fire again.
  *   3. Otherwise leave it open for the TTL sweep.
  */
+/**
+ * Resolve COMPILE-PENDING fan-out parks ('park:!~...') for one agent. The join
+ * completed and the model was steered to compile; this closes the loop no
+ * matter what the model did: if the owner's ask records an answer (mig 113
+ * key), the park quietly becomes relayed:; otherwise, after a short grace, the
+ * engine relays the RECORDED join pieces itself (the sanctioned park-relay
+ * delivery, receipts recorded at land time). Called from the runtime's
+ * turn-end drain (prompt) and the TTL sweep (backstop).
+ */
+export async function resolveCompilePendingParks(agentId: string): Promise<void> {
+  const db = getDb();
+  const pendingPrefix = `park:!${MULTI_PARK_MARK}`;
+  let rows: OpenParkRow[] = [];
+  try {
+    rows = db.prepare(
+      `SELECT rowid, agent_id, conv_key, content, inbound_meta, created_at FROM messages
+        WHERE agent_id = ? AND role = 'user' AND conv_key LIKE 'park:!%'
+        ORDER BY rowid ASC LIMIT 5`,
+    ).all(agentId) as OpenParkRow[];
+  } catch { return; }
+  for (const parked of rows) {
+    try {
+      const ans = db.prepare('SELECT answer_message_id FROM messages WHERE rowid = ?')
+        .get(parked.rowid) as { answer_message_id: string | null } | undefined;
+      if (ans?.answer_message_id) {
+        // The compile answered the owner; the receipt says so. Quiet consume.
+        db.prepare('UPDATE messages SET conv_key = ? WHERE rowid = ? AND conv_key = ?')
+          .run(parked.conv_key.replace(/^park:!/, 'relayed:'), parked.rowid, parked.conv_key);
+        continue;
+      }
+      // Grace: give the compile wake a real chance before the engine relays.
+      const age = db.prepare(`SELECT (julianday('now') - julianday(?)) * 86400 AS sec`)
+        .get(parked.created_at) as { sec: number } | undefined;
+      if ((age?.sec ?? 0) < 60) continue;
+      const threads = parked.conv_key.slice(pendingPrefix.length).split(MP_THREAD_SEP).filter(Boolean);
+      const pieces: string[] = [];
+      for (const t of threads) {
+        const rec = db.prepare(`
+          SELECT content, source_agent_id FROM inter_agent_messages
+           WHERE agent_id = ? AND conv_key = ? AND origin_intent = 'fanout_join_piece'
+           ORDER BY created_at DESC LIMIT 1
+        `).get(agentId, `join-piece:${t}`) as { content: string; source_agent_id: string | null } | undefined;
+        if (rec) {
+          const name = rec.source_agent_id
+            ? ((db.prepare('SELECT name FROM agents WHERE id = ?').get(rec.source_agent_id) as { name?: string } | undefined)?.name ?? 'a delegated agent')
+            : 'a delegated agent';
+          pieces.push(`From ${name}: ${rec.content.replace(/\s+/g, ' ').trim().slice(0, 600)}`);
+        }
+      }
+      const text = pieces.length > 0
+        ? `All the delegated pieces are back; here they are directly:\n${pieces.join('\n')}`
+        : 'The delegated pieces came back, but I could not assemble a combined reply in time.';
+      await consumeParkAndDeliver(
+        { rowid: parked.rowid, agent_id: parked.agent_id, conv_key: parked.conv_key, inbound_meta: parked.inbound_meta },
+        text,
+        { failedClosed: pieces.length === 0 },
+      );
+      logger.info('compile-pending park resolved: engine relayed the recorded pieces (the steered compile never answered the owner)', {
+        agentId, park: parked.conv_key.slice(0, 44), pieces: pieces.length,
+      });
+    } catch (err) {
+      logger.warn('compile-pending park resolution failed (left for the sweep)', {
+        agentId, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
 async function resolveOpenPark(parked: OpenParkRow, opts: { failIfUnanswered: boolean; askedNameHint?: string }): Promise<ParkResolution> {
   // Fan-out (multi) park: a single stranded reply is NOT the answer (relaying one piece
   // as THE answer is the fan-out bug), so we never relay from here. The live
@@ -1876,6 +1952,10 @@ export async function sweepExpiredParks(): Promise<{ failedClosed: number; relay
   }
   for (const parked of parks) {
     try {
+      if (parked.conv_key.startsWith('park:!')) {
+        await resolveCompilePendingParks(parked.agent_id);
+        continue;
+      }
       const outcome = await resolveOpenPark(parked, { failIfUnanswered: true });
       if (outcome === 'relayed-reply') out.relayedReplies++;
       else if (outcome === 'failed-closed') out.failedClosed++;

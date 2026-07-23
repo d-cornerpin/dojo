@@ -1232,7 +1232,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // (a2a_requires_response=1) and has not yet been claimed by a turn (conv_key NULL).
   // Gated with !hasUnansweredUser below so a waiting human always wins (no hijack).
   const TERMINAL_WAKE_INTENTS = new Set(['DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL']);
-  let terminalWakeA2A: { intent: string; threadShort: string; fromName: string; rowid: number; src: 'm' | 'ia' } | null = null;
+  let terminalWakeA2A: { intent: string; threadShort: string; threadId: string; fromName: string; rowid: number; src: 'm' | 'ia' } | null = null;
   if (
     mostRecentInbound &&
     mostRecentInbound.origin_kind !== 'engine' &&
@@ -1248,6 +1248,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
     terminalWakeA2A = {
       intent: mostRecentInbound.a2a_intent,
       threadShort: mostRecentInbound.a2a_thread_id.slice(0, 8),
+      threadId: mostRecentInbound.a2a_thread_id,
       fromName: senderRow?.name ?? mostRecentInbound.source_agent_id ?? 'another agent',
       rowid: mostRecentInbound.rowid,
       src: mostRecentInbound._src,
@@ -1273,6 +1274,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           terminalWakeA2A = {
             intent: b.a2a_intent,
             threadShort: b.a2a_thread_id.slice(0, 8),
+            threadId: b.a2a_thread_id,
             fromName: senderRow2?.name ?? b.source_agent_id ?? 'another agent',
             rowid: buried.rowid,
             src: buried.src,
@@ -1558,13 +1560,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
   {
     const root = currentTurnRoot.get(agentId) ?? null;
     const kind: 'user' | 'a2a' | 'engine' | null =
-      isEngineTurn ? 'engine' : (isA2ATurn ? 'a2a' : (chosenConvKey ? 'user' : null));
+      isEngineTurn ? 'engine' : ((isA2ATurn || terminalWakeA2A) ? 'a2a' : (chosenConvKey ? 'user' : null));
     const subjectKind = isEngineTurn ? 'engine_event' as const
-      : isA2ATurn ? 'a2a_thread' as const
+      : (isA2ATurn || terminalWakeA2A) ? 'a2a_thread' as const
       : chosenConvKey ? 'conv' as const
       : isHumanContinuation ? 'continuation' as const
       : 'none' as const;
     const subjectId = isEngineTurn ? (pendingEngineEvent?.id ?? null)
+      : terminalWakeA2A ? terminalWakeA2A.threadId
       : isA2ATurn ? ((terminalWakeA2A as unknown as { a2a_thread_id?: string | null } | null)?.a2a_thread_id ?? null)
       : chosenConvKey;
     currentModelRequestId.set(agentId, `req_${uuidv4().replace(/-/g, '').slice(0, 16)}`);
@@ -7985,6 +7988,30 @@ export async function runV2Turn(agentId: string): Promise<void> {
               }, agentId);
             } catch { /* best effort */ }
           }
+        }
+        // Owner law (2026-07-09) applies at the ASYNC-EXIT path too (2026-07-23,
+        // run bmrx5kjitjq: the hand-off status line vanished because this exit
+        // bypasses every turn-ending floor). A user-triggered turn may not go
+        // silent on a delegation hand-off: one steer for the status line, in
+        // the agent's own voice. If the model ghosts it (or delegates yet
+        // again), exit as designed; the park relay stays the deterministic
+        // backstop for the ANSWER, this net only covers the interim silence.
+        if (
+          triggerRow &&
+          !state.surfacedReplyThisTurn && !deferredDeliveredByAck &&
+          !state.lastAssistantTextForIM &&
+          (!persistedContent || persistedContent.trim().length === 0) &&
+          !Object.values(state.explicitSendThisTurn).some(Boolean) &&
+          !state.steeredForDelegationExitThisTurn &&
+          state.loopCount < MAX_TOOL_LOOPS
+        ) {
+          const exitSteer =
+            '[Engine hint: you delegated work on the user\'s request and are about to end your turn without telling them anything. Send the user ONE short line first: if you already have their answer, give it now; otherwise say you have handed the pieces off and will report back when they return. Do not message any agent again this turn.]';
+          state = advance(state, { pendingNudge: exitSteer, steeredForDelegationExitThisTurn: true });
+          logger.info('v2 delegation-exit steer: user-triggered hand-off ending silently; one steer for the status line before the async exit', {
+            agentId, turnNumber,
+          }, agentId);
+          continue;
         }
         logger.info('v2: delegation send, exiting loop (reply is async; owner question parked)', { agentId }, agentId);
         break;

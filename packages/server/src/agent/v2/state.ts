@@ -390,6 +390,7 @@ export interface AgentTurnState {
   steeredForGhostedAskThisTurn: boolean;  // ghosted-work-ask floor fired once (bare [no-reply] on a work-classified human ask)
   ghostedAskSecondSteerThisTurn: boolean; // second ghosted-ask steer fired (carries the recorded answer for the model to restate)
   steeredForSilentCloseoutThisTurn: boolean; // silent-closeout steer fired (task completed this turn, nothing surfaced; the AGENT must say it)
+  steeredForDelegationExitThisTurn: boolean; // delegation-exit steer fired (user-triggered turn about to exit silently on an async hand-off)
   /**
    * The task id of a project the ENGINE itself auto-scaffolded THIS turn
    * (mid-turn floor at 6+ work calls), or null. The engine owns the
@@ -582,6 +583,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     steeredForGhostedAskThisTurn: false,
     ghostedAskSecondSteerThisTurn: false,
     steeredForSilentCloseoutThisTurn: false,
+    steeredForDelegationExitThisTurn: false,
     autoScaffoldedTaskIdThisTurn: null,
     nudgedForOwedInterruptThisTurn: false,
     nudgedForPromiseFloorThisTurn: false,
