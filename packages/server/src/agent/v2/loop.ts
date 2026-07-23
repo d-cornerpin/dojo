@@ -115,7 +115,7 @@ import {
 } from './classifiers/hoarding.js';
 // ackInjector intentionally NOT imported, engine ack disabled per invariant
 // review (see "Engine-injected ack, DISABLED" comment below).
-import { composeStartAck, composeCompletionAck, extractDeliverableLinks, condenseResultProse, isForwardPromiseReply, pickA2AHandoffAck } from './ack-copy.js';
+import { isForwardPromiseReply, pickA2AHandoffAck } from './ack-copy.js';
 import { findCrossConvReAnswer } from './re-answer-guard.js';
 import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, TOOL_AND_OUTPUT_RESERVE } from '../../memory/compaction.js';
@@ -497,6 +497,11 @@ const ACK_DEFAULT_TEXT = 'Working on it…';
 // 12s acked nearly every tool-using turn on the floor model; 30s is roughly
 // where a texting human starts wondering if they were heard.
 const ENGINE_START_ACK_AFTER_MS = 30000;
+// Owner ruling 2026-07-22 (engine detects, agent speaks): the start ack is no
+// longer engine-composed. This steer hands the mic to the model instead; the
+// capture-site delivery surfaces whatever the model says as the visible ack.
+const START_ACK_STEER_TEXT =
+  '[Engine hint: the user has not heard anything from you yet this turn, and their request is being worked as a tracked job. In your next response, open with ONE short line in your own voice letting them know you are on it, then continue the work. Keep it to a single brief sentence; the full answer comes when the work is done.]';
 // RC-4.4: streaming-race grace. When the start-ack timer / first-tool hook is about to
 // fire but a model call is still streaming, wait up to this long for the real reply to
 // land (startAckRepliedNow suppresses the ack then). Kills the F-11 double-ack (ack at
@@ -1722,6 +1727,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // suppression of the model's own reply. Fires only for user counterparties;
   // A2A / engine turns never reach the classifier that calls it.
   let engineStartAckDeliveredThisTurn = false;
+  // Start-ack steer lifecycle (owner ruling 2026-07-22): requested (async-safe
+  // intent set by the timer/first-tool hook) -> armed (steer injected at a loop
+  // boundary, state write is loop-synchronous) -> delivered (the model's own
+  // line surfaced via the capture site). The engine never composes the line.
+  let startAckSteerRequested = false;
+  let startAckSteerArmedThisTurn = false;
   // originIntent stamps a machine-readable marker on the ack row so consumers
   // (the completion-ack cross-turn dedup, the PM poke chain, the F10 replied-
   // check) recognize an engine ack STRUCTURALLY instead of by copy prefix,
@@ -1907,17 +1918,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
   `).get(agentId, turnNumber);
   const fireStartAckIfOwed = async (via: 'timer' | 'first-tool'): Promise<void> => {
     try {
-      if (engineStartAckDeliveredThisTurn || startAckRepliedNow()) return;
-      engineStartAckDeliveredThisTurn = true;
+      if (engineStartAckDeliveredThisTurn || startAckSteerRequested || startAckSteerArmedThisTurn || startAckRepliedNow()) return;
       // Trivial-save fix (2026-07-16): if the model already WROTE the user's
       // answer this turn (text riding with its tool calls, captured by the
-      // demotion block), the ack the engine owes is THAT text, not a canned
-      // start line. Observed live: "Cool, diving into this now." fired three
-      // seconds AFTER the save completed, while the real answer ("Saved.") sat
-      // demoted as a working note. Deliver the model's own words with no
-      // origin stamp (it IS the reply, so startAckRepliedNow and the terminal
-      // floors count it) and mark it consumed so nothing double-sends.
+      // demotion block), the ack the engine owes is THAT text, the model's own
+      // words. Deliver with no origin stamp (it IS the reply, so
+      // startAckRepliedNow and the terminal floors count it) and mark it
+      // consumed so nothing double-sends.
       if (deferredUserReplyWithTools && deferredUserReplyWithTools.trim().length > 0) {
+        engineStartAckDeliveredThisTurn = true;
         const answer = deferredUserReplyWithTools.trim();
         deferredUserReplyWithTools = null;
         deferredDeliveredByAck = true;
@@ -1927,45 +1936,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }, agentId);
         return;
       }
-      // RC-4.4 + owner directive 2026-07-17: NEVER fire while a model call is in
-      // flight; wait for the call's OUTCOME instead of a fixed grace. If the call
-      // ends with the reply, the ack is moot (skip silently). If it ends with more
-      // tool work, execution resumes and the ack fires then, while tools are
-      // actually grinding, which is the only moment a start ack is honest.
-      // Observed pre-fix: "Got it, starting on this now." landed AFTER the work
-      // finished, five seconds before the composed answer. Bounded by a hard cap
-      // so a hung call (stream-idle watchdog territory) can't defer forever.
-      if (modelCallInFlight) {
-        const capDeadline = Date.now() + ENGINE_START_ACK_STREAM_GRACE_MS;
-        while (modelCallInFlight && Date.now() < capDeadline) {
-          await new Promise((r) => setTimeout(r, 250));
-          if (startAckRepliedNow()) {
-            logger.info('v2 F10 / RC-4.4: start ack skipped, the in-flight reply landed while waiting for the call outcome', {
-              agentId, turnNumber, via,
-            }, agentId);
-            return;
-          }
-        }
-        // Call completed without a reply (more tool work queued), or the hard
-        // cap elapsed on a genuinely wedged call: fall through and speak.
-        if (startAckRepliedNow()) return;
-      }
-      // Seconds of slack here (the threshold already passed), so the wording
-      // call is awaited inline; the pool fallback guarantees a line.
-      const ackText = await composeStartAck({ userMessage: lastUserMessageContent ?? '', agentId });
-      // Re-check AFTER composing: the wording call can take up to ~2s on a
-      // box with a system model, and the real reply can land inside that
-      // gap (observed live: reply at :16, stray ack at :17). An ack that
-      // arrives after the answer is pure noise, so the moment of truth is
-      // immediately before delivery, not before composition.
-      if (startAckRepliedNow()) {
-        logger.info('v2 F10: start ack skipped, the reply landed while the wording was being composed', {
-          agentId, turnNumber,
-        }, agentId);
-        return;
-      }
-      await deliverEngineUserAck(ackText, 'engine_start_ack');
-      logger.info('v2 F10: work-gated start ack delivered (no reply yet, work underway)', {
+      // Owner ruling 2026-07-22 (engine detects, agent speaks): no canned
+      // engine line, no compose call. Request the steer; the loop injects it
+      // at the next iteration boundary (loop-synchronous state write, so this
+      // async timer can never race the loop) and the MODEL speaks the start
+      // line in its own voice. The old in-flight-call wait is gone for the
+      // same reason: the request is inert until the checkpoint, which
+      // re-checks startAckRepliedNow at a safe boundary.
+      startAckSteerRequested = true;
+      logger.info('v2 F10: start-ack threshold passed with nothing heard; steer requested so the model says it (engine detects, agent speaks)', {
         agentId, turnNumber, via, thresholdMs: ENGINE_START_ACK_AFTER_MS,
       }, agentId);
     } catch (err) {
@@ -3295,21 +3274,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   // production failure where the floor model ended the turn on an
                   // A2A send and the owner heard nothing. One per turn.
                   // RC-4.2: never start-ack an agent-flagged counterparty (ack ping-pong).
-                  if (counterparty.kind === 'user' && !counterpartyIsAgentSender && !engineStartAckDeliveredThisTurn) {
-                    // Flag set synchronously at the fire decision so a second
-                    // site can never double-ack. Wording is composed fire-and-
-                    // forget (best-effort model, guaranteed pool fallback) so it
-                    // never delays the model loop; an ack always lands.
-                    engineStartAckDeliveredThisTurn = true;
-                    // Do NOT splice the project title into the sentence: it is derived
-                    // from the raw, truncated user request and reads as broken grammar.
-                    // The composer sees the user's message for context but keeps the
-                    // line title-free; the person just sent the request so they know
-                    // what it refers to.
-                    void (async () => {
-                      const ackText = await composeStartAck({ userMessage: lastUserMessageContent ?? '', agentId });
-                      await deliverEngineUserAck(ackText, 'engine_start_ack');
-                    })();
+                  if (counterparty.kind === 'user' && !counterpartyIsAgentSender && !engineStartAckDeliveredThisTurn && !startAckSteerArmedThisTurn) {
+                    // Owner ruling 2026-07-22 (engine detects, agent speaks):
+                    // the steer rides THIS first model call (the messages array
+                    // is mid-assembly here), so the model's very first response
+                    // opens with its own start line; the capture-site delivery
+                    // surfaces it the moment it lands. Armed synchronously so a
+                    // second site can never double-steer.
+                    startAckSteerArmedThisTurn = true;
+                    pushEngineMessage(messages, START_ACK_STEER_TEXT); // registry-exempt(2026-07-22): start-ack steer rides the in-flight messages array at the classifier site; migrate with the volatile-injection registry refactor
                   }
 
                   // ── PM rename handoff (async, fire-and-forget) ──
@@ -3448,6 +3421,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
             agentId, error: err instanceof Error ? err.message : String(err),
           }, agentId);
         }
+      }
+
+      // Start-ack steer checkpoint (owner ruling 2026-07-22): the async timer /
+      // first-tool hook only REQUEST the steer; the state write happens here,
+      // loop-synchronously. Re-checks startAckRepliedNow so a reply that landed
+      // in flight quietly disarms it. If another nudge occupies the slot this
+      // iteration, the request stays pending and retries next boundary.
+      if (startAckSteerRequested && !startAckSteerArmedThisTurn && !state.pendingNudge && !startAckRepliedNow()) {
+        startAckSteerArmedThisTurn = true;
+        state = advance(state, { pendingNudge: START_ACK_STEER_TEXT });
+        logger.info('v2 start-ack steer injected; the model speaks the start line itself', {
+          agentId, turnNumber,
+        }, agentId);
       }
 
       // Inject pendingNudge if present (synthetic user message, not persisted).
@@ -4261,6 +4247,27 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // suppress with no recovery (keeps A2A chatter off human channels).
         if (hasUnansweredUser && !interAgentTurn) {
           deferredUserReplyWithTools = persistedContent;
+          // Steered start line (owner ruling 2026-07-22): the start-ack steer
+          // asked the model to speak and this is its next text riding with
+          // tool calls. Surface it NOW as the user-visible start line, the
+          // model's own words at the moment they were said. Consumed so
+          // nothing double-sends; the terminal reply still lands separately
+          // when the work completes.
+          if (
+            startAckSteerArmedThisTurn &&
+            !engineStartAckDeliveredThisTurn &&
+            deferredUserReplyWithTools &&
+            !startAckRepliedNow()
+          ) {
+            engineStartAckDeliveredThisTurn = true;
+            const startLine = deferredUserReplyWithTools.trim();
+            deferredUserReplyWithTools = null;
+            deferredDeliveredByAck = true;
+            await deliverEngineUserAck(startLine, null);
+            logger.info('v2 start-ack steer: model spoke its start line mid-work; delivered as the visible ack', {
+              agentId, turnNumber, preview: startLine.slice(0, 60),
+            }, agentId);
+          }
         }
         // Demote, don't discard (owner request 2026-07-10). This narration
         // already STREAMED into the user's chat live; classifying it out of the
@@ -7517,15 +7524,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
         counterparty.kind === 'user' &&
         !counterpartyIsAgentSender && // RC-4.2: no start-ack to an agent-flagged sender
         !engineStartAckDeliveredThisTurn &&
+        !startAckSteerArmedThisTurn && !startAckSteerRequested &&
         result.toolCalls.some((tc) => tc.name === 'tracker_create_project')
       ) {
-        // Flag set synchronously; wording composed fire-and-forget with a
-        // guaranteed pool fallback so it never blocks the loop.
-        engineStartAckDeliveredThisTurn = true;
-        void (async () => {
-          const ackText = await composeStartAck({ userMessage: lastUserMessageContent ?? '', agentId });
-          await deliverEngineUserAck(ackText, 'engine_start_ack');
-        })();
+        // Owner ruling 2026-07-22 (engine detects, agent speaks): request the
+        // steer; the next iteration boundary injects it and the model speaks.
+        startAckSteerRequested = true;
       }
       // F2 (post-D3): the deleted anti-hoarding gate was ALSO the thing that forced
       // task scaffolding at the 6th load; deleting it removed all engine pressure to
@@ -7703,18 +7707,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // The engine just decided this in-flight work is project-worthy, so
             // the person who asked hears it is being tracked, once per turn.
             // RC-4.2: never start-ack an agent-flagged counterparty (ack ping-pong).
-            if (counterparty.kind === 'user' && !counterpartyIsAgentSender && !engineStartAckDeliveredThisTurn) {
-              // Flag set synchronously; wording composed fire-and-forget. This
-              // site fires MID-WORK (the engine just opened a task for in-flight
-              // work), so it uses the 'inprogress' flavor ("already working on
-              // it") rather than the fresh-start flavor.
-              engineStartAckDeliveredThisTurn = true;
-              // Title-free (see the other start-ack site): scaffoldName is a raw
-              // truncated user request and reads as broken grammar if spliced in.
-              void (async () => {
-                const ackText = await composeStartAck({ userMessage: lastUserMessageContent ?? '', agentId, phase: 'inprogress' });
-                await deliverEngineUserAck(ackText, 'engine_start_ack');
-              })();
+            if (counterparty.kind === 'user' && !counterpartyIsAgentSender && !engineStartAckDeliveredThisTurn && !startAckSteerArmedThisTurn && !startAckSteerRequested) {
+              // Owner ruling 2026-07-22 (engine detects, agent speaks): request
+              // the steer; the next iteration boundary injects it and the model
+              // says it is on it mid-work, in its own words.
+              startAckSteerRequested = true;
             }
             // F12.5: same PM rename handoff the turn-start site uses, so this
             // interim name also gets a proper umbrella name. Fire-and-forget.
