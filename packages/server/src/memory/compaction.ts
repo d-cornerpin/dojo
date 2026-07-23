@@ -392,6 +392,11 @@ export function resolveSummaryWriterModel(agentId: string, preferredModelId?: st
 
 // ── Main Entry Point ──
 
+// Minimum-yield floor + backoff for reactive compaction (2026-07-23).
+const MIN_COMPACTABLE_ROWS = 6;
+const LOW_YIELD_BACKOFF_MS = 15 * 60_000;
+const lowYieldCompactionBackoffUntil = new Map<string, number>();
+
 export async function checkAndCompact(
   agentId: string,
   modelId: string,
@@ -505,6 +510,27 @@ export async function checkAndCompact(
     // v2.5.11: reuse the gap calc we already did above instead of
     // re-querying.
     const guardUncompactedCount = uncompactedGapCount;
+    // Minimum-yield floor (owner report 2026-07-23: "compaction SO much,
+    // saving like 16 tokens"). A handful of rows outside the tail passes the
+    // zero-guard below, runs the FULL reactive cycle (continuity-brief LLM
+    // call, condensation, rebuild, divider), reclaims peanuts, and the
+    // still-crossed threshold refires next turn: a compaction treadmill. A
+    // tiny outside-tail region cannot reclaim meaningfully; skip it, and
+    // after any low-yield run back off for a while. Emergency (force) always
+    // bypasses, pressure at 96%+ must act regardless of yield.
+    if (!force && (lowYieldCompactionBackoffUntil.get(agentId) ?? 0) > Date.now()) {
+      logger.info('Compaction skipped: low-yield backoff active (last reactive run reclaimed almost nothing)', {
+        assembledTokens: totalTokens, threshold,
+      }, agentId);
+      return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
+    }
+    if (!force && guardUncompactedCount > 0 && guardUncompactedCount < MIN_COMPACTABLE_ROWS) {
+      logger.info('Compaction skipped: outside-tail region too small to reclaim meaningfully', {
+        assembledTokens: totalTokens, threshold, uncompactedOutsideTail: guardUncompactedCount,
+      }, agentId);
+      lowYieldCompactionBackoffUntil.set(agentId, Date.now() + LOW_YIELD_BACKOFF_MS);
+      return { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
+    }
     if (!force && guardUncompactedCount === 0) {
       logger.warn('Compaction gate exceeded but nothing outside fresh tail to compact, skipping (bloat is in fresh tail itself)', {
         assembledTokens: totalTokens,
@@ -621,6 +647,11 @@ export async function checkAndCompact(
       });
     }
 
+    if (result.tokensReclaimed < 2000 && result.leafCreated <= 1) {
+      // The run happened and bought almost nothing; the threshold will still
+      // be crossed next turn. Back off instead of treadmilling.
+      lowYieldCompactionBackoffUntil.set(agentId, Date.now() + LOW_YIELD_BACKOFF_MS);
+    }
     logger.info('Compaction complete', result, agentId);
     return result;
   }

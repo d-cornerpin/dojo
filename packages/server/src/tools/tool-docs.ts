@@ -58,6 +58,12 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   // Pre-loaded so "show me your screen" works in one call, without it the
   // model reaches for screen_screenshot (which only screenshots for itself) instead.
   'screen_broadcast',
+  // Pre-loaded so "show me X in the canvas" works in one call (owner .19
+  // transcript 2026-07-23: without it the model improvised with exec/file
+  // tools for six minutes, renamed a file on the owner's Desktop chasing an
+  // auto-open, and the untracked-work floor then bureaucratized the flail
+  // into a tracker project. Same disease screen_broadcast's entry cures).
+  'canvas_render',
   'recall_recent_thread',
   // RC-2: the primary is the agent that gets OPEN LOOPS injected, so the tool that
   // retires one must be callable in a single step (no load_tool_docs round-trip)
