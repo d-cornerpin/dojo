@@ -652,6 +652,16 @@ class AgentRuntime {
       try {
         const wdStatus = (getDb().prepare('SELECT status FROM agents WHERE id = ?').get(agentId) as { status?: string } | undefined)?.status;
         if (!isSelfResumeBlockedStatus(wdStatus)) {
+          // OWNER FIRST, ALWAYS (2026-07-23 production storm, the owner
+          // pleaded "stop" and the self-wake machinery kept the agent busy):
+          // when ANY human conversation is waiting, the drain queues NOTHING.
+          // The human's own trigger runs the next turn; leftover wakes get
+          // re-checked at THAT turn's end. Self-wakes never compete with a
+          // waiting human, full stop.
+          if (getWaitingHumanConversations(agentId).length > 0) {
+            wakeDrainHead.delete(agentId);
+            throw { __skipWakeDrain: true };
+          }
           const { findUnservedTerminalWake, getPendingEngineEvent } = await import('./v2/counterparty.js');
           const leftoverWake = findUnservedTerminalWake(agentId);
           const leftoverEngine = leftoverWake ? null : getPendingEngineEvent(agentId);
@@ -675,9 +685,11 @@ class AgentRuntime {
           }
         }
       } catch (err) {
-        logger.warn('unserved-wake drain check failed (non-fatal)', {
-          agentId, error: err instanceof Error ? err.message : String(err),
-        }, agentId);
+        if (!(err && typeof err === 'object' && '__skipWakeDrain' in (err as object))) {
+          logger.warn('unserved-wake drain check failed (non-fatal)', {
+            agentId, error: err instanceof Error ? err.message : String(err),
+          }, agentId);
+        }
       }
 
       // ── Human conversation drain (turn continuity) ──

@@ -5424,14 +5424,31 @@ export async function runV2Turn(agentId: string): Promise<void> {
               });
               if (owedTasks.length > 0) {
                 const first = owedTasks[0];
-                const resultBit = (first.result ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
                 const whichTask = owedTasks.length === 1
                   ? `the task "${first.title.slice(0, 80)}"`
                   : `${owedTasks.length} tasks (first: "${first.title.slice(0, 80)}")`;
+                // Receipts, never the model's own result prose (owner .19
+                // transcript: a task closed with a FALSE "opened in the canvas"
+                // claim and this steer quoted it back as "result on file",
+                // lending engine framing to a lie; prose-never-authority
+                // applies to the engine's own steers too). The engine states
+                // only what it RECORDED; with no recorded delivery it demands
+                // honesty instead of a victory lap.
+                let receipts = '';
+                try {
+                  const { composeTurnDeliverySummary } = await import('../../tracker/task-stamps.js');
+                  receipts = composeTurnDeliverySummary(agentId, turnNumber);
+                } catch { /* fall through to the no-receipts wording */ }
                 const steerText =
-                  `[Engine record: this turn completed ${whichTask}` +
-                  (resultBit ? ` with this result on file: "${resultBit}"` : '') +
-                  '. The user has not heard anything about it. The completion must come from you in your own words: WRITE one short reply in this conversation telling them it is done (include the deliverable or link if there is one). Do NOT call imessage_send or any other send tool; the engine routes your written reply to the right channel automatically. Do not re-open or re-do the task.]';
+                  `[Engine record: this turn marked ${whichTask} complete. ` +
+                  (receipts.length > 0
+                    ? `The engine recorded this delivery: ${receipts.slice(0, 220)}. The user has not heard anything about it. `
+                    : 'The engine has NO recorded delivery for it (no file artifact, no channel send). ') +
+                  'WRITE one short reply in this conversation now, in your own words: ' +
+                  (receipts.length > 0
+                    ? 'tell the user it is done and include the deliverable or link. '
+                    : 'if the work truly reached the user, say where; if it did NOT, say honestly what remains instead of claiming it is done. ') +
+                  'Do NOT call imessage_send or any other send tool; the engine routes your written reply automatically. Do not re-open or re-do the task.]';
                 const steerRowId = uuidv4();
                 try {
                   db.prepare(`
