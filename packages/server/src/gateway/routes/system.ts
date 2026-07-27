@@ -1,12 +1,11 @@
 import { Hono } from 'hono';
 import os from 'node:os';
-import dns from 'node:dns/promises';
-import net from 'node:net';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { readLogEntries } from '../../logger.js';
 import { broadcast } from '../ws.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
+import { assertPublicHttpTarget } from '../../agent/net-guard.js';
 import type { HealthData, LogEntry } from '@dojo/shared';
 
 const systemRouter = new Hono();
@@ -104,33 +103,10 @@ systemRouter.get('/system/time', (c) => {
 // http(s) link in any rendered message, including untrusted inbound email /
 // iMessage / agent output. Without validation that is an SSRF: a planted URL
 // could make the server probe 127.0.0.1, 169.254.169.254 (cloud metadata), or
-// LAN hosts. Block non-http(s) schemes and any host that resolves to a private,
-// loopback, or link-local address, and re-check on every redirect hop.
-function isPrivateAddr(ip: string): boolean {
-  if (net.isIPv4(ip)) {
-    const p = ip.split('.').map(Number);
-    if (p[0] === 10 || p[0] === 127 || p[0] === 0) return true;
-    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
-    if (p[0] === 192 && p[1] === 168) return true;
-    if (p[0] === 169 && p[1] === 254) return true; // link-local + cloud metadata
-    if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return true; // CGNAT
-    return false;
-  }
-  const v6 = ip.toLowerCase();
-  return v6 === '::1' || v6 === '::' || v6.startsWith('fe80') || v6.startsWith('fc') || v6.startsWith('fd') ||
-    v6.startsWith('::ffff:127.') || v6.startsWith('::ffff:10.') || v6.startsWith('::ffff:192.168.');
-}
-async function assertPublicHttpUrl(raw: string): Promise<void> {
-  const u = new URL(raw);
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('unsupported scheme');
-  const host = u.hostname;
-  if (net.isIP(host)) {
-    if (isPrivateAddr(host)) throw new Error('private address');
-    return;
-  }
-  const resolved = await dns.lookup(host, { all: true });
-  if (resolved.length === 0 || resolved.some((a) => isPrivateAddr(a.address))) throw new Error('private address');
-}
+// LAN hosts. The address-class judgement used to live here as a private copy;
+// PHASE-0 T11 extracted it to agent/net-guard.ts so the agent's outbound web
+// tools and this route share ONE owner of "may the server fetch this URL?".
+// Redirect hops are still re-checked individually (see the loop below).
 
 // GET /og-preview?url=... — fetch Open Graph metadata for link previews
 systemRouter.get('/og-preview', async (c) => {
@@ -143,7 +119,7 @@ systemRouter.get('/og-preview', async (c) => {
     let current = url;
     let resp: Response | null = null;
     for (let hop = 0; hop < 4; hop++) {
-      await assertPublicHttpUrl(current);
+      await assertPublicHttpTarget(current);
       resp = await fetch(current, {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; DojoBot/1.0)' },
         signal: AbortSignal.timeout(8000),

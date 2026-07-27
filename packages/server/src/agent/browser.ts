@@ -8,6 +8,7 @@ import { createLogger } from '../logger.js';
 import { callModel } from './model.js';
 import { getDb } from '../db/connection.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
+import { assertPublicHttpTarget } from './net-guard.js';
 
 const logger = createLogger('browser');
 
@@ -90,9 +91,13 @@ class BrowserSession {
   }
 
   async navigate(url: string): Promise<string> {
+    // T11 (SSRF): refuse loopback/LAN/metadata BEFORE a browser is launched.
+    // Playwright follows redirects and sub-resources itself, so this covers the
+    // requested URL only — per-hop enforcement is Phase 5's net broker.
+    const { address } = await assertPublicHttpTarget(url);
     const page = await this.ensurePage();
 
-    logger.info('Browser navigate', { url }, this.agentId);
+    logger.info('Browser navigate', { url, address }, this.agentId);
 
     try {
       await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });

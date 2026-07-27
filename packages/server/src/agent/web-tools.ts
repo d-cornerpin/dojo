@@ -5,6 +5,7 @@
 import { createLogger } from '../logger.js';
 import { getSearchApiKey } from '../config/loader.js';
 import { checkPermission } from './permissions.js';
+import { assertPublicHttpTarget, NetGuardError } from './net-guard.js';
 
 const logger = createLogger('web-tools');
 
@@ -221,6 +222,11 @@ export async function webFetch(
       if (!hopPerm.allowed) {
         return `Permission denied: ${hopPerm.reason}`;
       }
+      // T11 (SSRF): every hop resolves to a public address or we stop here.
+      // Inside the loop, not before it, so an open redirect on an allowed host
+      // cannot bounce us onto loopback/LAN/metadata. Rejection is a NetGuardError
+      // handled in the catch below.
+      await assertPublicHttpTarget(currentUrl);
       response = await fetch(currentUrl, {
         headers: {
           'User-Agent': 'DOJO/1.0 (agent-fetch)',
@@ -267,6 +273,10 @@ export async function webFetch(
       text = body;
     }
   } catch (err) {
+    if (err instanceof NetGuardError) {
+      logger.warn('Web fetch refused by the network guard', { url, address: err.address, reason: err.message }, agentId);
+      return `Permission denied: ${err.message}`;
+    }
     const msg = err instanceof Error ? err.message : String(err);
     // A network-layer fetch failure (timeout / DNS / refused / TLS) to an EXTERNAL
     // url is environmental, and this branch already HANDLES it: it returns actionable
