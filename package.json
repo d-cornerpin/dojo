@@ -17,7 +17,8 @@
     "typecheck": "tsc --noEmit -p packages/shared/tsconfig.json && tsc --noEmit -p packages/server/tsconfig.json",
     "build:package": "bash deploy/build-package.sh",
     "release": "bash deploy/release.sh",
-    "release:verify": "bash deploy/verify-release.sh"
+    "release:verify": "bash deploy/verify-release.sh",
+    "gates": "node deploy/checks/check-bytes.mjs && node deploy/checks/check-upgrade-bypass.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
