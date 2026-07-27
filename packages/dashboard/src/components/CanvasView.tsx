@@ -86,6 +86,22 @@ function CodeIcon() {
   );
 }
 
+/*
+ * SECURITY (2026-07-27, PHASE-0 T12b / P755) — canvas HTML is model-authored,
+ * so it renders in an OPAQUE origin, never ours. Both paths used to hand it the
+ * dashboard's origin: inline markup carried `allow-same-origin` (self-cancelling
+ * next to `allow-scripts` — verified reading a sentinel JWT out of localStorage),
+ * and a file on disk was an unsandboxed <iframe src>, served as text/html from
+ * the API origin, which in production IS the dashboard origin.
+ * Both now go through srcDoc + this sandbox. srcDoc rather than a blob: URL
+ * because a blob: is fetched against its CREATOR's origin, which an
+ * opaque-origin frame may not do — blob + sandbox is blocked outright.
+ * The file case therefore FETCHES its HTML instead of navigating to it; the
+ * server hands that body out attachment/octet-stream so the URL is inert in an
+ * address bar too (gateway/routes/upload.ts, PHASE-0 T12b / P421).
+ */
+const CANVAS_SANDBOX = 'allow-scripts allow-popups allow-forms';
+
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.ico']);
 const MARKDOWN_EXTS = new Set(['.md', '.markdown']);
 const HTML_EXTS = new Set(['.html', '.htm']);
@@ -193,6 +209,32 @@ export function CanvasView({ dock }: { dock: Extract<DockSpec, { kind: 'canvas' 
   const isHtmlCanvas = htmlInline || (fileBacked && isHtmlFile);
   const htmlSource = htmlInline ? dock.html ?? '' : isHtmlFile ? meta?.text ?? '' : '';
 
+  // ── Rendered markup for a file-backed HTML canvas ──
+  // Fetched, never navigated to: the body comes back with the sibling assets
+  // inlined as data URIs, and we hand it to a srcDoc iframe under
+  // CANVAS_SANDBOX (see the note above). `htmlSource` above stays the RAW file
+  // for the Code tab — the data-URI-expanded version is for rendering only.
+  const inlineUrl = isHtmlFile ? meta?.inlineUrl ?? null : null;
+  const [renderedHtml, setRenderedHtml] = useState<string | null>(null);
+  const [renderErr, setRenderErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (!inlineUrl) { setRenderedHtml(null); setRenderErr(null); return; }
+    let cancelled = false;
+    setRenderedHtml(null);
+    setRenderErr(null);
+    (async () => {
+      try {
+        const res = await fetch(inlineUrl, { credentials: 'include' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const html = await res.text();
+        if (!cancelled) setRenderedHtml(html);
+      } catch (err) {
+        if (!cancelled) setRenderErr(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [inlineUrl, nonce]);
+
   // ── Copy contents to clipboard ──
   // What gets copied depends on the type: the HTML source for an HTML canvas,
   // the raw text for code/markdown/json/csv, and the document's text for
@@ -253,11 +295,23 @@ export function CanvasView({ dock }: { dock: Extract<DockSpec, { kind: 'canvas' 
           srcDoc={dock.html}
           title={title}
           className="dojo3-dock__frame"
-          sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
+          sandbox={CANVAS_SANDBOX}
         />
       );
+    } else if (renderErr) {
+      body = <div className="dojo3-canvas__state dojo3-canvas__state--err">Could not load this page ({renderErr}).</div>;
+    } else if (renderedHtml == null) {
+      body = <div className="dojo3-canvas__state">Loading…</div>;
     } else {
-      body = <iframe key={nonce} src={meta!.inlineUrl} title={title} className="dojo3-dock__frame" />;
+      body = (
+        <iframe
+          key={nonce}
+          srcDoc={renderedHtml}
+          title={title}
+          className="dojo3-dock__frame"
+          sandbox={CANVAS_SANDBOX}
+        />
+      );
     }
   } else if (fileBacked) {
     if (loading && !meta) {

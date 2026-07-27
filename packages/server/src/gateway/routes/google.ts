@@ -42,6 +42,29 @@ import { queryGoogleActivity, getTodayActivityCounts, getLastActivityTimestamp }
 
 const logger = createLogger('google-routes');
 
+// SECURITY (2026-07-27, PHASE-0 T12b / P350): `/api/google/callback` is in
+// ALWAYS_PUBLIC_PATHS (gateway/middleware/auth.ts) — it must be, the OAuth
+// provider redirects the browser there with no credential to present — and it
+// answers with hand-built HTML. Anything interpolated into that HTML is
+// therefore attacker-reachable on an unauthenticated URL, and in production the
+// dashboard is served from this same origin (gateway/server.ts SPA fallback),
+// so an injected <script> would run with the dashboard's origin, its httpOnly
+// session cookie, and its localStorage token. Three values reach the response:
+// the `error` QUERY PARAM (fully attacker-controlled — anyone can hand the
+// owner a /api/google/callback?error=<payload> link) and the token-exchange
+// result's `email` / `error` (relayed provider text). All three go through
+// escapeHtml. Every one of them is a TEXT node, so escaping the five HTML
+// metacharacters is the complete job here; nothing is interpolated into an
+// attribute, a URL, or a <script> body. Regression: __tests__/google-oauth-callback.test.ts
+export function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export const googleRouter = new Hono<AppEnv>();
 
 /** Parse and validate the `slot` query param. Defaults to 'agent'. */
@@ -149,7 +172,7 @@ googleRouter.get('/callback', async (c) => {
 
   if (error) {
     logger.error('Google OAuth error', { error });
-    return c.html(`<html><body><h2>Google connection failed</h2><p>${error}</p><p>You can close this tab.</p><script>window.close()</script></body></html>`);
+    return c.html(`<html><body><h2>Google connection failed</h2><p>${escapeHtml(error)}</p><p>You can close this tab.</p><script>window.close()</script></body></html>`);
   }
 
   if (!code || !state) {
@@ -171,11 +194,11 @@ googleRouter.get('/callback', async (c) => {
   if (result.success) {
     logger.info('Google OAuth completed', { slot, email: result.email });
     const slotLabel = slot === 'user' ? "user's" : "agent's";
-    return c.html(`<html><body><h2>Google Workspace connected!</h2><p>${slotLabel.charAt(0).toUpperCase() + slotLabel.slice(1)} account connected as ${result.email}.</p><p>You can close this tab and return to the Dojo.</p><script>window.close()</script></body></html>`);
+    return c.html(`<html><body><h2>Google Workspace connected!</h2><p>${slotLabel.charAt(0).toUpperCase() + slotLabel.slice(1)} account connected as ${escapeHtml(result.email)}.</p><p>You can close this tab and return to the Dojo.</p><script>window.close()</script></body></html>`);
   }
 
   logger.error('Google OAuth token exchange failed', { slot, error: result.error });
-  return c.html(`<html><body><h2>Connection failed</h2><p>${result.error}</p><p>You can close this tab and try again from Settings.</p></body></html>`);
+  return c.html(`<html><body><h2>Connection failed</h2><p>${escapeHtml(result.error)}</p><p>You can close this tab and try again from Settings.</p></body></html>`);
 });
 
 // POST /api/google/disconnect?slot=agent|user  (resets that kind's primary)

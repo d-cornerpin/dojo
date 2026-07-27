@@ -368,6 +368,85 @@ uploadRouter.get('/file/:agentId/:filename', async (c) => {
   });
 });
 
+// ════════════════════════════════════════
+// SECURITY (2026-07-27, PHASE-0 T12b / P421) — the download route is PUBLIC.
+//
+// `/api/upload/download/` sits in ALWAYS_PUBLIC_PREFIXES (gateway/middleware/
+// auth.ts): the unguessable UUID is the whole credential, so it is reachable
+// with no token, over the tunnel, by anyone holding a link. It also serves
+// MODEL-AUTHORED bytes — every file_write/file_append registers itself here.
+// And in production the dashboard is served from this same origin (the SPA
+// fallback in gateway/server.ts), where the httpOnly session cookie and the
+// localStorage token live.
+//
+// Before this task, `?inline=1` on an .html file answered
+// `Content-Type: text/html` + `Content-Disposition: inline`, so opening that
+// public URL in a tab executed model-written script as a first-class document
+// on the dashboard's origin — able to fetch /api/* with the session cookie
+// attached. `?inline=1` was appended automatically by tools.ts on every canvas
+// open, so the URLs existed in the wild.
+//
+// The rule now: a response may render as a document ONLY if its type cannot
+// carry script. Everything else is `attachment`, which browsers download
+// instead of rendering, and script-capable *document* types are additionally
+// relabelled `application/octet-stream` so a sniffing browser has nothing to
+// latch onto either. `X-Content-Type-Options: nosniff` closes the third door.
+//
+// What still renders, and why it is safe:
+//   • raster images / PDF / audio / video / plain text — no script execution
+//     in the server's origin (Chrome runs PDF JS in its own isolated viewer).
+//   • SVG keeps `image/svg+xml` but is FORCED to `attachment`: scripts inside
+//     an SVG only run when it is a top-level document, never when it is loaded
+//     through <img>, and Content-Disposition does not affect subresource loads.
+//     So the canvas's <img src=inlineUrl> still shows it; a tab cannot run it.
+//   • HTML is fetched, not navigated to — CanvasView hands the body to a
+//     sandboxed srcDoc iframe. fetch() ignores Content-Disposition entirely.
+// ════════════════════════════════════════
+
+/** Types that can be rendered inline because they cannot execute script in our origin. */
+const INLINE_SAFE_MIME = /^(?:image\/(?:png|jpeg|jpg|gif|webp|bmp|x-icon|vnd\.microsoft\.icon|avif)|application\/pdf|audio\/|video\/|text\/plain)(?:$|;)/i;
+const INLINE_SAFE_EXT = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.avif',
+  '.pdf', '.mp3', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.flac',
+  '.mp4', '.mov', '.webm', '.mkv', '.txt', '.log',
+]);
+/** Types a browser will happily run as a document. Never handed out under their own label. */
+const SCRIPTABLE_DOC_MIME = /^(?:text\/html|application\/xhtml\+xml|text\/xml|application\/xml|text\/javascript|application\/(?:x-)?javascript|application\/ecmascript)(?:$|;)/i;
+const SCRIPTABLE_DOC_EXT = new Set([
+  '.html', '.htm', '.xhtml', '.shtml', '.xml', '.xsl', '.xslt',
+  '.js', '.mjs', '.cjs', '.jsx', '.htc',
+]);
+
+/**
+ * Decide the Content-Type + Content-Disposition for a public download.
+ * Exported for the regression suite (__tests__/upload-download-headers.test.ts).
+ */
+export function safeDownloadHeaders(
+  mimeType: string | null | undefined,
+  ext: string,
+  inlineRequested: boolean,
+): { contentType: string; disposition: 'inline' | 'attachment' } {
+  const mime = (mimeType ?? '').trim();
+  const e = ext.toLowerCase();
+
+  // Script-capable documents lose their label as well as their disposition.
+  // SVG is the deliberate exception — it keeps its mime so <img> still renders
+  // it, and relies on `attachment` to stop a top-level navigation.
+  const scriptable = SCRIPTABLE_DOC_MIME.test(mime) || SCRIPTABLE_DOC_EXT.has(e);
+  if (scriptable) return { contentType: 'application/octet-stream', disposition: 'attachment' };
+
+  const safeToRender = INLINE_SAFE_MIME.test(mime) || INLINE_SAFE_EXT.has(e);
+  return {
+    contentType: mime || 'application/octet-stream',
+    disposition: inlineRequested && safeToRender ? 'inline' : 'attachment',
+  };
+}
+
+/** Strip CR/LF/quotes so a filename can never inject a second response header. */
+export function sanitizeFilenameForHeader(filename: string): string {
+  return filename.replace(/[\r\n"\\]/g, '_');
+}
+
 // GET /download/:fileId — serve any shared file by ID (works through tunnel)
 uploadRouter.get('/download/:fileId', async (c) => {
   const fileId = c.req.param('fileId');
@@ -398,31 +477,35 @@ uploadRouter.get('/download/:fileId', async (c) => {
     return c.json({ ok: false, error: `File was registered but no longer exists on disk.` /* audit 26: do not leak the absolute file_path to the client */ }, 404);
   }
 
-  // `?inline=1` serves the file for in-page rendering (Content-Disposition:
-  // inline) instead of forcing a download. The right-dock canvas uses this so
-  // an HTML file written by file_write renders in the iframe rather than
-  // dropping into the browser's download queue. Default stays attachment so
-  // existing "download this file" links are unchanged.
+  // `?inline=1` asks for in-page rendering (Content-Disposition: inline)
+  // instead of a download. The right-dock canvas and the attachment chips use
+  // it; see the disposition rules below for which types still get it.
   const inline = c.req.query('inline') === '1' || c.req.query('disposition') === 'inline';
   const ext = path.extname(row.filename).toLowerCase();
   const isHtml = ext === '.html' || ext === '.htm' || row.mime_type === 'text/html';
 
   let content: Buffer;
-  let contentType = row.mime_type;
   if (inline && isHtml) {
     // Inline the HTML's local sibling assets (relative <img>/<link>/url() refs)
-    // as data URIs so they render in the canvas iframe, which otherwise can't
-    // resolve filesystem-relative paths and 404s every local asset.
+    // as data URIs so they render in the canvas, which otherwise can't resolve
+    // filesystem-relative paths and 404s every local asset. The canvas FETCHES
+    // this body and hands it to a sandboxed srcDoc iframe (CanvasView.tsx) —
+    // it is never navigated to, which is what lets the disposition below stay
+    // `attachment` without costing the canvas anything. The plain download URL
+    // (no ?inline=1) still hands over the file exactly as it is on disk.
     content = Buffer.from(inlineHtmlAssets(row.file_path), 'utf-8');
-    contentType = 'text/html; charset=utf-8';
   } else {
     content = await fs.promises.readFile(row.file_path);
   }
 
+  const { contentType, disposition } = safeDownloadHeaders(row.mime_type, ext, inline);
   return new Response(content, {
     headers: {
       'Content-Type': contentType,
-      'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="${row.filename}"`,
+      'Content-Disposition': `${disposition}; filename="${sanitizeFilenameForHeader(row.filename)}"`,
+      // Without this, a browser is free to sniff HTML out of a body we
+      // deliberately labelled octet-stream and undo the whole guard.
+      'X-Content-Type-Options': 'nosniff',
       'Cache-Control': inline && isHtml ? 'no-store' : 'public, max-age=86400',
     },
   });

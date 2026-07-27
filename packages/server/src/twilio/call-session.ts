@@ -116,17 +116,10 @@ export class CallSession {
   // frame boundaries introduce audible discontinuities.
   private aaLpState: BiquadState = createBiquadState();
 
-  // Parallel pre-biquad buffer used only by the diagnostic dump in
-  // handleUtterance — lets us compare what the runtime hands STT
-  // against an offline run on the same exact audio.
-  private rawBuffer: Float32Array[] = [];
-  private rawSamples = 0;
-
   // Rolling pre-onset lookback so the first phoneme of an utterance
   // isn't clipped when VAD onset fires mid-word. Fixed-length ring;
   // entries shift out as new frames come in.
   private lookbackRing: Float32Array[] = [];
-  private lookbackRingRaw: Float32Array[] = [];
 
   // Outbound TTS pacing queue.
   private ttsQueue: PendingTtsChunk[] = [];
@@ -284,10 +277,8 @@ export class CallSession {
     // clipping the first phoneme). Always update the ring, even when
     // not in active speech, so the lookback is fresh when onset fires.
     this.lookbackRing.push(float);
-    this.lookbackRingRaw.push(rawDecoded);
     while (this.lookbackRing.length > LOOKBACK_FRAMES) {
       this.lookbackRing.shift();
-      this.lookbackRingRaw.shift();
     }
 
     // Only buffer into the speech buffer when VAD has detected
@@ -300,8 +291,6 @@ export class CallSession {
     if (this.hasSpeech) {
       this.speechBuffer.push(float);
       this.speechSamples += float.length;
-      this.rawBuffer.push(rawDecoded);
-      this.rawSamples += rawDecoded.length;
     }
 
     const energy = rms(float);
@@ -383,10 +372,6 @@ export class CallSession {
           this.speechBuffer.push(c);
           this.speechSamples += c.length;
         }
-        for (const c of this.lookbackRingRaw) {
-          this.rawBuffer.push(c);
-          this.rawSamples += c.length;
-        }
         // Note: current `float` / `rawDecoded` are already in the
         // lookback (we pushed at the top), so the buffer now ends
         // with them. No need to re-append. Setting hasSpeech=true
@@ -416,20 +401,6 @@ export class CallSession {
     }
   }
 
-  /** Parallel flush of the diagnostic rawBuffer. */
-  private flushRawBuffer(): Float32Array {
-    const total = this.rawSamples;
-    const out = new Float32Array(total);
-    let offset = 0;
-    for (const chunk of this.rawBuffer) {
-      out.set(chunk, offset);
-      offset += chunk.length;
-    }
-    this.rawBuffer = [];
-    this.rawSamples = 0;
-    return out;
-  }
-
   private flushBuffer(): Float32Array {
     const total = this.speechSamples;
     const out = new Float32Array(total);
@@ -451,29 +422,15 @@ export class CallSession {
       // is the lowest-friction entry point - it auto-routes to whichever
       // engine the user has configured (Moonshine default).
       const wav = floatToWav(pcm16k, 16000);
-      // DIAGNOSTIC: dump every utterance to disk so we can listen.
-      // Two files per flush: `_post.wav` is what we hand STT (biquad
-      // applied), `_raw.wav` is the linear-interp-only decode for
-      // direct comparison. Lets us see whether the runtime biquad is
-      // doing something the offline biquad-on-WAV test isn't.
-      try {
-        const { mkdirSync, writeFileSync } = await import('node:fs');
-        const dir = '/tmp/dojo-twilio-utterances';
-        mkdirSync(dir, { recursive: true });
-        const stamp = Date.now();
-        const postPath = `${dir}/${this.callSid}_${stamp}_post.wav`;
-        writeFileSync(postPath, wav);
-        const raw = this.flushRawBuffer();
-        // Trim to the same length as pcm16k in case of drift.
-        const trimLen = Math.min(raw.length, pcm16k.length);
-        const rawTrimmed = trimLen === raw.length ? raw : raw.subarray(0, trimLen);
-        const rawWav = floatToWav(rawTrimmed, 16000);
-        const rawPath = `${dir}/${this.callSid}_${stamp}_raw.wav`;
-        writeFileSync(rawPath, rawWav);
-        logger.info('Dumped utterance WAVs', {
-          postPath, rawPath, sampleCount: pcm16k.length, rawSampleCount: rawTrimmed.length,
-        });
-      } catch { /* best effort */ }
+      // SECURITY (2026-07-27, PHASE-0 T12b / P553): every caller utterance used
+      // to be written here to `/tmp/dojo-twilio-utterances` as two WAVs — a
+      // world-readable, unbounded, never-cleaned recording of every phone call
+      // the box handled, kept unconditionally in production because a biquad
+      // investigation left its diagnostic behind. It is deleted, along with the
+      // parallel pre-biquad buffer (rawBuffer/rawSamples/lookbackRingRaw/
+      // flushRawBuffer) that existed only to feed it. If a debug capture is
+      // genuinely wanted again it comes back as an opt-in behind the test kit,
+      // never as an always-on write to a shared directory.
       const { transcribeBuffer } = await import('../voice/stt-service.js');
       const r = await transcribeBuffer(wav, { mime: 'audio/wav' });
       text = r.text.trim();
