@@ -22,6 +22,16 @@ const PUBLIC_PREFIXES = [
   '/api/twilio/voice-stream',  // Twilio Media Streams WS — opened by Twilio, no JWT
 ];
 
+// The only paths where an `Upgrade: websocket` request may skip token auth
+// here — each authenticates in its own upgrade handler (ws.ts
+// verifyAndTrackClient / the voice + vnc handlers). Registered in
+// gateway/server.ts. Adding a route here means that route owns its auth.
+const WEBSOCKET_PATHS = new Set([
+  '/api/ws',
+  '/api/ws/voice',
+  '/api/screen/vnc',
+]);
+
 export interface JwtPayload {
   userId: string;
   iat: number;
@@ -63,8 +73,21 @@ export const authMiddleware = async (c: Context, next: Next): Promise<Response |
     return next();
   }
 
-  // Skip auth for WebSocket upgrade requests (they handle auth separately)
-  if (c.req.header('upgrade')?.toLowerCase() === 'websocket') {
+  // WebSocket upgrades authenticate INSIDE their own handler (ws.ts
+  // verifyAndTrackClient reads ?token= and closes 1008 on failure), so the
+  // three real WS endpoints are exempted here — BY PATH.
+  //
+  // SECURITY (2026-07-26, PHASE-0 T9 Step 0): this used to exempt ANY request
+  // carrying `Upgrade: websocket`, on the whole /api/* mount, before any token
+  // was read — so `GET /api/agents` with that one header returned 200 with no
+  // credentials at all (verified live against the running dev server, and the
+  // box was publicly tunneled at the time). The header is attacker-controlled;
+  // the path is not. Anything that is not a WS endpoint now takes the normal
+  // token path regardless of what headers it claims.
+  if (
+    WEBSOCKET_PATHS.has(requestPath) &&
+    c.req.header('upgrade')?.toLowerCase() === 'websocket'
+  ) {
     return next();
   }
 
