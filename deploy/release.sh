@@ -303,7 +303,7 @@ step "Unit-suite gate (packages/server vitest, full run)"
 # ── Behavioral suite gate (wave-2 fix loop, 2026-07-03) ──
 # Real-model behavioral runs are slow (~25 min) and cannot run inline here, so
 # the gate checks for a RECENT full-suite green MARKER written only when every
-# scenario passed with zero blocking findings (dev-test-tools/behavioral/
+# scenario passed with zero blocking findings (dojo-test-kit/behavioral/
 # results/last-green.json). FA-D4: freshness is only the STALENESS FLOOR. The
 # gate must also mean "THIS change set passed," so we now HARD-MATCH the
 # marker's gitSha to the current pre-bump HEAD. HEAD is still the change-set
@@ -311,7 +311,7 @@ step "Unit-suite gate (packages/server vitest, full run)"
 # commit happens later, and the runner records exactly `git rev-parse HEAD` of
 # the platform repo, so an equal-length compare is exact. A change landed after
 # the green run ⇒ HEAD moved ⇒ mismatch ⇒ refuse. Run the suite with:
-#   (cd ../dev-test-tools && node behavioral/runner.mjs)
+#   (cd ../dojo-test-kit && node behavioral/runner.mjs)
 step "Behavioral suite gate (full-suite green marker, <24h AND same HEAD)"
 if [ "$SKIP_BEHAVIORAL" = "1" ]; then
   echo "  ⚠⚠⚠ BEHAVIORAL SUITE GATE SKIPPED (--skip-behavioral-gate) ⚠⚠⚠"
@@ -382,7 +382,7 @@ fi
 if grep -raqiE "sim-outbound|/api/dev/|DEV-INSTRUMENTS" "$SMOKE_PLATFORM/packages/server/dist" 2>/dev/null; then
   echo "  ---- offending dev-instrument references in packaged build ----"
   grep -raniE "sim-outbound|/api/dev/|DEV-INSTRUMENTS" "$SMOKE_PLATFORM/packages/server/dist" 2>/dev/null | head -10
-  fail "Dev-instrument ship-gate: packaged build still references dev instruments (sim-outbound / /api/dev). Run dev-test-tools/server-instruments/uninstall.mjs, rebuild, and re-run. NOT publishing."
+  fail "Dev-instrument ship-gate: packaged build still references dev instruments (sim-outbound / /api/dev). Run dojo-test-kit/server-instruments/uninstall.mjs, rebuild, and re-run. NOT publishing."
 fi
 echo "  ✓ no dev instruments (sim-outbound / /api/dev) in packaged build"
 
