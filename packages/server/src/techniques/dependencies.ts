@@ -420,11 +420,11 @@ export interface AutoResolveResult {
 }
 
 /**
- * Minimal sensitive-path check duplicated here to avoid importing
- * from agent/tools.ts (which has a heavy dependency graph). Keep in
- * sync with isSensitivePath in that file. The cost of false negatives
- * is high (leaked secrets); the cost of false positives is low (one
- * extra manual_step entry).
+ * Minimal sensitive-path check duplicated here. Keep in sync with
+ * isSensitivePath — in agent/path-guards.ts as of PHASE-0 T10, an import-light
+ * module, so this copy is a deletion candidate next time Sweep D opens
+ * technique export. False negatives are costly (leaked secrets); false
+ * positives are cheap (one extra manual_step entry).
  */
 function isSensitiveForBundling(absPath: string): boolean {
   const base = path.basename(absPath);

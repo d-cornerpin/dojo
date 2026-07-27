@@ -24,6 +24,8 @@ import { checkRequired, friendlyDbError, resolveAgentRef, resolveGroupRef, compa
 // with `large_files` table records created before Phase 3.5; new tool calls
 // don't intercept.
 import { checkPermission, getAgentPermissions } from './permissions.js';
+// PHASE-0 T10: sensitive-path list, ~-expansion and the share/read gate.
+import { resolvePath, isSensitivePath, sharePathGuard, pdfInputPaths } from './path-guards.js';
 import { isPrimaryAgent, isPMAgent, isImaginerAgent, getPrimaryAgentId, isDreamerAgent, isHealerAgent } from '../config/platform.js';
 import { spawnAgent, terminateAgent, completeAgent, applySpawnTimeoutDecision } from './spawner.js';
 import { getAgentRuntime } from './runtime.js';
@@ -3617,60 +3619,11 @@ for (const def of toolDefinitions) {
 }
 
 // ── Path Resolution ──
+// resolvePath / SENSITIVE_BASENAMES / isSensitivePath moved to
+// agent/path-guards.ts (PHASE-0 T10) so the case-fold and the share gate have
+// one home. Imported at the top of this file; behaviour is unchanged here.
 
 import os from 'node:os';
-
-function resolvePath(inputPath: string): string {
-  // Expand ~ and ~/ to home directory
-  if (inputPath === '~') return os.homedir();
-  if (inputPath.startsWith('~/')) return path.join(os.homedir(), inputPath.slice(2));
-  if (inputPath.startsWith('~')) return path.join(os.homedir(), '..', inputPath.slice(1));
-  return inputPath;
-}
-
-// Files that must NEVER appear in tool output. CLAUDE.md is explicit:
-// "Secrets never enter the database or memory DAG. API keys and tokens live
-// in ~/.dojo/secrets.yaml ... They never appear in message content, tool
-// results, or summaries." Any file_read / file_list / exec output that would
-// echo one of these gets refused at the tool boundary, before the model sees
-// it (and before the audit_log writes the result into the conversation).
-//
-// Match by basename (cheap, robust against absolute vs. relative paths) plus
-// a few directory containment checks.
-const SENSITIVE_BASENAMES = new Set<string>([
-  'secrets.yaml',
-  'secrets.yml',
-  'secrets.json',
-  '.env',
-  '.env.local',
-  '.env.production',
-  '.env.development',
-  'id_rsa',
-  'id_ed25519',
-  'id_ecdsa',
-  'id_dsa',
-  'authorized_keys',
-  'known_hosts',
-  '.npmrc',
-  '.pypirc',
-  '.netrc',
-  'credentials',
-]);
-
-function isSensitivePath(absPath: string): boolean {
-  const base = path.basename(absPath);
-  if (SENSITIVE_BASENAMES.has(base)) return true;
-  // Anything under ~/.ssh/ except the public key whitelist is sensitive.
-  const sshDir = path.join(os.homedir(), '.ssh');
-  if (absPath.startsWith(sshDir + path.sep) && !base.endsWith('.pub')) return true;
-  // ~/.aws/credentials, ~/.config/gcloud/, ~/.kube/config, common cred locations.
-  if (absPath === path.join(os.homedir(), '.aws', 'credentials')) return true;
-  if (absPath.startsWith(path.join(os.homedir(), '.config', 'gcloud') + path.sep)) return true;
-  if (absPath === path.join(os.homedir(), '.kube', 'config')) return true;
-  // Anything matching the secrets.yaml extension pattern in ~/.dojo/.
-  if (absPath.startsWith(path.join(os.homedir(), '.dojo') + path.sep) && base.startsWith('secret')) return true;
-  return false;
-}
 
 // Guard for exec commands. Block any command that would print a sensitive
 // file (`cat ~/.dojo/secrets.yaml`, `less id_rsa`, etc.) before the shell
@@ -4919,6 +4872,15 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
   try {
     // ── PDF tools (creation + manipulation, no external auth) ──
     if (pdfToolNames.includes(name)) {
+      // T10: pdf_read and friends read a caller-chosen path straight into the
+      // model's context. Gate every INPUT path exactly as share_file does.
+      for (const rawPdfPath of pdfInputPaths(args)) {
+        const pdfGuard = await sharePathGuard(agentId, name, rawPdfPath);
+        if (!pdfGuard.allowed) {
+          auditLog(agentId, name, pdfGuard.absPath, 'denied', pdfGuard.reason);
+          return { toolCallId: id, name, content: pdfGuard.blockedMessage ?? permissionDeniedMessage(pdfGuard.reason, agentId), isError: true };
+        }
+      }
       content = await executePdfTool(name, args, agentId);
       isError = content.startsWith('Error');
       // Auto-open the produced PDF in the canvas (it renders natively). Every
@@ -5150,7 +5112,16 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         break;
       }
       case 'share_file': {
-        const sharePath = resolvePath(args.path as string);
+        // T10: minting a public URL is a read that leaves the box. Same
+        // sensitive-path list and file_read permission every read tool uses.
+        const shareGuard = await sharePathGuard(agentId, 'share_file', args.path as string);
+        if (!shareGuard.allowed) {
+          auditLog(agentId, 'share_file', shareGuard.absPath, 'denied', shareGuard.reason);
+          content = shareGuard.blockedMessage ?? permissionDeniedMessage(shareGuard.reason, agentId);
+          isError = true;
+          break;
+        }
+        const sharePath = shareGuard.absPath;
         if (!path.isAbsolute(sharePath)) {
           content = 'Error: Path must be absolute. Use ~ for home directory.';
           isError = true;
@@ -8413,6 +8384,14 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         const entryFilename = (args.entry_filename as string | undefined)?.trim() || undefined;
         if (!sourcePath) {
           content = 'Error: source_path is required.';
+          isError = true;
+          break;
+        }
+        // T10: share_publicly mints an unauthenticated URL — gate it first.
+        const publishGuard = await sharePathGuard(agentId, 'share_publicly', sourcePath);
+        if (!publishGuard.allowed) {
+          auditLog(agentId, 'share_publicly', publishGuard.absPath, 'denied', publishGuard.reason);
+          content = publishGuard.blockedMessage ?? permissionDeniedMessage(publishGuard.reason, agentId);
           isError = true;
           break;
         }

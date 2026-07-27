@@ -19,6 +19,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { createLogger } from '../logger.js';
 import { getTunnelStatus } from './tunnel.js';
+import { isSensitivePath } from '../agent/path-guards.js';
 
 const logger = createLogger('public-share');
 
@@ -50,6 +51,12 @@ function copyDirRecursive(src: string, dest: string): void {
   for (const entry of entries) {
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
+    // PHASE-0 T10: a directory share must not sweep a secret in as a passenger.
+    // The tool-level gate only ever sees the directory the agent named.
+    if (isSensitivePath(srcPath)) {
+      logger.warn('Public share: skipped a sensitive file inside the shared directory', { file: entry.name });
+      continue;
+    }
     if (entry.isDirectory()) copyDirRecursive(srcPath, destPath);
     else if (entry.isFile()) fs.copyFileSync(srcPath, destPath);
     // skip symlinks/sockets/etc.
@@ -279,6 +286,14 @@ export function createPublicShare(input: CreatePublicShareInput): PublicShareRes
   }
   if (!fs.existsSync(src)) {
     throw new Error(`Source does not exist: ${src}`);
+  }
+  // PHASE-0 T10 — layered, not duplicated: the share_publicly tool case gates
+  // the agent's request with isSensitivePath + checkPermission and reports the
+  // standard [BLOCKED] string. This second check belongs to the FUNCTION, so no
+  // future caller (route, service, scheduled job) can publish a secret to an
+  // unauthenticated URL by simply not knowing about the tool-level gate.
+  if (isSensitivePath(src)) {
+    throw new Error(`${src} is on the sensitive-files block list and can never be published to a public URL`);
   }
 
   fs.mkdirSync(OUT_DIR, { recursive: true });

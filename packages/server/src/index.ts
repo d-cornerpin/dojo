@@ -14,6 +14,7 @@ import { checkTimeouts, reArmSpawnTimeouts } from './agent/spawner.js';
 import { killTunnelSync } from './services/tunnel.js';
 import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, isPMEnabled, setPlatformConfig, HOUSEHOLD_AGENT_IDS_KEY } from './config/platform.js';
 import { recordBootAttempt, markMigrationsRan, confirmHealthy, readMarker, synthesizeMigrationBootEpisode } from './update-state.js';
+import { probeFsCaseInsensitive, setFsCaseInsensitive } from './agent/path-guards.js';
 
 const logger = createLogger('main');
 const PORT = parseInt(process.env.DOJO_PORT ?? '3001', 10);
@@ -267,6 +268,12 @@ async function main(): Promise<void> {
 
   // 1. Create required directories
   ensureDirectories();
+
+  // 1b. PHASE-0 T10: MEASURE whether this box folds path case (APFS does, ext4
+  // does not) — every sensitive-path guard reads the flag. See path-guards.ts.
+  const fsFolds = probeFsCaseInsensitive(path.join(os.homedir(), '.dojo', 'data'), fs);
+  setFsCaseInsensitive(fsFolds);
+  logger.info('Filesystem case sensitivity probed', { caseInsensitive: fsFolds });
 
   // 2. Load secrets
   loadSecrets();

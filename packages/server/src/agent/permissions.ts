@@ -5,6 +5,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { isPrimaryAgent, isTrainerAgent } from '../config/platform.js';
 import { PROTECTED_IDENTITY_PATHS } from './sensei-policy.js';
+import { foldPath } from './path-guards.js';
 import type { PermissionManifest } from '@dojo/shared';
 
 const logger = createLogger('permissions');
@@ -184,8 +185,9 @@ export function resolveRealPathHardened(filePath: string): { path: string; resol
 // The protected-identity tier lives entirely under ~/.dojo; a candidate under that
 // root whose symlinks cannot be resolved is treated as protected (fail-closed).
 function isUnderProtectedRoot(lexicalAbs: string): boolean {
-  const root = canonicalizePath('~/.dojo');
-  return lexicalAbs === root || lexicalAbs.startsWith(root + path.sep);
+  const root = foldPath(canonicalizePath('~/.dojo'));
+  const candidate = foldPath(lexicalAbs);
+  return candidate === root || candidate.startsWith(root + path.sep);
 }
 
 // FU-4 + N3: is this write target one of the owner's identity/config files
@@ -198,10 +200,10 @@ function isUnderProtectedRoot(lexicalAbs: string): boolean {
 // Healer (destructive-gate.ts).
 export function isProtectedIdentityPath(filePath: string): boolean {
   const lexical = canonicalizePath(filePath);
-  if (PROTECTED_IDENTITY_PATHS.some(pattern => matchGlob(pattern, lexical))) return true;
+  if (PROTECTED_IDENTITY_PATHS.some(pattern => matchPathGlob(pattern, lexical))) return true;
   const { path: real, resolved } = realResolveDeepest(lexical);
   if (!resolved) return isUnderProtectedRoot(lexical);
-  return PROTECTED_IDENTITY_PATHS.some(pattern => matchGlob(pattern, real));
+  return PROTECTED_IDENTITY_PATHS.some(pattern => matchPathGlob(pattern, real));
 }
 
 /**
@@ -260,8 +262,17 @@ export function matchGlob(pattern: string, value: string): boolean {
   }
 }
 
+// PHASE-0 T10 (see agent/path-guards.ts): matchGlob's regex is case-SENSITIVE,
+// so on APFS '~/.dojo/Secrets.yaml' slipped every deny pattern while opening the
+// same bytes. Expand '~' on BOTH sides first — matchGlob would otherwise
+// re-expand a folded pattern back into a mixed-case absolute — then fold. Paths
+// only; checkGlobalDenyExec still matches command shapes case-sensitively.
+function matchPathGlob(pattern: string, value: string): boolean {
+  return matchGlob(foldPath(expandTilde(pattern)), foldPath(expandTilde(value)));
+}
+
 function matchesAny(patterns: string[], value: string): boolean {
-  return patterns.some(pattern => matchGlob(pattern, value));
+  return patterns.some(pattern => matchPathGlob(pattern, value));
 }
 
 // ── Permission Retrieval ──
@@ -336,7 +347,7 @@ function checkGlobalDenyFileWrite(filePath: string): PermissionResult {
   // best-effort because a hard fail-closed here would ride on every agent's write.
   const real = realResolveDeepest(expanded).path;
   for (const pattern of GLOBAL_FILE_WRITE_DENY) {
-    if (matchGlob(pattern, expanded) || matchGlob(pattern, real)) {
+    if (matchPathGlob(pattern, expanded) || matchPathGlob(pattern, real)) {
       return { allowed: false, reason: `Global deny: writing to ${filePath} is prohibited` };
     }
   }
@@ -346,7 +357,7 @@ function checkGlobalDenyFileWrite(filePath: string): PermissionResult {
 function checkGlobalDenyFileRead(filePath: string): PermissionResult {
   const expanded = canonicalizePath(filePath);
   for (const pattern of GLOBAL_FILE_READ_DENY) {
-    if (matchGlob(pattern, expanded)) {
+    if (matchPathGlob(pattern, expanded)) {
       return {
         allowed: false,
         reason: `Global deny: ${filePath} is restricted. Use the engine helper tools (healer_recent_actions / healer_action_detail) to access this kind of data with bounded response size.`,
@@ -359,7 +370,7 @@ function checkGlobalDenyFileRead(filePath: string): PermissionResult {
 function checkGlobalDenyFileDelete(filePath: string): PermissionResult {
   const expanded = canonicalizePath(filePath);
   for (const pattern of GLOBAL_FILE_DELETE_DENY) {
-    if (matchGlob(pattern, expanded)) {
+    if (matchPathGlob(pattern, expanded)) {
       return { allowed: false, reason: `Global deny: deleting ${filePath} is prohibited` };
     }
   }
@@ -390,7 +401,8 @@ function checkGlobalDenyExec(command: string): PermissionResult {
   // command shape (read, write, redirect, pipe). The path holds API
   // keys — no agent should ever touch it via shell.
   for (const needle of GLOBAL_EXEC_DENY_SUBSTRINGS) {
-    if (command.includes(needle)) {
+    // T10: fold so `cat ~/.dojo/Secrets.yaml` — the same file on APFS — is caught.
+    if (foldPath(command).includes(needle)) {
       return {
         allowed: false,
         reason: `Global deny: shell commands cannot read or modify ${needle} — this file holds API keys and is protected. Use Settings → Providers in the dashboard to change credentials.`,
@@ -544,8 +556,8 @@ function hasSquadWorkspaceAccess(agentId: string, filePath: string): boolean {
   // matches canonicalizePath's own semantics, so this stays consistent with the
   // main check rather than introducing a new resolution mode. Compare on a
   // path-segment boundary so /a/b matches /a/b/file but not a sibling /a/bc.
-  const canonicalPath = canonicalizePath(filePath);
-  const canonicalDir = canonicalizePath(technique.directory_path);
+  const canonicalPath = foldPath(canonicalizePath(filePath));
+  const canonicalDir = foldPath(canonicalizePath(technique.directory_path));
   return canonicalPath === canonicalDir || canonicalPath.startsWith(canonicalDir + path.sep);
 }
 
