@@ -239,6 +239,22 @@ step "Orphan-structure gate (no undeclared work-shaped table; spine readers repo
 node "$SCRIPT_DIR/checks/check-orphans.mjs" \
   || fail "Orphan-structure gate: an undeclared work-shaped table, a manifest entry that stopped describing the schema, or (under ORPHAN_GATE=block) a spine structure with no production reader. NOT publishing."
 
+# ── Watchdog/platform contract conformance (Phase 0 T5) ──
+# The watchdog must keep working while the platform will not boot, so it cannot
+# import platform code — which means the update-state contract (boot-attempt
+# limit, wall clock, rollback cap, phase names, marker shape) is HAND-COPIED into
+# both packages with a comment as the only thing binding them. If the copies
+# drift, nothing fails and nothing warns; the divergence surfaces during a failed
+# self-update, i.e. on a user's box, mid-incident, deciding whether to roll back.
+# This gate is the binding: it compares every declaration copy value-for-value and
+# set-for-set, fails on any NEW copy it was not told about, and asserts nothing in
+# watchdog/src imports packages/server or @dojo/shared. Reads SOURCE only, so it
+# sits here with the other source-reading gates BEFORE the version bump, per this
+# script's "fail before changing anything" rule. Static and fast; never skippable.
+step "Watchdog/platform contract gate (hand-synced copies must not drift)"
+node "$SCRIPT_DIR/checks/check-watchdog-contract.mjs" \
+  || fail "Watchdog contract gate: the hand-synced update-state copies disagree, a new undeclared copy appeared, or watchdog/src imported platform code. NOT publishing."
+
 # ── Bump version ──
 step "Bumping root package.json → $VERSION"
 node -e "const f='package.json',p=require('./'+f);p.version='$VERSION';require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
