@@ -212,6 +212,14 @@ export function writeContextReceipt(input: ReceiptInput): void {
         sha256: sha256(messagesSerialized),
         items: input.messages.map((m, i) => {
           const summary = summarizeMessage(m, mode);
+          // KIT-HARDENING K10(a). The whole-array hash above says THAT the
+          // array changed; it cannot say WHERE. A hash per message lets the kit
+          // diff two consecutive receipts and report the longest identical
+          // prefix plus the first entry that diverged — which is the only
+          // direct evidence of whether the cached prefix survived the turn.
+          // Read-only: this observes the array, it never reorders or edits it,
+          // so it cannot itself move the prefix it exists to watch.
+          summary.sha256 = sha256(JSON.stringify(m));
           if (input.messageEntryIds && input.messageEntryIds.length === input.messages.length) {
             summary.entryId = input.messageEntryIds[i];
           }
