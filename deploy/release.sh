@@ -51,22 +51,39 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# A failure AFTER the version bump used to leave package.json rewritten in the
-# working tree — so the tree was dirty, the next release refused at its
-# preconditions, and the reason ("we bumped and then a gate said no") was three
-# screens up. The bump is not a decision, it is a step; an abandoned run must
-# leave the tree exactly as it found it. Restored only while the bump is
-# uncommitted: once the release commit exists, the bump is real and reverting it
-# would be the destructive act, not the safe one.  (PHASE-0 T13)
+# ── One cleanup path for every way this script can end (PHASE-0 T13) ──
+# An abandoned run must leave the tree exactly as it found it, and there are
+# three ways to abandon one: a gate says no, someone presses ctrl-c, or the
+# process is killed. All three used to leave package.json rewritten at the new
+# version — so the tree was dirty, the NEXT release refused at its preconditions
+# with "working tree is not clean", and the actual reason ("we bumped and then a
+# gate said no") was three screens up. It was observed for real during T13's own
+# dry run, when the run was interrupted mid-flight.
+#
+# The bump is not a decision, it is a step. It is reverted only while it is
+# UNCOMMITTED: once the release commit exists the bump is real, and reverting it
+# would be the destructive act rather than the safe one.
+#
+# This is also the single owner of the smoke-sandbox teardown. Two separate
+# `trap ... EXIT` statements were racing for that job, and the second silently
+# replaced the first — one owner per job.
 CURRENT=""
 BUMPED=0
 COMMITTED=0
-fail() {
+cleanup() {
+  local code=$?
   if [ "$BUMPED" = "1" ] && [ "$COMMITTED" = "0" ]; then
-    git checkout -- package.json 2>/dev/null && echo "  ↪ reverted the uncommitted version bump; package.json is back at $CURRENT" >&2
+    git checkout -- package.json 2>/dev/null \
+      && echo "  ↪ reverted the uncommitted version bump; package.json is back at $CURRENT" >&2
   fi
-  echo "" >&2; echo "❌ $*" >&2; exit 1
+  [ -n "${SMOKE_PID:-}" ] && { kill "$SMOKE_PID" 2>/dev/null || true; }
+  [ -n "${SMOKE_DIR:-}" ] && rm -rf "$SMOKE_DIR"
+  return $code
 }
+trap cleanup EXIT
+trap 'echo "" >&2; echo "interrupted — cleaning up" >&2; exit 130' INT TERM
+
+fail() { echo "" >&2; echo "❌ $*" >&2; exit 1; }
 step() { echo ""; echo "▶ $*"; }
 
 # Prerelease-aware "strictly greater": exit 0 iff version $1 ranks strictly
@@ -375,8 +392,7 @@ echo "  ✓ zip embeds $VERSION"
 # way production does (unzip → npm install → node dist) and refuse to publish if
 # it can't reach startup. Runs in --dry-run too, so it's a real preflight gate.
 step "Smoke-booting the packaged build (catches non-resolvable imports before publish)"
-SMOKE_DIR="$(mktemp -d)"
-trap 'rm -rf "$SMOKE_DIR"' EXIT
+SMOKE_DIR="$(mktemp -d)"   # torn down by cleanup(), the one EXIT trap
 unzip -q "$DIST/$ZIP_NAME" -d "$SMOKE_DIR" || fail "Smoke boot: could not unzip the package"
 SMOKE_PLATFORM="$SMOKE_DIR/dojo-platform/platform"
 ( cd "$SMOKE_PLATFORM" && npm install --omit=dev --no-audit --no-fund >/dev/null 2>&1 ) \
@@ -401,10 +417,7 @@ SMOKE_PORT="$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0
 ( cd "$SMOKE_PLATFORM" && HOME="$SMOKE_HOME" DOJO_DATA_DIR="$SMOKE_HOME/.dojo/data" \
     DOJO_PORT="$SMOKE_PORT" DOJO_SKIP_SYSTEM_DEPS=1 NODE_ENV=production exec node packages/server/dist/index.js ) \
     >"$SMOKE_LOG" 2>&1 &
-SMOKE_PID=$!
-# Kill the smoke server on ANY exit path, not just the happy one — it outlives
-# this script otherwise and squats a port on a developer's box.
-trap 'kill "$SMOKE_PID" 2>/dev/null || true; rm -rf "$SMOKE_DIR"' EXIT
+SMOKE_PID=$!   # cleanup() kills it on ANY exit path, not just the happy one
 SMOKE_DOJO_LOG="$SMOKE_HOME/.dojo/logs/dojo.log"
 booted=0
 for _ in $(seq 1 60); do
