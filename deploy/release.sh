@@ -51,7 +51,22 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-fail() { echo "" >&2; echo "❌ $*" >&2; exit 1; }
+# A failure AFTER the version bump used to leave package.json rewritten in the
+# working tree — so the tree was dirty, the next release refused at its
+# preconditions, and the reason ("we bumped and then a gate said no") was three
+# screens up. The bump is not a decision, it is a step; an abandoned run must
+# leave the tree exactly as it found it. Restored only while the bump is
+# uncommitted: once the release commit exists, the bump is real and reverting it
+# would be the destructive act, not the safe one.  (PHASE-0 T13)
+CURRENT=""
+BUMPED=0
+COMMITTED=0
+fail() {
+  if [ "$BUMPED" = "1" ] && [ "$COMMITTED" = "0" ]; then
+    git checkout -- package.json 2>/dev/null && echo "  ↪ reverted the uncommitted version bump; package.json is back at $CURRENT" >&2
+  fi
+  echo "" >&2; echo "❌ $*" >&2; exit 1
+}
 step() { echo ""; echo "▶ $*"; }
 
 # Prerelease-aware "strictly greater": exit 0 iff version $1 ranks strictly
@@ -198,48 +213,96 @@ npm run typecheck
 ( cd packages/dashboard && npx tsc --noEmit -p tsconfig.json )
 echo "  ✓ server, shared, dashboard typecheck clean"
 
-# ── Size-ratchet gate (Phase 0 T2) ──
+# ════════════════════════════════════════════════════════════════════════
+# THE PHASE-0 GATE STACK (wired here by PHASE-0 T13 Step 2)
+#
+# `npm run gates` is two named tiers and a release runs BOTH:
+#   gates:block  (8) — each one refuses the release, in this exact order.
+#   gates:report (5) — instruments that never stop a build; their output is
+#                      CAPTURED into the release record instead of discarded,
+#                      because "reported and nobody read it" is how a phase
+#                      ends up net-positive with no accounting.
+#
+# All of these read SOURCE, so they run BEFORE the version bump, per this
+# script's own "fail before changing anything" rule — and before it, because
+# check-deletion-ratio refuses to report on a dirty tree and the bump makes the
+# tree dirty. Cheap and static (except lint, tens of seconds); none is skippable
+# and --skip-behavioral-gate does not skip any of them.
+#
+# ONE ORDERING DEVIATION, deliberate: the 8th blocking gate,
+# check-upgrade-bypass, needs a LIVE server. It runs further down against the
+# packaged artifact this script smoke-boots — the actual thing being shipped,
+# rather than the working tree — with --require-live so a missing server fails
+# instead of skipping. See "Upgrade-header auth-bypass gate" below.
+# ════════════════════════════════════════════════════════════════════════
+
+# The release record collects what the report tier measured, plus every
+# acknowledged red, so the cut is described by its own outputs rather than by
+# whoever writes the notes. Copied into deploy/dist at the end.
+RELEASE_RECORD="$(mktemp)"
+{
+  echo "# Release record — $CHANNEL_LABEL"
+  echo ""
+  echo "- cut at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "- branch: $BRANCH"
+  echo "- HEAD:   $(git rev-parse HEAD)"
+  echo ""
+} > "$RELEASE_RECORD"
+
+# ── Blocking gate 1/8: byte hygiene (Phase 0 T1) ──
+# NUL and C0 control bytes make a file BINARY to plain grep, which then reports
+# no match and looks clean — that is how the dev-instrument ship gate spent
+# months blind to the two largest files in this tree. Bidi/zero-width characters
+# are the render-time version of the same trick. First in the chain on purpose:
+# every gate after it greps something.
+step "Byte-hygiene gate (no bytes that blind grep or deceive review)"
+node "$SCRIPT_DIR/checks/check-bytes.mjs" \
+  || fail "Byte-hygiene gate: tracked source carries NUL/control/bidi/zero-width bytes. NOT publishing."
+
+# ── Blocking gate 2/8: size ratchets (Phase 0 T2) ──
 # The overhaul exists to shrink this codebase, and nothing shrinks by itself: the
 # god files got that way one "just five more lines" at a time, over two years, with
 # no gate that could see it. ratchets.json pins every large source file at its
 # measured wc -l; a pinned file may shrink but never exceed its pin, and any
 # unlisted source file above the new-file cap fails too (the decrease-only rule
-# cannot see a brand-new god file). Reads SOURCE, not the packaged dist, so it runs
-# here — BEFORE the version bump, per this script's own "fail before changing
-# anything" rule — rather than in the dist-gate cluster below. Cheap and static, so
-# it runs on every cut including --skip-behavioral-gate; it is never skippable.
+# cannot see a brand-new god file). Reads SOURCE, not the packaged dist.
 step "Size-ratchet gate (files may only shrink; new files may not balloon)"
 node "$SCRIPT_DIR/checks/check-ratchets.mjs" \
   || fail "Size-ratchet gate: a pinned file grew past its ratchet, a pinned file vanished without its manifest entry, or an unlisted new file exceeded the cap. NOT publishing."
 
-# ── Lint-baseline gate (Phase 0 T3) ──
+# ── Blocking gate 3/8: growth detector (Phase 0 T12d) ──
+# The ratchet governs files it already knows about. This is the other half: a
+# file more than 25% above its recorded baseline, or a NEW unlisted file that
+# crosses 60% of the new-file cap, fails — so a god file is argued about while
+# it is still cheap to argue about, not after it passes 400 lines.
+step "Growth-detector gate (no file balloons past its recorded baseline)"
+node "$SCRIPT_DIR/checks/check-growth.mjs" \
+  || fail "Growth-detector gate: a file grew >25% above its baseline, or an unlisted file crossed 60% of the new-file cap. NOT publishing."
+
+# ── Blocking gate 4/8: lint baseline (Phase 0 T3) ──
 # The eslint rules are all `warn` because the tree has hundreds of pre-existing
 # findings and error-mode would be unshippable — so lint-baseline.json is the
 # enforcement instead: every count is pinned PER RULE and may only fall. Reads
-# SOURCE, so it belongs here with the other source-reading gates, BEFORE the
-# version bump, per this script's "fail before changing anything" rule. Slower
-# than the ratchet (type-aware eslint plus a full tsc pass, tens of seconds)
-# and still never skippable: a gate that only runs on the good days is a habit,
-# not a gate.
+# SOURCE. Slower than the others (type-aware eslint plus a full tsc pass, tens of
+# seconds) and still never skippable: a gate that only runs on the good days is a
+# habit, not a gate.
 step "Lint-baseline gate (per-rule finding counts are decrease-only)"
 node "$SCRIPT_DIR/checks/check-lint-baseline.mjs" \
   || fail "Lint-baseline gate: an eslint rule or unused-symbol diagnostic rose above its pinned count in lint-baseline.json. NOT publishing."
 
-# ── Orphan-structure gate (Phase 0 T4) ──
+# ── Blocking gate 5/8: orphan structures (Phase 0 T4) ──
 # Two rules, one checker. The spine READER rule (a declared spine column/type with
 # no production reader) is log-only until Phase 1 exit, when ORPHAN_GATE=block
 # turns it into a failure. The WORK-SHAPED TABLE rule blocks from day one: any
 # table carrying an agent link and a state column must be declared in
 # spine-manifest.json, which is the machine check for the plan's own falsifier —
 # "work/tracker unification producing a second system in practice". Reads SOURCE
-# and the migration chain, never the live ~/.dojo database, so it sits here with
-# the other source-reading gates BEFORE the version bump, per this script's "fail
-# before changing anything" rule. Fast (no compiler), and never skippable.
+# and the migration chain, never the live ~/.dojo database.
 step "Orphan-structure gate (no undeclared work-shaped table; spine readers reported)"
 node "$SCRIPT_DIR/checks/check-orphans.mjs" \
   || fail "Orphan-structure gate: an undeclared work-shaped table, a manifest entry that stopped describing the schema, or (under ORPHAN_GATE=block) a spine structure with no production reader. NOT publishing."
 
-# ── Watchdog/platform contract conformance (Phase 0 T5) ──
+# ── Blocking gate 6/8: watchdog/platform contract (Phase 0 T5) ──
 # The watchdog must keep working while the platform will not boot, so it cannot
 # import platform code — which means the update-state contract (boot-attempt
 # limit, wall clock, rollback cap, phase names, marker shape) is HAND-COPIED into
@@ -248,16 +311,49 @@ node "$SCRIPT_DIR/checks/check-orphans.mjs" \
 # self-update, i.e. on a user's box, mid-incident, deciding whether to roll back.
 # This gate is the binding: it compares every declaration copy value-for-value and
 # set-for-set, fails on any NEW copy it was not told about, and asserts nothing in
-# watchdog/src imports packages/server or @dojo/shared. Reads SOURCE only, so it
-# sits here with the other source-reading gates BEFORE the version bump, per this
-# script's "fail before changing anything" rule. Static and fast; never skippable.
+# watchdog/src imports packages/server or @dojo/shared.
 step "Watchdog/platform contract gate (hand-synced copies must not drift)"
 node "$SCRIPT_DIR/checks/check-watchdog-contract.mjs" \
   || fail "Watchdog contract gate: the hand-synced update-state copies disagree, a new undeclared copy appeared, or watchdog/src imported platform code. NOT publishing."
 
+# ── Blocking gate 7/8: waiver budget (Phase 0 T12d) ──
+# The pre-committed consequence for "gates get waived": every waiver is a counted
+# commit trailer, and more than ~5 across an arc means the RULE is wrong. Over
+# budget the finding is a mis-scoped gate to re-aim, never a habit to hide.
+step "Waiver-budget gate (counted Gate-Waiver trailers across the arc)"
+node "$SCRIPT_DIR/checks/check-waivers.mjs" \
+  || fail "Waiver-budget gate: more waivers across this arc than the budget allows. The gate being waived is the thing to fix. NOT publishing."
+
+# ── The report tier (5): never blocks, always recorded ──
+# These measure rather than refuse — mixed timestamp formats, modules nothing
+# reaches, a stale resume pointer, capability the tree lost, and the phase's real
+# added/deleted/net line counts. Non-negotiable #7: no phase passes or fails on a
+# line count, but a net-positive phase owes an accounting, and the accounting
+# starts with the numbers being IN the release record instead of on a terminal
+# nobody kept. `|| true` on each: a report tier that can fail a release is a
+# blocking tier wearing the wrong name.
+step "Report tier (5 instruments — recorded into the release record, never blocking)"
+{
+  echo "## Report tier (never blocking — measured, recorded, judged by the exit review)"
+  echo ""
+  echo '```'
+} >> "$RELEASE_RECORD"
+for reporter in check-iso-writes check-wiring check-status-fresh check-capability-ledger check-deletion-ratio; do
+  {
+    echo "── $reporter ──"
+    node "$SCRIPT_DIR/checks/$reporter.mjs" 2>&1 || echo "(exit $? — report tier, not blocking)"
+    echo ""
+  } >> "$RELEASE_RECORD"
+  echo "  · $reporter recorded"
+done
+echo '```' >> "$RELEASE_RECORD"
+echo "" >> "$RELEASE_RECORD"
+echo "  ✓ 5 report-tier instruments captured into the release record"
+
 # ── Bump version ──
 step "Bumping root package.json → $VERSION"
 node -e "const f='package.json',p=require('./'+f);p.version='$VERSION';require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
+BUMPED=1
 
 # ── Build the deploy package ──
 step "Building deploy package (this compiles everything)"
@@ -287,25 +383,38 @@ SMOKE_PLATFORM="$SMOKE_DIR/dojo-platform/platform"
   || fail "Smoke boot: npm install failed in the packaged build"
 SMOKE_HOME="$SMOKE_DIR/home"; mkdir -p "$SMOKE_HOME/.dojo/data"
 SMOKE_LOG="$SMOKE_DIR/boot.log"
+# PHASE-0 T13: the smoke server gets its OWN free port, and "booted" now means
+# it ANSWERED, not that a hopeful line appeared in a log.
+#
+# It used to run on the default 3001 and count the string "is in use" as proof
+# of boot — which on a developer box (where the dev server holds 3001) meant the
+# packaged build never actually listened and the gate passed on the fact that it
+# could not start. The whole point of this step is that only the packaged
+# artifact can catch a packaging defect, so it has to really run. A free port
+# also lets the upgrade-header auth gate below interrogate the ARTIFACT rather
+# than the working tree.
+SMOKE_PORT="$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{const p=s.address().port;s.close(()=>console.log(p));});')"
+[ -n "$SMOKE_PORT" ] || fail "Smoke boot: could not obtain a free port for the packaged build. NOT publishing."
 # DOJO_SKIP_SYSTEM_DEPS keeps the boot from invoking Homebrew. `exec` makes the
 # subshell BECOME node, so $! is node's own PID — killing it actually stops the
 # server (which otherwise loops retrying the port forever and would leak).
 ( cd "$SMOKE_PLATFORM" && HOME="$SMOKE_HOME" DOJO_DATA_DIR="$SMOKE_HOME/.dojo/data" \
-    DOJO_SKIP_SYSTEM_DEPS=1 NODE_ENV=production exec node packages/server/dist/index.js ) \
+    DOJO_PORT="$SMOKE_PORT" DOJO_SKIP_SYSTEM_DEPS=1 NODE_ENV=production exec node packages/server/dist/index.js ) \
     >"$SMOKE_LOG" 2>&1 &
 SMOKE_PID=$!
+# Kill the smoke server on ANY exit path, not just the happy one — it outlives
+# this script otherwise and squats a port on a developer's box.
+trap 'kill "$SMOKE_PID" 2>/dev/null || true; rm -rf "$SMOKE_DIR"' EXIT
 SMOKE_DOJO_LOG="$SMOKE_HOME/.dojo/logs/dojo.log"
 booted=0
-for _ in $(seq 1 40); do
-  # Reaching migrations or the port-bind stage means the whole import graph
-  # resolved — which is exactly what preflight.1 failed to do.
-  if grep -qiE "Running database migrations|Migration applied|is in use|server (listening|started)|listening on" \
-       "$SMOKE_DOJO_LOG" "$SMOKE_LOG" 2>/dev/null; then booted=1; break; fi
+for _ in $(seq 1 60); do
+  # An HTTP answer on its own port is the whole import graph resolved, the
+  # migrations run, and the listener up — which is exactly what preflight.1
+  # failed to do, and exactly what a log line cannot prove.
+  if curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$SMOKE_PORT/api/health" 2>/dev/null; then booted=1; break; fi
   kill -0 "$SMOKE_PID" 2>/dev/null || break   # process died before reaching startup
   sleep 1
 done
-kill "$SMOKE_PID" 2>/dev/null || true
-wait "$SMOKE_PID" 2>/dev/null || true
 if grep -qiE "ERR_MODULE_NOT_FOUND|Cannot find package|ERR_REQUIRE_ESM|ERR_PACKAGE_PATH_NOT_EXPORTED" \
      "$SMOKE_DOJO_LOG" "$SMOKE_LOG" 2>/dev/null; then
   echo "  ---- last boot output ----"; tail -20 "$SMOKE_LOG" 2>/dev/null
@@ -313,9 +422,33 @@ if grep -qiE "ERR_MODULE_NOT_FOUND|Cannot find package|ERR_REQUIRE_ESM|ERR_PACKA
 fi
 [ "$booted" = "1" ] || {
   echo "  ---- last boot output ----"; tail -20 "$SMOKE_LOG" 2>/dev/null
-  fail "Smoke boot: packaged build did not reach startup within 40s. NOT publishing."
+  tail -20 "$SMOKE_DOJO_LOG" 2>/dev/null
+  fail "Smoke boot: packaged build did not answer /api/health on :$SMOKE_PORT within 60s. NOT publishing."
 }
-echo "  ✓ packaged build boots — import graph resolves and migrations run"
+echo "  ✓ packaged build boots and answers on :$SMOKE_PORT — import graph resolves, migrations run, listener up"
+
+# ── Blocking gate 8/8: upgrade-header auth bypass (Phase 0 T9 Step 0) ──
+# Until 2026-07-26 the auth middleware returned next() for ANY request whose
+# `Upgrade` header said `websocket`, before reading a token, across the whole
+# /api/* mount — an unauthenticated GET /api/agents came back 200. The exemption
+# is now scoped to the three real WS endpoints by PATH, and this is the
+# regression gate. It uses a RAW SOCKET because undici/fetch silently refuse to
+# send an Upgrade header, so a fetch-based version passes against the vulnerable
+# build too — do not "simplify" it.
+#
+# It asks the PACKAGED ARTIFACT just smoke-booted above, not the working tree:
+# the compiled thing being shipped is what a user runs. --require-live turns the
+# offline SKIP (correct for `npm run gates`) into a failure, because a release
+# that could not ask the question must not answer it.
+step "Upgrade-header auth-bypass gate (asked of the packaged artifact, live)"
+node "$SCRIPT_DIR/checks/check-upgrade-bypass.mjs" "$SMOKE_PORT" --require-live \
+  || fail "Upgrade-header auth-bypass gate: the packaged build let an untokened request through, or no server answered. NOT publishing."
+
+# The smoke server has now answered every question we have for it. Stop it
+# BEFORE the prefix-determinism gate below, which opens the same sandbox
+# database from a second process; the trap above is the backstop, not the plan.
+kill "$SMOKE_PID" 2>/dev/null || true
+wait "$SMOKE_PID" 2>/dev/null || true
 
 # ── Cacheable-prefix determinism gate (C28 Part 3) ──
 # The prompt cache erodes silently when a volatile token creeps into the cached
@@ -353,9 +486,44 @@ node "$SCRIPT_DIR/check-tool-conformance.mjs" \
 # The full server vitest suite now runs on EVERY cut, instruments-clean, and a
 # single red refuses the release. It is never skippable; --skip-behavioral-gate
 # does not skip this (unit tests are fast; there is no excuse).
+#
+# PHASE-0 T13 verified this was already wired and left it exactly where it is —
+# the plan's accumulated item #3 asked the question ("does the unit suite run in
+# release.sh at all?"); the answer is yes, since 2026-07-21, and it is
+# unconditional. The router-selector guard (T7) rides in here, so anything that
+# makes model selection slow or routes it through a network call stops a release.
 step "Unit-suite gate (packages/server vitest, full run)"
 ( cd "$SCRIPT_DIR/../packages/server" && npx vitest run --reporter=dot ) \
   || fail "Unit-suite gate: server unit tests are red. Root-cause and fix (owner rule: testing exists to find problems); NOT publishing."
+echo "- unit suite: full packages/server vitest run, green (never skippable)" >> "$RELEASE_RECORD"
+
+# ── Prompt-gate record (Phase 0 T13) ──
+# Four kit checks read the live server THROUGH THE DEV INSTRUMENTS —
+# check-cache-prefix, check-prompt-inventory, check-steer-delivery,
+# check-message-prefix. They can never run inside a release: the instruments
+# patch the tree being shipped, and the ship-gate below refuses any artifact
+# still carrying them. Before this step, "the cache-prefix gate stays blocking"
+# was a sentence people remembered rather than a thing the build read.
+#
+# So the release READS their recorded result instead. The record is written only
+# by `dojo-test-kit/checks/run-prompt-gates.mjs`, from the checks' own exit
+# codes, and only when it can name the tree the LISTENING SERVER was executing
+# and see the instruments installed. This gate then binds that record to THIS
+# release: same sha as HEAD, inside a freshness window, every rostered check
+# present, the two gates with no owner pointer green, and the acknowledged reds
+# carried through wearing their owners' names rather than counted as passes.
+step "Prompt-gate record (cache prefix, prompt inventory, steer delivery, message prefix)"
+node "$SCRIPT_DIR/checks/check-prompt-gate-record.mjs" --head "$(git rev-parse HEAD)" \
+  || fail "Prompt-gate record: missing, stale, measured another tree, or a blocking prompt gate is red. NOT publishing."
+{
+  echo ""
+  echo "## Prompt gates (recorded — they cannot run inside a release)"
+  echo ""
+  echo '```'
+  node "$SCRIPT_DIR/checks/check-prompt-gate-record.mjs" --head "$(git rev-parse HEAD)" 2>&1
+  echo '```'
+  echo ""
+} >> "$RELEASE_RECORD"
 
 # ── Behavioral suite gate (wave-2 fix loop, 2026-07-03) ──
 # Real-model behavioral runs are slow (~25 min) and cannot run inline here, so
@@ -425,7 +593,42 @@ console.log(bad.join(', '));
 if [ -n "$BEHAV_DISHONEST" ]; then
   fail "Behavioral gate: marker is not an honest first-class green ($BEHAV_DISHONEST). Fix and re-run the suite — or the owner explicitly authorizes --skip-behavioral-gate. NOT publishing."
 fi
+# ── The marker must have run on the DECLARED FLOOR MODEL (Phase 0 T6 + T13) ──
+# T6 made the kit RECORD which model produced a run; T13 makes the release READ
+# it. A battery green says nothing about this build unless you know what answered
+# the questions: a run on a frontier model hides exactly the failures the floor
+# model is meant to expose, and a marker from before the pin carries no modelId
+# at all and cannot be checked. Both are refusals here, because "probably the
+# right model" is the belief this whole phase exists to stop shipping on.
+FLOOR_MODEL_FILE="${DOJO_TEST_KIT:-$SCRIPT_DIR/../../dojo-test-kit}/behavioral/floor-model.json"
+[ -f "$FLOOR_MODEL_FILE" ] \
+  || fail "Behavioral gate: no declared floor model at $FLOOR_MODEL_FILE, so the marker's model cannot be checked against anything. NOT publishing."
+MODEL_MISMATCH=$(node -e "
+const declared = require('$FLOOR_MODEL_FILE');
+const marker = require('$BEHAV_MARKER');
+const want = declared.modelId;
+const got = marker.modelId;
+if (!want) { console.log('the floor-model declaration carries no modelId'); }
+else if (!got) { console.log('the marker carries NO modelId (a pre-pin run) — it cannot say which model produced the green; re-run the battery on the pinned kit'); }
+else if (got !== want) { console.log('the battery ran on ' + got + ', the declared floor model is ' + want + ' (' + (declared.observed && declared.observed.name || '?') + ')'); }
+")
+if [ -n "$MODEL_MISMATCH" ]; then
+  fail "Behavioral gate: $MODEL_MISMATCH. A green on an undeclared model is not evidence about this build. NOT publishing."
+fi
+echo "  ✓ battery ran on the declared floor model $(node -e "const d=require('$FLOOR_MODEL_FILE');console.log((d.observed&&d.observed.name||'?')+' ('+d.modelId.slice(0,8)+'…)')")"
 echo "  ✓ behavioral suite honest-green ${BEHAV_AGE_H}h ago at this exact HEAD (${HEAD_SHA:0:8})$(node -e "const m=require('$BEHAV_MARKER'); if(m.merged) console.log(' [merged over '+(m.mergedFrom&&m.mergedFrom.runId||'?')+']')")"
+{
+  echo ""
+  echo "## Behavioral battery"
+  echo ""
+  node -e "
+const m=require('$BEHAV_MARKER'), d=require('$FLOOR_MODEL_FILE');
+console.log('- marker run: ' + (m.runId||'?') + '  at sha ' + String(m.gitSha||'?').slice(0,8));
+console.log('- model:      ' + (m.modelId||'(none)') + '  = declared floor model ' + ((d.observed&&d.observed.name)||'?'));
+console.log('- green:      ' + m.green + '   scenarios: ' + Object.keys(m.verdicts||{}).length);
+"
+  echo ""
+} >> "$RELEASE_RECORD"
 fi
 
 # ── Dev-instrument ship-gate (C23) ──
@@ -443,13 +646,23 @@ if grep -raqiE "sim-outbound|/api/dev/|DEV-INSTRUMENTS" "$SMOKE_PLATFORM/package
 fi
 echo "  ✓ no dev instruments (sim-outbound / /api/dev) in packaged build"
 
+# ── Land the release record beside the artifacts ──
+# The report tier measured five things and every one of them would otherwise
+# scroll off a terminal. Non-negotiable #7 is explicit that a net-positive phase
+# owes an accounting, not a number — an accounting needs the numbers written
+# down somewhere a reviewer can open.
+RECORD_OUT="$DIST/release-record-$VERSION.md"
+cp "$RELEASE_RECORD" "$RECORD_OUT" 2>/dev/null || true
+echo ""
+echo "  📄 release record: $RECORD_OUT"
+
 # ── Dry run stops here ──
 if [ "$DRY_RUN" = "1" ]; then
   step "DRY RUN — reverting the version bump; not committing, pushing, or releasing"
   git checkout -- package.json
   echo "  Would next: commit, tag $TAG, push $BRANCH + tag, create $([ "$PREFLIGHT" = "1" ] && echo 'PRE-')release $TAG with both assets, then verify."
   echo ""
-  echo "✅ Dry run OK. Re-run without --dry-run to release for real."
+  echo "✅ Dry run OK — every blocking gate green, report tier recorded. Re-run without --dry-run to release for real."
   exit 0
 fi
 
@@ -483,6 +696,7 @@ if git diff --cached --quiet; then
 else
   git commit -m "release: $TAG" -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 fi
+COMMITTED=1
 if git rev-parse "$TAG" >/dev/null 2>&1; then
   echo "  ↪ tag $TAG already exists at HEAD (re-entry); skipping tag"
 else
