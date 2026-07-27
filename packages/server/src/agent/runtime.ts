@@ -1310,22 +1310,21 @@ function repairOrphanedModelPointers(): void {
 setInterval(recoverStuckAgents, STUCK_AGENT_CHECK_MS);
 setInterval(repairOrphanedModelPointers, STUCK_AGENT_CHECK_MS);
 
-// Also run once immediately on startup to clean up after a crash, but ONLY once
-// the schema exists. This module is imported during boot BEFORE main() runs the
-// migrations that CREATE the agents table, so on a FRESH install these sweeps
-// would log a spurious "no such table: agents" error. A fresh install has no
-// agents to recover, so skipping the immediate pass there is correct; every
-// established box has the table and runs the real sweep. The intervals above
-// then cover both cases on their normal cadence.
-try {
-  const agentsTablePresent = getDb()
-    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agents'")
-    .get();
-  if (agentsTablePresent) {
-    recoverStuckAgents();
-    repairOrphanedModelPointers();
-  }
-} catch { /* best effort: the intervals still run once the schema is ready */ }
+// Also run once at startup to clean up after a crash. main() calls this after
+// the port is bound and the migrations have run.
+//
+// PHASE-0 T12c: it used to run HERE, at module scope, which is during import and
+// therefore before main() — so it ran before the port bind no matter where the
+// bind went. On a box that was already serving, starting a second instance
+// flipped the RUNNING box's live agents from 'working' to 'idle', broadcast the
+// change to every connected dashboard, and kicked off a Dreamer health sweep,
+// all before discovering the port was taken. Running it from main() also retires
+// the "only if the agents table exists" guard: that existed solely because this
+// ran ahead of the migrations that create the table, and it now runs after them.
+export function runStartupRecoverySweep(): void {
+  recoverStuckAgents();
+  repairOrphanedModelPointers();
+}
 
 // Singleton
 let runtimeInstance: AgentRuntime | null = null;

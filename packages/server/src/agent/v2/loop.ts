@@ -65,7 +65,7 @@ import { queueEmbedding } from '../../memory/embeddings.js';
 import { isPrimaryAgent, isTrainerAgent, isPMAgent, isHealerAgent, isDreamerAgent } from '../../config/platform.js';
 import os from 'node:os';
 import path from 'node:path';
-import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, currentModelRequestId, currentTurnNumber, currentTurnRoot, currentTurnServedWork, currentToolCallId, continuationContext, clearTurnReceipts, clearRecallBudget, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
+import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, currentModelRequestId, currentTurnNumber, currentTurnRoot, currentTurnServedWork, continuationContext, clearTurnReceipts, clearRecallBudget, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
 import { persistEngineSteer } from './engine-steer.js';
 import { pushEngineMessage } from './engine-message.js';
 import { findRecentDeliveries, findRecentDeliveriesKeyed, getRecentOutbound, mostRecentDeliveryTo, mostRecentDeliveryToConversation, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
@@ -879,7 +879,7 @@ export function setAgentStatus(agentId: string, status: AgentStatus): void {
         UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?
       `).run(status, agentId);
     }
-    if (status === 'idle') { currentTurnKind.delete(agentId); currentTurnConvKey.delete(agentId); currentTurnImRecipient.delete(agentId); currentModelRequestId.delete(agentId); currentTurnNumber.delete(agentId); currentTurnRoot.delete(agentId); currentTurnServedWork.delete(agentId); currentToolCallId.delete(agentId); clearTurnReceipts(agentId); clearRecallBudget(agentId); }
+    if (status === 'idle') { currentTurnKind.delete(agentId); currentTurnConvKey.delete(agentId); currentTurnImRecipient.delete(agentId); currentModelRequestId.delete(agentId); currentTurnNumber.delete(agentId); currentTurnRoot.delete(agentId); currentTurnServedWork.delete(agentId); clearTurnReceipts(agentId); clearRecallBudget(agentId); }
     // On 'working', carry the turn kind so the composer can stay quiet on pure
     // A2A turns (unless wordy mode). Defaults to 'user' until the counterparty
     // is resolved early in the turn.
@@ -6481,9 +6481,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // it from the gates cannot itself cause a loop.
           const isA2AReplyTool =
             counterparty.kind === 'agent' && (tc.name === 'send_to_agent' || tc.name === 'broadcast_to_group');
-
-          // P6a: publish the executing call id for the execution-record writers.
-          currentToolCallId.set(agentId, tc.id);
 
           // Loop-break check
           const loopCheck = loopDetector(tc, recentSigs);

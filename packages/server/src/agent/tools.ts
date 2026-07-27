@@ -1,5 +1,5 @@
 import { exec } from 'node:child_process';
-import { currentToolCallId, currentTurnNumber, currentTurnRoot } from './turn-state.js';
+import { getCurrentToolCallId, runWithToolCallId, currentTurnNumber, currentTurnRoot } from './turn-state.js';
 import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
@@ -3690,7 +3690,7 @@ function auditLog(agentId: string, actionType: string, target: string | null, re
       INSERT INTO audit_log (id, agent_id, action_type, target, result, detail, turn_number, call_id, root_kind, root_id, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `).run(uuidv4(), agentId, normalizedAction, target, result, detail ?? null,
-      turnNumber, callId ?? currentToolCallId.get(agentId) ?? null, root?.kind ?? null, root?.id ?? null);
+      turnNumber, callId ?? getCurrentToolCallId(agentId), root?.kind ?? null, root?.id ?? null);
   } catch (err) {
     logger.error('Failed to write audit log', {
       error: err instanceof Error ? err.message : String(err),
@@ -4536,7 +4536,17 @@ function normalizeRepeatDaysOfWeek(rawDays: unknown): string | null | undefined 
   return [...nums].sort((a, b) => a - b).join(',');
 }
 
-export async function executeTool(agentId: string, toolCall: ToolCall): Promise<ToolResult> {
+// P6a: one tool call = one execution context. Everything below records against
+// `toolCall.id` through getCurrentToolCallId, so the identity is attached here,
+// at the single door every dispatch path goes through (the loop's parallel and
+// serial batches, the loop's auto-delivery sends, and a2a-transport's parked-call
+// resumes), rather than in a shared slot the concurrent batch overwrites. See the
+// AsyncLocalStorage note in turn-state.ts.
+export function executeTool(agentId: string, toolCall: ToolCall): Promise<ToolResult> {
+  return runWithToolCallId(agentId, toolCall.id, () => executeToolInCallContext(agentId, toolCall));
+}
+
+async function executeToolInCallContext(agentId: string, toolCall: ToolCall): Promise<ToolResult> {
   // C27 hook 2: resolve tool aliases FIRST, so the sim intercept, unknown-arg
   // detection, and every dispatcher case operate on the CANONICAL name. This is
   // the safety net covering every dispatch path (synthetic calls, A2A relay,

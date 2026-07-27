@@ -21,7 +21,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { currentToolCallId, currentTurnRoot, noteTurnReceipt, currentTurnConvKey, currentTurnNumber } from '../agent/turn-state.js';
+import { getCurrentToolCallId, currentTurnRoot, noteTurnReceipt, currentTurnConvKey, currentTurnNumber } from '../agent/turn-state.js';
 
 // RC-12: bound the sent_text copy. The full body already lives in the messages
 // tool_use args; the receipt only needs enough to quote the agent's own recent
@@ -172,7 +172,7 @@ export function writeToolReceipt(params: WriteReceiptParams): string {
 
     // P6a: the receipt binds to the EXACT tool_use call and the root the turn
     // serves (live turn state, same pattern as conv_key/turn_number).
-    const liveCallId = currentToolCallId.get(agentId) ?? null;
+    const liveCallId = getCurrentToolCallId(agentId);
     const liveRoot = currentTurnRoot.get(agentId) ?? null;
     db.prepare(`
       INSERT INTO tool_receipts (

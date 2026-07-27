@@ -1,6 +1,8 @@
 // Per-agent turn state shared between the runtime and context assembler.
 // Lives in its own module to avoid circular imports (runtime ↔ assembler).
 
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 // Timestamp of when each agent's current turn started, context assembly
 // uses this to exclude user messages that arrived mid-turn so they get
 // a fresh run via the wakeup mechanism.
@@ -258,10 +260,43 @@ export interface ServedWork {
 }
 export const currentTurnServedWork = new Map<string, ServedWork | null>();
 
-// P6a: the tool_use call id currently executing for this agent. Set by the
-// loop's executor immediately before dispatch; read by auditLog and
-// writeToolReceipt so every execution record carries its exact call identity.
-// Parallel-safe by construction: only serial-category tools (sends, gen,
-// mutations) write records that read this; the parallel safe-read batch never
-// does.
-export const currentToolCallId = new Map<string, string>();
+// P6a: the tool_use call id currently executing. Read by auditLog (agent/tools.ts)
+// and writeToolReceipt (receipts/store.ts) so every execution record carries the
+// exact call that produced it.
+//
+// This used to be one slot per agent, with a comment claiming it was
+// "parallel-safe by construction: only serial-category tools write records that
+// read this". That was wrong. file_read, file_list and share_file are all
+// 'safe' category, the loop runs a safe batch through Promise.all, and every one
+// of them writes an audit row. Each execution overwrote the slot on the way in,
+// so a batch of ten concurrent file_reads stamped ten audit rows with whichever
+// call started last. Measured on the dev box at 8eb4c58: 705 call-id-bearing
+// audit_log rows carrying 555 distinct ids — 150 rows (21.3%) provably belong to
+// a call other than the one named on them, and every colliding group was
+// file_read.
+//
+// AsyncLocalStorage gives each execution its own value: the store is captured
+// when the async work is created and travels with it across every await, so two
+// interleaved executions cannot see each other's id. The agent id is kept in the
+// store, and getCurrentToolCallId only answers for a matching agent, so a record
+// written FOR ANOTHER AGENT from inside this agent's tool call (a spawn, an A2A
+// send) still gets NULL rather than borrowing an identity — the one honest
+// property the per-agent map did have.
+//
+// Outside any tool execution the answer is NULL. That is a change: the map kept
+// the last call's id until the agent went idle, so engine-initiated writes (the
+// loop's auto-delivery receipts) inherited a stale one. Nothing SELECTs call_id
+// today; it is forensic evidence for later post-mortems, and a null is worth
+// more than a confident wrong answer.
+const toolCallContext = new AsyncLocalStorage<{ agentId: string; callId: string }>();
+
+/** Run one tool execution with its call identity attached to its async context. */
+export function runWithToolCallId<T>(agentId: string, callId: string, fn: () => Promise<T>): Promise<T> {
+  return toolCallContext.run({ agentId, callId }, fn);
+}
+
+/** The call id of the execution the caller is inside, for this agent, or null. */
+export function getCurrentToolCallId(agentId: string): string | null {
+  const ctx = toolCallContext.getStore();
+  return ctx?.agentId === agentId ? ctx.callId : null;
+}

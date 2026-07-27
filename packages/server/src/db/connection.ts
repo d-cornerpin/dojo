@@ -24,6 +24,23 @@ export function getDb(): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 
+  // PHASE-0 T12c: the settings every statement in the platform inherits, set
+  // here because this is the only place the platform opens its own database.
+  // Behaviour-neutral by construction — none of the three changes a result,
+  // only where the bytes come from. Asserted by readback in
+  // db/__tests__/connection-pragmas.test.ts, because SQLite accepts an
+  // unusable value in silence.
+  //
+  // Negative cache_size is KiB, not pages: 32 MB, roughly twice the whole
+  // database today, so the working set is not evicted by one large scan.
+  db.pragma('cache_size = -32000');
+  // Read pages straight out of the OS page cache instead of a read() syscall
+  // per page; 256 MB is well clear of the current file with room to grow.
+  db.pragma('mmap_size = 268435456');
+  // Sorts, GROUP BY spills and temp b-trees stay in RAM instead of writing a
+  // scratch file next to the database.
+  db.pragma('temp_store = MEMORY');
+
   // Verify foreign keys are actually enabled
   const fkStatus = db.pragma('foreign_keys', { simple: true });
   if (fkStatus !== 1) {

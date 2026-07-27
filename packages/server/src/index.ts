@@ -1,4 +1,4 @@
-import { serve } from '@hono/node-server';
+import { serve, type ServerType } from '@hono/node-server';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -214,8 +214,67 @@ function ensureHouseholdConfig(): void {
   logger.info('Seeded household_agent_ids allow-list', { members: [primaryId] });
 }
 
+// PHASE-0 T12c: the port is the mutual exclusion, so it is taken FIRST.
+//
+// Everything main() does after this is a mutation of the real database:
+// directories, migrations, config seeds, timer re-arms, pollers. The listen used
+// to be the LAST thing, so a second instance started against a box that was
+// already running rewrote the RUNNING box's database and only then discovered
+// the port was taken — and then retried the bind forever, leaving a whole second
+// platform (schedulers, sweeps, watchers) alive against the same file.
+//
+// Binding first inverts that: nothing boots until this process owns the port.
+// The old handler's 2s EADDRINUSE retry is kept, because a restart that overlaps
+// its predecessor's shutdown must still come up, but it is now BOUNDED and every
+// attempt happens before the first database write. When the window passes, the
+// duplicate exits instead of living on — launchd/the watchdog restart a process
+// that exits, and a loud restart loop against a healthy box is a far better
+// outcome than a silent second platform writing to it.
+const BIND_RETRY_MS = 2_000;
+const BIND_MAX_ATTEMPTS = 5;
+
+async function bindPortFirst(fetchHandler: (request: Request, env: unknown) => Response | Promise<Response>): Promise<ServerType> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await new Promise<ServerType>((resolve, reject) => {
+        const server = serve({ fetch: fetchHandler, port: PORT }, (info) => {
+          server.off('error', reject);
+          logger.info(`Dojo Agent Platform running on http://localhost:${info.port}`);
+          resolve(server);
+        });
+        server.once('error', reject);
+      });
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code !== 'EADDRINUSE' || attempt >= BIND_MAX_ATTEMPTS) {
+        logger.error(`Cannot bind port ${PORT}; exiting before any database work`, { error: e.message, code: e.code ?? null, attempts: attempt });
+        process.exit(1);
+      }
+      logger.warn(`Port ${PORT} is in use, retrying in ${BIND_RETRY_MS}ms...`, { attempt, of: BIND_MAX_ATTEMPTS });
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, BIND_RETRY_MS));
+    }
+  }
+}
+
 async function main(): Promise<void> {
   logger.info('Starting Dojo Agent Platform...');
+
+  // The real app is built at the end of boot; until then the socket is open and
+  // answers every request 503. The watchdog reads a non-2xx as down exactly like
+  // a refused connection, so "booting" still looks like "not serving yet".
+  let appFetch: ((request: Request, env: unknown) => Response | Promise<Response>) | null = null;
+  const server = await bindPortFirst((request, env) =>
+    appFetch
+      ? appFetch(request, env)
+      : new Response(JSON.stringify({ ok: false, error: 'Dojo is starting' }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      }));
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    logger.error('Server error', { error: err.message, code: err.code ?? null });
+    process.exit(1);
+  });
 
   // System-dependency check (brew packages like whisper-cpp). Runs in the
   // background, we don't block server startup on a `brew install` that
@@ -324,6 +383,20 @@ async function main(): Promise<void> {
   if (bootEpisode && countAppliedMigrations() > migCountBefore) {
     markMigrationsRan();
     logger.warn('D-F: a database migration ran during a self-update boot; a failed boot will escalate, not auto-rollback');
+  }
+
+  // 3b. One-shot crash cleanup: agents left in 'working' by a hard stop, and
+  // model pointers left dangling by a provider re-create. Used to run at
+  // runtime.ts's module scope, i.e. during import, which is ahead of the port
+  // bind (PHASE-0 T12c) — a duplicate instance rewrote the running box's agent
+  // rows before it ever learned the port was taken. It runs here instead, after
+  // the bind proved this process owns the box and after the migrations that
+  // create the table it reads.
+  try {
+    const { runStartupRecoverySweep } = await import('./agent/runtime.js');
+    runStartupRecoverySweep();
+  } catch (err) {
+    logger.warn('Startup recovery sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
   }
 
   // 3a0. Seed Workspace account rows from legacy per-key config (Path B,
@@ -983,27 +1056,12 @@ async function main(): Promise<void> {
     broadcast({ type: 'log:entry', entry });
   });
 
-  // 6. Create and start server
+  // 6. Boot is done: hand the already-listening socket its real handler. Up to
+  // here it answered 503 (see bindPortFirst at the top of main).
   const { app, injectWebSocket } = createServer();
-
-  const server = serve({
-    fetch: app.fetch,
-    port: PORT,
-  }, (info) => {
-    logger.info(`Dojo Agent Platform running on http://localhost:${info.port}`);
-  });
-
-  server.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EADDRINUSE') {
-      logger.warn(`Port ${PORT} is in use, retrying in 2s...`);
-      setTimeout(() => { server.close(); server.listen(PORT); }, 2000);
-    } else {
-      logger.error('Server error', { error: err.message });
-      process.exit(1);
-    }
-  });
-
+  appFetch = app.fetch;
   injectWebSocket(server);
+  logger.info('Dojo Agent Platform is serving');
 
   // D-F health-confirm: the server is now listening. If this boot is part of a
   // self-update episode, arm the ~90s uptime timer that flips the update-state

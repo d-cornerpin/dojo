@@ -965,11 +965,11 @@ async function maybeAutoRollback(): Promise<boolean> {
 
 // Patience gate for a self-update migration boot. A first jump to a marker-aware
 // build can run a long ONE-TIME migration chain with health down the whole time
-// (the platform only starts listening AFTER runMigrations). The generic restart
+// (PHASE-0 T12c: the port is bound BEFORE migrating now, but boot answers 503 and
+// any non-2xx reads as down here, so the window is unchanged). The generic restart
 // cadence below (MAX_FAILURES_BEFORE_RESTART checks ~= 10 min) would otherwise
-// kickstart the box mid-migration, BEFORE the 15-minute migration allowance the
-// auto-rollback gate deliberately grants. Reading the SAME FAIL_WALL_CLOCK_MS
-// constant guarantees the kickstart can never land before that window elapses.
+// kickstart the box mid-migration, BEFORE the 15-minute allowance the auto-rollback
+// gate grants; reading the SAME FAIL_WALL_CLOCK_MS constant guarantees it cannot.
 // Only 'booting-new' (a build coming up for the first time, not yet confirmed
 // healthy) qualifies; once the window passes, maybeAutoRollback owns the decision
 // (escalate on a migration episode, roll back a code-only one), so a genuinely
