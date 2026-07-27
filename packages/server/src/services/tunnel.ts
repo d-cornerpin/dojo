@@ -103,7 +103,7 @@ function createOutputBuffer() {
     },
     tail(): string {
       // Strip ANSI color codes (cloudflared prints colored logs) and trim.
-      const cleaned = buf.replace(/\[[0-9;]*m/g, '').trim();
+      const cleaned = buf.replace(/\x1b\[[0-9;]*m/g, '').trim();
       return cleaned.slice(-TUNNEL_OUTPUT_TAIL_BYTES);
     },
   };

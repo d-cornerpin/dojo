@@ -107,7 +107,7 @@ exec("grep -i 'error' ~/.dojo/logs/dojo.log | tail -50")
 
 **Look up source code for a function the diagnostic mentioned:**
 ```
-exec("grep -rn 'functionName' ~/.dojo/platform/packages/server/src --include='*.ts' | head -20")
+exec("grep -ran 'functionName' ~/.dojo/platform/packages/server/src --include='*.ts' | head -20")
 file_read({ path: "~/.dojo/platform/packages/server/src/path/to/file.ts" })
 ```
 

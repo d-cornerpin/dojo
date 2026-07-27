@@ -1,0 +1,3 @@
+#!/bin/sh
+# Byte-hygiene reject (Phase 0 T1): NUL/C0/bidi bytes blind grep and deceive review.
+node deploy/checks/check-bytes.mjs --staged || exit 1

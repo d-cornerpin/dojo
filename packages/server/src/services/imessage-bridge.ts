@@ -485,7 +485,7 @@ function normalizeSharingLevel(raw: unknown, isPrimary: boolean): SharingLevel {
  */
 function sanitizeFramingField(value: string): string {
   return value
-    .replace(/[\[\]\r\n\t\v\f -]/g, ' ')
+    .replace(/[\[\]\r\n\t\v\f\x00-\x1f\x7f]/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim();
 }

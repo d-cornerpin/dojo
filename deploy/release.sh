@@ -348,9 +348,9 @@ fi
 # while the module is gone, which throws on every tool/model call. Refuse to publish if the
 # packaged artifact still references any of them. Mirrors the smoke-boot module-resolution
 # gate above.
-if grep -rqiE "sim-outbound|/api/dev/|DEV-INSTRUMENTS" "$SMOKE_PLATFORM/packages/server/dist" 2>/dev/null; then
+if grep -raqiE "sim-outbound|/api/dev/|DEV-INSTRUMENTS" "$SMOKE_PLATFORM/packages/server/dist" 2>/dev/null; then
   echo "  ---- offending dev-instrument references in packaged build ----"
-  grep -rniE "sim-outbound|/api/dev/|DEV-INSTRUMENTS" "$SMOKE_PLATFORM/packages/server/dist" 2>/dev/null | head -10
+  grep -raniE "sim-outbound|/api/dev/|DEV-INSTRUMENTS" "$SMOKE_PLATFORM/packages/server/dist" 2>/dev/null | head -10
   fail "Dev-instrument ship-gate: packaged build still references dev instruments (sim-outbound / /api/dev). Run dev-test-tools/server-instruments/uninstall.mjs, rebuild, and re-run. NOT publishing."
 fi
 echo "  ✓ no dev instruments (sim-outbound / /api/dev) in packaged build"

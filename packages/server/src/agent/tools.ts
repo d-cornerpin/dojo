@@ -448,7 +448,7 @@ function computeAgentToolFingerprint(agentId: string): string {
       classification: string | null;
       task_id: string | null;
     } | undefined;
-  if (!row) return `none ${primary} ${pm}`;
+  if (!row) return `none\x00${primary}\x00${pm}`;
   return [
     primary,
     pm,
@@ -459,7 +459,7 @@ function computeAgentToolFingerprint(agentId: string): string {
     row.group_id ?? '',
     row.classification ?? '',
     row.task_id ?? '',
-  ].join(' ');
+  ].join('\x00');
 }
 
 export function getFilteredTools(agentId: string): ToolDefinition[] {
