@@ -38,7 +38,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { broadcast } from '../../gateway/ws.js';
-import type { Message, ToolCall, Channel } from '@dojo/shared';
+import type { AgentStatus, Message, ToolCall, Channel } from '@dojo/shared';
 // classifyTool is the canonical effectful/retrieval/bookkeeping classifier
 // (test-covered against the full tool registry); the closeout machinery
 // derives "did this turn do real work" from it instead of a hand list that
@@ -852,7 +852,7 @@ function stopStatusHeartbeat(agentId: string): void {
   }
 }
 
-export function setAgentStatus(agentId: string, status: string): void {
+export function setAgentStatus(agentId: string, status: AgentStatus): void {
   try {
     const db = getDb();
     // Capture the turn's human-conversation binding BEFORE the idle boundary below

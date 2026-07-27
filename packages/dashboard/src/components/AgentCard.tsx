@@ -75,6 +75,10 @@ const statusPresentation: Record<string, { label: string; color?: string }> = {
   paused: { label: 'Ready' },
   working: { label: 'Working', color: '#a4762e' },
   error: { label: 'Error', color: '#9c4434' },
+  // Reachable from PHASE-0 T12 on (migration 126 + the un-swallowed alert).
+  // Without this row the fallback below rendered a rate-limited agent as
+  // "Ready", which is the opposite of what the alert exists to say.
+  rate_limited: { label: 'Rate limited', color: '#9c4434' },
   terminated: { label: 'Ended', color: 'var(--dojo3-ink-4)' },
 };
 

@@ -135,7 +135,12 @@ export interface GenerationParamField {
 
 export type GenerationParamSpec = Record<string, GenerationParamField>;
 
-export type AgentStatus = 'idle' | 'working' | 'paused' | 'error' | 'terminated';
+/** Every status an agent row may hold, as data so a test can assert it against
+ *  the `CHECK(status IN (...))` on `agents.status` (widened for 'rate_limited'
+ *  by migration 126). A member added here without a migration throws on write —
+ *  which is how the rate_limited alert stayed dead until PHASE-0 T12. */
+export const AGENT_STATUSES = ['idle', 'working', 'paused', 'error', 'terminated', 'rate_limited'] as const;
+export type AgentStatus = (typeof AGENT_STATUSES)[number];
 
 export interface Agent {
   id: string;

@@ -2,12 +2,12 @@
 // WebSocket Event Type Definitions
 // ════════════════════════════════════════
 
-import type { Agent, AgentMessage, CompletionAnnouncement, HealthData, LogEntry, Message, MessageRole, Project, Task } from './types.js';
+import type { Agent, AgentMessage, AgentStatus, CompletionAnnouncement, HealthData, LogEntry, Message, MessageRole, Project, Task } from './types.js';
 
 export interface AgentStatusEvent {
   type: 'agent:status';
   agentId: string;
-  status: string;
+  status: AgentStatus;
   /**
    * When status === 'working', whether this turn is a normal user turn or an
    * agent-to-agent (A2A) turn. Lets the composer stay quiet (no thinking dots,

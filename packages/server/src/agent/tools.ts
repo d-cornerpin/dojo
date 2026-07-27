@@ -6984,7 +6984,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           const { setPresence, getPresence } = await import('../services/presence.js');
           const previous = getPresence();
           setPresence(status);
-          broadcast({ type: 'agent:status', agentId, status: `presence:${status}` });
+          // STRIP (PHASE-0 T12): dropped an `agent:status` broadcast carrying `presence:<status>` — not an agent status, zero subscribers (PresenceProvider reads GET /system/presence); it only left Agents/Tracker holding it as the agent's status. requirement preserved: setPresence persists config('user_presence'), the fact every reader consults.
           content = status === 'away'
             ? `Done. User marked as away. Messages will be forwarded via iMessage. (Was: ${previous})`
             : `Done. User marked as in the dojo. Messages will go to the dashboard. (Was: ${previous})`;

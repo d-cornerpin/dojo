@@ -170,13 +170,29 @@ function scheduleNextAttempt(
       if (!alerted) {
         notifyRateLimitHit(agentId, 'rate_limit');
 
-        try {
-          const db = getDb();
-          db.prepare("UPDATE agents SET status = 'rate_limited', updated_at = datetime('now') WHERE id = ?").run(agentId);
-          broadcast({ type: 'agent:status', agentId, status: 'rate_limited' });
+        // The alert proper. This used to be a hand-rolled UPDATE plus a
+        // broadcast plus an optional auto-router hint, all under ONE bare
+        // `catch { /* best effort */ }`. The UPDATE violated the day-0 CHECK on
+        // agents.status (which never listed 'rate_limited'), the throw was
+        // swallowed, and it took the broadcast and the hint down with it — so
+        // the alert never fired once and the dashboard showed a silently stuck
+        // agent as idle. Migration 126 widens the constraint; the write now goes
+        // through setAgentStatus, the ONE status writer, which reports its own
+        // failures (loop.ts:899) instead of dropping them, and the optional hint
+        // below keeps its own narrow best-effort catch so it can never again
+        // decide whether the owner hears about a rate limit.
+        //
+        // Imported lazily for the same reason runtime.js is above: model.ts
+        // imports this module and v2/loop.ts imports model.ts, so a static edge
+        // to loop.ts would close an import cycle. By the time a strike lands,
+        // loop.ts is long since evaluated and this resolves from cache.
+        const { setAgentStatus } = await import('./v2/loop.js');
+        setAgentStatus(agentId, 'rate_limited');
 
-          // For auto-routed agents, suggest switching models
-          const agentRow = db.prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined;
+        // For auto-routed agents, suggest switching models. Genuinely optional:
+        // its own try, so a read failure here costs the hint and nothing else.
+        try {
+          const agentRow = getDb().prepare('SELECT model_id FROM agents WHERE id = ?').get(agentId) as { model_id: string | null } | undefined;
           if (agentRow?.model_id === 'auto') {
             broadcast({
               type: 'chat:error',
@@ -187,7 +203,11 @@ function scheduleNextAttempt(
               retryable: true,
             });
           }
-        } catch { /* best effort */ }
+        } catch (hintErr) {
+          logger.debug('Auto-router rate-limit hint skipped', {
+            agentId, error: hintErr instanceof Error ? hintErr.message : String(hintErr),
+          });
+        }
 
         nowAlerted = true;
       }

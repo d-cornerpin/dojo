@@ -733,9 +733,8 @@ function maybeSendBusyAck(agentId: string, sender: string): void {
   if (st.ackedSenders.has(key)) return; // at most once per sender per running turn
   st.ackedSenders.add(key);
   sendIMessage(sender, BUSY_ACK_TEXT);
-  // Surface the queued state on the dashboard too (transient; the 30s
-  // working-status heartbeat re-asserts 'working' while the turn runs).
-  broadcast({ type: 'agent:status', agentId, status: 'queued' });
+  // STRIP (PHASE-0 T12): dropped an `agent:status` broadcast carrying 'queued' — not an agent status, zero subscribers branch on it; Agents/Tracker wrote it into agent.status, blanking the working indicator mid-turn.
+  // requirement preserved: the person is told by the busy-ack above, and the 30s status heartbeat re-asserts 'working' on the dashboard.
   logger.info('Busy-ack sent: inbound iMessage queued behind a running turn', {
     agentId,
     sender,
