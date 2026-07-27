@@ -1,3 +1,32 @@
 #!/bin/sh
 # Byte-hygiene reject (Phase 0 T1): NUL/C0/bidi bytes blind grep and deceive review.
 node deploy/checks/check-bytes.mjs --staged || exit 1
+
+# Gate-manifest integrity (Phase 0 T1 Step 10; strategy Part VI):
+# checkers and product code never change in the same commit. The gate files are
+# editable by the same agents they judge, so edits to them stay isolated and reviewable.
+#   GATE side:    deploy/checks/**, scripts/hooks/**, deploy/release.sh,
+#                 ratchets.json, lint-baseline.json
+#   PRODUCT side: packages/**, watchdog/**
+# Everything else (docs, package.json, templates, ...) is neither side and never blocks.
+staged=$(git diff --cached --name-only --no-renames)
+if [ -n "$staged" ]; then
+  gate=$(printf '%s\n' "$staged" | grep -E '^(deploy/checks/|scripts/hooks/|deploy/release\.sh$)|(^|/)(ratchets|lint-baseline)\.json$')
+  product=$(printf '%s\n' "$staged" | grep -E '^(packages/|watchdog/)')
+  if [ -n "$gate" ] && [ -n "$product" ]; then
+    echo "pre-commit: REFUSED - gate/checker files and product code in one commit." >&2
+    echo "" >&2
+    echo "  staged GATE files (the checkers):" >&2
+    printf '%s\n' "$gate" | sed 's/^/    /' >&2
+    echo "  staged PRODUCT files (the code they judge):" >&2
+    printf '%s\n' "$product" | sed 's/^/    /' >&2
+    echo "" >&2
+    echo "  The gate files are editable by the same agents they judge, so their edits" >&2
+    echo "  must be isolated and reviewable. Commit the two sides separately" >&2
+    echo "  (e.g. 'git restore --staged <one side>', commit, then stage the other)." >&2
+    exit 1
+  fi
+fi
+
+# --- new checks go ABOVE this line ---
+exit 0
