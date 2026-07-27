@@ -15,7 +15,7 @@ const STEP_LABELS: Record<WizardStep, string> = {
 };
 
 interface Props {
-  /** OOBE (no-auth /api/setup/migration/*) vs authed Settings (/api/migration/*). */
+  /** OOBE (embedded, "Enter the Dojo") vs authed Settings (modal, "Done"). */
   isOobe?: boolean;
   /** Render inside a centered modal (Settings) vs embedded in the page (OOBE). */
   asModal?: boolean;
@@ -44,7 +44,7 @@ const fmtBytes = (n: number | null | undefined): string => {
 };
 
 export const ImportWizard = ({ isOobe = false, asModal = false, initialStep, onComplete, onClose }: Props) => {
-  const apiBase = isOobe ? '/api/setup/migration' : '/api/migration';
+  const apiBase = '/api/migration'; // ONE mount; the public /api/setup/migration alias is deleted (PHASE-0 T9) and the wizard runs authenticated
   const { subscribe } = useWebSocket();
 
   const [step, setStep] = useState<WizardStep>(initialStep ?? 'upload');

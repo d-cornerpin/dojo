@@ -106,6 +106,10 @@ export function isImaginerEnabled(): boolean {
 
 // ── Setup ──
 
+// "Did OOBE finish?" — the SPAWN gate (healer/imaginer/trainer/PM/dreamer and
+// the boot ensures). Absent flag → false → don't spawn, which is the right
+// fail-safe here. Do NOT use it to decide what the network may reach: that
+// question fails the other way and lives in ./setup-state.ts (isPastFirstRun).
 export function isSetupCompleted(): boolean {
   return get('setup_completed', 'false') === 'true';
 }

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { request } from '../lib/api';
 
 // ════════════════════════════════════════
 // Dependencies & Local Models — OOBE Step
@@ -8,7 +9,11 @@ import { useState, useEffect, useCallback } from 'react';
 // status colors (text-green-700, text-yellow-400) for installed/installing
 // status. Setup wizard is explicitly exempt per FENG-SHUI-THEME-SPEC.md.
 
-const API = '/api/setup';
+// Paths are relative to the shared api client's /api base. Setup routes are
+// reachable without a token only during a genuine first run (PHASE-0 T9), so
+// these calls go through `request`, which carries the token and the CSRF header
+// once the box has one — and they keep working if the server restarts mid-setup.
+const API = '/setup';
 
 type DepStatus = 'checking' | 'installed' | 'installing' | 'failed' | 'not-installed';
 
@@ -28,19 +33,6 @@ interface OllamaModel {
   name: string;
   size: number;
   details?: { parameter_size?: string };
-}
-
-// ── Fetch helpers ──
-
-async function fetchJson<T>(url: string, opts?: RequestInit): Promise<{ ok: true; data: T } | { ok: false; error: string }> {
-  try {
-    const resp = await fetch(url, opts);
-    const json = await resp.json();
-    if (json.ok) return { ok: true, data: json.data };
-    return { ok: false, error: json.error ?? 'Unknown error' };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
 }
 
 // ── Dep check item ──
@@ -134,7 +126,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
   const checkDeps = useCallback(async () => {
     setDeps(d => ({ ...d, node: 'checking', brew: 'checking', ollama: 'checking', cliclick: 'checking', playwright: 'checking', nomic: 'checking', gws: 'checking', gcloud: 'checking' }));
 
-    const result = await fetchJson<{
+    const result = await request<{
       node: { installed: boolean; version: string };
       brew: { installed: boolean };
       ollama: { installed: boolean; running: boolean };
@@ -164,7 +156,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
       setPhase('models');
       loadInstalledModels();
       // Auto-configure Ollama provider
-      await fetchJson(`${API}/ollama/auto-configure`, { method: 'POST' });
+      await request(`${API}/ollama/auto-configure`, { method: 'POST' });
       setConfigured(true);
     }
 
@@ -178,43 +170,43 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
     setDepErrors(e => ({ ...e, [dep]: '' }));
 
     if (dep === 'ollama') {
-      const r = await fetchJson(`${API}/deps/install/ollama`, { method: 'POST' });
+      const r = await request(`${API}/deps/install/ollama`, { method: 'POST' });
       if (r.ok) {
         setDeps(d => ({ ...d, ollama: 'installed' }));
         // Also start Ollama
-        await fetchJson(`${API}/deps/install/ollama-start`, { method: 'POST' });
+        await request(`${API}/deps/install/ollama-start`, { method: 'POST' });
         // Re-check to get running state
-        const check = await fetchJson<{ ollama: { running: boolean } }>(`${API}/deps/check`);
+        const check = await request<{ ollama: { running: boolean } }>(`${API}/deps/check`);
         if (check.ok) setDeps(d => ({ ...d, ollamaRunning: check.data.ollama.running }));
       } else {
         setDeps(d => ({ ...d, ollama: 'failed' }));
         setDepErrors(e => ({ ...e, ollama: r.error }));
       }
     } else if (dep === 'cliclick') {
-      const r = await fetchJson(`${API}/deps/install/cliclick`, { method: 'POST' });
+      const r = await request(`${API}/deps/install/cliclick`, { method: 'POST' });
       setDeps(d => ({ ...d, cliclick: r.ok ? 'installed' : 'failed' }));
       if (!r.ok) setDepErrors(e => ({ ...e, cliclick: r.error }));
     } else if (dep === 'playwright') {
-      const r = await fetchJson(`${API}/deps/install/playwright`, { method: 'POST' });
+      const r = await request(`${API}/deps/install/playwright`, { method: 'POST' });
       setDeps(d => ({ ...d, playwright: r.ok ? 'installed' : 'failed' }));
       if (!r.ok) setDepErrors(e => ({ ...e, playwright: r.error }));
     } else if (dep === 'gws') {
-      const r = await fetchJson(`${API}/deps/install/gws`, { method: 'POST' });
+      const r = await request(`${API}/deps/install/gws`, { method: 'POST' });
       setDeps(d => ({ ...d, gws: r.ok ? 'installed' : 'failed' }));
       if (!r.ok) setDepErrors(e => ({ ...e, gws: r.error }));
     } else if (dep === 'gcloud') {
-      const r = await fetchJson(`${API}/deps/install/gcloud`, { method: 'POST' });
+      const r = await request(`${API}/deps/install/gcloud`, { method: 'POST' });
       setDeps(d => ({ ...d, gcloud: r.ok ? 'installed' : 'failed' }));
       if (!r.ok) setDepErrors(e => ({ ...e, gcloud: r.error }));
     } else if (dep === 'nomic') {
-      const r = await fetchJson(`${API}/ollama/pull`, {
+      const r = await request(`${API}/ollama/pull`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: 'nomic-embed-text' }),
       });
       if (r.ok) {
         setDeps(d => ({ ...d, nomic: 'installed' }));
-        await fetchJson(`${API}/ollama/auto-configure`, { method: 'POST' });
+        await request(`${API}/ollama/auto-configure`, { method: 'POST' });
         setConfigured(true);
       } else {
         setDeps(d => ({ ...d, nomic: 'failed' }));
@@ -235,9 +227,9 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
     } else if (d.ollama.installed && !d.ollama.running) {
       // Start Ollama if installed but not running
       setDeps(dd => ({ ...dd, ollama: 'installing' }));
-      await fetchJson(`${API}/deps/install/ollama-start`, { method: 'POST' });
+      await request(`${API}/deps/install/ollama-start`, { method: 'POST' });
       await new Promise(r => setTimeout(r, 3000));
-      const check = await fetchJson<{ ollama: { running: boolean } }>(`${API}/deps/check`);
+      const check = await request<{ ollama: { running: boolean } }>(`${API}/deps/check`);
       if (check.ok) {
         setDeps(dd => ({ ...dd, ollama: 'installed', ollamaRunning: check.data.ollama.running }));
       }
@@ -249,7 +241,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
     if (!d.gcloud.installed) await installDep('gcloud');
 
     // Re-check Ollama running state before pulling nomic
-    const recheck = await fetchJson<{ ollama: { running: boolean }; nomic: { installed: boolean } }>(`${API}/deps/check`);
+    const recheck = await request<{ ollama: { running: boolean }; nomic: { installed: boolean } }>(`${API}/deps/check`);
     if (recheck.ok) {
       setDeps(dd => ({ ...dd, ollamaRunning: recheck.data.ollama.running }));
       if (!recheck.data.nomic.installed && recheck.data.ollama.running) {
@@ -268,7 +260,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
   // ── Load installed models ──
 
   const loadInstalledModels = async () => {
-    const r = await fetchJson<OllamaModel[]>(`${API}/ollama/models`);
+    const r = await request<OllamaModel[]>(`${API}/ollama/models`);
     if (r.ok) setInstalledModels(r.data);
   };
 
@@ -283,7 +275,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
     // Poll progress every second
     const pollInterval = setInterval(async () => {
       try {
-        const r = await fetchJson<{
+        const r = await request<{
           model: string;
           status: string;
           completed: number;
@@ -312,13 +304,13 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
     setPullError(null);
     setPullElapsed(0);
     setPullProgress(null);
-    const r = await fetchJson(`${API}/ollama/pull`, {
+    const r = await request(`${API}/ollama/pull`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model }),
     });
     if (r.ok) {
-      await fetchJson(`${API}/ollama/auto-configure`, { method: 'POST' });
+      await request(`${API}/ollama/auto-configure`, { method: 'POST' });
       setConfigured(true);
       await loadInstalledModels();
     } else {
@@ -330,7 +322,7 @@ export const SetupDeps = ({ onReady }: { onReady?: (ready: boolean) => void }) =
   // ── Remove a model ──
 
   const removeModel = async (name: string) => {
-    await fetchJson(`${API}/ollama/models/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    await request(`${API}/ollama/models/${encodeURIComponent(name)}`, { method: 'DELETE' });
     await loadInstalledModels();
   };
 
@@ -560,7 +552,7 @@ export const SetupPermissions = () => {
 
   const checkPermissions = async () => {
     setChecking(true);
-    const r = await fetchJson<Record<string, string>>(`${API}/permissions/check`);
+    const r = await request<Record<string, string>>(`${API}/permissions/check`);
     if (r.ok) setPermissions(r.data);
     setChecking(false);
   };
@@ -568,7 +560,7 @@ export const SetupPermissions = () => {
   useEffect(() => { checkPermissions(); }, []);
 
   const openSettings = async (apiKey: string) => {
-    await fetchJson(`${API}/permissions/request/${apiKey}`, { method: 'POST' });
+    await request(`${API}/permissions/request/${apiKey}`, { method: 'POST' });
     // Re-check after a delay (user needs time to toggle in System Settings)
     setTimeout(checkPermissions, 5000);
   };

@@ -7,6 +7,7 @@ import {
   setDashboardPassword,
   getJwtSecret,
 } from '../../config/loader.js';
+import { isPastFirstRun, markFirstRunComplete } from '../../config/setup-state.js';
 import { LoginSchema } from '../../config/schema.js';
 import { createLogger } from '../../logger.js';
 import { isPMEnabled, isTrainerEnabled } from '../../config/platform.js';
@@ -20,21 +21,15 @@ const JWT_EXPIRY = '24h';
 
 const setupRouter = new Hono<AppEnv>();
 
-// The setup router is a PUBLIC prefix (first-run OOBE happens before any
-// credential exists). That means every state-changing route here MUST refuse
-// once first-run is over, or it becomes an unauthenticated admin surface: an
-// internet-reachable client (e.g. over the cloudflared tunnel) could otherwise
-// overwrite the dashboard password or mint an admin JWT with no credential.
-// `setup_completed` is written once at the end of POST /complete and never
-// unset. Read-only /status stays public (the dashboard polls it to decide
-// whether to show the wizard).
-function isSetupCompleted(): boolean {
-  const db = getDb();
-  const row = db
-    .prepare("SELECT value FROM config WHERE key = 'setup_completed'")
-    .get() as { value: string } | undefined;
-  return row?.value === 'true';
-}
+// The setup router is reachable without a token during the out-of-box
+// experience (a fresh machine has no credential to present). Since PHASE-0 T9
+// the auth middleware shuts that window the moment first run is over, and
+// `isPastFirstRun()` — one authority, shared with the middleware, in
+// config/setup-state.ts — is what both consult. The per-route refusals below
+// stay as the second, in-handler layer: these two routes mint an admin JWT and
+// overwrite the dashboard password, so they refuse on their own account rather
+// than trusting the door to have been shut. Read-only /status is always public
+// (the login screen reads it pre-token to decide wizard vs login).
 
 // GET /status
 setupRouter.get('/status', (c) => {
@@ -54,16 +49,12 @@ setupRouter.get('/status', (c) => {
   ).count;
   const hasPassword = getDashboardPasswordHash() !== null;
 
-  // The authoritative first-run signal is the explicit `setup_completed` flag
-  // written when OOBE finishes (see POST /complete). Falling back to the real
-  // provider/model counts keeps installs that were set up before that flag
-  // existed (legacy upgrades) out of the wizard.
-  const setupCompleted =
-    (db.prepare("SELECT value FROM config WHERE key = 'setup_completed'").get() as { value: string } | undefined)
-      ?.value === 'true';
-
+  // The authoritative first-run signal is the same one the auth middleware
+  // uses, so the dashboard can never be shown a wizard whose routes 401.
+  // Falling back to the real provider/model counts keeps installs that were set
+  // up before the flag existed (legacy upgrades) out of the wizard.
   const status: SetupStatus = {
-    isFirstRun: !setupCompleted && providerCount === 0 && enabledModelCount === 0,
+    isFirstRun: !isPastFirstRun() && providerCount === 0 && enabledModelCount === 0,
     steps: {
       providers: providerCount > 0,
       models: enabledModelCount > 0,
@@ -76,7 +67,7 @@ setupRouter.get('/status', (c) => {
 
 // POST /password: set password during setup (first-run only)
 setupRouter.post('/password', async (c) => {
-  if (isSetupCompleted()) {
+  if (isPastFirstRun()) {
     // Not a first-run box: changing the password requires authentication via
     // the authenticated change-password flow, not this public route.
     return c.json({ ok: false, error: 'Setup is already complete' }, 403);
@@ -97,7 +88,7 @@ setupRouter.post('/password', async (c) => {
 
 // POST /complete: finalize setup, return JWT (first-run only)
 setupRouter.post('/complete', async (c) => {
-  if (isSetupCompleted()) {
+  if (isPastFirstRun()) {
     // Already completed: this route must never mint an admin JWT again, or it
     // is an unauthenticated auth-bypass. Real logins go through /api/auth/login.
     return c.json({ ok: false, error: 'Setup is already complete' }, 403);
@@ -115,9 +106,9 @@ setupRouter.post('/complete', async (c) => {
     `token=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=86400`,
   );
 
-  // Mark setup as completed
-  const db = getDb();
-  db.prepare("INSERT INTO config (key, value, updated_at) VALUES ('setup_completed', 'true', datetime('now')) ON CONFLICT(key) DO UPDATE SET value = 'true', updated_at = datetime('now')").run();
+  // Mark setup as completed — writes the durable flag AND shuts the OOBE
+  // window in this process (config/setup-state.ts).
+  markFirstRunComplete();
 
   // Clear platform config cache so it picks up OOBE values
   const { clearPlatformConfigCache } = await import('../../config/platform.js');

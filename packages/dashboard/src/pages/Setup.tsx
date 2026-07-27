@@ -991,17 +991,17 @@ const PrimaryAgentStep = ({ onReady }: { onReady?: (ready: boolean) => void }) =
     await api.setSetting('primary_agent_name', agentName.trim());
     await api.setSetting('primary_agent_id', primaryId);
 
-    // Provision the agent in the database (creates or updates)
-    const provisionResult = await fetch('/api/setup/provision-agent', {
+    // Provision the agent (creates or updates). Through the shared api client so
+    // it carries token + CSRF: /api/setup/ is OOBE-only now (PHASE-0 T9).
+    const provisionResult = await api.request('/setup/provision-agent', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         id: primaryId,
         name: agentName.trim(),
         modelId: selectedModel || undefined,
         classification: 'sensei',
       }),
-    }).then(r => r.json());
+    });
 
     if (!provisionResult.ok) {
       setError(provisionResult.error ?? 'Failed to create agent');

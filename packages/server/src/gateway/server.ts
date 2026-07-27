@@ -274,7 +274,6 @@ export function createServer() {
   app.route('/api/contacts', contactsRouter); // DOJO contacts store CRUD
   app.route('/api/twilio', twilioRouter); // Twilio SMS + Voice (webhooks + config + numbers)
   app.route('/api/migration', migrationRouter); // /api/migration/export, /api/migration/import, etc.
-  app.route('/api/setup/migration', migrationRouter); // Same routes, public for OOBE import
   app.route('/api/healer', healerRouter);   // /api/healer/config, /api/healer/proposals, etc.
   app.route('/api/voice/assets', voiceAssetsRouter); // VAD/ORT static runtime assets
   app.route('/api/voice', voiceRouter);              // voice settings + models + preview
