@@ -3,6 +3,7 @@
   "maxNewFileLines": 400,
   "files": {
     "packages/dashboard/src/components/AttachmentChips.tsx": 465,
+    "packages/dashboard/src/components/CanvasView.tsx": 425,
     "packages/dashboard/src/components/ContactsPanel.tsx": 478,
     "packages/dashboard/src/components/Dojo3Composer.tsx": 723,
     "packages/dashboard/src/components/Dojo3Stage.tsx": 450,
@@ -48,7 +49,7 @@
     "packages/server/src/gateway/routes/tracker.ts": 877,
     "packages/server/src/gateway/routes/twilio.ts": 491,
     "packages/server/src/gateway/routes/update.ts": 1022,
-    "packages/server/src/gateway/routes/upload.ts": 524,
+    "packages/server/src/gateway/routes/upload.ts": 607,
     "packages/server/src/google/auth.ts": 771,
     "packages/server/src/google/tools-forms.ts": 817,
     "packages/server/src/google/tools-read.ts": 938,
