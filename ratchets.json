@@ -102,7 +102,7 @@
     "packages/server/src/voice/model-manager.ts": 583,
     "packages/server/src/voice/stt-service.ts": 538,
     "packages/server/src/voice/voice-ws.ts": 2274,
-    "packages/shared/src/types.ts": 495,
+    "packages/shared/src/types.ts": 500,
     "packages/shared/src/visibility.ts": 568,
     "packages/shared/src/ws.ts": 998,
     "watchdog/src/index.ts": 1164

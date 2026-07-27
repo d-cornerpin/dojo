@@ -245,57 +245,72 @@ function buildSchema() {
   for (const [rel, raw] of ddlSources()) {
     const text = stripSqlComments(raw);
 
-    const create = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"']?([A-Za-z_][A-Za-z0-9_]*)[`"']?\s*\(/gi;
-    let m;
-    while ((m = create.exec(text))) {
-      const name = m[1];
-      let i = create.lastIndex - 1;
-      const start = i;
-      let depth = 0;
-      for (; i < text.length; i++) {
-        if (text[i] === '(') depth++;
-        else if (text[i] === ')') { depth--; if (depth === 0) break; }
-      }
-      const body = text.slice(start + 1, i);
-      if (!tables.has(name)) tables.set(name, { name, columns: new Map(), createdIn: rel });
-      const t = tables.get(name);
-      // split on top-level commas
-      let d = 0, cur = '';
-      const parts = [];
-      for (const ch of body) {
-        if (ch === '(') d++;
-        if (ch === ')') d--;
-        if (ch === ',' && d === 0) { parts.push(cur); cur = ''; } else cur += ch;
-      }
-      parts.push(cur);
-      for (const p of parts) {
-        const s = p.trim().replace(/\s+/g, ' ');
-        if (!s || /^(?:PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT)\b/i.test(s)) continue;
-        const cm = /^[`"']?([A-Za-z_][A-Za-z0-9_]*)[`"']?\s+/.exec(s);
-        if (cm) t.columns.set(cm[1], { name: cm[1], definedIn: rel, ddl: s });
+    // ── One ordered pass, not four phase passes ──
+    // Each DDL form is matched with its offset and then APPLIED IN SOURCE ORDER.
+    // The previous shape ran every CREATE, then every ADD COLUMN, then every
+    // RENAME, then every DROP, which mis-reads the repo's table-rebuild pattern
+    // (`CREATE x_new; INSERT …; DROP x; ALTER TABLE x_new RENAME TO x`, used by
+    // migrations 005, 103 and 126): the drop phase ran last and deleted the very
+    // table the rename had just produced, so a rebuilt table vanished from the
+    // parsed schema. It went unnoticed while only `providers` and
+    // `summary_messages` were rebuilt — neither is manifest-declared — and
+    // surfaced the moment migration 126 rebuilt `agents`, which is.
+    const events = [];
+    const push = (re, kind) => {
+      let m;
+      while ((m = re.exec(text))) events.push({ at: m.index, end: re.lastIndex, kind, m: [...m] });
+    };
+    push(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`"']?([A-Za-z_][A-Za-z0-9_]*)[`"']?\s*\(/gi, 'create');
+    push(/ALTER\s+TABLE\s+[`"']?([A-Za-z_][A-Za-z0-9_]*)[`"']?\s+ADD\s+(?:COLUMN\s+)?[`"']?([A-Za-z_][A-Za-z0-9_]*)[`"']?([^;]*)/gi, 'add');
+    push(/ALTER\s+TABLE\s+[`"']?([A-Za-z_][A-Za-z0-9_]*)[`"']?\s+RENAME\s+TO\s+[`"']?([A-Za-z_][A-Za-z0-9_]*)[`"']?/gi, 'rename');
+    push(/DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?[`"']?([A-Za-z_][A-Za-z0-9_]*)[`"']?/gi, 'drop');
+    events.sort((a, b) => a.at - b.at);
+
+    for (const ev of events) {
+      const m = ev.m;
+      if (ev.kind === 'create') {
+        const name = m[1];
+        let i = ev.end - 1;
+        const start = i;
+        let depth = 0;
+        for (; i < text.length; i++) {
+          if (text[i] === '(') depth++;
+          else if (text[i] === ')') { depth--; if (depth === 0) break; }
+        }
+        const body = text.slice(start + 1, i);
+        if (!tables.has(name)) tables.set(name, { name, columns: new Map(), createdIn: rel });
+        const t = tables.get(name);
+        // split on top-level commas
+        let d = 0, cur = '';
+        const parts = [];
+        for (const ch of body) {
+          if (ch === '(') d++;
+          if (ch === ')') d--;
+          if (ch === ',' && d === 0) { parts.push(cur); cur = ''; } else cur += ch;
+        }
+        parts.push(cur);
+        for (const p of parts) {
+          const s = p.trim().replace(/\s+/g, ' ');
+          if (!s || /^(?:PRIMARY|FOREIGN|UNIQUE|CHECK|CONSTRAINT)\b/i.test(s)) continue;
+          const cm = /^[`"']?([A-Za-z_][A-Za-z0-9_]*)[`"']?\s+/.exec(s);
+          if (cm) t.columns.set(cm[1], { name: cm[1], definedIn: rel, ddl: s });
+        }
+      } else if (ev.kind === 'add') {
+        const [, tname, cname, rest] = m;
+        if (!tables.has(tname)) continue; // ALTER of a table this chain never created
+        tables.get(tname).columns.set(cname, {
+          name: cname, definedIn: rel, ddl: `${cname}${rest}`.replace(/\s+/g, ' ').trim(),
+        });
+      } else if (ev.kind === 'rename') {
+        const t = tables.get(m[1]);
+        if (!t) continue;
+        tables.delete(m[1]);
+        t.name = m[2];
+        tables.set(m[2], t);
+      } else {
+        tables.delete(m[1]);
       }
     }
-
-    const alter = /ALTER\s+TABLE\s+[`"']?([A-Za-z_][A-Za-z0-9_]*)[`"']?\s+ADD\s+(?:COLUMN\s+)?[`"']?([A-Za-z_][A-Za-z0-9_]*)[`"']?([^;]*)/gi;
-    while ((m = alter.exec(text))) {
-      const [, tname, cname, rest] = m;
-      if (!tables.has(tname)) continue; // ALTER of a table this chain never created
-      tables.get(tname).columns.set(cname, {
-        name: cname, definedIn: rel, ddl: `${cname}${rest}`.replace(/\s+/g, ' ').trim(),
-      });
-    }
-
-    const rename = /ALTER\s+TABLE\s+[`"']?([A-Za-z_][A-Za-z0-9_]*)[`"']?\s+RENAME\s+TO\s+[`"']?([A-Za-z_][A-Za-z0-9_]*)[`"']?/gi;
-    while ((m = rename.exec(text))) {
-      const t = tables.get(m[1]);
-      if (!t) continue;
-      tables.delete(m[1]);
-      t.name = m[2];
-      tables.set(m[2], t);
-    }
-
-    const drop = /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?[`"']?([A-Za-z_][A-Za-z0-9_]*)[`"']?/gi;
-    while ((m = drop.exec(text))) tables.delete(m[1]);
 
     for (const s of text.split(';')) {
       const st = s.replace(/\s+/g, ' ').trim();
