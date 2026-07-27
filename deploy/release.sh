@@ -319,9 +319,12 @@ if [ "$SKIP_BEHAVIORAL" = "1" ]; then
   echo "  Only valid when the owner explicitly authorized skipping the suite"
   echo "  for THIS push. The skip is recorded in the release notes."
 else
-BEHAV_MARKER="$SCRIPT_DIR/../../dev-test-tools/behavioral/results/last-green.json"
+# K1 (2026-07-26): the kit lives at the workspace sibling `dojo-test-kit/`
+# (the old `dev-test-tools/` path never resolved on this layout, which made
+# this gate permanently unpassable and pushed releases toward --skip).
+BEHAV_MARKER="${DOJO_TEST_KIT:-$SCRIPT_DIR/../../dojo-test-kit}/behavioral/results/last-green.json"
 if [ ! -f "$BEHAV_MARKER" ]; then
-  fail "Behavioral gate: no last-green marker. Run the behavioral suite to green first. NOT publishing."
+  fail "Behavioral gate: no last-green marker at $BEHAV_MARKER. Run the behavioral suite to green first. NOT publishing."
 fi
 BEHAV_AGE_H=$(node -e "const s=require('fs').statSync('$BEHAV_MARKER');console.log(((Date.now()-s.mtimeMs)/3600000).toFixed(1))")
 BEHAV_SHA=$(node -e "try{console.log(require('$BEHAV_MARKER').gitSha||'unknown')}catch{console.log('unreadable')}")
@@ -337,7 +340,35 @@ fi
 if [ "$BEHAV_SHA" != "$HEAD_SHA" ]; then
   fail "Behavioral gate: the suite passed a different tree (marker sha ${BEHAV_SHA:0:8}, current HEAD ${HEAD_SHA:0:8}), a change landed after the green run. Re-run the behavioral suite against this HEAD. NOT publishing."
 fi
-echo "  ✓ behavioral suite green ${BEHAV_AGE_H}h ago at this exact HEAD (${HEAD_SHA:0:8})"
+# K1 (2026-07-26): honesty check. The marker now records strict truth
+# (green flag, per-scenario pass ratios, flake markers, known-failing list,
+# merge provenance). Refuse anything that isn't a clean, first-class green:
+#  - green !== true (covers gate-passes carried by known-failing acks)
+#  - any scenario that flaked (HARD retry rescue) or passed by SOFT minority
+#  - any known-failing entry at all
+#  - a merged marker without provenance
+# Markers written by a pre-K1 kit lack these fields entirely and are refused,
+# which forces regeneration through the hardened kit. Shipping past a known
+# failure is still possible — but only via the loud, recorded --skip flag.
+BEHAV_DISHONEST=$(node -e "
+const m=require('$BEHAV_MARKER');
+const bad=[];
+if (m.green !== true) bad.push('green!=true');
+const v=m.verdicts;
+if (!v || typeof v !== 'object') bad.push('no-verdicts(pre-hardening marker)');
+else for (const [id,x] of Object.entries(v)) {
+  if (x.flaked) bad.push(id+':flaked');
+  if ((x.attempts||0)>0 && (x.passCount||0) < x.attempts) bad.push(id+':'+(x.passCount||0)+'/'+x.attempts);
+  if (x.knownFailing) bad.push(id+':known-failing');
+}
+if (Array.isArray(m.knownFailing) && m.knownFailing.length) bad.push('knownFailing-list('+m.knownFailing.length+')');
+if (m.merged && !m.mergedFrom) bad.push('merge-without-provenance');
+console.log(bad.join(', '));
+")
+if [ -n "$BEHAV_DISHONEST" ]; then
+  fail "Behavioral gate: marker is not an honest first-class green ($BEHAV_DISHONEST). Fix and re-run the suite — or the owner explicitly authorizes --skip-behavioral-gate. NOT publishing."
+fi
+echo "  ✓ behavioral suite honest-green ${BEHAV_AGE_H}h ago at this exact HEAD (${HEAD_SHA:0:8})$(node -e "const m=require('$BEHAV_MARKER'); if(m.merged) console.log(' [merged over '+(m.mergedFrom&&m.mergedFrom.runId||'?')+']')")"
 fi
 
 # ── Dev-instrument ship-gate (C23) ──
