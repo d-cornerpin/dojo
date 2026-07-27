@@ -1,0 +1,220 @@
+{
+  "_about": [
+    "The spine manifest. Read by deploy/checks/check-orphans.mjs (Phase 0 T4); that file's header",
+    "documents the heuristics, their known blind spots, and the ORPHAN_GATE=block switch.",
+    "",
+    "TWO LISTS, TWO JOBS:",
+    "  structures — spine columns and types that are supposed to be load-bearing. The gate counts",
+    "               production READERS for each. Zero readers is reported today and FAILS the build",
+    "               from Phase 1 exit (ORPHAN_GATE=block). Phase 1/2 tasks APPEND their new spine",
+    "               columns here in their own commits.",
+    "  tables     — every table in the migration chain that carries an agent link AND a state column.",
+    "               Declaring is mandatory and ALWAYS blocking, from day one: an undeclared one fails",
+    "               the build. This is the machine check for the plan's own falsifier — 'work/tracker",
+    "               unification producing a second system in practice' (DOJO-OVERHAUL-PLAN Part VI).",
+    "",
+    "workShaped answers ONE question, the OR1 test: do these rows track a unit of work whose",
+    "completion someone is owed, keyed to an agent? A table whose migration text shows a terminal",
+    "state may NOT be declared workShaped:false — the checker refuses that. 'why' is required on",
+    "every entry; a declaration nobody explained is a rubber stamp.",
+    "",
+    "waivers — {entry, reason, date} suppress a zero-reader report for ONE structure. They are",
+    "printed and counted on every run. More than 5 across Arc 1 is the pre-committed signal that the",
+    "RULE is wrong and the rule gets fixed. Waivers do NOT apply to the table rule: an undeclared",
+    "work-shaped table is fixed by declaring it, which costs one entry and one sentence.",
+    "",
+    "Every reader count in the AS-BUILT notes was measured by this checker at HEAD 6895eda on",
+    "2026-07-27; `node deploy/checks/check-orphans.mjs --explain <id>` reproduces any of them."
+  ],
+
+  "structures": [
+    {
+      "id": "messages.root_id",
+      "kind": "column",
+      "table": "messages",
+      "column": "root_id",
+      "definedIn": "packages/server/src/db/migrations/112_origin_spine.sql",
+      "why": "Origin spine: the root of the causal chain, so 'who ultimately asked for this' stops being re-derived from prose. Measured 2026-07-27: nothing in production reads it — and nothing writes it either. Every root_id in server source belongs to a DIFFERENT table (destructive_approvals, audit_log, deliveries, turns, inter_agent_messages, tool_receipts, router_log)."
+    },
+    {
+      "id": "messages.task_id",
+      "kind": "column",
+      "table": "messages",
+      "column": "task_id",
+      "definedIn": "packages/server/src/db/migrations/112_origin_spine.sql",
+      "why": "Origin spine: which task the message belongs to. Measured 2026-07-27: HAS a production reader (agent/v2/counterparty.ts selects it from messages), so it does not warn. Kept declared because it is a spine column Phase 1/2 must keep wired — this list is what must stay read, not a list of today's failures."
+    },
+    {
+      "id": "messages.speaker",
+      "kind": "column",
+      "table": "messages",
+      "column": "speaker",
+      "definedIn": "packages/server/src/db/migrations/123_voice_identity.sql",
+      "why": "Voice identity (OR4): who actually spoke a persisted voice row — owner | caller | agent. Written by voice/session-record.ts; nothing reads it back, so spoken-turn attribution is still inferred elsewhere."
+    },
+    {
+      "id": "messages.voice_session_id",
+      "kind": "column",
+      "table": "messages",
+      "column": "voice_session_id",
+      "definedIn": "packages/server/src/db/migrations/123_voice_identity.sql",
+      "why": "Binds a persisted row to the voice session that produced it. Same writer, same silence on the read side."
+    },
+    {
+      "id": "turns.lane",
+      "kind": "column",
+      "table": "turns",
+      "column": "lane",
+      "definedIn": "packages/server/src/db/migrations/123_voice_identity.sql",
+      "why": "The typed spoken-stream lane on the turn record (voice | phone | null). Written by agent/v2/turn-record.ts on every turn open; no reader, so continuation context still cannot ask the record 'was this turn spoken?'."
+    },
+    {
+      "id": "deliveries.receipt_id",
+      "kind": "column",
+      "table": "deliveries",
+      "column": "receipt_id",
+      "definedIn": "packages/server/src/db/migrations/121_deliveries.sql",
+      "why": "Ties a delivery row to the tool receipt that produced it. Written by agent/v2/deliveries.ts; no reader. Phase 2 makes `work.done` require a delivery, which makes this link load-bearing."
+    },
+    {
+      "id": "turn_artifacts.delivery_id",
+      "kind": "column",
+      "table": "turn_artifacts",
+      "column": "delivery_id",
+      "definedIn": "packages/server/src/db/migrations/121_deliveries.sql",
+      "why": "Which delivery carried this artifact to the user. Measured 2026-07-27: the identifier does not appear in production source AT ALL — neither written nor read. The most orphaned of the eight."
+    },
+    {
+      "id": "TurnPhase",
+      "kind": "type",
+      "identifier": "TurnPhase",
+      "definedIn": "packages/server/src/agent/v2/state.ts",
+      "why": "The engine's declared nine-phase skeleton as a type. Phase 6's exit gate is 'TurnPhase is load-bearing (state transitions recorded per turn)'. Measured 2026-07-27: no file outside its own defining module mentions it — the skeleton is declared and unused, which is exactly what Phase 6 exists to fix."
+    }
+  ],
+
+  "tables": [
+    {
+      "name": "tasks",
+      "definedIn": "packages/server/src/db/migrations/003_multi_agent.sql",
+      "agentLink": "assigned_to",
+      "stateColumn": "status",
+      "terminalStates": ["complete", "completed", "failed"],
+      "workShaped": true,
+      "why": "THE tracker. OR1: this table evolves into the `work` spine (Phase 2) and keeps its ID space. Note for anyone extending the detector: it links agents through `assigned_to TEXT REFERENCES agents(id)`, NOT a column named agent_id — which is why the declaration trigger is the structural shape rather than the literal name.",
+      "disposition": "Phase 2 — becomes `work` (OR1)."
+    },
+    {
+      "name": "task_runs",
+      "definedIn": "packages/server/src/db/migrations/009_phase6.sql",
+      "agentLink": "assigned_to",
+      "stateColumn": "status",
+      "terminalStates": ["failed"],
+      "workShaped": true,
+      "why": "One row per execution of a task; part of the tasks family the plan names as partial work-tracking system #1. (It has never held a row in the live DB, and that is NOT evidence of deadness — rows are deleted with their tasks, and it has a live route, live UI and a conformance test: roadmap non-negotiable #15.)",
+      "disposition": "Phase 2 — absorbed as work events."
+    },
+    {
+      "name": "open_loops",
+      "definedIn": "packages/server/src/db/migrations/107_open_loops.sql",
+      "agentLink": "agent_id",
+      "stateColumn": "status",
+      "terminalStates": ["resolved"],
+      "workShaped": true,
+      "why": "Structured unanswered obligations per agent (open | resolved | stale). Named in the plan as one of the five partial systems that each guess at 'is someone owed something'.",
+      "disposition": "Phase 2 — deleted; owner-attributed rows import as open `work` rows (Stable Bridge)."
+    },
+    {
+      "name": "generation_jobs",
+      "definedIn": "packages/server/src/db/migrations/063_generation_jobs.sql",
+      "agentLink": "agent_id",
+      "stateColumn": "status",
+      "terminalStates": ["succeeded", "failed"],
+      "workShaped": true,
+      "why": "Per-agent async media-generation queue: queued -> running -> succeeded | failed (services/generation-jobs.ts). Structurally a work tracker keyed to an agent, and NOT one of the five the plan enumerated — recorded here so Phase 2 decides deliberately instead of discovering it later.",
+      "disposition": "Undecided at Phase 0. Phase 2 judges whether it folds into `work` or stays a typed side-queue."
+    },
+    {
+      "name": "video_jobs",
+      "definedIn": "packages/server/src/db/migrations/062_video_jobs.sql",
+      "agentLink": "agent_id",
+      "stateColumn": "status",
+      "terminalStates": ["succeeded", "failed", "cancelled"],
+      "workShaped": true,
+      "why": "The same shape again for video: queued -> polling -> succeeded | failed | cancelled (services/video-job-poller.ts). Two independent job queues with the same lifecycle is the duplication pattern this project exists to stop.",
+      "disposition": "Undecided at Phase 0. Same Phase 2 judgement as generation_jobs."
+    },
+    {
+      "name": "healer_proposals",
+      "definedIn": "packages/server/src/db/migrations/028_healer.sql",
+      "agentLink": "agent_id",
+      "stateColumn": "status",
+      "terminalStates": ["approved", "denied"],
+      "workShaped": true,
+      "why": "Proposed fixes awaiting the owner's decision: pending -> approved | denied, with resolved_at (gateway/routes/healer.ts). A queue of things someone is owed a decision on, keyed to an agent.",
+      "disposition": "Sweep F owns the healer; the approval-routing pattern is explicitly promoted, not deleted."
+    },
+    {
+      "name": "destructive_approvals",
+      "definedIn": "packages/server/src/db/migrations/069_destructive_approvals.sql",
+      "agentLink": "agent_id",
+      "stateColumn": "status",
+      "terminalStates": ["approved", "denied", "consumed", "expired", "auto_resolved"],
+      "workShaped": true,
+      "why": "A non-primary agent's held destructive tool call, waiting on the primary's decision (agent/destructive-gate.ts). Short-lived, but it is a per-agent row with a terminal state that someone is owed an answer on — declared true rather than argued down.",
+      "disposition": "Phase 5 rebuilds permissions; the approval flow (exact command, once) is on the preserve list."
+    },
+    {
+      "name": "agents",
+      "definedIn": "packages/server/src/db/migrations.ts",
+      "agentLink": "parent_agent",
+      "stateColumn": "status",
+      "terminalStates": [],
+      "workShaped": false,
+      "why": "The agent registry itself. `status` is a PROCESS lifecycle (idle | working | paused | error | terminated), not a unit of work, and the agent link the detector found is the self-referential spawn edge `parent_agent`. Caught by the structural trigger and declared not-work on purpose — the detector is deliberately over-eager.",
+      "disposition": "Stays."
+    },
+    {
+      "name": "turns",
+      "definedIn": "packages/server/src/db/migrations/113_turns.sql",
+      "agentLink": "agent_id",
+      "stateColumn": "outcome",
+      "terminalStates": [],
+      "workShaped": false,
+      "why": "The turn record. `outcome` (answered | no_reply | parked | handoff | aborted | brake | error) says how a TURN ended, not whether an obligation is outstanding. A spine table in its own right (Part III).",
+      "disposition": "Stays and grows — turn identity allocated at turn start in Phase 2."
+    },
+    {
+      "name": "deliveries",
+      "definedIn": "packages/server/src/db/migrations/121_deliveries.sql",
+      "agentLink": "agent_id",
+      "stateColumn": "outcome",
+      "terminalStates": [],
+      "workShaped": false,
+      "why": "The delivery ledger: one row per send attempt, `outcome` (delivered | failed | held) recording how the send went. It is the EVIDENCE a piece of work finished, not a second place where work is tracked.",
+      "disposition": "Stays and becomes universal in Phase 2 (recorded at the five transport doors)."
+    },
+    {
+      "name": "techniques",
+      "definedIn": "packages/server/src/db/migrations/013_phase7_techniques.sql",
+      "agentLink": "author_agent_id",
+      "stateColumn": "state",
+      "terminalStates": [],
+      "workShaped": false,
+      "why": "An authored artifact, not a job. `state` is an editorial lifecycle (draft | review | published) on a document that has no completion anyone is owed.",
+      "disposition": "Sweep D — equip/export/import integrity; the table stays."
+    },
+    {
+      "name": "twilio_call_log",
+      "definedIn": "packages/server/src/db/migrations/057_twilio.sql",
+      "agentLink": "agent_id",
+      "stateColumn": "status",
+      "terminalStates": [],
+      "workShaped": false,
+      "why": "A transport log mirroring Twilio's own call status for a phone call that already happened. No work is claimed, assigned or completed here.",
+      "disposition": "Sweep B — voice/phone consolidation; the log stays."
+    }
+  ],
+
+  "waivers": []
+}

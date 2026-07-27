@@ -225,6 +225,20 @@ step "Lint-baseline gate (per-rule finding counts are decrease-only)"
 node "$SCRIPT_DIR/checks/check-lint-baseline.mjs" \
   || fail "Lint-baseline gate: an eslint rule or unused-symbol diagnostic rose above its pinned count in lint-baseline.json. NOT publishing."
 
+# ── Orphan-structure gate (Phase 0 T4) ──
+# Two rules, one checker. The spine READER rule (a declared spine column/type with
+# no production reader) is log-only until Phase 1 exit, when ORPHAN_GATE=block
+# turns it into a failure. The WORK-SHAPED TABLE rule blocks from day one: any
+# table carrying an agent link and a state column must be declared in
+# spine-manifest.json, which is the machine check for the plan's own falsifier —
+# "work/tracker unification producing a second system in practice". Reads SOURCE
+# and the migration chain, never the live ~/.dojo database, so it sits here with
+# the other source-reading gates BEFORE the version bump, per this script's "fail
+# before changing anything" rule. Fast (no compiler), and never skippable.
+step "Orphan-structure gate (no undeclared work-shaped table; spine readers reported)"
+node "$SCRIPT_DIR/checks/check-orphans.mjs" \
+  || fail "Orphan-structure gate: an undeclared work-shaped table, a manifest entry that stopped describing the schema, or (under ORPHAN_GATE=block) a spine structure with no production reader. NOT publishing."
+
 # ── Bump version ──
 step "Bumping root package.json → $VERSION"
 node -e "const f='package.json',p=require('./'+f);p.version='$VERSION';require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
