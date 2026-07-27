@@ -212,6 +212,19 @@ step "Size-ratchet gate (files may only shrink; new files may not balloon)"
 node "$SCRIPT_DIR/checks/check-ratchets.mjs" \
   || fail "Size-ratchet gate: a pinned file grew past its ratchet, a pinned file vanished without its manifest entry, or an unlisted new file exceeded the cap. NOT publishing."
 
+# ── Lint-baseline gate (Phase 0 T3) ──
+# The eslint rules are all `warn` because the tree has hundreds of pre-existing
+# findings and error-mode would be unshippable — so lint-baseline.json is the
+# enforcement instead: every count is pinned PER RULE and may only fall. Reads
+# SOURCE, so it belongs here with the other source-reading gates, BEFORE the
+# version bump, per this script's "fail before changing anything" rule. Slower
+# than the ratchet (type-aware eslint plus a full tsc pass, tens of seconds)
+# and still never skippable: a gate that only runs on the good days is a habit,
+# not a gate.
+step "Lint-baseline gate (per-rule finding counts are decrease-only)"
+node "$SCRIPT_DIR/checks/check-lint-baseline.mjs" \
+  || fail "Lint-baseline gate: an eslint rule or unused-symbol diagnostic rose above its pinned count in lint-baseline.json. NOT publishing."
+
 # ── Bump version ──
 step "Bumping root package.json → $VERSION"
 node -e "const f='package.json',p=require('./'+f);p.version='$VERSION';require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')"

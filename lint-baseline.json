@@ -1,0 +1,30 @@
+{
+  "$comment": "Lint baseline (PHASE-0 T3). Every count below may only FALL: check-lint-baseline.mjs fails the build when any rule or diagnostic code exceeds its pin, when an unpinned rule reports findings, or when either total rises. Counts are PER RULE, not just totals, so a rise in one rule cannot hide behind a fall in another. Seeded 2026-07-27 at commit fc662b6 from the commands recorded in each section, run on a clean, instrument-free tree. The eslint rules are all severity `warn` in eslint.config.js on purpose — the tree has hundreds of pre-existing findings and error-mode would be unshippable; this file is the enforcement, not the severity. To LOWER entries after real fixes: node deploy/checks/check-lint-baseline.mjs --tighten. To RAISE one, or to admit a newly enabled rule, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
+  "eslint": {
+    "$comment": "Findings by rule id. `--no-inline-config` is part of the command and is not optional: without it a one-line eslint-disable comment lowers the count without fixing anything. no-constant-binary-expression is pinned at 0 — the rule IS enabled and the tree is genuinely clean of it, so any future finding is a rise from zero.",
+    "command": "node_modules/.bin/eslint packages/server/src --no-inline-config -f json",
+    "filesLintedWhenSeeded": 305,
+    "counts": {
+      "@typescript-eslint/no-floating-promises": 13,
+      "no-constant-binary-expression": 0,
+      "no-empty": 5,
+      "no-restricted-imports": 89,
+      "prefer-const": 7
+    },
+    "total": 114
+  },
+  "unusedSymbols": {
+    "$comment": "Findings by TypeScript diagnostic code, from tsconfig.lint.json (noUnusedLocals + noUnusedParameters). That config is consumed ONLY by `npm run lint:types` — never by the build and never by `npm run typecheck` — so the unused-symbol population is counted without breaking either. TS6133 = declared but never read; TS6192 = all imports in a declaration unused; TS6196 = declared but never used (type position). 116 of the 118 sit in packages/server; the other 2 are in packages/shared, which the server program pulls in through its project reference.",
+    "command": "node_modules/.bin/tsc -p tsconfig.lint.json --noEmit",
+    "counts": {
+      "TS6133": 114,
+      "TS6192": 1,
+      "TS6196": 3
+    },
+    "total": 118
+  },
+  "typeAwareRules": [
+    "@typescript-eslint/no-floating-promises"
+  ],
+  "grandTotal": 232
+}

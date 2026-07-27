@@ -15,14 +15,18 @@
     "build": "npm run build -w packages/shared && npm run build -w packages/server && npm run build -w packages/dashboard",
     "test": "npm run test -w packages/server",
     "typecheck": "tsc --noEmit -p packages/shared/tsconfig.json && tsc --noEmit -p packages/server/tsconfig.json",
+    "lint": "eslint packages/server/src --no-inline-config",
+    "lint:types": "tsc -p tsconfig.lint.json --noEmit",
     "build:package": "bash deploy/build-package.sh",
     "release": "bash deploy/release.sh",
     "release:verify": "bash deploy/verify-release.sh",
-    "gates": "node deploy/checks/check-bytes.mjs && node deploy/checks/check-ratchets.mjs && node deploy/checks/check-upgrade-bypass.mjs"
+    "gates": "node deploy/checks/check-bytes.mjs && node deploy/checks/check-ratchets.mjs && node deploy/checks/check-lint-baseline.mjs && node deploy/checks/check-upgrade-bypass.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
-    "typescript": "^5.7.3"
+    "eslint": "^9.39.5",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.65.0"
   },
   "dependencies": {
     "playwright": "^1.58.2"

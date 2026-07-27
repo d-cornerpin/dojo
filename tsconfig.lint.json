@@ -1,0 +1,26 @@
+{
+  // ════════════════════════════════════════
+  // Unused-symbol counting only (Phase 0 T3).
+  //
+  // noUnusedLocals/noUnusedParameters are deliberately NOT in the server's real
+  // tsconfig: the codebase has a large pre-existing population of them, so the
+  // build and `npm run typecheck` would fail on day one. They live here instead,
+  // behind `npm run lint:types`, and their count is pinned in lint-baseline.json
+  // where it can only go down.
+  //
+  // Nothing builds from this file. It exists to be counted.
+  //   npm run lint:types   → the raw diagnostics
+  //   npm run gates        → the ratchet that refuses a rise
+  //
+  // It lives at the repo ROOT rather than beside the server tsconfig so it stays
+  // out of `packages/**` — the pre-commit gate/product classification keeps
+  // checker-side files and product code in separate commits, and this file is
+  // gate machinery, not product.
+  // ════════════════════════════════════════
+  "extends": "./packages/server/tsconfig.json",
+  "compilerOptions": {
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true
+  }
+}
