@@ -198,6 +198,20 @@ npm run typecheck
 ( cd packages/dashboard && npx tsc --noEmit -p tsconfig.json )
 echo "  ✓ server, shared, dashboard typecheck clean"
 
+# ── Size-ratchet gate (Phase 0 T2) ──
+# The overhaul exists to shrink this codebase, and nothing shrinks by itself: the
+# god files got that way one "just five more lines" at a time, over two years, with
+# no gate that could see it. ratchets.json pins every large source file at its
+# measured wc -l; a pinned file may shrink but never exceed its pin, and any
+# unlisted source file above the new-file cap fails too (the decrease-only rule
+# cannot see a brand-new god file). Reads SOURCE, not the packaged dist, so it runs
+# here — BEFORE the version bump, per this script's own "fail before changing
+# anything" rule — rather than in the dist-gate cluster below. Cheap and static, so
+# it runs on every cut including --skip-behavioral-gate; it is never skippable.
+step "Size-ratchet gate (files may only shrink; new files may not balloon)"
+node "$SCRIPT_DIR/checks/check-ratchets.mjs" \
+  || fail "Size-ratchet gate: a pinned file grew past its ratchet, a pinned file vanished without its manifest entry, or an unlisted new file exceeded the cap. NOT publishing."
+
 # ── Bump version ──
 step "Bumping root package.json → $VERSION"
 node -e "const f='package.json',p=require('./'+f);p.version='$VERSION';require('fs').writeFileSync(f,JSON.stringify(p,null,2)+'\n')"

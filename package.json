@@ -18,7 +18,7 @@
     "build:package": "bash deploy/build-package.sh",
     "release": "bash deploy/release.sh",
     "release:verify": "bash deploy/verify-release.sh",
-    "gates": "node deploy/checks/check-bytes.mjs && node deploy/checks/check-upgrade-bypass.mjs"
+    "gates": "node deploy/checks/check-bytes.mjs && node deploy/checks/check-ratchets.mjs && node deploy/checks/check-upgrade-bypass.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
