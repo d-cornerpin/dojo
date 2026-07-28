@@ -31,7 +31,7 @@
     "packages/server/src/agent/destructive-gate.ts": 552,
     "packages/server/src/agent/model.ts": 2655,
     "packages/server/src/agent/pdf-tools.ts": 1007,
-    "packages/server/src/agent/permissions.ts": 661,
+    "packages/server/src/agent/permissions.ts": 687,
     "packages/server/src/agent/runtime.ts": 1339,
     "packages/server/src/agent/spawner.ts": 1335,
     "packages/server/src/agent/tools.ts": 10622,
