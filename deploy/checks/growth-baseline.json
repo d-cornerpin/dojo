@@ -424,7 +424,7 @@
     "packages/shared/src/index.ts": 6,
     "packages/shared/src/origin.ts": 211,
     "packages/shared/src/types.ts": 500,
-    "packages/shared/src/visibility.ts": 568,
+    "packages/shared/src/visibility.ts": 811,
     "packages/shared/src/ws.ts": 998,
     "watchdog/src/auto-rollback.ts": 197,
     "watchdog/src/index.ts": 1164
