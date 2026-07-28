@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
@@ -397,30 +398,78 @@ const MIN_COMPACTABLE_ROWS = 6;
 const LOW_YIELD_BACKOFF_MS = 15 * 60_000;
 const lowYieldCompactionBackoffUntil = new Map<string, number>();
 
+export interface CheckAndCompactOptions {
+  force?: boolean;
+  // v2.5.12, Per-call cap on how many leaf chunks may be summarized.
+  // Used by the routine gap-trigger path so a huge backlog (e.g. an
+  // upgrade from a pre-gap-trigger version with thousands of uncompacted
+  // messages) drains across many turns instead of blocking a single turn
+  // for minutes while it does dozens of LLM calls back-to-back.
+  maxChunksPerRun?: number;
+  // v2.5.12, Skip the expensive continuity-brief LLM call AND the
+  // user-facing divider/nudge insert. Used by routine drain so we don't
+  // pay the brief cost on every chunk and don't spam the chat with
+  // "Memory Compacted" notifications while we drain a backlog.
+  skipContinuityBrief?: boolean;
+  // v2.5.14, Optional abort signal for cancellation. Used by the
+  // routine background drain in v2 loop so a hung summarizer LLM call
+  // can actually be cancelled instead of running until the SDK's
+  // 10-minute default timeout fires.
+  abortSignal?: AbortSignal;
+}
+
+export type CompactionResult = { leafCreated: number; condensedCreated: number; tokensReclaimed: number };
+
+const NO_COMPACTION: CompactionResult = { leafCreated: 0, condensedCreated: 0, tokensReclaimed: 0 };
+
+/**
+ * PHASE-1 T2: the ONE site that covers all seven compaction entry points (the
+ * v2 loop's four, recovery, the memory route, and the routine background
+ * drain). Every one of them arrives here, so the mutual exclusion belongs here
+ * and nowhere else.
+ *
+ * Requirement preserved: a second compaction for the SAME agent can no longer
+ * overlap the first. Both used to read the uncompacted set before either wrote
+ * a summary, so both summarised the same messages and both wrote depth-0 rows
+ * over them — 11.4% of depth-0 summaries were duplicates in real data (44/387,
+ * research 22). The race last fired 2026-06-26; the corruption class is real
+ * and the platform had no mutual-exclusion primitive to stop it.
+ *
+ * `ifBusy:'skip'` and not `'wait'`, deliberately: a queued second compaction
+ * would run against a history the first one just compacted and find nothing to
+ * do, after holding the caller's turn open for a full summarizer round-trip.
+ * Skipping returns the same zero result those callers already handle — every
+ * caller reads the counts and none treats zero as an error — and the work is
+ * not lost: the next turn's gate re-checks and compacts if pressure remains.
+ *
+ * Scope: `withLock` is IN-PROCESS. One dojo server owns its box, which is the
+ * shape of the observed race; it is not a cross-process lock and must not be
+ * described as one.
+ */
 export async function checkAndCompact(
   agentId: string,
   modelId: string,
   contextWindow: number,
-  options?: {
-    force?: boolean;
-    // v2.5.12, Per-call cap on how many leaf chunks may be summarized.
-    // Used by the routine gap-trigger path so a huge backlog (e.g. an
-    // upgrade from a pre-gap-trigger version with thousands of uncompacted
-    // messages) drains across many turns instead of blocking a single turn
-    // for minutes while it does dozens of LLM calls back-to-back.
-    maxChunksPerRun?: number;
-    // v2.5.12, Skip the expensive continuity-brief LLM call AND the
-    // user-facing divider/nudge insert. Used by routine drain so we don't
-    // pay the brief cost on every chunk and don't spam the chat with
-    // "Memory Compacted" notifications while we drain a backlog.
-    skipContinuityBrief?: boolean;
-    // v2.5.14, Optional abort signal for cancellation. Used by the
-    // routine background drain in v2 loop so a hung summarizer LLM call
-    // can actually be cancelled instead of running until the SDK's
-    // 10-minute default timeout fires.
-    abortSignal?: AbortSignal;
-  },
-): Promise<{ leafCreated: number; condensedCreated: number; tokensReclaimed: number }> {
+  options?: CheckAndCompactOptions,
+): Promise<CompactionResult> {
+  const result = await withLock(
+    `compact:${agentId}`,
+    () => runCheckAndCompact(agentId, modelId, contextWindow, options),
+    { ifBusy: 'skip' },
+  );
+  if (result === undefined) {
+    logger.info('Compaction skipped: another compaction is already running for this agent', {}, agentId);
+    return NO_COMPACTION;
+  }
+  return result;
+}
+
+async function runCheckAndCompact(
+  agentId: string,
+  modelId: string,
+  contextWindow: number,
+  options?: CheckAndCompactOptions,
+): Promise<CompactionResult> {
   // Resolve which model WRITES the summaries (see resolveSummaryWriterModel).
   {
     const resolved = resolveSummaryWriterModel(agentId, modelId);
