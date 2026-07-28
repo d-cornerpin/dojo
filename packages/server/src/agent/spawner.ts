@@ -4,6 +4,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
 import { getAgentPermissions, checkPermission } from './permissions.js';
+import { inheritedCreatorKind } from './created-by-kind.js';
 import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
 import { sendAgentMessage } from './agent-bus.js';
 import { postAgentNotice } from './agent-notice.js';
@@ -232,10 +233,10 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   const toolsPolicyJson = JSON.stringify(toolsPolicy ?? {});
 
   db.prepare(`
-    INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by,
+    INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by, created_by_kind,
                         parent_agent, spawn_depth, agent_type, classification, group_id, max_runtime, timeout_at,
                         permissions, tools_policy, equipped_techniques, task_id, created_at, updated_at)
-    VALUES (?, ?, ?, NULL, 'idle', ?, ?,
+    VALUES (?, ?, ?, NULL, 'idle', ?, ?, ?,
             ?, ?, 'standard', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
   `).run(
     agentId,
@@ -243,6 +244,10 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     resolvedModelId,
     JSON.stringify({ persist, shareUserProfile: shareUserProfile || undefined }),
     parentId,
+    // T11 Step 1b: a spawned child inherits its parent's kind, so a harness fixture's
+    // worker is disposable for the same structural reason its parent is; anything else
+    // an agent spawns is 'agent'.
+    inheritedCreatorKind(parentId),
     parentId,
     newDepth,
     classification,

@@ -252,11 +252,12 @@ export function ensurePMAgentRunning(): void {
     const pmPermissions = PM_PERMISSIONS_JSON;
     // Allow only the tools the PM needs (single source: PM_ALLOWED_TOOLS).
     const pmToolsPolicy = JSON.stringify({ allow: [...PM_ALLOWED_TOOLS] });
+    // T11 Step 1b: the PM is platform machinery, not a person's agent.
     db.prepare(`
-      INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by,
+      INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by, created_by_kind,
                           parent_agent, spawn_depth, agent_type, classification, max_runtime, timeout_at,
                           permissions, tools_policy, task_id, created_at, updated_at)
-      VALUES (?, ?, ?, NULL, 'idle', '{"shareUserProfile":true}', ?,
+      VALUES (?, ?, ?, NULL, 'idle', '{"shareUserProfile":true}', ?, 'agent',
               ?, 1, 'persistent', 'sensei', NULL, NULL,
               ?, ?, NULL, datetime('now'), datetime('now'))
     `).run(pmId, pmName, modelId, primaryId, primaryId, pmPermissions, pmToolsPolicy);

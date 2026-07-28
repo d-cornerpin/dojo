@@ -6,6 +6,7 @@ import os from 'node:os';
 import { getDb } from '../../db/connection.js';
 import { getAgentRuntime } from '../../agent/runtime.js';
 import { spawnAgent, terminateAgent } from '../../agent/spawner.js';
+import { parseCreatedByKind } from '../../agent/created-by-kind.js';
 import { stopAgent } from '../../agent/runtime.js';
 import { getAgentMessages } from '../../agent/agent-bus.js';
 import {
@@ -121,17 +122,25 @@ agentsRouter.post('/', async (c) => {
 
     const groupId = body.groupId ?? null;
 
+    // T11 Step 1b: who made this agent. This route is the dashboard create form, so a
+    // person made it — unless the caller DECLARES otherwise, which is how the behavioral
+    // harness stamps its BehaviorBot and its five fixture peers as disposable. An
+    // unrecognised value falls back to 'user' (parseCreatedByKind returns null), so a
+    // typo can only ever NARROW what a sweep may touch, never widen it.
+    const createdByKind = parseCreatedByKind(body.createdByKind) ?? 'user';
+
     db.prepare(`
-      INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by,
+      INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by, created_by_kind,
                           parent_agent, spawn_depth, agent_type, classification, group_id, max_runtime, timeout_at,
                           permissions, tools_policy, equipped_techniques, task_id, created_at, updated_at)
-      VALUES (?, ?, ?, NULL, 'idle', ?, 'dashboard',
+      VALUES (?, ?, ?, NULL, 'idle', ?, 'dashboard', ?,
               NULL, 0, 'standard', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     `).run(
       agentId,
       body.name,
       resolvedModelId,
       config,
+      createdByKind,
       classification,
       groupId,
       timeoutSeconds,
@@ -325,6 +334,23 @@ agentsRouter.put('/:id', async (c) => {
     // by the vault archive layer entirely — Dreamer never sees them.
     updates.push('dreamer_ignore = ?');
     params.push(body.dreamerIgnore ? 1 : 0);
+  }
+
+  // T11 Step 1b: who created this agent (migration 134), settable here for the same reason
+  // permissions are — the behavioral harness RECONCILES its long-lived BehaviorBot on every
+  // run rather than recreating it, so a bot that predates the column has no other way to
+  // record what it has always been. WRITE-ONCE: an agent that already carries a kind keeps
+  // it, so this can adopt an unstamped row and can never relabel a person's agent as
+  // disposable. An unrecognised value is ignored (parseCreatedByKind returns null), leaving
+  // the column NULL, which every sweep treats as "not mine".
+  if (body.createdByKind !== undefined) {
+    const kind = parseCreatedByKind(body.createdByKind);
+    const already = db.prepare('SELECT created_by_kind FROM agents WHERE id = ?').get(id) as
+      { created_by_kind: string | null } | undefined;
+    if (kind && !already?.created_by_kind) {
+      updates.push('created_by_kind = ?');
+      params.push(kind);
+    }
   }
 
   if (updates.length > 0) {

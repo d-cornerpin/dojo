@@ -175,10 +175,11 @@ function ensurePrimaryAgent(): void {
          LIMIT 1
       `).get() as { id: string } | undefined)?.id ?? null;
 
+  // T11 Step 1b: the primary agent exists because a person installed this platform.
   db.prepare(`
-    INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by,
+    INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by, created_by_kind,
                         classification, created_at, updated_at)
-    VALUES (?, ?, ?, NULL, 'idle', '{"shareUserProfile":true}', 'system', 'sensei', datetime('now'), datetime('now'))
+    VALUES (?, ?, ?, NULL, 'idle', '{"shareUserProfile":true}', 'system', 'user', 'sensei', datetime('now'), datetime('now'))
   `).run(
     primaryId,
     primaryName,

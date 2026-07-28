@@ -500,11 +500,11 @@ setupDepsRouter.post('/provision-agent', async (c) => {
     }
   }
 
-  // Create the agent
+  // Create the agent. T11 Step 1b: OOBE provisioning is a person setting the box up.
   db.prepare(`
-    INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by,
+    INSERT INTO agents (id, name, model_id, system_prompt_path, status, config, created_by, created_by_kind,
                         classification, created_at, updated_at)
-    VALUES (?, ?, ?, NULL, 'idle', '{"shareUserProfile":true}', 'system', ?, datetime('now'), datetime('now'))
+    VALUES (?, ?, ?, NULL, 'idle', '{"shareUserProfile":true}', 'system', 'user', ?, datetime('now'), datetime('now'))
   `).run(id, name, modelId ?? null, classification ?? 'sensei');
 
   logger.info('Agent provisioned during OOBE', { id, name, modelId, classification });

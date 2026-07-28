@@ -34,6 +34,11 @@ beforeEach(() => {
       status TEXT NOT NULL,
       assigned_to TEXT,
       created_by TEXT NOT NULL,
+      -- PHASE-1 T11 (migration 134): who made this row. This hand-built fixture went RED
+      -- the moment the writer started naming the column ("no such column" -> the writer's
+      -- own catch -> autoCreateAssignTask returned null on all six tests), which is the
+      -- fixture doing its job: a minimal schema has to move with the writer it exercises.
+      created_by_kind TEXT CHECK (created_by_kind IN ('user', 'agent', 'harness')),
       priority TEXT NOT NULL DEFAULT 'normal',
       step_number INTEGER,
       total_steps INTEGER,
@@ -50,6 +55,11 @@ beforeEach(() => {
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_tasks_a2a_thread ON tasks(a2a_thread_id);
+    CREATE TABLE agents (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      created_by_kind TEXT
+    );
   `);
   mockDb.current = db;
 });
@@ -131,5 +141,38 @@ describe('autoCreateAssignTask', () => {
     });
     const task = getTask(result!.taskId);
     expect(task!.title).toBe('Assigned task (untitled)');
+  });
+
+  // ── PHASE-1 T11 Step 1b: authorship travels with the row ──
+  //
+  // The engine creates this task, not the harness — which is the whole reason the kind
+  // has to PROPAGATE rather than be stamped by whoever happens to call an API. Measured
+  // on the dev box before the column existed: every one of 51 tasks and 102 of 104
+  // projects carried BehaviorBot's agent id in `created_by`. A column only the kit
+  // stamped would have been NULL on exactly the rows the clean-slate sweep must find,
+  // and switching the sweep to it would have made the sweep see LESS than the name
+  // pattern it replaces.
+  const kindOf = (taskId: string) =>
+    (mockDb.current!.prepare('SELECT created_by_kind FROM tasks WHERE id = ?').get(taskId) as
+      { created_by_kind: string | null }).created_by_kind;
+
+  it("inherits the SENDING agent's created_by_kind", () => {
+    mockDb.current!.prepare('INSERT INTO agents (id, name, created_by_kind) VALUES (?, ?, ?)')
+      .run('behavpeer', 'BehavPeer-x', 'harness');
+    const result = autoCreateAssignTask({
+      senderId: 'behavpeer', receiverId: 'maddy',
+      payload: 'Fixture work.', threadId: 'thread-harness',
+    });
+    expect(kindOf(result!.taskId)).toBe('harness');
+  });
+
+  it('records NULL — never a guess — when the sender names no known agent', () => {
+    // An absence is not evidence (roadmap #15). The sweep matches `= 'harness'`
+    // positively, so a row like this is outside every blast radius.
+    const result = autoCreateAssignTask({
+      senderId: 'primary', receiverId: 'maddy',
+      payload: 'Ordinary work.', threadId: 'thread-unknown',
+    });
+    expect(kindOf(result!.taskId)).toBeNull();
   });
 });

@@ -4,6 +4,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { writeTaskLog } from './task-log.js';
 import { isDashboardHiddenAgent, isPMAgent } from '../config/platform.js';
+import { createdByKindOfAgent } from '../agent/created-by-kind.js';
 import type { Project, ProjectDetail, Task, PokeEntry } from '@dojo/shared';
 
 const logger = createLogger('tracker-schema');
@@ -210,12 +211,19 @@ export function createProject(params: {
   // exactly that; the PM had no row to poke and the model "reused" an empty
   // shell). Broadcasts fire after commit so a rollback never announces
   // phantom rows.
+  // T11 Step 1b: authorship travels with the row. `created_by` on a project or a task is
+  // an AGENT id (measured on this box: every one of 51 tasks and 102 of 104 projects), so
+  // the kind is the creating agent's own — which makes a harness fixture's auto-scaffolded
+  // debris structurally identifiable without the harness ever touching these rows. One
+  // lookup, read once here and passed to the task inserts below.
+  const creatorKind = createdByKindOfAgent(createdBy);
+
   db.transaction(() => {
     db.prepare(`
-      INSERT INTO projects (id, title, description, level, status, created_by, phase_count, current_phase,
+      INSERT INTO projects (id, title, description, level, status, created_by, created_by_kind, phase_count, current_phase,
                             source_message_id, origin_turn, origin_conv_key, origin_kind, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'active', ?, 1, 1, ?, ?, ?, ?, datetime('now'), datetime('now'))
-    `).run(projectId, title, description ?? null, level, createdBy,
+      VALUES (?, ?, ?, ?, 'active', ?, ?, 1, 1, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    `).run(projectId, title, description ?? null, level, createdBy, creatorKind,
       params.origin.sourceMessageId, params.origin.turn, params.origin.convKey, params.origin.kind);
 
     if (tasks && tasks.length > 0) {
@@ -246,10 +254,10 @@ export function createProject(params: {
         // creates tasks via this code path; without this column being set the
         // onTaskComplete hook surfaces "(none recorded)" to the parent.
         db.prepare(`
-          INSERT INTO tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, priority,
+          INSERT INTO tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, created_by_kind, priority,
                              step_number, total_steps, phase, depends_on,
                              source_message_id, origin_turn, origin_conv_key, origin_kind, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
         `).run(
           taskId,
           projectId,
@@ -259,6 +267,7 @@ export function createProject(params: {
           status,
           assignee,
           createdBy,
+          creatorKind,
           task.priority ?? 'normal',
           stepNum,
           totalSteps,
@@ -535,10 +544,10 @@ export function createTask(params: {
   // Phase 7 onTaskComplete uses it to surface the original intent to the
   // parent agent at completion time even if the description was edited.
   db.prepare(`
-    INSERT INTO tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, priority,
+    INSERT INTO tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, created_by_kind, priority,
                        step_number, total_steps, phase, depends_on, kind,
                        source_message_id, origin_turn, origin_conv_key, origin_kind, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
   `).run(
     taskId,
     projectId ?? null,
@@ -548,6 +557,7 @@ export function createTask(params: {
     initialStatus,
     assignedTo ?? null,
     createdBy,
+    createdByKindOfAgent(createdBy), // T11 Step 1b: the creating agent's own kind
     priority ?? 'normal',
     stepNumber ?? null,
     phase ?? 1,
@@ -659,10 +669,10 @@ export function autoCreateAssignTask(params: {
     // reserved for future-scheduled tasks (the scheduler owns the
     // transition); auto-ASSIGN has no schedule.
     db.prepare(`
-      INSERT INTO tasks (id, project_id, title, description, original_description, goal, status, assigned_to, created_by, priority,
+      INSERT INTO tasks (id, project_id, title, description, original_description, goal, status, assigned_to, created_by, created_by_kind, priority,
                          step_number, total_steps, phase, depends_on, a2a_thread_id,
                          source_message_id, origin_conv_key, origin_kind, created_at, updated_at)
-      VALUES (?, NULL, ?, ?, ?, ?, 'in_progress', ?, ?, 'normal', NULL, NULL, 1, '[]', ?, ?, ?, 'a2a_assign', datetime('now'), datetime('now'))
+      VALUES (?, NULL, ?, ?, ?, ?, 'in_progress', ?, ?, ?, 'normal', NULL, NULL, 1, '[]', ?, ?, ?, 'a2a_assign', datetime('now'), datetime('now'))
     `).run(
       taskId,
       title,
@@ -671,6 +681,9 @@ export function autoCreateAssignTask(params: {
       autoGoal,
       params.receiverId,
       params.senderId,
+      // T11 Step 1b: an A2A ASSIGN task belongs to the SENDING agent's kind — a harness
+      // peer assigning work to the bot produces a harness-owned task.
+      createdByKindOfAgent(params.senderId),
       params.threadId,
       params.assignMessageId ?? null,
       'a2a:' + params.threadId,
