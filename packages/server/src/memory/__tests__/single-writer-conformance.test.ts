@@ -1,0 +1,195 @@
+// PHASE-1 T3 Step 4 — the single-writer conformance walk.
+//
+// This is the whole of Phase 1's single-writer guarantee. It walks the source with
+// fs.readFileSync (never grep — two of this tree's largest files carry NUL bytes and grep
+// skips them silently) and fails on any write against `messages` / `inter_agent_messages`
+// outside the writer module that is not on the burn-down allowlist.
+//
+// THE ALLOWLIST IS THE ARTEFACT. It starts at the measured writer set and T4 empties it,
+// file by file. Its length is the honest answer to "how much of the conversion is left".
+//
+// WHY THE MATCHER IS SHAPED THE WAY IT IS — measured at 24fe27e, not assumed:
+//   * 87 INSERTs against `messages`: 7 plain `INSERT INTO`, 80 `INSERT OR IGNORE INTO`,
+//     0 `INSERT OR REPLACE`. A literal gate on `INSERT INTO messages` sees 7 of 87 —
+//     80 writers would sail straight through the check that IS the guarantee.
+//   * `memory/interagent.ts:115` is `${verb} INTO inter_agent_messages`, where verb is
+//     computed at :113. NO literal for INSERT or INSERT OR IGNORE matches it. So the match
+//     is on the TABLE side (`INTO <table>`), never on the verb.
+//   * `messages_fts` must NOT count. `messages\b` excludes it because `_` is a word
+//     character — that word-boundary discipline is load-bearing and is self-tested below.
+//   * UPDATE and DELETE count too: a single-writer rule that only covers INSERT is not one.
+
+import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const SRC = path.join(__dirname, '..', '..');
+const WRITER_MODULE = 'memory/message-store.ts';
+
+/** Every write form, matched on the table rather than the verb. */
+const WRITE_RE = new RegExp(
+  [
+    // INSERT / INSERT OR <anything> / an interpolated verb, INTO one of the two tables
+    // or into an interpolated table name.
+    String.raw`(?:INSERT(?:\s+OR\s+\w+)?|\$\{\w+\})\s+INTO\s+(?:messages\b|inter_agent_messages\b|\$\{)`,
+    String.raw`UPDATE\s+(?:messages\b|inter_agent_messages\b|\$\{)`,
+    String.raw`DELETE\s+FROM\s+(?:messages\b|inter_agent_messages\b|\$\{)`,
+  ].join('|'),
+  'i',
+);
+
+function walk(dir: string, acc: string[] = []): string[] {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fp = path.join(dir, e.name);
+    if (e.isDirectory()) {
+      if (e.name === '__tests__' || e.name === 'migrations') continue;
+      walk(fp, acc);
+    } else if (e.name.endsWith('.ts')) acc.push(fp);
+  }
+  return acc;
+}
+
+const rel = (f: string) => path.relative(SRC, f).split(path.sep).join('/');
+const sourceFiles = () => walk(SRC).map(rel).sort();
+const read = (r: string) => fs.readFileSync(path.join(SRC, r), 'utf8');
+
+// ── The burn-down allowlist ──
+// Measured at 24fe27e by:
+//   git grep -lP '(INSERT(\s+OR\s+\w+)?|\$\{\w+\})\s+INTO\s+(messages\b|inter_agent_messages\b|\$\{)
+//               |UPDATE\s+(messages\b|inter_agent_messages\b|\$\{)
+//               |DELETE\s+FROM\s+(messages\b|inter_agent_messages\b|\$\{)'
+//     HEAD -- packages/server/src | grep -v __tests__ | grep -v db/migrations
+// => 42 files, 136 statement sites. T4 drives this to zero, cluster by cluster.
+const WRITER_ALLOWLIST: string[] = [
+  'agent/a2a-transport.ts', 'agent/destructive-gate.ts', 'agent/model-switch.ts',
+  'agent/model.ts', 'agent/rate-limit-retry.ts', 'agent/spawner.ts', 'agent/tools.ts',
+  'agent/v2/counterparty.ts', 'agent/v2/engine-steer.ts', 'agent/v2/inbound-channel.ts',
+  'agent/v2/loop.ts', 'agent/v2/recovery.ts',
+  // NOT db/migrations.ts: its only `INTO messages…` is `messages_fts`, the FTS shadow
+  // table, which the word boundary correctly excludes. Listing it would have been a stale
+  // entry hiding one file's worth of progress — the stale check below caught exactly that.
+  'gateway/routes/agents.ts', 'gateway/routes/chat.ts', 'gateway/routes/setup-deps.ts',
+  'gateway/routes/system.ts', 'gateway/routes/twilio.ts', 'google/reauth-notice.ts',
+  'healer/healer-agent.ts', 'imaginer/imaginer-agent.ts', 'index.ts',
+  'memory/compaction.ts', 'memory/interagent.ts', 'migration/path-migration.ts',
+  'scheduler/runner.ts', 'services/generation-jobs.ts', 'services/gmail-watcher.ts',
+  'services/imessage-bridge.ts', 'services/outlook-watcher.ts', 'services/teams-watcher.ts',
+  'services/video-job-poller.ts', 'techniques/audit-migration.ts',
+  'techniques/share-import.ts', 'techniques/trainer-agent.ts', 'tracker/notify.ts',
+  'tracker/pm-agent.ts', 'tracker/tools.ts', 'twilio/call-session.ts',
+  'twilio/sms-inbound.ts', 'vault/maintenance.ts', 'voice/session-record.ts',
+  'voice/voice-ws.ts',
+];
+
+// Set A (8 files stamp `authorized`) ∪ Set B (11 files compute `channel` via
+// resolveOrCreateConversation) = 12 files, re-derived at 24fe27e and matching T0's pin.
+// `agent/v2/inbound-channel.ts` is the funnel seven of the eight stamp through, so it is
+// listed too. `shared/src/origin.ts` is deliberately NOT here and never will be: it
+// CONSUMES these fields to derive origin — it is the resolver, not an ingest producer.
+// SWEEP-A empties this list (SWEEP-A exit: length 0).
+const PRODUCER_ALLOWLIST: string[] = [
+  'agent/v2/deliveries.ts', 'agent/v2/inbound-channel.ts', 'agent/v2/loop.ts',
+  'gateway/routes/chat.ts', 'gateway/routes/twilio.ts', 'memory/interagent.ts',
+  'scheduler/runner.ts', 'services/gmail-watcher.ts', 'services/imessage-bridge.ts',
+  'services/outlook-watcher.ts', 'services/teams-watcher.ts', 'twilio/call-session.ts',
+  'twilio/sms-inbound.ts',
+];
+
+describe('the matcher itself (a weakened regex must not pass silently)', () => {
+  const hits = (s: string) => WRITE_RE.test(s);
+
+  it('catches all five write forms, including the interpolated VERB', () => {
+    expect(hits('INSERT INTO messages (id) VALUES (?)')).toBe(true);
+    expect(hits('INSERT OR IGNORE INTO messages (id) VALUES (?)')).toBe(true);
+    expect(hits('INSERT OR REPLACE INTO messages (id) VALUES (?)')).toBe(true);
+    expect(hits('`${verb} INTO inter_agent_messages`')).toBe(true);
+    expect(hits('`INSERT OR IGNORE INTO ${table} (id)`')).toBe(true);
+    expect(hits('UPDATE messages SET swept_at = ?')).toBe(true);
+    expect(hits('`UPDATE ${engineEventTable(src)} SET conv_key = ?`')).toBe(true);
+    expect(hits('DELETE FROM messages WHERE agent_id = ?')).toBe(true);
+    expect(hits('DELETE FROM inter_agent_messages WHERE id = ?')).toBe(true);
+  });
+
+  it('does NOT catch the FTS shadow table, or other tables that merely start the same way', () => {
+    expect(hits('INSERT INTO messages_fts(rowid, content) VALUES (?, ?)')).toBe(false);
+    expect(hits('INSERT INTO summary_messages (summary_id) VALUES (?)')).toBe(false);
+    expect(hits('INSERT INTO agent_messages (from_agent) VALUES (?)')).toBe(false);
+    expect(hits('DELETE FROM messages_fts WHERE rowid = ?')).toBe(false);
+  });
+});
+
+describe('single writer for `messages`', () => {
+  it('no file outside the writer module writes the table unless it is on the burn-down list', () => {
+    const offenders = sourceFiles()
+      .filter(f => f !== WRITER_MODULE)
+      .filter(f => !WRITER_ALLOWLIST.includes(f))
+      .filter(f => WRITE_RE.test(read(f)));
+    expect(offenders, 'a NEW writer appeared outside memory/message-store.ts').toEqual([]);
+  });
+
+  it('the writer module actually writes the table (the rule is not vacuous)', () => {
+    expect(WRITE_RE.test(read(WRITER_MODULE))).toBe(true);
+  });
+
+  it('every allowlist entry still exists and still writes — no stale entries hiding progress', () => {
+    const stale = WRITER_ALLOWLIST.filter(f => {
+      const p = path.join(SRC, f);
+      return !fs.existsSync(p) || !WRITE_RE.test(fs.readFileSync(p, 'utf8'));
+    });
+    expect(stale, 'these are converted — delete them from WRITER_ALLOWLIST (T4 burn-down)').toEqual([]);
+  });
+
+  it('records the burn-down position so progress is visible, not asserted', () => {
+    // Not a threshold — a measurement. T4 drives it to 0; the number moving down IS the
+    // deliverable. A count with no command beside it is a rumour, so the command that
+    // produced the seed is written above WRITER_ALLOWLIST.
+    expect(WRITER_ALLOWLIST.length).toBeGreaterThanOrEqual(0);
+    expect(WRITER_ALLOWLIST.length).toBeLessThanOrEqual(43);
+  });
+});
+
+describe('ingest stamping has one owner (OR4)', () => {
+  it('no file outside the writer module computes `authorized` or `channel` off-list', () => {
+    const AUTH_RE = /\bauthorized\s*:\s*(?!\s*\/\/)/;
+    const CHAN_RE = /resolveOrCreateConversation\s*\(/;
+    const offenders = sourceFiles()
+      .filter(f => f !== WRITER_MODULE && f !== 'memory/conversations.ts')
+      .filter(f => !PRODUCER_ALLOWLIST.includes(f))
+      .filter(f => {
+        const src = read(f);
+        // Comment-only mentions do not make a file a producer.
+        const codeOnly = src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+        return AUTH_RE.test(codeOnly) || CHAN_RE.test(codeOnly);
+      });
+    expect(offenders, 'a NEW ingest producer appeared — stamp through the writer module').toEqual([]);
+  });
+
+  it('the producer allowlist is the 12-file union plus the funnel, and Sweep A empties it', () => {
+    expect(PRODUCER_ALLOWLIST).toContain('agent/v2/inbound-channel.ts');
+    expect(PRODUCER_ALLOWLIST).not.toContain('shared/src/origin.ts');
+    const stale = PRODUCER_ALLOWLIST.filter(f => !fs.existsSync(path.join(SRC, f)));
+    expect(stale).toEqual([]);
+  });
+});
+
+describe('the fail-closed reader is the only human-facing accessor', () => {
+  it('migration 127 declares chat_messages as lane-owner + not-retired', () => {
+    const mig = fs.readFileSync(
+      path.join(SRC, 'db', 'migrations', '127_unified_messages.sql'), 'utf8');
+    expect(mig).toMatch(/CREATE VIEW chat_messages AS[\s\S]{0,120}lane = 'owner'/);
+    expect(mig).toMatch(/retired_at IS NULL/);
+  });
+
+  it('every compat structure carries the task that deletes it (R2: scaffolding with a date)', () => {
+    const mig = fs.readFileSync(
+      path.join(SRC, 'db', 'migrations', '127_unified_messages.sql'), 'utf8');
+    for (const marker of ['origin_kind', 'source', 'conv_key']) {
+      const line = mig.split('\n').find(l =>
+        new RegExp(`^\\s{2}${marker}\\s`).test(l));
+      expect(line, `compat column ${marker} must declare its demolition owner`)
+        .toMatch(/T4-DELETES|PHASE2-DELETES/);
+    }
+    expect(mig).toMatch(/messages_compat_ai[\s\S]{0,80}/);
+    expect(mig).toMatch(/T4 DROPS this trigger/);
+  });
+});

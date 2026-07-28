@@ -128,6 +128,17 @@ describe('turn record (P4)', () => {
 });
 
 describe('conversations at ingest (P5)', () => {
+  // PHASE-1 T3 (2026-07-27): this array asserts the PRE-writer-module ingest shape and it is
+  // still exactly right — T3 created `memory/message-store.ts` and migration 127 but converted
+  // no producer, so all seven still stamp conversation_id in their own raw INSERT.
+  // T4 CONVERTS THESE SEVEN AND MUST UPDATE THIS TEST IN THE SAME COMMIT: once a producer
+  // calls insertMessage(), it no longer contains `INTO messages` and the regex below goes red
+  // for the right reason. The assertion that survives the conversion is the one that matters —
+  // that the producer resolves a conversation and hands it to the writer atomically — so the
+  // second expectation becomes `insertMessage\([\s\S]{0,300}conversationId`.
+  // The full 12-file producer union (this 7 plus twilio, deliveries, loop, interagent,
+  // scheduler) is pinned in memory/__tests__/single-writer-conformance.test.ts, whose
+  // allowlist is the burn-down artefact Sweep A drives to zero.
   it('every channel producer stamps conversation_id ATOMICALLY in its INSERT', () => {
     const producers = [
       'services/imessage-bridge.ts',
