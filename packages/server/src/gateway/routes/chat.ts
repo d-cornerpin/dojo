@@ -12,7 +12,7 @@ import { archiveAgentConversation } from '../../vault/archive.js';
 import { replaceContextItems } from '../../memory/dag.js';
 import { broadcast } from '../ws.js';
 import type { Message } from '@dojo/shared';
-import { deriveOrigin } from '@dojo/shared';
+import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 
 const logger = createLogger('chat-routes');
 
@@ -166,7 +166,7 @@ export async function submitUserMessage(
       cost: null,
       latencyMs: null,
       createdAt: createdAtRow?.created_at ?? new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, ''),
-      source: source ?? null,
+      source: source ?? null,   // the ?source= query param of THIS request, not a column read
     },
   });
 
@@ -260,121 +260,94 @@ chatRouter.get('/:agentId/messages', (c) => {
   // the user-facing chat feed.
   const STOP_MARKER_FILTER = "content NOT LIKE '[STOPPED BY USER]%'";
 
-  // D-A step 7 (history retire): legacy pre-cutover inter-agent rows in `messages`
-  // are stamped retired_at (migration 102) so they never surface on the chat
-  // feed. All NEW inter-agent traffic lives in inter_agent_messages, so this
-  // predicate + the store separation are what now keep A2A out of human chat
-  // (the dashboard's user-role 'a2a' visibility overlay was retired alongside).
-  // This was the wordy-mode-reload leak: the reload reads straight from here.
+  // `retired_at` is DISPLAY SUPPRESSION ONLY (research 07 §2g) and that is all it does
+  // here: migration 102 stamped legacy pre-cutover inter-agent rows so they never
+  // surface on the chat feed. It is NOT the lane filter — it was doing that job by
+  // accident while the lane separation was physical, and T6 gives the job back to the
+  // column that owns it. Both predicates survive because they answer different
+  // questions: `lane` is WHOSE traffic this is, `retired_at` is whether a row the owner
+  // once saw should still be rendered.
   const RETIRED_FILTER = 'retired_at IS NULL';
 
-  // PHASE-1 T4 (2026-07-27): LOAD-BEARING as of this commit. The paragraph above
-  // describes the protection that used to keep agent traffic off this route — a
-  // PHYSICAL table split, which is why no origin filter was needed here. T4 folded
-  // that traffic into `messages` on lane='a2a'/'events', so the split is a COLUMN now
-  // and this route leaks without it. (`chat_messages` IS this predicate + retired_at;
-  // pointing the route at the view is T6's, but the guard lands with the fold.)
+  // The fail-closed human surface. `chat_messages` IS exactly these two predicates
+  // (`WHERE lane = 'owner' AND retired_at IS NULL`), so the regular branches below could
+  // read the view instead — but wordy mode must ALSO serve the agent's own a2a output,
+  // which the view structurally cannot return, and having two branches read two
+  // different surfaces is how the live and reload views drifted apart in the first
+  // place. One surface, one pair of predicates, both branches.
   const OWNER_LANE_FILTER = "lane = 'owner'";
 
-  // REVERTED 2026-07-06 late night, owner correction: the serving contract is
-  // the SIMPLE one. `messages` is the conversation; the client renders visible
-  // rows in regular mode, everything in wordy mode, and infinite scroll pages
-  // straight back to day one on raw-row cursors. A server-side "visible walk"
-  // (briefly added tonight) broke that pagination contract. The blank-chat
-  // symptom it chased has a structural cause, agents' own coordination output
-  // being persisted into this table at all, and that is fixed at the STORE
-  // level (inter-agent turn output persists to inter_agent_messages), not by
-  // complicating this route.
+  // ⛔ REVERSAL, 2026-07-06 late night, owner correction — DO NOT RE-ATTEMPT (research 16).
+  // The serving contract is the SIMPLE one: `messages` is the conversation, the CLIENT
+  // renders visible rows in regular mode and everything in wordy mode, and infinite
+  // scroll pages straight back to day one on raw-row cursors. A server-side "visible
+  // walk" was briefly added and broke that pagination contract.
+  // T6 NOTE: this is why the display contract's `display_tier` does NOT become a WHERE
+  // clause here. T6's plan step reads "wordy mode becomes SELECT … WHERE with
+  // display_tier per 17"; filtering the SERVED set by tier server-side is the reverted
+  // mechanism wearing a new column's name. T8 owns the write-side classifier and Sweep E
+  // owns what the client does with it; this route's job is one query and one lane
+  // predicate, and that is all that changed.
   if (wordy) {
     // Wordy mode surfaces the agent's OWN inter-agent coordination output in chat.
-    // Constraint (own-output only): the store arm serves inter_agent_messages rows
-    // with role IN ('assistant','tool') and this agent_id, its own tool_use /
-    // tool_result history from inter-agent turns (D-A step 8). Inbound peer A2A
-    // (role='user') and engine rows never enter chat; the Threads lane owns them.
-    // That matches the live stream (wordy streams own output; inbound A2A no longer
-    // broadcasts on chat:message), so live and reload agree. The messages arm keeps
-    // today's predicates and dedups any id already in the store (live-edge backfill
-    // parity, mirrors mergedTailQuery). The regular branches below stay byte-
-    // identical; wordy is a separate query, not a rewrite of them.
+    // Inbound peer A2A (role='user') and engine rows never enter chat; the Threads lane
+    // owns them. That matches the live stream, so live and reload agree.
     //
-    // The store row NULL-pads the columns rowToMessage reads that the store lacks
-    // (token_count, model_id, cost, latency_ms, reasoning_content, inbound_meta),
-    // but projects 'a2a' AS source so a NEW own-output store row derives the SAME
-    // 'a2a' self origin (the pill) as a LEGACY own-output row (messages, source=
-    // 'a2a'). deriveOrigin keys the assistant/tool self-channel off source (see
-    // origin.ts); without this, new rows rendered as plain agent text while legacy
-    // siblings showed the a2a pill. Serving-only: the model-facing loaders are
-    // untouched (byte-identity law).
-    const unionSql = `
-      SELECT id, agent_id, role, content, token_count, model_id, cost, latency_ms,
-             created_at, reasoning_content, attachments, source, source_agent_id,
-             a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta,
-             origin_kind, origin_intent, rowid AS _rowid, 0 AS _tag
-      FROM messages
-      WHERE agent_id = @agentId AND ${STOP_MARKER_FILTER} AND ${RETIRED_FILTER}
-        AND (${OWNER_LANE_FILTER} OR (lane = 'a2a' AND role IN ('assistant','tool')))
-        AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
-      UNION ALL
-      SELECT id, agent_id, role, content, NULL AS token_count, NULL AS model_id, NULL AS cost, NULL AS latency_ms,
-             created_at, NULL AS reasoning_content, attachments, 'a2a' AS source, source_agent_id,
-             a2a_thread_id, a2a_intent, a2a_requires_response, NULL AS inbound_meta,
-             origin_kind, origin_intent, rowid AS _rowid, 1 AS _tag
-      FROM inter_agent_messages
-      WHERE agent_id = @agentId AND role IN ('assistant','tool')
-    `;
-
+    // T6: ONE query. This was a two-arm UNION over two physical tables with an
+    // anti-join dedup and a synthetic `'a2a' AS source` column whose only purpose was
+    // to make a store row derive the same self-origin pill as a legacy `messages` row.
+    // Both halves of that machinery are gone: the rows are in one table, `lane` carries
+    // the fact the synthesis was faking, and the sort key is the insertion key rather
+    // than a three-part cross-table collation.
+    // requirement preserved: wordy mode serves the owner conversation PLUS the agent's
+    // OWN inter-agent output (role IN ('assistant','tool')) and never inbound peer A2A
+    // or engine rows — the Threads lane owns those.
     const params: Record<string, unknown> = { agentId, limit: Math.min(limit, 200) };
     let cursorClause = '';
     if (before) {
-      // The cursor id can live in EITHER table now, so resolve it to the full
-      // merged sort key (created_at, _tag, _rowid): messages first, then the store;
-      // 400 on miss (same contract as regular mode). Paging then uses a TUPLE
-      // predicate over that key so a coordination burst's same-second siblings
-      // across the table boundary are not skipped (a bare created_at < ? would drop
-      // them, and many rows land in the same second).
-      const cursor = db.prepare(`
-        SELECT created_at, 0 AS _tag, rowid AS _rowid FROM messages WHERE id = @before AND agent_id = @agentId
-        UNION ALL
-        SELECT created_at, 1 AS _tag, rowid AS _rowid FROM inter_agent_messages WHERE id = @before AND agent_id = @agentId
-        LIMIT 1
-      `).get({ before, agentId }) as { created_at: string; _tag: number; _rowid: number } | undefined;
+      // The cursor resolves to the insertion key, which is strictly monotonic — so a
+      // coordination burst's same-second siblings can no longer be skipped by a page
+      // boundary landing inside one second (the reason the old key needed three parts).
+      const cursor = db.prepare(
+        'SELECT rowid AS _rowid FROM messages WHERE id = @before AND agent_id = @agentId',
+      ).get({ before, agentId }) as { _rowid: number } | undefined;
       if (!cursor) {
         return c.json({ ok: false, error: 'Invalid cursor message ID' }, 400);
       }
-      params.cCreated = cursor.created_at;
-      params.cTag = cursor._tag;
       params.cRowid = cursor._rowid;
-      cursorClause = `WHERE created_at < @cCreated
-          OR (created_at = @cCreated AND _tag < @cTag)
-          OR (created_at = @cCreated AND _tag = @cTag AND _rowid < @cRowid)`;
+      cursorClause = 'AND rowid < @cRowid';
     }
 
     rows = db.prepare(`
-      SELECT * FROM (${unionSql})
-      ${cursorClause}
-      ORDER BY created_at DESC, _tag DESC, _rowid DESC
+      SELECT *, rowid AS _rowid FROM messages
+      WHERE agent_id = @agentId AND ${STOP_MARKER_FILTER} AND ${RETIRED_FILTER}
+        AND (${OWNER_LANE_FILTER} OR (lane = 'a2a' AND role IN ('assistant','tool')))
+        ${cursorClause}
+      ORDER BY rowid DESC
       LIMIT @limit
     `).all(params) as Array<Record<string, unknown>>;
   } else if (before) {
-    // Get the timestamp of the cursor message
-    const cursorMsg = db.prepare('SELECT created_at FROM messages WHERE id = ?').get(before) as { created_at: string } | undefined;
+    // Same cursor shape as wordy mode: the strictly-monotonic insertion key, so both
+    // branches page identically. A `created_at <` cursor could skip a same-second
+    // sibling, and second-granular ties are the normal case in a burst.
+    const cursorMsg = db.prepare('SELECT rowid FROM messages WHERE id = ?').get(before) as { rowid: number } | undefined;
     if (!cursorMsg) {
       return c.json({ ok: false, error: 'Invalid cursor message ID' }, 400);
     }
 
     rows = db.prepare(`
       SELECT * FROM messages
-      WHERE agent_id = ? AND created_at < ? AND ${STOP_MARKER_FILTER} AND ${RETIRED_FILTER}
+      WHERE agent_id = ? AND rowid < ? AND ${STOP_MARKER_FILTER} AND ${RETIRED_FILTER}
         AND ${OWNER_LANE_FILTER}
-      ORDER BY created_at DESC, rowid DESC
+      ORDER BY rowid DESC
       LIMIT ?
-    `).all(agentId, cursorMsg.created_at, Math.min(limit, 200)) as Array<Record<string, unknown>>;
+    `).all(agentId, cursorMsg.rowid, Math.min(limit, 200)) as Array<Record<string, unknown>>;
   } else {
     rows = db.prepare(`
       SELECT * FROM messages
       WHERE agent_id = ? AND ${STOP_MARKER_FILTER} AND ${RETIRED_FILTER}
         AND ${OWNER_LANE_FILTER}
-      ORDER BY created_at DESC, rowid DESC
+      ORDER BY rowid DESC
       LIMIT ?
     `).all(agentId, Math.min(limit, 200)) as Array<Record<string, unknown>>;
   }
@@ -399,28 +372,25 @@ function rowToMessage(row: Record<string, unknown>): Message {
     createdAt: row.created_at as string,
     reasoningContent: (row.reasoning_content as string | null) ?? null,
     attachments: row.attachments ? JSON.parse(row.attachments as string) : undefined,
-    source: (row.source as 'voice' | null | undefined) ?? null,
+    source: row.lane === 'a2a' ? 'a2a' : row.channel === 'voice' ? 'voice' : null,
     // The conversation this turn served. Stamped on the agent's OWN
     // assistant/tool rows at turn end (migration 076 / loop C15) with the human
     // conversation key ('owner', 'imessage:…', 'email:…', …); a background /
     // engine turn (scheduler sync, watcher, tracker-driven surface) leaves it
     // null. The dashboard reads it to hide background-run tool CHIPS in regular
     // mode while keeping user-triggered chips (and all surfaced text) visible.
-    // Only the regular SELECT * path carries conv_key; the wordy union omits the
-    // column, which is fine because wordy mode renders every chip regardless.
     convKey: (row.conv_key as string | null | undefined) ?? null,
     // Canonical attribution for the dashboard's origin-based classifier
     // (mirrors the memory store + agents route projection).
     origin: deriveOrigin({
       role: row.role as Message['role'],
       content: (row.content as string | null) ?? null,
-      source: (row.source as string | null) ?? null,
+      ...legacyOriginInputs(row.lane as string | null, row.channel as string | null),
       sourceAgentId: (row.source_agent_id as string | null) ?? null,
       a2aThreadId: (row.a2a_thread_id as string | null) ?? null,
       a2aIntent: (row.a2a_intent as string | null) ?? null,
       a2aRequiresResponse: (row.a2a_requires_response as number | null) ?? null,
       inboundMeta: (row.inbound_meta as string | null) ?? null,
-      originKind: (row.origin_kind as string | null) ?? null,
       originIntent: (row.origin_intent as string | null) ?? null,
     }),
   };

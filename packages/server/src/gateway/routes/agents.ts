@@ -16,7 +16,7 @@ import { broadcast } from '../ws.js';
 import { isPrimaryAgent, getPrimaryAgentId, getHealerAgentId, getDreamerAgentId, getImaginerAgentId } from '../../config/platform.js';
 import { sanitizeMessagesOnModelChange } from '../../agent/model-switch.js';
 import type { AgentDetail, Model, Message, AgentMessage } from '@dojo/shared';
-import { deriveOrigin } from '@dojo/shared';
+import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 
 const logger = createLogger('agents-routes');
 const agentsRouter = new Hono();
@@ -573,16 +573,13 @@ agentsRouter.get('/:id/messages', (c) => {
   const limit = parseInt(c.req.query('limit') ?? '100', 10);
   const offset = parseInt(c.req.query('offset') ?? '0', 10);
 
-  // D-A step 7 (history retire): exclude legacy pre-cutover inter-agent rows
-  // (stamped retired_at by migration 102) from this dashboard projection, exactly
-  // as the chat history route does. New inter-agent traffic lives in the
-  // inter_agent_messages store, so this origin-projected feed only ever carries
-  // human chat + the agent's own turns now.
-  // PHASE-1 T4 (2026-07-27): `lane = 'owner'` is the fail-closed replacement for the
-  // physical separation this comment describes. T4 folded peer A2A and engine rows into
-  // the unified table, so "new inter-agent traffic lives in the store" stopped being
-  // true in the same commit that added this predicate — the sentence above is history
-  // now, and the column is what keeps this dashboard projection human-only.
+  // Two predicates, two different questions (T6). `lane = 'owner'` is WHOSE traffic
+  // this is — the fail-closed replacement for the physical table split, which is what
+  // keeps this dashboard projection human-only now that peer A2A and engine rows live
+  // in the same table. `retired_at IS NULL` is DISPLAY SUPPRESSION ONLY (research
+  // 07 §2g): migration 102 stamped the legacy pre-cutover inter-agent rows so they
+  // never surface again. It was covering for the lane while the split was physical;
+  // it is not doing that job any more.
   const rows = db.prepare(`
     SELECT * FROM messages WHERE agent_id = ? AND retired_at IS NULL AND lane = 'owner'
     ORDER BY created_at ASC
@@ -599,22 +596,22 @@ agentsRouter.get('/:id/messages', (c) => {
     cost: row.cost as number | null,
     latencyMs: row.latency_ms as number | null,
     createdAt: row.created_at as string,
-    // Carry source through so the dashboard can hide A2A-turn output (source='a2a')
-    // and badge voice messages on reload, not just on the live broadcast path.
-    source: (row.source as 'voice' | 'a2a' | null | undefined) ?? null,
+    // Carried so the dashboard can hide A2A-turn output and badge voice messages on
+    // reload, not just on the live broadcast path. PROJECTED from the stamped lane and
+    // channel — Sweep E re-points the dashboard onto those and deletes this field.
+    source: row.lane === 'a2a' ? 'a2a' : row.channel === 'voice' ? 'voice' : null,
     // Canonical attribution for the dashboard's origin-based classifier. Same
     // projection the memory store applies; structured columns win, legacy rows
     // resolve via the marker shim inside deriveOrigin.
     origin: deriveOrigin({
       role: row.role as Message['role'],
       content: (row.content as string | null) ?? null,
-      source: (row.source as string | null) ?? null,
+      ...legacyOriginInputs(row.lane as string | null, row.channel as string | null),
       sourceAgentId: (row.source_agent_id as string | null) ?? null,
       a2aThreadId: (row.a2a_thread_id as string | null) ?? null,
       a2aIntent: (row.a2a_intent as string | null) ?? null,
       a2aRequiresResponse: (row.a2a_requires_response as number | null) ?? null,
       inboundMeta: (row.inbound_meta as string | null) ?? null,
-      originKind: (row.origin_kind as string | null) ?? null,
       originIntent: (row.origin_intent as string | null) ?? null,
     }),
   }));
