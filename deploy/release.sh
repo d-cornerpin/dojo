@@ -234,8 +234,8 @@ echo "  ✓ server, shared, dashboard typecheck clean"
 # THE PHASE-0 GATE STACK (wired here by PHASE-0 T13 Step 2)
 #
 # `npm run gates` is two named tiers and a release runs BOTH:
-#   gates:block  (8) — each one refuses the release, in this exact order.
-#   gates:report (5) — instruments that never stop a build; their output is
+#   gates:block (10) — each one refuses the release, in this exact order.
+#   gates:report (4) — instruments that never stop a build; their output is
 #                      CAPTURED into the release record instead of discarded,
 #                      because "reported and nobody read it" is how a phase
 #                      ends up net-positive with no accounting.
@@ -246,7 +246,7 @@ echo "  ✓ server, shared, dashboard typecheck clean"
 # tree dirty. Cheap and static (except lint, tens of seconds); none is skippable
 # and --skip-behavioral-gate does not skip any of them.
 #
-# ONE ORDERING DEVIATION, deliberate: the 8th blocking gate,
+# ONE ORDERING DEVIATION, deliberate: the 10th blocking gate,
 # check-upgrade-bypass, needs a LIVE server. It runs further down against the
 # packaged artifact this script smoke-boots — the actual thing being shipped,
 # rather than the working tree — with --require-live so a missing server fails
@@ -266,7 +266,7 @@ RELEASE_RECORD="$(mktemp)"
   echo ""
 } > "$RELEASE_RECORD"
 
-# ── Blocking gate 1/8: byte hygiene (Phase 0 T1) ──
+# ── Blocking gate 1/10: byte hygiene (Phase 0 T1) ──
 # NUL and C0 control bytes make a file BINARY to plain grep, which then reports
 # no match and looks clean — that is how the dev-instrument ship gate spent
 # months blind to the two largest files in this tree. Bidi/zero-width characters
@@ -276,7 +276,7 @@ step "Byte-hygiene gate (no bytes that blind grep or deceive review)"
 node "$SCRIPT_DIR/checks/check-bytes.mjs" \
   || fail "Byte-hygiene gate: tracked source carries NUL/control/bidi/zero-width bytes. NOT publishing."
 
-# ── Blocking gate 2/8: size ratchets (Phase 0 T2) ──
+# ── Blocking gate 2/10: size ratchets (Phase 0 T2) ──
 # The overhaul exists to shrink this codebase, and nothing shrinks by itself: the
 # god files got that way one "just five more lines" at a time, over two years, with
 # no gate that could see it. ratchets.json pins every large source file at its
@@ -287,7 +287,7 @@ step "Size-ratchet gate (files may only shrink; new files may not balloon)"
 node "$SCRIPT_DIR/checks/check-ratchets.mjs" \
   || fail "Size-ratchet gate: a pinned file grew past its ratchet, a pinned file vanished without its manifest entry, or an unlisted new file exceeded the cap. NOT publishing."
 
-# ── Blocking gate 3/8: growth detector (Phase 0 T12d) ──
+# ── Blocking gate 3/10: growth detector (Phase 0 T12d) ──
 # The ratchet governs files it already knows about. This is the other half: a
 # file more than 25% above its recorded baseline, or a NEW unlisted file that
 # crosses 60% of the new-file cap, fails — so a god file is argued about while
@@ -296,7 +296,7 @@ step "Growth-detector gate (no file balloons past its recorded baseline)"
 node "$SCRIPT_DIR/checks/check-growth.mjs" \
   || fail "Growth-detector gate: a file grew >25% above its baseline, or an unlisted file crossed 60% of the new-file cap. NOT publishing."
 
-# ── Blocking gate 4/8: lint baseline (Phase 0 T3) ──
+# ── Blocking gate 4/10: lint baseline (Phase 0 T3) ──
 # The eslint rules are all `warn` because the tree has hundreds of pre-existing
 # findings and error-mode would be unshippable — so lint-baseline.json is the
 # enforcement instead: every count is pinned PER RULE and may only fall. Reads
@@ -307,7 +307,7 @@ step "Lint-baseline gate (per-rule finding counts are decrease-only)"
 node "$SCRIPT_DIR/checks/check-lint-baseline.mjs" \
   || fail "Lint-baseline gate: an eslint rule or unused-symbol diagnostic rose above its pinned count in lint-baseline.json. NOT publishing."
 
-# ── Blocking gate 5/8: orphan structures (Phase 0 T4) ──
+# ── Blocking gate 5/10: orphan structures (Phase 0 T4) ──
 # Two rules, one checker. The spine READER rule (a declared spine column/type with
 # no production reader) was log-only through Phases 0 and 1 and BLOCKS from the
 # PHASE-1 exit (2026-07-28, T13). The flip changed the checker's DEFAULT rather
@@ -324,7 +324,21 @@ step "Orphan-structure gate (no undeclared work-shaped table; every spine struct
 node "$SCRIPT_DIR/checks/check-orphans.mjs" \
   || fail "Orphan-structure gate: an undeclared work-shaped table, a manifest entry that stopped describing the schema, or a spine structure with no production reader and no dated disposition. NOT publishing."
 
-# ── Blocking gate 6/8: watchdog/platform contract (Phase 0 T5) ──
+# ── Blocking gate 6/10: module wiring walk (Phase 0 T12d Step 2) ──
+# The orphan gate works a column at a time and cannot see a WHOLE MODULE that no
+# longer hangs off any entry point. This walk does: it starts at the four real
+# entry points and reports the production files it never reaches. Warn-only for
+# one phase, BLOCKING from the PHASE-1 exit (2026-07-28, T13) against a dated
+# allowlist — five ghosts, every one older than Phase 1 and already booked to a
+# sweep in writing. It refuses a NEW unreached file, a stale allowlist entry, a
+# missing entry point, and an unresolved relative import (a hole in the walk means
+# the lists cannot be trusted). It never asks anyone to delete anything: the fix is
+# to wire the file or write down why it survives. Reads SOURCE only.
+step "Module wiring walk (no unreached production file without a dated allowlist line)"
+node "$SCRIPT_DIR/checks/check-wiring.mjs" \
+  || fail "Wiring walk: a production file no entry point reaches with no allowlist entry, a stale allowlist entry, a missing entry point, or an unresolved relative import. NOT publishing."
+
+# ── Blocking gate 7/10: watchdog/platform contract (Phase 0 T5) ──
 # The watchdog must keep working while the platform will not boot, so it cannot
 # import platform code — which means the update-state contract (boot-attempt
 # limit, wall clock, rollback cap, phase names, marker shape) is HAND-COPIED into
@@ -338,7 +352,20 @@ step "Watchdog/platform contract gate (hand-synced copies must not drift)"
 node "$SCRIPT_DIR/checks/check-watchdog-contract.mjs" \
   || fail "Watchdog contract gate: the hand-synced update-state copies disagree, a new undeclared copy appeared, or watchdog/src imported platform code. NOT publishing."
 
-# ── Blocking gate 7/8: waiver budget (Phase 0 T12d) ──
+# ── Blocking gate 8/10: watchdog SQL prepares (PHASE-1 T11) ──
+# ADDED AT THE PHASE-1 EXIT AND THE GAP IS THE POINT: T11 built this check and
+# wired it into `npm run gates:block`, but not into this stack — so the one path
+# that publishes to a user's box was the one path that did not run it. Found by
+# T13 counting the tiers (package.json had 9 blocking checks, this file described
+# 8). Every statement in `watchdog/src` is prepared against the schema the
+# migration chain produces; T10 found both halves of watchdog supervision silently
+# dead for a day because `watchdog/` sits outside every `packages/` scan. Repo
+# contained: the live ~/.dojo database is never consulted.
+step "Watchdog SQL gate (every watchdog statement prepares against the migrated schema)"
+node "$SCRIPT_DIR/checks/check-watchdog-sql.mjs" \
+  || fail "Watchdog SQL gate: a statement in watchdog/src does not prepare against the schema the migration chain produces. NOT publishing."
+
+# ── Blocking gate 9/10: waiver budget (Phase 0 T12d) ──
 # The pre-committed consequence for "gates get waived": every waiver is a counted
 # commit trailer, and more than ~5 across an arc means the RULE is wrong. Over
 # budget the finding is a mis-scoped gate to re-aim, never a habit to hide.
@@ -347,20 +374,20 @@ node "$SCRIPT_DIR/checks/check-waivers.mjs" \
   || fail "Waiver-budget gate: more waivers across this arc than the budget allows. The gate being waived is the thing to fix. NOT publishing."
 
 # ── The report tier (5): never blocks, always recorded ──
-# These measure rather than refuse — mixed timestamp formats, modules nothing
-# reaches, a stale resume pointer, capability the tree lost, and the phase's real
+# These measure rather than refuse — mixed timestamp formats, a stale resume
+# pointer, capability the tree lost, and the phase's real
 # added/deleted/net line counts. Non-negotiable #7: no phase passes or fails on a
 # line count, but a net-positive phase owes an accounting, and the accounting
 # starts with the numbers being IN the release record instead of on a terminal
 # nobody kept. `|| true` on each: a report tier that can fail a release is a
 # blocking tier wearing the wrong name.
-step "Report tier (5 instruments — recorded into the release record, never blocking)"
+step "Report tier (4 instruments — recorded into the release record, never blocking)"
 {
   echo "## Report tier (never blocking — measured, recorded, judged by the exit review)"
   echo ""
   echo '```'
 } >> "$RELEASE_RECORD"
-for reporter in check-iso-writes check-wiring check-status-fresh check-capability-ledger check-deletion-ratio; do
+for reporter in check-iso-writes check-status-fresh check-capability-ledger check-deletion-ratio; do
   {
     echo "── $reporter ──"
     node "$SCRIPT_DIR/checks/$reporter.mjs" 2>&1 || echo "(exit $? — report tier, not blocking)"
@@ -370,7 +397,7 @@ for reporter in check-iso-writes check-wiring check-status-fresh check-capabilit
 done
 echo '```' >> "$RELEASE_RECORD"
 echo "" >> "$RELEASE_RECORD"
-echo "  ✓ 5 report-tier instruments captured into the release record"
+echo "  ✓ 4 report-tier instruments captured into the release record"
 
 # ── Bump version ──
 step "Bumping root package.json → $VERSION"
@@ -445,7 +472,7 @@ fi
 }
 echo "  ✓ packaged build boots and answers on :$SMOKE_PORT — import graph resolves, migrations run, listener up"
 
-# ── Blocking gate 8/8: upgrade-header auth bypass (Phase 0 T9 Step 0) ──
+# ── Blocking gate 10/10: upgrade-header auth bypass (Phase 0 T9 Step 0) ──
 # Until 2026-07-26 the auth middleware returned next() for ANY request whose
 # `Upgrade` header said `websocket`, before reading a token, across the whole
 # /api/* mount — an unauthenticated GET /api/agents came back 200. The exemption
