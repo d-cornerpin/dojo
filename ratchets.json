@@ -62,6 +62,7 @@
     "packages/server/src/index.ts": 1254,
     "packages/server/src/memory/assembler.ts": 2546,
     "packages/server/src/memory/compaction.ts": 1269,
+    "packages/server/src/memory/message-store.ts": 268,
     "packages/server/src/memory/open-loops.ts": 619,
     "packages/server/src/memory/recall.ts": 506,
     "packages/server/src/memory/retrieval.ts": 595,
