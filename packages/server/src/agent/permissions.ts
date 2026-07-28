@@ -6,6 +6,7 @@ import { createLogger } from '../logger.js';
 import { isPrimaryAgent, isTrainerAgent } from '../config/platform.js';
 import { PROTECTED_IDENTITY_PATHS } from './sensei-policy.js';
 import { foldPath } from './path-guards.js';
+import { execInnerCommands } from './exec-grammar.js';
 import type { PermissionManifest } from '@dojo/shared';
 
 const logger = createLogger('permissions');
@@ -464,7 +465,32 @@ function checkFileAccess(manifest: PermissionManifest, filePath: string, accessT
   return { allowed: false, reason: `${accessType} not configured for this agent` };
 }
 
+// EXEC-LOOP (owner ruling 2026-07-28: "why wouldn't we allow an agent to do
+// commands if they have shell access?"). exec runs through /bin/zsh, so
+// `for i in $(seq -w 1 20); do echo $i; done` was always executable; only this
+// classifier disagreed, refusing the shell's own grammar as if `for` were a
+// program. execInnerCommands names the commands a control-flow line actually
+// runs — null when the line uses no construct, so a plain command line is
+// classified exactly as before — and each one goes through checkExecCommand,
+// the unchanged per-command check, so the refusal names the INNER command.
+// Grammar widens; authority does not. A construct with nothing nameable inside
+// it (grammar + a substitution) falls back to the whole line, i.e. the
+// pre-ruling refusal, so an agent with no shell access is still denied.
 function checkExecPermission(manifest: PermissionManifest, command: string): PermissionResult {
+  // The WHOLE line still meets the global deny list first: a construct's header
+  // is not one of the commands below, and secrets.yaml must not become
+  // reachable by hiding it in one.
+  const wholeLine = checkGlobalDenyExec(command);
+  if (!wholeLine.allowed) return wholeLine;
+  const inner = execInnerCommands(command);
+  for (const part of inner && inner.length > 0 ? inner : [command]) {
+    const result = checkExecCommand(manifest, part);
+    if (!result.allowed) return result;
+  }
+  return { allowed: true };
+}
+
+function checkExecCommand(manifest: PermissionManifest, command: string): PermissionResult {
   // Global deny always checked first
   const globalCheck = checkGlobalDenyExec(command);
   if (!globalCheck.allowed) return globalCheck;
