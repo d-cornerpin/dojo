@@ -277,6 +277,8 @@ vi.mock('../../../logger.js', () => ({
 import { runV2Turn } from '../loop.js';
 import { stoppedAgents, recoveryRunStreak, pendingWakeups } from '../../shared-state.js';
 import { runMigrations } from '../../../db/migrations.js';
+import { insertMessage } from '../../../memory/message-store.js';
+import { claimAsk, askIdForMessage } from '../../../work/store.js';
 
 // ── Test helpers ──
 
@@ -307,11 +309,16 @@ function setupTestDb(): Database.Database {
     INSERT INTO agents (id, name, model_id, status, config, classification)
     VALUES ('primary', 'Primary', 'test-model', 'idle', '{}', 'sensei')
   `).run();
-  // Seed a user message so assembleContext has something to work with
-  db.prepare(`
-    INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
-    VALUES ('msg-user-1', 'primary', 'user', 'hello primary', 1, (CAST(strftime('%s','now') AS INTEGER) * 1000))
-  `).run();
+  // Seed a user message so assembleContext has something to work with.
+  //
+  // PHASE-2 T3: through the REAL WRITER, not raw SQL. A person's message and the ask it
+  // opens are one transaction now, so a hand-rolled INSERT produces a message with no
+  // ticket — which is not a shape production can ever be in, and it would have made every
+  // "a human is waiting" assertion in this file vacuously false. Same reason this fixture
+  // stopped hand-rolling CREATE TABLE: a fixture that drifts from the writer tests nothing.
+  insertMessage({
+    id: 'msg-user-1', agentId: 'primary', role: 'user', content: 'hello primary', turnNumber: 1,
+  });
 
   return db;
 }
@@ -853,9 +860,11 @@ describe('runV2Turn integration', () => {
     // mid-stall regeneration). Claim the seeded user message so nothing is
     // waiting, then have the model regenerate text identical to the most
     // recent assistant message: break the loop without persisting the dup.
-    mockDb.current!
-      .prepare("UPDATE messages SET conv_key = 'test-claimed' WHERE id = 'msg-user-1'")
-      .run();
+    // PHASE-2 T3: "claimed" is a state on the ask, so the fixture claims the ask. Stamping
+    // conv_key here no longer removes anything from the waiting set, and a fixture that
+    // kept doing it would have quietly turned this into a WAITING-human turn — testing the
+    // opposite of what it says.
+    expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
     mockDb.current!
       .prepare(
         `INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)

@@ -358,3 +358,233 @@ export function revertCount(workId: string): number {
   ).get(workId) as { c: number };
   return r.c;
 }
+
+// ════════════════════════════════════════════════════════════════════════════════
+// PHASE-2 T3 — THE ASK: every ask is a ticket, and a claim is a STATE.
+//
+// What this section replaces, named so the removal can be checked rather than trusted:
+// `messages.conv_key` was ONE column doing TWO unrelated jobs — the conversation's
+// IDENTITY and the turn's CLAIM (`NULL` = nobody has picked this up). `conv_key IS NULL`
+// WAS the work queue for an owner's ask. It is now `work.state = 'open'`, and conv_key
+// keeps only the job it was named for (07 §3g/3l: state and identity are separate fields).
+//
+// requirement preserved, in one line each:
+//   * a person's message is an obligation the moment it arrives  -> the ask is INSERTed in
+//     the same transaction as the message, so there is no instant where one exists alone;
+//   * exactly one turn may serve an ask, across processes        -> `transition()`'s
+//     `expectedState` CAS; the loser gets `conflict`, which is the D-2 bail;
+//   * a transient failure must not strand a person in silence    -> a claim reverts on an
+//     abort that produced nothing;
+//   * a turn that already acted must never run twice (P6b)       -> the revert is refused
+//     when the turn recorded effectful calls, and the refusal is a row, not a silence.
+// ════════════════════════════════════════════════════════════════════════════════
+
+/** An ask's id is derived from the message that caused it, so "did this message already
+ *  open a ticket?" is answerable without a second index, and a producer retrying an insert
+ *  cannot mint a second obligation for one message. */
+export function askIdForMessage(messageId: string): string {
+  return `ask:${messageId}`;
+}
+
+export interface OpenAskInput {
+  agentId: string;
+  /** The inbound row this obligation is FOR. Becomes `root_id` — origin is required. */
+  messageId: string;
+  conversationId: string | null;
+  requesterId: string | null;
+  /** The MESSAGE's own timestamp, not the clock at some later step: every age cliff in the
+   *  platform reads `opened_at`, and an obligation is as old as the ask that created it. */
+  openedAt: number;
+  title: string | null;
+}
+
+/**
+ * Open the ticket for an inbound ask. Called from inside the message writer's transaction —
+ * it deliberately does NOT open one of its own, so the caller owns atomicity and this
+ * function cannot silently commit half a pair.
+ *
+ * Throws on a duplicate. That is the point: two tickets for one message would be two
+ * obligations for one question, and swallowing the collision is how the platform grew five
+ * partial trackers.
+ */
+export function openAsk(p: OpenAskInput): string {
+  const db = getDb();
+  const id = askIdForMessage(p.messageId);
+  // `conversation_id` carries a real FK. A producer handing us an id with no conversation
+  // row would otherwise take the OWNER'S MESSAGE down with it on the FK violation, so a
+  // dangling id is recorded as absent identity and logged — never allowed to drop the ask.
+  let conversationId = p.conversationId;
+  if (conversationId != null
+      && !db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(conversationId)) {
+    logger.warn('ask opened without conversation identity: the id resolves to no conversation row', {
+      agentId: p.agentId, messageId: p.messageId, conversationId,
+    }, p.agentId);
+    conversationId = null;
+  }
+  db.prepare(`
+    INSERT INTO work (
+      id, kind, agent_id, requester, requester_id, conversation_id,
+      root_kind, root_id, state, intent, wakes, closes_thread,
+      title, opened_at, updated_at, provenance
+    ) VALUES (?, 'ask', ?, 'owner', ?, ?, 'ask', ?, 'open', 'ask', 1, 0, ?, ?, ?, 'live')
+  `).run(id, p.agentId, p.requesterId, conversationId, p.messageId, p.title, p.openedAt, p.openedAt);
+  appendEvent(id, 'opened', p.requesterId ?? 'owner', {
+    message_id: p.messageId, conversation_id: conversationId,
+  });
+  return id;
+}
+
+/**
+ * Pickup. The compare-and-swap that used to be a conditional conv_key stamp on the inbound
+ * row, read back through `.changes`.
+ *
+ * `by: 'agent'` is the honest actor: it is this agent's own turn taking its own ask. The
+ * engine actor would need evidence it cannot have yet — the turn has not happened.
+ */
+export function claimAsk(workId: string, agentId: string): TransitionResult {
+  return transition(workId, {
+    to: 'claimed', by: 'agent', actorId: agentId, expectedState: 'open',
+    reason: 'turn pickup',
+  });
+}
+
+/**
+ * Record WHICH turn holds the claim, once the turn has been allocated its number.
+ *
+ * Deliberately not part of `claimAsk`: the claim must happen BEFORE the turn record exists,
+ * because the D-2 race has to be settled before any work is done, and the turn number is
+ * allocated from the turn's own subject — which the claim is what decides. This writes the
+ * forward link only; `state` still has exactly one writer, `transition()`. It is the direct
+ * counterpart of `markServedByRowid` on the message row.
+ *
+ * `claimed_by_turn IS NULL` in the WHERE means a later turn can never quietly re-label
+ * somebody else's claim.
+ */
+export function stampClaimingTurn(workId: string, turnNumber: number): number {
+  const changed = getDb().prepare(
+    `UPDATE work SET claimed_by_turn = ?, updated_at = ?
+      WHERE id = ? AND state = 'claimed' AND claimed_by_turn IS NULL`,
+  ).run(turnNumber, now(), workId).changes;
+  if (changed === 1) appendEvent(workId, 'claim_turn', 'engine', { turn_number: turnNumber });
+  return changed;
+}
+
+/**
+ * P6b, the whole rule in one function.
+ *
+ * A turn that ended with no answer and NO effectful call may hand its ask back: the person
+ * is still waiting and nothing has happened on their behalf, so re-serving costs a retry. A
+ * turn that already sent an email, created a task or wrote a file may NOT, because
+ * re-serving it would do that a second time — "a duplicate send is worse than a stranded
+ * ask" is the recorded direction of error, and it is preserved exactly.
+ *
+ * Returns the transition when the claim was handed back, or `null` when it was deliberately
+ * held. The refusal is written as an event, so a held ask is a fact somebody can find,
+ * rather than the absence of a log line.
+ */
+export function revertAskClaimOnAbort(
+  workId: string, effectfulCalls: number, reason: string,
+): TransitionResult | null {
+  if (effectfulCalls > 0) {
+    appendEvent(workId, 'rearm_refused', 'engine', { effectful_calls: effectfulCalls, reason });
+    logger.info('ask claim held: the turn performed effectful calls, so it must not re-fire (P6b)', {
+      workId, effectfulCalls, reason,
+    });
+    return null;
+  }
+  const r = transition(workId, {
+    to: 'open', by: 'agent', actorId: 'engine', expectedState: 'claimed', reason,
+  });
+  return r;
+}
+
+/** Tools whose delivery is NOT an answer to the ask that is open. `engine-ack` is the
+ *  engine saying "on it" at the START of the work (OR2-PROVISIONAL, PHASE-4 T4 removes the
+ *  lane entirely); closing an ask on it would mark a question answered before anybody
+ *  looked at it. */
+const NON_ANSWERING_DELIVERY_TOOLS = new Set(['engine-ack']);
+
+export interface DeliveryCloseInput {
+  agentId: string;
+  turnNumber: number | null;
+  deliveryId: string;
+  conversationId: string | null;
+  tool: string;
+  outcome: string;
+}
+
+/**
+ * A quick ask is done when something was DELIVERED for it — never because a model said so.
+ *
+ * Three narrowings, each of which is a negative control in the test file: the delivery must
+ * have succeeded, it must belong to the turn that holds the claim, and it must have gone to
+ * the ask's OWN conversation (an email to a third party sent while working on the owner's
+ * question is not its answer).
+ *
+ * PHASE-2 T5 makes deliveries universal; until it lands, the paths that record nothing
+ * (dashboard bubbles above all) leave their ask `claimed` rather than `done`. That is
+ * visible and inert — a claimed ask is out of the waiting set, so nobody is re-answered —
+ * and it is stated here rather than in a plan file.
+ */
+export function closeAsksForDelivery(p: DeliveryCloseInput): number {
+  if (p.outcome !== 'delivered') return 0;
+  if (p.turnNumber == null || p.conversationId == null) return 0;
+  if (NON_ANSWERING_DELIVERY_TOOLS.has(p.tool)) return 0;
+  const rows = getDb().prepare(
+    `SELECT id FROM work
+      WHERE agent_id = ? AND kind = 'ask' AND state = 'claimed'
+        AND claimed_by_turn = ? AND conversation_id = ?`,
+  ).all(p.agentId, p.turnNumber, p.conversationId) as Array<{ id: string }>;
+  let closed = 0;
+  for (const r of rows) {
+    const res = transition(r.id, {
+      to: 'done', by: 'agent', actorId: p.agentId, resultDeliveryId: p.deliveryId,
+      expectedState: 'claimed', reason: `delivered via ${p.tool}`,
+    });
+    if (res.kind === 'applied') closed++;
+  }
+  return closed;
+}
+
+/** How far back a boot reconciliation will reach. Carried verbatim from the pickup-stamp
+ *  reconciliation it replaces (`index.ts` 4b1): a claim stranded by a genuine crash is
+ *  seconds-to-minutes old, and anything older is history a restart must not re-answer. */
+export const ORPHAN_CLAIM_WINDOW_MINUTES = 30;
+
+/**
+ * Crash test B, the durable half: a process killed between the CLAIM and the EFFECT.
+ *
+ * The claim is in the database and the turn is not, so on restart the ask reads as being
+ * served by a turn that will never finish. Two outcomes and no third:
+ *   * the dead turn recorded ZERO effectful calls -> hand the ask back, the person is
+ *     served again (no orphan claims);
+ *   * it recorded some            -> HOLD it, because the effect already happened and a
+ *     second turn would repeat it (no duplicate effects).
+ *
+ * `turns.effectful_calls` is what makes this decidable after the process is gone, which is
+ * why T3 writes it as the effects happen instead of only at turn end.
+ */
+export function reconcileOrphanedClaims(): { reArmed: number; held: number } {
+  const db = getDb();
+  const since = now() - ORPHAN_CLAIM_WINDOW_MINUTES * 60 * 1000;
+  const rows = db.prepare(`
+    SELECT w.id AS id, COALESCE(t.effectful_calls, 0) AS effectful_calls
+      FROM work w
+      LEFT JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = w.claimed_by_turn
+     WHERE w.kind = 'ask' AND w.state = 'claimed' AND w.updated_at >= ?
+       AND (t.turn_number IS NULL OR t.ended_at IS NULL)
+  `).all(since) as Array<{ id: string; effectful_calls: number }>;
+  let reArmed = 0; let held = 0;
+  for (const r of rows) {
+    const res = revertAskClaimOnAbort(
+      r.id, r.effectful_calls,
+      'boot reconciliation: the claiming turn never finished (process killed between claim and effect)',
+    );
+    if (res === null) held++;
+    else if (res.kind === 'applied') reArmed++;
+  }
+  if (reArmed > 0 || held > 0) {
+    logger.warn('boot reconciliation of orphaned ask claims', { reArmed, held });
+  }
+  return { reArmed, held };
+}

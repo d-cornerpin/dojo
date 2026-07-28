@@ -54,6 +54,15 @@ beforeEach(() => {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     ,
       conversation_id TEXT);
+    -- PHASE-2 T3: "is any inbound still unserved?" is a work-spine question now, not a
+    -- conv_key scan. Only the columns the guard reads are modelled here.
+    CREATE TABLE work (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      state TEXT NOT NULL,
+      opened_at INTEGER NOT NULL
+    );
     CREATE TABLE open_loops (
       id TEXT PRIMARY KEY,
       agent_id TEXT NOT NULL,
@@ -81,6 +90,13 @@ function seedUser(convKey: string | null): void {
   mockDb.current!.prepare(
     `INSERT INTO messages (id, agent_id, role, content, conv_key) VALUES (?, ?, 'user', 'x', ?)`,
   ).run(`u-${Math.random().toString(36).slice(2)}`, AGENT, convKey);
+}
+
+/** An inbound nobody has picked up. T3: that is an OPEN ASK, not a NULL conv_key. */
+function seedUnservedAsk(): void {
+  mockDb.current!.prepare(
+    `INSERT INTO work (id, agent_id, kind, state, opened_at) VALUES (?, ?, 'ask', 'open', ?)`,
+  ).run(`ask:${Math.random().toString(36).slice(2)}`, AGENT, Date.now());
 }
 
 const selfOrigin: MessageOrigin = {
@@ -195,7 +211,7 @@ describe('store-contradiction guard', () => {
   });
 
   it('rejects a missing-inbound loop when every recent inbound was served', () => {
-    seedUser('imessage:sam'); // served (conv_key set); NO unserved rows exist
+    seedUser('imessage:sam'); // served (its ask was claimed); NO open ask exists
     const id = insertOpenLoop({
       agentId: AGENT, convKey: 'imessage:sam',
       description: "Sam texted something I never read; it got eaten by compaction",
@@ -207,7 +223,7 @@ describe('store-contradiction guard', () => {
 
   it('allows a missing-inbound loop when an unserved inbound exists', () => {
     seedUser('imessage:sam'); // served
-    seedUser(null);             // genuinely unserved inbound present
+    seedUnservedAsk();          // genuinely unserved inbound present
     const id = insertOpenLoop({
       agentId: AGENT, convKey: 'imessage:sam',
       description: "Sam texted something I never read; it got eaten by compaction",

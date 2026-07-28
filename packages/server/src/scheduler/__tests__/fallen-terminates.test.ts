@@ -125,8 +125,14 @@ function applySchema(db: Database.Database): void {
     -- test reads undefined. Widening the fixture is the honest fix: the alternative was
     -- to leave one production site unconverted so a test fixture could stay small.
     CREATE TABLE messages (
-      seq INTEGER,
-      id TEXT PRIMARY KEY,
+      -- PHASE-2 T3: this fixture declared seq as a plain INTEGER with id as the primary
+      -- key, which has not matched the real table since migration 133 promoted seq to the
+      -- INTEGER PRIMARY KEY. seq was therefore NULL on every inserted row here, so the
+      -- writer's own read-back by seq found nothing and threw AFTER the row was already
+      -- committed - invisible, because the caller's try/catch swallowed it. Making the
+      -- insert atomic turned that swallowed throw into a rolled-back row, which surfaced it.
+      seq INTEGER PRIMARY KEY,
+      id TEXT NOT NULL UNIQUE,
       agent_id TEXT NOT NULL,
       conversation_id TEXT,
       lane TEXT NOT NULL DEFAULT 'owner' CHECK (lane IN ('owner','a2a','events')),

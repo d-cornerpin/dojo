@@ -108,20 +108,24 @@ export function assertsMissingInbound(description: string): boolean {
 }
 
 /**
- * True when at least one inbound (role='user') row is UNSERVED (conv_key IS NULL)
- * within the window. The pickup claim stamps conv_key on the trigger row, so a
- * genuinely unread message never became a trigger and stays NULL. If NONE are
- * unserved, a "your message was lost" claim is contradicted by the store. Fails
- * OPEN (returns true) on error so the guard never wrongly rejects a real loop.
+ * True when at least one inbound ask is still UNSERVED within the window. If NONE are, a
+ * "your message was lost" claim is contradicted by the store. Fails OPEN (returns true) on
+ * error so the guard never wrongly rejects a real loop.
+ *
+ * PHASE-2 T3: this was a hand-rolled `conv_key IS NULL` query against the open-work
+ * predicate — research 07 §4 names it as exactly that ("trivial lookup with a work table").
+ * It now IS that lookup.
+ * requirement preserved verbatim, including the direction of error: an unserved ask is one
+ * no turn ever picked up, the window is unchanged, and an error still fails open.
  */
 function hasUnservedInboundRecently(agentId: string, windowHours: number): boolean {
   try {
     const db = getDb();
     const row = db
       .prepare(
-        `SELECT 1 FROM messages
-          WHERE agent_id = ? AND role = 'user' AND conv_key IS NULL
-            AND created_at >= (unixepoch('now', ?) * 1000)
+        `SELECT 1 FROM work
+          WHERE agent_id = ? AND kind = 'ask' AND state = 'open'
+            AND opened_at >= (unixepoch('now', ?) * 1000)
           LIMIT 1`,
       )
       .get(agentId, `-${Math.max(1, Math.floor(windowHours))} hours`);

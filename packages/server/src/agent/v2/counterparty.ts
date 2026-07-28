@@ -22,6 +22,7 @@ import {
   sweepByReferent,
   sweepByRowid,
 } from '../../memory/message-store.js';
+import { transition } from '../../work/store.js';
 import { postAgentNotice } from '../agent-notice.js';
 
 const logger = createLogger('counterparty');
@@ -29,13 +30,24 @@ const logger = createLogger('counterparty');
 // One source of truth (used by the loop to pick the turn's counterparty, the
 // runtime to decide whether to re-trigger and drain, and the dev context-dump)
 // for "which human conversations still have an unanswered message," in FIFO
-// order. A conversation is WAITING when its latest inbound rowid is past the
-// latest reply we've delivered for it. "Reply" = an own message stamped with
-// that conversation's conv_key (migration 076), a DB signal, so the waiting set
-// survives a server restart (no in-memory served map to lose). Scoped to the
-// current session. Engine events and A2A are not human conversations here.
+// order.
+//
+// PHASE-2 T3 — THE QUEUE IS A STATE NOW, NOT A NULL.
+// A conversation used to be WAITING when its inbound row's `conv_key` was still NULL:
+// one column carried the conversation's IDENTITY and the turn's CLAIM at the same time,
+// and `conv_key IS NULL` WAS the work queue (07 §structural finding, requirement 2a).
+// It is now `work(kind='ask').state = 'open'` — a real state on a real ticket, opened in
+// the same transaction as the message (memory/message-store.ts) and moved only by
+// `transition()`.
+// requirement preserved: the waiting set survives a restart (it is still a DB signal, on a
+// stronger row), it is still scoped to the session, it is still oldest-first per ITEM
+// rather than "a later reply exists" (P4), and engine events and A2A are still not human
+// conversations here — they never open an ask.
 export interface WaitingConversation {
   key: string;
+  /** The ticket this conversation's oldest unanswered message opened. The pickup CAS
+   *  addresses THIS, not a rowid, and the D-2 race is settled on it. */
+  workId: string;
   /** The conversation's NEWEST unanswered message row (kept for logging/context). */
   latest: {
     rowid: number; id: string; conversation_id: string | null; conv_key: string | null; content: string;
@@ -44,6 +56,9 @@ export interface WaitingConversation {
     lane: string; channel: string | null; source_agent_id: string | null;
     a2a_thread_id: string | null; a2a_intent: string | null; a2a_requires_response: number | null;
     inbound_meta: string | null; origin_intent: string | null; created_at: string;
+    /** The row's own ticket. Carried per-row because the trigger and its siblings are
+     *  DIFFERENT asks, and each is claimed and closed on its own (P4, per-item). */
+    work_id: string;
   };
   /** The conversation's OLDEST unanswered message row, this is the turn TRIGGER,
    *  so the agent answers a conversation's pending messages oldest-first and a
@@ -52,9 +67,9 @@ export interface WaitingConversation {
   oldestWaitingRowid: number;
   // C24: the former `unanswered: string[]` field was deleted, it had zero consumers.
   // Its concern (a middle message, e.g. a relay request before a follow-up ping, being
-  // dropped without a turn) is now preserved by the PER-MESSAGE pickup-stamp: every
-  // unclaimed row stays in the waiting set until IT is itself claimed at pickup
-  // (loop.ts ~500), so no sibling is collaterally marked served. No bulk-surfacing needed.
+  // dropped without a turn) is now preserved by the PER-MESSAGE ticket: every open ask
+  // stays in the waiting set until IT is itself claimed at pickup, so no sibling is
+  // collaterally marked served. No bulk-surfacing needed.
 }
 
 /** Every row shape below is read through this one projection list, so no query can
@@ -68,32 +83,40 @@ export interface WaitingConversation {
  *  messages` and the source walk in memory/__tests__/lane-readers.test.ts could not see it.
  *  The unit suite could: 45 integration tests went red on the promotion's first run because
  *  the turn stopped claiming its trigger. The walk resolves same-file constants now. */
-const WAITING_COLS = `seq AS rowid, id, conversation_id, conv_key, content, lane, channel,
-  source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta,
-  origin_intent, ${createdAtText()}`;
+const WAITING_COLS = `m.seq AS rowid, m.id, m.conversation_id, m.conv_key, m.content, m.lane, m.channel,
+  m.source_agent_id, m.a2a_thread_id, m.a2a_intent, m.a2a_requires_response, m.inbound_meta,
+  m.origin_intent, ${createdAtText('m.created_at')}, w.id AS work_id`;
 
 /**
  * T6: the candidate narrowing, in ONE place, for the four reads that must agree on it
  * (the waiting set, the quarantine, the teardown batch-claim and the owed-arrivals probe).
  * They were four copies of the same predicate kept in step by hand.
  *
- * `lane = 'owner'` REPLACES the physical-table separation. Before T4, peer A2A lived in a
- * second table so `FROM messages` could not see it and `origin_kind != 'engine'` was the
- * only exclusion needed. T4 folded that traffic in, so the separation is a column now, and
- * the lane CHECK constraint makes it stronger than the free-text flag it replaces.
+ * PHASE-2 T3: the claim half of this predicate is GONE. `conv_key IS NULL` (unclaimed) and
+ * `swept_at IS NULL` (drain-suppressed) were the two halves of "nobody has taken this on",
+ * and both are now one fact on the ticket: `work.state = 'open'`. The join below IS the
+ * queue.
+ * requirement preserved (the one thing this rekey may not change): WHICH rows the agent
+ * believes it owes a reply to. The ticket is opened at ingest behind the SAME structural
+ * columns and the SAME `deriveOrigin` authorized-human verdict this predicate applied, so
+ * the surviving `lane`/A2A filters below are now belt-and-braces rather than the decision —
+ * kept, not deleted, because a pre-D-A a2a row migrated to `lane='owner'` while still
+ * holding `a2a_thread_id`, and dropping them would change the answer on a lived-in box.
  *
- * The two structural A2A filters are NOT redundant with the lane and are deliberately
- * kept: a pre-D-A a2a row in `messages` carried `source` NULL, so migration 127 mapped it
- * to `lane='owner'` while it still holds `a2a_thread_id`. Dropping them would change WHICH
- * rows the agent believes it owes a reply to on a lived-in box — the one thing this task
- * may not do.
+ * The session bound moves to `work.opened_at`, which is stamped from the message's own
+ * `created_at` — the same instant the old predicate compared, on the ticket that carries it.
  */
+const WAITING_HUMAN_CANDIDATE_FROM =
+  `work w
+     JOIN messages m ON m.id = w.root_id AND m.agent_id = w.agent_id`;
+
 const WAITING_HUMAN_CANDIDATE_WHERE =
-  `role = 'user' AND created_at >= (unixepoch(@sessionStart) * 1000)
-   AND conv_key IS NULL
-   AND swept_at IS NULL
-   AND lane = 'owner'
-   AND source_agent_id IS NULL AND a2a_thread_id IS NULL`;
+  `w.kind = 'ask' AND w.state = 'open'
+   AND w.agent_id = @agentId
+   AND w.opened_at >= (unixepoch(@sessionStart) * 1000)
+   AND m.role = 'user'
+   AND m.lane = 'owner'
+   AND m.source_agent_id IS NULL AND m.a2a_thread_id IS NULL`;
 
 /** The origin of a candidate row, from the STAMPED lane/channel (never the compat columns). */
 function originOfCandidate(r: WaitingConversation['latest']) {
@@ -127,22 +150,19 @@ export function getWaitingHumanConversations(agentId: string): WaitingConversati
   // can't make).
   const rows = db.prepare(
     `SELECT ${WAITING_COLS}
-       FROM messages
-      WHERE agent_id = @agentId AND ${WAITING_HUMAN_CANDIDATE_WHERE}
-      ORDER BY created_at ASC, rowid ASC LIMIT 50`,
+       FROM ${WAITING_HUMAN_CANDIDATE_FROM}
+      WHERE ${WAITING_HUMAN_CANDIDATE_WHERE}
+      ORDER BY w.opened_at ASC, m.seq ASC LIMIT 50`,
   ).all({ agentId, sessionStart }) as WaitingConversation['latest'][];
   // OPEN-12 root fix, per-message "served", not "a later reply exists".
-  // A user message is UNANSWERED iff its OWN conv_key is still NULL, i.e. no turn
-  // ever CLAIMED it at pickup (the loop stamps the trigger's conv_key the moment
-  // it picks it up). The previous signal marked a message served whenever any
-  // reply with a higher rowid existed for its conversation, so a DISTINCT
-  // message that arrived mid-turn (a relay request before a follow-up ping) was
-  // collaterally served by the unrelated reply and dropped without ever getting a
-  // turn. Per-message claim cannot drop a distinct ask: every unclaimed message
-  // gets its own turn until it is itself picked up.
-  const agg = new Map<string, { latest: WaitingConversation['latest']; oldest: WaitingConversation['latest']; oldestWaitingRowid: number }>();
+  // A user message is UNANSWERED iff its OWN TICKET is still `open` — i.e. no turn ever
+  // CLAIMED it at pickup. The previous signal marked a message served whenever any reply
+  // with a higher rowid existed for its conversation, so a DISTINCT message that arrived
+  // mid-turn (a relay request before a follow-up ping) was collaterally served by the
+  // unrelated reply and dropped without ever getting a turn. A per-ITEM claim cannot drop a
+  // distinct ask: every open ask gets its own turn until it is itself picked up (P4).
+  const agg = new Map<string, { latest: WaitingConversation['latest']; oldest: WaitingConversation['latest']; oldestWaitingRowid: number; workId: string }>();
   for (const r of rows) {                              // C1: now OLDEST → newest by rowid (ASC)
-    if (r.conv_key != null) continue;                  // defensive: WHERE already filters claimed rows
     const o = originOfCandidate(r);
     // The single "owes a reply" definition (see MESSAGE-ATTRIBUTION-REDESIGN §3):
     // a conversation the agent must answer is AUTHORIZED human inbound. Unauthorized
@@ -153,12 +173,14 @@ export function getWaitingHumanConversations(agentId: string): WaitingConversati
     if (o.kind !== 'user' || !o.authorized) continue;
     const key = conversationKey(o.channel, o.senderId, o.senderName, o.threadId);
     let e = agg.get(key);
-    if (!e) { e = { latest: r, oldest: r, oldestWaitingRowid: r.rowid }; agg.set(key, e); }  // C1: first seen (ASC) = OLDEST unanswered
+    // C1: first seen (ASC) = OLDEST unanswered, and its ticket is the one the turn claims.
+    if (!e) { e = { latest: r, oldest: r, oldestWaitingRowid: r.rowid, workId: r.work_id }; agg.set(key, e); }
     e.latest = r;                                      // iterating oldest→newest, last write = newest unanswered
   }
   return [...agg.entries()]
     .map(([key, e]) => ({
       key,
+      workId: e.workId,
       latest: e.latest,
       oldest: e.oldest,
       oldestWaitingRowid: e.oldestWaitingRowid,
@@ -167,31 +189,45 @@ export function getWaitingHumanConversations(agentId: string): WaitingConversati
 }
 
 /**
- * D9: quarantine every UNCLAIMED row belonging to one waiting conversation so it
- * is skipped by getWaitingHumanConversations (which filters `swept_at IS NULL`).
- * Used when a conversation's turn repeatedly hard-aborts (poisoned attachment,
- * per-thread provider error, oversized context): rather than letting that
- * poisoned head starve every other waiting conversation behind it, the drain
- * quarantines it and serves the next. Reuses the D11 `swept_at` drain-suppression
- * column, so the row keeps its true conv_key/identity for recall. Returns the
- * number of rows quarantined. Conservative: only rows whose derived key matches
- * `convKey` are touched, so a different conversation is never collaterally hit.
+ * D9: quarantine every OPEN ask belonging to one waiting conversation so it is skipped by
+ * getWaitingHumanConversations. Used when a conversation's turn repeatedly hard-aborts
+ * (poisoned attachment, per-thread provider error, oversized context): rather than letting
+ * that poisoned head starve every other waiting conversation behind it, the drain
+ * quarantines it and serves the next. Returns the number quarantined. Conservative: only
+ * rows whose derived key matches `convKey` are touched, so a different conversation is
+ * never collaterally hit.
+ *
+ * PHASE-2 T3: the suppression was a `swept_at` stamp on the message, chosen (D11) because
+ * the alternative of the day OVERWROTE `conv_key` and destroyed the row's identity. That
+ * trade-off is gone: the obligation and the identity are different rows now, so the ask
+ * goes `abandoned` — a real terminal state with a reason and an event — and the message
+ * keeps every fact it had. `abandoned` is exactly requirement 2b's "terminal state
+ * reachable from three or more causes with a single-transition once-guard": `transition()`
+ * refuses the second attempt, which is what `swept_at IS NULL` + `.changes` was doing by
+ * hand.
  */
 export function quarantineWaitingConversation(agentId: string, convKey: string): number {
   const db = getDb();
   const sessionStart = sessionStartOf(agentId);
   const rows = db.prepare(
     `SELECT ${WAITING_COLS}
-       FROM messages
-      WHERE agent_id = @agentId AND ${WAITING_HUMAN_CANDIDATE_WHERE}`,
+       FROM ${WAITING_HUMAN_CANDIDATE_FROM}
+      WHERE ${WAITING_HUMAN_CANDIDATE_WHERE}`,
   ).all({ agentId, sessionStart }) as Array<WaitingConversation['latest']>;
   let n = 0;
   for (const r of rows) {
     const o = originOfCandidate(r);
     if (o.kind !== 'user' || !o.authorized) continue;
     if (conversationKey(o.channel, o.senderId, o.senderName, o.threadId) !== convKey) continue;
-    sweepByRowid({ rowid: r.rowid, agentId });
-    n++;
+    // `by: 'agent'` and not `'engine'`: the engine actor must point at an occurrence,
+    // delivery or artifact (gate G6, OR2), and a quarantine has none by definition — the
+    // whole reason it fires is that nothing happened. This is the agent's own drain giving
+    // up on a conversation it cannot serve, and it is recorded as that.
+    const res = transition(r.work_id, {
+      to: 'abandoned', by: 'agent', actorId: agentId,
+      reason: 'quarantined: this conversation repeatedly aborted its turn and was starving the queue',
+    });
+    if (res.kind === 'applied') n++;
   }
   return n;
 }
@@ -211,17 +247,25 @@ export function claimAssembledSiblings(agentId: string, convKey: string, assembl
   const sessionStart = sessionStartOf(agentId);
   const rows = db.prepare(
     `SELECT ${WAITING_COLS}
-       FROM messages
-      WHERE agent_id = @agentId AND ${WAITING_HUMAN_CANDIDATE_WHERE}
-        AND created_at <= (unixepoch(@assembledAt) * 1000)`,
+       FROM ${WAITING_HUMAN_CANDIDATE_FROM}
+      WHERE ${WAITING_HUMAN_CANDIDATE_WHERE}
+        AND m.created_at <= (unixepoch(@assembledAt) * 1000)`,
   ).all({ agentId, sessionStart, assembledAt: assembledAtIso }) as Array<WaitingConversation['latest']>;
-  // P4: siblings record WHICH turn served them (forward link), alongside the
-  // claim stamp that hides them from the waiting set.
+  // P4: siblings record WHICH turn served them (forward link) on BOTH rows — the ticket's
+  // claim takes them out of the waiting set, and the message's conv_key/served_by_turn is
+  // the conversation-identity half, which stays first-class (07 §3l) and is what
+  // conversation-scoped recall reads.
   let n = 0;
   for (const r of rows) {
     const o = originOfCandidate(r);
     if (o.kind !== 'user') continue;
     if (conversationKey(o.channel, o.senderId, o.senderName, o.threadId) !== convKey) continue;
+    const res = transition(r.work_id, {
+      to: 'claimed', by: 'agent', actorId: agentId, expectedState: 'open',
+      claimedByTurn: turnNumber ?? null,
+      reason: 'answered as a sibling inside this turn\'s assembled context',
+    });
+    if (res.kind !== 'applied') continue;
     claimRowByRowid({ agentId, rowid: r.rowid, convKey, servedByTurn: turnNumber ?? null });
     n++;
   }
@@ -258,11 +302,11 @@ export function getOwedMidTurnArrivals(
   // strict turnStartedAt lower bound so only mid-turn arrivals qualify.
   const rows = db.prepare(
     `SELECT ${WAITING_COLS}
-       FROM messages
-      WHERE agent_id = @agentId AND ${WAITING_HUMAN_CANDIDATE_WHERE}
-        AND created_at > (unixepoch(@turnStartedAt) * 1000)
-        AND created_at <= (unixepoch(@assembledAt) * 1000)
-      ORDER BY created_at ASC, rowid ASC`,
+       FROM ${WAITING_HUMAN_CANDIDATE_FROM}
+      WHERE ${WAITING_HUMAN_CANDIDATE_WHERE}
+        AND m.created_at > (unixepoch(@turnStartedAt) * 1000)
+        AND m.created_at <= (unixepoch(@assembledAt) * 1000)
+      ORDER BY m.created_at ASC, m.seq ASC`,
   ).all({ agentId, sessionStart, turnStartedAt, assembledAt: assembledAtIso }) as Array<WaitingConversation['latest']>;
   const owed: Array<{ rowid: number; content: string }> = [];
   for (const r of rows) {

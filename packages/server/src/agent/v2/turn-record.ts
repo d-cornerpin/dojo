@@ -96,11 +96,39 @@ export function finalizeTurn(
     getDb().prepare(`
       UPDATE turns
          SET ended_at = datetime('now'), exit_reason = ?, answered = ?,
-             effectful_calls = ?, answer_message_id = ?
+             effectful_calls = MAX(effectful_calls, ?), answer_message_id = ?
        WHERE agent_id = ? AND turn_number = ? AND ended_at IS NULL
     `).run(exitReason, answered ? 1 : 0, effectfulCalls, answerMessageId, agentId, turnNumber);
   } catch (err) {
     logger.warn('turn record finalize failed (non-fatal)', {
+      agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
+ * PHASE-2 T3 — `effectful_calls`, made DURABLE the moment the effect happens.
+ *
+ * T2 landed the column and persisted the loop's in-memory counter at finalize. That is the
+ * right number on every path except the one the counter exists for: a process KILLED
+ * between the effect and the end of the turn never reaches finalize, so the column reads 0
+ * and the boot reconciliation would hand the ask back and do the effect a second time —
+ * which is precisely what P6b forbids ("a duplicate send is worse than a stranded ask").
+ * So the count is written HERE, beside the effect, and `finalizeTurn` can only ever raise
+ * it (`MAX`), never lower it: two observation points of one fact, and the fail-safe
+ * direction is the only one they can disagree in.
+ *
+ * Deliberately not best-effort-silent: a failure to record an effect is logged, because the
+ * consequence of losing this number is a duplicated side effect.
+ */
+export function bumpEffectfulCalls(agentId: string, turnNumber: number, by = 1): void {
+  if (by <= 0) return;
+  try {
+    getDb().prepare(
+      'UPDATE turns SET effectful_calls = effectful_calls + ? WHERE agent_id = ? AND turn_number = ?',
+    ).run(by, agentId, turnNumber);
+  } catch (err) {
+    logger.warn('effectful-call count not recorded — a crash here could duplicate an effect', {
       agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
     });
   }

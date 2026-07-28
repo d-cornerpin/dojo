@@ -17,6 +17,7 @@ import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { currentTurnNumber, currentTurnRoot } from '../turn-state.js';
 import { resolveOrCreateConversation } from '../../memory/conversations.js';
+import { closeAsksForDelivery } from '../../work/store.js';
 
 const logger = createLogger('deliveries');
 
@@ -91,6 +92,22 @@ export function recordDelivery(input: DeliveryInput): string | null {
       input.outcome,
       input.detail ?? null,
     );
+    // PHASE-2 T3: a quick ask is DONE because something was delivered for it — never
+    // because a model said so. The close happens here, at the one place a delivery becomes
+    // a row, so no send path has to remember to do it and none can claim a close it cannot
+    // point at (`work.state='done'` requires `result_delivery_id`, enforced by the DDL AND
+    // by `transition()`'s own gate).
+    // Narrowed three ways, each a negative control in work/__tests__/ask-lifecycle.test.ts:
+    // the send must have succeeded, it must belong to the turn holding the claim, and it
+    // must have gone to the ask's OWN conversation.
+    closeAsksForDelivery({
+      agentId: input.agentId,
+      turnNumber: currentTurnNumber.get(input.agentId) ?? null,
+      deliveryId: id,
+      conversationId,
+      tool: input.tool,
+      outcome: input.outcome,
+    });
     return id;
   } catch (err) {
     logger.warn('recordDelivery failed (non-fatal; the delivery itself is unaffected)', {

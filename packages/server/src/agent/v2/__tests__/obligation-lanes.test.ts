@@ -37,6 +37,7 @@ import {
   quarantineWaitingConversation,
 } from '../counterparty.js';
 import { runMigrations } from '../../../db/migrations.js';
+import { claimAsk } from '../../../work/store.js';
 
 const AGENT = 'agent-obligation';
 const PEER = 'agent-obligation-peer';
@@ -118,10 +119,16 @@ describe('the waiting set is the OWNER lane, and nothing else', () => {
     expect(getWaitingHumanConversations(AGENT)).toHaveLength(0);
   });
 
-  it('a CLAIMED row leaves the waiting set; an unclaimed sibling stays', () => {
-    const first = humanAsk('first ask');
+  // PHASE-2 T3: the requirement is unchanged and the fixture had to move with the
+  // mechanism. "Claimed" used to be faked by stamping conv_key on the message; it is a
+  // STATE on the ask now, so the fixture claims the ask. A fixture still writing conv_key
+  // would have gone on passing while asserting nothing.
+  it('a CLAIMED ask leaves the waiting set; an unclaimed sibling stays', () => {
+    humanAsk('first ask');
     humanAsk('second ask', '+15550002222');
-    mockDb.current!.prepare("UPDATE messages SET conv_key = 'imessage:+15550001111' WHERE id = ?").run(first);
+    const head = getWaitingHumanConversations(AGENT)[0];
+    expect(head.oldest.content).toBe('first ask');
+    expect(claimAsk(head.workId, AGENT).kind).toBe('applied');
     const waiting = getWaitingHumanConversations(AGENT);
     expect(waiting).toHaveLength(1);
     expect(waiting[0].oldest.content).toBe('second ask');

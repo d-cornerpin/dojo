@@ -142,8 +142,11 @@ import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssist
 import { identicalCallSignature, checkIdenticalCallRefusal, recordIdenticalCallResult, isSignatureTerminal, type RepeatCallState } from './identical-call-brake.js';
 import { SEND_TO_PEOPLE } from '../sensei-policy.js';
 import { getPresence } from '../../services/presence.js';
-import { startTurn, finalizeTurn, type TurnExitReason } from './turn-record.js';
+import { startTurn, finalizeTurn, bumpEffectfulCalls, type TurnExitReason } from './turn-record.js';
 import { recordDelivery, type DeliveryInput } from './deliveries.js';
+// PHASE-2 T3: the ask's lifecycle. `transition()` is the only writer of `work.state`; these
+// are its named callers for the pickup / re-arm / turn-link steps of one owner ask.
+import { claimAsk, stampClaimingTurn, revertAskClaimOnAbort } from '../../work/store.js';
 const SEND_TO_PEOPLE_SET: ReadonlySet<string> = new Set(SEND_TO_PEOPLE);
 import { detectUngroundedDeliveryClaim, detectDeliveryDenial } from './classifiers/grounding.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
@@ -1020,27 +1023,38 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // for display; identity travels as this id).
   const lastUserMessageId: string | null = triggerRow?.id != null ? String(triggerRow.id) : null;
   currentTurnRoot.set(agentId, lastUserMessageId ? { kind: 'ask', id: lastUserMessageId, sourceMessageId: lastUserMessageId, conversationId: (triggerRow as unknown as { conversation_id?: string | null })?.conversation_id ?? null } : null);
-  // CLAIM this conversation the moment the turn picks it up: stamp the trigger
-  // inbound's conv_key so it reads as SERVED regardless of how this turn ends.
-  // The old design only marked a conversation served when the turn delivered a
-  // terminal reply (or [no-reply]), so a turn that did real, NON-IDEMPOTENT
-  // work (created a project, wrote files, messaged the PM) but then ended via a
-  // suppressed reply, a gate/limit, or an A2A hand-off tagged nothing, left the
-  // conversation "waiting", and the runtime drain re-triggered the SAME message
-  // → the agent redid the work → duplicate projects (the thrash spiral). Marking
-  // the inbound at pickup is restart-durable (DB), idempotent (conv_key IS NULL
-  // guard), and invisible to content-scoping (user rows scope by origin, not by
-  // conv_key, see scopeToHumanConversation). A genuinely newer message in the
-  // same conversation has a higher rowid, so it still reads as waiting and is
-  // served on the next turn; only the self-re-trigger of the message we are
-  // handling right now is killed. Continuing a long task is the tracker/PM's job,
-  // never re-running the user's message.
+  // CLAIM this ask the moment the turn picks it up, so it reads as SERVED regardless of how
+  // this turn ends. The old design only marked a conversation served when the turn
+  // delivered a terminal reply (or [no-reply]), so a turn that did real, NON-IDEMPOTENT
+  // work (created a project, wrote files, messaged the PM) but then ended via a suppressed
+  // reply, a gate/limit, or an A2A hand-off tagged nothing, left the conversation
+  // "waiting", and the runtime drain re-triggered the SAME message → the agent redid the
+  // work → duplicate projects (the thrash spiral). A genuinely newer message in the same
+  // conversation has its OWN ticket, so it still reads as waiting and is served on the next
+  // turn; only the self-re-trigger of the message we are handling right now is killed.
+  // Continuing a long task is the tracker/PM's job, never re-running the user's message.
+  //
+  // PHASE-2 T3: the claim is a STATE on the ask (`open → claimed`), not a NULL becoming a
+  // string on `messages.conv_key`. The conv_key stamp stays as what it was always named
+  // for — the conversation's IDENTITY, which conversation-scoped recall and the turn's own
+  // output tagging read (07 §3g/3l) — and it no longer decides anything about the queue.
+  // requirement preserved: restart-durable (still a DB fact, now on the ticket), one winner
+  // across processes (the CAS is `expectedState: 'open'` inside `transition()`), and
+  // identity untouched (a claim can no longer overwrite a channel).
+  const triggerWorkId: string | null = waitingConvs[0]?.workId ?? null;
   if (chosenConvKey && triggerRow) {
     let claimed = true;
+    if (triggerWorkId) {
+      const res = claimAsk(triggerWorkId, agentId);
+      claimed = res.kind === 'applied';
+      if (!claimed && res.kind !== 'conflict') {
+        logger.warn('v2: pickup claim refused by the work spine', { agentId, workId: triggerWorkId, res }, agentId);
+      }
+    }
+    // Identity, always, and independent of the claim: this row belongs to this
+    // conversation whether or not this turn won the race to serve it.
     try {
-      claimed = setConvKeyByRowid({
-        rowid: triggerRow.rowid, agentId, value: chosenConvKey, expect: null,
-      }) > 0;
+      setConvKeyByRowid({ rowid: triggerRow.rowid, agentId, value: chosenConvKey });
     } catch { /* best effort, served-tagging also happens at turn end */ }
     // C24: reset the turn-continuation counter at the start of a genuinely NEW
     // human-triggered turn (a fresh trigger claimed here). The counter bounds CONSECUTIVE
@@ -1056,32 +1070,44 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // message. Single-process production never hits this (changes is always 1); this
       // only guards the multi-process case (e.g. stray dev `tsx watch` processes). The
       // idle status clears the turn-state maps; the other process serves the message.
-      logger.warn('v2: pickup claim lost, another process already claimed this trigger; skipping to avoid a duplicate turn', { agentId, rowid: triggerRow.rowid }, agentId);
+      logger.warn('v2: pickup claim lost, another process already claimed this trigger; skipping to avoid a duplicate turn', { agentId, rowid: triggerRow.rowid, workId: triggerWorkId }, agentId);
       setAgentStatus(agentId, 'idle');
       return;
     }
   }
 
-  // N-1 (comms-audit): re-arm a stranded human ask. The pickup stamp above marks the
-  // trigger served so a concurrent turn can't double-serve it. If THIS turn then aborts
-  // BEFORE producing any answer (model-call exhausted all retries, or no model available
-  // at all, a transient rate-limit / provider outage), leaving the stamp in place would
-  // drop the ask from the waiting set FOREVER and the user would get permanent silence on
-  // a purely transient infra failure, while the recovery toast promises "retrying
-  // automatically". Reverting the stamp to NULL returns the ask to the waiting set so the
-  // runtime finally-drain (runtime.ts) re-serves it once the provider recovers (bounded by
-  // MAX_DRAIN_STUCK, so a persistent failure can't tight-loop). `AND conv_key = ?` reverts
-  // only our OWN stamp (idempotent, safe against a concurrent re-stamp). Call ONLY on
-  // no-answer abort paths, never after any reply text has been produced, or it would
-  // resurrect an answered ask and double-reply.
+  // N-1 (comms-audit): re-arm a stranded human ask. The pickup claim above marks the ask
+  // served so a concurrent turn can't double-serve it. If THIS turn then aborts BEFORE
+  // producing any answer (model-call exhausted all retries, or no model available at all, a
+  // transient rate-limit / provider outage), leaving the claim in place would drop the ask
+  // from the waiting set FOREVER and the user would get permanent silence on a purely
+  // transient infra failure, while the recovery toast promises "retrying automatically".
+  // Handing the ticket back to `open` returns it to the waiting set so the runtime
+  // finally-drain (runtime.ts) re-serves it once the provider recovers (bounded by
+  // MAX_DRAIN_STUCK, so a persistent failure can't tight-loop). Call ONLY on no-answer
+  // abort paths, never after any reply text has been produced, or it would resurrect an
+  // answered ask and double-reply.
+  //
+  // PHASE-2 T3 — P6b NOW BINDS THE HUMAN RE-ARM TOO, AND THIS IS A DELIBERATE BEHAVIOUR
+  // CHANGE. The engine-event half below has always been gated on
+  // `nonIdempotentCallsThisTurn === 0`; the human half was gated only at the C4 CALLER
+  // (`reArmIfStrandedNoAnswer`), so any of the five direct abort-path callers could re-arm
+  // an ask whose turn had already sent an email. The rule is one rule now, enforced where
+  // the revert happens rather than at each site that remembers to check: "a turn that
+  // performed a side effect must never re-fire" (07 §2c, ledger P6b-1). The refusal is
+  // recorded as a work event, so a held ask is a fact somebody can find.
+  //
   // D8: set at the engine-event pickup below when THIS turn claims a pending engine
   // event (conv_key stamped 'engine'). Declared here, before the abort revert that
   // reads it, so the closure never touches a TDZ variable.
   let claimedEngineEvent: { rowid: number } | null = null;
   const revertTriggerStampOnAbort = () => {
-    if (chosenConvKey && triggerRow) {
+    if (triggerWorkId) {
       try {
-        setConvKeyByRowid({ rowid: triggerRow.rowid, value: null, expect: chosenConvKey });
+        revertAskClaimOnAbort(
+          triggerWorkId, state.nonIdempotentCallsThisTurn,
+          'turn aborted with no answer; handing the ask back to the waiting set (N-1)',
+        );
       } catch { /* best effort, recovery, never block the abort */ }
     }
     // D8: symmetric revert for an ENGINE trigger claim. The engine pickup stamps
@@ -1563,9 +1589,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // engine receipts without threading it through every send executor. Cleared at
   // the turn boundary (idle), like currentTurnConvKey.
   currentTurnNumber.set(agentId, turnNumber);
-  // Per-ask forward link: the claimed trigger row records WHICH turn serves
-  // it (the claim stamps above only made it invisible to the waiting set).
+  // Per-ask forward link: the claimed trigger records WHICH turn serves it (the claim
+  // above only made it invisible to the waiting set). Two rows, one fact: the ticket's
+  // `claimed_by_turn` is what the delivery close and the boot reconciliation read; the
+  // message's `served_by_turn` is the message-side lineage the answer stamp joins on.
+  // The ticket is stamped HERE and not at the claim because the turn number is allocated
+  // from the subject the claim itself decides — and the D-2 race has to be settled before
+  // any of that runs.
   try {
+    if (triggerWorkId) {
+      stampClaimingTurn(triggerWorkId, turnNumber);
+    }
     if (triggerRow) {
       markServedByRowid(triggerRow.rowid, turnNumber);
     }
@@ -7044,16 +7078,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
             }
           } catch { /* recording is best-effort */ }
 
+          // Success-only, same discipline as the once-guard: a failed call performed no
+          // side effect and must not block the abort re-arm.
+          const wasEffectful = toolResult.isError !== true &&
+            (classifyTool(tc.name) === 'effectful-action' ||
+             FIRE_AND_FORGET_GEN_TOOLS.has(tc.name) ||
+             SEND_TO_PEOPLE_SET.has(tc.name));
           state = advance(state, {
             toolCallsExecutedThisTurn: state.toolCallsExecutedThisTurn + 1,
-            // Success-only, same discipline as the once-guard: a failed call
-            // performed no side effect and must not block the abort re-arm.
-            nonIdempotentCallsThisTurn: state.nonIdempotentCallsThisTurn +
-              ((toolResult.isError !== true &&
-                (classifyTool(tc.name) === 'effectful-action' ||
-                 FIRE_AND_FORGET_GEN_TOOLS.has(tc.name) ||
-                 SEND_TO_PEOPLE_SET.has(tc.name))) ? 1 : 0),
+            nonIdempotentCallsThisTurn: state.nonIdempotentCallsThisTurn + (wasEffectful ? 1 : 0),
           });
+          // T3/P6b: the same increment, DURABLY, in the same breath as the effect. The
+          // in-memory counter dies with the process; a kill right here is exactly the case
+          // the boot reconciliation has to decide, and it can only decide it from the row.
+          if (wasEffectful) bumpEffectfulCalls(agentId, turnNumber);
 
           // ── Anti-hoarding heavy-load accounting (2026-07-08 measured-size) ──
           // The counter ticks on the MEASURED SIZE of the result's text payload,

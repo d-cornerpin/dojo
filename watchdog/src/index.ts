@@ -522,14 +522,22 @@ async function checkStalledAgents(): Promise<void> {
     `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
 
     // (2) FA-W4(b): an agent that is NOT working (idle/error/paused) yet has an
-    // unanswered HUMAN message waiting 15+ min. This approximates the platform's
-    // waiting-conversation shape (counterparty.ts getWaitingHumanConversations): a
-    // role='user' row whose conv_key is still NULL was never picked up by a turn (i.e.
-    // unanswered). We exclude the lanes that legitimately wait — engine events and
-    // agent-to-agent traffic — skip disposed rows (swept_at), and scope to the current
-    // session. Cheap approximation: the watchdog cannot run the platform's
-    // authorized-sender gate, so an unauthorized third-party inbound could count; the lane
-    // exclusions remove the large non-human cases.
+    // unanswered HUMAN ask waiting 15+ min.
+    //
+    // ⚠ PHASE-2 T3 (2026-07-28). THIS QUERY READS THE WORK SPINE NOW, and it is written
+    // here — outside `packages/` — for the same reason its predecessor broke: a scan that
+    // stops at `packages/` does not see this file. The waiting set is no longer "a
+    // role='user' row whose conv_key is NULL"; it is `work(kind='ask', state='open')`, a
+    // ticket opened in the same transaction as the message.
+    //
+    // The approximation is now BETTER than it was, and the improvement is free: the old
+    // comment conceded that "the watchdog cannot run the platform's authorized-sender gate,
+    // so an unauthorized third-party inbound could count." The ask is only OPENED behind
+    // that gate, so a third-party notification never produces one and can no longer be
+    // counted here. The lane/A2A filters below are kept anyway — they cost nothing and they
+    // keep this query readable against the platform's own predicate.
+    // requirement preserved: idle/error/paused agents only, 15-minute floor, scoped to the
+    // current session, log-only (owner decision 2026-07-09).
     //
     // ⚠ REPAIRED 2026-07-28 (PHASE-1 T10). THIS QUERY HAD BEEN THROWING SINCE MIGRATION 129,
     // and because it sits inside `checkStalledAgents`'s single try/catch, its throw took the
@@ -558,18 +566,19 @@ async function checkStalledAgents(): Promise<void> {
     //     a box holding 3,992 messages). Each comparison now has one type on both sides.
     const backlog = db.prepare(`
       SELECT a.id AS id, a.name AS name, a.status AS status,
-             COUNT(*) AS waiting, MIN(m.created_at) AS oldest
+             COUNT(*) AS waiting, MIN(w.opened_at) AS oldest
       FROM agents a
-      JOIN messages m ON m.agent_id = a.id
+      JOIN work w ON w.agent_id = a.id
+      JOIN messages m ON m.id = w.root_id AND m.agent_id = w.agent_id
       WHERE a.status IN ('idle', 'error', 'paused')
+        AND w.kind = 'ask'
+        AND w.state = 'open'
         AND m.role = 'user'
-        AND m.conv_key IS NULL
-        AND m.swept_at IS NULL
         AND m.lane = 'owner'
         AND m.source_agent_id IS NULL
         AND m.a2a_thread_id IS NULL
-        AND m.created_at >= COALESCE(unixepoch(a.session_started_at) * 1000, 0)
-        AND m.created_at <= (unixepoch('now', '-15 minutes') * 1000)
+        AND w.opened_at >= COALESCE(unixepoch(a.session_started_at) * 1000, 0)
+        AND w.opened_at <= (unixepoch('now', '-15 minutes') * 1000)
       GROUP BY a.id, a.name, a.status
     `).all() as Array<{ id: string; name: string; status: string; waiting: number; oldest: number }>;
 

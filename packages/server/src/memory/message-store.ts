@@ -28,9 +28,11 @@ import { randomUUID } from 'node:crypto';
 import {
   classifyMessageForDisplay, parseMoodMarker, stripMoodMarker, stripNoReplySentinel,
   parseWorkingNote, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX,
+  deriveOrigin, legacyOriginInputs,
   type BroadcastRow, type DisplayKind, type MessageLane, type VisibilityTier,
 } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
+import { openAsk } from '../work/store.js';
 import { estimateTokens, NOW_MS, createdAtText } from './store.js';
 
 export { NOW_MS, createdAtText };
@@ -250,20 +252,78 @@ function bind(m: NewMessage): { lane: Lane; id: string; displayKind: DisplayKind
   };
 }
 
+// ── PHASE-2 T3: an inbound ask opens its TICKET in this same transaction ──
+//
+// The waiting set used to be "role='user' rows whose conv_key is still NULL"; it is now
+// "open asks", and the row that makes an ask open is written HERE, beside the message, so
+// there is no instant in which a person's question exists without its obligation.
+//
+// The gate below is the SAME gate the waiting set applied, on the same inputs — the four
+// structural columns, then `deriveOrigin`'s authorized-human verdict — which is the whole
+// safety argument for the cutover: the set of rows that opens a ticket is by construction
+// the set the old predicate surfaced, so no ask starts appearing and none stops.
+//
+// It reads `messages.authorized` NOWHERE, on purpose: that column and `deriveOrigin` are
+// two mechanisms for one job (recorded at PHASE-1's exit, owned by SWEEP A), and switching
+// to it here would change WHICH rows count inside a task with no mandate to.
+
+/** Is this row an authorized person asking this agent for something? */
+function isOwnerAsk(m: NewMessage, storedContent: string): boolean {
+  if (m.role !== 'user') return false;
+  const lane: Lane = m.lane ?? 'owner';
+  if (lane !== 'owner') return false;
+  if (m.sourceAgentId || m.a2aThreadId) return false;
+  const o = deriveOrigin({
+    role: 'user', content: storedContent,
+    ...legacyOriginInputs(lane, m.channel ?? null),
+    sourceAgentId: m.sourceAgentId ?? null,
+    a2aThreadId: m.a2aThreadId ?? null,
+    a2aIntent: m.a2aIntent ?? null,
+    a2aRequiresResponse: m.a2aRequiresResponse == null ? null : (m.a2aRequiresResponse ? 1 : 0),
+    inboundMeta: m.inboundMeta ?? null,
+    originIntent: m.originIntent ?? null,
+  });
+  return o.kind === 'user' && o.authorized;
+}
+
+/** The stored row's own facts, then the ticket. Runs inside the caller's transaction. */
+function persistAndMaybeOpenAsk(m: NewMessage, b: ReturnType<typeof bind>, seq: number): string {
+  const db = getDb();
+  const row = db.prepare(`SELECT ${createdAtText()}, created_at AS created_ms FROM messages WHERE seq = ?`)
+    .get(seq) as { created_at: string; created_ms: number };
+  if (isOwnerAsk(m, b.params.content as string)) {
+    openAsk({
+      agentId: m.agentId,
+      messageId: b.id,
+      conversationId: m.conversationId ?? null,
+      requesterId: m.senderId ?? null,
+      openedAt: row.created_ms,
+      title: (b.params.content as string).slice(0, 120),
+    });
+  }
+  return row.created_at;
+}
+
 /** The ONE INSERT into `messages`. Every column the row needs is decided here.
  *  Throws on a duplicate id — use `insertMessageIfAbsent` where a colliding id is a
- *  legitimate, designed no-op (inbound de-duplication). */
+ *  legitimate, designed no-op (inbound de-duplication).
+ *
+ *  T3: the insert and the ask it may open are ONE transaction. If the ticket cannot be
+ *  written the message does not land either, and the producer sees the failure — loudly
+ *  losing a message is recoverable, storing one no agent can ever see is not. */
 export function insertMessage(m: NewMessage): Persisted {
   const db = getDb();
   const b = bind(m);
-  const info = db.prepare(INSERT_SQL).run(b.params);
-  const createdAt = (db.prepare(`SELECT ${createdAtText()} FROM messages WHERE seq = ?`)
-    .get(info.lastInsertRowid as number) as { created_at: string }).created_at;
-  return {
-    seq: info.lastInsertRowid as number, id: b.id, lane: b.lane,
-    displayKind: b.displayKind, displayTier: b.displayTier,
-    tokenCount: b.tokenCount, createdAt, sentAt: b.sentAt,
-  };
+  return db.transaction((): Persisted => {
+    const info = db.prepare(INSERT_SQL).run(b.params);
+    const seq = info.lastInsertRowid as number;
+    const createdAt = persistAndMaybeOpenAsk(m, b, seq);
+    return {
+      seq, id: b.id, lane: b.lane,
+      displayKind: b.displayKind, displayTier: b.displayTier,
+      tokenCount: b.tokenCount, createdAt, sentAt: b.sentAt,
+    };
+  })();
 }
 
 /** Idempotent insert: returns `null` when the row is already there.
@@ -281,15 +341,19 @@ export function insertMessage(m: NewMessage): Persisted {
 export function insertMessageIfAbsent(m: NewMessage): Persisted | null {
   const db = getDb();
   const b = bind(m);
-  const info = db.prepare(`${INSERT_SQL} ON CONFLICT DO NOTHING`).run(b.params);
-  if (info.changes === 0) return null;
-  const createdAt = (db.prepare(`SELECT ${createdAtText()} FROM messages WHERE seq = ?`)
-    .get(info.lastInsertRowid as number) as { created_at: string }).created_at;
-  return {
-    seq: info.lastInsertRowid as number, id: b.id, lane: b.lane,
-    displayKind: b.displayKind, displayTier: b.displayTier,
-    tokenCount: b.tokenCount, createdAt, sentAt: b.sentAt,
-  };
+  return db.transaction((): Persisted | null => {
+    const info = db.prepare(`${INSERT_SQL} ON CONFLICT DO NOTHING`).run(b.params);
+    // T3: a designed no-op writes NO ticket. One message, one obligation — a producer
+    // retrying an inbound must not mint a second ask for the same question.
+    if (info.changes === 0) return null;
+    const seq = info.lastInsertRowid as number;
+    const createdAt = persistAndMaybeOpenAsk(m, b, seq);
+    return {
+      seq, id: b.id, lane: b.lane,
+      displayKind: b.displayKind, displayTier: b.displayTier,
+      tokenCount: b.tokenCount, createdAt, sentAt: b.sentAt,
+    };
+  })();
 }
 
 /** The WORK an engine row is about, as COLUMNS the serve boundary can read — until the P1
@@ -474,12 +538,29 @@ export function unservedHead(agentId: string): StoredMessage[] {
 // is annotated at its own definition and predates this phase.
 // ════════════════════════════════════════════════════════════════════════════════
 
-// ── conv_key: the claim/park machine (PHASE2-DELETES — Phase 2 replaces it wholesale) ──
+// ── conv_key: conversation IDENTITY, and the engine/park claim machine ──
+//
+// PHASE-2 T3 SPLIT THIS COLUMN'S TWO JOBS. It carried the conversation's identity AND the
+// owner ask's claim token, and the "is it NULL" test WAS the work queue. The OWNER-ASK
+// claim is `work.state` now (work/store.ts). What is left here is the identity half —
+// first-class per requirement 3l, read by conversation-scoped recall and the turn's own
+// output tagging — plus the ENGINE-EVENT and PARK claims, which are different queues with
+// their own owners this phase (T6/T9 for the engine retry lifecycle and its one reaper,
+// T4 for the park machine).
 
 /** Compare-and-swap a row's conv_key by rowid. `expect` is the guard the call sites all
  *  carried inline: `null` = only if unclaimed, a string = only if it still holds that key,
  *  `undefined` = unconditional. Returns rows changed, which every caller uses to detect a
- *  concurrent claim — so it must stay a real count, never a boolean. */
+ *  concurrent claim — so it must stay a real count, never a boolean.
+ *
+ *  T3 MEASURED, and this is a correction to the plan's own list: the `expect: null` branch
+ *  is NOT solely the owner-ask claim. THREE claims share it, and T3 removes exactly one.
+ *  The owner ask's pickup CAS is gone from here (it is `transition(… expectedState:'open')`
+ *  on the ticket now, where a lost race is a `conflict` value rather than a zero somebody
+ *  has to remember to check). The other two survive because they are other queues with
+ *  other owners in this phase: the ENGINE-EVENT pickup (`value:'engine'`, PHASE-2 T6 owns
+ *  its retry lifecycle, T9 its reaper) and the terminal A2A WAKE (`value:'a2a'`, PHASE-2
+ *  T4). Deleting the branch for them would not be a demolition, it would be a hole. */
 export function setConvKeyByRowid(
   p: { rowid: number; agentId?: string; value: string | null; expect?: string | null },
 ): number {
@@ -511,8 +592,16 @@ export function tagTurnOutputConvKey(
   ).run({ agentId: p.agentId, turnNumber: p.turnNumber, convKey: p.convKey, lane: p.lane ?? 'owner' }).changes;
 }
 
-/** Claim a queued engine/peer row for a turn: stamp its conv_key and, optionally, the
- *  serving turn in the same statement. Only ever claims an UNclaimed row. */
+/** Stamp a served row's conversation identity and the turn that served it, in one
+ *  statement.
+ *
+ *  T3: the `AND conv_key IS NULL` guard is gone with the claim it belonged to. Its ONE
+ *  production caller is `claimAssembledSiblings`, whose "may I take this?" question is now
+ *  asked and answered on the ticket (`transition(… expectedState: 'open')`) BEFORE this is
+ *  called; a second guard on a second row would be two mechanisms deciding one thing, and
+ *  the one that reached `.changes === 0` silently was the weaker of the two.
+ *  requirement preserved: a sibling already served by another turn is not re-stamped — the
+ *  ticket's CAS refuses first, and this is not reached. */
 export function claimRowByRowid(
   p: { agentId: string; rowid: number; convKey: string; servedByTurn?: number | null },
 ): number {
@@ -520,7 +609,7 @@ export function claimRowByRowid(
   return db.prepare(
     `UPDATE messages SET conv_key = @convKey,
         served_by_turn = COALESCE(@servedByTurn, served_by_turn)
-      WHERE agent_id = @agentId AND rowid = @rowid AND conv_key IS NULL`,
+      WHERE agent_id = @agentId AND rowid = @rowid`,
   ).run({ ...p, servedByTurn: p.servedByTurn ?? null }).changes;
 }
 

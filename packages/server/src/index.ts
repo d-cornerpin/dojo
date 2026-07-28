@@ -7,7 +7,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger, setLogBroadcast } from './logger.js';
 import { getDb } from './db/connection.js';
 import { runMigrations } from './db/migrations.js';
-import { setConvKeyByRowid, sweepByRowid } from './memory/message-store.js';
+import { sweepByRowid } from './memory/message-store.js';
+import { transition, reconcileOrphanedClaims } from './work/store.js';
 import { loadSecrets } from './config/loader.js';
 import { createServer } from './gateway/server.js';
 import { broadcast } from './gateway/ws.js';
@@ -474,35 +475,44 @@ async function main(): Promise<void> {
   {
     try {
       const db = getDb();
-      // D11: how many stale UNANSWERED rows are genuine authorized-human asks
-      // (not engine notices, not A2A)? A quick restart with a handful of these is
-      // a person waiting on an answer, HOLD those for the re-drain below to
-      // serve (never silently drop a question). A large backlog is stale history
-      // (box was offline for a long time), suppress it as before.
+      // D11: how many stale UNANSWERED asks are genuine authorized-human ones? A quick
+      // restart with a handful of these is a person waiting on an answer, HOLD those for
+      // the re-drain below to serve (never silently drop a question). A large backlog is
+      // stale history (box was offline for a long time), suppress it as before.
+      //
+      // PHASE-2 T3: this arm reads the WORK SPINE. An unanswered human ask is
+      // `work(kind='ask', state='open')`, not "a role='user' row whose conv_key is NULL",
+      // and suppression is `abandoned` rather than a `swept_at` stamp on the message.
+      // requirement preserved, all three parts: counted PER AGENT (a global count let 6
+      // asks across 6 agents all get swept), only SERVABLE rows counted (>= the agent's
+      // session start, the re-drain's own floor — holding an unservable row parked it in
+      // limbo forever), and a genuine just-before-restart message stays untouched because
+      // the 30-minute floor is unchanged. The engine-event half of this sweep follows
+      // below, still on `messages`, because an engine event is not an ask.
       const HUMAN_HOLD_LIMIT = 5;
-      const HUMAN_PREDICATE =
-        `lane = 'owner' AND source_agent_id IS NULL AND a2a_thread_id IS NULL`;
-      // AUDIT-FIX: count PER AGENT (a global count let 6 asks across 6 agents all
-      // get swept), and only count SERVABLE rows (>= the agent's session start,
-      // which is the re-drain's own floor). Holding an unservable row parked it in
-      // limbo: never served by the re-drain, never swept, re-held every boot.
-      const SERVABLE = `${HUMAN_PREDICATE} AND m.created_at >= (unixepoch(COALESCE((SELECT session_started_at FROM agents WHERE id = m.agent_id), '1970-01-01')) * 1000)`;
+      const STALE_ASK_WHERE =
+        `w.kind = 'ask' AND w.state = 'open'
+         AND w.opened_at < (unixepoch('now', '-30 minutes') * 1000)
+         AND w.opened_at >= (unixepoch(COALESCE((SELECT session_started_at FROM agents WHERE id = w.agent_id), '1970-01-01')) * 1000)`;
       const heldAgents = (db.prepare(
-        `SELECT m.agent_id AS id, COUNT(*) AS c FROM messages m
-          WHERE m.role = 'user' AND m.conv_key IS NULL AND m.swept_at IS NULL
-            AND m.created_at < (unixepoch('now', '-30 minutes') * 1000)
-            AND ${SERVABLE}
-          GROUP BY m.agent_id HAVING COUNT(*) <= ${HUMAN_HOLD_LIMIT}`,
+        `SELECT w.agent_id AS id, COUNT(*) AS c FROM work w
+          WHERE ${STALE_ASK_WHERE}
+          GROUP BY w.agent_id HAVING COUNT(*) <= ${HUMAN_HOLD_LIMIT}`,
       ).all() as Array<{ id: string; c: number }>);
       const heldTotal = heldAgents.reduce((s, a) => s + a.c, 0);
-      const heldIdList = heldAgents.map((a) => `'${a.id.replace(/'/g, "''")}'`).join(',');
-      // D11: mark stale rows SWEPT (drain-suppression) instead of OVERWRITING
-      // conv_key. Overwriting destroyed the row's conversation identity so recall
-      // returned the agent's replies but not what the user said. swept_at keeps
-      // conv_key intact (recall/scoping derive the true key) while the waiting
-      // query + engine-drain skip swept rows, so a restart still can't re-run
-      // weeks-old backlog. When an agent has only a few servable human asks stale,
-      // EXCLUDE those from the sweep so the re-drain below serves them.
+      const heldIds = new Set(heldAgents.map((a) => a.id));
+      const staleAsks = db.prepare(
+        `SELECT w.id AS id, w.agent_id AS agent_id FROM work w WHERE ${STALE_ASK_WHERE}`,
+      ).all() as Array<{ id: string; agent_id: string }>;
+      let suppressed = 0;
+      for (const a of staleAsks) {
+        if (heldIds.has(a.agent_id)) continue;      // held for the re-drain below
+        const res = transition(a.id, {
+          to: 'abandoned', by: 'agent', actorId: a.agent_id,
+          reason: 'boot staleness sweep: older than 30 minutes at startup and beyond the hold limit',
+        });
+        if (res.kind === 'applied') suppressed++;
+      }
       //
       // D8: also EXCLUDE engine events still inside their delivery lifecycle
       // (migration 084), i.e. rows carrying proof of an in-process delivery:
@@ -527,14 +537,21 @@ async function main(): Promise<void> {
       // disposal itself goes through the writer module's sweep, which re-applies the
       // same two guards per row (`swept_at IS NULL`, and `conv_key IS NULL` via
       // requireUnclaimed), so a row that was claimed in between is still not ours.
+      //
+      // T3: `lane = 'events'` is now EXPLICIT here rather than implied. This arm was always
+      // two sweeps sharing one predicate — owner asks and engine events — and the ask half
+      // moved to the work spine above. An engine event's claim still lives on `conv_key`
+      // (`'engine'` when a turn has picked it up), which is a DIFFERENT queue with its own
+      // retry lifecycle and its own owners in this phase (PHASE-2 T6 for the retry policy,
+      // T9 for the one reaper); collapsing it into the ask queue is not this task's to do
+      // and would be the two-mechanism disease in the other direction.
       const staleRows = db.prepare(
         `SELECT m.seq AS rowid, m.agent_id AS agent_id FROM messages AS m
-          WHERE m.role = 'user' AND m.conv_key IS NULL AND m.swept_at IS NULL
+          WHERE m.role = 'user' AND m.lane = 'events'
+            AND m.conv_key IS NULL AND m.swept_at IS NULL
             AND m.created_at < (unixepoch('now', '-30 minutes') * 1000)
-            AND NOT (m.lane = 'events'
-                     AND ((m.next_attempt_at IS NOT NULL AND m.next_attempt_at > (unixepoch('now') * 1000))
-                          OR (m.delivery_attempts > 0 AND m.delivery_attempts < 5)))
-            ${heldAgents.length > 0 ? `AND NOT (${SERVABLE} AND m.agent_id IN (${heldIdList}))` : ''}`,
+            AND NOT ((m.next_attempt_at IS NOT NULL AND m.next_attempt_at > (unixepoch('now') * 1000))
+                     OR (m.delivery_attempts > 0 AND m.delivery_attempts < 5))`,
       ).all() as Array<{ rowid: number; agent_id: string }>;
       let swept = 0;
       for (const r of staleRows) {
@@ -543,54 +560,42 @@ async function main(): Promise<void> {
       // T6: the SECOND sweep arm is gone. D-A step 4 split engine events across two
       // physical tables, so this sweep needed a store arm or a stale store engine event
       // survived the restart and re-fired via the merged boot re-drain. Engine events
-      // are `lane='events'` rows in `messages` now, and the predicate above already
-      // reaches them: `lane = 'events'` is exactly the `origin_kind = 'engine'` clause
-      // the store arm carried, and the held-agents exclusion cannot touch them because
-      // HUMAN_PREDICATE is owner-lane only.
+      // are `lane='events'` rows in `messages` now, and the predicate above reaches them
+      // directly: `lane = 'events'` is exactly the `origin_kind = 'engine'` clause the
+      // store arm carried.
       // requirement preserved: a stale, never-attempted engine event is drain-suppressed
       // at boot, wherever it was queued, while one still inside its delivery lifecycle
       // (a future backoff or 1-4 recorded attempts) survives to be retried.
-      if (swept > 0 || heldTotal > 0) {
-        logger.info(`Boot staleness sweep: drain-suppressed ${swept} stale (>30m) row(s) via swept_at (conv_key preserved for recall)${heldTotal > 0 ? `; HELD ${heldTotal} genuine human ask(s) across ${heldAgents.length} agent(s) for the re-drain` : ''} (tracker untouched)`);
+      if (swept > 0 || suppressed > 0 || heldTotal > 0) {
+        logger.info(`Boot staleness sweep: drain-suppressed ${swept} stale (>30m) engine event(s) via swept_at and abandoned ${suppressed} stale ask(s)${heldTotal > 0 ? `; HELD ${heldTotal} genuine human ask(s) across ${heldAgents.length} agent(s) for the re-drain` : ''} (tracker untouched)`);
       }
     } catch (err) {
       logger.warn('Boot staleness sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
     }
   }
 
-  // 4b1. D19: boot crash-reconciliation, split "claimed" from "answered".
-  // A crash AFTER the pickup stamp claimed a human ask (conv_key set) but BEFORE
-  // the reply was produced leaves the row reading SERVED forever: the in-memory
-  // revert (loop.ts revertTriggerStampOnAbort) never ran, and the re-drain below
-  // sees nothing waiting. A claimed human row is genuinely ANSWERED only if a
-  // later assistant/tool row carries the SAME conv_key (the turn-end stamp). Revert
-  // claims with no such reply so the re-drain re-serves them. Scoped to a recent
-  // window (a fresh crash) and biased to RE-SERVE (a possible duplicate reply) over
-  // DROP (silent loss). Uses idx_messages_agent_created for the reply check.
+  // 4b1. D19: boot crash-reconciliation — CRASH TEST B's durable half.
+  // A kill AFTER the pickup claimed a human ask but BEFORE the reply was produced leaves
+  // the ask reading SERVED forever: the in-process revert (loop.ts
+  // revertTriggerStampOnAbort) never ran, and the re-drain below sees nothing waiting.
+  //
+  // PHASE-2 T3 — THE INFERENCE IS GONE. This used to decide "genuinely answered" by asking
+  // whether a later assistant/tool row happened to carry the same conv_key string: a guess
+  // about prose lineage that could not tell an answered turn from a turn that merely
+  // narrated. It now reads the two facts that were recorded when they were known — did the
+  // claiming TURN finish (`turns.ended_at`), and did it already DO anything
+  // (`turns.effectful_calls`) — and it is exactly the rule P6b states:
+  //   * the turn never ended and did nothing -> hand the ask back (no orphan claims);
+  //   * the turn never ended but already acted -> HOLD it (no duplicate effects).
+  // Still scoped to a recent window (a fresh crash, never weeks of backlog) and still
+  // biased to re-serve over drop wherever nothing happened.
+  // PHASE-2 T5 owns the remaining half of this rekey: pointing "answered" at the delivery
+  // edge (`result_delivery_id`) once deliveries are universal.
   {
     try {
-      const db = getDb();
-      const claimed = db.prepare(
-        `SELECT seq AS rowid, conv_key, agent_id, datetime(created_at/1000,'unixepoch') AS created_at FROM messages
-          WHERE role = 'user' AND conv_key IS NOT NULL AND swept_at IS NULL
-            AND conv_key NOT IN ('engine', 'engine-steer')
-            AND conv_key NOT LIKE 'park:%' AND conv_key NOT LIKE 'relayed:%'
-            AND source_agent_id IS NULL AND a2a_thread_id IS NULL
-            AND lane = 'owner'
-            AND created_at >= (unixepoch('now', '-30 minutes') * 1000)`,
-      ).all() as Array<{ rowid: number; conv_key: string; agent_id: string; created_at: string }>;
-      const hasReply = db.prepare(
-        `SELECT 1 FROM messages WHERE agent_id = ? AND role IN ('assistant', 'tool')
-            AND conv_key = ? AND created_at >= (unixepoch(?) * 1000) LIMIT 1`,
-      );
-      let reArmed = 0;
-      for (const r of claimed) {
-        if (hasReply.get(r.agent_id, r.conv_key, r.created_at)) continue; // genuinely answered
-        setConvKeyByRowid({ rowid: r.rowid, agentId: r.agent_id, value: null });
-        reArmed++;
-      }
-      if (reArmed > 0) {
-        logger.warn(`Boot crash-reconciliation: re-armed ${reArmed} claimed-but-unanswered human ask(s) for the re-drain (crash between pickup and reply; tracker untouched)`);
+      const { reArmed, held } = reconcileOrphanedClaims();
+      if (reArmed > 0 || held > 0) {
+        logger.warn(`Boot crash-reconciliation: re-armed ${reArmed} orphaned ask claim(s) for the re-drain; HELD ${held} whose turn had already performed effectful calls (P6b: a duplicate send is worse than a stranded ask; tracker untouched)`);
       }
     } catch (err) {
       logger.warn('Boot crash-reconciliation failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
