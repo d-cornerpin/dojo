@@ -268,9 +268,9 @@
       "why": "Harness ownership as a FACT rather than a name pattern (migration 134, PHASE-1 T11). 'user' | 'agent' | 'harness', NULLABLE by design so no existing row is backfilled and nothing is inferred from NULL (#15). DECLARED AT THE PHASE-1 EXIT, and T13-items #23's premise turned out to be wrong for THIS column: it was left out of the manifest on the belief that its only reader is the kit, but measured 2026-07-28 at 41fcabb it has production readers inside the scan scope — agent/created-by-kind.ts:61 and gateway/routes/agents.ts:348. No disposition needed."
     },
     {
-      "id": "tasks.created_by_kind",
+      "id": "legacy_tasks.created_by_kind",
       "kind": "column",
-      "table": "tasks",
+      "table": "legacy_tasks",
       "column": "created_by_kind",
       "definedIn": "packages/server/src/db/migrations/134_created_by_kind.sql",
       "why": "Harness ownership as a FACT rather than a name pattern (migration 134, PHASE-1 T11). 'user' | 'agent' | 'harness', NULLABLE by design so no existing row is backfilled and nothing is inferred from NULL (#15). Stamped at creation by the tracker's writers so a test run's rows are structurally its own. Declared here rather than left undeclared (T13-items #23 argued for leaving it out) because an undeclared spine column is invisible to this gate forever, whereas a declared one with its reader named stays true and gets re-checked on every run.",
@@ -283,9 +283,9 @@
       }
     },
     {
-      "id": "projects.created_by_kind",
+      "id": "legacy_projects.created_by_kind",
       "kind": "column",
-      "table": "projects",
+      "table": "legacy_projects",
       "column": "created_by_kind",
       "definedIn": "packages/server/src/db/migrations/134_created_by_kind.sql",
       "why": "Harness ownership as a FACT rather than a name pattern (migration 134, PHASE-1 T11). 'user' | 'agent' | 'harness', NULLABLE by design so no existing row is backfilled and nothing is inferred from NULL (#15). Same stamp on the projects table; same kit consumer.",
@@ -296,11 +296,89 @@
         "date": "2026-07-28",
         "reason": "As tasks.created_by_kind — the sweep deletes leftover harness projects by this column (runner.mjs:605 collects harness ids; the teardown scopes on them), and kit-schema-conformance.mjs prepares the statement against the real schema."
       }
+    },
+    {
+      "id": "turns.exit_reason",
+      "kind": "column",
+      "table": "turns",
+      "column": "exit_reason",
+      "definedIn": "packages/server/src/db/migrations/135_work_spine.sql",
+      "why": "WHY a turn ended: a 17-value CHECKed enum, counted off DOJO-REBUILD-MAP.md:650-653 (research 19 s1c says 18 and is wrong). Half of the old `outcome` column, which conflated 'why did it end' with 'has the person heard from us' and made the second fact something ~29 sites re-derived from nine other variables. Written by agent/v2/turn-record.ts finalizeTurn + markTurnDied.",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "PHASE-2 T6",
+        "date": "2026-07-28",
+        "reason": "T6's C1 cluster deletes the PROSE classification of a closeout (CLOSEOUT_PHRASE / CLOSEOUT_WHOLE_RE and their consumer, PHASE-2.md PINNED s11). The structural fact that replaces it is exactly 'how did this turn end', which is this column — so the task that removes the prose reader is the task that owes the column reader. Stated as an assignment with its reasoning so it can be challenged rather than inherited (#14): if T6 concludes the honest reader belongs elsewhere, it moves the owner and says why."
+      }
+    },
+    {
+      "id": "turns.answered",
+      "kind": "column",
+      "table": "turns",
+      "column": "answered",
+      "definedIn": "packages/server/src/db/migrations/135_work_spine.sql",
+      "why": "WHETHER a genuine user-facing reply was DELIVERED this turn. 0/1, NOT NULL, no default — the writer must say, because 'we forgot to record it' and 'nothing was delivered' are the two facts this platform kept confusing. The other half of the old `outcome` split. HAS a production reader from the day it landed: tracker/delivery-evidence.ts:58 selects the answering turn with `answered = 1`, replacing the old `outcome = 'answered'` string test."
+    },
+    {
+      "id": "turns.effectful_calls",
+      "kind": "column",
+      "table": "turns",
+      "column": "effectful_calls",
+      "definedIn": "packages/server/src/db/migrations/135_work_spine.sql",
+      "why": "The counted non-idempotent call count for the turn, persisted instead of inferred. Written by finalizeTurn from the live in-memory counter state.nonIdempotentCallsThisTurn (agent/v2/state.ts:119), so it has a real writer on arrival rather than a placeholder.",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "PHASE-2 T3",
+        "date": "2026-07-28",
+        "reason": "PHASE-2.md T3 Step 1 names it: 'abort WITH effectful calls never re-fires (P6b carried — turns.effectful_calls is the counted input)'. P3/P6b revert a claim only when the turn produced no answer AND executed zero non-idempotent calls; today the second half is read from memory, which does not survive the crash the rule exists for. T3 makes it a read."
+      }
+    },
+    {
+      "id": "work.hop_count",
+      "kind": "column",
+      "table": "work",
+      "column": "hop_count",
+      "definedIn": "packages/server/src/db/migrations/135_work_spine.sql",
+      "why": "The per-thread hop count, on the row instead of in the transport's own constant. INTEGER NOT NULL DEFAULT 0, so it is honest from creation rather than nullable-until-someone-remembers.",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "PHASE-2 T4",
+        "date": "2026-07-28",
+        "reason": "T0's D2 assigns it by name: the hop cap has TWO LIVE VALUES today (8 at a2a-transport.ts:523, 5 at classifiers/a2a.ts:171) and 'MAX_HOPS_PER_THREAD (transport) DISSOLVES IN THIS PHASE ... the transport's per-thread hop count becomes a column on work. T4 Step 3 gains it by name.' The classifier's cap and the triplicated intent sets go to SWEEP A."
+      }
+    },
+    {
+      "id": "work.provenance",
+      "kind": "column",
+      "table": "work",
+      "column": "provenance",
+      "definedIn": "packages/server/src/db/migrations/135_work_spine.sql",
+      "why": "live | migrated | rescued, the same three values messages.provenance carries. It says where a work row came from, so a Stable Bridge import stays distinguishable from live traffic forever instead of being guessed from timestamps. UNLIKE messages.provenance, both values exist here from the first boot: migration 135's own copy stamps every legacy task and project 'migrated', so there is something real to distinguish on every box, not only after a Bridge run.",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "PHASE-2 T12",
+        "date": "2026-07-28",
+        "reason": "The reader that matters is the one that treats a migrated row differently from a live one — a migrated `done` row points at a legacy-closure delivery (outcome='migrated'), not at a real send, and any surface that reports delivery history must be able to say so. T12 owns Bridge Entry 12 and is where that distinction becomes load-bearing. Recorded rather than closed early: a reader written now would have nothing to protect anyone from."
+      }
     }
   ],
   "tables": [
     {
-      "name": "tasks",
+      "name": "work",
+      "definedIn": "packages/server/src/db/migrations/135_work_spine.sql",
+      "agentLink": "agent_id",
+      "stateColumn": "state",
+      "terminalStates": [
+        "done",
+        "failed",
+        "abandoned"
+      ],
+      "workShaped": true,
+      "why": "THE spine (OR1, PHASE-2 T2). One table, one ID space: `tasks` and `projects` became two `kind`s of one row with their ids carried over, and `done` is unreachable without a delivery to point at (CHECK state <> 'done' OR result_delivery_id IS NOT NULL). This is the table the falsifier is about, so it is declared first: if a SECOND work-shaped table ever appears beside it without an explanation in this file, the build stops, which is the whole point of the rule. NOTE for anyone extending the detector: `agent_id` deliberately carries NO foreign key and NO cascade (T0 D1) — a terminated agent's work rows must outlive their agent — so the absence of an FK here is a decision, not an oversight.",
+      "disposition": "LIVE, and the destination for everything else in this list. T3-T9 route their writers through work/store.ts's transition(); T10 drops the legacy tables it replaced."
+    },
+    {
+      "name": "legacy_tasks",
       "definedIn": "packages/server/src/db/migrations/003_multi_agent.sql",
       "agentLink": "assigned_to",
       "stateColumn": "status",
@@ -310,8 +388,8 @@
         "failed"
       ],
       "workShaped": true,
-      "why": "THE tracker. OR1: this table evolves into the `work` spine (Phase 2) and keeps its ID space. Note for anyone extending the detector: it links agents through `assigned_to TEXT REFERENCES agents(id)`, NOT a column named agent_id — which is why the declaration trigger is the structural shape rather than the literal name.",
-      "disposition": "Phase 2 — becomes `work` (OR1)."
+      "why": "THE tracker, now under its retirement name. PHASE-2 T2 copied every row into `work` with ids preserved and renamed the table in the same migration (135), so a reader nobody re-pointed fails loud instead of quietly reading a stale twin. It is still work-shaped and still declared, because it still holds rows and still has writers — 47 state-writing sites across 9 files, which the single-writer walk in work/__tests__ carries as a burn-down list. Note for anyone extending the detector: it links agents through `assigned_to TEXT REFERENCES agents(id)`, NOT a column named agent_id.",
+      "disposition": "Phase 2 — SUPERSEDED by `work` (OR1); renamed at T2, writers move at T8, table DROPS at T10."
     },
     {
       "name": "task_runs",
