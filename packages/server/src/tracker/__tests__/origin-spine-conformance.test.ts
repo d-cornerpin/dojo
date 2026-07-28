@@ -59,10 +59,23 @@ describe('origin-spine conformance (P1)', () => {
   });
 
   it('the engine-row writer persists the work referent columns', () => {
+    // PHASE-1 T4 (2026-07-27): interagent.ts is a shim over memory/message-store.ts now,
+    // so the engine row's columns are named as writer-module FIELDS rather than in a
+    // raw column list. The requirement is untouched — an engine row must still carry
+    // the work referent the serve boundary re-checks its premise against — so all four
+    // are still asserted, at both ends: the shim must pass them, and the single writer
+    // must persist them. Asserting only the old column-list literal would have gone
+    // quietly vacuous the moment the statement moved.
     const interagent = read('memory/interagent.ts');
     const fn = interagent.slice(interagent.indexOf('export function insertInterAgentEngineRow'));
-    expect(fn.slice(0, 2500)).toMatch(/task_id, run_id, root_kind, root_id/);
-    expect(fn.slice(0, 2500)).toMatch(/work:\s*\{\s*taskId:/);
+    const body = fn.slice(0, 2500);
+    for (const field of ['taskId', 'runId', 'rootKind', 'rootId']) {
+      expect(body, `the engine-row writer must pass ${field}`).toContain(`${field}: params.work?.`);
+    }
+    expect(body).toMatch(/work:\s*\{\s*taskId:|params\.work\?\.taskId/);
+    const store = read('memory/message-store.ts');
+    expect(store, 'the single writer must persist the work referent columns')
+      .toMatch(/task_id, run_id, root_kind, root_id/);
   });
 
   it('the a2a auto-task stores its assign message id', () => {

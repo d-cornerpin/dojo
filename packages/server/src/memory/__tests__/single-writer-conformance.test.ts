@@ -64,16 +64,17 @@ const read = (r: string) => fs.readFileSync(path.join(SRC, r), 'utf8');
 // this array held after it. 42 → 0 is the task.
 //   T4 cluster 1 (engine/loop):  −6  →  36   loop, counterparty, engine-steer,
 //                                            recovery, inbound-channel, compaction
+//   T4 cluster 2 (agent + fold): −8  →  28   a2a-transport, tools, model, spawner,
+//                                            rate-limit-retry, model-switch,
+//                                            destructive-gate, interagent (the shim)
 const WRITER_ALLOWLIST: string[] = [
-  'agent/a2a-transport.ts', 'agent/destructive-gate.ts', 'agent/model-switch.ts',
-  'agent/model.ts', 'agent/rate-limit-retry.ts', 'agent/spawner.ts', 'agent/tools.ts',
   // NOT db/migrations.ts: its only `INTO messages…` is `messages_fts`, the FTS shadow
   // table, which the word boundary correctly excludes. Listing it would have been a stale
   // entry hiding one file's worth of progress — the stale check below caught exactly that.
   'gateway/routes/agents.ts', 'gateway/routes/chat.ts', 'gateway/routes/setup-deps.ts',
   'gateway/routes/system.ts', 'gateway/routes/twilio.ts', 'google/reauth-notice.ts',
   'healer/healer-agent.ts', 'imaginer/imaginer-agent.ts', 'index.ts',
-  'memory/interagent.ts', 'migration/path-migration.ts',
+  'migration/path-migration.ts',
   'scheduler/runner.ts', 'services/generation-jobs.ts', 'services/gmail-watcher.ts',
   'services/imessage-bridge.ts', 'services/outlook-watcher.ts', 'services/teams-watcher.ts',
   'services/video-job-poller.ts', 'techniques/audit-migration.ts',

@@ -250,6 +250,14 @@ chatRouter.get('/:agentId/messages', (c) => {
   // This was the wordy-mode-reload leak: the reload reads straight from here.
   const RETIRED_FILTER = 'retired_at IS NULL';
 
+  // PHASE-1 T4 (2026-07-27): LOAD-BEARING as of this commit. The paragraph above
+  // describes the protection that used to keep agent traffic off this route — a
+  // PHYSICAL table split, which is why no origin filter was needed here. T4 folded
+  // that traffic into `messages` on lane='a2a'/'events', so the split is a COLUMN now
+  // and this route leaks without it. (`chat_messages` IS this predicate + retired_at;
+  // pointing the route at the view is T6's, but the guard lands with the fold.)
+  const OWNER_LANE_FILTER = "lane = 'owner'";
+
   // REVERTED 2026-07-06 late night, owner correction: the serving contract is
   // the SIMPLE one. `messages` is the conversation; the client renders visible
   // rows in regular mode, everything in wordy mode, and infinite scroll pages
@@ -286,6 +294,7 @@ chatRouter.get('/:agentId/messages', (c) => {
              origin_kind, origin_intent, rowid AS _rowid, 0 AS _tag
       FROM messages
       WHERE agent_id = @agentId AND ${STOP_MARKER_FILTER} AND ${RETIRED_FILTER}
+        AND (${OWNER_LANE_FILTER} OR (lane = 'a2a' AND role IN ('assistant','tool')))
         AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
       UNION ALL
       SELECT id, agent_id, role, content, NULL AS token_count, NULL AS model_id, NULL AS cost, NULL AS latency_ms,
@@ -338,6 +347,7 @@ chatRouter.get('/:agentId/messages', (c) => {
     rows = db.prepare(`
       SELECT * FROM messages
       WHERE agent_id = ? AND created_at < ? AND ${STOP_MARKER_FILTER} AND ${RETIRED_FILTER}
+        AND ${OWNER_LANE_FILTER}
       ORDER BY created_at DESC, rowid DESC
       LIMIT ?
     `).all(agentId, cursorMsg.created_at, Math.min(limit, 200)) as Array<Record<string, unknown>>;
@@ -345,6 +355,7 @@ chatRouter.get('/:agentId/messages', (c) => {
     rows = db.prepare(`
       SELECT * FROM messages
       WHERE agent_id = ? AND ${STOP_MARKER_FILTER} AND ${RETIRED_FILTER}
+        AND ${OWNER_LANE_FILTER}
       ORDER BY created_at DESC, rowid DESC
       LIMIT ?
     `).all(agentId, Math.min(limit, 200)) as Array<Record<string, unknown>>;

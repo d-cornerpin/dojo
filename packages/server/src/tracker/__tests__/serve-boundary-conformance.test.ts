@@ -150,17 +150,25 @@ describe('turn record (P4)', () => {
 });
 
 describe('conversations at ingest (P5)', () => {
-  // PHASE-1 T3 (2026-07-27): this array asserts the PRE-writer-module ingest shape and it is
-  // still exactly right — T3 created `memory/message-store.ts` and migration 127 but converted
-  // no producer, so all seven still stamp conversation_id in their own raw INSERT.
-  // T4 CONVERTS THESE SEVEN AND MUST UPDATE THIS TEST IN THE SAME COMMIT: once a producer
-  // calls insertMessage(), it no longer contains `INTO messages` and the regex below goes red
-  // for the right reason. The assertion that survives the conversion is the one that matters —
-  // that the producer resolves a conversation and hands it to the writer atomically — so the
-  // second expectation becomes `insertMessage\([\s\S]{0,300}conversationId`.
-  // The full 12-file producer union (this 7 plus twilio, deliveries, loop, interagent,
-  // scheduler) is pinned in memory/__tests__/single-writer-conformance.test.ts, whose
-  // allowlist is the burn-down artefact Sweep A drives to zero.
+  // PHASE-1 T4 (2026-07-27) — CONVERTED, as T3's dated note directed.
+  //
+  // The requirement has not moved an inch: a channel producer must resolve the
+  // conversation and hand it to the write ATOMICALLY, in the same statement, so no row
+  // can exist without its conversation identity (OR4 — stamped at ingest). What moved
+  // is the statement: a converted producer calls `insertMessage({ … conversationId })`
+  // instead of spelling `INTO messages … conversation_id`.
+  //
+  // BOTH shapes are accepted, deliberately, because T4 converts these seven across
+  // several cluster commits and a test that only knew the new shape would have gone red
+  // on the unconverted ones — which is a false alarm, not a finding. Both shapes are
+  // also the honest statement of the invariant: the atomicity is what is asserted, not
+  // the syntax. This list is superseded by the 12-file producer union in
+  // memory/__tests__/single-writer-conformance.test.ts, whose allowlist Sweep A drives
+  // to zero; it survives here because it is the only check that ties a producer's
+  // conversation RESOLUTION to its WRITE.
+  const ATOMIC_CONVERSATION_STAMP =
+    /INTO messages[\s\S]{0,300}conversation_id|insertMessage(?:IfAbsent)?\s*\([\s\S]{0,400}conversationId/;
+
   it('every channel producer stamps conversation_id ATOMICALLY in its INSERT', () => {
     const producers = [
       'services/imessage-bridge.ts',
@@ -174,10 +182,12 @@ describe('conversations at ingest (P5)', () => {
     for (const rel of producers) {
       const src = read(rel);
       expect(src, `${rel} must resolve a conversation`).toMatch(/resolveOrCreateConversation\(/);
-      expect(src, `${rel} must stamp conversation_id in the INSERT itself`).toMatch(/INTO messages[\s\S]{0,300}conversation_id/);
+      expect(src, `${rel} must stamp conversation_id in the write itself`).toMatch(ATOMIC_CONVERSATION_STAMP);
     }
+    // interagent.ts is a shim over the single writer as of T4; its peer-A2A row still
+    // resolves a conversation and passes it in the same call.
     const ia = read('memory/interagent.ts');
-    expect(ia).toMatch(/INTO inter_agent_messages[\s\S]{0,400}conversation_id/);
+    expect(ia).toMatch(/INTO inter_agent_messages[\s\S]{0,400}conversation_id|insertMessage(?:IfAbsent)?\s*\([\s\S]{0,600}conversationId/);
   });
 
   it('conversations rows have exactly one writer (the resolver)', () => {

@@ -580,8 +580,13 @@ agentsRouter.get('/:id/messages', (c) => {
   // as the chat history route does. New inter-agent traffic lives in the
   // inter_agent_messages store, so this origin-projected feed only ever carries
   // human chat + the agent's own turns now.
+  // PHASE-1 T4 (2026-07-27): `lane = 'owner'` is the fail-closed replacement for the
+  // physical separation this comment describes. T4 folded peer A2A and engine rows into
+  // the unified table, so "new inter-agent traffic lives in the store" stopped being
+  // true in the same commit that added this predicate — the sentence above is history
+  // now, and the column is what keeps this dashboard projection human-only.
   const rows = db.prepare(`
-    SELECT * FROM messages WHERE agent_id = ? AND retired_at IS NULL
+    SELECT * FROM messages WHERE agent_id = ? AND retired_at IS NULL AND lane = 'owner'
     ORDER BY created_at ASC
     LIMIT ? OFFSET ?
   `).all(id, limit, offset) as Array<Record<string, unknown>>;

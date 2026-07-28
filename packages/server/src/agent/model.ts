@@ -7,6 +7,7 @@ import { createLogger } from '../logger.js';
 import { AgentError } from './errors.js';
 import { scheduleRateLimitRetry } from './rate-limit-retry.js';
 import { toolDefinitions, getFilteredTools, type ToolDefinition } from './tools.js';
+import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { recordCost } from '../costs/tracker.js';
 import { checkBudget } from '../costs/budget.js';
 import { updateRateLimits } from '../router/rate-limits.js';
@@ -2187,9 +2188,8 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
         // Notify the agent's chat
         const notifyMsg = `[SOURCE: SYSTEM, not a message from the user] Daily budget reached ($${budgetCheck.dailySpend?.toFixed(2)} of $${budgetCheck.dailyLimit?.toFixed(2)}). Using ${fb.modelName} (free) instead.`;
         try {
-          const db = getDb();
           const msgId = uuidv4();
-          db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(msgId, agentId, notifyMsg);
+          insertMessageIfAbsent({ id: msgId, agentId, role: 'system', content: notifyMsg });
           broadcast({
             type: 'chat:message',
             agentId,
@@ -2201,7 +2201,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
           if (!isPrimaryAgent(agentId)) {
             const primaryMsgId = uuidv4();
             const primaryNotify = `[SOURCE: SYSTEM, not a message from the user] Agent "${agentId}" switched to free model (${fb.modelName}) due to budget limits.`;
-            db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(primaryMsgId, primaryId, primaryNotify);
+            insertMessageIfAbsent({ id: primaryMsgId, agentId: primaryId, role: 'system', content: primaryNotify });
             broadcast({
               type: 'chat:message',
               agentId: primaryId,

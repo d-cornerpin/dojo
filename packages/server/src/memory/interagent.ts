@@ -14,10 +14,39 @@
 // single-table tail. That byte-identity is the whole point: it protects the
 // correctness floor (the weakest model must act on an ASSIGN identically whether it
 // was sourced from `messages` or the store).
+//
+// ── PHASE-1 T4 (2026-07-27): THIS IS NOW A SHIM. T10 DELETES IT. ───────────────
+//
+// The three INSERTs below no longer write `inter_agent_messages`. They call the single
+// writer, which lands the same rows in the unified `messages` table on the lane that
+// says what they are: peer inbound and own output on `lane='a2a'`, engine notices on
+// `lane='events'`. STRIP; requirement preserved: one INSERT owner, and the physical
+// separation D-A bought is now a CHECK-constrained column instead of a second table.
+//
+// What replaced the separation, because the separation IS the protection and it does
+// not survive on trust:
+//   * `chat_messages` (migration 127) is `WHERE lane='owner' AND retired_at IS NULL`.
+//     The human-facing reads were re-pointed at it in this same commit — the chat
+//     history route, the dashboard message feed and the voice last-assistant probe.
+//     Before T4 those three read `messages` unfiltered and were kept honest ONLY by
+//     the fact that agent traffic physically lived elsewhere.
+//   * the module writes the legacy `origin_kind`/`source` values derived from `lane`,
+//     so the ~19 anti-join dedups and the pre-D-A `origin_kind != 'engine'` /
+//     `source != 'a2a'` filters that never went away keep excluding these rows from
+//     the human waiting set exactly as they did before D-A. T5/T6 re-point them onto
+//     `lane`; T10 drops the columns.
+//   * NO_INTERAGENT_LEAK (dojo-test-kit) was reformulated in the same commit: it now
+//     asserts on what the chat ROUTE returns and on what is broadcast, which is the
+//     leak's actual surface, instead of scanning for rows in a table they now
+//     legitimately live in.
+//
+// `inter_agent_messages` still EXISTS and still has readers (mergedTailQuery and the
+// anti-joins) until T5 deletes them — R5, because renaming it at T3 killed every
+// assembled turn. Its pre-T4 rows are untouched and keep being read from there.
 
-import { getDb } from '../db/connection.js';
 import { resolveOrCreateConversation } from './conversations.js';
 import type { Message } from '@dojo/shared';
+import { insertMessage, insertMessageIfAbsent, tagTurnOutputConvKey } from './message-store.js';
 import { rowToMessage, type MessageRow } from './store.js';
 
 /**
@@ -42,7 +71,6 @@ export function insertInterAgentMessage(params: {
   originKind: string | null;
   originIntent: string | null;
 }): { changes: number } {
-  const db = getDb();
   // P5: a peer A2A thread is a conversation like any other; identity keyed on
   // the full thread id. Engine-origin rows (no thread) stay conversation-less.
   const conversationId = params.a2aThreadId
@@ -50,24 +78,24 @@ export function insertInterAgentMessage(params: {
         channel: 'a2a', provider: null, counterpartyId: params.sourceAgentId, threadRoot: params.a2aThreadId,
       })
     : null;
-  const result = db.prepare(`
-    INSERT OR IGNORE INTO inter_agent_messages
-      (id, agent_id, role, content, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, attachments, origin_kind, origin_intent, conversation_id, created_at)
-    VALUES (?, ?, 'user', ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-  `).run(
-    params.id,
-    params.agentId,
-    params.content,
-    params.sourceAgentId,
-    params.a2aThreadId,
-    params.a2aIntent,
-    params.a2aRequiresResponse,
-    params.attachments,
-    params.originKind,
-    params.originIntent,
+  // T4: `originKind` was the caller's way of saying "this is engine coordination, not a
+  // peer talking" — that IS the lane, so it becomes one and stops being a column the
+  // caller stamps. Every other value is passed through unchanged.
+  const persisted = insertMessageIfAbsent({
+    id: params.id,
+    agentId: params.agentId,
+    role: 'user',
+    lane: params.originKind === 'engine' ? 'events' : 'a2a',
+    content: params.content,
+    sourceAgentId: params.sourceAgentId,
+    a2aThreadId: params.a2aThreadId,
+    a2aIntent: params.a2aIntent,
+    a2aRequiresResponse: params.a2aRequiresResponse === 1,
+    attachments: params.attachments,
+    originIntent: params.originIntent,
     conversationId,
-  );
-  return { changes: result.changes };
+  });
+  return { changes: persisted ? 1 : 0 };
 }
 
 /**
@@ -109,26 +137,33 @@ export function insertInterAgentEngineRow(params: {
   // retire when the referent is spent.
   work: { taskId: string | null; runId: string | null; rootKind: string | null; rootId: string | null } | null;
 }): { changes: number } {
-  const db = getDb();
-  const verb = params.orIgnore === false ? 'INSERT' : 'INSERT OR IGNORE';
-  const result = db.prepare(`
-    ${verb} INTO inter_agent_messages
-      (id, agent_id, role, content, source_agent_id, origin_kind, origin_intent, conv_key, turn_number, task_id, run_id, root_kind, root_id, created_at)
-    VALUES (?, ?, 'user', ?, ?, 'engine', ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-  `).run(
-    params.id,
-    params.agentId,
-    params.content,
-    params.sourceAgentId,
-    params.originIntent,
-    params.convKey,
-    params.turnNumber ?? null,
-    params.work?.taskId ?? null,
-    params.work?.runId ?? null,
-    params.work?.rootKind ?? null,
-    params.work?.rootId ?? null,
-  );
-  return { changes: result.changes };
+  // T4: the hardcoded origin_kind='engine' IS `lane:'events'` (T3-0b §1 maps them
+  // value for value). The interpolated VERB — the one write form no literal grep
+  // matched, and the reason the conformance walk keys on the TABLE — collapses into
+  // the writer module's two named functions, which say the same thing in the type
+  // system: `insertMessage` throws, `insertMessageIfAbsent` is a designed no-op.
+  // FA-T6 is preserved exactly: the tracker-assignment writer passes orIgnore:false so
+  // a genuine DB fault THROWS and its caller reports ok:false instead of a silent skip.
+  const row = {
+    id: params.id,
+    agentId: params.agentId,
+    role: 'user' as const,
+    lane: 'events' as const,
+    content: params.content,
+    sourceAgentId: params.sourceAgentId,
+    originIntent: params.originIntent,
+    convKey: params.convKey,
+    turnNumber: params.turnNumber ?? null,
+    taskId: params.work?.taskId ?? null,
+    runId: params.work?.runId ?? null,
+    rootKind: params.work?.rootKind ?? null,
+    rootId: params.work?.rootId ?? null,
+  };
+  if (params.orIgnore === false) {
+    insertMessage(row);
+    return { changes: 1 };
+  }
+  return { changes: insertMessageIfAbsent(row) ? 1 : 0 };
 }
 
 /**
@@ -163,20 +198,21 @@ export function insertInterAgentOwnOutput(params: {
   attachments?: string | null;        // JSON array string, or null
   turnNumber: number | null;
 }): { changes: number } {
-  const db = getDb();
-  const result = db.prepare(`
-    INSERT OR IGNORE INTO inter_agent_messages
-      (id, agent_id, role, content, attachments, turn_number, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
-  `).run(
-    params.id,
-    params.agentId,
-    params.role,
-    params.content,
-    params.attachments ?? null,
-    params.turnNumber ?? null,
-  );
-  return { changes: result.changes };
+  // T4: own output keeps source_agent_id / a2a_* NULL and carries its DIRECTION in
+  // `role`, exactly as documented above — which is why migration 127's a2a CHECK had to
+  // be amended to `lane <> 'a2a' OR role IN ('assistant','tool') OR source_agent_id IS
+  // NOT NULL` (T3-0b §3). Without that amendment every row this function writes would
+  // throw at the DB.
+  const persisted = insertMessageIfAbsent({
+    id: params.id,
+    agentId: params.agentId,
+    role: params.role,
+    lane: 'a2a',
+    content: params.content,
+    attachments: params.attachments ?? null,
+    turnNumber: params.turnNumber ?? null,
+  });
+  return { changes: persisted ? 1 : 0 };
 }
 
 /**
@@ -190,11 +226,11 @@ export function insertInterAgentOwnOutput(params: {
  * store rows for that turn_number). Returns the number of rows tagged.
  */
 export function tagInterAgentOwnOutputConvKey(agentId: string, turnNumber: number, convKey: string): number {
-  const db = getDb();
-  const result = db.prepare(
-    `UPDATE inter_agent_messages SET conv_key = ? WHERE agent_id = ? AND turn_number = ? AND role IN ('assistant','tool') AND conv_key IS NULL`,
-  ).run(convKey, agentId, turnNumber);
-  return result.changes;
+  // T4: the turn's a2a own output now lives in `messages` on lane='a2a', so this tags
+  // there. The lane argument is what keeps the two taggers from colliding: the loop's
+  // own-output tagger is scoped to lane='owner', this one to lane='a2a', which
+  // reproduces the pre-T4 split (two tables, two statements) inside one table.
+  return tagTurnOutputConvKey({ agentId, turnNumber, convKey, lane: 'a2a' });
 }
 
 /** Raw shape read out of `inter_agent_messages` (the table's own columns). */

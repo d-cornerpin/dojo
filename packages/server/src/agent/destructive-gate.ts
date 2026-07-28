@@ -20,6 +20,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { currentTurnRoot, currentTurnServedWork, currentTurnNumber } from './turn-state.js';
 import { getDb } from '../db/connection.js';
+import { insertMessage } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getPrimaryAgentName, isHealerAgent } from '../config/platform.js';
@@ -529,10 +530,7 @@ function notifyOwnerApprovalExpired(row: { agent_id: string; request_text: strin
       `but it went unanswered for over an hour, so I let the request expire. Nothing was changed or deleted. ` +
       `If you still want it done, just tell me and I'll approve it.`;
     const ownerMsgId = uuidv4();
-    getDb().prepare(`
-      INSERT INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'system', ?, datetime('now'))
-    `).run(ownerMsgId, primaryId, ownerMsg);
+    insertMessage({ id: ownerMsgId, agentId: primaryId, role: 'system', content: ownerMsg });
     broadcast({
       type: 'chat:message',
       agentId: primaryId,

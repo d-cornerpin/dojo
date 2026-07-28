@@ -942,6 +942,11 @@ function lastAssistantWasQuestion(agentId: string): boolean {
       FROM messages
       WHERE agent_id = ?
         AND role = 'assistant'
+        -- PHASE-1 T4: the agent's a2a own output now shares this table (lane='a2a').
+        -- "Did the agent just ask the person a question?" must only ever consider what
+        -- was said to the PERSON; without the lane predicate a coordination reply to a
+        -- peer would start driving the voice follow-up window.
+        AND lane = 'owner'
         AND content IS NOT NULL
         AND content <> ''
       ORDER BY created_at DESC, rowid DESC

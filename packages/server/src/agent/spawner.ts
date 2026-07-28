@@ -8,6 +8,7 @@ import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
 import { sendAgentMessage } from './agent-bus.js';
 import { postAgentNotice } from './agent-notice.js';
 import { memoryGrep } from '../memory/retrieval.js';
+import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
 import { archiveAgentConversation } from '../vault/archive.js';
 import type { PermissionManifest, Agent, Message } from '@dojo/shared';
@@ -272,10 +273,7 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   }, parentId);
 
   // Store the system prompt as the first system message
-  db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-    VALUES (?, ?, 'system', ?, datetime('now'))
-  `).run(uuidv4(), agentId, enhancedPrompt);
+  insertMessageIfAbsent({ id: uuidv4(), agentId, role: 'system', content: enhancedPrompt });
 
   // FA-PT6: persist the charter durably so getSoulContent reads it directly
   // (migration 096), instead of sniffing the earliest role='system' row (which
@@ -375,10 +373,7 @@ IMPORTANT INSTRUCTIONS:
 
   // Insert initial user message to kick off the agent loop
   const initMsgId = uuidv4();
-  db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-    VALUES (?, ?, 'user', ?, datetime('now'))
-  `).run(initMsgId, agentId, taskMessage);
+  insertMessageIfAbsent({ id: initMsgId, agentId, role: 'user', content: taskMessage });
   broadcastMessage(agentId, { id: initMsgId, role: 'user', content: taskMessage });
 
   // Start the agent loop asynchronously

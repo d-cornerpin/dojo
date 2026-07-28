@@ -17,6 +17,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
 import { insertInterAgentMessage, insertInterAgentEngineRow } from '../memory/interagent.js';
+import { insertMessageIfAbsent, setConvKeyByRowid } from '../memory/message-store.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
 // A2A protocol constants and helpers, inlined here to avoid runtime
 // imports from @dojo/shared (which points at .ts source and can't be
@@ -1473,9 +1474,8 @@ function advanceMultiParkOnReply(agentId: string, rowid: number, threadId: strin
     if (nextRemaining.length === parsed.remaining.length || !matchedThread) return { outcome: 'noop' }; // already landed
     if (nextRemaining.length > 0) {
       const newKey = `park:${MULTI_PARK_MARK}${parsed.full.join(MP_THREAD_SEP)}${MP_FULL_REMAIN_SEP}${nextRemaining.join(MP_THREAD_SEP)}`;
-      const res = db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ? AND conv_key = ?`)
-        .run(newKey, agentId, rowid, oldKey);
-      if (res.changes === 0) continue; // concurrent land moved the key; re-read
+      const res = setConvKeyByRowid({ rowid, agentId, value: newKey, expect: oldKey });
+      if (res === 0) continue; // concurrent land moved the key; re-read
       return { outcome: 'held', landed: total - nextRemaining.length, total, matchedThread };
     }
     // Last piece: park:~ -> park:!~ COMPILE-PENDING (2026-07-23, runs
@@ -1488,9 +1488,8 @@ function advanceMultiParkOnReply(agentId: string, rowid: number, threadId: strin
     // resolveCompilePendingParks flips it to relayed: once the ask records an
     // answer, or relays the recorded join pieces itself after a short grace.
     const relayedKey = `park:!${MULTI_PARK_MARK}${parsed.full.join(MP_THREAD_SEP)}`;
-    const res = db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ? AND conv_key = ?`)
-      .run(relayedKey, agentId, rowid, oldKey);
-    if (res.changes === 0) continue; // someone else advanced; re-read (likely 'noop' next)
+    const res = setConvKeyByRowid({ rowid, agentId, value: relayedKey, expect: oldKey });
+    if (res === 0) continue; // someone else advanced; re-read (likely 'noop' next)
     return { outcome: 'completed', full: parsed.full, total, matchedThread };
   }
   return { outcome: 'noop' };
@@ -1556,7 +1555,6 @@ async function consumeParkAndDeliver(
   deliveryText: string,
   opts?: { failedClosed?: boolean },
 ): Promise<boolean> {
-  const db = getDb();
   // Mark relayed FIRST (idempotent): the conv_key guard in the WHERE means exactly
   // one caller wins the park: -> relayed: transition, so a duplicate ANSWER on the
   // thread, a racing TTL sweep, or a boot re-drain can never double-deliver.
@@ -1578,10 +1576,10 @@ async function consumeParkAndDeliver(
     : parked.conv_key.startsWith('relayed:failed:')
       ? parked.conv_key.replace(/^relayed:failed:/, 'relayed:')
       : parked.conv_key.replace(/^park:/, 'relayed:');
-  const consumed = db.prepare(
-    `UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ? AND conv_key = ?`,
-  ).run(relayedKey, parked.agent_id, parked.rowid, parked.conv_key);
-  if (consumed.changes === 0) return false;
+  const consumed = setConvKeyByRowid({
+    rowid: parked.rowid, agentId: parked.agent_id, value: relayedKey, expect: parked.conv_key,
+  });
+  if (consumed === 0) return false;
 
   // Resolve the owner's reply channel from the parked question's STRUCTURED
   // inbound_meta (not by regex-scraping the SOURCE marker, that text varies
@@ -1655,7 +1653,9 @@ async function consumeParkAndDeliver(
     // own chat message so it renders in their dashboard conversation. Always
     // reaches them, so the text is never lost even on an unsupported channel.
     const msgId = uuidv4();
-    db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'assistant', ?, datetime('now'))`).run(msgId, parked.agent_id, deliveryText);
+    // Owner lane deliberately: this is the relay TO THE PERSON who asked, not
+    // coordination traffic — it must render in their dashboard conversation.
+    insertMessageIfAbsent({ id: msgId, agentId: parked.agent_id, role: 'assistant', content: deliveryText });
     broadcast({
       type: 'chat:message', agentId: parked.agent_id,
       message: { id: msgId, agentId: parked.agent_id, role: 'assistant' as const, content: deliveryText, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
@@ -1849,8 +1849,11 @@ export async function resolveCompilePendingParks(agentId: string): Promise<void>
         .get(parked.rowid) as { answer_message_id: string | null } | undefined;
       if (ans?.answer_message_id) {
         // The compile answered the owner; the receipt says so. Quiet consume.
-        db.prepare('UPDATE messages SET conv_key = ? WHERE rowid = ? AND conv_key = ?')
-          .run(parked.conv_key.replace(/^park:!/, 'relayed:'), parked.rowid, parked.conv_key);
+        setConvKeyByRowid({
+          rowid: parked.rowid,
+          value: parked.conv_key.replace(/^park:!/, 'relayed:'),
+          expect: parked.conv_key,
+        });
         continue;
       }
       // Grace: give the compile wake a real chance before the engine relays.

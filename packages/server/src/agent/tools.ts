@@ -16,6 +16,7 @@ import { setCurrentCanvas, getCurrentCanvas, viewCanvas } from './canvas-view.js
 import { isEmbeddable, captureSiteScreenshot } from './site-snapshot.js';
 import { queueCanvasDoc, queueScreenChip, queueLinkArtifact } from './pending-attachments.js';
 import { memoryGrep, memoryDescribe, memoryExpand } from '../memory/retrieval.js';
+import { insertMessageIfAbsent, rewriteSystemPromptRow } from '../memory/message-store.js';
 import { resolveOpenLoopByPrefix } from '../memory/open-loops.js';
 import { checkRequired, friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer } from './tool-helpers.js';
 // Phase 3.5 (2026-05-04), `shouldIntercept` / `interceptLargeFile` removed
@@ -7082,9 +7083,12 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           const { rehomeUnclaimedEngineEvents } = await import('./v2/counterparty.js');
           rehomeUnclaimedEngineEvents(resolvedId, boundary);
 
-          // Insert UI divider
+          // Insert UI divider. The row's created_at is stamped by the writer at insert
+          // time, which is at-or-after `boundary` (computed a few lines up), so the
+          // divider still lands inside the new session for every `created_at >=
+          // session_started_at` query. The broadcast keeps quoting `boundary` for the UI.
           const markerId = uuidv4();
-          db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', '── New Session ──', ?)").run(markerId, resolvedId, boundary);
+          insertMessageIfAbsent({ id: markerId, agentId: resolvedId, role: 'system', content: '── New Session ──' });
           broadcast({ type: 'chat:message', agentId: resolvedId, message: { id: markerId, agentId: resolvedId, role: 'system', content: '── New Session ──', tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
 
           // Inject the reorientation prompt. Picks between full reorient
@@ -7093,7 +7097,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           const { buildSessionResetMessage } = await import('./session-reset.js');
           const reorientId = uuidv4();
           const reorientContent = buildSessionResetMessage(resolvedId);
-          db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, ?)").run(reorientId, resolvedId, reorientContent, boundary);
+          insertMessageIfAbsent({ id: reorientId, agentId: resolvedId, role: 'system', content: reorientContent });
           broadcast({ type: 'chat:message', agentId: resolvedId, message: { id: reorientId, agentId: resolvedId, role: 'system', content: reorientContent, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
 
           // If the agent is in error/paused status, heal it by setting to idle.
@@ -7160,9 +7164,9 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
             if (typeof newPrompt === 'string') {
               const existingMsg = db.prepare("SELECT id FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY rowid ASC LIMIT 1").get(target.id) as { id: string } | undefined;
               if (existingMsg) {
-                db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(newPrompt, existingMsg.id);
+                rewriteSystemPromptRow(existingMsg.id, newPrompt);
               } else {
-                db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(uuidv4(), target.id, newPrompt);
+                insertMessageIfAbsent({ id: uuidv4(), agentId: target.id, role: 'system', content: newPrompt });
               }
               db.prepare("UPDATE agents SET updated_at = datetime('now') WHERE id = ?").run(target.id);
               changes.push(`system prompt rewritten (${newPrompt.length} chars)`);
@@ -8669,10 +8673,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           const { pickFillerPhrase } = await import('../voice/filler-phrases.js');
           const ackPhrase = pickFillerPhrase();
           const ackMsgId = uuidv4();
-          getDb().prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-            VALUES (?, ?, 'assistant', ?, datetime('now'))
-          `).run(ackMsgId, agentId, ackPhrase);
+          insertMessageIfAbsent({ id: ackMsgId, agentId, role: 'assistant', content: ackPhrase });
           broadcast({
             type: 'chat:message', agentId,
             message: {
@@ -8752,10 +8753,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
                 `I wasn't able to generate that image:\n\n` +
                 `> ${result.error}\n\n` +
                 `You could try simplifying the description or trying again in a moment.`;
-              db.prepare(`
-                INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-                VALUES (?, ?, 'assistant', ?, datetime('now'))
-              `).run(errMsgId, agentId, errContent);
+              insertMessageIfAbsent({ id: errMsgId, agentId, role: 'assistant', content: errContent });
               broadcast({
                 type: 'chat:message', agentId,
                 message: {
@@ -8875,10 +8873,10 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
 
               const deliveryMsgId = uuidv4();
               const attachmentsJson = JSON.stringify([attachment]);
-              db.prepare(`
-                INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)
-                VALUES (?, ?, 'assistant', ?, ?, datetime('now'))
-              `).run(deliveryMsgId, agentId, caption, attachmentsJson);
+              insertMessageIfAbsent({
+                id: deliveryMsgId, agentId, role: 'assistant', content: caption,
+                attachments: attachmentsJson,
+              });
               broadcast({
                 type: 'chat:message', agentId,
                 message: {
@@ -8908,10 +8906,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
               const fallbackId = uuidv4();
               const fallbackContent = `Image was generated successfully but delivery threw an error: ${deliveryErr instanceof Error ? deliveryErr.message : String(deliveryErr)}. The image file is at ${deliveredPath}.`;
               try {
-                db.prepare(`
-                  INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-                  VALUES (?, ?, 'system', ?, datetime('now'))
-                `).run(fallbackId, agentId, fallbackContent);
+                insertMessageIfAbsent({ id: fallbackId, agentId, role: 'system', content: fallbackContent });
                 broadcast({
                   type: 'chat:message', agentId,
                   message: {
@@ -9051,7 +9046,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           break;
         }
 
-        const db = getDb();
         const modelChoice = isMusic
           ? (await import('../services/music-gen-model.js')).getEffectiveMusicGenModel()
           : (await import('../services/audio-gen-model.js')).getEffectiveAudioGenModel();
@@ -9101,10 +9095,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           const ackPhrase = isMusic
             ? "On it, composing that now. I'll send it over when it's ready."
             : "On it, I'll send the audio over in a moment.";
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-            VALUES (?, ?, 'assistant', ?, datetime('now'))
-          `).run(ackMsgId, agentId, ackPhrase);
+          insertMessageIfAbsent({ id: ackMsgId, agentId, role: 'assistant', content: ackPhrase });
           broadcast({
             type: 'chat:message', agentId,
             message: {
@@ -9227,10 +9218,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         try {
           const ackMsgId = uuidv4();
           const ackPhrase = "I've started the video, this usually takes a few minutes. I'll send it as soon as it's ready.";
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-            VALUES (?, ?, 'assistant', ?, datetime('now'))
-          `).run(ackMsgId, agentId, ackPhrase);
+          insertMessageIfAbsent({ id: ackMsgId, agentId, role: 'assistant', content: ackPhrase });
           broadcast({
             type: 'chat:message', agentId,
             message: {

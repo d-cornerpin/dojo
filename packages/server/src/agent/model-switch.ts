@@ -25,9 +25,9 @@
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
-import { getDb } from '../db/connection.js';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
+import { insertMessageIfAbsent } from '../memory/message-store.js';
 
 const logger = createLogger('model-switch');
 
@@ -36,12 +36,8 @@ const RECALL_NUDGE_TEXT =
 
 function insertModelSwitchNudge(agentId: string): void {
   try {
-    const db = getDb();
     const id = uuidv4();
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'system', ?, datetime('now'))
-    `).run(id, agentId, RECALL_NUDGE_TEXT);
+    insertMessageIfAbsent({ id, agentId, role: 'system', content: RECALL_NUDGE_TEXT });
     broadcast({
       type: 'chat:message',
       agentId,

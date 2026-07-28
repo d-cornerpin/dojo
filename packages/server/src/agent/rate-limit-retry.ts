@@ -16,6 +16,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 import { getDb } from '../db/connection.js';
+import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { isPrimaryAgent } from '../config/platform.js';
 import { notifyRateLimitHit } from './errors.js';
 
@@ -115,9 +116,8 @@ function scheduleNextAttempt(
           ? `[SOURCE: SYSTEM — not a message from the user] You were rate-limited by the API for ${downtime}. You're back online now. Pick up where you left off.`
           : `[SOURCE: SYSTEM — not a message from the user] You were rate-limited by the API for ${downtime}. You're back online now. Let the primary agent know you were temporarily unavailable, then resume your task.`;
 
-        const db = getDb();
         const noticeMsgId = uuidv4();
-        db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))").run(noticeMsgId, agentId, noticeContent);
+        insertMessageIfAbsent({ id: noticeMsgId, agentId, role: 'user', content: noticeContent });
         broadcast({
           type: 'chat:message',
           agentId,
