@@ -40,14 +40,17 @@
 //     leak's actual surface, instead of scanning for rows in a table they now
 //     legitimately live in.
 //
-// `inter_agent_messages` still EXISTS and still has readers (mergedTailQuery and the
-// anti-joins) until T5 deletes them — R5, because renaming it at T3 killed every
-// assembled turn. Its pre-T4 rows are untouched and keep being read from there.
+// `inter_agent_messages` still EXISTS (R5 — renaming it at T3 killed every assembled turn).
+// PHASE-1 T5 deleted the MEMORY layer's readers of it: the merged tail loaders, recall,
+// history_get and the vault's store arm. What is left reading it is the raw-SQL long tail
+// T6 owns (a2a-transport, a2a-replies, counterparty, loop, the chat route, the boot sweep,
+// the Threads lane feed) — re-derive with
+// `git grep -nP '(^|[^_[:alnum:]])inter_agent_messages\b' -- packages/`. T10 drops the table
+// and this file with it once that list is empty.
 
 import { resolveOrCreateConversation } from './conversations.js';
 import type { Message } from '@dojo/shared';
 import { insertMessage, insertMessageIfAbsent, tagTurnOutputConvKey } from './message-store.js';
-import { rowToMessage, type MessageRow } from './store.js';
 
 /**
  * Persist one peer A2A inbound row into the physical inter-agent store.
@@ -231,63 +234,4 @@ export function tagInterAgentOwnOutputConvKey(agentId: string, turnNumber: numbe
   // own-output tagger is scoped to lane='owner', this one to lane='a2a', which
   // reproduces the pre-T4 split (two tables, two statements) inside one table.
   return tagTurnOutputConvKey({ agentId, turnNumber, convKey, lane: 'a2a' });
-}
-
-/** Raw shape read out of `inter_agent_messages` (the table's own columns). */
-export interface InterAgentRow {
-  id: string;
-  agent_id: string;
-  role: string;
-  content: string;
-  source_agent_id: string | null;
-  a2a_thread_id: string | null;
-  a2a_intent: string | null;
-  a2a_requires_response: number | null;
-  attachments: string | null;
-  origin_kind: string | null;
-  origin_intent: string | null;
-  conv_key: string | null;
-  turn_number: number | null;
-  created_at: string;
-  rowid?: number;
-}
-
-/**
- * Map a raw inter-agent store row into the shared `Message` shape, reusing the
- * SAME rowToMessage projection used for `messages`. The store lacks the non-A2A
- * columns (token_count/model_id/cost/latency_ms/reasoning_content/source/
- * inbound_meta); they are filled as NULL here, which is exactly the value a peer
- * A2A row carries in `messages` today, so origin derivation and downstream
- * partitioning are identical.
- *
- * Provided for the store-only readers that arrive in later steps (the dashboard
- * inter-agent lane route, step 5; any store-scoped reply reads). The merged tail
- * loaders in memory/store.ts project these NULLs inline in SQL and call
- * rowToMessage directly, so they do not need this helper.
- */
-export function interAgentRowToMessage(row: InterAgentRow): Message {
-  const normalized: MessageRow = {
-    id: row.id,
-    agent_id: row.agent_id,
-    role: row.role,
-    content: row.content,
-    token_count: null,
-    model_id: null,
-    cost: null,
-    latency_ms: null,
-    created_at: row.created_at,
-    turn_number: row.turn_number,
-    reasoning_content: null,
-    source: null,
-    source_agent_id: row.source_agent_id,
-    a2a_thread_id: row.a2a_thread_id,
-    a2a_intent: row.a2a_intent,
-    a2a_requires_response: row.a2a_requires_response,
-    inbound_meta: null,
-    origin_kind: row.origin_kind,
-    origin_intent: row.origin_intent,
-    conv_key: row.conv_key,
-    rowid: row.rowid,
-  };
-  return rowToMessage(normalized);
 }

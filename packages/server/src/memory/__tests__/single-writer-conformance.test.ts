@@ -239,12 +239,13 @@ describe('the fail-closed reader is the only human-facing accessor', () => {
       const line = mig.split('\n').find(l =>
         new RegExp(`^\\s{2}${marker}\\s`).test(l));
       // T4 RE-DATED origin_kind/source from T4-DELETES to T10-DELETES on measured
-      // evidence (T4 report §7): every WRITER is converted off them, but ~120
-      // origin_kind and 39 source READS are still live and belong to T5/T6, and
-      // dropping the columns here fails mergedTailQuery to prepare — a dead box, which
-      // R1 forbids. The marker must be TRUE, not aspirational; a stale one says the
-      // scaffolding is gone when it is standing, which is the failure this rule exists
-      // to prevent.
+      // evidence (T4 report §7): every WRITER is converted off them, but the READS were
+      // still live and dropping the columns failed the tail loader to prepare — a dead
+      // box, which R1 forbids. T5 has since re-pointed the whole memory layer onto
+      // `lane`/`channel`; the reads that remain are T6's raw-SQL long tail (re-derive:
+      // `git grep -P "(^|[^_[:alnum:]])origin_kind\b" -- packages/`). The marker must be
+      // TRUE, not aspirational; a stale one says the scaffolding is gone when it is
+      // standing, which is the failure this rule exists to prevent.
       expect(line, `compat column ${marker} must declare its demolition owner`)
         .toMatch(/T4-DELETES|T10-DELETES|PHASE2-DELETES/);
     }

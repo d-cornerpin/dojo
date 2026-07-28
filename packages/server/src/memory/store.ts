@@ -1,9 +1,35 @@
+// ════════════════════════════════════════
+// The model-facing readers of `messages`.
+// ════════════════════════════════════════
+//
+// PHASE-1 T5. There is ONE message table and ONE tail query. What stood here before was a
+// pair of loaders per window — a plain one and a `*Merged` twin — that UNIONed `messages`
+// with `inter_agent_messages`, NULL-padded the columns the second table lacked, dedup'd the
+// double-homed ids with an anti-join, and stitched the two rowid spaces back together with
+// a synthetic `(created_at, _tag, _rowid)` collation. All of that existed to answer one
+// question the schema now answers by itself: which lane is this row on.
+//
+// STRIP — `mergedTailQuery`, `getRecentMessagesMerged`, `getMessagesOutsideFreshTailMerged`,
+// `getMessagesByAgentMerged`, `getMessagesByAgent`.
+// Requirement preserved: ONE tail query per window, over every lane the agent owns, in true
+// insertion order. `ORDER BY seq` replaces the three-part collation everywhere.
+//
+// WHY `seq` AND NOT `created_at`. `created_at` is second-granular TEXT, and the engine's own
+// undelivered-event re-home (`message-store.rehomeUndeliveredCreatedAt`) deliberately pushes
+// a row's clock FORWARD while its insertion key stays put — so a clock-ordered tail reports a
+// row that was written first as though it arrived last. `seq` is `INTEGER PRIMARY KEY
+// AUTOINCREMENT`, i.e. the table's rowid under a name that means something, and it cannot
+// drift. (T10 promotes it to the PK alias role across the tree.)
+//
+// LANE, NOT TABLE. These loaders are the MODEL's view and deliberately carry every lane the
+// agent owns — owner conversation, agent-to-agent coordination, engine events. That is the
+// defect this phase exists to close: agent-to-agent history used to sit in a table with no
+// FTS index and no summaries, structurally unrecallable. Anything rendered to a PERSON reads
+// the fail-closed `chat_messages` view (`lane='owner'`), never these.
+
 import { getDb } from '../db/connection.js';
-import { createLogger } from '../logger.js';
 import type { Message } from '@dojo/shared';
 import { deriveOrigin } from '@dojo/shared';
-
-const logger = createLogger('memory-store');
 
 // ── Session Boundary ──
 
@@ -21,7 +47,15 @@ export function estimateTokens(text: string): number {
 
 // ── Row-to-Message Mapping ──
 
+/** Every loader below projects exactly this list, so `rowToMessage` never has to ask whether
+ *  a column happened to be selected. `seq` is projected as itself: it IS the rowid. */
+const SELECT_COLS = `seq, id, agent_id, role, content, token_count, model_id, cost,
+  latency_ms, created_at, turn_number, reasoning_content, lane, channel, source_agent_id,
+  a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, origin_intent, conv_key`;
+
 export interface MessageRow {
+  /** The insertion key — `INTEGER PRIMARY KEY AUTOINCREMENT`, the table's rowid. */
+  seq: number;
   id: string;
   agent_id: string;
   role: string;
@@ -33,25 +67,27 @@ export interface MessageRow {
   created_at: string;
   turn_number: number | null;
   reasoning_content: string | null;
-  // Attribution columns (mig 046 source, 027 source_agent_id, 034 a2a_*,
-  // 073 inbound_meta). All queries SELECT *, so these are present on the row;
-  // the mapper previously dropped them. Surfaced now for the origin projection.
-  source: string | null;
+  /** The stamped-at-ingest lane (OR4). Origin is PROJECTED from it — never re-parsed. */
+  lane: string;
+  channel: string | null;
   source_agent_id: string | null;
   a2a_thread_id: string | null;
   a2a_intent: string | null;
   a2a_requires_response: number | null;
   inbound_meta: string | null;
-  origin_kind: string | null;
   origin_intent: string | null;
   conv_key: string | null;
-  // Only projected by queries that add `, rowid` to their SELECT (rowid is not
-  // part of `*`). Undefined elsewhere; consumers that need it opt in.
-  rowid?: number;
 }
 
 export function rowToMessage(row: MessageRow): Message {
-  const source = (row.source === 'voice' || row.source === 'a2a') ? row.source : null;
+  // T5: the origin projection reads the STAMPED facts (`lane`, `channel`) instead of the two
+  // compat columns migration 127 carries for the writers that had not converted yet.
+  // `origin_kind` was only ever `lane='events'` spelled differently, and `source` was
+  // `lane='a2a'` plus `channel='voice'` folded into one nullable string (T3-0b §1/§3).
+  // Proven equivalent before the change, on every row the live box holds:
+  //   origin_kind mismatches 0 · source mismatches 0 · total rows 3211
+  // The two columns themselves are T10's to drop; this is the reader half.
+  const source = row.lane === 'a2a' ? 'a2a' : row.channel === 'voice' ? 'voice' : null;
   return {
     id: row.id,
     agentId: row.agent_id,
@@ -62,15 +98,16 @@ export function rowToMessage(row: MessageRow): Message {
     cost: row.cost,
     latencyMs: row.latency_ms,
     createdAt: row.created_at,
-    // Present only when the source query projected `, rowid` (see MessageRow).
-    rowid: row.rowid,
+    // The insertion key. One table, one keyspace: this is always a `messages.seq`, which is
+    // what the vault high-water and compaction's archive filter compare against.
+    rowid: row.seq,
     // Phase 4 §E (2026-05-04) — surface turn_number so the assembler's
     // stub-and-store pass can age out tool results from old turns.
     turnNumber: row.turn_number,
     // Reasoning content from thinking-mode providers (DeepSeek native,
     // OpenRouter unified reasoning, etc.). Migration 040.
     reasoningContent: row.reasoning_content,
-    // ── Attribution (previously dropped here) ──
+    // ── Attribution ──
     source,
     sourceAgentId: row.source_agent_id,
     a2aThreadId: row.a2a_thread_id,
@@ -78,206 +115,74 @@ export function rowToMessage(row: MessageRow): Message {
     a2aRequiresResponse: row.a2a_requires_response,
     inboundMeta: row.inbound_meta,
     convKey: row.conv_key,
-    // The single canonical "who is this from" signal. Structured columns win;
-    // legacy rows fall back to marker parsing via the shim in deriveOrigin.
+    // The single canonical "who is this from" signal, derived from stamped columns.
     origin: deriveOrigin({
       role: row.role as Message['role'],
       content: row.content,
-      source: row.source,
+      source,
       sourceAgentId: row.source_agent_id,
       a2aThreadId: row.a2a_thread_id,
       a2aIntent: row.a2a_intent,
       a2aRequiresResponse: row.a2a_requires_response,
       inboundMeta: row.inbound_meta,
-      originKind: row.origin_kind,
+      originKind: row.lane === 'events' ? 'engine' : null,
       originIntent: row.origin_intent,
     }),
   };
 }
 
-// ── Merged tail loaders (D-A inter-agent physical store) ──
-//
-// Peer A2A inbound rows now live in `inter_agent_messages`, not `messages`. The
-// model view is UNCHANGED IN SHAPE but RE-SOURCED: the tail is the UNION of both
-// tables, mapped through the same rowToMessage/deriveOrigin, so rows come out
-// byte-identical to the legacy single-table tail (correctness-floor guarantee).
-//
-// Ordering across two tables: rowid is only meaningfully comparable WITHIN a table
-// (each table has its own rowid sequence). We therefore sort by
-// (created_at, table_tag, rowid); table_tag (0 = messages, 1 = inter_agent) sits
-// BETWEEN created_at and rowid. Within one table this collapses to the legacy
-// (created_at, rowid) order exactly. When two rows from different tables share a
-// created_at (SQLite second precision, so ties are common) there is no cross-table
-// ground-truth insertion order anyway; table_tag gives a stable, reproducible tie
-// break. messages-first (tag 0) is also the causally-correct interim choice: every
-// pre-cutover row lives in `messages` and every post-cutover peer A2A row lives in
-// the store, so at a tie the `messages` row is the earlier one. The assembler then
-// partitions by origin.kind, so cross-lane ordering at an identical instant does
-// not affect what any single turn's model call sees.
-//
-// Dedup: the live-edge backfill (migration 098) COPIES rows into the store while
-// leaving them in `messages`, so the messages arm excludes any id that exists in
-// the store. A backfilled row is thus counted once (from the store), never doubled.
+// ── Query Functions ──
 
-/** The projected column list is identical for both arms; the store arm fills the
- *  non-A2A columns as NULL (exactly what a peer A2A row carries in `messages`). */
-function mergedTailQuery(opts: { boundary: boolean; cutoff: boolean; exposeRowid: boolean }): string {
-  const boundaryClause = opts.boundary ? 'AND created_at >= @boundary' : '';
-  const cutoffClause = opts.cutoff ? "AND NOT (role = 'user' AND created_at > @cutoff)" : '';
-  const rowidCol = opts.exposeRowid ? ', rowid AS rowid' : '';
-  return `
-    SELECT id, agent_id, role, content, token_count, model_id, cost, latency_ms,
-           created_at, turn_number, reasoning_content, source, source_agent_id,
-           a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta,
-           origin_kind, origin_intent, conv_key,
-           rowid AS _rowid, 0 AS _tag${rowidCol}
-    FROM messages
-    WHERE agent_id = @agentId ${boundaryClause} ${cutoffClause}
-      AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
-    UNION ALL
-    SELECT id, agent_id, role, content, NULL AS token_count, NULL AS model_id, NULL AS cost, NULL AS latency_ms,
-           created_at, turn_number, NULL AS reasoning_content, NULL AS source, source_agent_id,
-           a2a_thread_id, a2a_intent, a2a_requires_response, NULL AS inbound_meta,
-           origin_kind, origin_intent, conv_key,
-           rowid AS _rowid, 1 AS _tag${rowidCol}
-    FROM inter_agent_messages
-    WHERE agent_id = @agentId ${boundaryClause} ${cutoffClause}
-  `;
-}
-
-/** Merged variant of getRecentMessages. Same window semantics; UNIONs the store. */
-export function getRecentMessagesMerged(agentId: string, count: number, turnCutoff?: string): Message[] {
+/** The newest `count` rows for an agent, oldest-first.
+ *
+ *  Window semantics are unchanged from the two-table era: bounded below by the agent's
+ *  session boundary, and `turnCutoff` (when given) drops user rows that arrived after the
+ *  turn started so a turn never answers a message it has not claimed. Both predicates
+ *  compare `created_at` as TEXT — deliberately: the whole time column stays TEXT until T6
+ *  converts the format and all of its predicates together, in one owned step. */
+export function getRecentMessages(agentId: string, count: number, turnCutoff?: string): Message[] {
   const db = getDb();
   const sessionBoundary = getSessionBoundary(agentId);
   const params: Record<string, unknown> = { agentId, count };
-  if (sessionBoundary) params.boundary = sessionBoundary;
-  if (turnCutoff) params.cutoff = turnCutoff;
+  const clauses = ['agent_id = @agentId'];
+  if (sessionBoundary) { clauses.push('created_at >= @boundary'); params.boundary = sessionBoundary; }
+  if (turnCutoff) { clauses.push("NOT (role = 'user' AND created_at > @cutoff)"); params.cutoff = turnCutoff; }
 
-  // Take the newest `count` rows across both tables (DESC by the merged key), then
-  // return them oldest-first (ASC by the same key), mirrors getRecentMessages,
-  // which does not expose rowid on its rows (aliased to _rowid), so we do the same.
-  const sql = `
+  // Newest `count` by insertion key, returned oldest-first.
+  const rows = db.prepare(`
     SELECT * FROM (
-      ${mergedTailQuery({ boundary: !!sessionBoundary, cutoff: !!turnCutoff, exposeRowid: false })}
-      ORDER BY created_at DESC, _tag DESC, _rowid DESC
-      LIMIT @count
-    )
-    ORDER BY created_at ASC, _tag ASC, _rowid ASC
-  `;
-  const rows = db.prepare(sql).all(params) as MessageRow[];
+      SELECT ${SELECT_COLS} FROM messages
+       WHERE ${clauses.join(' AND ')}
+       ORDER BY seq DESC LIMIT @count
+    ) ORDER BY seq ASC
+  `).all(params) as MessageRow[];
   return rows.map(rowToMessage);
 }
 
-/** Merged variant of getMessagesOutsideFreshTail. Same high-water semantics.
- *  Exposes rowid so the archival high-water (vault/archive.ts, compaction) can
- *  filter tie-free. NB: this MESSAGES high-water (vault_conversations.latest_rowid)
- *  is `messages`-scoped; a store row carries its own (independent) rowid here, and
- *  a store row's rowid is far below the messages high-water on any established box,
- *  so the compaction archive path (bounded by the messages high-water) leaves store
- *  rows out of vault_conversations and simply summarizes them (id-based; the raw
- *  store rows persist, no data loss). That Dreamer-coverage gap is now closed by a
- *  PRINCIPLED store-side high-water: migration 100 adds vault_conversations.latest_ia_rowid,
- *  and the session-reset/terminate archive pass gained a store arm
- *  (vault/archive.ts archiveAgentStoreConversation + getStoreArchiveHighWaterMark)
- *  that copies new inter_agent_messages rows into vault_conversations on the same
- *  per-agent boundary as the messages arm. Compaction is deliberately untouched. */
-export function getMessagesOutsideFreshTailMerged(agentId: string, freshTailCount: number): Message[] {
+/** Everything EXCEPT the newest `freshTailCount` rows, oldest-first.
+ *
+ *  FA-M3: this partition must stay exactly complementary with `getRecentMessages`, or the
+ *  tail-to-summary handoff drops or duplicates messages. Both now order by the same single
+ *  key, so complementarity is structural rather than a pair of collations that have to be
+ *  kept in step by hand. A `NULL` cutoff (agent has no rows) yields no rows, which is the
+ *  right answer for an empty history. */
+export function getMessagesOutsideFreshTail(agentId: string, freshTailCount: number): Message[] {
   const db = getDb();
   const sessionBoundary = getSessionBoundary(agentId);
   const params: Record<string, unknown> = { agentId, freshTailCount };
-  if (sessionBoundary) params.boundary = sessionBoundary;
+  const clauses = ['agent_id = @agentId'];
+  if (sessionBoundary) { clauses.push('created_at >= @boundary'); params.boundary = sessionBoundary; }
+  const where = clauses.join(' AND ');
 
-  // "All rows except the newest N", over the merged set, using the same merged
-  // sort key for BOTH the inner cutoff and the outer order so the inside/outside
-  // partition stays complementary with getRecentMessagesMerged (FA-M3).
-  const inner = mergedTailQuery({ boundary: !!sessionBoundary, cutoff: false, exposeRowid: true });
-  const sql = `
-    WITH merged AS (${inner})
-    SELECT * FROM merged
-    WHERE id NOT IN (
-      SELECT id FROM merged
-      ORDER BY created_at DESC, _tag DESC, _rowid DESC
-      LIMIT @freshTailCount
-    )
-    ORDER BY created_at ASC, _tag ASC, _rowid ASC
-  `;
-  const rows = db.prepare(sql).all(params) as MessageRow[];
+  const rows = db.prepare(`
+    SELECT ${SELECT_COLS} FROM messages
+     WHERE ${where}
+       AND seq < (SELECT MIN(seq) FROM (
+             SELECT seq FROM messages WHERE ${where} ORDER BY seq DESC LIMIT @freshTailCount
+           ))
+     ORDER BY seq ASC
+  `).all(params) as MessageRow[];
   return rows.map(rowToMessage);
-}
-
-/** Merged variant of getMessagesByAgent. Exposed for the step-3/5 read-path switch
- *  (dashboard inter-agent lane, counterparty). Not wired into any reader here. */
-export function getMessagesByAgentMerged(
-  agentId: string,
-  options?: { limit?: number; since?: string; before?: string },
-): Message[] {
-  const db = getDb();
-  const extra: string[] = [];
-  const params: Record<string, unknown> = { agentId };
-  if (options?.since) { extra.push('AND created_at >= @since'); params.since = options.since; }
-  if (options?.before) { extra.push('AND created_at < @before'); params.before = options.before; }
-  const filter = extra.join(' ');
-
-  const sql = `
-    SELECT id, agent_id, role, content, token_count, model_id, cost, latency_ms,
-           created_at, turn_number, reasoning_content, source, source_agent_id,
-           a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta,
-           origin_kind, origin_intent, conv_key, rowid AS _rowid, 0 AS _tag
-    FROM messages
-    WHERE agent_id = @agentId ${filter}
-      AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
-    UNION ALL
-    SELECT id, agent_id, role, content, NULL, NULL, NULL, NULL,
-           created_at, turn_number, NULL, NULL, source_agent_id,
-           a2a_thread_id, a2a_intent, a2a_requires_response, NULL,
-           origin_kind, origin_intent, conv_key, rowid AS _rowid, 1 AS _tag
-    FROM inter_agent_messages
-    WHERE agent_id = @agentId ${filter}
-    ORDER BY created_at ASC, _tag ASC, _rowid ASC
-    ${options?.limit ? 'LIMIT @limit' : ''}
-  `;
-  if (options?.limit) params.limit = options.limit;
-  const rows = db.prepare(sql).all(params) as MessageRow[];
-  return rows.map(rowToMessage);
-}
-
-// ── Query Functions ──
-
-export function getMessagesByAgent(
-  agentId: string,
-  options?: { limit?: number; since?: string; before?: string },
-): Message[] {
-  const db = getDb();
-  const conditions = ['agent_id = ?'];
-  const params: unknown[] = [agentId];
-
-  if (options?.since) {
-    conditions.push('created_at >= ?');
-    params.push(options.since);
-  }
-  if (options?.before) {
-    conditions.push('created_at < ?');
-    params.push(options.before);
-  }
-
-  let sql = `SELECT * FROM messages WHERE ${conditions.join(' AND ')} ORDER BY created_at ASC, rowid ASC`;
-
-  if (options?.limit) {
-    sql += ' LIMIT ?';
-    params.push(options.limit);
-  }
-
-  const rows = db.prepare(sql).all(...params) as MessageRow[];
-  return rows.map(rowToMessage);
-}
-
-export function getMessagesOutsideFreshTail(agentId: string, freshTailCount: number): Message[] {
-  // D-A step 2: re-sourced to the merged (messages ∪ inter_agent_messages) tail so
-  // the inside/outside partition stays complementary with getRecentMessages (which
-  // is also merged below). Byte-identical for a pure-messages agent; adds peer A2A
-  // store rows for A2A-receiving agents. Kept as a thin delegate so every existing
-  // caller (compaction, gap count) moves coherently in one place.
-  return getMessagesOutsideFreshTailMerged(agentId, freshTailCount);
 }
 
 // Canonical model-aware fresh-tail window size. Larger models keep more raw
@@ -292,48 +197,20 @@ export function getFreshTailCount(contextWindow: number): number {
   return 24;                                 // Small models, ~5 turns
 }
 
+/** Resolve message ids to rows, in insertion order.
+ *
+ *  This is how a summary's source chunk is rebuilt (`dag.getSummarySourceMessages`), so the
+ *  ORDER is the conversation the model is shown. It used to be `(created_at, _tag, _rowid)`
+ *  over a UNION of two tables with a JS dedup pass on top, because a chunk could cover rows
+ *  from either home; one table means one key and no dedup step. */
 export function getMessagesByIds(ids: string[]): Message[] {
   if (ids.length === 0) return [];
-
   const db = getDb();
   const placeholders = ids.map(() => '?').join(',');
-  // D-A hotfix (rides migration 103): summary source ids are two-homed. A leaf
-  // summary's chunk can cover inter-agent store rows, so resolving its sources
-  // (getSummarySourceMessages, the rebuild / sole-copy machinery) must read the
-  // MERGED id space or store-homed sources silently vanish from rebuilds. Same
-  // shared-column projection as the merged tail loaders (the two tables have
-  // different column sets, so the store arm NULL-pads). Ids are globally unique
-  // uuids; a double-homed live-edge backfill row could appear twice, keep the
-  // messages copy (tag 0 sorts first on a created_at tie).
   const rows = db.prepare(
-    `SELECT id, agent_id, role, content, token_count, model_id, cost, latency_ms,
-            created_at, turn_number, reasoning_content, source, source_agent_id,
-            a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta,
-            origin_kind, origin_intent, conv_key, rowid AS _rowid, 0 AS _tag
-       FROM messages WHERE id IN (${placeholders})
-     UNION ALL
-     SELECT id, agent_id, role, content, NULL AS token_count, NULL AS model_id, NULL AS cost, NULL AS latency_ms,
-            created_at, turn_number, NULL AS reasoning_content, NULL AS source, source_agent_id,
-            a2a_thread_id, a2a_intent, a2a_requires_response, NULL AS inbound_meta,
-            origin_kind, origin_intent, conv_key, rowid AS _rowid, 1 AS _tag
-       FROM inter_agent_messages WHERE id IN (${placeholders})
-     ORDER BY created_at ASC, _tag ASC, _rowid ASC`,
-  ).all(...ids, ...ids) as MessageRow[];
-
-  const seen = new Set<string>();
-  const deduped = rows.filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)));
-  return deduped.map(rowToMessage);
-}
-
-export function getRecentMessages(agentId: string, count: number, turnCutoff?: string): Message[] {
-  // D-A step 2: the woken A2A receiver's turn tail (assembler.ts freshTailRaw) is
-  // this function. Peer A2A inbound now lands in inter_agent_messages, so a
-  // messages-only tail would leave a NEW ASSIGN INVISIBLE to the model. Re-sourced
-  // to the merged tail so the store ASSIGN appears in context identically to before
-  // (same window, session-boundary and turn-cutoff semantics; rowid not exposed on
-  // the returned rows, matching the legacy behavior). Thin delegate so every caller
-  // moves in one place.
-  return getRecentMessagesMerged(agentId, count, turnCutoff);
+    `SELECT ${SELECT_COLS} FROM messages WHERE id IN (${placeholders}) ORDER BY seq ASC`,
+  ).all(...ids) as MessageRow[];
+  return rows.map(rowToMessage);
 }
 
 export function getMessageCountByAgent(agentId: string): number {

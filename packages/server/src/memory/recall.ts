@@ -3,9 +3,16 @@
 // ════════════════════════════════════════
 //
 // Returns a clean transcript of the agent's recent user/assistant
-// exchanges, read directly from the messages table, same data the
-// dashboard renders. Respects session_started_at so a recent reset
-// doesn't leak pre-reset content into the recall.
+// exchanges, read directly from the messages table. Respects
+// session_started_at so a recent reset doesn't leak pre-reset content
+// into the recall.
+//
+// SCOPE (PHASE-1 T5): this is an AGENT surface, and it spans every lane the agent owns —
+// the owner conversation, agent-to-agent coordination and engine events alike. That is
+// deliberate and it is the defect this phase closes: coordination history used to live in a
+// separate table with no FTS index, so an agent could hold thousands of rows it was
+// structurally unable to recall. What a PERSON sees is the `chat_messages` view
+// (`lane='owner'`), which these queries never read and never feed.
 //
 // v2.5.11, Expanded for memory-recovery use cases:
 //   - include_tool_results=true ("wordy mode") includes tool RESULTS,
@@ -207,22 +214,17 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
       .get(agentId) as { session_started_at: string | null } | undefined;
     const sessionBoundary = sessionRow?.session_started_at ?? null;
 
-    // Resolve before_id → timestamp cursor. If invalid, fall back to "newest first".
-    let beforeTimestamp: string | null = null;
+    // Resolve before_id → insertion-key cursor. If invalid, fall back to "newest first".
+    // T5: the cursor is `seq`, not `created_at`. Pagination has to be strictly monotonic or
+    // a page boundary that lands inside one second either repeats rows or skips them, and
+    // `created_at` is second-granular TEXT. `seq` is the insertion key and cannot tie.
+    let beforeSeq: number | null = null;
     if (opts.beforeId) {
-      // D-A: the merged recall below can surface a store row's id in its
-      // before_id/history_get pointers, so resolve the cursor from the MERGED source
-      // (id is a globally unique uuid, so at most one row matches across the two tables).
       const cursorRow = db
-        .prepare(
-          `SELECT created_at FROM messages WHERE id = ? AND agent_id = ?
-           UNION ALL
-           SELECT created_at FROM inter_agent_messages WHERE id = ? AND agent_id = ?
-           LIMIT 1`,
-        )
-        .get(opts.beforeId, agentId, opts.beforeId, agentId) as { created_at: string } | undefined;
+        .prepare('SELECT seq FROM messages WHERE id = ? AND agent_id = ?')
+        .get(opts.beforeId, agentId) as { seq: number } | undefined;
       if (cursorRow) {
-        beforeTimestamp = cursorRow.created_at;
+        beforeSeq = cursorRow.seq;
       }
     }
 
@@ -261,7 +263,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
           .prepare(
             `SELECT conv_key FROM messages
                WHERE agent_id = ? AND conv_key IS NOT NULL${sessionBoundary ? ' AND created_at >= ?' : ''}
-               ORDER BY rowid DESC LIMIT 1`,
+               ORDER BY seq DESC LIMIT 1`,
           )
           .get(...(sessionBoundary ? [agentId, sessionBoundary] : [agentId])) as { conv_key: string } | undefined;
         scopeKey = cur?.conv_key;
@@ -287,35 +289,29 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
       clauses.push('created_at >= ?');
       params.push(normalizeTimestampForSqlite(opts.since));
     }
-    if (beforeTimestamp) {
-      clauses.push('created_at < ?');
-      params.push(beforeTimestamp);
+    if (beforeSeq != null) {
+      clauses.push('seq < ?');
+      params.push(beforeSeq);
     }
-    // D-A: peer A2A inbound now lives in inter_agent_messages, not `messages`. Recall
-    // is RE-SOURCED to the MERGED (messages ∪ inter_agent_messages) set so the A2A rows
-    // the scope clauses keep (source_agent_id IS NOT NULL) still appear, exactly as they
-    // did when they lived in `messages`. The partition logic (the WHERE clauses above) is
-    // UNCHANGED; only the source is merged. A pure-messages agent's output is byte-
-    // identical: the store arm is empty for it, and the messages arm dedups against store
-    // ids so a live-edge-backfilled row is never double-counted. Cross-table order is
-    // created_at, then a stable _tag tiebreak, then rowid, matching the merged tail
-    // loaders in memory/store.ts.
+    // T5: ONE query over ONE table. This used to UNION `messages` with
+    // `inter_agent_messages`, NULL-pad the columns the second table lacked and dedup the
+    // double-homed ids with an anti-join, because peer A2A traffic had its own home. It no
+    // longer does: agent-to-agent rows are `lane='a2a'` in this table, so the scope clauses
+    // above reach them by reading columns instead of by reaching into a second store — and,
+    // for the first time, so do FTS and the summaries. Recall deliberately spans every lane
+    // the agent owns; the `chat_messages` view is what a PERSON sees.
+    // STRIP; requirement preserved: recall covers agent-to-agent history.
     const whereSql = `${clauses.join(' AND ')} AND ${rolesClause}`;
     const sql = `
-      SELECT id, role, content, created_at, attachments, rowid AS _rowid, 0 AS _tag
+      SELECT id, role, content, created_at, attachments
         FROM messages
        WHERE ${whereSql}
-         AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = ?)
-      UNION ALL
-      SELECT id, role, content, created_at, attachments, rowid AS _rowid, 1 AS _tag
-        FROM inter_agent_messages
-       WHERE ${whereSql}
-      ORDER BY created_at DESC, _tag DESC, _rowid DESC
+       ORDER BY seq DESC
       LIMIT ?`;
-    const rows = db.prepare(sql).all(...params, agentId, ...params, fetchLimit) as MessageRow[];
+    const rows = db.prepare(sql).all(...params, fetchLimit) as MessageRow[];
 
     if (rows.length === 0) {
-      if (beforeTimestamp) {
+      if (beforeSeq != null) {
         return `No older messages before id=${opts.beforeId} in this session.`;
       }
       if (opts.since) {
@@ -373,7 +369,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
     const headerParts = [
       `last ${opts.turnCount} user/assistant exchanges`,
       sessionBoundary ? 'bounded by current session' : null,
-      beforeTimestamp ? `before id=${opts.beforeId}` : null,
+      beforeSeq != null ? `before id=${opts.beforeId}` : null,
       opts.since ? `since ${opts.since}` : null,
       includeToolResults ? `wordy mode (tool results up to ${truncateChars} chars each)` : null,
     ].filter(Boolean);

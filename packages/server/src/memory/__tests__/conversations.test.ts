@@ -29,12 +29,7 @@ beforeEach(() => {
     );
     CREATE TABLE messages (
       id TEXT PRIMARY KEY,
-      conversation_id TEXT,
-      conv_key TEXT,
-      a2a_thread_id TEXT
-    );
-    CREATE TABLE inter_agent_messages (
-      id TEXT PRIMARY KEY,
+      lane TEXT NOT NULL DEFAULT 'owner',
       conversation_id TEXT,
       conv_key TEXT,
       a2a_thread_id TEXT
@@ -75,15 +70,20 @@ describe('resolveOrCreateConversation (P5)', () => {
 
 // P5c: summaries/archives carry the dominant lineage of their chunk.
 describe('dominantMessageLineage (P5c)', () => {
-  it('returns the modal non-null lineage across both message stores', () => {
+  // PHASE-1 T5 — CONVERTED, not dropped. This asserted that lineage was tallied "across
+  // both message stores", which was a claim about WHERE the a2a row physically sat. There
+  // is one table now, so the same requirement is expressed against the lane that carries
+  // the fact: a chunk containing agent-to-agent rows must still hand its summary that
+  // thread id. The old form would have gone VACUOUS rather than red — it seeded a table
+  // nothing reads any more, and the a2a assertion would simply have stopped being tested.
+  it('returns the modal non-null lineage across every lane in the chunk', () => {
     const db = mockDb.current!;
-    const ins = db.prepare('INSERT INTO messages (id, conversation_id, conv_key, a2a_thread_id) VALUES (?, ?, ?, ?)');
-    ins.run('m1', 'convA', 'imessage:x', null);
-    ins.run('m2', 'convA', 'imessage:x', null);
-    ins.run('m3', 'convB', 'dashboard', null);
-    ins.run('m4', null, null, null);
-    db.prepare('INSERT INTO inter_agent_messages (id, conversation_id, conv_key, a2a_thread_id) VALUES (?, ?, ?, ?)')
-      .run('ia1', 'convA', 'a2a:t', 'thread-9');
+    const ins = db.prepare('INSERT INTO messages (id, lane, conversation_id, conv_key, a2a_thread_id) VALUES (?, ?, ?, ?, ?)');
+    ins.run('m1', 'owner', 'convA', 'imessage:x', null);
+    ins.run('m2', 'owner', 'convA', 'imessage:x', null);
+    ins.run('m3', 'owner', 'convB', 'dashboard', null);
+    ins.run('m4', 'owner', null, null, null);
+    ins.run('ia1', 'a2a', 'convA', 'a2a:t', 'thread-9');
     const l = dominantMessageLineage(['m1', 'm2', 'm3', 'm4', 'ia1']);
     expect(l.conversationId).toBe('convA');
     expect(l.convKey).toBe('imessage:x');
@@ -99,9 +99,9 @@ describe('dominantMessageLineage (P5c)', () => {
 
   it('breaks ties deterministically (lexicographic smallest wins at equal count)', () => {
     const db = mockDb.current!;
-    const ins = db.prepare('INSERT INTO messages (id, conversation_id, conv_key, a2a_thread_id) VALUES (?, ?, ?, ?)');
-    ins.run('t1', 'convZ', null, null);
-    ins.run('t2', 'convA', null, null);
+    const ins = db.prepare('INSERT INTO messages (id, lane, conversation_id, conv_key, a2a_thread_id) VALUES (?, ?, ?, ?, ?)');
+    ins.run('t1', 'owner', 'convZ', null, null);
+    ins.run('t2', 'owner', 'convA', null, null);
     expect(dominantMessageLineage(['t1', 't2']).conversationId).toBe('convA');
   });
 });

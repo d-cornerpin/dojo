@@ -287,8 +287,17 @@ export function getDescendantMessages(summaryId: string): Message[] {
     }
   }
 
-  // Sort by created_at ASC
-  allMessages.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  // T5: sort by the INSERTION key, not the clock. `created_at` is second-granular TEXT, so
+  // a burst of messages inside one second sorted arbitrarily here and the expanded history
+  // came back scrambled — and the engine's undelivered-event re-home deliberately pushes a
+  // row's clock forward, which put it in the wrong place outright. `rowid` on a Message is
+  // `messages.seq`, one keyspace, no ties. Clock order is the fallback for the (defensive)
+  // case of a row that reached here without its key.
+  allMessages.sort((a, b) => (
+    a.rowid != null && b.rowid != null
+      ? a.rowid - b.rowid
+      : a.createdAt.localeCompare(b.createdAt)
+  ));
   return allMessages;
 }
 

@@ -56,14 +56,17 @@ export function resolveOrCreateConversation(agentId: string, ident: Conversation
   }
 }
 
-/** Dominant (modal) non-null lineage across a set of message ids, over BOTH
- *  message stores (lanes & lineage P5c). Summaries and archives call this so
- *  conversation identity survives the compaction boundary instead of dropping
- *  at it. Each field's mode is computed independently: a chunk can carry one
- *  dominant conversation but several conv_keys, and each is separately useful
+/** Dominant (modal) non-null lineage across a set of message ids (lanes & lineage P5c).
+ *  Summaries and archives call this so conversation identity survives the compaction
+ *  boundary instead of dropping at it. Each field's mode is computed independently: a chunk
+ *  can carry one dominant conversation but several conv_keys, and each is separately useful
  *  to recall/audits. Ties break deterministically (count, then lexicographic).
- *  Best-effort by design: any failure returns all-null lineage and never
- *  blocks the writer. */
+ *  Best-effort by design: any failure returns all-null lineage and never blocks the writer.
+ *
+ *  T5: ONE query per chunk. This ran the same statement twice, once against each message
+ *  store, and summed the tallies — which also meant a double-homed id voted TWICE and could
+ *  carry a mode on its own. STRIP; requirement preserved: a summary carries the modal
+ *  lineage of the chunk it compressed, counted once per row. */
 export function dominantMessageLineage(messageIds: string[]): {
   conversationId: string | null;
   convKey: string | null;
@@ -81,15 +84,13 @@ export function dominantMessageLineage(messageIds: string[]): {
     for (let i = 0; i < messageIds.length; i += 500) {
       const chunk = messageIds.slice(i, i + 500);
       const ph = chunk.map(() => '?').join(',');
-      for (const table of ['messages', 'inter_agent_messages'] as const) {
-        const rows = db.prepare(
-          `SELECT conversation_id, conv_key, a2a_thread_id FROM ${table} WHERE id IN (${ph})`,
-        ).all(...chunk) as Array<{ conversation_id: string | null; conv_key: string | null; a2a_thread_id: string | null }>;
-        for (const r of rows) {
-          for (const col of ['conversation_id', 'conv_key', 'a2a_thread_id'] as const) {
-            const v = r[col];
-            if (v) tallies[col].set(v, (tallies[col].get(v) ?? 0) + 1);
-          }
+      const rows = db.prepare(
+        `SELECT conversation_id, conv_key, a2a_thread_id FROM messages WHERE id IN (${ph})`,
+      ).all(...chunk) as Array<{ conversation_id: string | null; conv_key: string | null; a2a_thread_id: string | null }>;
+      for (const r of rows) {
+        for (const col of ['conversation_id', 'conv_key', 'a2a_thread_id'] as const) {
+          const v = r[col];
+          if (v) tallies[col].set(v, (tallies[col].get(v) ?? 0) + 1);
         }
       }
     }

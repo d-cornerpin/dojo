@@ -844,10 +844,10 @@ export function archiveConversation(params: {
   // archival high-water. Optional so older callers still compile; null when the
   // batch carried no rowid.
   latestRowid?: number | null;
-  // Migration 100 (D-A step-4 follow-up): the highest inter_agent_messages rowid
-  // in this archive, the STORE-space archival high-water (getStoreArchiveHighWaterMark).
-  // Independent from latestRowid: a messages archive leaves this NULL, a store
-  // archive leaves latestRowid NULL. Optional so every existing caller compiles.
+  // Migration 100: was the STORE-space high-water, when agent-to-agent rows lived in a
+  // second table with its own rowid sequence. PHASE-1 T5 deleted that arm — one table,
+  // one keyspace, `latestRowid` bounds every lane — so nothing passes this any more.
+  // T7 Step 2 drops the column; until then historical rows keep their value.
   latestIaRowid?: number | null;
 }): string {
   const db = getDb();
