@@ -1,0 +1,42 @@
+-- 129_drop_messages_compat_columns.sql — PHASE-1 T6: the two compat columns come off.
+--
+-- `origin_kind` and `source` were carried by migration 127 as SCAFFOLDING WITH A DEMOLITION
+-- DATE (R2). 127 DERIVED `lane` from them for every migrated row; T4's writer module then
+-- derived THEM from `lane` for every live row, so the two spellings have been the same fact
+-- twice over since the cutover. T5 took the memory layer off them and T6 took the raw-SQL
+-- long tail off them. This drops them.
+--
+-- WHY HERE AND NOT AT T4 (dated resolution, 2026-07-27, orchestrator ruling, recorded under
+-- the R1-R6 block in overhaul-plans/PHASE-1.md): the R1-R6 consequences table said T4 would
+-- drop these when its writer allowlist reached zero. That row was WRONG, and T4 proved it on
+-- a copy: allowlist-zero covers the WRITERS, and the READERS still held the columns —
+-- 5 of 5 live reader statements failed to PREPARE with both dropped, including the read
+-- behind every assembled turn. R1 forbids that at a commit boundary. T4 re-dated the markers
+-- to `T10-DELETES` as the nearest already-written owner; the drop's true owner is the task
+-- that empties the READER side, which is T6. T10 keeps the grep-zero backstop.
+--
+-- EQUIVALENCE, re-measured on a VACUUM INTO copy of the live dev box immediately before this
+-- migration was written (3,584 rows):
+--   origin_kind <> (lane='events' -> 'engine')                     -> 0 mismatches
+--   source      <> (lane='a2a' -> 'a2a', channel='voice' -> 'voice') -> 0 mismatches
+-- and it holds STRUCTURALLY, not by luck: 127 derived one direction, message-store.ts the
+-- other. Nothing distinguishable is lost.
+--
+-- READERS, re-derived at HEAD before the drop (a scan of every SQL string literal in
+-- packages/{server,shared,dashboard}/src that names the word-bounded `messages` table):
+-- ZERO reader sites. The only remaining occurrences are `memory/message-store.ts`'s own
+-- INSERT column list and `markSpokenAloud`, both removed in the same commit as this file.
+--
+-- REHEARSED on a VACUUM INTO copy before it ran for real; transcript in
+-- .superpowers/sdd/PHASE-1/task-T6-report.md.
+--
+-- THE VIEW SURVIVES — measured, and the first draft of this file claimed the opposite.
+-- `chat_messages` is `SELECT * FROM messages`, so it looked like the drop would leave it
+-- pointing at columns that no longer exist, and the migration was written with a
+-- drop-and-recreate around the ALTERs. The negative control says otherwise: with the
+-- columns dropped and the view UNTOUCHED, `SELECT * FROM chat_messages` returns its 3,544
+-- rows and resolves to 44 columns. SQLite re-resolves a `SELECT *` view at prepare time and
+-- does not treat it as a reference to the named column. The unnecessary DDL is gone.
+
+ALTER TABLE messages DROP COLUMN origin_kind;
+ALTER TABLE messages DROP COLUMN source;

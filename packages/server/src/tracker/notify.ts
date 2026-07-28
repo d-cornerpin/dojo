@@ -150,7 +150,7 @@ export function injectTaskAssignmentNotification(
   const messageId = uuidv4();
   try {
     // D-A step 4: a task-assignment notice is inter-agent traffic (origin_kind=
-    // 'engine'), so it lands in the physical inter-agent store, not the assignee's
+    // lane='events'), so it lands on the EVENTS lane, structurally outside the assignee's
     // `messages` chat table. The merged tail + assembler surface it as a pending
     // engine event (conv_key NULL) exactly as the old `messages` row did.
     // origin_kind/origin_intent (mig 075): this is an ENGINE event (a task

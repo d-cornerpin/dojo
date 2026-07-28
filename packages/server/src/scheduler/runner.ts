@@ -773,7 +773,7 @@ export async function checkScheduledTasks(): Promise<void> {
 
     // Inject as engine event and trigger runtime.
     // D-A step 4: a scheduler fire is inter-agent/engine traffic (origin_kind=
-    // 'engine'), so it lands in the physical inter-agent store, not the assignee's
+    // lane='events'), so it lands on the EVENTS lane, structurally outside the assignee's
     // `messages` chat table. The merged tail + assembler surface it as a pending
     // engine event (conv_key NULL) exactly as the old `messages` row did, and the
     // migration-084/099 delivery lifecycle applies unchanged.

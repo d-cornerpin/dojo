@@ -69,7 +69,7 @@ export function postAgentNotice(opts: AgentNoticeOpts): string | null {
   const id = uuidv4();
   try {
     // D-A step 4: an engine notice is inter-agent traffic (origin_kind='engine'),
-    // so it now lands in the physical inter-agent store, not the primary's `messages`
+    // so it lands on the EVENTS lane, structurally outside the primary's owner chat
     // chat table where a forgetful downstream filter could leak it into human chat.
     // The merged tail loaders + assembler classify it into the EVENTS/awareness lane
     // byte-identically to the old `messages` row.

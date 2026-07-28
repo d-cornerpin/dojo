@@ -53,7 +53,7 @@ import type { Message } from '@dojo/shared';
 import { insertMessage, insertMessageIfAbsent, tagTurnOutputConvKey } from './message-store.js';
 
 /**
- * Persist one peer A2A inbound row into the physical inter-agent store.
+ * Persist one peer A2A inbound row on the A2A lane.
  *
  * Mirrors the exact column set + values deliverA2AMessage used to write into
  * `messages` (role hardcoded 'user', created_at = datetime('now')). Uses
@@ -102,7 +102,7 @@ export function insertInterAgentMessage(params: {
 }
 
 /**
- * Persist one ENGINE-ORIGIN notice/event row into the physical inter-agent store
+ * Persist one ENGINE-ORIGIN notice/event row on the EVENTS lane
  * (D-A step 4). This is the store home for what the engine-notice writers used to
  * INSERT into `messages`: agent notices (conv_key='engine-notice'), tracker
  * assignments (conv_key NULL), scheduler fires (conv_key NULL), healer-denied
@@ -171,7 +171,7 @@ export function insertInterAgentEngineRow(params: {
 
 /**
  * Persist the agent's OWN inter-agent-turn output (role 'assistant' or 'tool')
- * into the physical inter-agent store (D-A step 8). On a turn the persistence
+ * on the A2A lane (D-A step 8). On a turn the persistence
  * classifier marks inter-agent (the six-way interAgentTurn union in agent/v2/
  * loop.ts), the turn's assistant tool_use rows and its tool_result rows belong
  * in the store, NOT in the primary's `messages` chat table, so a coordination

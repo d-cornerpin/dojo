@@ -131,24 +131,14 @@ function classify(lane: Lane, role: Role): { kind: string; tier: DisplayTier } {
   return { kind: role === 'user' ? 'user-text' : 'agent-text', tier: 'user-visible' };
 }
 
-// ── The legacy-column projection (T4) ──
-// T6-DELETES / T10-DELETES. `origin_kind` and `source` are the two compat columns migration
-// 127 carries. T4 converted every CALL SITE off them — no writer outside this module names
-// either column any more — but ~120 `origin_kind` refs and 39 `source` refs are still READ
-// across the tree, and T5/T6 own re-pointing those. R1 says the box stays alive and
-// OR8-verifiable after EVERY task, so the single writer keeps the two columns TRUE by
-// deriving them from `lane`, which is the exact inverse of the compat trigger T4 dropped.
-// The derivation lives in ONE function with one demolition marker instead of firing as an
-// invisible AFTER INSERT trigger on every row. When T6 has re-pointed the predicates and
-// T10 drops the columns, this function and its two call sites go with them.
-function legacyOriginKind(lane: Lane): string | null {
-  return lane === 'events' ? 'engine' : null;   // T10-DELETES (T3-0b §1: origin_kind ⟺ lane)
-}
-function legacySource(lane: Lane, channel: string | null): string | null {
-  if (lane === 'a2a') return 'a2a';             // T10-DELETES (T3-0b §3: source splits onto
-  if (channel === 'voice') return 'voice';      //              lane + channel)
-  return null;
-}
+// PHASE-1 T6: the legacy-column projection is GONE with migration 129. T4 added
+// `legacyOriginKind`/`legacySource` here so the single writer could keep `origin_kind` and
+// `source` TRUE while ~120 reads still consulted them (R1: the box stays alive and
+// OR8-verifiable after EVERY task). T5 and T6 emptied the reader side, 129 drops the
+// columns, and the derivation goes with them. STRIP; requirement preserved: "engine
+// coordination and peer traffic are structurally distinguishable from a person speaking,
+// without parsing prose" — carried by `lane`, which is CHECK-constrained at the database
+// where the two columns were nullable free text.
 
 const INSERT_SQL = `
     INSERT INTO messages (
@@ -157,14 +147,14 @@ const INSERT_SQL = `
       source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, token_count,
       model_id, cost, latency_ms, reasoning_content, inbound_meta, attachments,
       external_message_id, speaker, voice_session_id, task_id, run_id, root_kind, root_id,
-      conv_key, origin_kind, source, provenance, sent_at, created_at
+      conv_key, provenance, sent_at, created_at
     ) VALUES (
       @id, @agentId, @conversationId, @lane, @originIntent, @role, @content, @mood,
       @displayKind, @displayTier, @turnNumber, @groupId, @channel, @senderId, @authorized,
       @sourceAgentId, @a2aThreadId, @a2aIntent, @a2aRequiresResponse, @tokenCount,
       @modelId, @cost, @latencyMs, @reasoningContent, @inboundMeta, @attachments,
       @externalMessageId, @speaker, @voiceSessionId, @taskId, @runId, @rootKind, @rootId,
-      @convKey, @originKind, @source, 'live', @sentAt, datetime('now')
+      @convKey, 'live', @sentAt, datetime('now')
     )`;
 
 function bind(m: NewMessage): { lane: Lane; id: string; displayKind: string; displayTier: DisplayTier;
@@ -197,7 +187,6 @@ function bind(m: NewMessage): { lane: Lane; id: string; displayKind: string; dis
       externalMessageId: m.externalMessageId ?? null, speaker: m.speaker ?? null,
       voiceSessionId: m.voiceSessionId ?? null, taskId: m.taskId ?? null, runId: m.runId ?? null,
       rootKind: m.rootKind ?? null, rootId: m.rootId ?? null, convKey: m.convKey ?? null,
-      originKind: legacyOriginKind(lane), source: legacySource(lane, channel),
       sentAt,
     },
   };
@@ -535,13 +524,13 @@ export function stampVoiceSpeaker(id: string, speaker: string, voiceSessionId: s
   ).run(speaker, voiceSessionId, id).changes;
 }
 
-/** "This assistant row was spoken aloud." Was `source='voice'`; `channel` is where that
- *  fact lives now (T3-0b §3). `source` is kept in step for the compat window — T10-DELETES
- *  with the column. Routing columns only, so the cache prefix is untouched. */
+/** "This assistant row was spoken aloud." Was `source='voice'`; `channel` is where that fact
+ *  lives now (T3-0b §3), and as of migration 129 it is the only place it lives. Routing
+ *  columns only, so no historical prompt byte moves and the cache prefix is untouched. */
 export function markSpokenAloud(id: string): number {
   const db = getDb();
   return db.prepare(
-    `UPDATE messages SET channel = 'voice', source = 'voice'
+    `UPDATE messages SET channel = 'voice'
        WHERE id = ? AND role = 'assistant' AND (channel IS NULL OR channel = '')`,
   ).run(id).changes;
 }
