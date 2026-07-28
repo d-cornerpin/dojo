@@ -58,8 +58,17 @@ export interface WaitingConversation {
 }
 
 /** Every row shape below is read through this one projection list, so no query can
- *  accidentally omit a column the origin resolver needs. */
-const WAITING_COLS = `rowid, id, conversation_id, conv_key, content, lane, channel,
+ *  accidentally omit a column the origin resolver needs.
+ *
+ *  `seq AS rowid` (T10, migration 133): `seq` is the table's INTEGER PRIMARY KEY now, so a
+ *  bare `rowid` here would come back named `seq` and every `r.rowid` in this file — the
+ *  waiting set's key, the quarantine's, the teardown claim's — would be `undefined`, with
+ *  nothing thrown. This constant is where that would have happened silently: it is
+ *  INTERPOLATED into four queries, so the string `rowid` never appears beside a `FROM
+ *  messages` and the source walk in memory/__tests__/lane-readers.test.ts could not see it.
+ *  The unit suite could: 45 integration tests went red on the promotion's first run because
+ *  the turn stopped claiming its trigger. The walk resolves same-file constants now. */
+const WAITING_COLS = `seq AS rowid, id, conversation_id, conv_key, content, lane, channel,
   source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta,
   origin_intent, ${createdAtText()}`;
 
@@ -348,7 +357,7 @@ export function retireSpentEngineEvents(agentId: string): number {
   try {
     const db = getDb();
     const candidates = db.prepare(
-      `SELECT rowid, task_id, run_id, ${createdAtText()} FROM messages
+      `SELECT seq AS rowid, task_id, run_id, ${createdAtText()} FROM messages
          WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} AND (task_id IS NOT NULL OR run_id IS NOT NULL)
        LIMIT 50`,
     ).all({ agentId }) as Array<{ rowid: number; task_id: string | null; run_id: string | null; created_at: string }>;
@@ -421,7 +430,7 @@ export function expireExhaustedEngineEvents(agentId: string): number {
       `AND (delivery_attempts >= ${ENGINE_EVENT_MAX_ATTEMPTS}
             OR created_at <= (unixepoch('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours') * 1000))`;
     const rows = db.prepare(
-      `SELECT rowid, content FROM messages
+      `SELECT seq AS rowid, content FROM messages
         WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${exhaustedTail}`,
     ).all({ agentId }) as Array<{ rowid: number; content: string }>;
     for (const r of rows) {
@@ -576,7 +585,7 @@ export function findUnservedTerminalWake(agentId: string): { rowid: number } | n
   // FRESH; older rows return to their pre-.20 state (inert, never served),
   // which is exactly how the box behaved before this finder existed.
   const row = db.prepare(`
-    SELECT rowid FROM messages
+    SELECT seq AS rowid FROM messages
      WHERE agent_id = @agentId AND role = 'user'
        AND lane <> 'events'
        AND a2a_thread_id IS NOT NULL
@@ -610,7 +619,7 @@ export function getPendingEngineEvent(agentId: string): { rowid: number; id: str
      AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
      AND (next_attempt_at IS NULL OR next_attempt_at <= (unixepoch('now') * 1000))`;
   const row = db.prepare(
-    `SELECT rowid, id, task_id, run_id, content, origin_intent FROM messages
+    `SELECT seq AS rowid, id, task_id, run_id, content, origin_intent FROM messages
        WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${engineGates}
      ORDER BY created_at ASC, rowid ASC LIMIT 1`,
   ).get({ agentId, sessionStart }) as { rowid: number; id: string; task_id: string | null; run_id: string | null; content: string; origin_intent: string | null } | undefined;

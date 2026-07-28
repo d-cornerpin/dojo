@@ -59,21 +59,27 @@ describe('origin-spine conformance (P1)', () => {
   });
 
   it('the engine-row writer persists the work referent columns', () => {
-    // PHASE-1 T4 (2026-07-27): interagent.ts is a shim over memory/message-store.ts now,
-    // so the engine row's columns are named as writer-module FIELDS rather than in a
-    // raw column list. The requirement is untouched — an engine row must still carry
-    // the work referent the serve boundary re-checks its premise against — so all four
-    // are still asserted, at both ends: the shim must pass them, and the single writer
-    // must persist them. Asserting only the old column-list literal would have gone
-    // quietly vacuous the moment the statement moved.
-    const interagent = read('memory/interagent.ts');
-    const fn = interagent.slice(interagent.indexOf('export function insertInterAgentEngineRow'));
-    const body = fn.slice(0, 2500);
-    for (const field of ['taskId', 'runId', 'rootKind', 'rootId']) {
-      expect(body, `the engine-row writer must pass ${field}`).toContain(`${field}: params.work?.`);
-    }
-    expect(body).toMatch(/work:\s*\{\s*taskId:|params\.work\?\.taskId/);
+    // PHASE-1 T4 (2026-07-27): interagent.ts became a shim over memory/message-store.ts, so
+    // the engine row's columns are named as writer-module FIELDS rather than in a raw column
+    // list. PHASE-1 T10 (2026-07-28): the shim is DELETED, and the requirement moved with it
+    // rather than dying with it — `work` is now a REQUIRED field on the writer module's own
+    // `insertEngineEvent` / `insertEngineEventIfAbsent`, where `null` is a legal and
+    // deliberate answer. That is what this assertion follows.
+    //
+    // The requirement is untouched at both ends: an engine row must carry the work referent
+    // the serve boundary re-checks its premise against, so the parameter must be REQUIRED
+    // (not optional — optional is how a new writer forgets in silence) and the single writer
+    // must persist all four columns. Asserting the old shim's `params.work?.` literal would
+    // have gone quietly vacuous the moment that file was deleted.
     const store = read('memory/message-store.ts');
+    expect(store, 'engine rows must declare their work referent, and `null` must be explicit')
+      .toMatch(/work:\s*EngineEventWork\s*\|\s*null/);
+    expect(store, '`work` must not be optional — an optional referent is a forgotten one')
+      .not.toMatch(/work\?\s*:\s*EngineEventWork/);
+    const engineRow = store.slice(store.indexOf('function engineRow('), store.indexOf('function engineRow(') + 700);
+    for (const field of ['taskId', 'runId', 'rootKind', 'rootId']) {
+      expect(engineRow, `the engine-row writer must pass ${field}`).toContain(`work?.${field}`);
+    }
     expect(store, 'the single writer must persist the work referent columns')
       .toMatch(/task_id, run_id, root_kind, root_id/);
   });

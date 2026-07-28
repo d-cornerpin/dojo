@@ -73,38 +73,79 @@ describe('R1 — no writer may lose a row silently', () => {
     expect(rowOf('legacy-form')).toBeTruthy();
   });
 
-  it('every NOT NULL non-key column except the three that ARE the message carries a DEFAULT', () => {
-    // agent_id/role/content (plus `id`, which is the primary key and so excluded by the
-    // pk filter) are the irreducible identity of a message: a writer that omits one has no
-    // message to write. Every OTHER NOT NULL column must default, or the silent-discard
-    // window reopens for whichever writer has not been converted yet.
+  it('every NOT NULL non-key column except the four that ARE the message carries a DEFAULT', () => {
+    // id/agent_id/role/content are the irreducible identity of a message: a writer that
+    // omits one has no message to write. Every OTHER NOT NULL column must default, or the
+    // silent-discard window reopens for whichever writer has not been converted yet.
+    //
+    // T10 (migration 133) moved `id` INTO this list and TIGHTENED it, deliberately. It used
+    // to be `id TEXT PRIMARY KEY`, which the `pk === 0` filter below excluded — and SQLite
+    // permits NULL in a TEXT primary key, a documented legacy quirk, so the column that names
+    // every row was nullable. It is `TEXT NOT NULL UNIQUE` now: same UNIQUE index the
+    // `summary_messages` foreign key needs as a parent key, plus the NOT NULL it always
+    // should have had. R1's "convert the writers in the same commit or keep the default" is
+    // satisfied without a conversion, measured both ways: the writer module has always
+    // defaulted it (`const id = m.id ?? randomUUID()`), and the live box holds
+    // `SELECT COUNT(*) FROM messages WHERE id IS NULL` → 0 rows, so nothing existed to break.
     const cols = mockDb.current!.prepare('PRAGMA table_info(messages)').all() as Array<{
       name: string; notnull: number; dflt_value: string | null; pk: number;
     }>;
     const undefaulted = cols
       .filter(c => c.notnull === 1 && c.dflt_value === null && c.pk === 0)
       .map(c => c.name);
-    expect(undefaulted.sort()).toEqual(['agent_id', 'content', 'role']);
+    expect(undefaulted.sort()).toEqual(['agent_id', 'content', 'id', 'role']);
+    // The tightening itself, so a later rebuild cannot quietly restore a nullable name.
+    expect(cols.find(c => c.name === 'id')?.notnull).toBe(1);
   });
 
-  it('`seq` tracks rowid exactly, so T5 can move readers onto it before T10 promotes it', () => {
+  it('`seq` IS the rowid — it cannot drift, because it is the same integer (T10, mig 133)', () => {
+    // Until T10 this read "`seq` TRACKS rowid, so T5 can move readers onto it before T10
+    // promotes it", and it was kept true by an AFTER INSERT trigger (`messages_seq_ai`)
+    // that wrote `seq = new.rowid` on every insert. Migration 133 made `seq` the
+    // `INTEGER PRIMARY KEY AUTOINCREMENT` itself, so there is nothing left to keep in
+    // step: the two names address one integer. The trigger is gone with the drift it
+    // policed. The assertion is unchanged in meaning and stronger in kind — it now holds
+    // structurally rather than by a trigger firing.
     const p = insertMessage({ agentId: AGENT, role: 'user', content: 'seq check' });
-    const row = mockDb.current!.prepare('SELECT seq, rowid FROM messages WHERE id = ?')
-      .get(p.id) as { seq: number; rowid: number };
-    expect(row.seq).toBe(row.rowid);
+    const row = mockDb.current!.prepare('SELECT seq, rowid AS rid FROM messages WHERE id = ?')
+      .get(p.id) as { seq: number; rid: number };
+    expect(row.seq).toBe(row.rid);
     expect(p.seq).toBe(row.seq);
     const drift = mockDb.current!.prepare(
       'SELECT COUNT(*) c FROM messages WHERE seq IS NULL OR seq <> rowid',
     ).get() as { c: number };
     expect(drift.c).toBe(0);
+    // The promotion itself, asserted rather than assumed: `seq` is the declared primary
+    // key and `id` is not. A rebuild that quietly restored the old shape would pass every
+    // other assertion in this file.
+    const cols = mockDb.current!.prepare('PRAGMA table_info(messages)').all() as Array<{
+      name: string; pk: number;
+    }>;
+    expect(cols.find(c => c.name === 'seq')?.pk).toBe(1);
+    expect(cols.find(c => c.name === 'id')?.pk).toBe(0);
   });
 
-  it('a bare `SELECT rowid` still names its column `rowid` — 52 TS reads depend on it', () => {
-    // The measured reason `seq` is not the INTEGER PRIMARY KEY yet. Promoting it renames
-    // this result column to `seq`, every `row.rowid` becomes undefined, and nothing throws.
+  it('a bare `SELECT rowid` now names its column `seq` — which is why no reader writes one', () => {
+    // INVERTED at T10, not deleted. This assertion is the measurement that kept the
+    // promotion out of migrations 127 and 131: `SELECT rowid FROM t` names its result
+    // column `rowid` while the PK is TEXT, and `seq` the moment an INTEGER PRIMARY KEY
+    // alias exists — same value, different name, so every `row.rowid` in TypeScript
+    // silently becomes `undefined` and nothing throws. It broke 45 tests on T3's first
+    // attempt and the failure was silent: the turn simply stopped claiming its trigger.
+    //
+    // The hazard is real and it is now permanent, so the fact is asserted in its new
+    // direction and the CODE rule that neutralises it — every reader projects
+    // `seq AS rowid`, never a bare `rowid` — is walked in lane-readers.test.ts.
     insertMessage({ agentId: AGENT, role: 'user', content: 'x' });
-    const stmt = mockDb.current!.prepare('SELECT rowid, id FROM messages LIMIT 1');
-    expect(stmt.columns().map(c => c.name)).toContain('rowid');
+    // Assembled at runtime, not written out: the source walk in lane-readers.test.ts reads
+    // this file too, and a literal bare projection here would make that rule permanently red.
+    const KEY = 'row' + 'id';
+    const bare = mockDb.current!.prepare(`SELECT ${KEY}, id FROM messages LIMIT 1`);
+    expect(bare.columns().map(c => c.name)).toContain('seq');
+    expect(bare.columns().map(c => c.name)).not.toContain('rowid');
+    const aliased = mockDb.current!.prepare('SELECT seq AS rowid, id FROM messages LIMIT 1');
+    expect(aliased.columns().map(c => c.name)).toContain('rowid');
+    expect((aliased.get() as { rowid: number }).rowid).toBeGreaterThan(0);
   });
 
   it('engine traffic stays OUT of the human-facing view — now by the writer, not a trigger', () => {
@@ -119,7 +160,7 @@ describe('R1 — no writer may lose a row silently', () => {
     // be visible through `chat_messages`. It is now carried by the two things that will
     // still be standing at T10 — the writer stamping `lane` at ingest, and the fail-closed
     // view. Keeping the old form would have tested a mechanism that no longer exists.
-    insertEngineEvent({ id: 'engine-note', agentId: AGENT, content: '[Engine] a tracker note', originIntent: 'tracker' });
+    insertEngineEvent({ id: 'engine-note', agentId: AGENT, content: '[Engine] a tracker note', originIntent: 'tracker', work: null });
 
     expect(rowOf('engine-note').lane).toBe('events');
     const visible = mockDb.current!.prepare(
@@ -224,7 +265,7 @@ describe('insertMessage', () => {
 
 describe('insertEngineEvent', () => {
   it('always lands in the events lane and never in the human-facing view', () => {
-    const p = insertEngineEvent({ agentId: AGENT, content: '[Engine] scheduler fired', originIntent: 'scheduler' });
+    const p = insertEngineEvent({ agentId: AGENT, content: '[Engine] scheduler fired', originIntent: 'scheduler', work: null });
     const row = rowOf(p.id);
     expect(row.lane).toBe('events');
     expect(row.origin_intent).toBe('scheduler');
@@ -396,7 +437,7 @@ describe('sanctioned readers', () => {
   it('recentTail returns oldest-first and is lane-scoped', () => {
     insertMessage({ agentId: AGENT, role: 'user', content: 'one' });
     insertMessage({ agentId: AGENT, role: 'assistant', content: 'two' });
-    insertEngineEvent({ agentId: AGENT, content: 'three (events)' });
+    insertEngineEvent({ agentId: AGENT, content: 'three (events)', work: null });
 
     const all = recentTail(AGENT, { limit: 10 });
     expect(all.map(m => m.content)).toEqual(['one', 'two', 'three (events)']);

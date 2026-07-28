@@ -525,12 +525,37 @@ async function checkStalledAgents(): Promise<void> {
     // unanswered HUMAN message waiting 15+ min. This approximates the platform's
     // waiting-conversation shape (counterparty.ts getWaitingHumanConversations): a
     // role='user' row whose conv_key is still NULL was never picked up by a turn (i.e.
-    // unanswered). We exclude the lanes that legitimately wait, engine events
-    // (origin_kind='engine') and agent-to-agent traffic (source_agent_id / a2a_thread_id),
-    // skip disposed rows (swept_at), and scope to the current session
-    // (created_at >= session_started_at). Cheap approximation: the watchdog cannot run the
-    // platform's authorized-sender gate, so an unauthorized third-party inbound could
-    // count; the lane exclusions remove the large non-human cases.
+    // unanswered). We exclude the lanes that legitimately wait — engine events and
+    // agent-to-agent traffic — skip disposed rows (swept_at), and scope to the current
+    // session. Cheap approximation: the watchdog cannot run the platform's
+    // authorized-sender gate, so an unauthorized third-party inbound could count; the lane
+    // exclusions remove the large non-human cases.
+    //
+    // ⚠ REPAIRED 2026-07-28 (PHASE-1 T10). THIS QUERY HAD BEEN THROWING SINCE MIGRATION 129,
+    // and because it sits inside `checkStalledAgents`'s single try/catch, its throw took the
+    // STALLED-AGENT log line with it — so BOTH halves of agent supervision had been silently
+    // dead for a day. Measured, not inferred: `db.prepare(<the old statement>)` against
+    // ~/.dojo/data/dojo.db → "no such column: m.origin_kind".
+    //
+    // Two Phase-1 changes reached in here and neither scan saw it, for the same reason:
+    // T6 dropped `messages.origin_kind` (migration 129) and T6b converted `created_at` to
+    // epoch-ms INTEGER (migration 131), and BOTH tasks re-derived their reader sets over
+    // `packages/{server,shared,dashboard}/src`. `watchdog/` is not under `packages/` — the
+    // very independence that the watchdog-contract gate enforces put it outside the scan.
+    // T10's grep-zero, which walks the whole repository, is what found it.
+    //
+    //   * `origin_kind = 'engine'` IS `lane = 'events'` (T3-0b §1 maps them value for value),
+    //     and `lane='owner'` is the positive form the platform's own waiting-set predicate
+    //     uses (WAITING_HUMAN_CANDIDATE_WHERE). It also subsumes the a2a lane, but the two
+    //     structural A2A filters are KEPT, exactly as counterparty.ts keeps them and for the
+    //     same recorded reason: a pre-D-A a2a row migrated to `lane='owner'` while still
+    //     holding `a2a_thread_id`.
+    //   * `created_at` is epoch-ms INTEGER; `agents.session_started_at` is TEXT and stays
+    //     TEXT. SQLite orders INTEGER before TEXT UNCONDITIONALLY, so the old
+    //     `m.created_at >= a.session_started_at` was not merely wrong, it was CONSTANTLY
+    //     FALSE — the backlog would have been empty forever even with the column restored
+    //     (measured: the lane-only repair, with the time halves left alone, returns 0 rows on
+    //     a box holding 3,992 messages). Each comparison now has one type on both sides.
     const backlog = db.prepare(`
       SELECT a.id AS id, a.name AS name, a.status AS status,
              COUNT(*) AS waiting, MIN(m.created_at) AS oldest
@@ -540,13 +565,13 @@ async function checkStalledAgents(): Promise<void> {
         AND m.role = 'user'
         AND m.conv_key IS NULL
         AND m.swept_at IS NULL
-        AND (m.origin_kind IS NULL OR m.origin_kind != 'engine')
+        AND m.lane = 'owner'
         AND m.source_agent_id IS NULL
         AND m.a2a_thread_id IS NULL
-        AND m.created_at >= COALESCE(a.session_started_at, '1970-01-01')
-        AND m.created_at <= datetime('now', '-15 minutes')
+        AND m.created_at >= COALESCE(unixepoch(a.session_started_at) * 1000, 0)
+        AND m.created_at <= (unixepoch('now', '-15 minutes') * 1000)
       GROUP BY a.id, a.name, a.status
-    `).all() as Array<{ id: string; name: string; status: string; waiting: number; oldest: string }>;
+    `).all() as Array<{ id: string; name: string; status: string; waiting: number; oldest: number }>;
 
     db.close();
 

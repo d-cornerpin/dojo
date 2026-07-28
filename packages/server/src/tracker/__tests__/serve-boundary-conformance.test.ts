@@ -187,10 +187,14 @@ describe('conversations at ingest (P5)', () => {
       expect(src, `${rel} must resolve a conversation`).toMatch(/resolveOrCreateConversation\(/);
       expect(src, `${rel} must stamp conversation_id in the write itself`).toMatch(ATOMIC_CONVERSATION_STAMP);
     }
-    // interagent.ts is a shim over the single writer as of T4; its peer-A2A row still
-    // resolves a conversation and passes it in the same call.
-    const ia = read('memory/interagent.ts');
-    expect(ia).toMatch(/INTO inter_agent_messages[\s\S]{0,400}conversation_id|insertMessage(?:IfAbsent)?\s*\([\s\S]{0,600}conversationId/);
+    // The eighth producer is peer A2A. T4 made `memory/interagent.ts` a shim over the single
+    // writer; T10 DELETED that file and moved the resolve to the site that was calling it, so
+    // the assertion follows the requirement to its new address rather than dying with the
+    // file. Same property, same shape: resolve the conversation, hand it to the write.
+    const a2a = read('agent/a2a-transport.ts');
+    expect(a2a, 'agent/a2a-transport.ts must resolve a conversation').toMatch(/resolveOrCreateConversation\(/);
+    expect(a2a, 'agent/a2a-transport.ts must stamp conversation_id in the write itself')
+      .toMatch(ATOMIC_CONVERSATION_STAMP);
   });
 
   it('conversations rows have exactly one writer (the resolver)', () => {

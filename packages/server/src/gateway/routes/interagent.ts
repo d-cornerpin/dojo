@@ -127,7 +127,7 @@ interAgentRouter.get('/:agentId', (c) => {
       // boundary, and coordination bursts land several rows in one second; the
       // insertion key is strictly monotonic, so one column says the same thing.
       // 400-on-miss contract unchanged.
-      const cursor = db.prepare('SELECT rowid AS _rowid FROM messages WHERE id = ?').get(before) as { _rowid: number } | undefined;
+      const cursor = db.prepare('SELECT seq AS _rowid FROM messages WHERE id = ?').get(before) as { _rowid: number } | undefined;
       if (!cursor) {
         return c.json({ ok: false, error: 'Invalid cursor message ID' }, 400);
       }

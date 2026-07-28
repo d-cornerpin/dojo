@@ -109,9 +109,13 @@ const WRITER_ALLOWLIST: string[] = [];
 // listed too. `shared/src/origin.ts` is deliberately NOT here and never will be: it
 // CONSUMES these fields to derive origin — it is the resolver, not an ingest producer.
 // SWEEP-A empties this list (SWEEP-A exit: length 0).
+// T10: `memory/interagent.ts` LEAVES this list because the file is deleted. Its entry is
+// replaced, not simply removed — the peer-A2A conversation resolve it performed moved to
+// `agent/a2a-transport.ts`, the site that was calling the shim. Same producer, one fewer
+// indirection; the list length is unchanged and Sweep A's burn-down is not quietly shortened.
 const PRODUCER_ALLOWLIST: string[] = [
-  'agent/v2/deliveries.ts', 'agent/v2/inbound-channel.ts', 'agent/v2/loop.ts',
-  'gateway/routes/chat.ts', 'gateway/routes/twilio.ts', 'memory/interagent.ts',
+  'agent/a2a-transport.ts', 'agent/v2/deliveries.ts', 'agent/v2/inbound-channel.ts',
+  'agent/v2/loop.ts', 'gateway/routes/chat.ts', 'gateway/routes/twilio.ts',
   'scheduler/runner.ts', 'services/gmail-watcher.ts', 'services/imessage-bridge.ts',
   'services/outlook-watcher.ts', 'services/teams-watcher.ts', 'twilio/call-session.ts',
   'twilio/sms-inbound.ts',

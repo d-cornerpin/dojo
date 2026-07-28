@@ -119,7 +119,7 @@ describe('the search index runs on one keyspace', () => {
   it('a row missing from the index is DETECTED and REPAIRED on the next boot', () => {
     const seeded = seedMixedHistory();
     const target = one<{ rowid: number; content: string }>(
-      'SELECT rowid, content FROM messages WHERE id = ?', seeded.peerIn,
+      'SELECT seq AS rowid, content FROM messages WHERE id = ?', seeded.peerIn,
     );
 
     // Genuine drift, produced the way it actually happens: the row is in `messages` but

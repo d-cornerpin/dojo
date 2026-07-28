@@ -79,6 +79,7 @@ describe('the waiting set is the OWNER lane, and nothing else', () => {
   it('an ENGINE event never counts as a human conversation the agent owes a reply', () => {
     humanAsk('the real ask');
     insertEngineEvent({
+      work: null,
       agentId: AGENT, content: '[SOURCE: scheduler] your 3pm reminder fired',
       originIntent: 'scheduler',
     });
@@ -147,6 +148,7 @@ describe('the waiting set is the OWNER lane, and nothing else', () => {
     // fan-out burst produces.
     for (let i = 0; i < 60; i++) {
       insertEngineEvent({
+        work: null,
         agentId: AGENT, content: `[SOURCE: tracker] notice ${i}`, originIntent: 'tracker',
       });
     }
@@ -170,6 +172,7 @@ describe('the waiting set is the OWNER lane, and nothing else', () => {
 describe('the engine-event queue is the EVENTS lane, and it is one keyspace', () => {
   it('a queued engine event is pending, and carries its own row identity', () => {
     const ev = insertEngineEvent({
+      work: null,
       agentId: AGENT, content: '[SOURCE: tracker] task 7 needs a status',
       originIntent: 'tracker',
     });
@@ -185,8 +188,8 @@ describe('the engine-event queue is the EVENTS lane, and it is one keyspace', ()
   });
 
   it('non-deliverable intents (thrash_gate / hint / system) never drive a turn', () => {
-    insertEngineEvent({ agentId: AGENT, content: '[Engine hint] slow down', originIntent: 'hint' });
-    insertEngineEvent({ agentId: AGENT, content: '[Engine] thrash gate', originIntent: 'thrash_gate' });
+    insertEngineEvent({ agentId: AGENT, content: '[Engine hint] slow down', originIntent: 'hint', work: null });
+    insertEngineEvent({ agentId: AGENT, content: '[Engine] thrash gate', originIntent: 'thrash_gate', work: null });
     expect(getPendingEngineEvent(AGENT)).toBeNull();
   });
 
@@ -194,8 +197,8 @@ describe('the engine-event queue is the EVENTS lane, and it is one keyspace', ()
     // Both rows land in the same clock second, which is the common case for a scheduler
     // tick: the pick must fall back on the insertion key, never on a second-granular
     // TEXT clock that cannot separate them.
-    const first = insertEngineEvent({ agentId: AGENT, content: '[SOURCE: scheduler] first', originIntent: 'scheduler' });
-    insertEngineEvent({ agentId: AGENT, content: '[SOURCE: scheduler] second', originIntent: 'scheduler' });
+    const first = insertEngineEvent({ agentId: AGENT, content: '[SOURCE: scheduler] first', originIntent: 'scheduler', work: null });
+    insertEngineEvent({ agentId: AGENT, content: '[SOURCE: scheduler] second', originIntent: 'scheduler', work: null });
     expect(getPendingEngineEvent(AGENT)!.id).toBe(first.id);
   });
 
@@ -203,7 +206,7 @@ describe('the engine-event queue is the EVENTS lane, and it is one keyspace', ()
     // The pick returns a rowid that the loop's claim UPDATE then addresses. rowid is
     // PER-TABLE: a pick that reports a foreign table's rowid claims the wrong row, or
     // no row, and the event re-delivers forever. This asserts the keyspace, not the value.
-    const ev = insertEngineEvent({ agentId: AGENT, content: '[SOURCE: healer] check in', originIntent: 'healer' });
+    const ev = insertEngineEvent({ agentId: AGENT, content: '[SOURCE: healer] check in', originIntent: 'healer', work: null });
     const pending = getPendingEngineEvent(AGENT)!;
     const byRowid = mockDb.current!.prepare('SELECT id FROM messages WHERE rowid = ?')
       .get(pending.rowid) as { id: string } | undefined;
@@ -226,7 +229,7 @@ describe('the terminal-wake finder reads one lane and one keyspace', () => {
   });
 
   it('an ENGINE row is never a terminal wake', () => {
-    insertEngineEvent({ agentId: AGENT, content: '[SOURCE: scheduler] fired', originIntent: 'scheduler' });
+    insertEngineEvent({ agentId: AGENT, content: '[SOURCE: scheduler] fired', originIntent: 'scheduler', work: null });
     expect(findUnservedTerminalWake(AGENT)).toBeNull();
   });
 });

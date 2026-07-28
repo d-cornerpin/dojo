@@ -6,7 +6,7 @@ import { broadcast } from '../ws.js';
 import { getHealerConfig, setHealerConfig, scheduleHealingCycle, runHealingCycle, sendHealerReport, getHealerLogContent } from '../../healer/healer-agent.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import { getAgentRuntime } from '../../agent/runtime.js';
-import { insertInterAgentEngineRow } from '../../memory/interagent.js';
+import { insertEngineEventIfAbsent } from '../../memory/message-store.js';
 import { grantApprovalForSignature } from '../../agent/destructive-gate.js';
 
 const logger = createLogger('healer-routes');
@@ -236,8 +236,8 @@ export function resolveHealerProposal(input: {
       // (lane='events'), so it lands on the EVENTS lane, structurally outside
       // the primary's `messages` chat table. The merged tail + assembler surface it
       // as a pending engine event (conv_key NULL) exactly as the old row did.
-      insertInterAgentEngineRow({
-      work: null,
+      insertEngineEventIfAbsent({
+        work: null,
         id: msgId,
         agentId: primaryId,
         content,

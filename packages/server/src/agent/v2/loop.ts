@@ -129,10 +129,9 @@ import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, TOOL_AND_OUTPUT_RESERVE } from '../../memory/compaction.js';
 import { estimateTokens } from '../../memory/store.js';
 import {
-  insertMessageIfAbsent, setConvKeyByRowid, tagTurnOutputConvKey,
+  insertMessageIfAbsent, insertEngineEventIfAbsent, setConvKeyByRowid, tagTurnOutputConvKey,
   markServedByRowid, setAnswerMessageId,
 } from '../../memory/message-store.js';
-import { insertInterAgentEngineRow, insertInterAgentOwnOutput, tagInterAgentOwnOutputConvKey } from '../../memory/interagent.js';
 import { buildOpenLoopsInjection } from '../../memory/open-loops.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
 import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, claimAssembledSiblings, getOwedMidTurnArrivals, conversationKey, type TurnCounterparty } from './counterparty.js';
@@ -1201,7 +1200,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // requirement preserved: a peer ASSIGN that arrived last is the trigger the assembler
   // scopes the tail to. The `_src` tag is gone with the second table (one rowid space).
   const mostRecentInbound = db.prepare(`
-    SELECT rowid, content, lane, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, conv_key
+    SELECT seq AS rowid, content, lane, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, conv_key
       FROM messages
      WHERE agent_id = @agentId AND role = 'user'
      ORDER BY created_at DESC, rowid DESC
@@ -2347,8 +2346,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // the model receives it on the very next iteration. conv_key sentinel
             // 'engine-steer' keeps it un-selectable as a pending event (see the
             // thrash-steer C6 note below).
-            insertInterAgentEngineRow({
-      work: null,
+            insertEngineEventIfAbsent({
+              work: null,
               id: driftNudgeId,
               agentId,
               content: driftNudge,
@@ -2443,8 +2442,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // ending here (break below), so the next turn's EVENTS lane surfaces it.
           // conv_key sentinel keeps it un-selectable as a pending event.
           const agentNoteId = uuidv4();
-          insertInterAgentEngineRow({
-      work: null,
+          insertEngineEventIfAbsent({
+            work: null,
             id: agentNoteId,
             agentId,
             content:
@@ -2532,8 +2531,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // An engine steer is platform coordination, so it lands on lane='events'.
             // conv_key 'engine-steer' (below) keeps it un-selectable as a pending
             // event; the EVENTS lane still surfaces it to the model.
-            insertInterAgentEngineRow({
-      work: null,
+            insertEngineEventIfAbsent({
+              work: null,
               id: steerMsgId,
               agentId,
               content: steerMsg,
@@ -3402,8 +3401,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // ("[Engine hint] body", space not colon) so the events-lane
             // leading-bracket strip drops only the label and keeps the body; a
             // single wrapping "[Engine hint: ...]" bracket would be stripped whole.
-            insertInterAgentEngineRow({
-      work: null,
+            insertEngineEventIfAbsent({
+              work: null,
               id: uuidv4(),
               agentId,
               content: `[Engine hint] ${DELEGATION_HINT_BODY}`,
@@ -5199,10 +5198,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // for peer-A2A rows), so model continuity holds. Regular-mode chat (messages-
           // only) never sees it; wordy mode serves it from the merged set. The row id
           // stays STABLE (other tables reference message ids) and content byte-identical.
-          insertInterAgentOwnOutput({
+          insertMessageIfAbsent({
             id: messageId,
             agentId,
             role: 'assistant',
+            lane: 'a2a',
             content: assistantContentJson,
             attachments: queuedAttachmentsJson,
             turnNumber,
@@ -5257,10 +5257,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // trailing text on an inter-agent turn (so persistedContent is null and
           // this branch does not run), but keeping the relocation here makes the
           // "no own inter-agent output in messages" invariant total and future-proof.
-          insertInterAgentOwnOutput({
+          insertMessageIfAbsent({
             id: messageId,
             agentId,
             role: 'assistant',
+            lane: 'a2a',
             content: persistedContent,
             attachments: queuedAttachmentsJson,
             turnNumber,
@@ -5810,8 +5811,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
               // as a pending engine event, PLUS pendingNudge so the steer reaches the
               // model on the very next iteration. Label form ([System] body) so the
               // events-lane leading-bracket strip keeps the body.
-              insertInterAgentEngineRow({
-      work: null,
+              insertEngineEventIfAbsent({
+                work: null,
                 id: rePromptId,
                 agentId,
                 content: rePrompt,
@@ -5895,8 +5896,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 // steer reaches the model on the next iteration. The promise text row the
                 // user already saw is KEPT visible (never delete a user-visible row); the
                 // follow-through lands after it.
-                insertInterAgentEngineRow({
-      work: null,
+                insertEngineEventIfAbsent({
+                  work: null,
                   id: steerId,
                   agentId,
                   content: steer,
@@ -5955,8 +5956,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
             );
             const steerId = uuidv4();
             try {
-              insertInterAgentEngineRow({
-      work: null,
+              insertEngineEventIfAbsent({
+                work: null,
                 id: steerId,
                 agentId,
                 content: steer,
@@ -7411,10 +7412,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // D-A step 8: the weak-model (XML-fallback) own-output on an inter-agent
           // iteration relocates to the store too, so the DeepSeek floor path never
           // leaks collapsed tool narration into the owner's chat.
-          insertInterAgentOwnOutput({
+          insertMessageIfAbsent({
             id: messageId,
             agentId,
             role: 'assistant',
+            lane: 'a2a',
             content: collapsedText,
             turnNumber,
           });
@@ -7463,10 +7465,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // never bury or leak into the owner's chat. The merged tail UNIONs them
           // back with role='tool', so the tool_use/tool_result pairing the model
           // sees on its next turn is byte-identical.
-          insertInterAgentOwnOutput({
+          insertMessageIfAbsent({
             id: toolMessageId,
             agentId,
             role: 'tool',
+            lane: 'a2a',
             content: toolResultJson,
             turnNumber,
           });
@@ -7716,8 +7719,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
             );
             const autoNoteId = uuidv4();
             try {
-              insertInterAgentEngineRow({
-      work: null,
+              insertEngineEventIfAbsent({
+                work: null,
                 id: autoNoteId,
                 agentId,
                 content: autoNoteText,
@@ -8942,8 +8945,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // it in the store and the claim branches on its home table, exactly like
           // the scheduler/tracker/healer events. The universal NO_INTERAGENT_LEAK
           // battery invariant now holds absolutely (no by-design exceptions).
-          insertInterAgentEngineRow({
-      work: null,
+          insertEngineEventIfAbsent({
+            work: null,
             id: reportId,
             agentId,
             content: reportMsg,

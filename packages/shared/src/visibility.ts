@@ -597,8 +597,12 @@ function classifyInner(msg: DisplayMessageInput): DisplayClassification {
     // D-A step 7 (history retire): the user-role A2A branch (origin.kind ===
     // 'agent' -> agent-only 'a2a') is REMOVED. Requirement it encoded: hide
     // inbound peer-A2A rows that used to live in this chat table from human
-    // chat. What satisfies it now: (1) the store separation, ALL new
-    // inter-agent traffic lands in inter_agent_messages, never in `messages`;
+    // chat. What satisfies it now: (1) the LANE separation — all inter-agent
+    // traffic is stamped `lane='a2a'`/`'events'` at ingest and the human-facing
+    // `chat_messages` view is `WHERE lane='owner'`. (This clause used to read
+    // "lands in inter_agent_messages, never in `messages`"; PHASE-1 folded that
+    // second table in and migration 133 dropped it, so the sentence was about to
+    // become a false statement of where the protection lives.)
     // (2) the retire migration (102) marks the legacy pre-cutover A2A rows
     // retired_at, and the dashboard serving paths (chat history route +
     // agents.ts projection) filter retired_at IS NULL, so no user-role A2A row

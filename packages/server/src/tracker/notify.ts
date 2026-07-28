@@ -20,8 +20,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from '../agent/runtime.js';
-import { insertInterAgentEngineRow } from '../memory/interagent.js';
-import { claimTrackerNoticeForTask } from '../memory/message-store.js';
+import { insertEngineEvent, claimTrackerNoticeForTask } from '../memory/message-store.js';
 import { isDreamerAgent, isPrimaryAgent } from '../config/platform.js';
 
 const logger = createLogger('tracker:notify');
@@ -156,19 +155,20 @@ export function injectTaskAssignmentNotification(
     // origin_kind/origin_intent (mig 075): this is an ENGINE event (a task
     // assignment notice), not the user talking, stamped structurally so the
     // engine/dashboard never have to parse the [SOURCE: …] prose to know that.
-    // FA-T6: plain INSERT (orIgnore:false), not INSERT OR IGNORE. `id` is a fresh
-    // uuid, so OR IGNORE could never suppress a real duplicate, it could only
-    // swallow a genuine constraint failure (which the catch below already surfaces
-    // as a warning + ok:false). No double-fire path exists for this notification,
-    // so the implied dedup was inert; a plain INSERT keeps a real failure honest.
-    insertInterAgentEngineRow({
+    // FA-T6: `insertEngineEvent`, the THROWING form — not `insertEngineEventIfAbsent`.
+    // `id` is a fresh uuid, so idempotence could never suppress a real duplicate; it
+    // could only swallow a genuine constraint failure (which the catch below already
+    // surfaces as a warning + ok:false). No double-fire path exists for this
+    // notification, so the implied dedup was inert, and the throwing form keeps a real
+    // failure honest. (T10: the shim's `orIgnore: false` said this by flag; the writer
+    // module says it by which function is called.)
+    insertEngineEvent({
       id: messageId,
       agentId: assignedAgentId,
       content,
       sourceAgentId: creatorAgentId === 'dojo-system' ? null : creatorAgentId,
       originIntent: 'tracker',
       convKey: null,
-      orIgnore: false,
       // P1 lineage spine: the task this notice assigns, as a COLUMN. The
       // terminal-task retire (claimAssignmentNoticeForTerminalTask) becomes a
       // keyed UPDATE at P2 instead of a content LIKE scan.

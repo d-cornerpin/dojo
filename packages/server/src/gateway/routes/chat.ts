@@ -310,7 +310,7 @@ chatRouter.get('/:agentId/messages', (c) => {
   if (before) {
     // The cursor is the strictly-monotonic insertion key. A `created_at <` cursor could
     // skip a same-second sibling, and second-granular ties are the normal case in a burst.
-    const cursorMsg = db.prepare('SELECT rowid FROM messages WHERE id = ?').get(before) as { rowid: number } | undefined;
+    const cursorMsg = db.prepare('SELECT seq AS rowid FROM messages WHERE id = ?').get(before) as { rowid: number } | undefined;
     if (!cursorMsg) {
       return c.json({ ok: false, error: 'Invalid cursor message ID' }, 400);
     }

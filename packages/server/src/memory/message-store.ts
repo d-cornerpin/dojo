@@ -292,18 +292,45 @@ export function insertMessageIfAbsent(m: NewMessage): Persisted | null {
   };
 }
 
+/** The WORK an engine row is about, as COLUMNS the serve boundary can read — until the P1
+ *  lineage spine (migration 112) the task/run reference lived only as prose inside `content`.
+ *
+ *  It is REQUIRED, and `null` is a legal, deliberate answer: pass `null` for rows about no
+ *  specific work (steers, awareness notices, floors), real ids for scheduler fires, assignment
+ *  notices, and anything else whose premise a serve-boundary check must be able to retire when
+ *  the referent is spent. Inherited verbatim from `memory/interagent.ts`, the shim T10 deleted:
+ *  of everything that file carried, this was the one requirement the writer module did not
+ *  already encode, and a shim's parameter is not where a requirement should live. Making it
+ *  optional here would let a new engine writer forget its referent in silence, which is the
+ *  state migration 112 exists to have ended. */
+export interface EngineEventWork {
+  taskId: string | null;
+  runId: string | null;
+  rootKind: string | null;
+  rootId: string | null;
+}
+
+type EngineEventInput =
+  Omit<NewMessage, 'lane' | 'role' | 'taskId' | 'runId' | 'rootKind' | 'rootId'>
+  & { role?: Role; work: EngineEventWork | null };
+
+function engineRow(e: EngineEventInput): NewMessage {
+  const { work, ...rest } = e;
+  return {
+    ...rest, lane: 'events', role: e.role ?? 'user',
+    taskId: work?.taskId ?? null, runId: work?.runId ?? null,
+    rootKind: work?.rootKind ?? null, rootId: work?.rootId ?? null,
+  };
+}
+
 /** Platform coordination: never the agent speaking, never visible to a human. */
-export function insertEngineEvent(
-  e: Omit<NewMessage, 'lane' | 'role'> & { role?: Role },
-): Persisted {
-  return insertMessage({ ...e, lane: 'events', role: e.role ?? 'user' });
+export function insertEngineEvent(e: EngineEventInput): Persisted {
+  return insertMessage(engineRow(e));
 }
 
 /** Idempotent twin of `insertEngineEvent`. */
-export function insertEngineEventIfAbsent(
-  e: Omit<NewMessage, 'lane' | 'role'> & { role?: Role },
-): Persisted | null {
-  return insertMessageIfAbsent({ ...e, lane: 'events', role: e.role ?? 'user' });
+export function insertEngineEventIfAbsent(e: EngineEventInput): Persisted | null {
+  return insertMessageIfAbsent(engineRow(e));
 }
 
 // ── Turn boundary ──
@@ -431,21 +458,21 @@ export function unservedHead(agentId: string): StoredMessage[] {
 // can happen to a message row after it is written; before T4 that list was 49 statements
 // scattered over 24 files and nobody could state it.
 //
-// TWO-TABLE DISPATCH — T10-DELETES. `inter_agent_messages` is NOT renamed until T10 (R5:
-// renaming it at T3 killed every assembled turn — measured), so rows written before T4
-// still live there and their lifecycle columns must stay reachable. `src` carries that,
-// and this file is now the ONLY place in the tree that knows two tables exist: T4 Step 3
-// removed the `${table}` interpolation from every call site.
+// THE TWO-TABLE DISPATCH IS GONE (T10, migration 133). Every statement below named its table
+// through `home(src)`, where `src: LegacySrc` chose between `messages` and
+// `inter_agent_messages` — the second store, which T3 could not rename (R5: renaming it killed
+// every assembled turn, measured) and which T4/T5/T6 emptied of writers and readers. This file
+// was the last place in the tree that knew two tables existed. The table is dropped, so the
+// dispatch is dropped with it and the statements name `messages` directly.
+//
+// requirement preserved: a pre-T4 row's lifecycle columns stay reachable. There are none left
+// to reach — migration 133 dropped the table they lived in, and before it did, all 34 call
+// sites of the twelve functions below were enumerated and every one passes ONE argument, so
+// the `'ia'` branch was unreachable from every caller in the tree.
 //
 // CACHE LAW (OR7): none of these touch `content` except `rewriteSystemPromptRow`, which
 // is annotated at its own definition and predates this phase.
 // ════════════════════════════════════════════════════════════════════════════════
-
-/** Which physical table a pre-T4 row lives in. T10-DELETES along with the table. */
-export type LegacySrc = 'm' | 'ia';
-function home(src: LegacySrc = 'm'): 'messages' | 'inter_agent_messages' {
-  return src === 'ia' ? 'inter_agent_messages' : 'messages';
-}
 
 // ── conv_key: the claim/park machine (PHASE2-DELETES — Phase 2 replaces it wholesale) ──
 
@@ -455,13 +482,12 @@ function home(src: LegacySrc = 'm'): 'messages' | 'inter_agent_messages' {
  *  concurrent claim — so it must stay a real count, never a boolean. */
 export function setConvKeyByRowid(
   p: { rowid: number; agentId?: string; value: string | null; expect?: string | null },
-  src: LegacySrc = 'm',
 ): number {
   const db = getDb();
   const guard = p.expect === undefined ? '' : p.expect === null ? 'AND conv_key IS NULL' : 'AND conv_key = @expect';
   const agent = p.agentId ? 'AND agent_id = @agentId' : '';
   return db.prepare(
-    `UPDATE ${home(src)} SET conv_key = @value WHERE rowid = @rowid ${agent} ${guard}`,
+    `UPDATE messages SET conv_key = @value WHERE rowid = @rowid ${agent} ${guard}`,
   ).run({ rowid: p.rowid, agentId: p.agentId ?? null, value: p.value, expect: p.expect ?? null }).changes;
 }
 
@@ -475,12 +501,11 @@ export function setConvKeyByRowid(
  *  behaviour change T4 has no mandate to make. The lane filter keeps it byte-identical. */
 export function tagTurnOutputConvKey(
   p: { agentId: string; turnNumber: number; convKey: string; lane?: Lane },
-  src: LegacySrc = 'm',
 ): number {
   const db = getDb();
-  const laneClause = src === 'ia' ? '' : `AND lane = @lane`;
+  const laneClause = `AND lane = @lane`;
   return db.prepare(
-    `UPDATE ${home(src)} SET conv_key = @convKey
+    `UPDATE messages SET conv_key = @convKey
        WHERE agent_id = @agentId AND turn_number = @turnNumber
          AND role IN ('assistant','tool') AND conv_key IS NULL ${laneClause}`,
   ).run({ agentId: p.agentId, turnNumber: p.turnNumber, convKey: p.convKey, lane: p.lane ?? 'owner' }).changes;
@@ -490,11 +515,10 @@ export function tagTurnOutputConvKey(
  *  serving turn in the same statement. Only ever claims an UNclaimed row. */
 export function claimRowByRowid(
   p: { agentId: string; rowid: number; convKey: string; servedByTurn?: number | null },
-  src: LegacySrc = 'm',
 ): number {
   const db = getDb();
   return db.prepare(
-    `UPDATE ${home(src)} SET conv_key = @convKey,
+    `UPDATE messages SET conv_key = @convKey,
         served_by_turn = COALESCE(@servedByTurn, served_by_turn)
       WHERE agent_id = @agentId AND rowid = @rowid AND conv_key IS NULL`,
   ).run({ ...p, servedByTurn: p.servedByTurn ?? null }).changes;
@@ -505,11 +529,11 @@ export function claimRowByRowid(
  *  verbatim, not improved, because narrowing it here would silently change which rows
  *  retire. */
 export function claimTrackerNoticeForTask(
-  p: { agentId: string; contentLike: string }, src: LegacySrc = 'm',
+  p: { agentId: string; contentLike: string },
 ): number {
   const db = getDb();
   return db.prepare(
-    `UPDATE ${home(src)} SET conv_key = 'engine'
+    `UPDATE messages SET conv_key = 'engine'
        WHERE agent_id = @agentId AND lane = 'events' AND origin_intent = 'tracker'
          AND conv_key IS NULL AND content LIKE @contentLike`,
   ).run(p).changes;
@@ -518,54 +542,47 @@ export function claimTrackerNoticeForTask(
 // ── Turn boundary ──
 
 /** Mark one row served by a turn, addressed by rowid (the shape the claim path holds). */
-export function markServedByRowid(rowid: number, turnNumber: number, src: LegacySrc = 'm'): number {
+export function markServedByRowid(rowid: number, turnNumber: number): number {
   const db = getDb();
-  return db.prepare(`UPDATE ${home(src)} SET served_by_turn = ? WHERE rowid = ?`)
+  return db.prepare(`UPDATE messages SET served_by_turn = ? WHERE rowid = ?`)
     .run(turnNumber, rowid).changes;
 }
 
 /** Record which message answered the rows a turn served (the delivery receipt the
  *  "did I actually reply" probes read). Never overwrites an existing answer. */
 export function setAnswerMessageId(
-  p: { agentId: string; servedByTurn: number; answerMessageId: string }, src: LegacySrc = 'm',
+  p: { agentId: string; servedByTurn: number; answerMessageId: string },
 ): number {
   const db = getDb();
   return db.prepare(
-    `UPDATE ${home(src)} SET answer_message_id = @answerMessageId
+    `UPDATE messages SET answer_message_id = @answerMessageId
        WHERE agent_id = @agentId AND served_by_turn = @servedByTurn AND answer_message_id IS NULL`,
   ).run(p).changes;
 }
 
 // ── Engine-event lifecycle (serve boundary, mig 099/112) ──
 
-/** "Now", in whichever representation the TARGET TABLE stores (T6b). `messages` is epoch-ms
- *  INTEGER from migration 131; `inter_agent_messages` is still TEXT and stays TEXT until T10
- *  drops it. Both branches are correct rather than one being right by luck — nothing passes
- *  `'ia'` today (measured: no caller in `packages/server/src` supplies the argument), but the
- *  dispatch is still declared, so writing the wrong shape down that branch would be a real
- *  bug the day someone re-enables it. */
-function nowExpr(src: LegacySrc): string {
-  return src === 'ia' ? "datetime('now')" : NOW_MS;
-}
-
-/** The same, offset — `offset` is a SQLite modifier this module's own callers supply
- *  ('+5 minutes'); it is never user input. */
-function nowPlusExpr(src: LegacySrc, param: string): string {
-  return src === 'ia'
-    ? `datetime('now', ${param})`
-    : `(CAST(strftime('%s','now', ${param}) AS INTEGER) * 1000)`;
+/** "Now", offset — `param` is a SQLite modifier this module's own callers supply
+ *  ('+5 minutes'); it is never user input.
+ *
+ *  T10: this and its sibling `nowExpr` used to branch on the TARGET TABLE, because `messages`
+ *  became epoch-ms INTEGER at migration 131 while `inter_agent_messages` stayed TEXT. One
+ *  table, one representation — `nowExpr` collapsed into the `NOW_MS` constant it already
+ *  delegated to. */
+function nowPlusExpr(param: string): string {
+  return `(CAST(strftime('%s','now', ${param}) AS INTEGER) * 1000)`;
 }
 
 /** Retire a queued engine event without serving it. `requireUnclaimed` is the serve
  *  boundary's guard: a row already claimed by a turn is not ours to sweep. */
 export function sweepByRowid(
-  p: { rowid: number; agentId?: string; requireUnclaimed?: boolean }, src: LegacySrc = 'm',
+  p: { rowid: number; agentId?: string; requireUnclaimed?: boolean },
 ): number {
   const db = getDb();
   const agent = p.agentId ? 'AND agent_id = @agentId' : '';
   const unclaimed = p.requireUnclaimed ? 'AND conv_key IS NULL' : '';
   return db.prepare(
-    `UPDATE ${home(src)} SET swept_at = ${nowExpr(src)}
+    `UPDATE messages SET swept_at = ${NOW_MS}
        WHERE rowid = @rowid ${agent} ${unclaimed} AND swept_at IS NULL`,
   ).run({ rowid: p.rowid, agentId: p.agentId ?? null }).changes;
 }
@@ -573,31 +590,30 @@ export function sweepByRowid(
 /** Retire every unclaimed engine event pointing at one referent (a task or a run whose
  *  premise is spent). The referent column is a fixed enum, never caller SQL. */
 export function sweepByReferent(
-  p: { referent: 'task_id' | 'run_id'; id: string }, src: LegacySrc = 'm',
+  p: { referent: 'task_id' | 'run_id'; id: string },
 ): number {
   const db = getDb();
   return db.prepare(
-    `UPDATE ${home(src)} SET swept_at = ${nowExpr(src)}
+    `UPDATE messages SET swept_at = ${NOW_MS}
        WHERE ${p.referent} = ? AND conv_key IS NULL AND swept_at IS NULL`,
   ).run(p.id).changes;
 }
 
 /** Retire one row by its message id. */
-export function sweepById(id: string, src: LegacySrc = 'm'): number {
+export function sweepById(id: string): number {
   const db = getDb();
-  return db.prepare(`UPDATE ${home(src)} SET swept_at = ${nowExpr(src)} WHERE id = ?`)
+  return db.prepare(`UPDATE messages SET swept_at = ${NOW_MS} WHERE id = ?`)
     .run(id).changes;
 }
 
 /** Bookkeep a failed delivery: attempt counter + backoff window (mig 084). */
 export function recordDeliveryAttempt(
   p: { agentId: string; rowid: number; attempts: number; backoffMinutes: number },
-  src: LegacySrc = 'm',
 ): number {
   const db = getDb();
   return db.prepare(
-    `UPDATE ${home(src)} SET delivery_attempts = @attempts,
-        next_attempt_at = ${nowPlusExpr(src, '@offset')}
+    `UPDATE messages SET delivery_attempts = @attempts,
+        next_attempt_at = ${nowPlusExpr('@offset')}
       WHERE agent_id = @agentId AND rowid = @rowid`,
   ).run({ agentId: p.agentId, rowid: p.rowid, attempts: p.attempts, offset: `+${p.backoffMinutes} minutes` }).changes;
 }
@@ -621,15 +637,12 @@ export function recordDeliveryAttempt(
  *  now reject outright — loudly, which is the point. */
 export function rehomeUndeliveredCreatedAt(
   p: { agentId: string; newBoundary: string; eligibleWhere: string; maxAttempts: number; expiryHours: number },
-  src: LegacySrc = 'm',
 ): number {
   const db = getDb();
-  const boundary = src === 'ia' ? '@newBoundary' : '(unixepoch(@newBoundary) * 1000)';
-  const horizon = src === 'ia'
-    ? `datetime('now', '-${p.expiryHours} hours')`
-    : `(CAST(strftime('%s','now', '-${p.expiryHours} hours') AS INTEGER) * 1000)`;
+  const boundary = '(unixepoch(@newBoundary) * 1000)';
+  const horizon = `(CAST(strftime('%s','now', '-${p.expiryHours} hours') AS INTEGER) * 1000)`;
   return db.prepare(
-    `UPDATE ${home(src)} SET created_at = ${boundary}
+    `UPDATE messages SET created_at = ${boundary}
        WHERE agent_id = @agentId AND ${p.eligibleWhere}
          AND created_at < ${boundary}
          AND delivery_attempts < ${p.maxAttempts}
@@ -685,9 +698,9 @@ export function rewriteSystemPromptRow(id: string, content: string): number {
 
 /** Every message for an agent. Used by agent deletion and by the three singleton agents
  *  (imaginer/trainer/PM) that reset their own scratch history. */
-export function deleteAllForAgent(agentId: string, src: LegacySrc = 'm'): number {
+export function deleteAllForAgent(agentId: string): number {
   const db = getDb();
-  return db.prepare(`DELETE FROM ${home(src)} WHERE agent_id = ?`).run(agentId).changes;
+  return db.prepare(`DELETE FROM messages WHERE agent_id = ?`).run(agentId).changes;
 }
 
 /** Everything older than a cutoff row, for the PM's bounded scratch history. Deletes the
@@ -706,11 +719,11 @@ export function deleteForAgentBefore(agentId: string, cutoffId: string): number 
     db.prepare(`
       DELETE FROM summary_messages
       WHERE message_id IN (
-        SELECT id FROM messages WHERE agent_id = ? AND rowid < (SELECT rowid FROM messages WHERE id = ?)
+        SELECT id FROM messages WHERE agent_id = ? AND seq < (SELECT seq FROM messages WHERE id = ?)
       )
     `).run(aid, cid);
     return db.prepare(
-      'DELETE FROM messages WHERE agent_id = ? AND rowid < (SELECT rowid FROM messages WHERE id = ?)',
+      'DELETE FROM messages WHERE agent_id = ? AND seq < (SELECT seq FROM messages WHERE id = ?)',
     ).run(aid, cid).changes;
   });
   return txn(agentId, cutoffId);

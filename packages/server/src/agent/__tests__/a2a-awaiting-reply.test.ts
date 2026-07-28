@@ -49,11 +49,30 @@ vi.mock('../runtime.js', () => ({
   getAgentRuntime: () => ({ handleMessage }),
 }));
 
-// The persisted row is the sole delivery vehicle; for these tests we only care
-// about the latch decision, so a changes:1 stub keeps the delivered cases past
-// the FA-C4 persist guard without a full messages INSERT.
-vi.mock('../../memory/interagent.js', () => ({
-  insertInterAgentMessage: vi.fn(() => ({ changes: 1 })),
+// The persisted row is the sole delivery vehicle; for these tests we only care about the
+// latch decision, so a stub keeps the delivered cases past the FA-C4 persist guard without a
+// full messages INSERT.
+//
+// T10 re-pointed this from the deleted shim `memory/interagent.js`, and the stub set had to
+// GROW by one to stay honest: that shim did two things behind a single call — resolve the
+// peer-A2A conversation and persist the row — and both now happen at the call site in
+// a2a-transport.ts. This fixture has no `conversations` table (conversation identity is not
+// what the latch decides), so the resolver is stubbed alongside the write. Everything else in
+// the writer module is the REAL implementation: `setConvKeyByRowid` and the engine-event
+// writer run against the fixture, which is what they did before through the shim.
+//
+// The stub's shape follows the real contract: `insertMessageIfAbsent` returns the persisted
+// row, or `null` for the designed no-op — so a truthy object is what "it landed" looks like
+// now, where `{ changes: 1 }` said it before.
+vi.mock('../../memory/conversations.js', () => ({
+  resolveOrCreateConversation: vi.fn(() => 'conv-stub'),
+}));
+vi.mock('../../memory/message-store.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../memory/message-store.js')>()),
+  insertMessageIfAbsent: vi.fn(() => ({
+    seq: 1, id: 'stub', lane: 'a2a', displayKind: 'a2a', displayTier: 'agent-only',
+    tokenCount: 1, createdAt: '2026-07-28 00:00:00', sentAt: 1_800_000_000_000,
+  })),
 }));
 
 const SENDER = 'primary';

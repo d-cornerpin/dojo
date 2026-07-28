@@ -30,7 +30,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { broadcast } from '../gateway/ws.js';
 import { createLogger } from '../logger.js';
-import { insertInterAgentEngineRow } from '../memory/interagent.js';
+import { insertEngineEventIfAbsent } from '../memory/message-store.js';
 
 const logger = createLogger('agent-notice');
 
@@ -79,7 +79,7 @@ export function postAgentNotice(opts: AgentNoticeOpts): string | null {
     // engine EVENT and drive a spurious engine turn. The sentinel keeps it out of the
     // pending-event and human-waiting pools while it still surfaces in the EVENTS/awareness
     // lane (which filters on origin_kind, not conv_key) and is excluded from compaction.
-    insertInterAgentEngineRow({
+    insertEngineEventIfAbsent({
       work: null,
       id,
       agentId: toAgentId,

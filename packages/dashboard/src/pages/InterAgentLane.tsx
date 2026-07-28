@@ -9,9 +9,15 @@ import { formatDate } from '../lib/dates';
 // Inter-Agent lane (D-A step 5)
 //
 // The DEDICATED surface for agent-to-agent (A2A) traffic and engine-origin
-// notices. Those rows physically live in `inter_agent_messages` (never the
-// primary's `messages` chat table), so this is a STRUCTURALLY separate entity
-// from the human chat, not a filtered overlay on it. History loads from
+// notices. It is a STRUCTURALLY separate entity from the human chat, not a
+// filtered overlay on it — but the structure changed under it and the old
+// wording became false, so it is corrected here rather than left to rot.
+// Those rows used to live in a SECOND PHYSICAL TABLE, `inter_agent_messages`.
+// PHASE-1 folded them into `messages` on `lane IN ('a2a','events')` and
+// migration 133 dropped the old table; the separation is a CHECK-constrained
+// column now, and the human-facing side reads the fail-closed `chat_messages`
+// view (`WHERE lane='owner'`), which is stronger than a table a reader could
+// forget to exclude. History loads from
 // GET /api/interagent/:agentId; the live path is the `interagent:message` WS
 // event. Scope is the currently-viewed agent (the RECIPIENT), mirroring the
 // chat's per-agent model (each agent's store holds the messages IT received).

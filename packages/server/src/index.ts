@@ -527,7 +527,7 @@ async function main(): Promise<void> {
       // same two guards per row (`swept_at IS NULL`, and `conv_key IS NULL` via
       // requireUnclaimed), so a row that was claimed in between is still not ours.
       const staleRows = db.prepare(
-        `SELECT m.rowid AS rowid, m.agent_id AS agent_id FROM messages AS m
+        `SELECT m.seq AS rowid, m.agent_id AS agent_id FROM messages AS m
           WHERE m.role = 'user' AND m.conv_key IS NULL AND m.swept_at IS NULL
             AND m.created_at < (unixepoch('now', '-30 minutes') * 1000)
             AND NOT (m.lane = 'events'
@@ -570,7 +570,7 @@ async function main(): Promise<void> {
     try {
       const db = getDb();
       const claimed = db.prepare(
-        `SELECT rowid, conv_key, agent_id, datetime(created_at/1000,'unixepoch') AS created_at FROM messages
+        `SELECT seq AS rowid, conv_key, agent_id, datetime(created_at/1000,'unixepoch') AS created_at FROM messages
           WHERE role = 'user' AND conv_key IS NOT NULL AND swept_at IS NULL
             AND conv_key NOT IN ('engine', 'engine-steer')
             AND conv_key NOT LIKE 'park:%' AND conv_key NOT LIKE 'relayed:%'

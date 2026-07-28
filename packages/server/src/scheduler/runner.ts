@@ -22,8 +22,7 @@ import { calculateNextRun, normalizeDbTimestamp, type ScheduledTask } from './en
 import { getAgentRuntime } from '../agent/runtime.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
-import { insertInterAgentEngineRow } from '../memory/interagent.js';
-import { insertMessage } from '../memory/message-store.js';
+import { insertEngineEventIfAbsent, insertMessage } from '../memory/message-store.js';
 import { getPrimaryAgentId, getPMAgentId, getOwnerName } from '../config/platform.js';
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 
@@ -779,7 +778,7 @@ export async function checkScheduledTasks(): Promise<void> {
     // engine event (conv_key NULL) exactly as the old `messages` row did, and the
     // migration-084/099 delivery lifecycle applies unchanged.
     const msgId = uuidv4();
-    insertInterAgentEngineRow({
+    insertEngineEventIfAbsent({
       id: msgId,
       agentId: assignedAgent,
       content: `[SOURCE: SCHEDULER — automated scheduled task trigger, not a message from the user] ${message}`,

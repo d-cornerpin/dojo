@@ -16,8 +16,8 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
-import { insertInterAgentMessage, insertInterAgentEngineRow } from '../memory/interagent.js';
-import { insertMessageIfAbsent, setConvKeyByRowid } from '../memory/message-store.js';
+import { insertMessageIfAbsent, insertEngineEventIfAbsent, setConvKeyByRowid } from '../memory/message-store.js';
+import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
 // A2A protocol constants and helpers, inlined here to avoid runtime
 // imports from @dojo/shared (which points at .ts source and can't be
@@ -823,7 +823,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
         // fallback for pieces landed before this shipped.
         if (step.outcome === 'held' || step.outcome === 'completed') {
           try {
-            insertInterAgentEngineRow({
+            insertEngineEventIfAbsent({
               work: null,
               id: uuidv4(),
               agentId: target.id,
@@ -892,8 +892,8 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
           // conv_key sentinel (kept out of the pending-event pool, so it never drives
           // its OWN turn; the deliverable's own wake carries it to the model). The steer
           // TEXT is unchanged, only the channel. INSERT OR IGNORE keeps the store idiom.
-          insertInterAgentEngineRow({
-      work: null,
+          insertEngineEventIfAbsent({
+            work: null,
             id: uuidv4(),
             agentId: target.id,
             content: steer,
@@ -944,7 +944,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
       // still fires. This removes the prefix-collision wrong-answer/drop while staying
       // compatible with any question parked under the short key.
       const parkLookup = db.prepare(
-        `SELECT rowid, content, inbound_meta FROM messages WHERE agent_id = ? AND conv_key = ? AND role = 'user' ORDER BY rowid DESC LIMIT 1`,
+        `SELECT seq AS rowid, content, inbound_meta FROM messages WHERE agent_id = ? AND conv_key = ? AND role = 'user' ORDER BY rowid DESC LIMIT 1`,
       );
       let matchedParkKey = `park:${threadId}`;
       let parked = parkLookup.get(target.id, matchedParkKey) as { rowid: number; content: string; inbound_meta: string | null } | undefined;
@@ -1124,34 +1124,48 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   // `lane='a2a'` (or `'events'` for engine-origin A2A), and the fail-closed
   // `chat_messages` view — `WHERE lane='owner'` — is what a forgetful reader now hits.
   // A CHECK-constrained column is stronger than a table a reader could forget to
-  // exclude. The FA-C4 .changes===0 PERSIST_SKIPPED drop guard below is unchanged: the
-  // persisted row is the sole delivery vehicle (runtime.handleMessage re-reads it), so
-  // a 0-change insert was never delivered.
-  const persistResult = insertInterAgentMessage({
+  // exclude. The FA-C4 PERSIST_SKIPPED drop guard below is unchanged: the persisted row is
+  // the sole delivery vehicle (runtime.handleMessage re-reads it), so a skipped insert was
+  // never delivered.
+  //
+  // T10: the shim `memory/interagent.ts` is gone and this is the same write, stated in the
+  // writer module's own vocabulary. Three things the shim did are now visible at the site
+  // instead of hidden one call away: `originKind === 'engine'` WAS the lane and now says so
+  // (T3-0b §1 maps the two value for value); a peer A2A thread is a conversation like any
+  // other (P5), resolved here from the thread root; and the shim's `{ changes: 0 }` return
+  // becomes the `null` that `insertMessageIfAbsent` already means by name.
+  const conversationId = threadId
+    ? resolveOrCreateConversation(target.id, {
+        channel: 'a2a', provider: null, counterpartyId: envelope.fromAgent, threadRoot: threadId,
+      })
+    : null;
+  const persisted = insertMessageIfAbsent({
     id: msgId,
     agentId: target.id,
+    role: 'user',
+    lane: originKind === 'engine' ? 'events' : 'a2a',
     content: contextMessage,
     sourceAgentId: envelope.fromAgent,
     a2aThreadId: threadId,
     a2aIntent: effectiveIntent,
-    a2aRequiresResponse: requiresResponse ? 1 : 0,
+    a2aRequiresResponse: requiresResponse,
     attachments: attachmentsJson,
-    originKind,
     originIntent,
+    conversationId,
   });
 
   // ── 11b. Confirm the row actually persisted (FA-C4) ──
   // The persisted messages row is the SOLE delivery vehicle: runtime.handleMessage
   // ignores its content arg and re-reads this row, so a message that never landed in
-  // the store was never delivered. Capture .changes and treat 0 as a drop rather than
-  // returning delivered:true blind. OR IGNORE is kept deliberately: the only path to 0
-  // changes is a primary-key collision, which cannot happen today (msgId is a fresh
-  // uuidv4 and messages has no other UNIQUE constraint), so this is future-proofing.
-  // Keeping OR IGNORE degrades that (unreachable) collision to a clean drop instead of
-  // a throw that fire-and-forget callers (PM poke, scheduler) would not catch; genuine
-  // DB faults (BUSY/FULL/IO) are not constraint violations and still throw under OR
-  // IGNORE exactly as a plain INSERT would, so no observability is lost.
-  if (persistResult.changes === 0) {
+  // the store was never delivered. Treat a skip as a drop rather than returning
+  // delivered:true blind. The IDEMPOTENT form is kept deliberately: the only path to a
+  // skip is an id collision, which cannot happen today (msgId is a fresh uuidv4), so this
+  // is future-proofing. It degrades that (unreachable) collision to a clean drop instead
+  // of a throw that fire-and-forget callers (PM poke, scheduler) would not catch — while
+  // a NOT NULL or CHECK violation still THROWS, which raw `INSERT OR IGNORE` swallowed
+  // and `insertMessageIfAbsent` deliberately does not (T4, R1). Genuine DB faults
+  // (BUSY/FULL/IO) are not constraint violations and throw either way.
+  if (persisted === null) {
     logDrop(envelope, 'PERSIST_SKIPPED');
     return { delivered: false, reason: 'PERSIST_SKIPPED', threadId };
   }
@@ -1401,7 +1415,7 @@ function findOpenMultiParkForThread(agentId: string, threadId: string, threadSho
   let rows: Array<{ rowid: number; conv_key: string; content: string; inbound_meta: string | null }> = [];
   try {
     rows = db.prepare(
-      `SELECT rowid, conv_key, content, inbound_meta FROM messages
+      `SELECT seq AS rowid, conv_key, content, inbound_meta FROM messages
          WHERE agent_id = ? AND role = 'user' AND conv_key LIKE 'park:~%'
          ORDER BY rowid DESC LIMIT 25`,
     ).all(agentId) as typeof rows;
@@ -1781,7 +1795,7 @@ export async function resolveCompilePendingParks(agentId: string): Promise<void>
   let rows: OpenParkRow[] = [];
   try {
     rows = db.prepare(
-      `SELECT rowid, agent_id, conv_key, content, inbound_meta,
+      `SELECT seq AS rowid, agent_id, conv_key, content, inbound_meta,
               datetime(created_at/1000,'unixepoch') AS created_at FROM messages
         WHERE agent_id = ? AND role = 'user' AND conv_key LIKE 'park:!%'
         ORDER BY rowid ASC LIMIT 5`,
@@ -1887,7 +1901,7 @@ export async function sweepExpiredParks(): Promise<{ failedClosed: number; relay
   let parks: OpenParkRow[] = [];
   try {
     parks = db.prepare(
-      `SELECT rowid, agent_id, conv_key, content, inbound_meta,
+      `SELECT seq AS rowid, agent_id, conv_key, content, inbound_meta,
               datetime(created_at/1000,'unixepoch') AS created_at FROM messages
         WHERE created_at >= (unixepoch('now', '-${PARK_MAX_AGE_DAYS} days') * 1000)
           AND created_at < (unixepoch('now', '-${PARK_TTL_MINUTES} minutes') * 1000)
@@ -1931,7 +1945,7 @@ export async function resolveParksAtBoot(): Promise<{ relayedReplies: number; fa
   const db = getDb();
   const out = { relayedReplies: 0, failedClosed: 0, leftOpen: 0 };
   const parks = db.prepare(
-    `SELECT rowid, agent_id, conv_key, content, inbound_meta,
+    `SELECT seq AS rowid, agent_id, conv_key, content, inbound_meta,
               datetime(created_at/1000,'unixepoch') AS created_at FROM messages
       WHERE created_at >= (unixepoch('now', '-${PARK_MAX_AGE_DAYS} days') * 1000)
         AND role = 'user' AND conv_key LIKE 'park:%'
@@ -1983,7 +1997,7 @@ export async function failParksForAbandonedAsk(inboundAskMessageId: string, thre
     const keys = [...new Set([full ? `park:${full}` : '', threadShort ? `park:${threadShort}` : ''].filter(Boolean))];
     if (keys.length === 0) return;
     const parks = db.prepare(
-      `SELECT rowid, agent_id, conv_key, content, inbound_meta,
+      `SELECT seq AS rowid, agent_id, conv_key, content, inbound_meta,
               datetime(created_at/1000,'unixepoch') AS created_at FROM messages
         WHERE created_at >= (unixepoch('now', '-${PARK_MAX_AGE_DAYS} days') * 1000)
           AND role = 'user' AND conv_key IN (${keys.map(() => '?').join(',')})
