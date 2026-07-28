@@ -495,7 +495,7 @@ memoryRouter.get('/forensic-search', (c) => {
   }
 
   const projectRows = db.prepare(
-    `SELECT id, title, description, created_by, created_at FROM projects
+    `SELECT id, title, description, created_by, created_at FROM legacy_projects
      WHERE title LIKE ? OR description LIKE ? ORDER BY created_at DESC LIMIT ?`,
   ).all(like, like, limit) as Array<{ id: string; title: string; description: string | null; created_by: string; created_at: string }>;
   for (const r of projectRows) {
@@ -511,7 +511,7 @@ memoryRouter.get('/forensic-search', (c) => {
   }
 
   const taskRows = db.prepare(
-    `SELECT id, title, description, assigned_to, created_at FROM tasks
+    `SELECT id, title, description, assigned_to, created_at FROM legacy_tasks
      WHERE title LIKE ? OR description LIKE ? OR notes LIKE ? ORDER BY created_at DESC LIMIT ?`,
   ).all(like, like, like, limit) as Array<{ id: string; title: string; description: string | null; assigned_to: string | null; created_at: string }>;
   for (const r of taskRows) {
@@ -578,11 +578,11 @@ memoryRouter.post('/forensic-purge', async (c) => {
           // Tasks reference projects via FK; null out the task linkage rather
           // than cascade-delete tasks, so individual tasks remain visible
           // even after their parent project is purged.
-          db.prepare('UPDATE tasks SET project_id = NULL WHERE project_id = ?').run(item.id);
-          db.prepare('DELETE FROM projects WHERE id = ?').run(item.id);
+          db.prepare('UPDATE legacy_tasks SET project_id = NULL WHERE project_id = ?').run(item.id);
+          db.prepare('DELETE FROM legacy_projects WHERE id = ?').run(item.id);
           break;
         case 'task':
-          db.prepare('DELETE FROM tasks WHERE id = ?').run(item.id);
+          db.prepare('DELETE FROM legacy_tasks WHERE id = ?').run(item.id);
           break;
         case 'scratchpad': {
           // Scratchpad purge means "clear $.scratchpad", not "delete agent".

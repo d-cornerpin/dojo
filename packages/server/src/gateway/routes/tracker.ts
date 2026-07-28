@@ -158,7 +158,7 @@ trackerRouter.get('/tasks', (c) => {
       const hiddenArr = Array.from(hidden);
       const placeholders = hiddenArr.map(() => '?').join(',');
       const rows = getDb().prepare(
-        `SELECT id FROM tasks
+        `SELECT id FROM legacy_tasks
          WHERE assigned_to IN (${placeholders})
            AND (revert_count > 0
                 OR awaiting_user_verdict = 1
@@ -250,7 +250,7 @@ trackerRouter.post('/tasks/:id/user-validate', async (c) => {
   }
 
   db.prepare(`
-    UPDATE tasks
+    UPDATE legacy_tasks
     SET ${flagColumn} = 1,
         validation_escalated_at = COALESCE(validation_escalated_at, datetime('now')),
         updated_at = datetime('now')
@@ -348,7 +348,7 @@ trackerRouter.get('/hygiene', async (c) => {
     // Tasks currently elevated: high revert_count or awaiting verdict.
     const elevated = db.prepare(`
       SELECT substr(id, 1, 8) as id8, title, status, revert_count, awaiting_user_verdict, last_smell_flag
-      FROM tasks
+      FROM legacy_tasks
       WHERE revert_count >= 2 OR awaiting_user_verdict = 1 OR last_smell_flag IS NOT NULL
       ORDER BY revert_count DESC, updated_at DESC
       LIMIT 20
@@ -419,7 +419,7 @@ trackerRouter.post('/override-requests/:id/resolve', async (c) => {
       // Override approval is an authoritative decision: also set the
       // corresponding *_validated flag so PM doesn't re-surface the task.
       db.prepare(`
-        UPDATE tasks
+        UPDATE legacy_tasks
         SET revert_count = 0,
             awaiting_user_verdict = 0,
             user_verdict_requested_at = NULL,
@@ -501,7 +501,7 @@ trackerRouter.get('/override-requests', async (c) => {
              r.resolved_reason, r.created_at, r.resolved_at,
              t.title as task_title, t.goal as task_goal
       FROM task_override_requests r
-      LEFT JOIN tasks t ON t.id = r.task_id
+      LEFT JOIN legacy_tasks t ON t.id = r.task_id
       ${where}
       ORDER BY r.created_at DESC
       LIMIT 100
@@ -581,7 +581,7 @@ trackerRouter.post('/tasks', async (c) => {
       const nextRun = calculateNextRun(taskForCalc) ?? body.scheduled_start;
 
       db.prepare(`
-        UPDATE tasks SET
+        UPDATE legacy_tasks SET
           scheduled_start = ?, repeat_interval = ?, repeat_unit = ?,
           repeat_end_type = ?, repeat_end_value = ?,
           repeat_days_of_week = ?, anchor_time = ?,
@@ -682,7 +682,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
         // because those have their own resolution path via tracker_apply_user_verdict.
         const db = getDb();
         db.prepare(`
-          UPDATE tasks
+          UPDATE legacy_tasks
           SET complete_validated = CASE WHEN ? = 'complete' THEN 1 ELSE complete_validated END,
               pause_validated = CASE WHEN ? = 'paused' THEN 1 ELSE pause_validated END,
               blocked_validated = CASE WHEN ? = 'blocked' THEN 1 ELSE blocked_validated END,
@@ -716,7 +716,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
       if (body.scheduled_start === null) {
         // Remove schedule
         db.prepare(`
-          UPDATE tasks SET scheduled_start = NULL, repeat_interval = NULL, repeat_unit = NULL,
+          UPDATE legacy_tasks SET scheduled_start = NULL, repeat_interval = NULL, repeat_unit = NULL,
             repeat_end_type = NULL, repeat_end_value = NULL, repeat_days_of_week = NULL,
             anchor_time = NULL,
             next_run_at = NULL,
@@ -754,7 +754,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
         const nextRun = calculateNextRun(taskForCalc) ?? body.scheduled_start;
 
         db.prepare(`
-          UPDATE tasks SET scheduled_start = ?, repeat_interval = ?, repeat_unit = ?,
+          UPDATE legacy_tasks SET scheduled_start = ?, repeat_interval = ?, repeat_unit = ?,
             repeat_end_type = ?, repeat_end_value = ?,
             repeat_days_of_week = ?, anchor_time = ?,
             next_run_at = ?, schedule_status = 'waiting', is_paused = 0,
@@ -788,7 +788,7 @@ trackerRouter.post('/projects/:id/close', async (c) => {
   const id = c.req.param('id');
   const db = getDb();
 
-  const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(id);
+  const project = db.prepare('SELECT id FROM legacy_projects WHERE id = ?').get(id);
   if (!project) {
     return c.json({ ok: false, error: 'Project not found' }, 404);
   }
@@ -830,13 +830,13 @@ trackerRouter.delete('/projects/:id', (c) => {
   const id = c.req.param('id');
   const db = getDb();
 
-  const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(id);
+  const project = db.prepare('SELECT id FROM legacy_projects WHERE id = ?').get(id);
   if (!project) {
     return c.json({ ok: false, error: 'Project not found' }, 404);
   }
 
   // Get task IDs for cascade
-  const taskIds = db.prepare('SELECT id FROM tasks WHERE project_id = ?').all(id) as Array<{ id: string }>;
+  const taskIds = db.prepare('SELECT id FROM legacy_tasks WHERE project_id = ?').all(id) as Array<{ id: string }>;
   const ids = taskIds.map(t => t.id);
 
   // Delete child rows for these tasks
@@ -847,10 +847,10 @@ trackerRouter.delete('/projects/:id', (c) => {
   }
 
   // Delete tasks
-  db.prepare('DELETE FROM tasks WHERE project_id = ?').run(id);
+  db.prepare('DELETE FROM legacy_tasks WHERE project_id = ?').run(id);
 
   // Delete project
-  db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+  db.prepare('DELETE FROM legacy_projects WHERE id = ?').run(id);
 
   logger.info('Project deleted', { projectId: id, tasksDeleted: ids.length });
   return c.json({ ok: true, data: { projectId: id, tasksDeleted: ids.length } });
@@ -861,14 +861,14 @@ trackerRouter.delete('/tasks/:id', (c) => {
   const id = c.req.param('id');
   const db = getDb();
 
-  const task = db.prepare('SELECT id FROM tasks WHERE id = ?').get(id);
+  const task = db.prepare('SELECT id FROM legacy_tasks WHERE id = ?').get(id);
   if (!task) {
     return c.json({ ok: false, error: 'Task not found' }, 404);
   }
 
   db.prepare('DELETE FROM task_runs WHERE task_id = ?').run(id);
   db.prepare('DELETE FROM poke_log WHERE task_id = ?').run(id);
-  db.prepare('DELETE FROM tasks WHERE id = ?').run(id);
+  db.prepare('DELETE FROM legacy_tasks WHERE id = ?').run(id);
 
   logger.info('Task deleted', { taskId: id });
   return c.json({ ok: true, data: { taskId: id } });

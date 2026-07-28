@@ -223,12 +223,12 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
   // Non-paused tasks move to on_deck so they can be reassigned.
   const db = getDb();
   const unpaused = db.prepare(`
-    UPDATE tasks SET assigned_to = NULL, status = 'on_deck', updated_at = datetime('now')
+    UPDATE legacy_tasks SET assigned_to = NULL, status = 'on_deck', updated_at = datetime('now')
     WHERE assigned_to IN (SELECT id FROM agents WHERE status = 'terminated')
       AND status IN ('in_progress', 'on_deck')
   `).run();
   const pausedOrphans = db.prepare(`
-    UPDATE tasks SET assigned_to = NULL, updated_at = datetime('now')
+    UPDATE legacy_tasks SET assigned_to = NULL, updated_at = datetime('now')
     WHERE assigned_to IN (SELECT id FROM agents WHERE status = 'terminated')
       AND status = 'paused'
   `).run();
@@ -256,13 +256,13 @@ function fixOrphanedProject(item: DiagnosticItem): AutoFixResult {
   // fallen task now blocks the close, which is also what keeps the paired
   // ORPHANED_PROJECT detector from re-offering this project every cycle.
   const updated = db.prepare(`
-    UPDATE projects SET status = 'complete', completed_at = datetime('now'), updated_at = datetime('now')
+    UPDATE legacy_projects SET status = 'complete', completed_at = datetime('now'), updated_at = datetime('now')
     WHERE status = 'active'
       AND NOT EXISTS (
-        SELECT 1 FROM tasks t
-        WHERE t.project_id = projects.id AND t.status != 'complete'
+        SELECT 1 FROM legacy_tasks t
+        WHERE t.project_id = legacy_projects.id AND t.status != 'complete'
       )
-      AND EXISTS (SELECT 1 FROM tasks t2 WHERE t2.project_id = projects.id)
+      AND EXISTS (SELECT 1 FROM legacy_tasks t2 WHERE t2.project_id = legacy_projects.id)
   `).run();
 
   if (updated.changes > 0) {

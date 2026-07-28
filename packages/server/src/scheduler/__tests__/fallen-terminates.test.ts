@@ -42,7 +42,7 @@ import { terminateLiveScheduleOnFallen, onTaskRunComplete } from '../runner.js';
 
 function applySchema(db: Database.Database): void {
   db.exec(`
-    CREATE TABLE tasks (
+    CREATE TABLE legacy_tasks (
       id TEXT PRIMARY KEY,
       project_id TEXT,
       title TEXT NOT NULL,
@@ -154,7 +154,7 @@ function applySchema(db: Database.Database): void {
       sent_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-    CREATE TABLE projects (
+    CREATE TABLE legacy_projects (
       id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT,
       level INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'active',
       created_by TEXT NOT NULL, phase_count INTEGER NOT NULL DEFAULT 1,
@@ -183,7 +183,7 @@ function seedLiveRecurring(db: Database.Database, overrides: Record<string, unkn
     ...overrides,
   };
   const keys = Object.keys(cols);
-  db.prepare(`INSERT INTO tasks (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`).run(...Object.values(cols));
+  db.prepare(`INSERT INTO legacy_tasks (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`).run(...Object.values(cols));
   return id;
 }
 
@@ -212,7 +212,7 @@ describe('terminateLiveScheduleOnFallen (RC-17.5)', () => {
     expect(out.terminated).toBe(true);
     expect(out.runsSkipped).toBe(1);
 
-    const task = db.prepare('SELECT schedule_status, is_paused, next_run_at FROM tasks WHERE id = ?').get(taskId) as { schedule_status: string; is_paused: number; next_run_at: string | null };
+    const task = db.prepare('SELECT schedule_status, is_paused, next_run_at FROM legacy_tasks WHERE id = ?').get(taskId) as { schedule_status: string; is_paused: number; next_run_at: string | null };
     expect(task.schedule_status).toBe('completed');
     expect(task.is_paused).toBe(1);
     expect(task.next_run_at).toBeNull();
@@ -257,13 +257,13 @@ describe('onTaskRunComplete (RC-17.2)', () => {
 
     const first = await onTaskRunComplete(taskId, 'complete', 'run 4 done');
     expect(first).toBe(true);
-    const afterFirst = db.prepare('SELECT run_count FROM tasks WHERE id = ?').get(taskId) as { run_count: number };
+    const afterFirst = db.prepare('SELECT run_count FROM legacy_tasks WHERE id = ?').get(taskId) as { run_count: number };
     expect(afterFirst.run_count).toBe(4); // seeded 3, advanced once
 
     // No running run remains: a stale re-close must be a no-op, not another advance.
     const second = await onTaskRunComplete(taskId, 'complete', 'stale re-close');
     expect(second).toBe(false);
-    const afterSecond = db.prepare('SELECT run_count FROM tasks WHERE id = ?').get(taskId) as { run_count: number };
+    const afterSecond = db.prepare('SELECT run_count FROM legacy_tasks WHERE id = ?').get(taskId) as { run_count: number };
     expect(afterSecond.run_count).toBe(4); // unchanged, no inflation
   });
 });

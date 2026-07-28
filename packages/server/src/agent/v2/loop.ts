@@ -142,7 +142,7 @@ import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssist
 import { identicalCallSignature, checkIdenticalCallRefusal, recordIdenticalCallResult, isSignatureTerminal, type RepeatCallState } from './identical-call-brake.js';
 import { SEND_TO_PEOPLE } from '../sensei-policy.js';
 import { getPresence } from '../../services/presence.js';
-import { recordTurnStart, finalizeTurn } from './turn-record.js';
+import { startTurn, finalizeTurn, type TurnExitReason } from './turn-record.js';
 import { recordDelivery, type DeliveryInput } from './deliveries.js';
 const SEND_TO_PEOPLE_SET: ReadonlySet<string> = new Set(SEND_TO_PEOPLE);
 import { detectUngroundedDeliveryClaim, detectDeliveryDenial } from './classifiers/grounding.js';
@@ -325,8 +325,8 @@ function userRequestedCloseWantsReply(
   try {
     const db = getDb();
     const task = db.prepare(`
-      SELECT t.created_at AS created_at, t.source_message_id AS source_message_id FROM tasks t
-      JOIN projects p ON p.id = t.project_id
+      SELECT t.created_at AS created_at, t.source_message_id AS source_message_id FROM legacy_tasks t
+      JOIN legacy_projects p ON p.id = t.project_id
       WHERE t.assigned_to = ?
         AND (t.id = ? OR t.id LIKE ?)
         AND (p.origin_kind = 'engine_scaffold' OR p.description LIKE ?)
@@ -1397,7 +1397,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         : { kind: 'engine', id: pendingEngineEvent.id, sourceMessageId: null });
       if (pendingEngineEvent.taskId) {
         try {
-          const servedTask = db.prepare('SELECT kind, origin_conv_key FROM tasks WHERE id = ?')
+          const servedTask = db.prepare('SELECT kind, origin_conv_key FROM legacy_tasks WHERE id = ?')
             .get(pendingEngineEvent.taskId) as { kind: string | null; origin_conv_key: string | null } | undefined;
           currentTurnServedWork.set(agentId, {
             taskId: pendingEngineEvent.taskId,
@@ -1526,20 +1526,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
     }
   }
 
-  // Determine v2 turn_number, read max from messages, increment.
-  // Per Part XVIII §E: turn_number is per-agent, monotonically increasing,
-  // resets to 0 on session reset (handled elsewhere).
-  const lastTurn = db.prepare(
-    'SELECT MAX(turn_number) as max_turn FROM messages WHERE agent_id = ?',
-  ).get(agentId) as { max_turn: number | null } | undefined;
-  const turnNumber = (lastTurn?.max_turn ?? 0) + 1;
-  // RC-12: publish the turn number so writeToolReceipt can stamp turn_number on
-  // engine receipts without threading it through every send executor. Cleared at
-  // the turn boundary (idle), like currentTurnConvKey.
-  currentTurnNumber.set(agentId, turnNumber);
-
-  // ── P4 turn record: what this turn SERVES, forward-linked ──
-  {
+  // ── P4 turn record: allocate this turn's IDENTITY and record what it SERVES ──
+  //
+  // PHASE-2 T2: the turn number is allocated by the `turns` table itself, in-transaction
+  // (`INSERT … SELECT COALESCE(MAX(turn_number),0)+1 … RETURNING`), and NOT derived here from
+  // `MAX(messages.turn_number)`. The old derivation was wrong in two live situations — a turn
+  // that writes no messages, and an agent whose history was cleared — because `messages`
+  // restarts while `turns` keeps climbing, so the derived number collided with an already
+  // recorded turn and the old `ON CONFLICT DO UPDATE` overwrote it in silence. Both facts now
+  // come from one place. Per Part XVIII §E turn_number stays per-agent and monotonic; it no
+  // longer resets when history is cleared, which is the honest reading of "turn 41 of this
+  // agent's life".
+  const turnNumber: number = (() => {
     const root = currentTurnRoot.get(agentId) ?? null;
     const kind: 'user' | 'a2a' | 'engine' | null =
       isEngineTurn ? 'engine' : ((isA2ATurn || terminalWakeA2A) ? 'a2a' : (chosenConvKey ? 'user' : null));
@@ -1553,27 +1551,31 @@ export async function runV2Turn(agentId: string): Promise<void> {
       : isA2ATurn ? ((terminalWakeA2A as unknown as { a2a_thread_id?: string | null } | null)?.a2a_thread_id ?? null)
       : chosenConvKey;
     currentModelRequestId.set(agentId, `req_${uuidv4().replace(/-/g, '').slice(0, 16)}`);
-    recordTurnStart({
-      agentId, turnNumber, kind, subjectKind, subjectId,
+    return startTurn({
+      agentId, kind, subjectKind, subjectId,
       // P8: typed spoken-stream lane on the record.
       lane: latestUserSource === 'voice' ? 'voice' : inboundChannel === 'phone' ? 'phone' : null,
       rootKind: root?.kind ?? null, rootId: root?.id ?? null,
       sourceMessageId: root?.sourceMessageId ?? null, convKey: chosenConvKey,
     });
-    // Per-ask forward link: the claimed trigger row records WHICH turn serves
-    // it (the claim stamps above only made it invisible to the waiting set).
-    try {
-      if (triggerRow) {
-        markServedByRowid(triggerRow.rowid, turnNumber);
-      }
-      if (claimedEngineEvent) {
-        markServedByRowid(claimedEngineEvent.rowid, turnNumber);
-      }
-      if (terminalWakeA2A) {
-        markServedByRowid(terminalWakeA2A.rowid, turnNumber);
-      }
-    } catch { /* best effort */ }
-  }
+  })();
+  // RC-12: publish the turn number so writeToolReceipt can stamp turn_number on
+  // engine receipts without threading it through every send executor. Cleared at
+  // the turn boundary (idle), like currentTurnConvKey.
+  currentTurnNumber.set(agentId, turnNumber);
+  // Per-ask forward link: the claimed trigger row records WHICH turn serves
+  // it (the claim stamps above only made it invisible to the waiting set).
+  try {
+    if (triggerRow) {
+      markServedByRowid(triggerRow.rowid, turnNumber);
+    }
+    if (claimedEngineEvent) {
+      markServedByRowid(claimedEngineEvent.rowid, turnNumber);
+    }
+    if (terminalWakeA2A) {
+      markServedByRowid(terminalWakeA2A.rowid, turnNumber);
+    }
+  } catch { /* best effort */ }
 
   // Snapshot turn boundary so context assembly excludes mid-run user messages
   const turnStartedAt = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
@@ -2031,7 +2033,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // worked task naturally stays inside the window.
     const CLOSE_OUT_IDLE_MINUTES = 10;
     const inProgressDanglers = db.prepare(`
-      SELECT id, title, 'in_progress' AS kind FROM tasks
+      SELECT id, title, 'in_progress' AS kind FROM legacy_tasks
       WHERE assigned_to = ?
         AND status = 'in_progress'
         AND is_paused = 0
@@ -2053,8 +2055,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // prevents this from firing inside the same conversation as the
     // creation, only catches genuinely abandoned work between sessions.
     const strandedRows = db.prepare(`
-      SELECT t.id, t.title, 'stranded' AS kind FROM tasks t
-      INNER JOIN projects p ON p.id = t.project_id
+      SELECT t.id, t.title, 'stranded' AS kind FROM legacy_tasks t
+      INNER JOIN legacy_projects p ON p.id = t.project_id
       WHERE t.assigned_to = ?
         AND t.status = 'on_deck'
         AND t.is_paused = 0
@@ -2064,7 +2066,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         AND p.status = 'active'
         AND datetime(t.updated_at) < datetime('now', '-30 minutes')
         AND NOT EXISTS (
-          SELECT 1 FROM tasks sib
+          SELECT 1 FROM legacy_tasks sib
           WHERE sib.project_id = p.id AND sib.status = 'in_progress'
         )
       ORDER BY t.updated_at ASC
@@ -2115,7 +2117,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           const st = db.prepare(
             `SELECT id, last_activity_turn, last_activity_at, last_activity_outcome,
                     last_answered_turn, last_answered_at, last_delivery_summary
-               FROM tasks WHERE id = ?`,
+               FROM legacy_tasks WHERE id = ?`,
           ).get(r.id) as import('../../tracker/task-stamps.js').TaskStampFields | undefined;
           // Tangibility rule (battery catch 2026-07-22): only a recorded
           // HANDOVER (file or channel delivery) earns the close-this text; a
@@ -2393,18 +2395,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
           const db2 = getDb();
           const { ENGINE_AUTO_MARKER } = await import('./classifiers/multistep.js');
           const task = db2.prepare(`
-            SELECT id, title, project_id FROM tasks
+            SELECT id, title, project_id FROM legacy_tasks
             WHERE assigned_to = ? AND status = 'in_progress'
             ORDER BY updated_at DESC LIMIT 1
           `).get(agentId) as { id: string; title: string; project_id: string | null } | undefined;
           if (task) {
             if (!blockedWorkIsUserOrigin && task.project_id) {
-              const proj = db2.prepare(`SELECT description FROM projects WHERE id = ?`).get(task.project_id) as { description: string | null } | undefined;
+              const proj = db2.prepare(`SELECT description FROM legacy_projects WHERE id = ?`).get(task.project_id) as { description: string | null } | undefined;
               if (proj?.description && proj.description.startsWith(ENGINE_AUTO_MARKER)) blockedWorkIsUserOrigin = true;
             }
             const noteLine = `Engine auto-blocked: ${breakerReason}. Likely needs human review or a re-stated goal.`;
             db2.prepare(`
-              UPDATE tasks
+              UPDATE legacy_tasks
               SET status = 'blocked',
                   blocked_validated = 1,
                   updated_at = datetime('now')
@@ -3198,7 +3200,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // (one of the two disarm holes this fix closes).
             const db = getDb();
             const existingTask = db.prepare(`
-              SELECT id FROM tasks
+              SELECT id FROM legacy_tasks
               WHERE assigned_to = ? AND status IN ('on_deck', 'in_progress', 'paused')
                 AND datetime(updated_at) >= datetime('now', ?)
               LIMIT 1
@@ -5361,7 +5363,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         ) {
           try {
             const closedThisTurn = db.prepare(`
-              SELECT title, result, created_at, source_message_id FROM tasks
+              SELECT title, result, created_at, source_message_id FROM legacy_tasks
                WHERE assigned_to = ? AND status = 'complete'
                  AND repeat_interval IS NULL AND completed_at >= ?
                ORDER BY completed_at ASC LIMIT 3
@@ -5458,7 +5460,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               }
             }
             if (nudgedTaskId) {
-              const row = db.prepare('SELECT status, title FROM tasks WHERE id = ?').get(nudgedTaskId) as { status?: string; title?: string } | undefined;
+              const row = db.prepare('SELECT status, title FROM legacy_tasks WHERE id = ?').get(nudgedTaskId) as { status?: string; title?: string } | undefined;
               if (row?.status === 'in_progress') {
                 const titleShort = (row.title ?? '').slice(0, 60);
                 const nudgeText = (
@@ -5507,7 +5509,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // turn) qualifies, because the issue isn't staleness - it's
           // that the agent went idle without resolving its state.
           const openTasks = db.prepare(`
-            SELECT id, title FROM tasks
+            SELECT id, title FROM legacy_tasks
             WHERE assigned_to = ?
               AND status = 'in_progress'
               AND is_paused = 0
@@ -5684,7 +5686,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           persistedContent && persistedContent.trim().length > 0
         ) {
           const recurringDanglers = db.prepare(`
-            SELECT id FROM tasks
+            SELECT id FROM legacy_tasks
             WHERE assigned_to = ?
               AND status = 'in_progress'
               AND is_paused = 0
@@ -5728,7 +5730,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         ) {
           const scaffoldId = state.autoScaffoldedTaskIdThisTurn;
           const stillOpen = db.prepare(
-            `SELECT 1 FROM tasks WHERE id = ? AND status = 'in_progress' AND is_paused = 0`,
+            `SELECT 1 FROM legacy_tasks WHERE id = ? AND status = 'in_progress' AND is_paused = 0`,
           ).get(scaffoldId);
           if (stillOpen) {
             try {
@@ -6006,7 +6008,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           ) {
             try {
               const remRow = servedRem.taskId
-                ? (db.prepare('SELECT title, description FROM tasks WHERE id = ?')
+                ? (db.prepare('SELECT title, description FROM legacy_tasks WHERE id = ?')
                     .get(servedRem.taskId) as { title: string | null; description: string | null } | undefined)
                 : undefined;
               const remText = (remRow?.description || remRow?.title || '').replace(/^Reminder:?\s*/i, '').trim();
@@ -6198,7 +6200,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               // the project.
               const inProgressIds = db
                 .prepare(
-                  `SELECT id FROM tasks WHERE id IN (${state.danglingTaskIds.map(() => '?').join(',')}) AND status = 'in_progress'`,
+                  `SELECT id FROM legacy_tasks WHERE id IN (${state.danglingTaskIds.map(() => '?').join(',')}) AND status = 'in_progress'`,
                 )
                 .all(...state.danglingTaskIds) as Array<{ id: string }>;
               const onDeckIds = state.danglingTaskIds.filter(
@@ -6217,7 +6219,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               const recurringResetIds: string[] = [];
               const oneShotDanglerIds: string[] = [];
               for (const tid of inProgressIds.map((r) => r.id)) {
-                const isRecurring = db.prepare(`SELECT repeat_interval FROM tasks WHERE id = ?`).get(tid) as { repeat_interval: number | null } | undefined;
+                const isRecurring = db.prepare(`SELECT repeat_interval FROM legacy_tasks WHERE id = ?`).get(tid) as { repeat_interval: number | null } | undefined;
                 if (isRecurring?.repeat_interval) {
                   try { forceResetStuckRecurringTask(tid); recurringResetIds.push(tid); } catch { /* best effort */ }
                   continue;
@@ -8266,8 +8268,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // sites set it there; the task carries the user content), so match it via
         // the task's project, not the task's own description.
         const justCompletedScaffold = db.prepare(`
-          SELECT t.title AS title, t.result AS result, t.created_at AS created_at, t.source_message_id AS source_message_id FROM tasks t
-          JOIN projects p ON p.id = t.project_id
+          SELECT t.title AS title, t.result AS result, t.created_at AS created_at, t.source_message_id AS source_message_id FROM legacy_tasks t
+          JOIN legacy_projects p ON p.id = t.project_id
           WHERE t.assigned_to = ?
             AND t.status = 'complete'
             AND t.completed_at >= ?
@@ -8918,7 +8920,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
     if (isA2ATurn) {
       try {
         const justCompleted = db.prepare(`
-          SELECT id, title, result FROM tasks
+          SELECT id, title, result FROM legacy_tasks
           WHERE assigned_to = ?
             AND status = 'complete'
             AND completed_at >= ?
@@ -9145,12 +9147,23 @@ export async function runV2Turn(agentId: string): Promise<void> {
         `SELECT 1 FROM messages WHERE agent_id = ? AND turn_number = ? AND lane = 'a2a'
             AND role IN ('assistant','tool') LIMIT 1`,
       ).get(agentId, turnNumber) : undefined;
-      const outcome = toolPhaseEndedBySpinBrake ? 'brake'
+      // PHASE-2 T2: the ONE column that meant two things is now two columns that each mean
+      // one. `exitReason` is why the turn ended (17-value enum, CHECKed in the DB);
+      // `answered` is whether a genuine user-facing reply was DELIVERED — the truthful-answer
+      // key, which is `terminalAnswerRowId` and nothing else. A turn can end 'brake' having
+      // answered, and that pair is now representable instead of being flattened to one word.
+      const exitReason: TurnExitReason = toolPhaseEndedBySpinBrake ? 'brake'
         : answerRow ? 'answered'
-        : parkedRow ? 'parked'
+        : parkedRow ? 'park'
         : handoffRow ? 'handoff'
-        : 'no_reply';
-      finalizeTurn(agentId, turnNumber, outcome, answerRow?.id ?? null);
+        : 'no_reply_intended';
+      const outcome = exitReason;
+      finalizeTurn(
+        agentId, turnNumber, exitReason, answerRow !== undefined, answerRow?.id ?? null,
+        // P3/P6b's counted input, persisted instead of inferred: the claim may be reverted
+        // only when the turn produced no answer AND executed zero non-idempotent calls.
+        state.nonIdempotentCallsThisTurn,
+      );
       // Ticket stamps (owner design 2026-07-22): the ONE stamping point. The
       // engine writes what it observed onto every ticket this turn's root
       // touches, so the model reads state instead of guessing it.
@@ -9180,12 +9193,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
           const strike0Summary = composeTurnDeliverySummary(agentId, turnNumber);
           if (strike0Summary.length > 0) {
             const sameTurnOpen = db.prepare(
-              `SELECT id, title FROM tasks
+              `SELECT id, title FROM legacy_tasks
                 WHERE assigned_to = ? AND origin_turn = ? AND status = 'in_progress' AND is_paused = 0`,
             ).all(agentId, turnNumber) as Array<{ id: string; title: string }>;
             for (const t of sameTurnOpen) {
               db.prepare(`
-                UPDATE tasks SET status = 'complete', completed_at = datetime('now'),
+                UPDATE legacy_tasks SET status = 'complete', completed_at = datetime('now'),
                   result = COALESCE(NULLIF(result, ''), ?), updated_at = datetime('now')
                 WHERE id = ? AND status = 'in_progress'
               `).run(`Delivered (engine-recorded at the turn boundary): ${strike0Summary}`, t.id);

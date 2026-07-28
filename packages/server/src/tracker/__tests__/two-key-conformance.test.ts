@@ -85,7 +85,7 @@ const STATUS_COMPLETE_SQL = /status\s*=\s*'complete'/;
 const STATUS_COMPLETE_OBJ = /[,{]\s*status:\s*'complete'/;
 // A tasks-table UPDATE header (\b after `tasks` excludes `task_runs`; `projects` is a
 // different word entirely). Used to confirm a literal SQL match targets `tasks`.
-const UPDATE_TASKS = /\bUPDATE\s+tasks\b/;
+const UPDATE_TASKS = /\bUPDATE\s+legacy_tasks\b/;   // PHASE-2 T2 renamed the table
 
 // The reviewed writer definition sites. A KEY-1 writer line is compliant iff, for its
 // file, one of these substrings is present in the line (or, for scheduler/runner.ts
@@ -270,7 +270,7 @@ describe('two-key KEY 1: TASK status=complete writers limited to the reviewed se
   it('positive control: a synthetic rogue engine close is caught', () => {
     const rogue = [
       'function rogueEngineClose(taskId: string) {',
-      "  db.prepare(\"UPDATE tasks SET status = 'complete', complete_validated = 1 WHERE id = ?\").run(taskId);",
+      "  db.prepare(\"UPDATE legacy_tasks SET status = 'complete', complete_validated = 1 WHERE id = ?\").run(taskId);",
       '}',
     ];
     const violations = scanKey1('tracker/rogue-synthetic.ts', rogue);
@@ -298,7 +298,7 @@ describe('two-key KEY 2: complete_validated writers limited to verdict paths', (
   });
 
   it('positive control: a synthetic complete_validated=1 forgery is caught', () => {
-    const rogue = ["  db.prepare(\"UPDATE tasks SET complete_validated = 1 WHERE id = ?\").run(id);"];
+    const rogue = ["  db.prepare(\"UPDATE legacy_tasks SET complete_validated = 1 WHERE id = ?\").run(id);"];
     const violations = scanFlagWriters('tracker/rogue-synthetic.ts', rogue, 'complete_validated', COMPLETE_VALIDATED_ALLOW);
     expect(violations.length).toBe(1);
   });
@@ -340,7 +340,7 @@ describe('two-key KEY 2: pause_validated writers limited to verdict paths (track
   });
 
   it('positive control: a synthetic pause pre-blessing is caught', () => {
-    const rogue = ["  db.prepare(\"UPDATE tasks SET status='paused', pause_validated = 1 WHERE id=?\").run(id);"];
+    const rogue = ["  db.prepare(\"UPDATE legacy_tasks SET status='paused', pause_validated = 1 WHERE id=?\").run(id);"];
     const violations = scanFlagWriters('scheduler/rogue-synthetic.ts', rogue, 'pause_validated', PAUSE_VALIDATED_ALLOW);
     expect(violations.length).toBe(1);
   });
@@ -361,7 +361,7 @@ describe('ticket stamps: stamp writers are updated_at-free and status-free', () 
 
   function stampUpdateBlocks(text: string): string[] {
     const blocks: string[] = [];
-    const re = /UPDATE\s+tasks\s+SET[\s\S]{0,600}?(?:WHERE[^\n]*)/g;
+    const re = /UPDATE\s+legacy_tasks\s+SET[\s\S]{0,600}?(?:WHERE[^\n]*)/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text))) {
       if (STAMP_COLS.test(m[0])) blocks.push(m[0]);
@@ -398,7 +398,7 @@ describe('ticket stamps: stamp writers are updated_at-free and status-free', () 
   });
 
   it('positive control: a forged stamp UPDATE touching updated_at is caught', () => {
-    const forged = "UPDATE tasks SET last_activity_turn = ?, updated_at = datetime('now') WHERE id = ?";
+    const forged = "UPDATE legacy_tasks SET last_activity_turn = ?, updated_at = datetime('now') WHERE id = ?";
     const blocks = stampUpdateBlocks(forged);
     expect(blocks.length).toBe(1);
     expect(FORBIDDEN.some((bad) => bad.test(blocks[0]))).toBe(true);

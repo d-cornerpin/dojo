@@ -447,7 +447,7 @@ export function terminateAgent(agentId: string, reason?: string): void {
   // to reassign or close them.
   try {
     const danglers = db.prepare(`
-      SELECT id, title FROM tasks
+      SELECT id, title FROM legacy_tasks
       WHERE assigned_to = ? AND status = 'in_progress' AND is_paused = 0
     `).all(agentId) as Array<{ id: string; title: string }>;
     if (danglers.length > 0) {
@@ -463,7 +463,7 @@ export function terminateAgent(agentId: string, reason?: string): void {
       // also resolve these from the dashboard.
       for (const dt of danglers) {
         db.prepare(`
-          UPDATE tasks
+          UPDATE legacy_tasks
           SET status = 'paused', is_paused = 1, status_before_pause = 'in_progress',
               notes = COALESCE(notes, '') || ? || char(10),
               updated_at = datetime('now')
@@ -672,7 +672,7 @@ export async function completeAgent(
   let resolvedTaskId: string | null = agent.task_id;
   if (!resolvedTaskId) {
     const candidates = db.prepare(`
-      SELECT id FROM tasks
+      SELECT id FROM legacy_tasks
        WHERE assigned_to = ?
          AND (status IN ('on_deck','in_progress')
               OR (status = 'complete'
@@ -702,7 +702,7 @@ export async function completeAgent(
     // touching the notes column. completion_summary stays as the
     // canonical "result" home for apprentice flows (also reused by
     // Phase B.1 evidence plumbing).
-    const priorRow = db.prepare('SELECT status, project_id FROM tasks WHERE id = ?').get(resolvedTaskId) as { status: string; project_id: string | null } | undefined;
+    const priorRow = db.prepare('SELECT status, project_id FROM legacy_tasks WHERE id = ?').get(resolvedTaskId) as { status: string; project_id: string | null } | undefined;
     if (taskStatus === 'fallen' && priorRow?.project_id) fallenProjectIds.add(priorRow.project_id);
 
     // Phase B.1: plumb result + evidence_json from the apprentice's summary
@@ -728,7 +728,7 @@ export async function completeAgent(
     }
 
     db.prepare(`
-      UPDATE tasks SET status = ?, updated_at = datetime('now'),
+      UPDATE legacy_tasks SET status = ?, updated_at = datetime('now'),
         completed_at = CASE WHEN ? = 'complete' THEN datetime('now') ELSE completed_at END,
         completion_summary = ?,
         result = CASE WHEN ? = 'complete' THEN ? ELSE result END,
@@ -786,11 +786,11 @@ export async function completeAgent(
   try {
     const bulkStatus = status === 'complete' ? 'complete' : status === 'fallen' ? 'fallen' : 'blocked';
     const primaryLineage = resolvedTaskId
-      ? db.prepare('SELECT project_id, source_message_id FROM tasks WHERE id = ?')
+      ? db.prepare('SELECT project_id, source_message_id FROM legacy_tasks WHERE id = ?')
           .get(resolvedTaskId) as { project_id: string | null; source_message_id: string | null } | undefined
       : undefined;
     const otherDanglers = db.prepare(`
-      SELECT id, title, project_id, source_message_id FROM tasks
+      SELECT id, title, project_id, source_message_id FROM legacy_tasks
       WHERE assigned_to = ?
         AND status = 'in_progress'
         AND is_paused = 0
@@ -804,7 +804,7 @@ export async function completeAgent(
       );
       const disposition = sameWork ? bulkStatus : 'blocked';
       db.prepare(`
-        UPDATE tasks SET status = ?, updated_at = datetime('now'),
+        UPDATE legacy_tasks SET status = ?, updated_at = datetime('now'),
           completed_at = CASE WHEN ? = 'complete' THEN datetime('now') ELSE completed_at END
         WHERE id = ?
       `).run(disposition, disposition, dt.id);
@@ -1061,7 +1061,7 @@ export function fireSpawnTimeoutDecision(agentId: string): void {
 
   let taskLine = 'no tracker task linked';
   if (agent.task_id) {
-    const t = db.prepare('SELECT title, status FROM tasks WHERE id = ?').get(agent.task_id) as { title: string; status: string } | undefined;
+    const t = db.prepare('SELECT title, status FROM legacy_tasks WHERE id = ?').get(agent.task_id) as { title: string; status: string } | undefined;
     if (t) taskLine = `linked task "${t.title}" (status: ${t.status})`;
   }
 

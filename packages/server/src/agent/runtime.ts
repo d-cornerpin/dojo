@@ -843,7 +843,7 @@ class AgentRuntime {
       // the ones that just stalled.
       interface StalledTaskRow { id: string; title: string; status: string }
       const stalledTasks = db.prepare(`
-        SELECT id, title, status FROM tasks
+        SELECT id, title, status FROM legacy_tasks
         WHERE assigned_to = ? AND status IN ('in_progress', 'on_deck')
         ORDER BY updated_at DESC
         LIMIT 5

@@ -149,7 +149,7 @@ export function deleteGroup(id: string): boolean {
   // Move agents to ungrouped
   db.prepare("UPDATE agents SET group_id = NULL, updated_at = datetime('now') WHERE group_id = ?").run(id);
   // Remove group task assignments
-  db.prepare("UPDATE tasks SET assigned_to_group = NULL WHERE assigned_to_group = ?").run(id);
+  db.prepare("UPDATE legacy_tasks SET assigned_to_group = NULL WHERE assigned_to_group = ?").run(id);
   const result = db.prepare('DELETE FROM agent_groups WHERE id = ?').run(id);
 
   if (result.changes > 0) {

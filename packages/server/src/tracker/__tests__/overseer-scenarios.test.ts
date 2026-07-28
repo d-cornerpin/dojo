@@ -15,7 +15,7 @@ let testDb: Database.Database;
 // are irrelevant to overseer logic. Keeps the test fast and self-contained.
 function applyMinimalSchema(db: Database.Database): void {
   db.exec(`
-    CREATE TABLE projects (
+    CREATE TABLE legacy_projects (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       description TEXT,
@@ -29,7 +29,7 @@ function applyMinimalSchema(db: Database.Database): void {
       completed_at TEXT
     );
 
-    CREATE TABLE tasks (
+    CREATE TABLE legacy_tasks (
       id TEXT PRIMARY KEY,
       project_id TEXT,
       title TEXT NOT NULL,
@@ -151,7 +151,7 @@ function makeTask(db: Database.Database, overrides: Record<string, unknown> = {}
   const keys = Object.keys(cols);
   const placeholders = keys.map(() => '?').join(',');
   db.prepare(
-    `INSERT INTO tasks (${keys.join(',')}) VALUES (${placeholders})`,
+    `INSERT INTO legacy_tasks (${keys.join(',')}) VALUES (${placeholders})`,
   ).run(...Object.values(cols));
   return id;
 }
@@ -166,13 +166,13 @@ describe('Phase D scenario suite', () => {
     const taskId = makeTask(testDb, { status: 'in_progress' });
     // Mimic what trackerUpdateStatus does on accepted complete:
     testDb.prepare(
-      `UPDATE tasks SET status='complete', result=?, evidence_json=?, updated_at=datetime('now') WHERE id=?`,
+      `UPDATE legacy_tasks SET status='complete', result=?, evidence_json=?, updated_at=datetime('now') WHERE id=?`,
     ).run(
       'wrote a short summary',
       JSON.stringify([{ kind: 'claim', claim: 'self-handled simple ask' }]),
       taskId,
     );
-    const row = testDb.prepare(`SELECT status, result, evidence_json FROM tasks WHERE id=?`).get(taskId) as { status: string; result: string; evidence_json: string };
+    const row = testDb.prepare(`SELECT status, result, evidence_json FROM legacy_tasks WHERE id=?`).get(taskId) as { status: string; result: string; evidence_json: string };
     expect(row.status).toBe('complete');
     expect(row.result.length).toBeGreaterThan(0);
     const ev = JSON.parse(row.evidence_json);
@@ -195,13 +195,13 @@ describe('Phase D scenario suite', () => {
     const elapsedSec = Math.floor((Date.now() - new Date(lastPoke.sent_at + 'Z').getTime()) / 1000);
     expect(elapsedSec).toBeLessThanOrEqual(60);
     const flag = `closed within ${elapsedSec}s of last poke with no non-tracker tool calls in between`;
-    testDb.prepare(`UPDATE tasks SET last_smell_flag = ? WHERE id = ?`).run(flag, taskId);
+    testDb.prepare(`UPDATE legacy_tasks SET last_smell_flag = ? WHERE id = ?`).run(flag, taskId);
     testDb.prepare(`
       INSERT INTO task_log (id, task_id, from_entity, entry_kind, reason, created_at)
       VALUES (?, ?, 'engine', 'smell_flag', ?, datetime('now'))
     `).run(`log-${taskId}`, taskId, flag);
 
-    const row = testDb.prepare(`SELECT last_smell_flag FROM tasks WHERE id = ?`).get(taskId) as { last_smell_flag: string };
+    const row = testDb.prepare(`SELECT last_smell_flag FROM legacy_tasks WHERE id = ?`).get(taskId) as { last_smell_flag: string };
     expect(row.last_smell_flag).toContain('closed within');
     const log = testDb.prepare(`SELECT entry_kind, reason FROM task_log WHERE task_id = ?`).all(taskId) as Array<{ entry_kind: string; reason: string }>;
     expect(log.some((e) => e.entry_kind === 'smell_flag' && e.reason.includes('closed within'))).toBe(true);
@@ -219,14 +219,14 @@ describe('Phase D scenario suite', () => {
   it('Scenario L: stalemate flag flips when revert_count crosses the normal-priority threshold', () => {
     const taskId = makeTask(testDb, { priority: 'normal', revert_count: 2, status: 'complete' });
     // Simulate one more PM reject:
-    testDb.prepare(`UPDATE tasks SET revert_count = revert_count + 1 WHERE id = ?`).run(taskId);
-    const after = testDb.prepare(`SELECT revert_count, priority FROM tasks WHERE id = ?`).get(taskId) as { revert_count: number; priority: string };
+    testDb.prepare(`UPDATE legacy_tasks SET revert_count = revert_count + 1 WHERE id = ?`).run(taskId);
+    const after = testDb.prepare(`SELECT revert_count, priority FROM legacy_tasks WHERE id = ?`).get(taskId) as { revert_count: number; priority: string };
     expect(after.revert_count).toBe(3);
     const THRESHOLDS = { high: 2, normal: 3, low: 5 };
     expect(after.revert_count).toBeGreaterThanOrEqual(THRESHOLDS[after.priority as keyof typeof THRESHOLDS]);
     // Engine would then flip awaiting_user_verdict; simulate:
-    testDb.prepare(`UPDATE tasks SET awaiting_user_verdict = 1, user_verdict_requested_at = datetime('now') WHERE id = ?`).run(taskId);
-    const fin = testDb.prepare(`SELECT awaiting_user_verdict FROM tasks WHERE id = ?`).get(taskId) as { awaiting_user_verdict: number };
+    testDb.prepare(`UPDATE legacy_tasks SET awaiting_user_verdict = 1, user_verdict_requested_at = datetime('now') WHERE id = ?`).run(taskId);
+    const fin = testDb.prepare(`SELECT awaiting_user_verdict FROM legacy_tasks WHERE id = ?`).get(taskId) as { awaiting_user_verdict: number };
     expect(fin.awaiting_user_verdict).toBe(1);
   });
 
@@ -259,7 +259,7 @@ describe('Phase D scenario suite', () => {
       evidence_json: JSON.stringify([{ kind: 'claim', claim: 'Run 1' }]),
     });
     testDb.prepare(`
-      UPDATE tasks
+      UPDATE legacy_tasks
       SET repeat_interval = 2, repeat_unit = 'minutes', next_run_at = datetime('now', '+2 minutes')
       WHERE id = ?
     `).run(taskId);
@@ -275,10 +275,10 @@ describe('Phase D scenario suite', () => {
       JSON.stringify([{ kind: 'claim', claim: 'Run 1' }]),
     );
     testDb.prepare(`
-      UPDATE tasks SET status = 'on_deck', result = NULL, evidence_json = NULL, complete_validated = 0 WHERE id = ?
+      UPDATE legacy_tasks SET status = 'on_deck', result = NULL, evidence_json = NULL, complete_validated = 0 WHERE id = ?
     `).run(taskId);
 
-    const fin = testDb.prepare(`SELECT status, result, evidence_json FROM tasks WHERE id = ?`).get(taskId) as { status: string; result: string | null; evidence_json: string | null };
+    const fin = testDb.prepare(`SELECT status, result, evidence_json FROM legacy_tasks WHERE id = ?`).get(taskId) as { status: string; result: string | null; evidence_json: string | null };
     expect(fin.status).toBe('on_deck');
     expect(fin.result).toBeNull();
     expect(fin.evidence_json).toBeNull();
@@ -292,7 +292,7 @@ describe('Phase D scenario suite', () => {
   it('Scenario H: bulk close writes one transition entry per task with reason', () => {
     const projectId = `proj-${Math.random().toString(36).slice(2, 8)}`;
     testDb.prepare(`
-      INSERT INTO projects (id, title, level, status, created_by) VALUES (?, 'test project', 1, 'active', 'primary')
+      INSERT INTO legacy_projects (id, title, level, status, created_by) VALUES (?, 'test project', 1, 'active', 'primary')
     `).run(projectId);
     const t1 = makeTask(testDb, { project_id: projectId });
     const t2 = makeTask(testDb, { project_id: projectId, status: 'on_deck' });
@@ -300,8 +300,8 @@ describe('Phase D scenario suite', () => {
     // Simulate the bulk close path:
     const reason = 'project was a duplicate, closing both tasks';
     for (const id of [t1, t2]) {
-      const fromStatus = testDb.prepare(`SELECT status FROM tasks WHERE id = ?`).get(id) as { status: string };
-      testDb.prepare(`UPDATE tasks SET status = 'fallen', completed_at = datetime('now') WHERE id = ?`).run(id);
+      const fromStatus = testDb.prepare(`SELECT status FROM legacy_tasks WHERE id = ?`).get(id) as { status: string };
+      testDb.prepare(`UPDATE legacy_tasks SET status = 'fallen', completed_at = datetime('now') WHERE id = ?`).run(id);
       testDb.prepare(`
         INSERT INTO task_log (id, task_id, from_entity, entry_kind, from_status, to_status, action_taken, reason, created_at)
         VALUES (?, ?, 'agent:primary', 'transition', ?, 'fallen', 'bulk-closed via tracker_close_project', ?, datetime('now'))
@@ -324,7 +324,7 @@ describe('Phase D scenario suite', () => {
         `SELECT id FROM task_runs WHERE task_id = ? AND status = 'running' ORDER BY run_number DESC LIMIT 1`,
       ).get(taskId) as { id: string } | undefined;
       const scheduleStatus = (
-        testDb.prepare('SELECT schedule_status FROM tasks WHERE id = ?').get(taskId) as { schedule_status: string } | undefined
+        testDb.prepare('SELECT schedule_status FROM legacy_tasks WHERE id = ?').get(taskId) as { schedule_status: string } | undefined
       )?.schedule_status;
       return !!openRun && scheduleStatus === 'running';
     };

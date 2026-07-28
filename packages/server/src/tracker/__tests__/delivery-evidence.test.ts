@@ -21,26 +21,27 @@ const ASK = 'msg-ask-1';
 beforeEach(() => {
   const db = new Database(':memory:');
   db.exec(`
-    CREATE TABLE tasks (
+    CREATE TABLE legacy_tasks (
       id TEXT PRIMARY KEY, assigned_to TEXT, source_message_id TEXT,
       origin_conv_key TEXT, created_at TEXT
     );
     CREATE TABLE turns (
-      agent_id TEXT, turn_number INTEGER, outcome TEXT, started_at TEXT,
-      ended_at TEXT, answer_message_id TEXT, source_message_id TEXT, conv_key TEXT
+      agent_id TEXT, turn_number INTEGER, exit_reason TEXT, answered INTEGER NOT NULL,
+      started_at TEXT, ended_at TEXT, answer_message_id TEXT, source_message_id TEXT,
+      conv_key TEXT
     );
     CREATE TABLE audit_log (agent_id TEXT, turn_number INTEGER);
     CREATE TABLE turn_artifacts (agent_id TEXT, turn_number INTEGER, path TEXT, payload_json TEXT, delivered_at TEXT);
     CREATE TABLE deliveries (agent_id TEXT, turn_number INTEGER, channel TEXT, outcome TEXT);
   `);
-  db.prepare(`INSERT INTO tasks VALUES (?, ?, ?, ?, '2026-07-22 07:15:34')`)
+  db.prepare(`INSERT INTO legacy_tasks VALUES (?, ?, ?, ?, '2026-07-22 07:15:34')`)
     .run(TASK, AGENT, ASK, 'owner');
   mockDb.current = db;
 });
 
 function insertAnsweredTurn(n: number, opts?: { sourceMessageId?: string | null; convKey?: string | null; startedAt?: string }) {
   mockDb.current!.prepare(
-    `INSERT INTO turns VALUES (?, ?, 'answered', ?, ?, 'msg-answer', ?, ?)`,
+    `INSERT INTO turns VALUES (?, ?, 'answered', 1, ?, ?, 'msg-answer', ?, ?)`,
   ).run(AGENT, n, opts?.startedAt ?? '2026-07-22 07:16:00', '2026-07-22 07:16:30',
     opts?.sourceMessageId === undefined ? ASK : opts.sourceMessageId,
     opts?.convKey === undefined ? null : opts.convKey);
@@ -77,7 +78,7 @@ describe('findDeliveryEvidenceForTask (delivered-but-unclosed consult)', () => {
   });
 
   it('NO evidence for a task with no origin identity at all', () => {
-    mockDb.current!.prepare(`UPDATE tasks SET source_message_id = NULL, origin_conv_key = NULL WHERE id = ?`).run(TASK);
+    mockDb.current!.prepare(`UPDATE legacy_tasks SET source_message_id = NULL, origin_conv_key = NULL WHERE id = ?`).run(TASK);
     insertAnsweredTurn(100);
     expect(findDeliveryEvidenceForTask(TASK)).toBeNull();
   });

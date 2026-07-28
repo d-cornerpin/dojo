@@ -68,7 +68,7 @@ describe('serve boundary (P2)', () => {
     const fn = cp.slice(cp.indexOf('export function retireSpentEngineEvents'));
     const body = fn.slice(0, 3000);
     expect(body).toMatch(/SELECT status FROM task_runs WHERE id = \?/);
-    expect(body).toMatch(/SELECT status, is_paused FROM tasks WHERE id = \?/);
+    expect(body).toMatch(/SELECT status, is_paused FROM legacy_tasks WHERE id = \?/);
   });
 });
 
@@ -122,10 +122,13 @@ describe('once-per-response guard (P3)', () => {
 describe('turn record (P4)', () => {
   it('every turn start records its subject and root; every exit finalizes', () => {
     const loop = read('agent/v2/loop.ts');
-    expect(loop).toMatch(/recordTurnStart\(\{/);
-    expect(loop).toMatch(/finalizeTurn\(agentId, turnNumber, outcome/);
+    // PHASE-2 T2: identity is ALLOCATED at start (startTurn returns the number) and the
+    // exit records why it ended AND whether the person heard from us, as two facts.
+    expect(loop).toMatch(/return startTurn\(\{/);
+    expect(loop).toMatch(/finalizeTurn\(\s*agentId, turnNumber, exitReason, answerRow !== undefined/);
     const rec = read('agent/v2/recovery.ts');
-    expect(rec).toMatch(/markLatestTurnError\(agentId\)/);
+    // The recovery site closes THIS turn, by number — not "every open turn for the agent".
+    expect(rec).toMatch(/markTurnDied\(agentId, state\.turnNumber\)/);
   });
 
   it('claimed asks carry forward links (served_by_turn at every claim site, answers stamped at teardown)', () => {

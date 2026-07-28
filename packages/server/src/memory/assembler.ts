@@ -880,7 +880,7 @@ async function assembleMessageContext(
       if (entries.length === 0) continue;
       let revertNote = '';
       try {
-        const row = getDb().prepare('SELECT revert_count FROM tasks WHERE id = ?')
+        const row = getDb().prepare('SELECT revert_count FROM legacy_tasks WHERE id = ?')
           .get(task.id) as { revert_count: number | null } | undefined;
         if (row?.revert_count) revertNote = `, reverted ${row.revert_count}x already`;
       } catch { /* column may not exist on old DBs */ }
@@ -925,7 +925,7 @@ async function assembleMessageContext(
           `SELECT id, last_activity_turn, last_activity_at, last_activity_outcome,
                   last_answered_turn, last_answered_at, last_delivery_summary,
                   step_number, total_steps, project_id
-             FROM tasks WHERE id = ?`,
+             FROM legacy_tasks WHERE id = ?`,
         );
         const taskLines = activeTasks.slice(0, 5).map(t => {
           let line = `• ${t.title} (ID: ${t.id.slice(0, 8)}, priority: ${t.priority})`;

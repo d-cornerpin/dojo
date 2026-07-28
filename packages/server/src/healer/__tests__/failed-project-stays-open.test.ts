@@ -46,11 +46,11 @@ const ORPHANED_PROJECT: DiagnosticItem = {
 beforeEach(() => {
   const db = new Database(':memory:');
   db.exec(`
-    CREATE TABLE projects (
+    CREATE TABLE legacy_projects (
       id TEXT PRIMARY KEY, title TEXT, description TEXT, status TEXT NOT NULL,
       completed_at TEXT, updated_at TEXT, created_by TEXT
     );
-    CREATE TABLE tasks (
+    CREATE TABLE legacy_tasks (
       id TEXT PRIMARY KEY, project_id TEXT, title TEXT, status TEXT NOT NULL,
       assigned_to TEXT, is_paused INTEGER DEFAULT 0, updated_at TEXT
     );
@@ -59,8 +59,8 @@ beforeEach(() => {
       agent_id TEXT, action_taken TEXT, result TEXT, created_at TEXT
     );
   `);
-  const proj = db.prepare(`INSERT INTO projects (id, title, status) VALUES (?, ?, 'active')`);
-  const task = db.prepare(`INSERT INTO tasks (id, project_id, title, status) VALUES (?, ?, ?, ?)`);
+  const proj = db.prepare(`INSERT INTO legacy_projects (id, title, status) VALUES (?, ?, 'active')`);
+  const task = db.prepare(`INSERT INTO legacy_tasks (id, project_id, title, status) VALUES (?, ?, ?, ?)`);
 
   // 1. THE SUBJECT: work that FELL. One task shipped, one died. No open work
   //    remains, so every "is this finished?" sweep looks at it.
@@ -86,14 +86,14 @@ beforeEach(() => {
 });
 
 const status = (id: string) =>
-  (mockDb.current!.prepare('SELECT status FROM projects WHERE id = ?').get(id) as { status: string }).status;
+  (mockDb.current!.prepare('SELECT status FROM legacy_projects WHERE id = ?').get(id) as { status: string }).status;
 
 describe("healer ORPHANED_PROJECT auto-fix: a fallen task blocks the close (D-K fail-open)", () => {
   it('never closes a project that has a FALLEN task, however many others completed', () => {
     runAutoFixes('diag-1', [ORPHANED_PROJECT]);
     expect(status('p-failed')).toBe('active');
     expect(
-      mockDb.current!.prepare("SELECT completed_at FROM projects WHERE id = 'p-failed'").get(),
+      mockDb.current!.prepare("SELECT completed_at FROM legacy_projects WHERE id = 'p-failed'").get(),
     ).toEqual({ completed_at: null });
   });
 

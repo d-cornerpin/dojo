@@ -220,7 +220,7 @@ export function createProject(params: {
 
   db.transaction(() => {
     db.prepare(`
-      INSERT INTO projects (id, title, description, level, status, created_by, created_by_kind, phase_count, current_phase,
+      INSERT INTO legacy_projects (id, title, description, level, status, created_by, created_by_kind, phase_count, current_phase,
                             source_message_id, origin_turn, origin_conv_key, origin_kind, created_at, updated_at)
       VALUES (?, ?, ?, ?, 'active', ?, ?, 1, 1, ?, ?, ?, ?, datetime('now'), datetime('now'))
     `).run(projectId, title, description ?? null, level, createdBy, creatorKind,
@@ -254,7 +254,7 @@ export function createProject(params: {
         // creates tasks via this code path; without this column being set the
         // onTaskComplete hook surfaces "(none recorded)" to the parent.
         db.prepare(`
-          INSERT INTO tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, created_by_kind, priority,
+          INSERT INTO legacy_tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, created_by_kind, priority,
                              step_number, total_steps, phase, depends_on,
                              source_message_id, origin_turn, origin_conv_key, origin_kind, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
@@ -309,12 +309,12 @@ export function createProject(params: {
 export function getProject(id: string): ProjectDetail | null {
   const db = getDb();
 
-  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ProjectRow | undefined;
+  const row = db.prepare('SELECT * FROM legacy_projects WHERE id = ?').get(id) as ProjectRow | undefined;
   if (!row) return null;
 
   const project = mapProjectRow(row);
 
-  const taskRows = db.prepare('SELECT * FROM tasks WHERE project_id = ? ORDER BY step_number ASC, created_at ASC').all(id) as TaskRow[];
+  const taskRows = db.prepare('SELECT * FROM legacy_tasks WHERE project_id = ? ORDER BY step_number ASC, created_at ASC').all(id) as TaskRow[];
   const tasks = taskRows.map(mapTaskRow);
 
   const taskCounts = {
@@ -343,7 +343,7 @@ export function getProject(id: string): ProjectDetail | null {
 export function listProjects(filter?: { status?: string }): Project[] {
   const db = getDb();
 
-  let sql = 'SELECT * FROM projects';
+  let sql = 'SELECT * FROM legacy_projects';
   const params: unknown[] = [];
 
   if (filter?.status) {
@@ -386,7 +386,7 @@ export function closeProjectAndOpenTasks(params: {
   const noteMarker = taskStatus === 'cancelled' ? '[CANCELLED]' : '[Completed via bulk close]';
 
   const tasks = db
-    .prepare('SELECT id, status FROM tasks WHERE project_id = ?')
+    .prepare('SELECT id, status FROM legacy_tasks WHERE project_id = ?')
     .all(projectId) as Array<{ id: string; status: string }>;
 
   let tasksClosed = 0;
@@ -397,7 +397,7 @@ export function closeProjectAndOpenTasks(params: {
   // land in task_log instead. We capture the per-task prior status inside
   // the loop so each transition entry has the right from→to pair.
   const closeStmt = db.prepare(`
-    UPDATE tasks
+    UPDATE legacy_tasks
     SET status = ?,
         is_paused = 0,
         completed_at = datetime('now'),
@@ -417,7 +417,7 @@ export function closeProjectAndOpenTasks(params: {
       tasksClosed++;
     }
     db.prepare(`
-      UPDATE projects
+      UPDATE legacy_projects
       SET status = ?,
           completed_at = datetime('now'),
           updated_at = datetime('now')
@@ -492,7 +492,7 @@ export function updateProject(
 
   params.push(id);
 
-  db.prepare(`UPDATE projects SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
+  db.prepare(`UPDATE legacy_projects SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
 
   logger.info('Project updated', { projectId: id, updates });
 
@@ -544,7 +544,7 @@ export function createTask(params: {
   // Phase 7 onTaskComplete uses it to surface the original intent to the
   // parent agent at completion time even if the description was edited.
   db.prepare(`
-    INSERT INTO tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, created_by_kind, priority,
+    INSERT INTO legacy_tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, created_by_kind, priority,
                        step_number, total_steps, phase, depends_on, kind,
                        source_message_id, origin_turn, origin_conv_key, origin_kind, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
@@ -645,7 +645,7 @@ export function autoCreateAssignTask(params: {
 
     // Reuse if a task already exists for this thread.
     const existing = db
-      .prepare('SELECT id FROM tasks WHERE a2a_thread_id = ? LIMIT 1')
+      .prepare('SELECT id FROM legacy_tasks WHERE a2a_thread_id = ? LIMIT 1')
       .get(params.threadId) as { id: string } | undefined;
     if (existing?.id) {
       return { taskId: existing.id, isNew: false };
@@ -669,7 +669,7 @@ export function autoCreateAssignTask(params: {
     // reserved for future-scheduled tasks (the scheduler owns the
     // transition); auto-ASSIGN has no schedule.
     db.prepare(`
-      INSERT INTO tasks (id, project_id, title, description, original_description, goal, status, assigned_to, created_by, created_by_kind, priority,
+      INSERT INTO legacy_tasks (id, project_id, title, description, original_description, goal, status, assigned_to, created_by, created_by_kind, priority,
                          step_number, total_steps, phase, depends_on, a2a_thread_id,
                          source_message_id, origin_conv_key, origin_kind, created_at, updated_at)
       VALUES (?, NULL, ?, ?, ?, ?, 'in_progress', ?, ?, ?, 'normal', NULL, NULL, 1, '[]', ?, ?, ?, 'a2a_assign', datetime('now'), datetime('now'))
@@ -709,7 +709,7 @@ export function autoCreateAssignTask(params: {
 
 export function getTask(id: string): Task | null {
   const db = getDb();
-  const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(id) as TaskRow | undefined;
+  const row = db.prepare('SELECT * FROM legacy_tasks WHERE id = ?').get(id) as TaskRow | undefined;
   if (!row) return null;
   return mapTaskRow(row);
 }
@@ -733,7 +733,7 @@ export type IdResolution =
   | { ok: true; id: string }
   | { ok: false; reason: 'empty' | 'too_short' | 'not_found' | 'ambiguous'; matches?: string[] };
 
-function resolveIdIn(table: 'tasks' | 'projects', idOrPrefix: string, agentId?: string): IdResolution {
+function resolveIdIn(table: 'legacy_tasks' | 'legacy_projects', idOrPrefix: string, agentId?: string): IdResolution {
   if (!idOrPrefix || typeof idOrPrefix !== 'string') {
     return { ok: false, reason: 'empty' };
   }
@@ -779,10 +779,10 @@ function resolveIdIn(table: 'tasks' | 'projects', idOrPrefix: string, agentId?: 
  * light wording drift. Returns ok on a single hit, ambiguous on several, or
  * null when nothing matched (caller then emits the normal not_found).
  */
-function resolveByTitleScoped(table: 'tasks' | 'projects', title: string, agentId: string): IdResolution | null {
+function resolveByTitleScoped(table: 'legacy_tasks' | 'legacy_projects', title: string, agentId: string): IdResolution | null {
   const db = getDb();
-  const scopeSql = table === 'tasks' ? '(assigned_to = ? OR created_by = ?)' : 'created_by = ?';
-  const scopeParams = table === 'tasks' ? [agentId, agentId] : [agentId];
+  const scopeSql = table === 'legacy_tasks' ? '(assigned_to = ? OR created_by = ?)' : 'created_by = ?';
+  const scopeParams = table === 'legacy_tasks' ? [agentId, agentId] : [agentId];
 
   // Exact, case-insensitive.
   let rows = db.prepare(
@@ -805,12 +805,12 @@ function resolveByTitleScoped(table: 'tasks' | 'projects', title: string, agentI
 
 /** Resolve a task id from a full UUID, ≥4-char prefix, or (with agentId) a title. */
 export function resolveTaskId(idOrPrefix: string, agentId?: string): IdResolution {
-  return resolveIdIn('tasks', idOrPrefix, agentId);
+  return resolveIdIn('legacy_tasks', idOrPrefix, agentId);
 }
 
 /** Resolve a project id from a full UUID, ≥4-char prefix, or (with agentId) a title. */
 export function resolveProjectId(idOrPrefix: string, agentId?: string): IdResolution {
-  return resolveIdIn('projects', idOrPrefix, agentId);
+  return resolveIdIn('legacy_projects', idOrPrefix, agentId);
 }
 
 /**
@@ -875,7 +875,7 @@ export function listTasks(filter?: {
     params.push(filter.projectId);
   }
 
-  let sql = 'SELECT * FROM tasks';
+  let sql = 'SELECT * FROM legacy_tasks';
   if (conditions.length > 0) {
     sql += ' WHERE ' + conditions.join(' AND ');
   }
@@ -930,7 +930,7 @@ export function updateTask(id: string, updates: Partial<{
       setClauses.push('pause_validated = 0');
       // Save the current status so we can restore it on auto-resume.
       // Look up the task's current status BEFORE we overwrite it.
-      const currentTask = db.prepare('SELECT status FROM tasks WHERE id = ?').get(id) as { status: string } | undefined;
+      const currentTask = db.prepare('SELECT status FROM legacy_tasks WHERE id = ?').get(id) as { status: string } | undefined;
       if (currentTask && currentTask.status !== 'paused') {
         setClauses.push('status_before_pause = ?');
         params.push(currentTask.status);
@@ -1033,7 +1033,7 @@ export function updateTask(id: string, updates: Partial<{
 
   params.push(id);
 
-  const result = db.prepare(`UPDATE tasks SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
+  const result = db.prepare(`UPDATE legacy_tasks SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
 
   if (result.changes === 0) {
     // UPDATE matched zero rows, the id doesn't exist. Callers that pass
@@ -1070,7 +1070,7 @@ export function addTaskNotes(id: string, notes: string): void {
   const entry = `[${timestamp}] ${notes}`;
 
   db.prepare(`
-    UPDATE tasks SET
+    UPDATE legacy_tasks SET
       notes = CASE WHEN notes IS NULL THEN ? ELSE notes || char(10) || ? END,
       updated_at = datetime('now')
     WHERE id = ?
@@ -1088,7 +1088,7 @@ export function addTaskNotes(id: string, notes: string): void {
 export function setTaskNotes(id: string, notes: string): void {
   const db = getDb();
   db.prepare(`
-    UPDATE tasks SET notes = ?, updated_at = datetime('now') WHERE id = ?
+    UPDATE legacy_tasks SET notes = ?, updated_at = datetime('now') WHERE id = ?
   `).run(notes, id);
   logger.info('Task notes replaced', { taskId: id, notesLength: notes.length });
 }
@@ -1100,7 +1100,7 @@ export function setTaskNotes(id: string, notes: string): void {
 export function clearTaskNotes(id: string): void {
   const db = getDb();
   db.prepare(`
-    UPDATE tasks SET notes = NULL, updated_at = datetime('now') WHERE id = ?
+    UPDATE legacy_tasks SET notes = NULL, updated_at = datetime('now') WHERE id = ?
   `).run(id);
   logger.info('Task notes cleared', { taskId: id });
 }

@@ -13,8 +13,8 @@
 //
 // ── THE PROPAGATION RULE, and why it is not optional ──
 // Measured on this box before this file was written:
-//     SELECT created_by, COUNT(*) FROM tasks    GROUP BY 1  ->  BehaviorBot's id, 50
-//     SELECT created_by, COUNT(*) FROM projects GROUP BY 1  ->  BehaviorBot's id, 102
+//     SELECT created_by, COUNT(*) FROM legacy_tasks    GROUP BY 1  ->  BehaviorBot's id, 50
+//     SELECT created_by, COUNT(*) FROM legacy_projects GROUP BY 1  ->  BehaviorBot's id, 102
 // Almost every harness-owned task and project is created by the ENGINE on the harness
 // agent's behalf — the auto-scaffolder, the PM, a tool call inside a scenario turn. The
 // kit never touches those rows, so a column the kit alone stamped would be NULL on

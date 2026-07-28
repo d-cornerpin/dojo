@@ -35,7 +35,7 @@ beforeEach(() => {
       classification TEXT,
       status TEXT DEFAULT 'idle'
     );
-    CREATE TABLE tasks (
+    CREATE TABLE legacy_tasks (
       id TEXT PRIMARY KEY,
       title TEXT,
       description TEXT,
@@ -58,11 +58,11 @@ beforeEach(() => {
   // Apprentice with no parent (top-level).
   db.prepare("INSERT INTO agents (id, name) VALUES ('orphan', 'Orphan')").run();
   db.prepare(
-    `INSERT INTO tasks (id, title, description, original_description, completion_summary, status, assigned_to)
+    `INSERT INTO legacy_tasks (id, title, description, original_description, completion_summary, status, assigned_to)
      VALUES ('task-1', 'Research vendor X', 'Look into vendor X pricing', 'Look into vendor X pricing', 'Found three pricing tiers, B is best', 'complete', 'apprentice-1')`,
   ).run();
   db.prepare(
-    `INSERT INTO tasks (id, title, description, original_description, completion_summary, status, assigned_to)
+    `INSERT INTO legacy_tasks (id, title, description, original_description, completion_summary, status, assigned_to)
      VALUES ('task-2', 'Solo work', 'no parent', 'no parent', 'done', 'complete', 'orphan')`,
   ).run();
   mockDb.current = db;
@@ -100,7 +100,7 @@ describe('onTaskComplete hook — no-op contract (comms-audit 2026-07-01, rank 3
     const long = 'X'.repeat(800);
     mockDb.current!
       .prepare(
-        `INSERT INTO tasks (id, title, description, original_description, completion_summary, status, assigned_to)
+        `INSERT INTO legacy_tasks (id, title, description, original_description, completion_summary, status, assigned_to)
          VALUES ('task-long', 'Big task', 'short', ?, ?, 'complete', 'apprentice-1')`,
       )
       .run(long, long);

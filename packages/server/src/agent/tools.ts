@@ -572,7 +572,7 @@ async function resolveSpawnSquad(opts: {
     const grp = db.prepare('SELECT id, name, created_by FROM agent_groups WHERE id = ?').get(ref.id) as { id: string; name: string; created_by: string | null } | undefined;
     if (!grp) return { error: `Squad "${opts.explicitGroupId}" doesn't exist. Omit group_id to auto-create a squad, or pass one you created.` };
     const ownsIt = grp.created_by === opts.callerAgentId;
-    const projectStamped = !!db.prepare('SELECT 1 FROM projects WHERE group_id = ? LIMIT 1').get(ref.id);
+    const projectStamped = !!db.prepare('SELECT 1 FROM legacy_projects WHERE group_id = ? LIMIT 1').get(ref.id);
     if (!ownsIt && !projectStamped) {
       return { error: `You can only spawn into a squad you created or a project's squad. "${grp.name}" is neither. Omit group_id to auto-create your own squad.` };
     }
@@ -585,9 +585,9 @@ async function resolveSpawnSquad(opts: {
       const { resolveTaskId } = await import('../tracker/schema.js');
       const rt = resolveTaskId(opts.rawTaskId);
       if (rt.ok) {
-        const task = db.prepare('SELECT project_id FROM tasks WHERE id = ?').get(rt.id) as { project_id: string | null } | undefined;
+        const task = db.prepare('SELECT project_id FROM legacy_tasks WHERE id = ?').get(rt.id) as { project_id: string | null } | undefined;
         if (task?.project_id) {
-          const proj = db.prepare('SELECT id, title, group_id FROM projects WHERE id = ?').get(task.project_id) as { id: string; title: string; group_id: string | null } | undefined;
+          const proj = db.prepare('SELECT id, title, group_id FROM legacy_projects WHERE id = ?').get(task.project_id) as { id: string; title: string; group_id: string | null } | undefined;
           if (proj) {
             if (proj.group_id) {
               const existing = db.prepare('SELECT id, name FROM agent_groups WHERE id = ?').get(proj.group_id) as { id: string; name: string } | undefined;
@@ -595,7 +595,7 @@ async function resolveSpawnSquad(opts: {
               // Stale stamp (group was deleted): fall through and re-create below.
             }
             const group = createGroup(proj.title, `Squad for project "${proj.title}".`, opts.callerAgentId);
-            db.prepare("UPDATE projects SET group_id = ?, updated_at = datetime('now') WHERE id = ?").run(group.id, proj.id);
+            db.prepare("UPDATE legacy_projects SET group_id = ?, updated_at = datetime('now') WHERE id = ?").run(group.id, proj.id);
             return { groupId: group.id, squadName: group.name, note: ` (created for project "${proj.title}")` };
           }
         }
@@ -5500,7 +5500,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
               if (resolvedTask.ok) {
                 const reDb = getDb();
                 reDb.prepare(
-                  "UPDATE tasks SET assigned_to = ?, assigned_to_group = NULL, updated_at = datetime('now') WHERE id = ?",
+                  "UPDATE legacy_tasks SET assigned_to = ?, assigned_to_group = NULL, updated_at = datetime('now') WHERE id = ?",
                 ).run(result.agentId, resolvedTask.id);
                 const { writeTaskLog } = await import('../tracker/task-log.js');
                 writeTaskLog({
@@ -6333,7 +6333,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
             // above) or if the row already carries days.
             try {
               const { getDb } = await import('../db/connection.js');
-              const row = getDb().prepare('SELECT repeat_days_of_week FROM tasks WHERE id = ?').get(args.task_id) as { repeat_days_of_week: string | null } | undefined;
+              const row = getDb().prepare('SELECT repeat_days_of_week FROM legacy_tasks WHERE id = ?').get(args.task_id) as { repeat_days_of_week: string | null } | undefined;
               const existingDays = row?.repeat_days_of_week ?? null;
               if (!editArgs.repeat_days_of_week && !existingDays) {
                 content = 'Error: switching repeat_unit to "specific_days" requires repeat_days_of_week (e.g. ["mon","wed"]).';
@@ -7637,12 +7637,12 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         if (args.terminate_members) {
           const groupDb2 = getDb();
           const orphanedTasks = groupDb2.prepare(`
-            SELECT id, title, status, schedule_status FROM tasks
+            SELECT id, title, status, schedule_status FROM legacy_tasks
             WHERE (assigned_to_group = ? OR assigned_to IN (SELECT id FROM agents WHERE group_id = ? AND status = 'terminated'))
               AND status NOT IN ('complete', 'fallen')
           `).all(groupId, groupId) as Array<{ id: string; title: string; status: string; schedule_status: string }>;
           for (const t of orphanedTasks) {
-            groupDb2.prepare("UPDATE tasks SET status = 'complete', schedule_status = CASE WHEN schedule_status = 'unscheduled' THEN 'unscheduled' ELSE 'completed' END, is_paused = 1, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(t.id);
+            groupDb2.prepare("UPDATE legacy_tasks SET status = 'complete', schedule_status = CASE WHEN schedule_status = 'unscheduled' THEN 'unscheduled' ELSE 'completed' END, is_paused = 1, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(t.id);
             groupDb2.prepare("UPDATE task_runs SET status = 'complete', completed_at = datetime('now'), result_summary = 'Auto-completed: group deleted' WHERE task_id = ? AND status = 'running'").run(t.id);
           }
           if (orphanedTasks.length > 0) {
@@ -7685,7 +7685,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         const reassignTaskId = reassignResolved.id;
 
         const reassignDb = getDb();
-        const reassignTask = reassignDb.prepare('SELECT id, title FROM tasks WHERE id = ?').get(reassignTaskId) as { id: string; title: string } | undefined;
+        const reassignTask = reassignDb.prepare('SELECT id, title FROM legacy_tasks WHERE id = ?').get(reassignTaskId) as { id: string; title: string } | undefined;
         if (!reassignTask) { content = `Error: Task ${reassignTaskId} was deleted before reassignment could be applied.`; isError = true; break; }
         let newAgent = args.assigned_to as string | undefined;
         const newGroup = args.assigned_to_group as string | undefined;
@@ -7707,12 +7707,12 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
             }
             newAgent = lookup.id;
           }
-          reassignDb.prepare("UPDATE tasks SET assigned_to = ?, assigned_to_group = NULL, updated_at = datetime('now') WHERE id = ?").run(newAgent, reassignTaskId);
+          reassignDb.prepare("UPDATE legacy_tasks SET assigned_to = ?, assigned_to_group = NULL, updated_at = datetime('now') WHERE id = ?").run(newAgent, reassignTaskId);
           // Resolve name for response
           const agentName = (reassignDb.prepare('SELECT name FROM agents WHERE id = ?').get(newAgent) as { name: string } | undefined)?.name ?? newAgent;
           content = `Task "${reassignTask.title}" reassigned to ${agentName}`;
         } else if (newGroup) {
-          reassignDb.prepare("UPDATE tasks SET assigned_to = NULL, assigned_to_group = ?, updated_at = datetime('now') WHERE id = ?").run(newGroup, reassignTaskId);
+          reassignDb.prepare("UPDATE legacy_tasks SET assigned_to = NULL, assigned_to_group = ?, updated_at = datetime('now') WHERE id = ?").run(newGroup, reassignTaskId);
           const groupName = (reassignDb.prepare('SELECT name FROM agent_groups WHERE id = ?').get(newGroup) as { name: string } | undefined)?.name ?? newGroup;
           content = `Task "${reassignTask.title}" reassigned to group "${groupName}", PM will pick an agent at run time`;
         } else {

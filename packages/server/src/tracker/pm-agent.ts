@@ -428,7 +428,7 @@ export async function escalateCloseoutMissToPM(ctx: {
 
   const db = getDb();
   const rows = ctx.danglingTaskIds
-    .map((id) => db.prepare(`SELECT id, title, goal, deliverable_shown FROM tasks WHERE id = ?`).get(id) as { id: string; title: string; goal: string | null; deliverable_shown: number } | undefined)
+    .map((id) => db.prepare(`SELECT id, title, goal, deliverable_shown FROM legacy_tasks WHERE id = ?`).get(id) as { id: string; title: string; goal: string | null; deliverable_shown: number } | undefined)
     .filter((r): r is { id: string; title: string; goal: string | null; deliverable_shown: number } => Boolean(r));
   if (rows.length === 0) return;
 
@@ -594,7 +594,7 @@ function runSmellDetector(taskId: string, toStatus: string): void {
       const pokeTs = new Date(lastPoke.sent_at.includes('Z') ? lastPoke.sent_at : lastPoke.sent_at + 'Z').getTime();
       const elapsedSec = Math.floor((Date.now() - pokeTs) / 1000);
       if (elapsedSec <= SMELL_POKE_WINDOW_SEC) {
-        const taskAgent = db.prepare(`SELECT assigned_to FROM tasks WHERE id = ?`).get(taskId) as { assigned_to: string | null } | undefined;
+        const taskAgent = db.prepare(`SELECT assigned_to FROM legacy_tasks WHERE id = ?`).get(taskId) as { assigned_to: string | null } | undefined;
         // P6b REKEY: "did any real work ride this close" reads the CLOSING
         // TURN's own audit set (turn_number lineage, mig 116), not an
         // agent-global clock window that credited tool calls from unrelated
@@ -615,7 +615,7 @@ function runSmellDetector(taskId: string, toStatus: string): void {
           if (!nonTrackerTool) {
             // Structured flag (P6b): readers parse fields, not prose.
             const flag = JSON.stringify({ kind: 'complete_dodges_poke', elapsedSec, closingTurn });
-            db.prepare(`UPDATE tasks SET last_smell_flag = ? WHERE id = ?`).run(flag, taskId);
+            db.prepare(`UPDATE legacy_tasks SET last_smell_flag = ? WHERE id = ?`).run(flag, taskId);
             void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
               taskId,
               fromEntity: 'engine',
@@ -641,7 +641,7 @@ function runSmellDetector(taskId: string, toStatus: string): void {
       // The window here is the rate definition of "thrash", not a scar; the
       // count already reads structured task_log transitions. Structured flag.
       const flag = JSON.stringify({ kind: 'pause_resume_thrash', cycles: cycles.c, windowMin: SMELL_PAUSE_THRASH_WINDOW_MIN });
-      db.prepare(`UPDATE tasks SET last_smell_flag = ? WHERE id = ?`).run(flag, taskId);
+      db.prepare(`UPDATE legacy_tasks SET last_smell_flag = ? WHERE id = ?`).run(flag, taskId);
       void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
         taskId,
         fromEntity: 'engine',
@@ -777,9 +777,9 @@ async function runPMReview(): Promise<void> {
     try {
       return (db.prepare(`
         SELECT
-          (SELECT COUNT(*) FROM tasks WHERE status = 'complete' AND complete_validated = 0 AND awaiting_user_verdict = 0) +
-          (SELECT COUNT(*) FROM tasks WHERE status = 'blocked' AND blocked_validated = 0 AND awaiting_user_verdict = 0) +
-          (SELECT COUNT(*) FROM tasks WHERE status = 'paused' AND pause_validated = 0) +
+          (SELECT COUNT(*) FROM legacy_tasks WHERE status = 'complete' AND complete_validated = 0 AND awaiting_user_verdict = 0) +
+          (SELECT COUNT(*) FROM legacy_tasks WHERE status = 'blocked' AND blocked_validated = 0 AND awaiting_user_verdict = 0) +
+          (SELECT COUNT(*) FROM legacy_tasks WHERE status = 'paused' AND pause_validated = 0) +
           (SELECT COUNT(*) FROM task_override_requests WHERE status = 'pending')
         AS c
       `).get() as { c: number }).c;
@@ -868,9 +868,9 @@ async function runPMReview(): Promise<void> {
   if (activeTasks.length === 0) {
     const pendingCount = db.prepare(`
       SELECT
-        (SELECT COUNT(*) FROM tasks WHERE status = 'complete' AND complete_validated = 0 AND awaiting_user_verdict = 0) +
-        (SELECT COUNT(*) FROM tasks WHERE status = 'blocked' AND blocked_validated = 0 AND awaiting_user_verdict = 0) +
-        (SELECT COUNT(*) FROM tasks WHERE status = 'paused' AND pause_validated = 0) +
+        (SELECT COUNT(*) FROM legacy_tasks WHERE status = 'complete' AND complete_validated = 0 AND awaiting_user_verdict = 0) +
+        (SELECT COUNT(*) FROM legacy_tasks WHERE status = 'blocked' AND blocked_validated = 0 AND awaiting_user_verdict = 0) +
+        (SELECT COUNT(*) FROM legacy_tasks WHERE status = 'paused' AND pause_validated = 0) +
         (SELECT COUNT(*) FROM task_override_requests WHERE status = 'pending')
       AS c
     `).get() as { c: number };
@@ -914,7 +914,7 @@ async function runPMReview(): Promise<void> {
         dormantAgentIds.add(agent.id);
         continue;
       }
-      const spawnTask = db.prepare('SELECT status FROM tasks WHERE id = ?')
+      const spawnTask = db.prepare('SELECT status FROM legacy_tasks WHERE id = ?')
         .get(agent.task_id) as { status: string } | undefined;
       if (!spawnTask || spawnTask.status === 'complete' || spawnTask.status === 'fallen') {
         dormantAgentIds.add(agent.id);
@@ -1052,7 +1052,7 @@ async function runPMReview(): Promise<void> {
   // notes themselves (the pause reason the agent supplied).
   const unvalidatedPauseRows = db.prepare(`
     SELECT id, title, assigned_to, updated_at
-    FROM tasks
+    FROM legacy_tasks
     WHERE status = 'paused'
       AND pause_validated = 0
       AND datetime(updated_at) < datetime('now', '-1 minute')
@@ -1077,7 +1077,7 @@ async function runPMReview(): Promise<void> {
     WHERE task_id = ? AND entry_kind IN ('observation', 'legacy_note', 'auto_sweep')
     ORDER BY created_at DESC, rowid DESC LIMIT 1
   `);
-  const legacyNotesStmt = db.prepare(`SELECT notes FROM tasks WHERE id = ?`);
+  const legacyNotesStmt = db.prepare(`SELECT notes FROM legacy_tasks WHERE id = ?`);
 
   for (const pTask of unvalidatedPauseRows) {
     const agentName = pTask.assigned_to
@@ -1123,7 +1123,7 @@ async function runPMReview(): Promise<void> {
     SELECT id, title, assigned_to, goal, result, evidence_json, last_smell_flag,
            created_by, project_id, repeat_interval, next_run_at, priority,
            updated_at, revert_count
-    FROM tasks
+    FROM legacy_tasks
     WHERE status = 'complete'
       AND complete_validated = 0
       AND awaiting_user_verdict = 0
@@ -1246,7 +1246,7 @@ async function runPMReview(): Promise<void> {
   // ── Phase B.1: UNVALIDATED_BLOCK ──
   const unvalidatedBlockRows = db.prepare(`
     SELECT id, title, assigned_to, goal, priority, updated_at, revert_count
-    FROM tasks
+    FROM legacy_tasks
     WHERE status = 'blocked'
       AND blocked_validated = 0
       AND awaiting_user_verdict = 0
@@ -1281,7 +1281,7 @@ async function runPMReview(): Promise<void> {
     SELECT r.id, r.task_id, r.requested_by, r.requested_status, r.justification, r.last_engine_error, r.attempts_attached, r.created_at,
            t.title as task_title, t.goal as task_goal
     FROM task_override_requests r
-    LEFT JOIN tasks t ON t.id = r.task_id
+    LEFT JOIN legacy_tasks t ON t.id = r.task_id
     WHERE r.status = 'pending'
     ORDER BY r.created_at ASC
     LIMIT 10
@@ -1462,7 +1462,7 @@ export async function runPokeCheck(): Promise<void> {
     const sweepCutoff = new Date(Date.now() - STALE_A2A_GRACE_MS).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
     const candidates = db.prepare(`
       SELECT t.id, t.title, t.assigned_to, t.created_at, t.project_id
-      FROM tasks t
+      FROM legacy_tasks t
       WHERE t.status = 'on_deck'
         AND t.a2a_thread_id IS NOT NULL
         AND (t.scheduled_start IS NULL OR t.schedule_status = 'unscheduled')
@@ -1474,7 +1474,7 @@ export async function runPokeCheck(): Promise<void> {
     if (candidates.length > 0) {
       // Phase B.0: tasks.notes is read-only legacy. Audit trail lives in task_log.
       const closeStmt = db.prepare(`
-        UPDATE tasks
+        UPDATE legacy_tasks
         SET status = 'fallen', completed_at = datetime('now'), updated_at = datetime('now')
         WHERE id = ?
       `);
@@ -1541,9 +1541,9 @@ export async function runPokeCheck(): Promise<void> {
     try {
       const row = getDb().prepare(`
         SELECT
-          (SELECT COUNT(*) FROM tasks WHERE status = 'complete' AND complete_validated = 0 AND awaiting_user_verdict = 0) +
-          (SELECT COUNT(*) FROM tasks WHERE status = 'blocked' AND blocked_validated = 0 AND awaiting_user_verdict = 0) +
-          (SELECT COUNT(*) FROM tasks WHERE status = 'paused' AND pause_validated = 0) +
+          (SELECT COUNT(*) FROM legacy_tasks WHERE status = 'complete' AND complete_validated = 0 AND awaiting_user_verdict = 0) +
+          (SELECT COUNT(*) FROM legacy_tasks WHERE status = 'blocked' AND blocked_validated = 0 AND awaiting_user_verdict = 0) +
+          (SELECT COUNT(*) FROM legacy_tasks WHERE status = 'paused' AND pause_validated = 0) +
           (SELECT COUNT(*) FROM task_override_requests WHERE status = 'pending')
         AS c
       `).get() as { c: number };
@@ -1660,7 +1660,7 @@ export async function runPokeCheck(): Promise<void> {
       const idleMinutes = Math.floor(idleSeconds / 60);
 
       // Move task back to on_deck so it can be retried
-      db.prepare("UPDATE tasks SET status = 'on_deck', updated_at = datetime('now') WHERE id = ?").run(task.id);
+      db.prepare("UPDATE legacy_tasks SET status = 'on_deck', updated_at = datetime('now') WHERE id = ?").run(task.id);
 
       // If this is a scheduled task, also reset schedule_status so the scheduler retries
       if (task.scheduleStatus === 'running') {
@@ -1730,7 +1730,7 @@ export async function runPokeCheck(): Promise<void> {
       const db = getDb();
       const basis = `engine close on delivery receipt: ${renderDeliveryEvidence(deliveryEvidence)}; a close steer was already sent (${lastPoke.sentAt} UTC) and the status still said in_progress`;
       db.prepare(`
-        UPDATE tasks SET status = 'complete', completed_at = datetime('now'),
+        UPDATE legacy_tasks SET status = 'complete', completed_at = datetime('now'),
           result = COALESCE(NULLIF(result, ''), ?), updated_at = datetime('now')
         WHERE id = ? AND status = 'in_progress'
       `).run(`Delivered (engine-recorded): ${renderDeliveryEvidence(deliveryEvidence)}`, task.id);
@@ -1824,7 +1824,7 @@ function buildPokeMessage(
       `SELECT id, last_activity_turn, last_activity_at, last_activity_outcome,
               last_answered_turn, last_answered_at, last_delivery_summary,
               step_number, total_steps, project_id
-         FROM tasks WHERE id = ?`,
+         FROM legacy_tasks WHERE id = ?`,
     ).get(task.id) as TaskStampFields | undefined;
     if (st) {
       const steps = renderStepFacts(st);
@@ -1865,7 +1865,7 @@ export function checkDependencies(completedTaskId: string): void {
 
   // Find tasks that depend on the completed task
   const dependentTasks = db.prepare(`
-    SELECT * FROM tasks
+    SELECT * FROM legacy_tasks
     WHERE status IN ('on_deck', 'blocked')
       AND depends_on LIKE ?
   `).all(`%${completedTaskId}%`) as Array<{
@@ -1889,7 +1889,7 @@ export function checkDependencies(completedTaskId: string): void {
 
     // Check if ALL dependencies are now complete
     const allDepsComplete = dependsOn.every(depId => {
-      const depTask = db.prepare('SELECT status FROM tasks WHERE id = ?').get(depId) as { status: string } | undefined;
+      const depTask = db.prepare('SELECT status FROM legacy_tasks WHERE id = ?').get(depId) as { status: string } | undefined;
       return depTask?.status === 'complete';
     });
 
@@ -1899,7 +1899,7 @@ export function checkDependencies(completedTaskId: string): void {
       // for scheduled-for-later. A previously-blocked task whose deps just
       // cleared is ready to be worked on now, not parked.
       db.prepare(`
-        UPDATE tasks SET status = 'in_progress', updated_at = datetime('now') WHERE id = ?
+        UPDATE legacy_tasks SET status = 'in_progress', updated_at = datetime('now') WHERE id = ?
       `).run(row.id);
 
       logger.info('Task unblocked by dependency completion', {

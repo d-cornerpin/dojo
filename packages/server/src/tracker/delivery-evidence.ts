@@ -48,14 +48,14 @@ export function findDeliveryEvidenceForTask(taskId: string): TaskDeliveryEvidenc
   try {
     const db = getDb();
     const task = db.prepare(
-      `SELECT assigned_to, source_message_id, origin_conv_key, created_at FROM tasks WHERE id = ?`,
+      `SELECT assigned_to, source_message_id, origin_conv_key, created_at FROM legacy_tasks WHERE id = ?`,
     ).get(taskId) as { assigned_to: string | null; source_message_id: string | null; origin_conv_key: string | null; created_at: string } | undefined;
     if (!task?.assigned_to) return null;
     if (!task.source_message_id && !task.origin_conv_key) return null;
 
     const turn = db.prepare(
       `SELECT turn_number, ended_at, answer_message_id FROM turns
-        WHERE agent_id = ? AND outcome = 'answered'
+        WHERE agent_id = ? AND answered = 1
           AND started_at >= ?
           AND (
             (source_message_id IS NOT NULL AND source_message_id = ?)
@@ -149,7 +149,7 @@ export function findTaskOriginChain(taskId: string): TaskOriginChain | null {
   try {
     const db = getDb();
     const task = db.prepare(
-      `SELECT source_message_id, origin_conv_key, origin_kind, created_at FROM tasks WHERE id = ?`,
+      `SELECT source_message_id, origin_conv_key, origin_kind, created_at FROM legacy_tasks WHERE id = ?`,
     ).get(taskId) as { source_message_id: string | null; origin_conv_key: string | null; origin_kind: string | null; created_at: string } | undefined;
     if (!task) return null;
     if (!task.source_message_id && !task.origin_conv_key) return null;

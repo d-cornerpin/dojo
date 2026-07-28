@@ -18,7 +18,7 @@ const AGENT = 'a1';
 beforeEach(() => {
   const db = new Database(':memory:');
   db.exec(`
-    CREATE TABLE tasks (
+    CREATE TABLE legacy_tasks (
       id TEXT PRIMARY KEY, assigned_to TEXT, status TEXT, title TEXT,
       project_id TEXT, step_number INTEGER, total_steps INTEGER,
       source_message_id TEXT, origin_conv_key TEXT, origin_turn INTEGER,
@@ -30,11 +30,11 @@ beforeEach(() => {
     CREATE TABLE turn_artifacts (agent_id TEXT, turn_number INTEGER, kind TEXT, path TEXT, payload_json TEXT, delivered_at TEXT);
     CREATE TABLE deliveries (agent_id TEXT, turn_number INTEGER, channel TEXT, outcome TEXT);
   `);
-  db.prepare(`INSERT INTO tasks (id, assigned_to, status, title, source_message_id, origin_conv_key, origin_turn)
+  db.prepare(`INSERT INTO legacy_tasks (id, assigned_to, status, title, source_message_id, origin_conv_key, origin_turn)
               VALUES ('t1', 'a1', 'in_progress', 'Deliver report', 'ask-1', 'owner', 100)`).run();
-  db.prepare(`INSERT INTO tasks (id, assigned_to, status, title, source_message_id)
+  db.prepare(`INSERT INTO legacy_tasks (id, assigned_to, status, title, source_message_id)
               VALUES ('t2', 'a1', 'in_progress', 'Unrelated', 'other-ask')`).run();
-  db.prepare(`INSERT INTO tasks (id, assigned_to, status, title, source_message_id)
+  db.prepare(`INSERT INTO legacy_tasks (id, assigned_to, status, title, source_message_id)
               VALUES ('t3', 'someone-else', 'in_progress', 'Not mine', 'ask-1')`).run();
   mockDb.current = db;
 });
@@ -46,16 +46,16 @@ describe('stampTasksAtTurnFinalize', () => {
       agentId: AGENT, turnNumber: 100, outcome: 'answered', answerMessageId: 'ans-1',
       rootSourceMessageId: 'ask-1', convKey: 'owner', servedTaskId: null,
     });
-    const t1 = mockDb.current!.prepare("SELECT * FROM tasks WHERE id='t1'").get() as Record<string, unknown>;
+    const t1 = mockDb.current!.prepare("SELECT * FROM legacy_tasks WHERE id='t1'").get() as Record<string, unknown>;
     expect(t1.last_activity_turn).toBe(100);
     expect(t1.last_activity_outcome).toBe('answered');
     expect(t1.last_answered_turn).toBe(100);
     expect(t1.last_answer_message_id).toBe('ans-1');
     expect(String(t1.last_delivery_summary)).toContain('imessage');
     expect(t1.updated_at).toBe('2026-07-22 07:00:00'); // the drive clock is untouched
-    const t2 = mockDb.current!.prepare("SELECT last_activity_turn FROM tasks WHERE id='t2'").get() as Record<string, unknown>;
+    const t2 = mockDb.current!.prepare("SELECT last_activity_turn FROM legacy_tasks WHERE id='t2'").get() as Record<string, unknown>;
     expect(t2.last_activity_turn).toBeNull(); // different origin, unstamped
-    const t3 = mockDb.current!.prepare("SELECT last_activity_turn FROM tasks WHERE id='t3'").get() as Record<string, unknown>;
+    const t3 = mockDb.current!.prepare("SELECT last_activity_turn FROM legacy_tasks WHERE id='t3'").get() as Record<string, unknown>;
     expect(t3.last_activity_turn).toBeNull(); // same origin but NOT my ticket
   });
 
@@ -68,7 +68,7 @@ describe('stampTasksAtTurnFinalize', () => {
       agentId: AGENT, turnNumber: 101, outcome: 'no_reply', answerMessageId: null,
       rootSourceMessageId: 'ask-1', convKey: 'owner', servedTaskId: null,
     });
-    const t1 = mockDb.current!.prepare("SELECT * FROM tasks WHERE id='t1'").get() as Record<string, unknown>;
+    const t1 = mockDb.current!.prepare("SELECT * FROM legacy_tasks WHERE id='t1'").get() as Record<string, unknown>;
     expect(t1.last_activity_turn).toBe(101);
     expect(t1.last_activity_outcome).toBe('no_reply');
     expect(t1.last_answered_turn).toBe(100); // preserved
@@ -79,7 +79,7 @@ describe('stampTasksAtTurnFinalize', () => {
       agentId: AGENT, turnNumber: 200, outcome: 'answered', answerMessageId: null,
       rootSourceMessageId: null, convKey: null, servedTaskId: 't2',
     });
-    const t2 = mockDb.current!.prepare("SELECT last_activity_turn FROM tasks WHERE id='t2'").get() as Record<string, unknown>;
+    const t2 = mockDb.current!.prepare("SELECT last_activity_turn FROM legacy_tasks WHERE id='t2'").get() as Record<string, unknown>;
     expect(t2.last_activity_turn).toBe(200);
     mockDb.current = null;
     expect(() => stampTasksAtTurnFinalize({
@@ -122,8 +122,8 @@ describe('renderTaskStamps / renderStepFacts (caps + owner wording)', () => {
 
   it('step facts derive LIVE from siblings: open earlier step is named; none = plain step count', () => {
     const db = mockDb.current!;
-    db.prepare(`UPDATE tasks SET project_id='p1', step_number=1, total_steps=2 WHERE id='t1'`).run();
-    db.prepare(`UPDATE tasks SET project_id='p1', step_number=2, total_steps=2 WHERE id='t2'`).run();
+    db.prepare(`UPDATE legacy_tasks SET project_id='p1', step_number=1, total_steps=2 WHERE id='t1'`).run();
+    db.prepare(`UPDATE legacy_tasks SET project_id='p1', step_number=2, total_steps=2 WHERE id='t2'`).run();
     const facts = renderStepFacts({
       last_activity_turn: null, last_activity_at: null, last_activity_outcome: null,
       last_answered_turn: null, last_answered_at: null, last_delivery_summary: null,
@@ -131,7 +131,7 @@ describe('renderTaskStamps / renderStepFacts (caps + owner wording)', () => {
     });
     expect(facts).toContain('step 2 of 2');
     expect(facts).toContain("step 1 'Deliver report' still open");
-    db.prepare(`UPDATE tasks SET status='complete' WHERE id='t1'`).run();
+    db.prepare(`UPDATE legacy_tasks SET status='complete' WHERE id='t1'`).run();
     const after = renderStepFacts({
       last_activity_turn: null, last_activity_at: null, last_activity_outcome: null,
       last_answered_turn: null, last_answered_at: null, last_delivery_summary: null,

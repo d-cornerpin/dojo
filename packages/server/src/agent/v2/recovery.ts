@@ -18,7 +18,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../../logger.js';
-import { markLatestTurnError } from './turn-record.js';
+import { markTurnDied } from './turn-record.js';
 import { broadcast } from '../../gateway/ws.js';
 import { getDb } from '../../db/connection.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
@@ -177,7 +177,10 @@ export function computeInputsFingerprint(state: AgentTurnState): string {
     h = ((h << 5) - h) + seed.charCodeAt(i);
     h |= 0;
   }
-  return `t${state.turnNumber}:${h.toString(36)}`;
+  // PHASE-2 T2: the turn number is NOT an input and is out of this key. With `t<turnNumber>`
+  // in it the streak could only match WITHIN a turn; the cross-turn cap fired only because the
+  // old MAX(messages) derivation handed two turns the same number. Details: T2's report §4.
+  return `h${h.toString(36)}`;
 }
 
 /**
@@ -487,7 +490,7 @@ async function recordInjury(
   logger.error(`v2 agent loop failed: ${message}`, { agentId, code, cause }, agentId);
   // P4 turn record: a turn that died on an exception gets an honest terminal
   // state instead of an open-ended row.
-  try { markLatestTurnError(agentId); } catch { /* best effort */ }
+  try { markTurnDied(agentId, state.turnNumber); } catch { /* best effort */ }
 
   // v2.3.19 — ALWAYS persist a chat-history system note FIRST so the
   // agent has context on its next turn. Pre-spec the only path that

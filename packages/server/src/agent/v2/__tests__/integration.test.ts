@@ -1649,12 +1649,14 @@ describe('runV2Turn integration', () => {
 
     const db = mockDb.current!;
     const turn = db.prepare(
-      "SELECT kind, subject_kind, outcome, answer_message_id, ended_at FROM turns WHERE agent_id = 'primary' ORDER BY turn_number DESC LIMIT 1",
-    ).get() as { kind: string; subject_kind: string; outcome: string; answer_message_id: string | null; ended_at: string | null };
+      "SELECT kind, subject_kind, exit_reason, answered, answer_message_id, ended_at FROM turns WHERE agent_id = 'primary' ORDER BY turn_number DESC LIMIT 1",
+    ).get() as { kind: string; subject_kind: string; exit_reason: string; answered: number; answer_message_id: string | null; ended_at: string | null };
     expect(turn).toBeTruthy();
     expect(turn.kind).toBe('user');
     expect(turn.subject_kind).toBe('conv');
-    expect(turn.outcome).toBe('answered');
+    // PHASE-2 T2: two facts, asserted separately — why it ended, and whether we answered.
+    expect(turn.exit_reason).toBe('answered');
+    expect(turn.answered).toBe(1);
     expect(turn.answer_message_id).toBeTruthy();
     expect(turn.ended_at).toBeTruthy();
 

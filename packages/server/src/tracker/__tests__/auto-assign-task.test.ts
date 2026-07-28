@@ -23,7 +23,7 @@ beforeEach(() => {
   const db = new Database(':memory:');
   // Minimal schema needed for the test — tasks table + a2a_thread_id column.
   db.exec(`
-    CREATE TABLE tasks (
+    CREATE TABLE legacy_tasks (
       id TEXT PRIMARY KEY,
       project_id TEXT,
       title TEXT NOT NULL,
@@ -54,7 +54,7 @@ beforeEach(() => {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
-    CREATE INDEX IF NOT EXISTS idx_tasks_a2a_thread ON tasks(a2a_thread_id);
+    CREATE INDEX IF NOT EXISTS idx_tasks_a2a_thread ON legacy_tasks(a2a_thread_id);
     CREATE TABLE agents (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -153,7 +153,7 @@ describe('autoCreateAssignTask', () => {
   // and switching the sweep to it would have made the sweep see LESS than the name
   // pattern it replaces.
   const kindOf = (taskId: string) =>
-    (mockDb.current!.prepare('SELECT created_by_kind FROM tasks WHERE id = ?').get(taskId) as
+    (mockDb.current!.prepare('SELECT created_by_kind FROM legacy_tasks WHERE id = ?').get(taskId) as
       { created_by_kind: string | null }).created_by_kind;
 
   it("inherits the SENDING agent's created_by_kind", () => {

@@ -370,7 +370,7 @@ export function retireSpentEngineEvents(agentId: string): number {
         else if (run.status !== 'running') { reason = 'run_closed'; referentState = `run ${run.status}`; }
       }
       if (!reason && ev.task_id) {
-        const task = db.prepare('SELECT status, is_paused FROM tasks WHERE id = ?').get(ev.task_id) as { status: string; is_paused: number } | undefined;
+        const task = db.prepare('SELECT status, is_paused FROM legacy_tasks WHERE id = ?').get(ev.task_id) as { status: string; is_paused: number } | undefined;
         if (!task) { reason = 'task_missing'; referentState = 'task row gone'; }
         else if (task.status === 'complete' || task.status === 'fallen') { reason = 'task_terminal'; referentState = `task ${task.status}`; }
         else if (task.status === 'paused' && task.is_paused === 1) { reason = 'task_paused'; referentState = 'task paused'; }

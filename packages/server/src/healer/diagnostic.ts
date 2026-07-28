@@ -353,7 +353,7 @@ function getTrackerHealth(): DiagnosticItem[] {
   const staleTasks = db.prepare(`
     SELECT t.id, t.title, t.assigned_to, t.updated_at,
            a.name as agent_name, a.status as agent_status
-    FROM tasks t
+    FROM legacy_tasks t
     LEFT JOIN agents a ON a.id = t.assigned_to
     WHERE t.status = 'in_progress'
       AND t.updated_at < datetime('now', '-24 hours')
@@ -375,7 +375,7 @@ function getTrackerHealth(): DiagnosticItem[] {
   // Tasks assigned to terminated agents
   const orphanedTasks = db.prepare(`
     SELECT t.id, t.title, t.assigned_to, a.name as agent_name
-    FROM tasks t
+    FROM legacy_tasks t
     JOIN agents a ON a.id = t.assigned_to
     WHERE t.status IN ('in_progress', 'on_deck', 'paused')
       AND a.status = 'terminated'
@@ -401,13 +401,13 @@ function getTrackerHealth(): DiagnosticItem[] {
   // fallen-containing project on every cycle (no infinite re-detect loop).
   const orphanedProjects = db.prepare(`
     SELECT p.id, p.title
-    FROM projects p
+    FROM legacy_projects p
     WHERE p.status = 'active'
       AND NOT EXISTS (
-        SELECT 1 FROM tasks t
+        SELECT 1 FROM legacy_tasks t
         WHERE t.project_id = p.id AND t.status != 'complete'
       )
-      AND EXISTS (SELECT 1 FROM tasks t2 WHERE t2.project_id = p.id)
+      AND EXISTS (SELECT 1 FROM legacy_tasks t2 WHERE t2.project_id = p.id)
   `).all() as Array<{ id: string; title: string }>;
 
   for (const project of orphanedProjects) {
@@ -451,7 +451,7 @@ function getBulletproofToolHealth(): DiagnosticItem[] {
   const splitBrain = db.prepare(`
     SELECT a.id, a.name, t.id as task_id, t.title as task_title
     FROM agents a
-    JOIN tasks t ON t.assigned_to = a.id
+    JOIN legacy_tasks t ON t.assigned_to = a.id
     WHERE a.status IN ('idle', 'working')
       AND a.classification = 'apprentice'
       AND COALESCE(a.agent_type, '') != 'persistent'
@@ -507,7 +507,7 @@ function getBulletproofToolHealth(): DiagnosticItem[] {
   const neverPoked = db.prepare(`
     SELECT a.id, a.name, t.title as task_title, t.id as task_id, a.created_at
     FROM agents a
-    JOIN tasks t ON t.assigned_to = a.id
+    JOIN legacy_tasks t ON t.assigned_to = a.id
     WHERE a.status = 'idle'
       AND a.classification = 'apprentice'
       AND t.status IN ('on_deck', 'in_progress')

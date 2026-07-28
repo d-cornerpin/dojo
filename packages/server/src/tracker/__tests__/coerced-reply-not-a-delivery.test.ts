@@ -48,7 +48,7 @@ const TURN = 4242;
 beforeEach(() => {
   const db = new Database(':memory:');
   db.exec(`
-    CREATE TABLE tasks (
+    CREATE TABLE legacy_tasks (
       id TEXT PRIMARY KEY, assigned_to TEXT, status TEXT, title TEXT,
       project_id TEXT, step_number INTEGER, total_steps INTEGER,
       source_message_id TEXT, origin_conv_key TEXT, origin_turn INTEGER,
@@ -61,7 +61,7 @@ beforeEach(() => {
     CREATE TABLE deliveries (agent_id TEXT, turn_number INTEGER, channel TEXT, outcome TEXT);
   `);
   db.prepare(
-    `INSERT INTO tasks (id, assigned_to, status, title, origin_turn)
+    `INSERT INTO legacy_tasks (id, assigned_to, status, title, origin_turn)
      VALUES ('t-braked', ?, 'in_progress', 'The work the user is waiting for', ?)`,
   ).run(AGENT, TURN);
   // The turn genuinely produced a channel delivery AND an artifact. This is the
@@ -75,7 +75,7 @@ beforeEach(() => {
 });
 
 const ticket = () =>
-  mockDb.current!.prepare("SELECT * FROM tasks WHERE id = 't-braked'").get() as Record<string, unknown>;
+  mockDb.current!.prepare("SELECT * FROM legacy_tasks WHERE id = 't-braked'").get() as Record<string, unknown>;
 
 describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () => {
   it("outcome 'brake' records ACTIVITY but never an ANSWER stamp", () => {
@@ -173,24 +173,36 @@ describe('turn-outcome conformance: brake outranks answered (loop.ts)', () => {
     return fs.readFileSync(path.join(srcRoot, 'agent/v2/loop.ts'), 'utf8');
   };
 
-  it('the outcome ternary tests toolPhaseEndedBySpinBrake BEFORE answerRow', () => {
+  // PHASE-2 T2 renamed the variable (`outcome` -> `exitReason`) when the column split into
+  // exit_reason + answered. THE REQUIREMENT IS UNCHANGED and is what this asserts: the brake
+  // is tested BEFORE answerRow, so a braked turn that also persisted text never reads as
+  // 'answered'. The rename is why the addresses moved; d54cd1f's class is why the order matters.
+  it('the exit-reason ternary tests toolPhaseEndedBySpinBrake BEFORE answerRow', () => {
     const src = loopSrc();
-    const idx = src.indexOf('const outcome = ');
+    const idx = src.indexOf('const exitReason: TurnExitReason = ');
     expect(idx).toBeGreaterThan(-1);
     const ternary = src.slice(idx, idx + 260);
-    expect(ternary).toMatch(/const outcome = toolPhaseEndedBySpinBrake \? 'brake'/);
+    expect(ternary).toMatch(/const exitReason: TurnExitReason = toolPhaseEndedBySpinBrake \? 'brake'/);
     const brakeAt = ternary.indexOf('toolPhaseEndedBySpinBrake');
     const answerAt = ternary.indexOf('answerRow ?');
     expect(answerAt).toBeGreaterThan(-1);
     expect(brakeAt).toBeLessThan(answerAt);
   });
 
-  it('that same outcome is what finalizeTurn and the ticket stamps both receive', () => {
+  it('that same exit reason is what finalizeTurn and the ticket stamps both receive', () => {
     const src = loopSrc();
-    const idx = src.indexOf('const outcome = ');
-    const block = src.slice(idx, idx + 1200);
-    expect(block).toMatch(/finalizeTurn\(agentId, turnNumber, outcome/);
+    const idx = src.indexOf('const exitReason: TurnExitReason = ');
+    const block = src.slice(idx, idx + 1600);
+    expect(block).toMatch(/finalizeTurn\(\s*agentId, turnNumber, exitReason/);
     expect(block).toMatch(/stampTasksAtTurnFinalize\(\{[\s\S]{0,200}outcome/);
+  });
+
+  // ...and the ANSWERED half is now its own recorded fact rather than a word to infer from.
+  it('answered is passed as the truthful-answer key, not derived from the exit reason', () => {
+    const src = loopSrc();
+    const idx = src.indexOf('const exitReason: TurnExitReason = ');
+    const block = src.slice(idx, idx + 1600);
+    expect(block).toMatch(/finalizeTurn\([\s\S]{0,120}answerRow !== undefined/);
   });
 
   it('the ticket stamper still gates its answer/delivery columns on outcome === "answered"', () => {

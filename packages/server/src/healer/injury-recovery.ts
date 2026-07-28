@@ -616,7 +616,7 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
     // Find tasks stalled on this agent
     interface StalledTask { id: string; title: string; status: string }
     const stalledTasks = db.prepare(`
-      SELECT id, title, status FROM tasks
+      SELECT id, title, status FROM legacy_tasks
       WHERE assigned_to = ? AND status IN ('in_progress', 'on_deck')
       ORDER BY updated_at DESC LIMIT 5
     `).all(agentId) as StalledTask[];

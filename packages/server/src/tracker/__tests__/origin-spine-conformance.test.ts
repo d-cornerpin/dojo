@@ -39,16 +39,16 @@ describe('origin-spine conformance (P1)', () => {
     const createProjectSig = schema.slice(schema.indexOf('export function createProject'), schema.indexOf('export function createProject') + 1200);
     expect(createTaskSig).toMatch(/origin:\s*\{\s*kind:/);
     expect(createProjectSig).toMatch(/origin:\s*\{\s*kind:/);
-    // Every INSERT INTO tasks in schema.ts carries origin columns (the a2a
+    // Every INSERT INTO legacy_tasks in schema.ts carries origin columns (the a2a
     // auto-task INSERT stamps a literal origin_kind instead of the quad).
-    const taskInserts = schema.split('INSERT INTO tasks').slice(1);
+    const taskInserts = schema.split('INSERT INTO legacy_tasks').slice(1);
     expect(taskInserts.length).toBeGreaterThanOrEqual(3);
     for (const ins of taskInserts) {
       const head = ins.slice(0, 400);
       expect(head, 'a task INSERT is missing origin columns').toMatch(/source_message_id/);
       expect(head).toMatch(/origin_kind|'a2a_assign'/);
     }
-    expect(schema.split('INSERT INTO projects').slice(1)[0]).toMatch(/source_message_id, origin_turn, origin_conv_key, origin_kind/);
+    expect(schema.split('INSERT INTO legacy_projects').slice(1)[0]).toMatch(/source_message_id, origin_turn, origin_conv_key, origin_kind/);
   });
 
   it('the scheduler fire and the assignment notice pass REAL work referents', () => {

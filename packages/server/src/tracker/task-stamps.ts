@@ -88,7 +88,7 @@ export function stampTasksAtTurnFinalize(input: {
   try {
     const db = getDb();
     const tied = db.prepare(
-      `SELECT id FROM tasks
+      `SELECT id FROM legacy_tasks
         WHERE assigned_to = ?
           AND status IN ('in_progress', 'on_deck', 'blocked')
           AND (
@@ -115,7 +115,7 @@ export function stampTasksAtTurnFinalize(input: {
     // stamps when THIS turn did not answer/deliver. Deliberately no
     // updated_at, no status, no validation columns (conformance-locked).
     const stamp = db.prepare(`
-      UPDATE tasks SET
+      UPDATE legacy_tasks SET
         last_activity_turn = ?,
         last_activity_at = datetime('now'),
         last_activity_outcome = ?,
@@ -191,7 +191,7 @@ export function renderStepFacts(t: TaskStampFields): string {
   try {
     const db = getDb();
     const openEarlier = db.prepare(
-      `SELECT step_number, title FROM tasks
+      `SELECT step_number, title FROM legacy_tasks
         WHERE project_id = ? AND step_number IS NOT NULL AND step_number < ?
           AND status NOT IN ('complete', 'fallen')
         ORDER BY step_number ASC LIMIT 1`,

@@ -61,7 +61,7 @@ function normalizeTitle(title: string): string {
 function findRepeatedSuccessGroups(): CompletionGroup[] {
   const db = getDb();
   const rows = db.prepare(`
-    SELECT id, title, goal FROM tasks
+    SELECT id, title, goal FROM legacy_tasks
     WHERE status = 'complete'
       AND updated_at >= datetime('now', '-${PATTERN_LOOKBACK_DAYS} days')
       AND title IS NOT NULL
