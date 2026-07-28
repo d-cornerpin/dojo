@@ -175,9 +175,23 @@ type LoopMsg = { role: 'user' | 'assistant'; content: string | Anthropic.Content
 // provider-structured content risks breaking tool_use/tool_result pairing, and
 // tool activity's timing is visible from the surrounding stamped turns.
 
-/** SQLite stores "YYYY-MM-DD HH:MM:SS" (UTC, no marker); ISO rows carry T/Z.
- *  Normalize both to an ISO-UTC string Date can parse unambiguously. */
-function normalizeCreatedAtUtc(createdAt: string): string {
+/** SQLite stores "YYYY-MM-DD HH:MM:SS" (UTC, no marker); ISO rows carry T/Z; and from
+ *  migration 131 `messages.created_at` is epoch-ms INTEGER, so a NUMBER arrives too.
+ *  Normalize all three to an ISO-UTC string Date can parse unambiguously, or null.
+ *
+ *  T6b, on the number arm: every SQL read that hands a row to TypeScript projects the
+ *  column back through `datetime(created_at/1000,'unixepoch')`, so the string form still
+ *  arrives here in practice — but the declared type is `string`, typecheck cannot see a
+ *  number slipping through, and before this arm a missed projection was a thrown
+ *  TypeError inside the assembler (i.e. every turn dying). Now it is the same stamp,
+ *  byte-identical, pinned in `__tests__/message-time-stamps.test.ts`. The floor is
+ *  `sent_at`'s own CHECK from migration 127 — same quantity, same rejections — so epoch
+ *  SECONDS, 0 and negatives render unstamped instead of as a confident wrong date. */
+function normalizeCreatedAtUtc(createdAt: string | number): string | null {
+  if (typeof createdAt === 'number') {
+    return Number.isFinite(createdAt) && createdAt >= 1600000000000
+      ? new Date(createdAt).toISOString() : null;
+  }
   let s = createdAt.trim();
   if (!s.includes('T')) s = s.replace(' ', 'T');
   if (!/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s)) s += 'Z';
@@ -190,9 +204,11 @@ function normalizeCreatedAtUtc(createdAt: string): string {
  * as renderCurrentTimeMessage so the model compares like with like. Returns
  * null for missing/unparseable timestamps (row renders unstamped, never throws).
  */
-export function renderMessageTimeStamp(createdAt: string | null | undefined): string | null {
+export function renderMessageTimeStamp(createdAt: string | number | null | undefined): string | null {
   if (!createdAt) return null;
-  const d = new Date(normalizeCreatedAtUtc(createdAt));
+  const iso = normalizeCreatedAtUtc(createdAt);
+  if (iso === null) return null;
+  const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return null;
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const localStr = d.toLocaleString('en-US', {
@@ -213,7 +229,7 @@ export function renderMessageTimeStamp(createdAt: string | null | undefined): st
  */
 export function stampTextContent(
   content: string | Anthropic.ContentBlockParam[],
-  createdAt: string | null | undefined,
+  createdAt: string | number | null | undefined,
 ): string | Anthropic.ContentBlockParam[] {
   if (typeof content !== 'string' || content.length === 0) return content;
   const stamp = renderMessageTimeStamp(createdAt);
