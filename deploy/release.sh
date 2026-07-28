@@ -309,15 +309,20 @@ node "$SCRIPT_DIR/checks/check-lint-baseline.mjs" \
 
 # ── Blocking gate 5/8: orphan structures (Phase 0 T4) ──
 # Two rules, one checker. The spine READER rule (a declared spine column/type with
-# no production reader) is log-only until Phase 1 exit, when ORPHAN_GATE=block
-# turns it into a failure. The WORK-SHAPED TABLE rule blocks from day one: any
-# table carrying an agent link and a state column must be declared in
-# spine-manifest.json, which is the machine check for the plan's own falsifier —
-# "work/tracker unification producing a second system in practice". Reads SOURCE
-# and the migration chain, never the live ~/.dojo database.
-step "Orphan-structure gate (no undeclared work-shaped table; spine readers reported)"
+# no production reader) was log-only through Phases 0 and 1 and BLOCKS from the
+# PHASE-1 exit (2026-07-28, T13). The flip changed the checker's DEFAULT rather
+# than adding `ORPHAN_GATE=block` to this line, and that was the point: this
+# invocation passes no environment, so an env-var-only flip would have left the
+# release path measuring nothing. A zero-reader structure now needs a waiver or a
+# dated zeroReader disposition in the manifest, or it refuses.
+# The WORK-SHAPED TABLE rule blocks from day one: any table carrying an agent link
+# and a state column must be declared in spine-manifest.json, which is the machine
+# check for the plan's own falsifier — "work/tracker unification producing a second
+# system in practice". Reads SOURCE and the migration chain, never the live
+# ~/.dojo database.
+step "Orphan-structure gate (no undeclared work-shaped table; every spine structure read, waived or owed)"
 node "$SCRIPT_DIR/checks/check-orphans.mjs" \
-  || fail "Orphan-structure gate: an undeclared work-shaped table, a manifest entry that stopped describing the schema, or (under ORPHAN_GATE=block) a spine structure with no production reader. NOT publishing."
+  || fail "Orphan-structure gate: an undeclared work-shaped table, a manifest entry that stopped describing the schema, or a spine structure with no production reader and no dated disposition. NOT publishing."
 
 # ── Blocking gate 6/8: watchdog/platform contract (Phase 0 T5) ──
 # The watchdog must keep working while the platform will not boot, so it cannot

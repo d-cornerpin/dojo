@@ -5,8 +5,10 @@
     "",
     "TWO LISTS, TWO JOBS:",
     "  structures — spine columns and types that are supposed to be load-bearing. The gate counts",
-    "               production READERS for each. Zero readers is reported today and FAILS the build",
-    "               from Phase 1 exit (ORPHAN_GATE=block). Phase 1/2 tasks APPEND their new spine",
+    "               production READERS for each.",
+    "               Zero readers was reported through Phases 0-1 and FAILS THE BUILD from the",
+    "               PHASE-1 exit (2026-07-28): blocking is now the DEFAULT, ORPHAN_GATE=warn",
+    "               is the only escape. Phase 1/2 tasks APPEND their new spine",
     "               columns here in their own commits.",
     "  tables     — every table in the migration chain that carries an agent link AND a state column.",
     "               Declaring is mandatory and ALWAYS blocking, from day one: an undeclared one fails",
@@ -24,7 +26,20 @@
     "work-shaped table is fixed by declaring it, which costs one entry and one sentence.",
     "",
     "Every reader count in the AS-BUILT notes was measured by this checker at HEAD 6895eda on",
-    "2026-07-27; `node deploy/checks/check-orphans.mjs --explain <id>` reproduces any of them."
+    "2026-07-27; `node deploy/checks/check-orphans.mjs --explain <id>` reproduces any of them.",
+    "",
+    "ZERO-READER DISPOSITIONS (added at the PHASE-1 exit, 2026-07-28, when the reader rule",
+    "flipped to blocking). Twelve of nineteen declared structures had no production reader at",
+    "the flip and the waiver budget is five, so the twelve were separated by WHAT IS ACTUALLY",
+    "TRUE about each instead of being waived in a heap:",
+    "  waivers                        — the reader is inside packages/*/src and the heuristic",
+    "                                   cannot see it. The GATE is wrong. Budget 5.",
+    "  zeroReader.external-reader     — the reader is real, enumerated, and outside the scan",
+    "                                   scope (the kit repo, watchdog/). Carries the reader's",
+    "                                   path AND the command that re-derives it.",
+    "  zeroReader.owed                — no reader exists anywhere; a NAMED phase owes one.",
+    "                                   Carries owner + reason + date and prints on every run.",
+    "A zero-reader entry with none of the three FAILS the build. That is the flip."
   ],
   "structures": [
     {
@@ -33,7 +48,13 @@
       "table": "messages",
       "column": "root_id",
       "definedIn": "packages/server/src/db/migrations/112_origin_spine.sql",
-      "why": "Origin spine: the root of the causal chain, so 'who ultimately asked for this' stops being re-derived from prose. Measured 2026-07-27: nothing in production reads it — and nothing writes it either. Every root_id in server source belongs to a DIFFERENT table (destructive_approvals, audit_log, deliveries, turns, inter_agent_messages, tool_receipts, router_log)."
+      "why": "Origin spine: the root of the causal chain, so 'who ultimately asked for this' stops being re-derived from prose. RE-MEASURED 2026-07-28 at 41fcabb: WRITTEN now (the T4 writer module stamps it; loop.ts:1560, scheduler/runner.ts:791, tracker/notify.ts:175 supply a work referent), still read by nothing. Every other root_id in server source belongs to a DIFFERENT table (destructive_approvals, audit_log, deliveries, turns, tool_receipts, router_log).",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "UNASSIGNED — flagged to the owner at the PHASE-1 exit",
+        "date": "2026-07-28",
+        "reason": "No plan document names a reader for messages.root_id. PHASE-2 is the candidate because it builds work.root_kind/root_id with origin REQUIRED (PHASE-2.md:49), but that is a DIFFERENT table and inheriting the assignment would be inventing one (#14). Phase 1 acquired the writer and not the reader; the read side needs an owner named out loud before it can be closed."
+      }
     },
     {
       "id": "messages.task_id",
@@ -49,7 +70,13 @@
       "table": "messages",
       "column": "speaker",
       "definedIn": "packages/server/src/db/migrations/123_voice_identity.sql",
-      "why": "Voice identity (OR4): who actually spoke a persisted voice row — owner | caller | agent. Written by voice/session-record.ts; nothing reads it back, so spoken-turn attribution is still inferred elsewhere."
+      "why": "Voice identity (OR4): who actually spoke a persisted voice row — owner | caller | agent. Written through the single writer and by stampVoiceSpeaker (message-store.ts:668); re-measured 2026-07-28 at 41fcabb, nothing reads it back, so spoken-turn attribution is still inferred elsewhere. A test reads it (voice/__tests__/session-record.test.ts), which is evidence it is not dead and is never counted as a reader.",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "SWEEP-B",
+        "date": "2026-07-28",
+        "reason": "SWEEP-B.md:32 owns it by name: 'Mig-123 columns now all have readers -> orphan-gate entries cleared', and SWEEP-B.md:14 re-pins the mig-123 consumers at its own HEAD. Untouched by Phase 1 — no Phase-1 task named this column."
+      }
     },
     {
       "id": "messages.voice_session_id",
@@ -57,7 +84,13 @@
       "table": "messages",
       "column": "voice_session_id",
       "definedIn": "packages/server/src/db/migrations/123_voice_identity.sql",
-      "why": "Binds a persisted row to the voice session that produced it. Same writer, same silence on the read side."
+      "why": "Binds a persisted row to the voice session that produced it. Same writer, same silence on the read side, re-measured 2026-07-28 at 41fcabb. Test reader only (voice/__tests__/session-record.test.ts).",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "SWEEP-B",
+        "date": "2026-07-28",
+        "reason": "SWEEP-B.md:14 and :32, with messages.speaker — the same mig-123 pair, the same sweep."
+      }
     },
     {
       "id": "turns.lane",
@@ -65,7 +98,13 @@
       "table": "turns",
       "column": "lane",
       "definedIn": "packages/server/src/db/migrations/123_voice_identity.sql",
-      "why": "The typed spoken-stream lane on the turn record (voice | phone | null). Written by agent/v2/turn-record.ts on every turn open; no reader, so continuation context still cannot ask the record 'was this turn spoken?'."
+      "why": "The typed spoken-stream lane on the turn record (voice | phone | null). Written by agent/v2/turn-record.ts:34 on every turn open; re-measured 2026-07-28 at 41fcabb, no reader, so continuation context still cannot ask the record 'was this turn spoken?'. NOTE for anyone reading the gate output: this is turns.lane, NOT messages.lane — messages.lane is the Phase-1 cutover column and has nine readers.",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "SWEEP-B",
+        "date": "2026-07-28",
+        "reason": "SWEEP-B.md:14 names it explicitly ('turns.lane now read by the engine') as part of re-pinning the mig-123 consumers post-Arc-1."
+      }
     },
     {
       "id": "deliveries.receipt_id",
@@ -73,7 +112,13 @@
       "table": "deliveries",
       "column": "receipt_id",
       "definedIn": "packages/server/src/db/migrations/121_deliveries.sql",
-      "why": "Ties a delivery row to the tool receipt that produced it. Written by agent/v2/deliveries.ts; no reader. Phase 2 makes `work.done` require a delivery, which makes this link load-bearing."
+      "why": "Ties a delivery row to the tool receipt that produced it. Written by agent/v2/deliveries.ts:76; re-measured 2026-07-28 at 41fcabb, no reader anywhere in packages/.",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "PHASE-2",
+        "date": "2026-07-28",
+        "reason": "PHASE-2.md:111 owns it by name ('deliveries.receipt_id populated when a receipt exists') and PHASE-2 makes work.done REQUIRE a delivery, which is what turns this link load-bearing. Untouched by Phase 1."
+      }
     },
     {
       "id": "turn_artifacts.delivery_id",
@@ -81,14 +126,26 @@
       "table": "turn_artifacts",
       "column": "delivery_id",
       "definedIn": "packages/server/src/db/migrations/121_deliveries.sql",
-      "why": "Which delivery carried this artifact to the user. Measured 2026-07-27: the identifier does not appear in production source AT ALL — neither written nor read. The most orphaned of the eight."
+      "why": "Which delivery carried this artifact to the user. Re-measured 2026-07-28 at 41fcabb: the identifier still does not appear in packages/ AT ALL — neither written nor read. The most orphaned of the eight Phase 0 seeded.",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "PHASE-2",
+        "date": "2026-07-28",
+        "reason": "PHASE-2.md:111 names the WRITE ('turn_artifacts.delivery_id populated on artifact delivery'). Stated plainly so PHASE-2 cannot close it half-way: no plan names a READER yet either, so Phase 2 owes the reader or owes a written reason there is none. Untouched by Phase 1."
+      }
     },
     {
       "id": "TurnPhase",
       "kind": "type",
       "identifier": "TurnPhase",
       "definedIn": "packages/server/src/agent/v2/state.ts",
-      "why": "The engine's declared nine-phase skeleton as a type. Phase 6's exit gate is 'TurnPhase is load-bearing (state transitions recorded per turn)'. Measured 2026-07-27: no file outside its own defining module mentions it — the skeleton is declared and unused, which is exactly what Phase 6 exists to fix."
+      "why": "The engine's declared nine-phase skeleton as a type. Re-measured 2026-07-28 at 41fcabb: no file outside its own defining module mentions it — the skeleton is declared and unused, which is exactly what Phase 6 exists to fix.",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "PHASE-6",
+        "date": "2026-07-28",
+        "reason": "PHASE-6.md:26 Step 3 ('TurnPhase becomes load-bearing: the driver advances it') and DOJO-OVERHAUL-PLAN.md:141 makes it a Phase-6 EXIT GATE. Untouched by Phase 1."
+      }
     },
     {
       "id": "messages.seq",
@@ -96,7 +153,7 @@
       "table": "messages",
       "column": "seq",
       "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
-      "why": "The stored monotonic sequence that replaces the (created_at, _tag, rowid) ordering key the two-store world needed. PROMOTED at T10 (migration 133): `seq` IS the table's `INTEGER PRIMARY KEY AUTOINCREMENT`, so it is the rowid rather than a column kept equal to it by the `messages_seq_ai` trigger, which is deleted. AUTOINCREMENT is load-bearing, not decoration: without it SQLite reuses the largest rowid after the top row is deleted, and four live delete paths would then place a NEW row at an OLD position in every `ORDER BY seq` tail and below the vault archive high-water. Readers arrived with T5 (ORDER BY seq replaced the composite key everywhere); a bare `SELECT rowid` now returns a column NAMED `seq`, which is why every reader projects `seq AS rowid` and a source walk in memory/__tests__/lane-readers.test.ts refuses a bare one."
+      "why": "The stored monotonic sequence that replaces the (created_at, _tag, rowid) ordering key the two-store world needed. PROMOTED at T10 (migration 133): `seq` IS the table's `INTEGER PRIMARY KEY AUTOINCREMENT`, so it is the rowid rather than a column kept equal to it by the `messages_seq_ai` trigger, which is deleted. AUTOINCREMENT is load-bearing, not decoration: without it SQLite reuses the largest rowid after the top row is deleted, and four live delete paths would then place a NEW row at an OLD position in every `ORDER BY seq` tail and below the vault archive high-water. Readers arrived with T5 (ORDER BY seq replaced the composite key everywhere); a bare `SELECT rowid` now returns a column NAMED `seq`, which is why every reader projects `seq AS rowid` and a source walk in memory/__tests__/lane-readers.test.ts refuses a bare one. READERS CONFIRMED at the PHASE-1 exit (2026-07-28, 41fcabb): 11 production files."
     },
     {
       "id": "messages.lane",
@@ -104,7 +161,7 @@
       "table": "messages",
       "column": "lane",
       "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
-      "why": "The column the whole cutover exists for: owner | a2a | events, stamped at ingest (OR4) and CHECK-constrained at the DB, replacing the physical two-table split and the free-text origin_kind bit. It is what the fail-closed chat_messages view filters on, so a forgetful reader omits agent traffic instead of leaking it. Readers arrive with T5/T6."
+      "why": "The column the whole cutover exists for: owner | a2a | events, stamped at ingest (OR4) and CHECK-constrained at the DB, replacing the physical two-table split and the free-text origin_kind bit. It is what the fail-closed chat_messages view filters on, so a forgetful reader omits agent traffic instead of leaking it. Readers arrive with T5/T6. READERS ARRIVED as promised — 9 production files at the PHASE-1 exit (2026-07-28, 41fcabb)."
     },
     {
       "id": "messages.display_kind",
@@ -112,7 +169,7 @@
       "table": "messages",
       "column": "display_kind",
       "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
-      "why": "Write-time display classification (research 17 §C1) so the live view and the reload view stop being two independent guessers. T3 guarantees only that no row is ever unclassified; T8 owns the real taxonomy, the enum CHECK and the dashboard readers."
+      "why": "Write-time display classification (research 17 §C1) so the live view and the reload view stop being two independent guessers. T3 guarantees only that no row is ever unclassified; T8 owns the real taxonomy, the enum CHECK and the dashboard readers. T8 landed the taxonomy and migration 132's CHECK; T9 gave it its first production reader (the ws broadcast stamps the row), measured 2026-07-28 at 41fcabb. The DASHBOARD reader is still Sweep E's — the dashboard reads .tier today."
     },
     {
       "id": "messages.display_tier",
@@ -120,7 +177,7 @@
       "table": "messages",
       "column": "display_tier",
       "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
-      "why": "user-visible | agent-only | never-shown, decided once at write. Defaults to agent-only: visibility is earned, never assumed. T8 owns the classifier; Sweep E owns the dashboard read."
+      "why": "user-visible | agent-only | never-shown, decided once at write. Defaults to agent-only: visibility is earned, never assumed. T8 owns the classifier; Sweep E owns the dashboard read. Reader arrived at T9 with display_kind (the broadcast carries the persisted row), measured 2026-07-28 at 41fcabb."
     },
     {
       "id": "messages.authorized",
@@ -128,7 +185,13 @@
       "table": "messages",
       "column": "authorized",
       "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
-      "why": "The producer's own sender-authorization verdict, recorded on the row at ingest instead of being re-derived downstream from inbound_meta prose (OR4). Readers arrive with T4/T6 as the 12 producers move onto the writer module."
+      "why": "The producer's own sender-authorization verdict, recorded on the row at ingest instead of being re-derived downstream from inbound_meta prose (OR4). WRITTEN as designed — six real producers supply it (routes/chat.ts:145, routes/twilio.ts:268/:279, gmail-watcher.ts:417/:438, outlook-watcher.ts:358, imessage-bridge.ts:1161/:1203). THE READ SIDE DID NOT ARRIVE: measured 2026-07-28 at 41fcabb, the waiting-set gate still asks deriveOrigin(), which computes `authorized` from inbound_meta JSON (shared/src/origin.ts:116,:210) and not from this column. The manifest previously said 'readers arrive with T4/T6'; T4/T6 moved the WRITERS.",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "SWEEP-A",
+        "date": "2026-07-28",
+        "reason": "SWEEP-A.md:15-16 is the read side by name: ingestInbound() returns {channel, sender, relation, authorized, lane, ...}, 'the persisted row carries all of it', and deriveOrigin 'collapses to a pure row->shape projection with no prose fallback and no authorized:true default'. SWEEP-A.md:38 makes emptying the Phase-1 authorized/channel burn-down allowlist its exit gate. Until then the fact is on the row AND still derived from prose — two mechanisms, which is the disease; recorded at the exit rather than left to be discovered."
+      }
     },
     {
       "id": "messages.channel",
@@ -136,7 +199,7 @@
       "table": "messages",
       "column": "channel",
       "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
-      "why": "Channel identity stamped at ingest; also absorbs the old source='voice'. Replies return on the same channel (OR4). Readers arrive with T6, under the cache-prefix rider that the four voice/tts matrix cells must stay byte-identical."
+      "why": "Channel identity stamped at ingest; also absorbs the old source='voice'. Replies return on the same channel (OR4). Readers arrive with T6, under the cache-prefix rider that the four voice/tts matrix cells must stay byte-identical. READERS ARRIVED at T6 — 3 production files at the PHASE-1 exit (2026-07-28, 41fcabb), and the four voice/tts cache-prefix cells stayed byte-identical through the re-point."
     },
     {
       "id": "messages.sender_id",
@@ -144,7 +207,13 @@
       "table": "messages",
       "column": "sender_id",
       "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
-      "why": "Who sent it, on the row, so sender identity is not re-parsed from content or inbound_meta. Readers arrive with T6/Sweep A."
+      "why": "Who sent it, on the row, so sender identity is not re-parsed from content or inbound_meta. WRITTEN by real producers (routes/chat.ts:144, routes/twilio.ts:267, gmail-watcher.ts:437). Measured 2026-07-28 at 41fcabb: no production SQL reads the column back — sender identity still comes from deriveOrigin()'s inbound_meta parse, same shape as messages.authorized.",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "SWEEP-A",
+        "date": "2026-07-28",
+        "reason": "Same clause as messages.authorized: SWEEP-A.md:15-16 makes the persisted row the source and retires resolveFromProse behind a one-shot backfill. The two columns close together or not at all."
+      }
     },
     {
       "id": "messages.group_id",
@@ -152,7 +221,13 @@
       "table": "messages",
       "column": "group_id",
       "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
-      "why": "Groups the rows a single turn produced so the dashboard can render one turn as one unit (research 17 §C1). Written by T8/T9; readers are Sweep E's."
+      "why": "Groups the rows a single turn produced so the dashboard can render one turn as one unit (research 17 Section C1). MEASURED 2026-07-28 at 41fcabb AND THE EARLIER NOTE WAS WRONG: it said 'Written by T8/T9'. It is NOT written — the writer module accepts a groupId (message-store.ts:57,:236) and no caller in packages/server passes one, so every row carries NULL. Neither half exists yet. (The many group_id hits in the tree are agents.group_id, a different table — a cleanup grep would confuse them.)",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "SWEEP-E",
+        "date": "2026-07-28",
+        "reason": "SWEEP-E owns the display contract's client half (SWEEP-E.md:16, the renderLive == renderReload parity test) and this column exists only to serve it. Recorded with the correction that Sweep E inherits BOTH halves — the write and the read — not just the read."
+      }
     },
     {
       "id": "messages.mood",
@@ -160,7 +235,7 @@
       "table": "messages",
       "column": "mood",
       "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
-      "why": "Mood extracted to its own column so it is never rendered inside content — the owner-reported mood-leak bug is a stripper called in one of six renderers. T8 populates it; the renderers move in Sweep E."
+      "why": "Mood extracted to its own column so it is never rendered inside content — the owner-reported mood-leak bug is a stripper called in one of six renderers. T8 populates it; the renderers move in Sweep E. T8 populated it and moved the marker out of content; reader confirmed 2026-07-28 at 41fcabb. The RENDERERS are still Sweep E's."
     },
     {
       "id": "messages.provenance",
@@ -168,7 +243,13 @@
       "table": "messages",
       "column": "provenance",
       "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
-      "why": "live | migrated | rescued. Says where a row came from, so a lived-in Stable Bridge merge (T12) is distinguishable from live traffic forever after, instead of being guessed from timestamps."
+      "why": "live | migrated | rescued. Says where a row came from, so a lived-in Stable Bridge merge is distinguishable from live traffic forever after, instead of being guessed from timestamps. WRITTEN as the literal 'live' by the single writer (message-store.ts:209). Measured 2026-07-28 at 41fcabb: no reader — and there cannot be a meaningful one on this box, because every row here is 'live'.",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "the task that makes the Stable Bridge EXECUTABLE (PHASE-2 T12 or the release fixture)",
+        "date": "2026-07-28",
+        "reason": "The distinguishing value 'migrated' is written by STABLE-BRIDGE.md's merge, which is a skeleton by design (T12; bridge-migrations/129b_stable_merge_messages.sql, deliberately non-executable and outside the dojo repo). A reader before there is anything to distinguish would be theatre. Carried with T13-items #20: the lived-in baseline and the release fixture at Stable baseline 111 ride with the same task."
+      }
     },
     {
       "id": "messages.sent_at",
@@ -176,7 +257,45 @@
       "table": "messages",
       "column": "sent_at",
       "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
-      "why": "Epoch-ms send time, the first spine column on this table to use the Part III time representation. Distinct from created_at (row-write time) so a delayed or retried send stops being indistinguishable from a fresh one. T6 converts the remaining TEXT time columns; T9 puts a single epoch-ms createdAt on the wire."
+      "why": "Epoch-ms send time, the first spine column on this table to use the Part III time representation. Distinct from created_at (row-write time) so a delayed or retried send stops being indistinguishable from a fresh one. IT IS READ, and the gate cannot see it: message-store.ts projects it through the SELECT_COLS fragment constant (:117) at four sites (:344, :379, :435, :445) into StoredMessage.sentAt (:124). The gate requires the table name and the column name in the SAME string literal, and an interpolated `${SELECT_COLS}` is replaced by a placeholder before matching — the documented false-positive class, in the form T10 met from the other side (WAITING_COLS). Waived rather than dispositioned, because a waiver is exactly the claim being made: there IS a reader."
+    },
+    {
+      "id": "agents.created_by_kind",
+      "kind": "column",
+      "table": "agents",
+      "column": "created_by_kind",
+      "definedIn": "packages/server/src/db/migrations/134_created_by_kind.sql",
+      "why": "Harness ownership as a FACT rather than a name pattern (migration 134, PHASE-1 T11). 'user' | 'agent' | 'harness', NULLABLE by design so no existing row is backfilled and nothing is inferred from NULL (#15). DECLARED AT THE PHASE-1 EXIT, and T13-items #23's premise turned out to be wrong for THIS column: it was left out of the manifest on the belief that its only reader is the kit, but measured 2026-07-28 at 41fcabb it has production readers inside the scan scope — agent/created-by-kind.ts:61 and gateway/routes/agents.ts:348. No disposition needed."
+    },
+    {
+      "id": "tasks.created_by_kind",
+      "kind": "column",
+      "table": "tasks",
+      "column": "created_by_kind",
+      "definedIn": "packages/server/src/db/migrations/134_created_by_kind.sql",
+      "why": "Harness ownership as a FACT rather than a name pattern (migration 134, PHASE-1 T11). 'user' | 'agent' | 'harness', NULLABLE by design so no existing row is backfilled and nothing is inferred from NULL (#15). Stamped at creation by the tracker's writers so a test run's rows are structurally its own. Declared here rather than left undeclared (T13-items #23 argued for leaving it out) because an undeclared spine column is invisible to this gate forever, whereas a declared one with its reader named stays true and gets re-checked on every run.",
+      "zeroReader": {
+        "kind": "external-reader",
+        "reader": "dojo-test-kit/behavioral/runner.mjs (clean-slate sweep and per-run teardown)",
+        "verifiedBy": "git -C ../dojo-test-kit grep -nP \"created_by_kind\" HEAD",
+        "date": "2026-07-28",
+        "reason": "The consumer is the behavioral kit, a separate repository, by design — the sweep must decide what it may delete from a fact the PLATFORM stamped, not from a name it guessed. Measured 2026-07-28 at kit 6482eb7: 15 hits, including runner.mjs:581/:605 (the two sweep prongs), runner.mjs:563 (the one-time adoption), and behavioral/__selftest__/kit-schema-conformance.mjs:162, which PREPARES the sweep's own SQL against the migrated schema so the kit's reader cannot silently rot. This gate's scope is packages/*/src; that is a statement about the gate, not a defect in it, so it is not a waiver."
+      }
+    },
+    {
+      "id": "projects.created_by_kind",
+      "kind": "column",
+      "table": "projects",
+      "column": "created_by_kind",
+      "definedIn": "packages/server/src/db/migrations/134_created_by_kind.sql",
+      "why": "Harness ownership as a FACT rather than a name pattern (migration 134, PHASE-1 T11). 'user' | 'agent' | 'harness', NULLABLE by design so no existing row is backfilled and nothing is inferred from NULL (#15). Same stamp on the projects table; same kit consumer.",
+      "zeroReader": {
+        "kind": "external-reader",
+        "reader": "dojo-test-kit/behavioral/runner.mjs (clean-slate sweep and per-run teardown)",
+        "verifiedBy": "git -C ../dojo-test-kit grep -nP \"created_by_kind\" HEAD",
+        "date": "2026-07-28",
+        "reason": "As tasks.created_by_kind — the sweep deletes leftover harness projects by this column (runner.mjs:605 collects harness ids; the teardown scopes on them), and kit-schema-conformance.mjs prepares the statement against the real schema."
+      }
     }
   ],
   "tables": [
@@ -325,5 +444,11 @@
       "disposition": "Sweep B — voice/phone consolidation; the log stays."
     }
   ],
-  "waivers": []
+  "waivers": [
+    {
+      "entry": "messages.sent_at",
+      "reason": "FALSE POSITIVE, measured: the column IS read. memory/message-store.ts builds its projection from the SELECT_COLS fragment constant (:116-118) and interpolates it into four `SELECT ${SELECT_COLS} FROM messages` statements (:344, :379, :435, :445), landing in StoredMessage.sentAt (:124). The heuristic requires table and column inside ONE string literal and blanks `${...}` before matching, so a shared column list is invisible to it — the documented false-positive class (the same shape T10 hit from the other side with counterparty.ts's WAITING_COLS). RIDER, stated because it is the weaker half of the truth: the SQL reads it, but nothing downstream CONSUMES StoredMessage.sentAt yet. This gate asks about SQL readers; the consumption question is Sweep E's with the rest of the wire shape.",
+      "date": "2026-07-28"
+    }
+  ]
 }

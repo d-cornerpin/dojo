@@ -5,7 +5,16 @@
 // Two rules live here. They protect different things and they fail differently.
 //
 // ── RULE 1: every declared spine structure needs a production READER ──
-// LOG-ONLY until Phase 1 exit; `ORPHAN_GATE=block` flips it to a build failure.
+// BLOCKING since the PHASE-1 exit (2026-07-28, T13). It was log-only through
+// Phases 0 and 1 and the flip was scheduled from the day it shipped.
+//
+// THE FLIP CHANGED THE DEFAULT, NOT AN ENV VAR — and that is deliberate.
+// The plan's wording was "ORPHAN_GATE=block", but `deploy/release.sh:319` invokes
+// this checker with no environment at all, so a gate that only bites when someone
+// remembers to export a variable would have left the release path measuring
+// nothing. `ORPHAN_GATE=block` is still accepted and means exactly what it says;
+// `ORPHAN_GATE=warn` is the escape hatch for a worker mid-change who wants the
+// report without the refusal. Default = refuse.
 //
 // The disease this project exists to cure is half-wired structure: a column gets
 // added, something writes it, and nothing ever reads it back — so the fact it was
@@ -56,6 +65,45 @@
 // nobody sees is a hole. More than 5 across Arc 1 means the RULE is wrong and
 // the rule gets fixed — that consequence was committed to in advance.
 //
+// ════════════════════════════════════════
+// THREE WAYS A ZERO-READER ENTRY MAY SURVIVE THE FLIP, AND WHY THEY ARE THREE
+// ════════════════════════════════════════
+// Measured at the PHASE-1 exit: 12 of 19 declared structures had no production
+// reader inside the scanned scope. The waiver budget is 5. Waiving twelve would
+// have blown the budget by seven AND told a lie about eleven of them, because a
+// WAIVER means one specific thing — "the heuristic is wrong, there IS a reader
+// here". Most of the twelve are the opposite: the heuristic is exactly right,
+// the wiring genuinely does not exist, and a named later phase owes it. Those
+// are different facts and they get different words, so that a real orphan can
+// never hide behind "the gate is dumb".
+//
+//   1. `waivers` (budget 5)          — the reader is inside the scanned scope and
+//                                      the heuristic cannot see it. The gate is
+//                                      wrong. Budgeted, because a rule that needs
+//                                      many of these is a rule to fix.
+//   2. `zeroReader.kind = "external-reader"` — the reader is REAL and enumerated
+//                                      but lives outside `packages/*/src` (the kit
+//                                      repository, `watchdog/`, the packaging
+//                                      step). Requires the reader's path AND the
+//                                      command that proves it, so the claim can be
+//                                      re-run rather than believed. Not budgeted:
+//                                      it is a scope statement about this gate,
+//                                      not a defect in it. (T10's dead watchdog is
+//                                      why "outside packages/" is a first-class
+//                                      idea here instead of an oversight.)
+//   3. `zeroReader.kind = "owed"`     — there is no reader anywhere. A named phase
+//                                      owes one. Requires `owner`, `reason`, and a
+//                                      date. This is a DEBT, printed in full on
+//                                      every run; it is the honest way to say "not
+//                                      wired yet" without pretending otherwise.
+//
+// A zero-reader entry with NONE of the three FAILS the build. That is the flip:
+// a new half-wired structure cannot be added without either wiring it or writing
+// down, with a date and an owner, that it is not wired. Both dispositions are
+// checked for STALENESS every run — an entry that has readers now, or a waiver on
+// an entry that also carries a `zeroReader`, is reported so the manifest cannot
+// rot into a list of excuses.
+//
 // Comment stripping is not free of judgement either: `//` is only treated as a
 // comment when an even number of quote characters precedes it on the line, so
 // `https://…` inside a string survives. Block comments go unconditionally.
@@ -105,8 +153,9 @@
 //
 // ════════════════════════════════════════
 // Usage:
-//   node deploy/checks/check-orphans.mjs                    # report; exit 0 unless a structural rule fails
-//   ORPHAN_GATE=block node deploy/checks/check-orphans.mjs  # zero-reader entries also fail (Phase 1 exit)
+//   node deploy/checks/check-orphans.mjs                    # BLOCKING (since PHASE-1 exit)
+//   ORPHAN_GATE=block node deploy/checks/check-orphans.mjs  # the same thing, said explicitly
+//   ORPHAN_GATE=warn  node deploy/checks/check-orphans.mjs  # report only; never fails on readers
 //   node deploy/checks/check-orphans.mjs --explain <id>     # show every site considered for one entry
 //
 // Implementation note (deliberate deviation from "count reader files via
@@ -137,8 +186,13 @@ const AGENT_REFERENCE = /REFERENCES\s+agents\s*\(/i;
 const STATE_COLUMN = /^(?:state|status|outcome)$|_(?:state|status|outcome)$/i;
 const TERMINAL = /'(done|complete|completed|failed|closed|abandoned|cancelled|canceled|resolved)'/gi;
 
-const BLOCK = process.env.ORPHAN_GATE === 'block';
+// Blocking by default since the PHASE-1 exit. `ORPHAN_GATE=warn` is the only
+// value that turns the reader rule back into a report; anything else (including
+// the plan's literal `block`, and the empty environment `release.sh` runs with)
+// refuses.
+const BLOCK = process.env.ORPHAN_GATE !== 'warn';
 const WAIVER_BUDGET = 5; // plan: >5 across Arc 1 means the rule is wrong, not the tree
+const ZERO_READER_KINDS = ['external-reader', 'owed'];
 
 // ════════ source text helpers ════════
 
@@ -391,6 +445,21 @@ function loadManifest() {
     if (s.kind === 'type' && !s.identifier) die(`type structure "${s.id}" needs "identifier".`);
     if (!['column', 'type'].includes(s.kind)) die(`structure "${s.id}" has unknown kind "${s.kind}".`);
     if (!s.definedIn) die(`structure "${s.id}" needs "definedIn".`);
+    const z = s.zeroReader;
+    if (z === undefined) continue;
+    if (typeof z !== 'object' || z === null) die(`structure "${s.id}": "zeroReader" must be an object.`);
+    if (!ZERO_READER_KINDS.includes(z.kind)) {
+      die(`structure "${s.id}": zeroReader.kind must be one of ${ZERO_READER_KINDS.join(' | ')} (got ${JSON.stringify(z.kind)}).`);
+    }
+    if (!z.reason) die(`structure "${s.id}": zeroReader needs a "reason" — an undated, unexplained survival is what this gate exists to stop.`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(z.date ?? '')) die(`structure "${s.id}": zeroReader needs an ISO "date" (got ${JSON.stringify(z.date)}).`);
+    if (z.kind === 'owed' && !z.owner) {
+      die(`structure "${s.id}": zeroReader.kind "owed" needs an "owner" — the phase or sweep that owes the reader. "Somebody" is not an owner.`);
+    }
+    if (z.kind === 'external-reader') {
+      if (!z.reader) die(`structure "${s.id}": zeroReader.kind "external-reader" needs "reader" — the path of the file that actually reads it.`);
+      if (!z.verifiedBy) die(`structure "${s.id}": zeroReader.kind "external-reader" needs "verifiedBy" — the command that re-derives the claim. A reader nobody can re-check is a rumour (#14).`);
+    }
   }
   for (const t of m.tables) {
     if (!t.name) die(`every table declaration needs "name": ${JSON.stringify(t)}`);
@@ -553,18 +622,33 @@ if (stale.length) {
 
 // ════════ RULE 1: reader counts (log-only unless ORPHAN_GATE=block) ════════
 const waived = new Map(manifest.waivers.map((w) => [w.entry, w]));
-const zero = [], ok = [], honoured = [];
+const zero = [], ok = [], honoured = [], external = [], owed = [];
+const doubleClaimed = [];
 
 for (const entry of manifest.structures) {
   const r = analyse(entry);
   const rec = { entry, ...r };
+  if (entry.zeroReader && waived.has(entry.id)) doubleClaimed.push(entry.id);
   if (r.readers.length === 0) {
     if (waived.has(entry.id)) honoured.push({ ...rec, waiver: waived.get(entry.id) });
+    else if (entry.zeroReader?.kind === 'external-reader') external.push(rec);
+    else if (entry.zeroReader?.kind === 'owed') owed.push(rec);
     else zero.push(rec);
   } else ok.push(rec);
 }
 
-console.log(`\n── spine reader rule (${BLOCK ? 'BLOCKING — ORPHAN_GATE=block' : 'log-only; set ORPHAN_GATE=block to fail'}) ──`);
+// A structure may not be BOTH waived ("the gate is wrong") and dispositioned
+// ("the gate is right and here is why it survives"). Those are contradictory
+// claims about the same entry and one of them is false.
+if (doubleClaimed.length) {
+  structuralFailure = true;
+  console.error(`\n✗ ${doubleClaimed.length} structure(s) carry BOTH a waiver and a zeroReader disposition:`);
+  for (const id of doubleClaimed) console.error(`  ${id}`);
+  console.error('  A waiver says the heuristic missed a reader; a zeroReader says why a real absence survives.');
+  console.error('  Both cannot be true. Keep the one that is.');
+}
+
+console.log(`\n── spine reader rule (${BLOCK ? 'BLOCKING — default since the PHASE-1 exit' : 'REPORT ONLY — ORPHAN_GATE=warn is set'}) ──`);
 console.log(`  ${manifest.structures.length} declared structure(s); scope ${SEARCH_DIRS.join(' + ')} (${SOURCES.length} source files)`);
 
 for (const rec of ok) {
@@ -586,6 +670,39 @@ for (const rec of zero) {
   say(`      full site list: node deploy/checks/check-orphans.mjs --explain ${rec.entry.id}`);
 }
 if (zero.length && BLOCK) readerFailure = true;
+
+if (external.length) {
+  console.log(`\n  ${external.length} zero-reader entr(y/ies) whose READER IS REAL AND OUTSIDE THE SCANNED SCOPE:`);
+  console.log('  Not a waiver — the gate is not wrong here, its scope simply ends at packages/*/src.');
+  console.log('  Each carries the reader and the command that re-derives it; re-run the command, do not trust the line.');
+  for (const rec of external) {
+    const z = rec.entry.zeroReader;
+    console.log(`    ${rec.entry.id} — ${z.date}: reader ${z.reader}`);
+    console.log(`        verify: ${z.verifiedBy}`);
+    console.log(`        ${z.reason}`);
+  }
+}
+
+if (owed.length) {
+  console.log(`\n  ${owed.length} zero-reader entr(y/ies) DECLARED AS DEBT — no reader exists anywhere, a named owner owes one:`);
+  console.log('  This list is the phase-exit report. It is printed in full on every run, forever, until it is empty.');
+  for (const rec of owed) {
+    const z = rec.entry.zeroReader;
+    console.log(`    ${rec.entry.id} — ${z.date} · owner ${z.owner}`);
+    console.log(`        ${z.reason}`);
+    if (rec.entry.kind === 'column') {
+      console.log(`        writers today: ${rec.writers.length ? rec.writers.join(', ') : '(none — not even written)'}`);
+    }
+  }
+}
+
+const staleDispositions = manifest.structures.filter(
+  (s) => s.zeroReader && ok.some((r) => r.entry.id === s.id),
+);
+if (staleDispositions.length) {
+  console.log(`\n  ${staleDispositions.length} STALE zeroReader disposition(s) — the entry has production readers now, so the note can go:`);
+  for (const s of staleDispositions) console.log(`    ${s.id} — ${s.zeroReader.date} (${s.zeroReader.kind})`);
+}
 
 if (honoured.length) {
   console.log(`\n  ${honoured.length} WAIVED zero-reader entr(y/ies) — every one is printed on every run, by design:`);
@@ -609,11 +726,15 @@ if (structuralFailure) {
   process.exit(1);
 }
 if (readerFailure) {
-  console.error(`✗ orphan gate: refusing. ${zero.length} declared spine structure(s) have no production reader and ORPHAN_GATE=block is set.`);
+  console.error(`✗ orphan gate: refusing. ${zero.length} declared spine structure(s) have no production reader, no waiver, and no dated zeroReader disposition.`);
+  console.error('  Wire it, or say in the manifest why it survives: {"zeroReader":{"kind":"owed","owner":…,"reason":…,"date":…}}');
+  console.error('  for a debt a named phase owes, or {"kind":"external-reader","reader":…,"verifiedBy":…,"reason":…,"date":…}');
+  console.error('  when the reader is real and simply lives outside packages/*/src.');
   process.exit(1);
 }
 console.log(
   `✓ orphan gate — ${candidates.length}/${candidates.length} work-shaped table(s) declared; ` +
-  `${ok.length} spine structure(s) read, ${zero.length} with zero readers ` +
-  `(${BLOCK ? 'BLOCKING' : 'reported, log-only until Phase 1 exit'}), ${honoured.length} waived`,
+  `${ok.length} spine structure(s) read, ${zero.length} unexplained zero-reader ` +
+  `(${BLOCK ? 'BLOCKING' : 'REPORT ONLY'}), ${external.length} read outside the scan scope, ` +
+  `${owed.length} declared as debt, ${honoured.length} waived`,
 );
