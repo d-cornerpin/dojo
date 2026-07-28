@@ -26,7 +26,6 @@
     "Every reader count in the AS-BUILT notes was measured by this checker at HEAD 6895eda on",
     "2026-07-27; `node deploy/checks/check-orphans.mjs --explain <id>` reproduces any of them."
   ],
-
   "structures": [
     {
       "id": "messages.root_id",
@@ -90,16 +89,107 @@
       "identifier": "TurnPhase",
       "definedIn": "packages/server/src/agent/v2/state.ts",
       "why": "The engine's declared nine-phase skeleton as a type. Phase 6's exit gate is 'TurnPhase is load-bearing (state transitions recorded per turn)'. Measured 2026-07-27: no file outside its own defining module mentions it — the skeleton is declared and unused, which is exactly what Phase 6 exists to fix."
+    },
+    {
+      "id": "messages.seq",
+      "kind": "column",
+      "table": "messages",
+      "column": "seq",
+      "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
+      "why": "The stored monotonic sequence that replaces the (created_at, _tag, rowid) ordering key the two-store world needed. Maintained equal to rowid by messages_seq_ai so readers can move onto it before T10 promotes it to the physical primary key; the values never change when it does. Readers arrive with T5 (ORDER BY seq replaces the composite key everywhere)."
+    },
+    {
+      "id": "messages.lane",
+      "kind": "column",
+      "table": "messages",
+      "column": "lane",
+      "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
+      "why": "The column the whole cutover exists for: owner | a2a | events, stamped at ingest (OR4) and CHECK-constrained at the DB, replacing the physical two-table split and the free-text origin_kind bit. It is what the fail-closed chat_messages view filters on, so a forgetful reader omits agent traffic instead of leaking it. Readers arrive with T5/T6."
+    },
+    {
+      "id": "messages.display_kind",
+      "kind": "column",
+      "table": "messages",
+      "column": "display_kind",
+      "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
+      "why": "Write-time display classification (research 17 §C1) so the live view and the reload view stop being two independent guessers. T3 guarantees only that no row is ever unclassified; T8 owns the real taxonomy, the enum CHECK and the dashboard readers."
+    },
+    {
+      "id": "messages.display_tier",
+      "kind": "column",
+      "table": "messages",
+      "column": "display_tier",
+      "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
+      "why": "user-visible | agent-only | never-shown, decided once at write. Defaults to agent-only: visibility is earned, never assumed. T8 owns the classifier; Sweep E owns the dashboard read."
+    },
+    {
+      "id": "messages.authorized",
+      "kind": "column",
+      "table": "messages",
+      "column": "authorized",
+      "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
+      "why": "The producer's own sender-authorization verdict, recorded on the row at ingest instead of being re-derived downstream from inbound_meta prose (OR4). Readers arrive with T4/T6 as the 12 producers move onto the writer module."
+    },
+    {
+      "id": "messages.channel",
+      "kind": "column",
+      "table": "messages",
+      "column": "channel",
+      "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
+      "why": "Channel identity stamped at ingest; also absorbs the old source='voice'. Replies return on the same channel (OR4). Readers arrive with T6, under the cache-prefix rider that the four voice/tts matrix cells must stay byte-identical."
+    },
+    {
+      "id": "messages.sender_id",
+      "kind": "column",
+      "table": "messages",
+      "column": "sender_id",
+      "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
+      "why": "Who sent it, on the row, so sender identity is not re-parsed from content or inbound_meta. Readers arrive with T6/Sweep A."
+    },
+    {
+      "id": "messages.group_id",
+      "kind": "column",
+      "table": "messages",
+      "column": "group_id",
+      "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
+      "why": "Groups the rows a single turn produced so the dashboard can render one turn as one unit (research 17 §C1). Written by T8/T9; readers are Sweep E's."
+    },
+    {
+      "id": "messages.mood",
+      "kind": "column",
+      "table": "messages",
+      "column": "mood",
+      "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
+      "why": "Mood extracted to its own column so it is never rendered inside content — the owner-reported mood-leak bug is a stripper called in one of six renderers. T8 populates it; the renderers move in Sweep E."
+    },
+    {
+      "id": "messages.provenance",
+      "kind": "column",
+      "table": "messages",
+      "column": "provenance",
+      "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
+      "why": "live | migrated | rescued. Says where a row came from, so a lived-in Stable Bridge merge (T12) is distinguishable from live traffic forever after, instead of being guessed from timestamps."
+    },
+    {
+      "id": "messages.sent_at",
+      "kind": "column",
+      "table": "messages",
+      "column": "sent_at",
+      "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
+      "why": "Epoch-ms send time, the first spine column on this table to use the Part III time representation. Distinct from created_at (row-write time) so a delayed or retried send stops being indistinguishable from a fresh one. T6 converts the remaining TEXT time columns; T9 puts a single epoch-ms createdAt on the wire."
     }
   ],
-
   "tables": [
     {
       "name": "tasks",
       "definedIn": "packages/server/src/db/migrations/003_multi_agent.sql",
       "agentLink": "assigned_to",
       "stateColumn": "status",
-      "terminalStates": ["complete", "completed", "failed"],
+      "terminalStates": [
+        "complete",
+        "completed",
+        "failed"
+      ],
       "workShaped": true,
       "why": "THE tracker. OR1: this table evolves into the `work` spine (Phase 2) and keeps its ID space. Note for anyone extending the detector: it links agents through `assigned_to TEXT REFERENCES agents(id)`, NOT a column named agent_id — which is why the declaration trigger is the structural shape rather than the literal name.",
       "disposition": "Phase 2 — becomes `work` (OR1)."
@@ -109,7 +199,9 @@
       "definedIn": "packages/server/src/db/migrations/009_phase6.sql",
       "agentLink": "assigned_to",
       "stateColumn": "status",
-      "terminalStates": ["failed"],
+      "terminalStates": [
+        "failed"
+      ],
       "workShaped": true,
       "why": "One row per execution of a task; part of the tasks family the plan names as partial work-tracking system #1. (It has never held a row in the live DB, and that is NOT evidence of deadness — rows are deleted with their tasks, and it has a live route, live UI and a conformance test: roadmap non-negotiable #15.)",
       "disposition": "Phase 2 — absorbed as work events."
@@ -119,7 +211,9 @@
       "definedIn": "packages/server/src/db/migrations/107_open_loops.sql",
       "agentLink": "agent_id",
       "stateColumn": "status",
-      "terminalStates": ["resolved"],
+      "terminalStates": [
+        "resolved"
+      ],
       "workShaped": true,
       "why": "Structured unanswered obligations per agent (open | resolved | stale). Named in the plan as one of the five partial systems that each guess at 'is someone owed something'.",
       "disposition": "Phase 2 — deleted; owner-attributed rows import as open `work` rows (Stable Bridge)."
@@ -129,7 +223,10 @@
       "definedIn": "packages/server/src/db/migrations/063_generation_jobs.sql",
       "agentLink": "agent_id",
       "stateColumn": "status",
-      "terminalStates": ["succeeded", "failed"],
+      "terminalStates": [
+        "succeeded",
+        "failed"
+      ],
       "workShaped": true,
       "why": "Per-agent async media-generation queue: queued -> running -> succeeded | failed (services/generation-jobs.ts). Structurally a work tracker keyed to an agent, and NOT one of the five the plan enumerated — recorded here so Phase 2 decides deliberately instead of discovering it later.",
       "disposition": "Undecided at Phase 0. Phase 2 judges whether it folds into `work` or stays a typed side-queue."
@@ -139,7 +236,11 @@
       "definedIn": "packages/server/src/db/migrations/062_video_jobs.sql",
       "agentLink": "agent_id",
       "stateColumn": "status",
-      "terminalStates": ["succeeded", "failed", "cancelled"],
+      "terminalStates": [
+        "succeeded",
+        "failed",
+        "cancelled"
+      ],
       "workShaped": true,
       "why": "The same shape again for video: queued -> polling -> succeeded | failed | cancelled (services/video-job-poller.ts). Two independent job queues with the same lifecycle is the duplication pattern this project exists to stop.",
       "disposition": "Undecided at Phase 0. Same Phase 2 judgement as generation_jobs."
@@ -149,7 +250,10 @@
       "definedIn": "packages/server/src/db/migrations/028_healer.sql",
       "agentLink": "agent_id",
       "stateColumn": "status",
-      "terminalStates": ["approved", "denied"],
+      "terminalStates": [
+        "approved",
+        "denied"
+      ],
       "workShaped": true,
       "why": "Proposed fixes awaiting the owner's decision: pending -> approved | denied, with resolved_at (gateway/routes/healer.ts). A queue of things someone is owed a decision on, keyed to an agent.",
       "disposition": "Sweep F owns the healer; the approval-routing pattern is explicitly promoted, not deleted."
@@ -159,7 +263,13 @@
       "definedIn": "packages/server/src/db/migrations/069_destructive_approvals.sql",
       "agentLink": "agent_id",
       "stateColumn": "status",
-      "terminalStates": ["approved", "denied", "consumed", "expired", "auto_resolved"],
+      "terminalStates": [
+        "approved",
+        "denied",
+        "consumed",
+        "expired",
+        "auto_resolved"
+      ],
       "workShaped": true,
       "why": "A non-primary agent's held destructive tool call, waiting on the primary's decision (agent/destructive-gate.ts). Short-lived, but it is a per-agent row with a terminal state that someone is owed an answer on — declared true rather than argued down.",
       "disposition": "Phase 5 rebuilds permissions; the approval flow (exact command, once) is on the preserve list."
@@ -215,6 +325,5 @@
       "disposition": "Sweep B — voice/phone consolidation; the log stays."
     }
   ],
-
   "waivers": []
 }
