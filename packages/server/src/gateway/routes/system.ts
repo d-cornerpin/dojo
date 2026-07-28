@@ -3,6 +3,7 @@ import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { readLogEntries } from '../../logger.js';
+import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { broadcast } from '../ws.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import { assertPublicHttpTarget } from '../../agent/net-guard.js';
@@ -214,10 +215,12 @@ systemRouter.post('/system/reset-idle-sessions', async (c) => {
         rehomeUnclaimedEngineEvents(agent.id, boundary);
       } catch { /* best-effort carry-over, never block the reset */ }
 
+      // The row's created_at is stamped by the writer at insert time, which is at-or-after
+      // `boundary` (computed a few lines up), so the divider still lands inside the new
+      // session for every `created_at >= session_started_at` query. The broadcast below
+      // keeps quoting `boundary` for the UI.
       const markerId = uuidv4();
-      db.prepare(
-        "INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', '── New Session ──', ?)",
-      ).run(markerId, agent.id, boundary);
+      insertMessageIfAbsent({ id: markerId, agentId: agent.id, role: 'system', content: '── New Session ──' });
       try {
         broadcast({
           type: 'chat:message',

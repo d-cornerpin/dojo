@@ -598,3 +598,20 @@ export function deleteNonSystemForAgent(agentId: string): number {
   const db = getDb();
   return db.prepare("DELETE FROM messages WHERE agent_id = ? AND role != 'system'").run(agentId).changes;
 }
+
+/** The agent-bus rows an agent is either end of. Replaces the third store's own DELETE
+ *  cascade (`DELETE FROM agent_messages WHERE from_agent = ? OR to_agent = ?`) exactly:
+ *  both directions, and scoped by `origin_intent` so it can never reach ordinary peer
+ *  A2A traffic, which that statement could not see. */
+export function deleteAgentBusRowsFor(agentId: string): number {
+  const db = getDb();
+  return db.prepare(
+    `DELETE FROM messages WHERE origin_intent = '${AGENT_BUS_INTENT}'
+       AND (agent_id = @agentId OR source_agent_id = @agentId)`,
+  ).run({ agentId }).changes;
+}
+
+/** What marks a row as the agent BUS (spawn results, PM status, scheduler notices)
+ *  rather than ordinary peer conversation. `origin_intent` is the open-vocabulary
+ *  "which subsystem produced this" column (T3-0b §2) and this is exactly its job. */
+export const AGENT_BUS_INTENT = 'agent_bus';

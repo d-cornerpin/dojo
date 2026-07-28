@@ -26,14 +26,21 @@ import path from 'node:path';
 const SRC = path.join(__dirname, '..', '..');
 const WRITER_MODULE = 'memory/message-store.ts';
 
-/** Every write form, matched on the table rather than the verb. */
+/** Every write form, matched on the table rather than the verb.
+ *
+ *  PHASE-1 T4 added `agent_messages` — the THIRD store, folded into the unified table
+ *  in cluster 3 (agent/agent-bus.ts). It is listed here with no allowlist entry, which
+ *  is the strongest form this walk has: the fold is complete, so any reappearance of a
+ *  write against that table fails immediately rather than waiting for T10 to notice.
+ *  The word boundary that keeps `messages_fts` out also keeps these three names from
+ *  matching each other, which is exactly the mistake an earlier correction made. */
 const WRITE_RE = new RegExp(
   [
-    // INSERT / INSERT OR <anything> / an interpolated verb, INTO one of the two tables
+    // INSERT / INSERT OR <anything> / an interpolated verb, INTO one of the three tables
     // or into an interpolated table name.
-    String.raw`(?:INSERT(?:\s+OR\s+\w+)?|\$\{\w+\})\s+INTO\s+(?:messages\b|inter_agent_messages\b|\$\{)`,
-    String.raw`UPDATE\s+(?:messages\b|inter_agent_messages\b|\$\{)`,
-    String.raw`DELETE\s+FROM\s+(?:messages\b|inter_agent_messages\b|\$\{)`,
+    String.raw`(?:INSERT(?:\s+OR\s+\w+)?|\$\{\w+\})\s+INTO\s+(?:messages\b|inter_agent_messages\b|agent_messages\b|\$\{)`,
+    String.raw`UPDATE\s+(?:messages\b|inter_agent_messages\b|agent_messages\b|\$\{)`,
+    String.raw`DELETE\s+FROM\s+(?:messages\b|inter_agent_messages\b|agent_messages\b|\$\{)`,
   ].join('|'),
   'i',
 );
@@ -67,13 +74,18 @@ const read = (r: string) => fs.readFileSync(path.join(SRC, r), 'utf8');
 //   T4 cluster 2 (agent + fold): −8  →  28   a2a-transport, tools, model, spawner,
 //                                            rate-limit-retry, model-switch,
 //                                            destructive-gate, interagent (the shim)
+//   T4 cluster 3 (gateway):      −6  →  22   routes/agents, routes/chat,
+//                                            routes/setup-deps, routes/system,
+//                                            routes/twilio, index — plus the THIRD
+//                                            store `agent_messages` folded in
+//                                            (agent/agent-bus.ts), which is why the
+//                                            matcher above now names it.
 const WRITER_ALLOWLIST: string[] = [
   // NOT db/migrations.ts: its only `INTO messages…` is `messages_fts`, the FTS shadow
   // table, which the word boundary correctly excludes. Listing it would have been a stale
   // entry hiding one file's worth of progress — the stale check below caught exactly that.
-  'gateway/routes/agents.ts', 'gateway/routes/chat.ts', 'gateway/routes/setup-deps.ts',
-  'gateway/routes/system.ts', 'gateway/routes/twilio.ts', 'google/reauth-notice.ts',
-  'healer/healer-agent.ts', 'imaginer/imaginer-agent.ts', 'index.ts',
+  'google/reauth-notice.ts',
+  'healer/healer-agent.ts', 'imaginer/imaginer-agent.ts',
   'migration/path-migration.ts',
   'scheduler/runner.ts', 'services/generation-jobs.ts', 'services/gmail-watcher.ts',
   'services/imessage-bridge.ts', 'services/outlook-watcher.ts', 'services/teams-watcher.ts',
@@ -116,8 +128,12 @@ describe('the matcher itself (a weakened regex must not pass silently)', () => {
   it('does NOT catch the FTS shadow table, or other tables that merely start the same way', () => {
     expect(hits('INSERT INTO messages_fts(rowid, content) VALUES (?, ?)')).toBe(false);
     expect(hits('INSERT INTO summary_messages (summary_id) VALUES (?)')).toBe(false);
-    expect(hits('INSERT INTO agent_messages (from_agent) VALUES (?)')).toBe(false);
     expect(hits('DELETE FROM messages_fts WHERE rowid = ?')).toBe(false);
+  });
+
+  it('catches the third store, which T4 folded in and nothing may write again', () => {
+    expect(hits('INSERT INTO agent_messages (from_agent) VALUES (?)')).toBe(true);
+    expect(hits('DELETE FROM agent_messages WHERE from_agent = ?')).toBe(true);
   });
 });
 

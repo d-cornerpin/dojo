@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger, setLogBroadcast } from './logger.js';
 import { getDb } from './db/connection.js';
 import { runMigrations } from './db/migrations.js';
+import { setConvKeyByRowid, sweepByRowid } from './memory/message-store.js';
 import { loadSecrets } from './config/loader.js';
 import { createServer } from './gateway/server.js';
 import { broadcast } from './gateway/ws.js';
@@ -519,15 +520,25 @@ async function main(): Promise<void> {
       // the comparison NULL, the OR NULL, the AND NULL, and NOT(NULL) is
       // NULL = row skipped, which would shield ALL plain engine backlog
       // from the sweep (verified against an aged DB copy).
-      const swept = db.prepare(
-        `UPDATE messages AS m SET swept_at = datetime('now')
+      //
+      // T4: the row SELECTION is unchanged — the predicate below is carried verbatim,
+      // it just names the candidates now instead of updating them in place. The
+      // disposal itself goes through the writer module's sweep, which re-applies the
+      // same two guards per row (`swept_at IS NULL`, and `conv_key IS NULL` via
+      // requireUnclaimed), so a row that was claimed in between is still not ours.
+      const staleRows = db.prepare(
+        `SELECT m.rowid AS rowid, m.agent_id AS agent_id FROM messages AS m
           WHERE m.role = 'user' AND m.conv_key IS NULL AND m.swept_at IS NULL
             AND m.created_at < datetime('now', '-30 minutes')
             AND NOT (m.origin_kind = 'engine'
                      AND ((m.next_attempt_at IS NOT NULL AND m.next_attempt_at > datetime('now'))
                           OR (m.delivery_attempts > 0 AND m.delivery_attempts < 5)))
             ${heldAgents.length > 0 ? `AND NOT (${SERVABLE} AND m.agent_id IN (${heldIdList}))` : ''}`,
-      ).run();
+      ).all() as Array<{ rowid: number; agent_id: string }>;
+      let swept = 0;
+      for (const r of staleRows) {
+        swept += sweepByRowid({ rowid: r.rowid, agentId: r.agent_id, requireUnclaimed: true });
+      }
       // D-A step 4: engine events (scheduler/tracker/healer/notice) now persist to
       // inter_agent_messages, so the same >30-min attempts=0 backlog disposal must
       // cover the store arm or a stale store engine event survives the restart and
@@ -535,16 +546,23 @@ async function main(): Promise<void> {
       // the store never participate in swept_at semantics (no reader consults it),
       // and they are governed by the reply-owed/park machinery instead. No
       // held-agents guard needed, store rows are never genuine human asks.
-      const sweptStore = db.prepare(
-        `UPDATE inter_agent_messages AS m SET swept_at = datetime('now')
+      const staleStoreRows = db.prepare(
+        `SELECT m.rowid AS rowid, m.agent_id AS agent_id FROM inter_agent_messages AS m
           WHERE m.role = 'user' AND m.conv_key IS NULL AND m.swept_at IS NULL
             AND m.origin_kind = 'engine'
             AND m.created_at < datetime('now', '-30 minutes')
             AND NOT ((m.next_attempt_at IS NOT NULL AND m.next_attempt_at > datetime('now'))
                      OR (m.delivery_attempts > 0 AND m.delivery_attempts < 5))`,
-      ).run();
-      if (swept.changes > 0 || sweptStore.changes > 0 || heldTotal > 0) {
-        logger.info(`Boot staleness sweep: drain-suppressed ${swept.changes} stale (>30m) row(s) + ${sweptStore.changes} store engine event(s) via swept_at (conv_key preserved for recall)${heldTotal > 0 ? `; HELD ${heldTotal} genuine human ask(s) across ${heldAgents.length} agent(s) for the re-drain` : ''} (tracker untouched)`);
+      ).all() as Array<{ rowid: number; agent_id: string }>;
+      let sweptStore = 0;
+      for (const r of staleStoreRows) {
+        // The store arm is the SAME sweep against the other physical table (T10-DELETES
+        // with it); `src: 'ia'` is how the writer module dispatches, and it is the only
+        // thing in the tree that still knows two tables exist.
+        sweptStore += sweepByRowid({ rowid: r.rowid, agentId: r.agent_id, requireUnclaimed: true }, 'ia');
+      }
+      if (swept > 0 || sweptStore > 0 || heldTotal > 0) {
+        logger.info(`Boot staleness sweep: drain-suppressed ${swept} stale (>30m) row(s) + ${sweptStore} store engine event(s) via swept_at (conv_key preserved for recall)${heldTotal > 0 ? `; HELD ${heldTotal} genuine human ask(s) across ${heldAgents.length} agent(s) for the re-drain` : ''} (tracker untouched)`);
       }
     } catch (err) {
       logger.warn('Boot staleness sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
@@ -579,7 +597,7 @@ async function main(): Promise<void> {
       let reArmed = 0;
       for (const r of claimed) {
         if (hasReply.get(r.agent_id, r.conv_key, r.created_at)) continue; // genuinely answered
-        db.prepare('UPDATE messages SET conv_key = NULL WHERE rowid = ? AND agent_id = ?').run(r.rowid, r.agent_id);
+        setConvKeyByRowid({ rowid: r.rowid, agentId: r.agent_id, value: null });
         reArmed++;
       }
       if (reArmed > 0) {

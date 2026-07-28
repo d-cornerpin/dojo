@@ -11,6 +11,7 @@ import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
+import { deleteAllForAgent } from '../../memory/message-store.js';
 
 const logger = createLogger('setup-deps');
 
@@ -493,7 +494,7 @@ setupDepsRouter.post('/provision-agent', async (c) => {
   for (const oldId of ['primary', 'pm']) {
     const old = db.prepare('SELECT id FROM agents WHERE id = ?').get(oldId);
     if (old && oldId !== id) {
-      db.prepare('DELETE FROM messages WHERE agent_id = ?').run(oldId);
+      deleteAllForAgent(oldId);
       db.prepare('DELETE FROM agents WHERE id = ?').run(oldId);
       logger.info('Removed placeholder agent', { oldId, newId: id });
     }

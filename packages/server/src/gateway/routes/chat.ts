@@ -7,6 +7,7 @@ import { SendMessageSchema } from '../../config/schema.js';
 import { createLogger } from '../../logger.js';
 import { getAgentRuntime } from '../../agent/runtime.js';
 import { queueEmbedding } from '../../memory/embeddings.js';
+import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { archiveAgentConversation } from '../../vault/archive.js';
 import { replaceContextItems } from '../../memory/dag.js';
 import { broadcast } from '../ws.js';
@@ -120,14 +121,31 @@ export async function submitUserMessage(
   const dashMeta = source === 'voice'
     ? null
     : JSON.stringify({ channel: 'dashboard', accountKind: 'agent', authorized: true, relation: 'owner' });
+  // T4/OR4: the ONE channel this ingest is on, named once and then used for BOTH the
+  // conversation identity and the row's own `channel` stamp — never re-derived. The old
+  // `source` column carried only the voice half of that fact; `channel` carries both
+  // (T3-0b §3), and the writer module keeps `source` in step for the compat window.
+  const inboundChannel = source === 'voice' ? 'voice' : 'dashboard';
   // P5: the owner's dashboard (and voice) is one conversation per agent.
   const conversationId = resolveOrCreateConversation(agentId, {
-    channel: source === 'voice' ? 'voice' : 'dashboard', provider: null, counterpartyId: 'owner', threadRoot: null,
+    channel: inboundChannel, provider: null, counterpartyId: 'owner', threadRoot: null,
   });
-  db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, source, inbound_meta, conversation_id, created_at)
-    VALUES (?, ?, 'user', ?, ?, ?, ?, ?, datetime('now'))
-  `).run(messageId, agentId, modelContent, attachments ? JSON.stringify(attachments) : null, source ?? null, dashMeta, conversationId);
+  // The routing facts are stamped IN the insert (OR4: at ingest, from this producer's own
+  // meta), so the row is never briefly unstamped: `authorized` is dashMeta's own verdict
+  // (the owner's dashboard/voice session), `senderId` is the counterparty identity the
+  // conversation just resolved on, and `conversationId` lands in the SAME write.
+  insertMessageIfAbsent({
+    id: messageId,
+    agentId,
+    role: 'user',
+    content: modelContent,
+    attachments: attachments ? JSON.stringify(attachments) : null,
+    channel: inboundChannel,
+    senderId: 'owner',
+    authorized: true,
+    inboundMeta: dashMeta,
+    conversationId,
+  });
 
   logger.info('User message persisted', { agentId, messageId, attachmentCount: attachments?.length ?? 0 }, agentId);
 
@@ -467,13 +485,13 @@ chatRouter.post('/:agentId/new-session', async (c) => {
       rehomeUnclaimedEngineEvents(agentId, boundary);
     } catch { /* best-effort carry-over, never block the reset */ }
 
-    // 4. Insert session marker for the UI divider only
+    // 4. Insert session marker for the UI divider only. The row's created_at is stamped
+    //    by the writer at insert time, which is at-or-after `boundary` (computed a few
+    //    lines up), so the divider still lands inside the new session for every
+    //    `created_at >= session_started_at` query. The broadcast keeps quoting `boundary`.
     const markerId = uuidv4();
 
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'system', ?, ?)
-    `).run(markerId, agentId, '── New Session ──', boundary);
+    insertMessageIfAbsent({ id: markerId, agentId, role: 'system', content: '── New Session ──' });
 
     // 5. Broadcast the divider so the chat UI updates in real time
     broadcast({
@@ -500,7 +518,7 @@ chatRouter.post('/:agentId/new-session', async (c) => {
     const { buildSessionResetMessage } = await import('../../agent/session-reset.js');
     const reorientId = uuidv4();
     const reorientContent = buildSessionResetMessage(agentId);
-    db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, ?)").run(reorientId, agentId, reorientContent, boundary);
+    insertMessageIfAbsent({ id: reorientId, agentId, role: 'system', content: reorientContent });
     broadcast({ type: 'chat:message', agentId, message: { id: reorientId, agentId, role: 'system', content: reorientContent, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
 
     logger.info('New session started', { agentId, agentName: agent.name, archiveId });

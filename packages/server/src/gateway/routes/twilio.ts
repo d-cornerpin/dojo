@@ -35,6 +35,7 @@ import {
   appendTwilioVoiceSafeCaller,
 } from '../../services/channel-safe-senders.js';
 import { getDb } from '../../db/connection.js';
+import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { getTunnelStatus } from '../../services/tunnel.js';
 
 const logger = createLogger('twilio-routes');
@@ -253,10 +254,19 @@ twilioRouter.post('/webhook/voicemail-transcription', async (c) => {
           `Transcript:\n${transcript}\n\nCall SID: ${callSid}`;
         const { v4: uuidv4 } = await import('uuid');
         const msgId = uuidv4();
-        getDb().prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-          VALUES (?, ?, 'user', ?, datetime('now'))
-        `).run(msgId, primaryId, content);
+        // T4/OR4: the routing facts this producer already knows (phone channel, the
+        // caller as sender, and the authorized:false verdict below) are stamped IN the
+        // insert, so the row is never briefly unstamped. recordInboundMeta still records
+        // the full meta blob for the resolver.
+        insertMessageIfAbsent({
+          id: msgId,
+          agentId: primaryId,
+          role: 'user',
+          content,
+          channel: 'phone',
+          senderId: from,
+          authorized: false,
+        });
         // v3.1.10 (attribution redesign §5, Phase 4) — stamp structured origin so
         // this notification rides the awareness lane by data, not by the legacy
         // [SOURCE: …] prose shim. A voicemail is a phone-channel notification ABOUT

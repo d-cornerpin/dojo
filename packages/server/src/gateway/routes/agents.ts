@@ -8,6 +8,9 @@ import { getAgentRuntime } from '../../agent/runtime.js';
 import { spawnAgent, terminateAgent } from '../../agent/spawner.js';
 import { stopAgent } from '../../agent/runtime.js';
 import { getAgentMessages } from '../../agent/agent-bus.js';
+import {
+  insertMessageIfAbsent, rewriteSystemPromptRow, deleteAllForAgent, deleteAgentBusRowsFor,
+} from '../../memory/message-store.js';
 import { createLogger } from '../../logger.js';
 import { broadcast } from '../ws.js';
 import { isPrimaryAgent, getPrimaryAgentId, getHealerAgentId, getDreamerAgentId, getImaginerAgentId } from '../../config/platform.js';
@@ -140,10 +143,7 @@ agentsRouter.post('/', async (c) => {
     );
 
     // Store system prompt as first message (no spawn injection)
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'system', ?, datetime('now'))
-    `).run(uuidv4(), agentId, body.systemPrompt);
+    insertMessageIfAbsent({ id: uuidv4(), agentId, role: 'system', content: body.systemPrompt });
 
     // FA-PT6: persist the charter durably (migration 096) so getSoulContent
     // reads it directly instead of sniffing the earliest role='system' row.
@@ -153,10 +153,7 @@ agentsRouter.post('/', async (c) => {
 
     // Store initial user message — just the task, no IMPORTANT INSTRUCTIONS
     const initMsgId = uuidv4();
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'user', ?, datetime('now'))
-    `).run(initMsgId, agentId, body.systemPrompt);
+    insertMessageIfAbsent({ id: initMsgId, agentId, role: 'user', content: body.systemPrompt });
 
     // Start the agent runtime
     const runtime = getAgentRuntime();
@@ -270,9 +267,9 @@ agentsRouter.put('/:id', async (c) => {
       // Update or insert the system message for this agent
       const existing = db.prepare("SELECT id FROM messages WHERE agent_id = ? AND role = 'system' ORDER BY rowid ASC LIMIT 1").get(id) as { id: string } | undefined;
       if (existing) {
-        db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(body.systemPrompt, existing.id);
+        rewriteSystemPromptRow(existing.id, body.systemPrompt);
       } else {
-        db.prepare("INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))").run(uuidv4(), id, body.systemPrompt);
+        insertMessageIfAbsent({ id: uuidv4(), agentId: id, role: 'system', content: body.systemPrompt });
       }
       // FA-PT6: keep the durable charter column (migration 096) in sync with the
       // edited system prompt, so getSoulContent reflects the update immediately.
@@ -435,9 +432,11 @@ agentsRouter.post('/:id/reset-session', async (c) => {
 
     // 3. Insert UI divider + broadcast.
     const dividerId = uuidv4();
-    db.prepare(
-      "INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', '── New Session ──', ?)",
-    ).run(dividerId, id, boundary);
+    // The divider's created_at is stamped by the writer at insert time rather than
+    // pinned to `boundary` (computed a few lines up). Every session query is
+    // `created_at >= session_started_at`, so at-or-after the boundary keeps the row
+    // inside the new session; the broadcast still quotes `boundary` for the UI.
+    insertMessageIfAbsent({ id: dividerId, agentId: id, role: 'system', content: '── New Session ──' });
     broadcast({
       type: 'chat:message',
       agentId: id,
@@ -452,9 +451,7 @@ agentsRouter.post('/:id/reset-session', async (c) => {
     const { buildSessionResetMessage } = await import('../../agent/session-reset.js');
     const reorientId = uuidv4();
     const reorientContent = buildSessionResetMessage(id);
-    db.prepare(
-      "INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, ?)",
-    ).run(reorientId, id, reorientContent, boundary);
+    insertMessageIfAbsent({ id: reorientId, agentId: id, role: 'system', content: reorientContent });
     broadcast({
       type: 'chat:message',
       agentId: id,
@@ -504,8 +501,12 @@ agentsRouter.post('/:id/purge', (c) => {
   }
 
   // Delete all associated data
-  db.prepare('DELETE FROM messages WHERE agent_id = ?').run(id);
-  db.prepare('DELETE FROM agent_messages WHERE from_agent = ? OR to_agent = ?').run(id, id);
+  deleteAllForAgent(id);
+  // T4: the agent bus folded into `messages`, so its cascade is a scoped delete on the
+  // same table rather than a second one. Both directions, exactly as before — the rows
+  // this agent RECEIVED go with the line above; this catches the ones it SENT, which
+  // live on the recipient's row.
+  deleteAgentBusRowsFor(id);
   db.prepare('DELETE FROM summary_messages WHERE summary_id IN (SELECT id FROM summaries WHERE agent_id = ?)').run(id);
   db.prepare('DELETE FROM summary_parents WHERE summary_id IN (SELECT id FROM summaries WHERE agent_id = ?) OR parent_id IN (SELECT id FROM summaries WHERE agent_id = ?)').run(id, id);
   db.prepare('DELETE FROM summaries WHERE agent_id = ?').run(id);
@@ -545,10 +546,7 @@ agentsRouter.post('/:id/message', async (c) => {
   const messageId = uuidv4();
 
   // Persist as user message
-  db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-    VALUES (?, ?, 'user', ?, datetime('now'))
-  `).run(messageId, id, content);
+  insertMessageIfAbsent({ id: messageId, agentId: id, role: 'user', content });
 
   // Trigger the agent runtime
   const runtime = getAgentRuntime();
