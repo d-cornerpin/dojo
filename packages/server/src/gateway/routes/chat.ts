@@ -150,7 +150,7 @@ export async function submitUserMessage(
   logger.info('User message persisted', { agentId, messageId, attachmentCount: attachments?.length ?? 0 }, agentId);
 
   const createdAtRow = db
-    .prepare('SELECT created_at FROM messages WHERE id = ?')
+    .prepare(`SELECT datetime(created_at/1000,'unixepoch') AS created_at FROM messages WHERE id = ?`)
     .get(messageId) as { created_at: string } | undefined;
   broadcast({
     type: 'chat:message',
@@ -319,7 +319,7 @@ chatRouter.get('/:agentId/messages', (c) => {
     }
 
     rows = db.prepare(`
-      SELECT *, rowid AS _rowid FROM messages
+      SELECT *, datetime(created_at/1000,'unixepoch') AS created_at, rowid AS _rowid FROM messages
       WHERE agent_id = @agentId AND ${STOP_MARKER_FILTER} AND ${RETIRED_FILTER}
         AND (${OWNER_LANE_FILTER} OR (lane = 'a2a' AND role IN ('assistant','tool')))
         ${cursorClause}
@@ -336,7 +336,7 @@ chatRouter.get('/:agentId/messages', (c) => {
     }
 
     rows = db.prepare(`
-      SELECT * FROM messages
+      SELECT *, datetime(created_at/1000,'unixepoch') AS created_at FROM messages
       WHERE agent_id = ? AND rowid < ? AND ${STOP_MARKER_FILTER} AND ${RETIRED_FILTER}
         AND ${OWNER_LANE_FILTER}
       ORDER BY rowid DESC
@@ -344,7 +344,7 @@ chatRouter.get('/:agentId/messages', (c) => {
     `).all(agentId, cursorMsg.rowid, Math.min(limit, 200)) as Array<Record<string, unknown>>;
   } else {
     rows = db.prepare(`
-      SELECT * FROM messages
+      SELECT *, datetime(created_at/1000,'unixepoch') AS created_at FROM messages
       WHERE agent_id = ? AND ${STOP_MARKER_FILTER} AND ${RETIRED_FILTER}
         AND ${OWNER_LANE_FILTER}
       ORDER BY rowid DESC

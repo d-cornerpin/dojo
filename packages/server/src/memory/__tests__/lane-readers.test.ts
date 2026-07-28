@@ -126,7 +126,7 @@ describe('agent recall covers the a2a lane (the 20k-invisible class)', () => {
 
 // ── 2. One tail query, ordered by seq ──
 //
-// `created_at` is second-granular TEXT, and the engine's undelivered-event re-home
+// `created_at` is second-granular epoch-ms INTEGER (T6b, mig 131), and the engine's re-home
 // (message-store.rehomeUndeliveredCreatedAt, D-A step 4) deliberately pushes a row's
 // created_at FORWARD across a session reset while its insertion key stays put. A tail
 // ordered by the clock therefore reports a row that was written first as if it arrived
@@ -139,7 +139,7 @@ describe('one tail query, ordered by seq', () => {
     const third = insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', content: 'third' });
 
     // Exactly what rehomeUndeliveredCreatedAt does to a fired-but-undelivered event.
-    mockDb.current!.prepare("UPDATE messages SET created_at = datetime('now', '+1 hour') WHERE id = ?")
+    mockDb.current!.prepare("UPDATE messages SET created_at = (CAST(strftime('%s','now','+1 hour') AS INTEGER) * 1000) WHERE id = ?")
       .run(first.id);
 
     const tail = getRecentMessages(AGENT, 50);
@@ -150,7 +150,7 @@ describe('one tail query, ordered by seq', () => {
     const a = insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', content: 'alpha' });
     const b = insertMessage({ agentId: AGENT, role: 'assistant', lane: 'a2a', content: 'bravo' });
     const c = insertMessage({ agentId: AGENT, role: 'user', lane: 'owner', content: 'charlie' });
-    mockDb.current!.prepare("UPDATE messages SET created_at = datetime('now', '+1 hour') WHERE id = ?")
+    mockDb.current!.prepare("UPDATE messages SET created_at = (CAST(strftime('%s','now','+1 hour') AS INTEGER) * 1000) WHERE id = ?")
       .run(a.id);
 
     const rows = getMessagesByIds([c.id, a.id, b.id]);

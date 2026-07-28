@@ -26,7 +26,9 @@
 
 import { randomUUID } from 'node:crypto';
 import { getDb } from '../db/connection.js';
-import { estimateTokens } from './store.js';
+import { estimateTokens, NOW_MS, createdAtText } from './store.js';
+
+export { NOW_MS, createdAtText };
 
 export type Lane = 'owner' | 'a2a' | 'events';
 export type Role = 'user' | 'assistant' | 'system' | 'tool';
@@ -104,7 +106,7 @@ interface MessageRowShape {
 }
 
 const SELECT_COLS = `seq, id, agent_id, role, content, lane, display_kind, display_tier,
-  token_count, created_at, sent_at, turn_number, channel, origin_intent, source_agent_id,
+  token_count, ${createdAtText()}, sent_at, turn_number, channel, origin_intent, source_agent_id,
   served_by_turn`;
 
 function toStored(r: MessageRowShape): StoredMessage {
@@ -154,7 +156,7 @@ const INSERT_SQL = `
       @sourceAgentId, @a2aThreadId, @a2aIntent, @a2aRequiresResponse, @tokenCount,
       @modelId, @cost, @latencyMs, @reasoningContent, @inboundMeta, @attachments,
       @externalMessageId, @speaker, @voiceSessionId, @taskId, @runId, @rootKind, @rootId,
-      @convKey, 'live', @sentAt, datetime('now')
+      @convKey, 'live', @sentAt, ${NOW_MS}
     )`;
 
 function bind(m: NewMessage): { lane: Lane; id: string; displayKind: string; displayTier: DisplayTier;
@@ -199,7 +201,7 @@ export function insertMessage(m: NewMessage): Persisted {
   const db = getDb();
   const b = bind(m);
   const info = db.prepare(INSERT_SQL).run(b.params);
-  const createdAt = (db.prepare('SELECT created_at FROM messages WHERE seq = ?')
+  const createdAt = (db.prepare(`SELECT ${createdAtText()} FROM messages WHERE seq = ?`)
     .get(info.lastInsertRowid as number) as { created_at: string }).created_at;
   return {
     seq: info.lastInsertRowid as number, id: b.id, lane: b.lane,
@@ -225,7 +227,7 @@ export function insertMessageIfAbsent(m: NewMessage): Persisted | null {
   const b = bind(m);
   const info = db.prepare(`${INSERT_SQL} ON CONFLICT DO NOTHING`).run(b.params);
   if (info.changes === 0) return null;
-  const createdAt = (db.prepare('SELECT created_at FROM messages WHERE seq = ?')
+  const createdAt = (db.prepare(`SELECT ${createdAtText()} FROM messages WHERE seq = ?`)
     .get(info.lastInsertRowid as number) as { created_at: string }).created_at;
   return {
     seq: info.lastInsertRowid as number, id: b.id, lane: b.lane,
@@ -436,6 +438,24 @@ export function setAnswerMessageId(
 
 // ── Engine-event lifecycle (serve boundary, mig 099/112) ──
 
+/** "Now", in whichever representation the TARGET TABLE stores (T6b). `messages` is epoch-ms
+ *  INTEGER from migration 131; `inter_agent_messages` is still TEXT and stays TEXT until T10
+ *  drops it. Both branches are correct rather than one being right by luck — nothing passes
+ *  `'ia'` today (measured: no caller in `packages/server/src` supplies the argument), but the
+ *  dispatch is still declared, so writing the wrong shape down that branch would be a real
+ *  bug the day someone re-enables it. */
+function nowExpr(src: LegacySrc): string {
+  return src === 'ia' ? "datetime('now')" : NOW_MS;
+}
+
+/** The same, offset — `offset` is a SQLite modifier this module's own callers supply
+ *  ('+5 minutes'); it is never user input. */
+function nowPlusExpr(src: LegacySrc, param: string): string {
+  return src === 'ia'
+    ? `datetime('now', ${param})`
+    : `(CAST(strftime('%s','now', ${param}) AS INTEGER) * 1000)`;
+}
+
 /** Retire a queued engine event without serving it. `requireUnclaimed` is the serve
  *  boundary's guard: a row already claimed by a turn is not ours to sweep. */
 export function sweepByRowid(
@@ -445,7 +465,7 @@ export function sweepByRowid(
   const agent = p.agentId ? 'AND agent_id = @agentId' : '';
   const unclaimed = p.requireUnclaimed ? 'AND conv_key IS NULL' : '';
   return db.prepare(
-    `UPDATE ${home(src)} SET swept_at = datetime('now')
+    `UPDATE ${home(src)} SET swept_at = ${nowExpr(src)}
        WHERE rowid = @rowid ${agent} ${unclaimed} AND swept_at IS NULL`,
   ).run({ rowid: p.rowid, agentId: p.agentId ?? null }).changes;
 }
@@ -457,7 +477,7 @@ export function sweepByReferent(
 ): number {
   const db = getDb();
   return db.prepare(
-    `UPDATE ${home(src)} SET swept_at = datetime('now')
+    `UPDATE ${home(src)} SET swept_at = ${nowExpr(src)}
        WHERE ${p.referent} = ? AND conv_key IS NULL AND swept_at IS NULL`,
   ).run(p.id).changes;
 }
@@ -465,7 +485,7 @@ export function sweepByReferent(
 /** Retire one row by its message id. */
 export function sweepById(id: string, src: LegacySrc = 'm'): number {
   const db = getDb();
-  return db.prepare(`UPDATE ${home(src)} SET swept_at = datetime('now') WHERE id = ?`)
+  return db.prepare(`UPDATE ${home(src)} SET swept_at = ${nowExpr(src)} WHERE id = ?`)
     .run(id).changes;
 }
 
@@ -477,7 +497,7 @@ export function recordDeliveryAttempt(
   const db = getDb();
   return db.prepare(
     `UPDATE ${home(src)} SET delivery_attempts = @attempts,
-        next_attempt_at = datetime('now', @offset)
+        next_attempt_at = ${nowPlusExpr(src, '@offset')}
       WHERE agent_id = @agentId AND rowid = @rowid`,
   ).run({ agentId: p.agentId, rowid: p.rowid, attempts: p.attempts, offset: `+${p.backoffMinutes} minutes` }).changes;
 }
@@ -490,18 +510,30 @@ export function recordDeliveryAttempt(
  *  next to the eligibility reads it must stay identical to (agent/v2/counterparty.ts).
  *  Copying it here would fork the definition of "deliverable", which is the duplication
  *  this phase exists to remove. It is never built from user input. T6 owns collapsing it
- *  onto `lane` along with the rest of the eligibility predicates. */
+ *  onto `lane` along with the rest of the eligibility predicates.
+ *
+ *  T6b: `newBoundary` is still the TEXT session boundary its five callers already compute
+ *  and already write to `agents.session_started_at` — that column is not on the spine and
+ *  does not convert, so the parameter's type is unchanged and no caller was touched. Both
+ *  uses of it here cross into the converted column, so BOTH are wrapped. This is the one
+ *  place in the module that WRITES `created_at` after the insert; the wrap is what stops it
+ *  putting a datetime string into an INTEGER column, which the column's typeof CHECK would
+ *  now reject outright — loudly, which is the point. */
 export function rehomeUndeliveredCreatedAt(
   p: { agentId: string; newBoundary: string; eligibleWhere: string; maxAttempts: number; expiryHours: number },
   src: LegacySrc = 'm',
 ): number {
   const db = getDb();
+  const boundary = src === 'ia' ? '@newBoundary' : '(unixepoch(@newBoundary) * 1000)';
+  const horizon = src === 'ia'
+    ? `datetime('now', '-${p.expiryHours} hours')`
+    : `(CAST(strftime('%s','now', '-${p.expiryHours} hours') AS INTEGER) * 1000)`;
   return db.prepare(
-    `UPDATE ${home(src)} SET created_at = @newBoundary
+    `UPDATE ${home(src)} SET created_at = ${boundary}
        WHERE agent_id = @agentId AND ${p.eligibleWhere}
-         AND created_at < @newBoundary
+         AND created_at < ${boundary}
          AND delivery_attempts < ${p.maxAttempts}
-         AND created_at >= datetime('now', '-${p.expiryHours} hours')`,
+         AND created_at >= ${horizon}`,
   ).run({ agentId: p.agentId, newBoundary: p.newBoundary }).changes;
 }
 

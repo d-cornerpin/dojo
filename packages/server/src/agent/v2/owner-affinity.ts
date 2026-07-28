@@ -64,10 +64,10 @@ export function resolveOwnerAffinityChannel(agentId: string, opts: OwnerAffinity
     const db = getDb();
     const rows = db.prepare(
       `SELECT content, lane, channel, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response,
-              inbound_meta, origin_intent, created_at
+              inbound_meta, origin_intent, datetime(created_at/1000,'unixepoch') AS created_at
          FROM messages
         WHERE agent_id = ? AND role = 'user'
-          AND created_at >= datetime('now', ?)
+          AND created_at >= (unixepoch('now', ?) * 1000)
         ORDER BY created_at DESC, rowid DESC
         LIMIT 100`,
     ).all(agentId, `-${windowHours} hours`) as OwnerAffinityRow[];

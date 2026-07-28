@@ -45,12 +45,52 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+// ════════════════════════════════════════════════════════════════════════════════
+// TIME ON THE SPINE (PHASE-1 T6b, migration 131) — the two vocabularies, and the rule.
+//
+// `messages.created_at`, `swept_at`, `next_attempt_at` and `retired_at` are epoch-ms
+// INTEGER in the database. They were TEXT 'YYYY-MM-DD HH:MM:SS' until 131, and SQLite orders
+// INTEGER before TEXT UNCONDITIONALLY, so a comparison left in the old shape does not error —
+// it silently returns the wrong rows. (Measured, on real data: the scheduler's stale-task
+// gate returned 50 stale tasks unconverted against a true 44.) The two helpers below exist
+// so that mistake has to be made deliberately.
+//
+// WRITING a time: `NOW_MS`. Never `datetime('now')` — that stores a string, which the
+// column's typeof CHECK now rejects at the database rather than absorbing.
+//
+// READING a time INTO TypeScript: `createdAtText(...)`. Every projection that lands in a
+// `createdAt: string` goes through it, so the value TypeScript sees is the identical string
+// it saw before 131 — byte for byte, because `strftime('%s', …)` and `datetime(…,'unixepoch')`
+// are exact inverses for the second-granular UTC values this column holds (0 mismatches over
+// all rows; the command is in migration 131's header). That is what keeps THREE things this
+// phase does not own completely unchanged: the wire type `Message.createdAt: string` and the
+// dashboard that parses it (SWEEP-E's), the per-message prompt stamp whose bytes every
+// provider has cached (non-negotiable #10), and `vault_conversations.earliest_at`/`latest_at`,
+// which are TEXT and stay TEXT.
+//
+// COMPARING against a TEXT datetime the platform still holds — `agents.session_started_at`,
+// `tasks.updated_at`, a JS-formatted session boundary: put `unixepoch(<text>) * 1000` on the
+// TEXT side. Convert the other side; never leave the two sides in different types.
+// ════════════════════════════════════════════════════════════════════════════════
+
+/** Epoch-ms for "now", second-granular — the same expression migration 127 gave `sent_at`
+ *  and 131 gave `created_at`'s DEFAULT, so a row written through a writer and a row that
+ *  fell back to the default are indistinguishable. */
+export const NOW_MS = "(CAST(strftime('%s','now') AS INTEGER) * 1000)";
+
+/** Project an epoch-ms time column back to the canonical SQLite TEXT shape under its own
+ *  name. `col`/`alias` are SQL identifiers the CALLER supplies from its own literal — never
+ *  user input. Use it in any SELECT whose row lands in a TypeScript `string`. */
+export function createdAtText(col = 'created_at', alias = 'created_at'): string {
+  return `datetime(${col}/1000,'unixepoch') AS ${alias}`;
+}
+
 // ── Row-to-Message Mapping ──
 
 /** Every loader below projects exactly this list, so `rowToMessage` never has to ask whether
  *  a column happened to be selected. `seq` is projected as itself: it IS the rowid. */
 const SELECT_COLS = `seq, id, agent_id, role, content, token_count, model_id, cost,
-  latency_ms, created_at, turn_number, reasoning_content, lane, channel, source_agent_id,
+  latency_ms, ${createdAtText()}, turn_number, reasoning_content, lane, channel, source_agent_id,
   a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, origin_intent, conv_key`;
 
 export interface MessageRow {
@@ -136,16 +176,24 @@ export function rowToMessage(row: MessageRow): Message {
  *
  *  Window semantics are unchanged from the two-table era: bounded below by the agent's
  *  session boundary, and `turnCutoff` (when given) drops user rows that arrived after the
- *  turn started so a turn never answers a message it has not claimed. Both predicates
- *  compare `created_at` as TEXT — deliberately: the whole time column stays TEXT until T6
- *  converts the format and all of its predicates together, in one owned step. */
+ *  turn started so a turn never answers a message it has not claimed.
+ *
+ *  T6b — THE TWO PREDICATES THAT MATTER MOST IN THIS FILE. `@boundary` is
+ *  `agents.session_started_at` and `@cutoff` is a JS-formatted turn start; both are TEXT and
+ *  neither is on the spine, so both are converted HERE, at the comparison. Left unwrapped
+ *  they do not error — `<integer> >= '<datetime>'` is simply FALSE for every row — and this
+ *  is the loader that builds the model's conversation. The whole tail comes back EMPTY, the
+ *  model is handed nothing, and the turn ends without a reply. Measured exactly that way
+ *  during this task: `simple-reply` went red with "[Agent ended turn without replying]" and
+ *  no assistant row at all. It is the single most expensive thing this conversion could get
+ *  wrong, and no SQL-literal scan can see it, because these fragments never name the table. */
 export function getRecentMessages(agentId: string, count: number, turnCutoff?: string): Message[] {
   const db = getDb();
   const sessionBoundary = getSessionBoundary(agentId);
   const params: Record<string, unknown> = { agentId, count };
   const clauses = ['agent_id = @agentId'];
-  if (sessionBoundary) { clauses.push('created_at >= @boundary'); params.boundary = sessionBoundary; }
-  if (turnCutoff) { clauses.push("NOT (role = 'user' AND created_at > @cutoff)"); params.cutoff = turnCutoff; }
+  if (sessionBoundary) { clauses.push('created_at >= (unixepoch(@boundary) * 1000)'); params.boundary = sessionBoundary; }
+  if (turnCutoff) { clauses.push("NOT (role = 'user' AND created_at > (unixepoch(@cutoff) * 1000))"); params.cutoff = turnCutoff; }
 
   // Newest `count` by insertion key, returned oldest-first.
   const rows = db.prepare(`
@@ -170,7 +218,7 @@ export function getMessagesOutsideFreshTail(agentId: string, freshTailCount: num
   const sessionBoundary = getSessionBoundary(agentId);
   const params: Record<string, unknown> = { agentId, freshTailCount };
   const clauses = ['agent_id = @agentId'];
-  if (sessionBoundary) { clauses.push('created_at >= @boundary'); params.boundary = sessionBoundary; }
+  if (sessionBoundary) { clauses.push('created_at >= (unixepoch(@boundary) * 1000)'); params.boundary = sessionBoundary; }
   const where = clauses.join(' AND ');
 
   const rows = db.prepare(`
@@ -223,7 +271,7 @@ export function getMessageCountByAgent(agentId: string): number {
 export function getTotalTokensByAgent(agentId: string): number {
   const db = getDb();
   const sessionBoundary = getSessionBoundary(agentId);
-  const boundaryClause = sessionBoundary ? 'AND created_at >= ?' : '';
+  const boundaryClause = sessionBoundary ? 'AND created_at >= (unixepoch(?) * 1000)' : '';
   const boundaryParams = sessionBoundary ? [sessionBoundary] : [];
 
   // Sum known token counts (current session only)

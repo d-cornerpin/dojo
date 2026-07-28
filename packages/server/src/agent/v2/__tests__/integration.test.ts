@@ -310,7 +310,7 @@ function setupTestDb(): Database.Database {
   // Seed a user message so assembleContext has something to work with
   db.prepare(`
     INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
-    VALUES ('msg-user-1', 'primary', 'user', 'hello primary', 1, datetime('now'))
+    VALUES ('msg-user-1', 'primary', 'user', 'hello primary', 1, (CAST(strftime('%s','now') AS INTEGER) * 1000))
   `).run();
 
   return db;
@@ -859,7 +859,7 @@ describe('runV2Turn integration', () => {
     mockDb.current!
       .prepare(
         `INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
-         VALUES ('msg-prior-assistant', 'primary', 'assistant', 'Hello back!', 1, datetime('now'))`,
+         VALUES ('msg-prior-assistant', 'primary', 'assistant', 'Hello back!', 1, (CAST(strftime('%s','now') AS INTEGER) * 1000))`,
       )
       .run();
 
@@ -891,7 +891,7 @@ describe('runV2Turn integration', () => {
     mockDb.current!
       .prepare(
         `INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
-         VALUES ('msg-prior-assistant', 'primary', 'assistant', 'Hello back!', 1, datetime('now'))`,
+         VALUES ('msg-prior-assistant', 'primary', 'assistant', 'Hello back!', 1, (CAST(strftime('%s','now') AS INTEGER) * 1000))`,
       )
       .run();
 
@@ -917,7 +917,7 @@ describe('runV2Turn integration', () => {
     mockDb.current!
       .prepare(
         `INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
-         VALUES ('msg-prior-assistant', 'primary', 'assistant', 'Same text', 1, datetime('now'))`,
+         VALUES ('msg-prior-assistant', 'primary', 'assistant', 'Same text', 1, (CAST(strftime('%s','now') AS INTEGER) * 1000))`,
       )
       .run();
 
@@ -1434,7 +1434,7 @@ describe('runV2Turn integration', () => {
     mockDb.current!
       .prepare(
         `INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
-         VALUES ('msg-dreamer-1', 'dreamer', 'user', 'process batch', 1, datetime('now'))`,
+         VALUES ('msg-dreamer-1', 'dreamer', 'user', 'process batch', 1, (CAST(strftime('%s','now') AS INTEGER) * 1000))`,
       )
       .run();
 

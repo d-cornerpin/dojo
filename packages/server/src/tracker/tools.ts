@@ -1840,7 +1840,7 @@ function relayAssignHandbackIfMissing(taskId: string): void {
     // hand-back happened, nothing to relay.
     const heardAlready = (): boolean => !!getDb().prepare(
       `SELECT rowid FROM messages
-       WHERE agent_id = ? AND source_agent_id = ? AND a2a_thread_id = ? AND created_at >= ?
+       WHERE agent_id = ? AND source_agent_id = ? AND a2a_thread_id = ? AND created_at >= (unixepoch(?) * 1000)
        LIMIT 1`
     ).get(row.created_by, row.assigned_to, row.a2a_thread_id, row.created_at);
     if (heardAlready()) return;

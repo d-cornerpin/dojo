@@ -108,7 +108,7 @@ export function findCrossConvReAnswer(
         AND conv_key NOT IN ('engine', 'engine-steer')
         AND content NOT LIKE '[{%'
         AND length(content) >= ${MIN_COMPARABLE_CHARS}
-        AND created_at >= datetime('now', '-${LOOKBACK_HOURS} hours')
+        AND created_at >= (unixepoch('now', '-${LOOKBACK_HOURS} hours') * 1000)
       ORDER BY created_at DESC LIMIT ${MAX_CANDIDATES}`,
   ).all(agentId, excludeConvKey, excludeConvKey) as Array<{ conv_key: string; content: string }>;
 

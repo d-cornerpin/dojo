@@ -1256,6 +1256,19 @@ function cleanupStaleRuns(): void {
   // updated_at, agent last message) — same per-task pattern as PM's poke
   // loop in v2.3.6. Catches a recurring run that the agent finished but
   // never called tracker_update_status on.
+  //
+  // PHASE-1 T6b — THE SILENT INVERSION, and why `MAX(m.created_at)` is wrapped.
+  // `messages.created_at` is epoch-ms INTEGER from migration 131; `tasks.updated_at` is
+  // TEXT and is not on the spine, so this scalar MIN() compares an INTEGER against a TEXT
+  // datetime. SQLite orders INTEGER before TEXT UNCONDITIONALLY — so MIN() would return the
+  // epoch number whenever the messages side existed at all, and `<integer> < '<datetime>'`
+  // is TRUE for every integer there is. Every running scheduled task would be declared
+  // stale, with no error, no log line and no failing test.
+  // It is not hypothetical: rehearsed on a VACUUM INTO copy of this box, the unwrapped form
+  // returned 50 stale tasks where the true answer was 44 — six live tasks killed per pass.
+  // Projecting the messages side back to the TEXT shape keeps BOTH sides of the comparison
+  // one type and reproduces the pre-migration answer exactly (44 = 44 in the same rehearsal).
+  // If `tasks.updated_at` ever converts too, this wrap comes off and both sides go numeric.
   const staleTasks = db.prepare(`
     SELECT t.id, t.title, t.assigned_to
     FROM tasks t
@@ -1264,7 +1277,7 @@ function cleanupStaleRuns(): void {
       AND t.assigned_to IS NOT NULL
       AND MIN(
         COALESCE(
-          (SELECT MAX(m.created_at) FROM messages m WHERE m.agent_id = t.assigned_to),
+          (SELECT datetime(MAX(m.created_at)/1000, 'unixepoch') FROM messages m WHERE m.agent_id = t.assigned_to),
           t.updated_at
         ),
         t.updated_at

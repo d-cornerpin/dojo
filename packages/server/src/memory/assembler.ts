@@ -1331,7 +1331,7 @@ async function assembleMessageContext(
       ];
       const params: unknown[] = [agentId];
       if (sessionBoundary) {
-        baseConditions.push('created_at >= ?');
+        baseConditions.push('created_at >= (unixepoch(?) * 1000)');
         params.push(sessionBoundary);
       }
       const sql = `SELECT content FROM messages WHERE ${baseConditions.join(' AND ')} ORDER BY created_at DESC, rowid DESC LIMIT 1`;
@@ -1371,7 +1371,7 @@ async function assembleMessageContext(
     const sessionRow = db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined;
     if (sessionRow?.session_started_at) {
       const assistantInSession = db.prepare(
-        "SELECT COUNT(*) as cnt FROM messages WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?"
+        "SELECT COUNT(*) as cnt FROM messages WHERE agent_id = ? AND role = 'assistant' AND created_at >= (unixepoch(?) * 1000)"
       ).get(agentId, sessionRow.session_started_at) as { cnt: number };
       if (assistantInSession.cnt === 0 && merged.length > 0 && merged[merged.length - 1].role === 'user') {
         const lastMsg = merged[merged.length - 1];
@@ -1738,7 +1738,7 @@ async function buildRelevantMemoryBlock(agentId: string, includeVault: boolean):
     const msgCandidates: Array<{ createdAt: string; line: string }> = [];
     for (const hit of msgHits) {
       if (tailIds.has(hit.sourceId)) continue;
-      const row = db.prepare('SELECT role, content, created_at FROM messages WHERE id = ?')
+      const row = db.prepare(`SELECT role, content, datetime(created_at/1000,'unixepoch') AS created_at FROM messages WHERE id = ?`)
         .get(hit.sourceId) as { role: string; content: string; created_at: string } | undefined;
       if (!row || typeof row.content !== 'string') continue;
       if (row.content.trim().startsWith('[') && row.content.includes('"type"')) continue; // tool JSON rows
@@ -1961,7 +1961,7 @@ function isV2SessionStart(agentId: string): boolean {
     let cnt: number;
     if (sessionStarted) {
       cnt = (db.prepare(
-        "SELECT COUNT(*) as cnt FROM messages WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?",
+        "SELECT COUNT(*) as cnt FROM messages WHERE agent_id = ? AND role = 'assistant' AND created_at >= (unixepoch(?) * 1000)",
       ).get(agentId, sessionStarted) as { cnt: number }).cnt;
     } else {
       cnt = (db.prepare(

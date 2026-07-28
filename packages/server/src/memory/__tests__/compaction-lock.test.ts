@@ -68,7 +68,7 @@ function seedHistory(db: Database.Database, count: number): string[] {
   const ids: string[] = [];
   const insert = db.prepare(`
     INSERT INTO messages (id, agent_id, role, content, token_count, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, (unixepoch(?) * 1000))
   `);
   for (let i = 0; i < count; i++) {
     const id = `msg-${i.toString().padStart(4, '0')}`;
@@ -169,7 +169,7 @@ describe('checkAndCompact concurrency (PHASE-1 T2)', () => {
     // Fresh material, then compact again. It must do real work.
     const insert = db.prepare(`
       INSERT INTO messages (id, agent_id, role, content, token_count, created_at)
-      VALUES (?, ?, 'user', ?, 2000, ?)
+      VALUES (?, ?, 'user', ?, 2000, (unixepoch(?) * 1000))
     `);
     for (let i = 0; i < 120; i++) {
       insert.run(`later-${i.toString().padStart(4, '0')}`, AGENT, `Later message ${i}: ${'context '.repeat(400)}`,
@@ -189,7 +189,7 @@ describe('checkAndCompact concurrency (PHASE-1 T2)', () => {
     seedHistory(db, 160);
     const insert = db.prepare(`
       INSERT INTO messages (id, agent_id, role, content, token_count, created_at)
-      VALUES (?, ?, 'user', ?, 2000, ?)
+      VALUES (?, ?, 'user', ?, 2000, (unixepoch(?) * 1000))
     `);
     for (let i = 0; i < 160; i++) {
       insert.run(`other-${i.toString().padStart(4, '0')}`, OTHER, `Other message ${i}: ${'context '.repeat(400)}`,

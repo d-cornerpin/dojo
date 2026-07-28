@@ -1479,7 +1479,7 @@ export async function runPokeCheck(): Promise<void> {
       `);
       const activeCheck = db.prepare(`
         SELECT 1 FROM messages
-        WHERE agent_id = ? AND role = 'assistant' AND created_at > ?
+        WHERE agent_id = ? AND role = 'assistant' AND created_at > (unixepoch(?) * 1000)
         LIMIT 1
       `);
       let swept = 0;

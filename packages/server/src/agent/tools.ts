@@ -7456,7 +7456,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           const DORMANT_DAYS = 7;
           lines = agentRows.map(a => {
             const lastMsg = listDb.prepare(
-              'SELECT created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
+              `SELECT datetime(created_at/1000,'unixepoch') AS created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`
             ).get(a.id as string) as { created_at: string } | undefined;
             const createdTs = a.created_at ? ((a.created_at as string).includes('Z') ? a.created_at as string : (a.created_at as string) + 'Z') : null;
             const createdMs = createdTs ? new Date(createdTs).getTime() : 0;

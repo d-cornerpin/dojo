@@ -70,7 +70,7 @@ const THREADS_LANES = "lane IN ('a2a','events')";
 
 /** Every read below projects exactly this list. */
 const LANE_COLS = `id, agent_id, role, content, source_agent_id, a2a_thread_id, a2a_intent,
-               a2a_requires_response, attachments, lane, origin_intent, created_at`;
+               a2a_requires_response, attachments, lane, origin_intent, datetime(created_at/1000,'unixepoch') AS created_at`;
 
 function rowToInterAgentMessage(
   db: ReturnType<typeof getDb>,

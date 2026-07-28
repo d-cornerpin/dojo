@@ -581,7 +581,7 @@ agentsRouter.get('/:id/messages', (c) => {
   // never surface again. It was covering for the lane while the split was physical;
   // it is not doing that job any more.
   const rows = db.prepare(`
-    SELECT * FROM messages WHERE agent_id = ? AND retired_at IS NULL AND lane = 'owner'
+    SELECT *, datetime(created_at/1000,'unixepoch') AS created_at FROM messages WHERE agent_id = ? AND retired_at IS NULL AND lane = 'owner'
     ORDER BY created_at ASC
     LIMIT ? OFFSET ?
   `).all(id, limit, offset) as Array<Record<string, unknown>>;

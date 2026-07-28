@@ -935,7 +935,7 @@ export function isBackchannel(transcript: string): boolean {
 function lastAssistantWasQuestion(agentId: string): boolean {
   try {
     const row = getDb().prepare(`
-      SELECT content, created_at
+      SELECT content, datetime(created_at/1000,'unixepoch') AS created_at
       FROM messages
       WHERE agent_id = ?
         AND role = 'assistant'

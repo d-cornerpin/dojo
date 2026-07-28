@@ -121,7 +121,7 @@ function hasUnservedInboundRecently(agentId: string, windowHours: number): boole
       .prepare(
         `SELECT 1 FROM messages
           WHERE agent_id = ? AND role = 'user' AND conv_key IS NULL
-            AND created_at >= datetime('now', ?)
+            AND created_at >= (unixepoch('now', ?) * 1000)
           LIMIT 1`,
       )
       .get(agentId, `-${Math.max(1, Math.floor(windowHours))} hours`);

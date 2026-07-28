@@ -16,6 +16,7 @@ import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import {
   claimRowByRowid,
+  createdAtText,
   recordDeliveryAttempt,
   rehomeUndeliveredCreatedAt,
   sweepByReferent,
@@ -60,7 +61,7 @@ export interface WaitingConversation {
  *  accidentally omit a column the origin resolver needs. */
 const WAITING_COLS = `rowid, id, conversation_id, conv_key, content, lane, channel,
   source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta,
-  origin_intent, created_at`;
+  origin_intent, ${createdAtText()}`;
 
 /**
  * T6: the candidate narrowing, in ONE place, for the four reads that must agree on it
@@ -79,7 +80,7 @@ const WAITING_COLS = `rowid, id, conversation_id, conv_key, content, lane, chann
  * may not do.
  */
 const WAITING_HUMAN_CANDIDATE_WHERE =
-  `role = 'user' AND created_at >= @sessionStart
+  `role = 'user' AND created_at >= (unixepoch(@sessionStart) * 1000)
    AND conv_key IS NULL
    AND swept_at IS NULL
    AND lane = 'owner'
@@ -203,7 +204,7 @@ export function claimAssembledSiblings(agentId: string, convKey: string, assembl
     `SELECT ${WAITING_COLS}
        FROM messages
       WHERE agent_id = @agentId AND ${WAITING_HUMAN_CANDIDATE_WHERE}
-        AND datetime(created_at) <= datetime(@assembledAt)`,
+        AND created_at <= (unixepoch(@assembledAt) * 1000)`,
   ).all({ agentId, sessionStart, assembledAt: assembledAtIso }) as Array<WaitingConversation['latest']>;
   // P4: siblings record WHICH turn served them (forward link), alongside the
   // claim stamp that hides them from the waiting set.
@@ -250,8 +251,8 @@ export function getOwedMidTurnArrivals(
     `SELECT ${WAITING_COLS}
        FROM messages
       WHERE agent_id = @agentId AND ${WAITING_HUMAN_CANDIDATE_WHERE}
-        AND datetime(created_at) > datetime(@turnStartedAt)
-        AND datetime(created_at) <= datetime(@assembledAt)
+        AND created_at > (unixepoch(@turnStartedAt) * 1000)
+        AND created_at <= (unixepoch(@assembledAt) * 1000)
       ORDER BY created_at ASC, rowid ASC`,
   ).all({ agentId, sessionStart, turnStartedAt, assembledAt: assembledAtIso }) as Array<WaitingConversation['latest']>;
   const owed: Array<{ rowid: number; content: string }> = [];
@@ -347,7 +348,7 @@ export function retireSpentEngineEvents(agentId: string): number {
   try {
     const db = getDb();
     const candidates = db.prepare(
-      `SELECT rowid, task_id, run_id, created_at FROM messages
+      `SELECT rowid, task_id, run_id, ${createdAtText()} FROM messages
          WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} AND (task_id IS NOT NULL OR run_id IS NOT NULL)
        LIMIT 50`,
     ).all({ agentId }) as Array<{ rowid: number; task_id: string | null; run_id: string | null; created_at: string }>;
@@ -418,7 +419,7 @@ export function expireExhaustedEngineEvents(agentId: string): number {
     // (`swept_at IS NULL` + .changes) stays atomic per row.
     const exhaustedTail =
       `AND (delivery_attempts >= ${ENGINE_EVENT_MAX_ATTEMPTS}
-            OR created_at <= datetime('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours'))`;
+            OR created_at <= (unixepoch('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours') * 1000))`;
     const rows = db.prepare(
       `SELECT rowid, content FROM messages
         WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${exhaustedTail}`,
@@ -476,17 +477,21 @@ export function getNextEngineEventRetryAt(agentId: string): number | null {
     const db = getDb();
     const sessionStart = sessionStartOf(agentId);
     const retryGates =
-      `AND created_at >= @sessionStart
-       AND created_at >= datetime('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours')
+      `AND created_at >= (unixepoch(@sessionStart) * 1000)
+       AND created_at >= (unixepoch('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours') * 1000)
        AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
-       AND next_attempt_at > datetime('now')`;
+       AND next_attempt_at > (unixepoch('now') * 1000)`;
     const row = db.prepare(
       `SELECT MIN(next_attempt_at) AS t FROM messages
         WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${retryGates}`,
-    ).get({ agentId, sessionStart }) as { t: string | null } | undefined;
-    if (!row?.t) return null;
-    const ms = Date.parse(row.t.replace(' ', 'T') + 'Z'); // SQLite datetime('now') is UTC
-    return Number.isFinite(ms) ? ms : null;
+    ).get({ agentId, sessionStart }) as { t: number | null } | undefined;
+    // T6b: `next_attempt_at` IS epoch-ms now, so the answer this function has always
+    // returned — a JS millisecond timestamp — is the stored value itself. The old body
+    // parsed the TEXT back out (`Date.parse(t.replace(' ','T') + 'Z')`); that string no
+    // longer exists, and `.replace` on a number would have thrown here rather than
+    // returning a wrong time, which is why this consumer had to move with the column.
+    if (row?.t == null) return null;
+    return Number.isFinite(row.t) ? row.t : null;
   } catch {
     return null;
   }
@@ -578,7 +583,7 @@ export function findUnservedTerminalWake(agentId: string): { rowid: number } | n
        AND a2a_intent IN ('DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL')
        AND a2a_requires_response = 1
        AND conv_key IS NULL AND swept_at IS NULL
-       AND created_at >= datetime('now', '-45 minutes')
+       AND created_at >= (unixepoch('now', '-45 minutes') * 1000)
     ORDER BY created_at DESC, rowid DESC LIMIT 1
   `).get({ agentId }) as { rowid: number } | undefined;
   return row ? { rowid: row.rowid } : null;
@@ -600,10 +605,10 @@ export function getPendingEngineEvent(agentId: string): { rowid: number; id: str
   // key as the tiebreak — a scheduler tick queues several events inside one clock second
   // and `created_at` is second-granular TEXT, so rowid is what actually orders them.
   const engineGates =
-    `AND created_at >= @sessionStart
-     AND created_at >= datetime('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours')
+    `AND created_at >= (unixepoch(@sessionStart) * 1000)
+     AND created_at >= (unixepoch('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours') * 1000)
      AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
-     AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))`;
+     AND (next_attempt_at IS NULL OR next_attempt_at <= (unixepoch('now') * 1000))`;
   const row = db.prepare(
     `SELECT rowid, id, task_id, run_id, content, origin_intent FROM messages
        WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${engineGates}

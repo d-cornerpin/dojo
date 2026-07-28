@@ -239,7 +239,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
     const clauses: string[] = ['agent_id = ?'];
     const params: (string | number)[] = [agentId];
     if (sessionBoundary) {
-      clauses.push('created_at >= ?');
+      clauses.push('created_at >= (unixepoch(?) * 1000)');
       params.push(sessionBoundary);
     }
     // Conversation scoping (OPEN-15). The current turn's trigger inbound is
@@ -262,7 +262,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
         const cur = db
           .prepare(
             `SELECT conv_key FROM messages
-               WHERE agent_id = ? AND conv_key IS NOT NULL${sessionBoundary ? ' AND created_at >= ?' : ''}
+               WHERE agent_id = ? AND conv_key IS NOT NULL${sessionBoundary ? ' AND created_at >= (unixepoch(?) * 1000)' : ''}
                ORDER BY seq DESC LIMIT 1`,
           )
           .get(...(sessionBoundary ? [agentId, sessionBoundary] : [agentId])) as { conv_key: string } | undefined;
@@ -286,7 +286,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
       }
     }
     if (opts.since) {
-      clauses.push('created_at >= ?');
+      clauses.push('created_at >= (unixepoch(?) * 1000)');
       params.push(normalizeTimestampForSqlite(opts.since));
     }
     if (beforeSeq != null) {
@@ -303,7 +303,7 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
     // STRIP; requirement preserved: recall covers agent-to-agent history.
     const whereSql = `${clauses.join(' AND ')} AND ${rolesClause}`;
     const sql = `
-      SELECT id, role, content, created_at, attachments
+      SELECT id, role, content, datetime(created_at/1000,'unixepoch') AS created_at, attachments
         FROM messages
        WHERE ${whereSql}
        ORDER BY seq DESC

@@ -179,9 +179,9 @@ export function archiveAgentConversation(agentId: string, force = false): string
   // bounded by a high-water in the SAME keyspace it is compared against.
   const highWater = getArchiveHighWaterMark(agentId);
   const rows = (highWater != null
-    ? db.prepare('SELECT * FROM messages WHERE agent_id = ? AND seq > ? ORDER BY seq ASC')
+    ? db.prepare(`SELECT *, datetime(created_at/1000,'unixepoch') AS created_at FROM messages WHERE agent_id = ? AND seq > ? ORDER BY seq ASC`)
         .all(agentId, highWater)
-    : db.prepare('SELECT * FROM messages WHERE agent_id = ? ORDER BY seq ASC')
+    : db.prepare(`SELECT *, datetime(created_at/1000,'unixepoch') AS created_at FROM messages WHERE agent_id = ? ORDER BY seq ASC`)
         .all(agentId)) as Array<Record<string, unknown>>;
 
   if (rows.length === 0) return null;

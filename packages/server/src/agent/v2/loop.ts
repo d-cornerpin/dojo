@@ -338,7 +338,7 @@ function userRequestedCloseWantsReply(
     }
     const alreadyAnswered = !!db.prepare(`
       SELECT 1 FROM messages
-      WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?
+      WHERE agent_id = ? AND role = 'assistant' AND created_at >= (unixepoch(?) * 1000)
         AND lane <> 'a2a'
         AND content NOT LIKE '[{%'
         AND origin_intent IS NULL
@@ -2121,7 +2121,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         SELECT 1 FROM messages
         WHERE agent_id = ? AND role = 'system'
           AND content LIKE '[System: REQUIRED close-out%'
-          AND created_at >= datetime('now', '-5 minutes')
+          AND created_at >= (unixepoch('now', '-5 minutes') * 1000)
         LIMIT 1
       `).get(agentId);
       const gateMsgId = uuidv4();
@@ -2178,12 +2178,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
     ).get(agentId) as { session_started_at: string | null } | undefined;
     const sessionBoundary = sessionRow?.session_started_at ?? null;
     const nudgeQuery = sessionBoundary
-      ? `SELECT created_at FROM messages
+      ? `SELECT datetime(created_at/1000,'unixepoch') AS created_at FROM messages
          WHERE agent_id = ? AND role = 'system'
            AND content LIKE '[System: Memory was just compacted%'
-           AND created_at >= ?
+           AND created_at >= (unixepoch(?) * 1000)
          ORDER BY created_at DESC, rowid DESC LIMIT 1`
-      : `SELECT created_at FROM messages
+      : `SELECT datetime(created_at/1000,'unixepoch') AS created_at FROM messages
          WHERE agent_id = ? AND role = 'system'
            AND content LIKE '[System: Memory was just compacted%'
          ORDER BY created_at DESC, rowid DESC LIMIT 1`;
@@ -2191,12 +2191,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
     const lastNudge = db.prepare(nudgeQuery).get(...nudgeParams) as { created_at: string } | undefined;
     if (lastNudge) {
       const recallQuery = sessionBoundary
-        ? `SELECT created_at FROM messages
+        ? `SELECT datetime(created_at/1000,'unixepoch') AS created_at FROM messages
            WHERE agent_id = ? AND role = 'assistant'
              AND content LIKE '%"name":"recall_recent_thread"%'
-             AND created_at >= ?
+             AND created_at >= (unixepoch(?) * 1000)
            ORDER BY created_at DESC, rowid DESC LIMIT 1`
-        : `SELECT created_at FROM messages
+        : `SELECT datetime(created_at/1000,'unixepoch') AS created_at FROM messages
            WHERE agent_id = ? AND role = 'assistant'
              AND content LIKE '%"name":"recall_recent_thread"%'
            ORDER BY created_at DESC, rowid DESC LIMIT 1`;
@@ -7865,7 +7865,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             const sentRows = db.prepare(
               `SELECT a2a_thread_id FROM messages
                  WHERE source_agent_id = @agentId AND a2a_thread_id IS NOT NULL
-                   AND a2a_intent IN ('QUESTION','ASSIGN','BLOCK') AND created_at >= @turnStartedAt
+                   AND a2a_intent IN ('QUESTION','ASSIGN','BLOCK') AND created_at >= (unixepoch(@turnStartedAt) * 1000)
                ORDER BY created_at ASC, rowid ASC`,
             ).all({ agentId, turnStartedAt }) as Array<{ a2a_thread_id: string }>;
             // BUG-4 (comms-audit): park under FULL thread ids (never an 8-char prefix). Two
@@ -8268,7 +8268,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         });
         const userAlreadyAnswered = answeredByKey || (justCompletedScaffold.length > 0 && !!db.prepare(`
           SELECT 1 FROM messages
-          WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?
+          WHERE agent_id = ? AND role = 'assistant' AND created_at >= (unixepoch(?) * 1000)
             AND lane <> 'a2a'
             AND content NOT LIKE '[{%'
             -- Engine acks are excluded STRUCTURALLY by their origin_intent tag.
@@ -9099,7 +9099,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // silent-completion defect), and ticket stamps inflated.
       const answerRow = terminalAnswerRowId ? { id: terminalAnswerRowId } : undefined;
       const parkedRow = !answerRow ? db.prepare(
-        `SELECT 1 FROM messages WHERE agent_id = ? AND conv_key LIKE 'park:%' AND created_at >= ? LIMIT 1`,
+        `SELECT 1 FROM messages WHERE agent_id = ? AND conv_key LIKE 'park:%' AND created_at >= (unixepoch(?) * 1000) LIMIT 1`,
       ).get(agentId, turnBoundary.get(agentId) ?? new Date().toISOString()) : undefined;
       // T6: "did this turn hand off to a peer instead of answering?" was a probe of the
       // second physical table — being IN that table WAS the handoff signal. The equivalent

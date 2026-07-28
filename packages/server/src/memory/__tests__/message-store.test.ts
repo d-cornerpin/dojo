@@ -60,7 +60,7 @@ describe('R1 — no writer may lose a row silently', () => {
     const before = mockDb.current!.prepare('SELECT COUNT(*) c FROM messages').get() as { c: number };
     const info = mockDb.current!.prepare(
       `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-       VALUES (?, ?, 'user', ?, ?, datetime('now'))`,
+       VALUES (?, ?, 'user', ?, ?, (CAST(strftime('%s','now') AS INTEGER) * 1000))`,
     ).run('legacy-form', AGENT, 'a real user message', 7);
     const after = mockDb.current!.prepare('SELECT COUNT(*) c FROM messages').get() as { c: number };
 
@@ -303,5 +303,66 @@ describe('claimForTurn / markServed', () => {
     const p = insertMessage({ agentId: AGENT, role: 'user', content: 'untouched' });
     markServed([], 3);
     expect(rowOf(p.id).served_by_turn).toBeNull();
+  });
+});
+
+// ── T6b: time on the spine is epoch-ms INTEGER, and it cannot quietly become TEXT again ──
+//
+// This block is the standing guard for the defect this conversion exists to prevent. SQLite
+// orders INTEGER before TEXT unconditionally, so a datetime STRING written into one of these
+// columns does not error and does not sort — it makes every window predicate that touches the
+// row return the wrong answer, silently, forever. There is no failing test that shape can
+// produce on its own; the typeof CHECK is what turns it into an exception, and these
+// assertions are what stop the CHECK being "tidied away" by a later task that finds it odd.
+
+describe('T6b — the four time columns are epoch-ms INTEGER', () => {
+  it('the migrated schema declares all four as INTEGER, not TEXT', () => {
+    const cols = mockDb.current!.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string; type: string }>;
+    for (const name of ['created_at', 'swept_at', 'next_attempt_at', 'retired_at']) {
+      expect(cols.find(c => c.name === name)?.type, `${name} should be INTEGER`).toBe('INTEGER');
+    }
+  });
+
+  it('the writer stamps an epoch-ms number, second-granular', () => {
+    const p = insertMessage({ agentId: AGENT, role: 'user', content: 'timed' });
+    const raw = rowOf(p.id).created_at as number;
+    expect(typeof raw).toBe('number');
+    expect(raw % 1000, 'granularity must stay second-level, as it was under TEXT').toBe(0);
+    expect(Math.abs(raw - Date.now())).toBeLessThan(120_000);
+  });
+
+  it('the value the writer RETURNS is still the canonical TEXT shape (the wire contract)', () => {
+    // `Persisted.createdAt` is declared `string` and feeds Message.createdAt, the dashboard,
+    // the vault's TEXT high-waters and the per-message prompt stamp. The storage flipped
+    // underneath all of them; this is the assertion that says they never noticed.
+    const p = insertMessage({ agentId: AGENT, role: 'user', content: 'shape' });
+    expect(p.createdAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    const raw = rowOf(p.id).created_at as number;
+    const roundTrip = mockDb.current!
+      .prepare("SELECT datetime(?/1000,'unixepoch') AS t").get(raw) as { t: string };
+    expect(roundTrip.t).toBe(p.createdAt);
+  });
+
+  it('a datetime STRING is REFUSED rather than absorbed — the silent-inversion guard', () => {
+    // The exact mistake: a writer left on the old `datetime('now')` vocabulary.
+    expect(() => mockDb.current!.prepare(
+      `INSERT INTO messages (id, agent_id, role, content, created_at)
+       VALUES (?, ?, 'user', ?, datetime('now'))`,
+    ).run('text-time', AGENT, 'wrong vocabulary')).toThrow(/CHECK constraint failed/);
+    // …and the same refusal on the three nullable columns, via the sweep vocabulary.
+    const p = insertMessage({ agentId: AGENT, role: 'user', content: 'sweepable' });
+    expect(() => mockDb.current!.prepare(
+      "UPDATE messages SET swept_at = datetime('now') WHERE id = ?",
+    ).run(p.id)).toThrow(/CHECK constraint failed/);
+  });
+
+  it('the sweep vocabulary writes a number, and the IS NULL guards still read it', () => {
+    const p = insertMessage({ agentId: AGENT, role: 'user', content: 'to sweep' });
+    expect(unservedHead(AGENT).map(m => m.id)).toContain(p.id);
+    mockDb.current!.prepare(
+      "UPDATE messages SET swept_at = (CAST(strftime('%s','now') AS INTEGER) * 1000) WHERE id = ?",
+    ).run(p.id);
+    expect(typeof rowOf(p.id).swept_at).toBe('number');
+    expect(unservedHead(AGENT).map(m => m.id)).not.toContain(p.id);
   });
 });

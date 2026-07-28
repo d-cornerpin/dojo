@@ -80,11 +80,11 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
   // cross-table tiebreak.
   const clauses: string[] = [`agent_id = @agentId`, `role = 'user'`];
   const params: Record<string, unknown> = { agentId, lookback };
-  if (sessionStartedAt) { clauses.push(`created_at >= @boundary`); params.boundary = sessionStartedAt; }
-  if (maxAgeMinutes != null) { clauses.push(`created_at >= datetime('now', @maxAge)`); params.maxAge = `-${maxAgeMinutes} minutes`; }
+  if (sessionStartedAt) { clauses.push(`created_at >= (unixepoch(@boundary) * 1000)`); params.boundary = sessionStartedAt; }
+  if (maxAgeMinutes != null) { clauses.push(`created_at >= (unixepoch('now', @maxAge) * 1000)`); params.maxAge = `-${maxAgeMinutes} minutes`; }
   const where = clauses.join(' AND ');
   const sql = `
-    SELECT id, content, created_at, source_agent_id, a2a_thread_id, a2a_intent, lane
+    SELECT id, content, datetime(created_at/1000,'unixepoch') AS created_at, source_agent_id, a2a_thread_id, a2a_intent, lane
       FROM messages
      WHERE ${where}
      ORDER BY rowid DESC

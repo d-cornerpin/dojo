@@ -30,7 +30,7 @@ const logger = createLogger('agent-bus');
 
 /** Columns the two reads project, in one place so they cannot drift apart. */
 const BUS_COLS = `id, agent_id, source_agent_id, a2a_intent, content, inbound_meta,
-  served_by_turn, created_at`;
+  served_by_turn, datetime(created_at/1000,'unixepoch') AS created_at`;
 
 interface BusRow {
   id: string; agent_id: string; source_agent_id: string | null; a2a_intent: string | null;

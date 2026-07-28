@@ -70,7 +70,7 @@ export function getActiveUserDirective(
   const baseClauses = ["agent_id = ?", "role = 'user'"];
   const baseParams: unknown[] = [agentId];
   if (sessionStart) {
-    baseClauses.push("created_at >= ?");
+    baseClauses.push("created_at >= (unixepoch(?) * 1000)");
     baseParams.push(sessionStart);
   }
   if (opts?.excludeEngine) {
@@ -107,7 +107,7 @@ export function getActiveUserDirective(
   // Prefer the most recent substantive ask.
   const substantive = db
     .prepare(
-      `SELECT id, content, created_at FROM messages
+      `SELECT id, content, datetime(created_at/1000,'unixepoch') AS created_at FROM messages
        WHERE ${baseClauses.join(' AND ')} AND length(content) >= ?
        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     )
@@ -126,7 +126,7 @@ export function getActiveUserDirective(
   // to by a person" rather than nothing.
   const fallback = db
     .prepare(
-      `SELECT id, content, created_at FROM messages
+      `SELECT id, content, datetime(created_at/1000,'unixepoch') AS created_at FROM messages
        WHERE ${baseClauses.join(' AND ')}
        ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     )

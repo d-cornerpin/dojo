@@ -27,14 +27,17 @@ function makeDb(): Database.Database {
   const db = new Database(':memory:');
   db.exec(`CREATE TABLE messages (
     id TEXT PRIMARY KEY, agent_id TEXT, role TEXT, content TEXT,
-    conv_key TEXT, created_at TEXT DEFAULT (datetime('now'))
+    conv_key TEXT, created_at INTEGER DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000)
   );`);
   return db;
 }
 
-function seed(db: Database.Database, id: string, convKey: string, content: string, createdAt = "datetime('now')"): void {
+// T6b: `created_at` is epoch-ms INTEGER on the spine (migration 131), so the fixture's
+// clock has to speak the same units as the guard's lookback predicate. Written as a
+// SQLite expression, exactly as before, so the test still reads as "30 hours ago".
+function seed(db: Database.Database, id: string, convKey: string, content: string, createdAt = "'now'"): void {
   db.prepare(
-    `INSERT INTO messages (id, agent_id, role, content, conv_key, created_at) VALUES (?, 'a1', 'assistant', ?, ?, ${createdAt})`,
+    `INSERT INTO messages (id, agent_id, role, content, conv_key, created_at) VALUES (?, 'a1', 'assistant', ?, ?, (CAST(strftime('%s', ${createdAt}) AS INTEGER) * 1000))`,
   ).run(id, content, convKey);
 }
 
@@ -85,7 +88,7 @@ describe('re-answer-guard', () => {
   it('ignores tool-array rows and old history', () => {
     const db = makeDb();
     seed(db, 'm1', 'owner', `[{"type":"tool_use","content":"${ORIGINAL.slice(0, 200)}"}]`);
-    seed(db, 'm2', 'owner', ORIGINAL, `datetime('now', '-30 hours')`);
+    seed(db, 'm2', 'owner', ORIGINAL, `'now', '-30 hours'`);
     expect(findCrossConvReAnswer(db as never, 'a1', REWORDING_B, 'email:x@example.com')).toBeNull();
   });
 });

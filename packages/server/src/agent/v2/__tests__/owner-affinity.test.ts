@@ -34,7 +34,7 @@ function insertInbound(
 ): void {
   mockDb.current!.prepare(
     `INSERT INTO messages (id, agent_id, role, content, lane, channel, inbound_meta, created_at)
-       VALUES (?, ?, 'user', ?, ?, ?, ?, datetime('now', ?))`,
+       VALUES (?, ?, 'user', ?, ?, ?, ?, (CAST(strftime('%s','now', ?) AS INTEGER) * 1000))`,
   ).run(`m${++rowid}`, agentId, content, lane, channel, inboundMeta, `-${ageMinutes} minutes`);
 }
 
@@ -61,7 +61,7 @@ beforeEach(() => {
       channel TEXT,
       origin_intent TEXT,
       conv_key TEXT,
-      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      created_at INTEGER DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000)
     );
     CREATE TABLE conversations (
       id TEXT PRIMARY KEY,

@@ -118,7 +118,7 @@ async function checkSemanticDedup(payload: string, threadId: string, fromAgent: 
     const recentMessages = db.prepare(`
       SELECT content FROM messages
       WHERE a2a_thread_id = ? AND source_agent_id = ?
-        AND created_at >= datetime('now', '-10 minutes')
+        AND created_at >= (unixepoch('now', '-10 minutes') * 1000)
       ORDER BY created_at DESC, rowid DESC
       LIMIT ?
     `).all(threadId, fromAgent, DEDUP_LOOKBACK) as Array<{ content: string }>;
@@ -189,7 +189,7 @@ async function findRecentDuplicateAssignThread(
       SELECT content, a2a_thread_id FROM messages
        WHERE agent_id = @receiverId AND source_agent_id = @senderId AND a2a_intent = 'ASSIGN'
          AND a2a_thread_id IS NOT NULL
-         AND created_at >= datetime('now', '-10 minutes')
+         AND created_at >= (unixepoch('now', '-10 minutes') * 1000)
       ORDER BY rowid DESC
       LIMIT @lookback
     `).all({ receiverId, senderId, lookback: DEDUP_LOOKBACK }) as Array<{ content: string; a2a_thread_id: string }>;
@@ -571,7 +571,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
         SELECT 1 AS hit FROM messages
          WHERE agent_id = @senderId AND source_agent_id = @receiverId
            AND a2a_thread_id = @threadId
-           AND created_at >= datetime('now', @window)
+           AND created_at >= (unixepoch('now', @window) * 1000)
         LIMIT 1
       `).get({ senderId: envelope.fromAgent, receiverId: target.id, threadId, window: AWAITING_REPLY_COOLDOWN }) as
         | { hit: number }
@@ -1689,7 +1689,7 @@ function findUnrelayedInboundReply(parked: OpenParkRow): { payload: string; send
   const row = db.prepare(
     `SELECT content, source_agent_id FROM messages
       WHERE agent_id = ? AND role = 'user' AND source_agent_id IS NOT NULL
-        AND source_agent_id != ? AND created_at >= datetime(?, '-15 minutes')
+        AND source_agent_id != ? AND created_at >= (unixepoch(?, '-15 minutes') * 1000)
         AND ${cond.sql}
      ORDER BY (a2a_intent IN ('ANSWER','DELIVERABLE','COMPLETE','FAIL')) DESC, rowid DESC
      LIMIT 1`,
@@ -1723,7 +1723,7 @@ function findAskedAgentForPark(parked: OpenParkRow): { name: string; status: str
   const cond = parkThreadCondition(ref);
   const ask = db.prepare(
     `SELECT agent_id FROM messages
-      WHERE created_at >= datetime(?, '-2 hours') AND created_at <= datetime(?, '+15 minutes')
+      WHERE created_at >= (unixepoch(?, '-2 hours') * 1000) AND created_at <= (unixepoch(?, '+15 minutes') * 1000)
         AND source_agent_id = ? AND agent_id != ? AND ${cond.sql}
      ORDER BY rowid DESC LIMIT 1`,
   ).get(
@@ -1734,7 +1734,7 @@ function findAskedAgentForPark(parked: OpenParkRow): { name: string; status: str
     const inbound = db.prepare(
       `SELECT source_agent_id FROM messages
         WHERE agent_id = ? AND source_agent_id IS NOT NULL AND source_agent_id != ?
-          AND created_at >= datetime(?, '-15 minutes') AND ${cond.sql}
+          AND created_at >= (unixepoch(?, '-15 minutes') * 1000) AND ${cond.sql}
        ORDER BY rowid DESC LIMIT 1`,
     ).get(
       parked.agent_id, parked.agent_id, parked.created_at, ...cond.params,
@@ -1781,7 +1781,8 @@ export async function resolveCompilePendingParks(agentId: string): Promise<void>
   let rows: OpenParkRow[] = [];
   try {
     rows = db.prepare(
-      `SELECT rowid, agent_id, conv_key, content, inbound_meta, created_at FROM messages
+      `SELECT rowid, agent_id, conv_key, content, inbound_meta,
+              datetime(created_at/1000,'unixepoch') AS created_at FROM messages
         WHERE agent_id = ? AND role = 'user' AND conv_key LIKE 'park:!%'
         ORDER BY rowid ASC LIMIT 5`,
     ).all(agentId) as OpenParkRow[];
@@ -1886,9 +1887,10 @@ export async function sweepExpiredParks(): Promise<{ failedClosed: number; relay
   let parks: OpenParkRow[] = [];
   try {
     parks = db.prepare(
-      `SELECT rowid, agent_id, conv_key, content, inbound_meta, created_at FROM messages
-        WHERE created_at >= datetime('now', '-${PARK_MAX_AGE_DAYS} days')
-          AND created_at < datetime('now', '-${PARK_TTL_MINUTES} minutes')
+      `SELECT rowid, agent_id, conv_key, content, inbound_meta,
+              datetime(created_at/1000,'unixepoch') AS created_at FROM messages
+        WHERE created_at >= (unixepoch('now', '-${PARK_MAX_AGE_DAYS} days') * 1000)
+          AND created_at < (unixepoch('now', '-${PARK_TTL_MINUTES} minutes') * 1000)
           AND role = 'user' AND conv_key LIKE 'park:%'
         ORDER BY rowid ASC LIMIT ${PARK_SWEEP_BATCH}`,
     ).all() as OpenParkRow[];
@@ -1929,8 +1931,9 @@ export async function resolveParksAtBoot(): Promise<{ relayedReplies: number; fa
   const db = getDb();
   const out = { relayedReplies: 0, failedClosed: 0, leftOpen: 0 };
   const parks = db.prepare(
-    `SELECT rowid, agent_id, conv_key, content, inbound_meta, created_at FROM messages
-      WHERE created_at >= datetime('now', '-${PARK_MAX_AGE_DAYS} days')
+    `SELECT rowid, agent_id, conv_key, content, inbound_meta,
+              datetime(created_at/1000,'unixepoch') AS created_at FROM messages
+      WHERE created_at >= (unixepoch('now', '-${PARK_MAX_AGE_DAYS} days') * 1000)
         AND role = 'user' AND conv_key LIKE 'park:%'
       ORDER BY rowid DESC LIMIT ${PARK_BOOT_BATCH}`,
   ).all() as OpenParkRow[];
@@ -1980,8 +1983,9 @@ export async function failParksForAbandonedAsk(inboundAskMessageId: string, thre
     const keys = [...new Set([full ? `park:${full}` : '', threadShort ? `park:${threadShort}` : ''].filter(Boolean))];
     if (keys.length === 0) return;
     const parks = db.prepare(
-      `SELECT rowid, agent_id, conv_key, content, inbound_meta, created_at FROM messages
-        WHERE created_at >= datetime('now', '-${PARK_MAX_AGE_DAYS} days')
+      `SELECT rowid, agent_id, conv_key, content, inbound_meta,
+              datetime(created_at/1000,'unixepoch') AS created_at FROM messages
+        WHERE created_at >= (unixepoch('now', '-${PARK_MAX_AGE_DAYS} days') * 1000)
           AND role = 'user' AND conv_key IN (${keys.map(() => '?').join(',')})
         ORDER BY rowid DESC LIMIT 5`,
     ).all(...keys) as OpenParkRow[];

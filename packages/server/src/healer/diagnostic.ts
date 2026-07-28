@@ -147,7 +147,7 @@ function getAgentStatusAnomalies(): DiagnosticItem[] {
     const statusIsRecent = (Date.now() - agentUpdatedMs) < DORMANT_THRESHOLD_MS;
     if (!statusIsRecent) {
       const lastMsg = db.prepare(
-        'SELECT created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
+        `SELECT datetime(created_at/1000,'unixepoch') AS created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`
       ).get(agent.id) as { created_at: string } | undefined;
       if (lastMsg) {
         const lastTs = lastMsg.created_at.includes('Z') ? lastMsg.created_at : lastMsg.created_at + 'Z';
@@ -207,7 +207,7 @@ function getAgentStatusAnomalies(): DiagnosticItem[] {
     const stuckStatusRecent = (Date.now() - stuckUpdatedMs) < DORMANT_THRESHOLD_MS;
     if (!stuckStatusRecent) {
       const stuckLastMsg = db.prepare(
-        'SELECT created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1'
+        `SELECT datetime(created_at/1000,'unixepoch') AS created_at FROM messages WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`
       ).get(agent.id) as { created_at: string } | undefined;
       if (stuckLastMsg) {
         const stuckTs = stuckLastMsg.created_at.includes('Z') ? stuckLastMsg.created_at : stuckLastMsg.created_at + 'Z';
@@ -303,7 +303,7 @@ function getContextHealth(): DiagnosticItem[] {
   // Check for agents with orphaned tool messages
   const agents = db.prepare(`
     SELECT DISTINCT agent_id FROM messages
-    WHERE role = 'tool' AND created_at > datetime('now', '-24 hours')
+    WHERE role = 'tool' AND created_at > (unixepoch('now', '-24 hours') * 1000)
   `).all() as Array<{ agent_id: string }>;
 
   for (const { agent_id } of agents) {

@@ -103,17 +103,17 @@ function searchMessages(
     const params: unknown[] = [agentId];
 
     if (since) {
-      conditions.push('m.created_at >= ?');
+      conditions.push('m.created_at >= (unixepoch(?) * 1000)');
       params.push(since);
     }
     if (before) {
-      conditions.push('m.created_at < ?');
+      conditions.push('m.created_at < (unixepoch(?) * 1000)');
       params.push(before);
     }
 
     // FTS5 match using the content column
     const sql = `
-      SELECT m.id, m.role, m.content, m.created_at,
+      SELECT m.id, m.role, m.content, datetime(m.created_at/1000,'unixepoch') AS created_at,
              snippet(messages_fts, 0, '>>>', '<<<', '...', 64) as snippet
       FROM messages_fts
       INNER JOIN messages m ON messages_fts.rowid = m.rowid
@@ -190,11 +190,11 @@ function searchMessagesLike(
   const params: unknown[] = [agentId, `%${pattern}%`];
 
   if (since) {
-    conditions.push('created_at >= ?');
+    conditions.push('created_at >= (unixepoch(?) * 1000)');
     params.push(since);
   }
   if (before) {
-    conditions.push('created_at < ?');
+    conditions.push('created_at < (unixepoch(?) * 1000)');
     params.push(before);
   }
 
@@ -202,7 +202,7 @@ function searchMessagesLike(
   // isPureToolCallMessage rationale above).
   const fetchLimit = (limit ?? 20) * 3;
   const rawRows = db.prepare(`
-    SELECT id, role, content, created_at FROM messages
+    SELECT id, role, content, datetime(created_at/1000,'unixepoch') AS created_at FROM messages
     WHERE ${conditions.join(' AND ')}
     ORDER BY created_at DESC
     LIMIT ?
@@ -370,7 +370,7 @@ export function memoryDescribe(agentId: string, params: { id: string }): string 
     // STRIP; requirement preserved: a history_get pointer always fetches a full body,
     // whatever lane the row is on.
     const row = db.prepare(
-      'SELECT id, agent_id, role, content, created_at, attachments FROM messages WHERE id = ?',
+      `SELECT id, agent_id, role, content, datetime(created_at/1000,'unixepoch') AS created_at, attachments FROM messages WHERE id = ?`,
     ).get(id) as
       | { id: string; agent_id: string; role: string; content: string; created_at: string; attachments: string | null }
       | undefined;

@@ -159,7 +159,7 @@ export function findTaskOriginChain(taskId: string): TaskOriginChain | null {
     let originAt: string | null = null;
     if (task.source_message_id) {
       const msg = db.prepare(
-        `SELECT m.content, m.created_at, c.channel, c.counterparty_name, c.counterparty_id
+        `SELECT m.content, datetime(m.created_at/1000,'unixepoch') AS created_at, c.channel, c.counterparty_name, c.counterparty_id
            FROM messages m LEFT JOIN conversations c ON c.id = m.conversation_id
           WHERE m.id = ?`,
       ).get(task.source_message_id) as { content: string | null; created_at: string; channel: string | null; counterparty_name: string | null; counterparty_id: string | null } | undefined;

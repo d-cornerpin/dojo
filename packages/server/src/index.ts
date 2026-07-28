@@ -485,11 +485,11 @@ async function main(): Promise<void> {
       // get swept), and only count SERVABLE rows (>= the agent's session start,
       // which is the re-drain's own floor). Holding an unservable row parked it in
       // limbo: never served by the re-drain, never swept, re-held every boot.
-      const SERVABLE = `${HUMAN_PREDICATE} AND m.created_at >= COALESCE((SELECT session_started_at FROM agents WHERE id = m.agent_id), '1970-01-01')`;
+      const SERVABLE = `${HUMAN_PREDICATE} AND m.created_at >= (unixepoch(COALESCE((SELECT session_started_at FROM agents WHERE id = m.agent_id), '1970-01-01')) * 1000)`;
       const heldAgents = (db.prepare(
         `SELECT m.agent_id AS id, COUNT(*) AS c FROM messages m
           WHERE m.role = 'user' AND m.conv_key IS NULL AND m.swept_at IS NULL
-            AND m.created_at < datetime('now', '-30 minutes')
+            AND m.created_at < (unixepoch('now', '-30 minutes') * 1000)
             AND ${SERVABLE}
           GROUP BY m.agent_id HAVING COUNT(*) <= ${HUMAN_HOLD_LIMIT}`,
       ).all() as Array<{ id: string; c: number }>);
@@ -529,9 +529,9 @@ async function main(): Promise<void> {
       const staleRows = db.prepare(
         `SELECT m.rowid AS rowid, m.agent_id AS agent_id FROM messages AS m
           WHERE m.role = 'user' AND m.conv_key IS NULL AND m.swept_at IS NULL
-            AND m.created_at < datetime('now', '-30 minutes')
+            AND m.created_at < (unixepoch('now', '-30 minutes') * 1000)
             AND NOT (m.lane = 'events'
-                     AND ((m.next_attempt_at IS NOT NULL AND m.next_attempt_at > datetime('now'))
+                     AND ((m.next_attempt_at IS NOT NULL AND m.next_attempt_at > (unixepoch('now') * 1000))
                           OR (m.delivery_attempts > 0 AND m.delivery_attempts < 5)))
             ${heldAgents.length > 0 ? `AND NOT (${SERVABLE} AND m.agent_id IN (${heldIdList}))` : ''}`,
       ).all() as Array<{ rowid: number; agent_id: string }>;
@@ -570,17 +570,17 @@ async function main(): Promise<void> {
     try {
       const db = getDb();
       const claimed = db.prepare(
-        `SELECT rowid, conv_key, agent_id, created_at FROM messages
+        `SELECT rowid, conv_key, agent_id, datetime(created_at/1000,'unixepoch') AS created_at FROM messages
           WHERE role = 'user' AND conv_key IS NOT NULL AND swept_at IS NULL
             AND conv_key NOT IN ('engine', 'engine-steer')
             AND conv_key NOT LIKE 'park:%' AND conv_key NOT LIKE 'relayed:%'
             AND source_agent_id IS NULL AND a2a_thread_id IS NULL
             AND lane = 'owner'
-            AND created_at >= datetime('now', '-30 minutes')`,
+            AND created_at >= (unixepoch('now', '-30 minutes') * 1000)`,
       ).all() as Array<{ rowid: number; conv_key: string; agent_id: string; created_at: string }>;
       const hasReply = db.prepare(
         `SELECT 1 FROM messages WHERE agent_id = ? AND role IN ('assistant', 'tool')
-            AND conv_key = ? AND created_at >= ? LIMIT 1`,
+            AND conv_key = ? AND created_at >= (unixepoch(?) * 1000) LIMIT 1`,
       );
       let reArmed = 0;
       for (const r of claimed) {
