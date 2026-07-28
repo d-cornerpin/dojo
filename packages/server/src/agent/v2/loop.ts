@@ -120,6 +120,10 @@ import { findCrossConvReAnswer } from './re-answer-guard.js';
 import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, TOOL_AND_OUTPUT_RESERVE } from '../../memory/compaction.js';
 import { estimateTokens } from '../../memory/store.js';
+import {
+  insertMessageIfAbsent, setConvKeyByRowid, tagTurnOutputConvKey,
+  markServedByRowid, setAnswerMessageId,
+} from '../../memory/message-store.js';
 import { insertInterAgentEngineRow, insertInterAgentOwnOutput, tagInterAgentOwnOutputConvKey } from '../../memory/interagent.js';
 import { buildOpenLoopsInjection } from '../../memory/open-loops.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
@@ -658,11 +662,7 @@ async function dispatchPMRenameHandoff(params: {
       `back to anyone, this is a silent rename. Do not contact ${primaryName}.`
     );
     const renameMsgId = uuidv4();
-    const db = getDb();
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'user', ?, datetime('now'))
-    `).run(renameMsgId, pmId, renameRequest);
+    insertMessageIfAbsent({ id: renameMsgId, agentId: pmId, role: 'user', content: renameRequest });
     broadcast({
       type: 'chat:message',
       agentId: pmId,
@@ -1031,10 +1031,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
   if (chosenConvKey && triggerRow) {
     let claimed = true;
     try {
-      const res = db.prepare(
-        `UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ? AND conv_key IS NULL`,
-      ).run(chosenConvKey, agentId, triggerRow.rowid);
-      claimed = res.changes > 0;
+      claimed = setConvKeyByRowid({
+        rowid: triggerRow.rowid, agentId, value: chosenConvKey, expect: null,
+      }) > 0;
     } catch { /* best effort, served-tagging also happens at turn end */ }
     // C24: reset the turn-continuation counter at the start of a genuinely NEW
     // human-triggered turn (a fresh trigger claimed here). The counter bounds CONSECUTIVE
@@ -1078,8 +1077,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   const revertTriggerStampOnAbort = () => {
     if (chosenConvKey && triggerRow) {
       try {
-        db.prepare(`UPDATE messages SET conv_key = NULL WHERE rowid = ? AND conv_key = ?`)
-          .run(triggerRow.rowid, chosenConvKey);
+        setConvKeyByRowid({ rowid: triggerRow.rowid, value: null, expect: chosenConvKey });
       } catch { /* best effort, recovery, never block the abort */ }
     }
     // D8: symmetric revert for an ENGINE trigger claim. The engine pickup stamps
@@ -1096,11 +1094,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
     if (claimedEngineEvent != null) {
       try {
         if (state.nonIdempotentCallsThisTurn === 0) {
-          // D-A step 4: revert + record against the event's ACTUAL home table.
-          const table = claimedEngineEvent.src === 'ia' ? 'inter_agent_messages' : 'messages';
-          const res = db.prepare(`UPDATE ${table} SET conv_key = NULL WHERE agent_id = ? AND rowid = ? AND conv_key = 'engine'`)
-            .run(agentId, claimedEngineEvent.rowid);
-          if (res.changes > 0) recordEngineEventDeliveryFailure(agentId, claimedEngineEvent.rowid, claimedEngineEvent.src);
+          // D-A step 4: revert + record against the event's ACTUAL home table. The writer
+          // module takes the src and owns the dispatch (T4 Step 3); the table name is no
+          // longer spelled here.
+          const reverted = setConvKeyByRowid(
+            { rowid: claimedEngineEvent.rowid, agentId, value: null, expect: 'engine' },
+            claimedEngineEvent.src,
+          );
+          if (reverted > 0) recordEngineEventDeliveryFailure(agentId, claimedEngineEvent.rowid, claimedEngineEvent.src);
         }
       } catch { /* best effort, recovery, never block the abort */ }
     }
@@ -1321,12 +1322,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // inert to every other consumer. Mirrors the human/engine pickup-claim above.
   if (terminalWakeDrivesTurn && terminalWakeA2A) {
     try {
-      // D-A: claim in whichever table the row lives in. A peer terminal-wake now
-      // lives in inter_agent_messages; an engine one still in `messages`. rowid is
-      // per-table, so the table MUST match the source or the claim silently misses.
-      const claimTable = terminalWakeA2A.src === 'ia' ? 'inter_agent_messages' : 'messages';
-      db.prepare(`UPDATE ${claimTable} SET conv_key = 'a2a' WHERE agent_id = ? AND rowid = ? AND conv_key IS NULL`)
-        .run(agentId, terminalWakeA2A.rowid);
+      // D-A: claim in whichever table the row lives in. rowid is per-table, so the src
+      // MUST match or the claim silently misses; the writer module owns that dispatch.
+      setConvKeyByRowid(
+        { rowid: terminalWakeA2A.rowid, agentId, value: 'a2a', expect: null },
+        terminalWakeA2A.src,
+      );
     } catch { /* best effort, exactly-once is a safety net, not a correctness gate */ }
     // P1 lineage spine: an A2A wake turn's root is its thread.
     const twThread = (terminalWakeA2A as unknown as { a2a_thread_id?: string | null }).a2a_thread_id;
@@ -1398,10 +1399,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // the merged getPendingEngineEvent read). rowid is per-table, so a claim against
       // the wrong table stamps nothing, leaves the event conv_key NULL, and it
       // re-delivers on every subsequent drain, forever, the worst regression here.
-      const engineTable = pendingEngineEvent.src === 'ia' ? 'inter_agent_messages' : 'messages';
-      const res = db.prepare(`UPDATE ${engineTable} SET conv_key = 'engine' WHERE agent_id = ? AND rowid = ? AND conv_key IS NULL`)
-        .run(agentId, pendingEngineEvent.rowid);
-      engineClaimed = res.changes > 0;
+      engineClaimed = setConvKeyByRowid(
+        { rowid: pendingEngineEvent.rowid, agentId, value: 'engine', expect: null },
+        pendingEngineEvent.src,
+      ) > 0;
     } catch { /* best effort */ }
     // D8: remember OUR claim so a no-answer abort can revert it symmetrically with
     // the human trigger stamp (see revertTriggerStampOnAbort above).
@@ -1582,15 +1583,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // it (the claim stamps above only made it invisible to the waiting set).
     try {
       if (triggerRow) {
-        db.prepare('UPDATE messages SET served_by_turn = ? WHERE rowid = ?').run(turnNumber, triggerRow.rowid);
+        markServedByRowid(triggerRow.rowid, turnNumber);
       }
       if (claimedEngineEvent) {
-        db.prepare(`UPDATE ${claimedEngineEvent.src === 'ia' ? 'inter_agent_messages' : 'messages'} SET served_by_turn = ? WHERE rowid = ?`)
-          .run(turnNumber, claimedEngineEvent.rowid);
+        markServedByRowid(claimedEngineEvent.rowid, turnNumber, claimedEngineEvent.src);
       }
       if (terminalWakeA2A) {
-        const twTable = (terminalWakeA2A as unknown as { src?: string }).src === 'ia' ? 'inter_agent_messages' : 'messages';
-        db.prepare(`UPDATE ${twTable} SET served_by_turn = ? WHERE rowid = ?`).run(turnNumber, terminalWakeA2A.rowid);
+        markServedByRowid(terminalWakeA2A.rowid, turnNumber, terminalWakeA2A.src);
       }
     } catch { /* best effort */ }
   }
@@ -1683,10 +1682,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
     if (delivery) recordDelivery({ agentId, ...delivery });
     const tagId = uuidv4();
     const tagContent = `[Reply routed via ${label}]`;
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-      VALUES (?, ?, 'system', ?, ?, datetime('now'))
-    `).run(tagId, agentId, tagContent, turnNumber);
+    insertMessageIfAbsent({ id: tagId, agentId, role: 'system', content: tagContent, turnNumber });
     broadcast({
       type: 'chat:message',
       agentId,
@@ -1730,10 +1726,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
       if (!echoKey || echoKey === chosenConvKey) return;
       const echoId = uuidv4();
       const content = `[Sent via ${channelWord} to ${recipientName}]: ${text}`;
-      db.prepare(`
-        INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, conv_key, origin_intent, created_at)
-        VALUES (?, ?, 'assistant', ?, ?, ?, 'cross_conv_send_echo', datetime('now'))
-      `).run(echoId, agentId, content, turnNumber, echoKey);
+      insertMessageIfAbsent({
+        id: echoId, agentId, role: 'assistant', content, turnNumber,
+        convKey: echoKey, originIntent: 'cross_conv_send_echo',
+      });
       logger.info('RC-1: dual-homed cross-recipient send echo into recipient conversation', {
         agentId, turnNumber, echoKey, channel: channelWord,
       }, agentId);
@@ -1831,9 +1827,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // message instead of a duplicate appearing next to a demoted note.
     const ackId = reuseId ?? uuidv4();
     try {
-      db.prepare(
-        `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, origin_intent, created_at) VALUES (?, ?, 'assistant', ?, ?, ?, datetime('now'))`,
-      ).run(ackId, agentId, text, turnNumber, originIntent);
+      insertMessageIfAbsent({ id: ackId, agentId, role: 'assistant', content: text, turnNumber, originIntent });
       broadcast({
         type: 'chat:message',
         agentId,
@@ -2164,10 +2158,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // a tracker call lands), so its behavior does not depend on the model seeing
           // this row. It also runs in the pre-turn setup, outside the loop's per-turn
           // pendingNudge scope. Guidance-only text; not dashboard-only theater.
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-            VALUES (?, ?, 'system', ?, datetime('now'))
-          `).run(gateMsgId, agentId, gateMsg);
+          insertMessageIfAbsent({ id: gateMsgId, agentId, role: 'system', content: gateMsg });
           broadcast({
             type: 'chat:message',
             agentId,
@@ -2596,10 +2587,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             `Send a follow-up to resume, or break the work into smaller pieces.]`
           );
           const stuckId = uuidv4();
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-            VALUES (?, ?, 'system', ?, ?, datetime('now'))
-          `).run(stuckId, agentId, stuckMsg, turnNumber);
+          insertMessageIfAbsent({ id: stuckId, agentId, role: 'system', content: stuckMsg, turnNumber });
           broadcast({
             type: 'chat:message',
             agentId,
@@ -2656,10 +2644,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           `Check tracker_list_active for the task you were working on; do not start over.]`
         );
         const sysMsgId = uuidv4();
-        db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-          VALUES (?, ?, 'system', ?, ?, datetime('now'))
-        `).run(sysMsgId, agentId, sysMsg, turnNumber);
+        insertMessageIfAbsent({ id: sysMsgId, agentId, role: 'system', content: sysMsg, turnNumber });
         broadcast({
           type: 'chat:message',
           agentId,
@@ -2737,10 +2722,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           `Pausing, the DOJO will compact memory and resume automatically.]`
         );
         const blockMsgId = uuidv4();
-        db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-          VALUES (?, ?, 'system', ?, ?, datetime('now'))
-        `).run(blockMsgId, agentId, blockMsg, turnNumber);
+        insertMessageIfAbsent({ id: blockMsgId, agentId, role: 'system', content: blockMsg, turnNumber });
         broadcast({
           type: 'chat:message',
           agentId,
@@ -3455,10 +3437,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           });
           const noteContent = `[Engine: input preparation]\n${lines.join('\n')}`;
           const noteId = uuidv4();
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-            VALUES (?, ?, 'system', ?, ?, datetime('now'))
-          `).run(noteId, agentId, noteContent, turnNumber);
+          insertMessageIfAbsent({ id: noteId, agentId, role: 'system', content: noteContent, turnNumber });
           broadcast({
             type: 'chat:message',
             agentId,
@@ -4386,10 +4365,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // 'engine' here would make the row inter-agent-shaped, and those
             // belong in the store, not messages (the NO_INTERAGENT_LEAK
             // invariant caught exactly that on the first draft of this).
-            db.prepare(`
-              INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-              VALUES (?, ?, 'system', ?, ?, datetime('now'))
-            `).run(noteId, agentId, `${notePrefix}${persistedContent}`, turnNumber);
+            insertMessageIfAbsent({
+              id: noteId, agentId, role: 'system',
+              content: `${notePrefix}${persistedContent}`, turnNumber,
+            });
             broadcast({
               type: 'chat:workingnote',
               agentId,
@@ -4464,7 +4443,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           state = persistEngineSteer(
             state,
             { agentId, content: nudgeText, turnNumber, extra: { nudgedForUngroundedClaimThisTurn: true } },
-            { db, broadcast },
+            { broadcast },
           );
           logger.info('v2 grounding guard fired, ungrounded delivery claim, re-entering', {
             agentId, recipient: grounding.recipient,
@@ -4515,7 +4494,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             state = persistEngineSteer(
               state,
               { agentId, content: nudgeText, turnNumber, extra: { nudgedForDeliveryDenialThisTurn: true } },
-              { db, broadcast },
+              { broadcast },
             );
             logger.info('v2 delivery-denial guard fired, receipt contradicts denial, re-entering', {
               agentId, recipient: who, channel: receipt.channel,
@@ -4549,7 +4528,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           state = persistEngineSteer(
             state,
             { agentId, content: nudgeText, turnNumber, extra: { nudgedForFailedSaveClaimThisTurn: true } },
-            { db, broadcast },
+            { broadcast },
           );
           logger.info('v2 RC-13.2 save-claim floor fired, all vault saves rejected this turn, re-entering', {
             agentId, rejected,
@@ -4801,10 +4780,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             'reply with ONE brief line pointing to the existing answer or delivery. Otherwise, do the work now, including creating the tracker task first if the user asked for one.]';
           const steerRowId = uuidv4();
           try {
-            db.prepare(`
-              INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-              VALUES (?, ?, 'system', ?, ?, datetime('now'))
-            `).run(steerRowId, agentId, steerText, turnNumber);
+            insertMessageIfAbsent({ id: steerRowId, agentId, role: 'system', content: steerText, turnNumber });
           } catch { /* dashboard row is best effort */ }
           state = advance(state, { pendingNudge: steerText, steeredForGhostedAskThisTurn: true });
           logger.info('v2 ghosted-work-ask floor: bare [no-reply] on a work-classified human ask with nothing surfaced; steering once (answer-or-point, never silence)', {
@@ -4832,10 +4808,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 `[Engine record: you again ended with [no-reply] on the user's direct ask, but you already answered this in this conversation. Your recorded answer: "${excerpt}". Reply now with one brief line in your own words pointing back to that. Do not re-do the work and do not stay silent.]`;
               const steer2RowId = uuidv4();
               try {
-                db.prepare(`
-                  INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-                  VALUES (?, ?, 'system', ?, ?, datetime('now'))
-                `).run(steer2RowId, agentId, steer2, turnNumber);
+                insertMessageIfAbsent({ id: steer2RowId, agentId, role: 'system', content: steer2, turnNumber });
               } catch { /* dashboard row is best effort */ }
               broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
               state = advance(state, { pendingNudge: steer2, ghostedAskSecondSteerThisTurn: true });
@@ -4881,10 +4854,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
               const noReplyCaption = canvasDoc
                 ? `Opened ${canvasDoc.filename ? `"${canvasDoc.filename.replace(/\.[a-z0-9]+$/i, '')}"` : 'a document'} in the canvas.`
                 : 'Here you go.';
-              db.prepare(`
-                INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, turn_number, created_at)
-                VALUES (?, ?, 'assistant', ?, ?, ?, datetime('now'))
-              `).run(messageId, agentId, noReplyCaption, JSON.stringify(noReplyAttachments), turnNumber);
+              insertMessageIfAbsent({
+                id: messageId, agentId, role: 'assistant', content: noReplyCaption,
+                attachments: JSON.stringify(noReplyAttachments), turnNumber,
+              });
               terminalAnswerRowId = messageId; // truthful answer key: canvas chip surfaced as the reply
               broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
               broadcast({
@@ -4951,10 +4924,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             const sysId = uuidv4();
             const sysContent = '[Agent ended turn without replying, conversation closed]';
             try {
-              db.prepare(`
-                INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-                VALUES (?, ?, 'system', ?, ?, datetime('now'))
-              `).run(sysId, agentId, sysContent, turnNumber);
+              insertMessageIfAbsent({ id: sysId, agentId, role: 'system', content: sysContent, turnNumber });
               broadcast({
                 type: 'chat:message',
                 agentId,
@@ -4976,7 +4946,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // the durable "served" signal (the conversation won't be re-picked) AND
           // the content-isolation tag (its work won't bleed into another turn).
           if (chosenConvKey) {
-            try { db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND turn_number = ? AND role IN ('assistant','tool') AND conv_key IS NULL`).run(chosenConvKey, agentId, turnNumber); } catch { /* best effort */ }
+            try { tagTurnOutputConvKey({ agentId, turnNumber, convKey: chosenConvKey }); } catch { /* best effort */ }
           }
           logger.info('v2: agent ended turn silently via [no-reply] sentinel', {
             agentId, loopCount: state.loopCount,
@@ -5052,10 +5022,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }, agentId);
           try {
             const noteId = uuidv4();
-            db.prepare(`
-              INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-              VALUES (?, ?, 'system', ?, ?, datetime('now'))
-            `).run(noteId, agentId, `[working-note] ${persistedContent}`, turnNumber);
+            insertMessageIfAbsent({
+              id: noteId, agentId, role: 'system',
+              content: `[working-note] ${persistedContent}`, turnNumber,
+            });
             // Convert the already-streamed dashboard bubble in place into the dimmed note
             // (same demote mechanism as the RC-9 text-with-tools path).
             broadcast({ type: 'chat:workingnote', agentId, messageId, noteId, content: persistedContent });
@@ -5232,20 +5202,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
             turnNumber,
           });
         } else {
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, token_count, model_id, cost, latency_ms, turn_number, reasoning_content, source, created_at)
-            VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, NULL, ?, ?, NULL, datetime('now'))
-          `).run(
-            messageId,
-            agentId,
-            assistantContentJson,
-            queuedAttachmentsJson,
-            result.outputTokens,
-            effectiveModelIdForPersist,
-            null,
-            turnNumber,
-            result.reasoningContent ?? null,
-          );
+          // The old statement's trailing `NULL` was the `source` column — the else arm of
+          // the a2a split, and T3-0b §3 measured it as the reason NO live writer stamps
+          // source='a2a' into `messages`. Owner-lane is the writer module's default, so
+          // that NULL position simply disappears.
+          insertMessageIfAbsent({
+            id: messageId, agentId, role: 'assistant', content: assistantContentJson,
+            attachments: queuedAttachmentsJson, tokenCount: result.outputTokens,
+            modelId: effectiveModelIdForPersist, cost: null, turnNumber,
+            reasoningContent: result.reasoningContent ?? null,
+          });
         }
         broadcast({
           type: 'chat:message',
@@ -5301,20 +5267,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
             turnNumber,
           });
         } else {
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, token_count, model_id, cost, latency_ms, turn_number, reasoning_content, created_at)
-            VALUES (?, ?, 'assistant', ?, ?, ?, ?, ?, NULL, ?, ?, datetime('now'))
-          `).run(
-            messageId,
-            agentId,
-            persistedContent,
-            queuedAttachmentsJson,
-            result.outputTokens,
-            effectiveModelIdForPersist,
-            null,
-            turnNumber,
-            result.reasoningContent ?? null,
-          );
+          insertMessageIfAbsent({
+            id: messageId, agentId, role: 'assistant', content: persistedContent,
+            attachments: queuedAttachmentsJson, tokenCount: result.outputTokens,
+            modelId: effectiveModelIdForPersist, cost: null, turnNumber,
+            reasoningContent: result.reasoningContent ?? null,
+          });
         }
         if (persistedContent.trim().length > 0) {
           state = advance(state, { lastAssistantTextForIM: stripOrbMood(persistedContent) });
@@ -5451,10 +5409,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   'Do NOT call imessage_send or any other send tool; the engine routes your written reply automatically. Do not re-open or re-do the task.]';
                 const steerRowId = uuidv4();
                 try {
-                  db.prepare(`
-                    INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-                    VALUES (?, ?, 'system', ?, ?, datetime('now'))
-                  `).run(steerRowId, agentId, steerText, turnNumber);
+                  insertMessageIfAbsent({ id: steerRowId, agentId, role: 'system', content: steerText, turnNumber });
                 } catch { /* dashboard row is best effort */ }
                 broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
                 state = advance(state, { pendingNudge: steerText, steeredForSilentCloseoutThisTurn: true });
@@ -5513,7 +5468,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 state = persistEngineSteer(
                   state,
                   { agentId, content: nudgeText, turnNumber, extra: { nudgedForAddNotesStopThisTurn: true } },
-                  { db, broadcast },
+                  { broadcast },
                 );
                 logger.info('v2 add-notes-stop nudge fired', { agentId, taskId: nudgedTaskId }, agentId);
                 continue; // re-enter the loop so the model sees the nudge
@@ -5674,10 +5629,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               // which pauses/resets the dangling task and keeps the single reply.
             } else {
               const nudgeId = uuidv4();
-              db.prepare(`
-                INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-                VALUES (?, ?, 'system', ?, ?, datetime('now'))
-              `).run(nudgeId, agentId, nudgeText, turnNumber);
+              insertMessageIfAbsent({ id: nudgeId, agentId, role: 'system', content: nudgeText, turnNumber });
               broadcast({
                 type: 'chat:message',
                 agentId,
@@ -6123,10 +6075,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             `If it still needs a reply, call send_to_agent on your next turn; otherwise leave it.]`
           );
           const stopId = uuidv4();
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-            VALUES (?, ?, 'system', ?, ?, datetime('now'))
-          `).run(stopId, agentId, stopMsg, turnNumber);
+          insertMessageIfAbsent({ id: stopId, agentId, role: 'system', content: stopMsg, turnNumber });
           broadcast({
             type: 'chat:message',
             agentId,
@@ -6177,7 +6126,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               turnNumber,
               extra: a2aReplyAssignMessageId ? { nudgedForMissedReplyOnAssignId: a2aReplyAssignMessageId } : undefined,
             },
-            { db, broadcast },
+            { broadcast },
           );
           // Continue loop so the agent reads the nudge and retries
           continue;
@@ -6383,7 +6332,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               state = persistEngineSteer(
                 state,
                 { agentId, content: nudgeText, turnNumber, extra: { nudgedForTrackerCloseThisTurn: true } },
-                { db, broadcast },
+                { broadcast },
               );
               logger.info('v2: tracker close-out nudge fired', {
                 agentId, openTaskCount: openTasks.length,
@@ -6706,7 +6655,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             state = persistEngineSteer(
               state,
               { agentId, content: nudge, turnNumber, extra: { nudgedForHoardingThisTurn: true } },
-              { db, broadcast },
+              { broadcast },
             );
             logger.info('v2: hoarding advisory nudged (non-blocking)', {
               agentId, tool: tc.name, heavyLoads: state.heavyLoadsThisTurn, ratio: state.lastContextRatio,
@@ -7464,17 +7413,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
             turnNumber,
           });
         } else {
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, token_count, model_id, cost, latency_ms, turn_number, created_at)
-            VALUES (?, ?, 'assistant', ?, ?, ?, NULL, NULL, ?, datetime('now'))
-          `).run(
-            messageId,
-            agentId,
-            collapsedText,
-            result.outputTokens,
-            effectiveModelIdForPersist,
-            turnNumber,
-          );
+          insertMessageIfAbsent({
+            id: messageId, agentId, role: 'assistant', content: collapsedText,
+            tokenCount: result.outputTokens, modelId: effectiveModelIdForPersist, turnNumber,
+          });
         }
         broadcast({
           type: 'chat:message',
@@ -7528,10 +7470,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             turnNumber,
           });
         } else {
-          db.prepare(`
-            INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-            VALUES (?, ?, 'tool', ?, ?, datetime('now'))
-          `).run(toolMessageId, agentId, toolResultJson, turnNumber);
+          insertMessageIfAbsent({ id: toolMessageId, agentId, role: 'tool', content: toolResultJson, turnNumber });
         }
         broadcast({
           type: 'chat:message',
@@ -7865,7 +7804,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           state = persistEngineSteer(
             state,
             { agentId, content: nudgeText, turnNumber, extra: { nudgedForTrackerThisTurn: true } },
-            { db, broadcast },
+            { broadcast },
           );
           logger.info('v2: tracker nudge fired', {
             agentId, nonTrackerToolCalls: state.nonTrackerToolCalls,
@@ -7996,8 +7935,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }
           if (parkKey) {
             try {
-              db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND rowid = ?`)
-                .run(parkKey, agentId, triggerRow.rowid);
+              setConvKeyByRowid({ rowid: triggerRow.rowid, agentId, value: parkKey });
               logger.info('v2: parked owner question awaiting agent reply', {
                 agentId, park: parkKey, threads: parkThreads.length, ownerRowid: triggerRow.rowid,
               }, agentId);
@@ -8173,7 +8111,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         state = persistEngineSteer(
           state,
           { agentId, content: nudgeText, turnNumber, extra: { spinningNudgeCount: state.spinningNudgeCount + 1 } },
-          { db, broadcast },
+          { broadcast },
         );
       }
 
@@ -8193,10 +8131,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         `to continue your work. Pick up where you left off.]`
       );
       const sysMsgId = uuidv4();
-      db.prepare(`
-        INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-        VALUES (?, ?, 'system', ?, ?, datetime('now'))
-      `).run(sysMsgId, agentId, sysMsg, turnNumber);
+      insertMessageIfAbsent({ id: sysMsgId, agentId, role: 'system', content: sysMsg, turnNumber });
       broadcast({
         type: 'chat:message',
         agentId,
@@ -8267,9 +8202,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
             }, agentId);
           }
         } catch { /* detection is best-effort; never block the recovery delivery */ }
-        db.prepare(
-          `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at) VALUES (?, ?, 'assistant', ?, ?, datetime('now'))`,
-        ).run(recoveredId, agentId, deferredUserReplyWithTools, turnNumber);
+        insertMessageIfAbsent({
+          id: recoveredId, agentId, role: 'assistant',
+          content: deferredUserReplyWithTools, turnNumber,
+        });
         broadcast({
           type: 'chat:message',
           agentId,
@@ -8468,10 +8404,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           if (undeliveredForDashboard.length > 0) {
             const linkBlock = undeliveredForDashboard.map(u => `Download: ${u}`).join('\n');
             const linkMsgId = uuidv4();
-            db.prepare(`
-              INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at)
-              VALUES (?, ?, 'assistant', ?, ?, datetime('now'))
-            `).run(linkMsgId, agentId, linkBlock, turnNumber);
+            insertMessageIfAbsent({ id: linkMsgId, agentId, role: 'assistant', content: linkBlock, turnNumber });
             broadcast({
               type: 'chat:message',
               agentId,
@@ -8507,7 +8440,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // later turn for a different counterparty never sees this turn's reply or
         // work in its live tail (content bleed across conversations).
         if (chosenConvKey) {
-          try { db.prepare(`UPDATE messages SET conv_key = ? WHERE agent_id = ? AND turn_number = ? AND role IN ('assistant','tool') AND conv_key IS NULL`).run(chosenConvKey, agentId, turnNumber); } catch { /* best effort */ }
+          try { tagTurnOutputConvKey({ agentId, turnNumber, convKey: chosenConvKey }); } catch { /* best effort */ }
         }
 
         const { resolveReplyDestination } = await import('./reply-destination.js');
@@ -8920,10 +8853,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
           ? stranded.captions.join('\n\n')
           : describeDeliverables(stranded.attachments);
         const synthId = uuidv4();
-        db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, turn_number, created_at)
-          VALUES (?, ?, 'assistant', ?, ?, ?, datetime('now'))
-        `).run(synthId, agentId, captionText, JSON.stringify(stranded.attachments), turnNumber);
+        insertMessageIfAbsent({
+          id: synthId, agentId, role: 'assistant', content: captionText,
+          attachments: JSON.stringify(stranded.attachments), turnNumber,
+        });
         broadcast({
           type: 'chat:message',
           agentId,
@@ -9164,9 +9097,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // the rows are already tagged, so `conv_key IS NULL` makes this a no-op. Best-effort.
     if (chosenConvKey) {
       try {
-        db.prepare(
-          `UPDATE messages SET conv_key = ? WHERE agent_id = ? AND turn_number = ? AND role IN ('assistant','tool') AND conv_key IS NULL`,
-        ).run(chosenConvKey, agentId, turnNumber);
+        tagTurnOutputConvKey({ agentId, turnNumber, convKey: chosenConvKey });
       } catch { /* best effort, turn teardown must not throw */ }
       // F9: claim same-conversation sibling user rows that were inside this
       // turn's final assembled context (they got answered by this reply); a
@@ -9286,10 +9217,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // answered it (both stores; sibling rows were stamped served_by_turn in
       // claimAssembledSiblings above).
       if (answerRow) {
-        db.prepare('UPDATE messages SET answer_message_id = ? WHERE agent_id = ? AND served_by_turn = ? AND answer_message_id IS NULL')
-          .run(answerRow.id, agentId, turnNumber);
-        db.prepare('UPDATE inter_agent_messages SET answer_message_id = ? WHERE agent_id = ? AND served_by_turn = ? AND answer_message_id IS NULL')
-          .run(answerRow.id, agentId, turnNumber);
+        setAnswerMessageId({ agentId, servedByTurn: turnNumber, answerMessageId: answerRow.id });
+        setAnswerMessageId({ agentId, servedByTurn: turnNumber, answerMessageId: answerRow.id }, 'ia');
       }
     } catch { /* best effort, turn teardown must not throw */ }
 
@@ -9326,10 +9255,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
           ? leftover.captions.join('\n\n')
           : 'Here are the files I prepared (the turn ended early).';
         const leftoverId = uuidv4();
-        db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, conv_key, turn_number, created_at)
-          VALUES (?, ?, 'assistant', ?, ?, ?, ?, datetime('now'))
-        `).run(leftoverId, agentId, caption, JSON.stringify(leftover.attachments), chosenConvKey, turnNumber);
+        insertMessageIfAbsent({
+          id: leftoverId, agentId, role: 'assistant', content: caption,
+          attachments: JSON.stringify(leftover.attachments), convKey: chosenConvKey, turnNumber,
+        });
         broadcast({
           type: 'chat:message',
           agentId,

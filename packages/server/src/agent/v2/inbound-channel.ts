@@ -27,7 +27,7 @@
 import type { InboundMeta } from '@dojo/shared';
 import type { ChannelInboundContext } from './state.js';
 import { isSenderAuthorized } from './channel-auth.js';
-import { getDb } from '../../db/connection.js';
+import { stampInboundMeta } from '../../memory/message-store.js';
 
 /**
  * Stamp structured routing metadata onto an inbound message row. Channel
@@ -37,9 +37,7 @@ import { getDb } from '../../db/connection.js';
  */
 export function recordInboundMeta(messageId: string, meta: InboundMeta): void {
   try {
-    getDb()
-      .prepare('UPDATE messages SET inbound_meta = ? WHERE id = ?')
-      .run(JSON.stringify(meta), messageId);
+    stampInboundMeta(messageId, JSON.stringify(meta));
   } catch {
     // best-effort
   }

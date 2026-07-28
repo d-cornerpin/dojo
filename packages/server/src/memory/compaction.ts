@@ -5,6 +5,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
 import { estimateTokens, getFreshTailCount, getMessagesOutsideFreshTail, getRecentMessages } from './store.js';
+import { insertMessageIfAbsent } from './message-store.js';
 import {
   createLeafSummary,
   createCondensedSummary,
@@ -303,14 +304,10 @@ function shouldShowCompactionDivider(agentId: string): boolean {
 
 function insertCompactionDivider(agentId: string, opts: { label: string }): void {
   try {
-    const db = getDb();
     const id = uuidv4();
     const content = `── ${opts.label} ──`;
     const createdAt = new Date().toISOString();
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'system', ?, datetime('now'))
-    `).run(id, agentId, content);
+    insertMessageIfAbsent({ id, agentId, role: 'system', content });
     broadcast({
       type: 'chat:message',
       agentId,

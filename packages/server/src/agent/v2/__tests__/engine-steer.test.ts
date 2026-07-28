@@ -43,20 +43,17 @@ function freshState(): AgentTurnState {
 
 describe('persistEngineSteer: does both writes', () => {
   it('inserts a role=system row AND sets pendingNudge on the returned state', () => {
-    let runArgs: unknown[] = [];
-    let runSql = '';
+    // PHASE-1 T4: the row is written through the single writer module, not a raw
+    // statement on an injected connection, so the seam moved from `deps.db` to
+    // `deps.insertRow`. The REQUIREMENT is unchanged and is what is asserted below:
+    // a persisted role='system' row carrying the steer's content, AND pendingNudge.
+    // Asserting on SQL text would now only prove which string literal we typed.
+    let written: { role?: string; content?: string; agentId?: string; turnNumber?: number | null } | null = null;
     const events: WsEvent[] = [];
     const deps = {
-      db: {
-        prepare(sql: string) {
-          runSql = sql;
-          return {
-            run(...args: unknown[]) {
-              runArgs = args;
-              return undefined;
-            },
-          };
-        },
+      insertRow(m: { role?: string; content?: string; agentId?: string; turnNumber?: number | null }) {
+        written = m;
+        return null;
       },
       broadcast(event: WsEvent) {
         events.push(event);
@@ -67,10 +64,12 @@ describe('persistEngineSteer: does both writes', () => {
     const content = '[System: STOP and call tracker_create_project.]';
     const after = persistEngineSteer(before, { agentId: 'a1', content, turnNumber: 7 }, deps);
 
-    // Dashboard row: a role='system' INSERT carrying the content.
-    expect(runSql).toMatch(/INSERT/);
-    expect(runSql).toMatch(/'system'/);
-    expect(runArgs).toContain(content);
+    // Dashboard row: a role='system' message carrying the content, for this turn.
+    expect(written).not.toBeNull();
+    expect(written!.role).toBe('system');
+    expect(written!.content).toBe(content);
+    expect(written!.agentId).toBe('a1');
+    expect(written!.turnNumber).toBe(7);
 
     // Dashboard broadcast: chat:message with the content.
     const chatMsg = events.find((e) => e.type === 'chat:message');
@@ -87,7 +86,7 @@ describe('persistEngineSteer: does both writes', () => {
 
   it('merges extra one-shot flags into the same advance', () => {
     const deps = {
-      db: { prepare: () => ({ run: () => undefined }) },
+      insertRow: () => null,
       broadcast: () => undefined,
     } as unknown as Parameters<typeof persistEngineSteer>[2];
     const after = persistEngineSteer(
@@ -101,12 +100,8 @@ describe('persistEngineSteer: does both writes', () => {
 
   it('still sets pendingNudge even if the dashboard row write throws (delivery is load-bearing)', () => {
     const deps = {
-      db: {
-        prepare: () => ({
-          run: () => {
-            throw new Error('db down');
-          },
-        }),
+      insertRow: () => {
+        throw new Error('db down');
       },
       broadcast: () => undefined,
     } as unknown as Parameters<typeof persistEngineSteer>[2];
@@ -119,8 +114,30 @@ describe('persistEngineSteer: does both writes', () => {
 
 const LOOP_TS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../loop.ts');
 
-// The VALUES row of a role='system' messages INSERT (2-arg id/agent_id prefix).
-const SYSTEM_INSERT = /VALUES\s*\(\s*\?,\s*\?,\s*'system'/;
+// A role='system' message write, in EITHER of the two shapes this codebase has.
+//
+// PHASE-1 T4 (2026-07-27): the guard's target moved and the guard had to move with it,
+// or it would have kept passing while matching nothing — the exact silent-vacuity
+// failure the "scan actually finds something" tests below exist to catch. Every raw
+// `INSERT ... VALUES (?, ?, 'system'` is being re-pointed onto the single writer
+// module, cluster by cluster, so BOTH forms are matched: the legacy statement (still
+// live in the clusters not yet converted, and in any file a future phase resurrects)
+// and the writer-module call. The RC-19 REQUIREMENT is untouched — a system row whose
+// text tells the model to act must pair a model-visible delivery.
+const SYSTEM_INSERT_SQL = /VALUES\s*\(\s*\?,\s*\?,\s*'system'/;
+const SYSTEM_INSERT_CALL = /insertMessage(?:IfAbsent)?\s*\(\s*\{[\s\S]{0,400}?role:\s*'system'/g;
+
+/** 0-based line indices of every role='system' message write in `src`, either shape. */
+function systemInsertLines(src: string): number[] {
+  const lines = src.split('\n');
+  const hits = new Set<number>();
+  lines.forEach((l, i) => { if (SYSTEM_INSERT_SQL.test(l)) hits.add(i); });
+  SYSTEM_INSERT_CALL.lastIndex = 0;
+  for (const m of src.matchAll(SYSTEM_INSERT_CALL)) {
+    hits.add(src.slice(0, m.index).split('\n').length - 1);
+  }
+  return [...hits].sort((a, b) => a - b);
+}
 
 // Imperative-to-agent shapes. Case-sensitive on purpose: prose "must"/"do not"
 // (lowercase) is fine; the SHOUTED forms are the directive tells. Covers the three
@@ -140,11 +157,11 @@ function isCommentLine(line: string): boolean {
 
 describe('RC-19: no bare-system imperative steer in loop.ts (build-enforced invariant)', () => {
   it('every role=system INSERT with imperative content pairs a model-visible delivery or is documented exempt', () => {
-    const lines = fs.readFileSync(LOOP_TS, 'utf8').split('\n');
+    const src = fs.readFileSync(LOOP_TS, 'utf8');
+    const lines = src.split('\n');
     const violations: string[] = [];
 
-    lines.forEach((line, i) => {
-      if (!SYSTEM_INSERT.test(line)) return;
+    systemInsertLines(src).forEach((i) => {
       // Window: content literals sit ABOVE the INSERT (built into a variable),
       // pendingNudge / persistEngineSteer / exempt sentinels sit just below or above.
       const start = Math.max(0, i - 40);
@@ -206,10 +223,10 @@ function subsystemFiles(dir: string): string[] {
 
 function scanBareImperativeSystemInserts(file: string, paired: RegExp): string[] {
   const rel = `${path.basename(path.dirname(file))}/${path.basename(file)}`;
-  const lines = fs.readFileSync(file, 'utf8').split('\n');
+  const src = fs.readFileSync(file, 'utf8');
+  const lines = src.split('\n');
   const found: string[] = [];
-  lines.forEach((line, i) => {
-    if (!SYSTEM_INSERT.test(line)) return;
+  systemInsertLines(src).forEach((i) => {
     // Same window + comment-filtering rules as the loop.ts scan: content literals
     // sit above the INSERT; the NOTICE / steer / exempt sentinel sits nearby.
     const start = Math.max(0, i - 40);
@@ -239,8 +256,7 @@ describe('RC-19: no bare-system imperative steer in tracker/ + scheduler/ (build
   it('the scan actually finds role=system INSERTs across the subsystems (guards against silently matching nothing)', () => {
     let systemInsertCount = 0;
     for (const f of files) {
-      const lines = fs.readFileSync(f, 'utf8').split('\n');
-      systemInsertCount += lines.filter((l) => SYSTEM_INSERT.test(l)).length;
+      systemInsertCount += systemInsertLines(fs.readFileSync(f, 'utf8')).length;
     }
     // Known non-imperative role='system' writers still present after Phase 0:
     // pm-agent.ts (PM soul prompt, x2), tools.ts (task-update notification),

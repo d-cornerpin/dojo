@@ -21,6 +21,7 @@ import { createLogger } from '../../logger.js';
 import { markLatestTurnError } from './turn-record.js';
 import { broadcast } from '../../gateway/ws.js';
 import { getDb } from '../../db/connection.js';
+import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { recordError, AgentError } from '../errors.js';
 import { hasActiveRateLimitRetry } from '../rate-limit-retry.js';
 import { classifyRecoverableProviderError, classifyPlatformError } from './classifiers/provider.js';
@@ -570,11 +571,7 @@ async function recordInjury(
 function persistAndBroadcastSystemNote(agentId: string, content: string): void {
   try {
     const noteId = uuidv4();
-    getDb()
-      .prepare(
-        `INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))`,
-      )
-      .run(noteId, agentId, content);
+    insertMessageIfAbsent({ id: noteId, agentId, role: 'system', content });
     broadcast({
       type: 'chat:message',
       agentId,

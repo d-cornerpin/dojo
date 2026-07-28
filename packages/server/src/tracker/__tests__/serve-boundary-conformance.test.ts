@@ -35,9 +35,21 @@ describe('serve boundary (P2)', () => {
     for (const fname of ['retireEngineEventsForRun', 'retireEngineEventsForTask']) {
       const fn = cp.slice(cp.indexOf(`export function ${fname}`));
       const body = fn.slice(0, 1200);
-      expect(body, `${fname} must iterate both message stores`).toMatch(/'messages',\s*'inter_agent_messages'/);
-      expect(body, `${fname} must not yank a live turn's trigger`).toMatch(/conv_key IS NULL AND swept_at IS NULL/);
+      // PHASE-1 T4: the retire helpers no longer spell the two table names — the
+      // single writer owns that dispatch and takes the src ('m' | 'ia'). Both halves
+      // of the requirement are still asserted, just at their new addresses: the
+      // helper must still visit BOTH stores, and the "never yank a live turn's
+      // trigger" guard (conv_key IS NULL AND swept_at IS NULL) must still be the
+      // statement's WHERE. The second half moved into memory/message-store.ts, so
+      // that is where it is now read from — dropping it would have left the guard
+      // asserting only against a string this file itself no longer contains.
+      expect(body, `${fname} must iterate both message stores`).toMatch(/\['m',\s*'ia'\]/);
+      expect(body, `${fname} must retire by referent through the single writer`).toMatch(/sweepByReferent\(/);
     }
+    const store = read('memory/message-store.ts');
+    const sweep = store.slice(store.indexOf('export function sweepByReferent'));
+    expect(sweep.slice(0, 600), 'sweepByReferent must not yank a live turn\'s trigger')
+      .toMatch(/conv_key IS NULL AND swept_at IS NULL/);
   });
 
   it('run close claims its trigger by key; terminal tasks retire their events by key', () => {
@@ -114,11 +126,21 @@ describe('turn record (P4)', () => {
   });
 
   it('claimed asks carry forward links (served_by_turn at every claim site, answers stamped at teardown)', () => {
+    // PHASE-1 T4: same requirement, new addresses. The loop must still stamp
+    // served_by_turn at every claim site and stamp the answer at teardown; both are
+    // now calls into the single writer, and the statements they resolve to are
+    // asserted in memory/message-store.ts so the SQL itself is still pinned
+    // somewhere. Three claim sites: the human trigger, the engine event, the
+    // terminal A2A wake.
     const loop = read('agent/v2/loop.ts');
-    expect((loop.match(/SET served_by_turn = \?/g) ?? []).length).toBeGreaterThanOrEqual(3);
-    expect(loop).toMatch(/SET answer_message_id = \? WHERE agent_id = \? AND served_by_turn = \?/);
+    expect((loop.match(/markServedByRowid\(/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    expect(loop).toMatch(/setAnswerMessageId\(\{/);
+    const store = read('memory/message-store.ts');
+    expect(store).toMatch(/SET served_by_turn = \? WHERE rowid = \?/);
+    expect(store).toMatch(/SET answer_message_id = @answerMessageId[\s\S]{0,200}served_by_turn = @servedByTurn/);
     const cp = read('agent/v2/counterparty.ts');
-    expect(cp).toMatch(/conv_key = \?, served_by_turn = COALESCE/);
+    expect(cp).toMatch(/claimRowByRowid\(\{/);
+    expect(store).toMatch(/conv_key = @convKey,[\s\S]{0,80}served_by_turn = COALESCE/);
   });
 
   it('the scaffold same-turn close keys on origin_turn identity (clock window = pre-spine fallback only)', () => {

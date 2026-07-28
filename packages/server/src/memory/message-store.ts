@@ -131,9 +131,44 @@ function classify(lane: Lane, role: Role): { kind: string; tier: DisplayTier } {
   return { kind: role === 'user' ? 'user-text' : 'agent-text', tier: 'user-visible' };
 }
 
-/** The ONE INSERT into `messages`. Every column the row needs is decided here. */
-export function insertMessage(m: NewMessage): Persisted {
-  const db = getDb();
+// ── The legacy-column projection (T4) ──
+// T6-DELETES / T10-DELETES. `origin_kind` and `source` are the two compat columns migration
+// 127 carries. T4 converted every CALL SITE off them — no writer outside this module names
+// either column any more — but ~120 `origin_kind` refs and 39 `source` refs are still READ
+// across the tree, and T5/T6 own re-pointing those. R1 says the box stays alive and
+// OR8-verifiable after EVERY task, so the single writer keeps the two columns TRUE by
+// deriving them from `lane`, which is the exact inverse of the compat trigger T4 dropped.
+// The derivation lives in ONE function with one demolition marker instead of firing as an
+// invisible AFTER INSERT trigger on every row. When T6 has re-pointed the predicates and
+// T10 drops the columns, this function and its two call sites go with them.
+function legacyOriginKind(lane: Lane): string | null {
+  return lane === 'events' ? 'engine' : null;   // T10-DELETES (T3-0b §1: origin_kind ⟺ lane)
+}
+function legacySource(lane: Lane, channel: string | null): string | null {
+  if (lane === 'a2a') return 'a2a';             // T10-DELETES (T3-0b §3: source splits onto
+  if (channel === 'voice') return 'voice';      //              lane + channel)
+  return null;
+}
+
+const INSERT_SQL = `
+    INSERT INTO messages (
+      id, agent_id, conversation_id, lane, origin_intent, role, content, mood,
+      display_kind, display_tier, turn_number, group_id, channel, sender_id, authorized,
+      source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, token_count,
+      model_id, cost, latency_ms, reasoning_content, inbound_meta, attachments,
+      external_message_id, speaker, voice_session_id, task_id, run_id, root_kind, root_id,
+      conv_key, origin_kind, source, provenance, sent_at, created_at
+    ) VALUES (
+      @id, @agentId, @conversationId, @lane, @originIntent, @role, @content, @mood,
+      @displayKind, @displayTier, @turnNumber, @groupId, @channel, @senderId, @authorized,
+      @sourceAgentId, @a2aThreadId, @a2aIntent, @a2aRequiresResponse, @tokenCount,
+      @modelId, @cost, @latencyMs, @reasoningContent, @inboundMeta, @attachments,
+      @externalMessageId, @speaker, @voiceSessionId, @taskId, @runId, @rootKind, @rootId,
+      @convKey, @originKind, @source, 'live', @sentAt, datetime('now')
+    )`;
+
+function bind(m: NewMessage): { lane: Lane; id: string; displayKind: string; displayTier: DisplayTier;
+  tokenCount: number; sentAt: number; params: Record<string, unknown> } {
   const lane: Lane = m.lane ?? 'owner';
   const id = m.id ?? randomUUID();
   const display = classify(lane, m.role);
@@ -143,48 +178,70 @@ export function insertMessage(m: NewMessage): Persisted {
   // zero here would make every budget arithmetic downstream quietly wrong.
   const tokenCount = m.tokenCount ?? Math.max(1, estimateTokens(m.content));
   const sentAt = Date.now();
+  const channel = m.channel ?? null;
+  return {
+    lane, id, displayKind, displayTier, tokenCount, sentAt,
+    params: {
+      id, agentId: m.agentId, conversationId: m.conversationId ?? null, lane,
+      originIntent: m.originIntent ?? null, role: m.role, content: m.content,
+      mood: m.mood ?? null, displayKind, displayTier,
+      turnNumber: m.turnNumber ?? null, groupId: m.groupId ?? null,
+      channel, senderId: m.senderId ?? null,
+      authorized: (m.authorized ?? true) ? 1 : 0,
+      sourceAgentId: m.sourceAgentId ?? null, a2aThreadId: m.a2aThreadId ?? null,
+      a2aIntent: m.a2aIntent ?? null,
+      a2aRequiresResponse: m.a2aRequiresResponse == null ? null : (m.a2aRequiresResponse ? 1 : 0),
+      tokenCount, modelId: m.modelId ?? null, cost: m.cost ?? null,
+      latencyMs: m.latencyMs ?? null, reasoningContent: m.reasoningContent ?? null,
+      inboundMeta: m.inboundMeta ?? null, attachments: m.attachments ?? null,
+      externalMessageId: m.externalMessageId ?? null, speaker: m.speaker ?? null,
+      voiceSessionId: m.voiceSessionId ?? null, taskId: m.taskId ?? null, runId: m.runId ?? null,
+      rootKind: m.rootKind ?? null, rootId: m.rootId ?? null, convKey: m.convKey ?? null,
+      originKind: legacyOriginKind(lane), source: legacySource(lane, channel),
+      sentAt,
+    },
+  };
+}
 
-  const info = db.prepare(`
-    INSERT INTO messages (
-      id, agent_id, conversation_id, lane, origin_intent, role, content, mood,
-      display_kind, display_tier, turn_number, group_id, channel, sender_id, authorized,
-      source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, token_count,
-      model_id, cost, latency_ms, reasoning_content, inbound_meta, attachments,
-      external_message_id, speaker, voice_session_id, task_id, run_id, root_kind, root_id,
-      conv_key, provenance, sent_at, created_at
-    ) VALUES (
-      @id, @agentId, @conversationId, @lane, @originIntent, @role, @content, @mood,
-      @displayKind, @displayTier, @turnNumber, @groupId, @channel, @senderId, @authorized,
-      @sourceAgentId, @a2aThreadId, @a2aIntent, @a2aRequiresResponse, @tokenCount,
-      @modelId, @cost, @latencyMs, @reasoningContent, @inboundMeta, @attachments,
-      @externalMessageId, @speaker, @voiceSessionId, @taskId, @runId, @rootKind, @rootId,
-      @convKey, 'live', @sentAt, datetime('now')
-    )
-  `).run({
-    id, agentId: m.agentId, conversationId: m.conversationId ?? null, lane,
-    originIntent: m.originIntent ?? null, role: m.role, content: m.content,
-    mood: m.mood ?? null, displayKind, displayTier,
-    turnNumber: m.turnNumber ?? null, groupId: m.groupId ?? null,
-    channel: m.channel ?? null, senderId: m.senderId ?? null,
-    authorized: (m.authorized ?? true) ? 1 : 0,
-    sourceAgentId: m.sourceAgentId ?? null, a2aThreadId: m.a2aThreadId ?? null,
-    a2aIntent: m.a2aIntent ?? null,
-    a2aRequiresResponse: m.a2aRequiresResponse == null ? null : (m.a2aRequiresResponse ? 1 : 0),
-    tokenCount, modelId: m.modelId ?? null, cost: m.cost ?? null,
-    latencyMs: m.latencyMs ?? null, reasoningContent: m.reasoningContent ?? null,
-    inboundMeta: m.inboundMeta ?? null, attachments: m.attachments ?? null,
-    externalMessageId: m.externalMessageId ?? null, speaker: m.speaker ?? null,
-    voiceSessionId: m.voiceSessionId ?? null, taskId: m.taskId ?? null, runId: m.runId ?? null,
-    rootKind: m.rootKind ?? null, rootId: m.rootId ?? null, convKey: m.convKey ?? null,
-    sentAt,
-  });
-
+/** The ONE INSERT into `messages`. Every column the row needs is decided here.
+ *  Throws on a duplicate id — use `insertMessageIfAbsent` where a colliding id is a
+ *  legitimate, designed no-op (inbound de-duplication). */
+export function insertMessage(m: NewMessage): Persisted {
+  const db = getDb();
+  const b = bind(m);
+  const info = db.prepare(INSERT_SQL).run(b.params);
   const createdAt = (db.prepare('SELECT created_at FROM messages WHERE seq = ?')
     .get(info.lastInsertRowid as number) as { created_at: string }).created_at;
-
   return {
-    seq: info.lastInsertRowid as number, id, lane,
-    displayKind, displayTier, tokenCount, createdAt, sentAt,
+    seq: info.lastInsertRowid as number, id: b.id, lane: b.lane,
+    displayKind: b.displayKind, displayTier: b.displayTier,
+    tokenCount: b.tokenCount, createdAt, sentAt: b.sentAt,
+  };
+}
+
+/** Idempotent insert: returns `null` when the row is already there.
+ *
+ *  R1, and this is the whole point of the form. The 80 legacy `INSERT OR IGNORE` writers
+ *  used SQLite's IGNORE conflict resolution, which swallows **NOT NULL and CHECK** failures
+ *  as well as UNIQUE ones — that is the silent-discard class T3 measured and the reason
+ *  migration 127 had to default every spine column. `ON CONFLICT DO NOTHING` is scoped to
+ *  uniqueness ALONE: a duplicate id or a repeat `external_message_id` is still a designed
+ *  no-op, and a NOT NULL or CHECK violation now THROWS. Both halves proven on a VACUUM INTO
+ *  copy before this was written (T4 report §2).
+ *
+ *  `lastInsertRowid` is stale on a no-op (SQLite reports the connection's last successful
+ *  insert), so the outcome is read off `changes` and never off the rowid. */
+export function insertMessageIfAbsent(m: NewMessage): Persisted | null {
+  const db = getDb();
+  const b = bind(m);
+  const info = db.prepare(`${INSERT_SQL} ON CONFLICT DO NOTHING`).run(b.params);
+  if (info.changes === 0) return null;
+  const createdAt = (db.prepare('SELECT created_at FROM messages WHERE seq = ?')
+    .get(info.lastInsertRowid as number) as { created_at: string }).created_at;
+  return {
+    seq: info.lastInsertRowid as number, id: b.id, lane: b.lane,
+    displayKind: b.displayKind, displayTier: b.displayTier,
+    tokenCount: b.tokenCount, createdAt, sentAt: b.sentAt,
   };
 }
 
@@ -193,6 +250,13 @@ export function insertEngineEvent(
   e: Omit<NewMessage, 'lane' | 'role'> & { role?: Role },
 ): Persisted {
   return insertMessage({ ...e, lane: 'events', role: e.role ?? 'user' });
+}
+
+/** Idempotent twin of `insertEngineEvent`. */
+export function insertEngineEventIfAbsent(
+  e: Omit<NewMessage, 'lane' | 'role'> & { role?: Role },
+): Persisted | null {
+  return insertMessageIfAbsent({ ...e, lane: 'events', role: e.role ?? 'user' });
 }
 
 // ── Turn boundary ──
@@ -265,4 +329,272 @@ export function unservedHead(agentId: string): StoredMessage[] {
     ORDER BY seq ASC
   `).all(agentId) as MessageRowShape[];
   return rows.map(toStored);
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// THE MUTATION VOCABULARY (T4)
+//
+// Every UPDATE and DELETE against `messages` lives here. "A single-writer rule that
+// only covers INSERT is not one" — the conformance walk says exactly that and enforces
+// it. The payoff is that this section IS the complete, enumerable list of things that
+// can happen to a message row after it is written; before T4 that list was 49 statements
+// scattered over 24 files and nobody could state it.
+//
+// TWO-TABLE DISPATCH — T10-DELETES. `inter_agent_messages` is NOT renamed until T10 (R5:
+// renaming it at T3 killed every assembled turn — measured), so rows written before T4
+// still live there and their lifecycle columns must stay reachable. `src` carries that,
+// and this file is now the ONLY place in the tree that knows two tables exist: T4 Step 3
+// removed the `${table}` interpolation from every call site.
+//
+// CACHE LAW (OR7): none of these touch `content` except `rewriteSystemPromptRow`, which
+// is annotated at its own definition and predates this phase.
+// ════════════════════════════════════════════════════════════════════════════════
+
+/** Which physical table a pre-T4 row lives in. T10-DELETES along with the table. */
+export type LegacySrc = 'm' | 'ia';
+function home(src: LegacySrc = 'm'): 'messages' | 'inter_agent_messages' {
+  return src === 'ia' ? 'inter_agent_messages' : 'messages';
+}
+
+// ── conv_key: the claim/park machine (PHASE2-DELETES — Phase 2 replaces it wholesale) ──
+
+/** Compare-and-swap a row's conv_key by rowid. `expect` is the guard the call sites all
+ *  carried inline: `null` = only if unclaimed, a string = only if it still holds that key,
+ *  `undefined` = unconditional. Returns rows changed, which every caller uses to detect a
+ *  concurrent claim — so it must stay a real count, never a boolean. */
+export function setConvKeyByRowid(
+  p: { rowid: number; agentId?: string; value: string | null; expect?: string | null },
+  src: LegacySrc = 'm',
+): number {
+  const db = getDb();
+  const guard = p.expect === undefined ? '' : p.expect === null ? 'AND conv_key IS NULL' : 'AND conv_key = @expect';
+  const agent = p.agentId ? 'AND agent_id = @agentId' : '';
+  return db.prepare(
+    `UPDATE ${home(src)} SET conv_key = @value WHERE rowid = @rowid ${agent} ${guard}`,
+  ).run({ rowid: p.rowid, agentId: p.agentId ?? null, value: p.value, expect: p.expect ?? null }).changes;
+}
+
+/** Tag this turn's OWN output rows with the conversation they served, so one
+ *  counterparty's work cannot bleed into another's turn (content isolation, mig 076).
+ *
+ *  `lane` is not decoration. Before T4 this UPDATE could only ever reach owner-lane rows,
+ *  because the agent's a2a own output physically lived in `inter_agent_messages` and had
+ *  its own tagger. T4 folded that output into `messages` as `lane='a2a'`, so without the
+ *  predicate the human conversation's key would start landing on coordination rows — a
+ *  behaviour change T4 has no mandate to make. The lane filter keeps it byte-identical. */
+export function tagTurnOutputConvKey(
+  p: { agentId: string; turnNumber: number; convKey: string; lane?: Lane },
+  src: LegacySrc = 'm',
+): number {
+  const db = getDb();
+  const laneClause = src === 'ia' ? '' : `AND lane = @lane`;
+  return db.prepare(
+    `UPDATE ${home(src)} SET conv_key = @convKey
+       WHERE agent_id = @agentId AND turn_number = @turnNumber
+         AND role IN ('assistant','tool') AND conv_key IS NULL ${laneClause}`,
+  ).run({ agentId: p.agentId, turnNumber: p.turnNumber, convKey: p.convKey, lane: p.lane ?? 'owner' }).changes;
+}
+
+/** Claim a queued engine/peer row for a turn: stamp its conv_key and, optionally, the
+ *  serving turn in the same statement. Only ever claims an UNclaimed row. */
+export function claimRowByRowid(
+  p: { agentId: string; rowid: number; convKey: string; servedByTurn?: number | null },
+  src: LegacySrc = 'm',
+): number {
+  const db = getDb();
+  return db.prepare(
+    `UPDATE ${home(src)} SET conv_key = @convKey,
+        served_by_turn = COALESCE(@servedByTurn, served_by_turn)
+      WHERE agent_id = @agentId AND rowid = @rowid AND conv_key IS NULL`,
+  ).run({ ...p, servedByTurn: p.servedByTurn ?? null }).changes;
+}
+
+/** Claim the assignment notice(s) for a task that has gone terminal. The content LIKE is
+ *  the documented legacy fallback for pre-112 rows whose task_id is NULL; it is carried
+ *  verbatim, not improved, because narrowing it here would silently change which rows
+ *  retire. The `origin_kind` predicate is T6's to convert to `lane`. */
+export function claimTrackerNoticeForTask(
+  p: { agentId: string; contentLike: string }, src: LegacySrc = 'm',
+): number {
+  const db = getDb();
+  return db.prepare(
+    `UPDATE ${home(src)} SET conv_key = 'engine'
+       WHERE agent_id = @agentId AND origin_kind = 'engine' AND origin_intent = 'tracker'
+         AND conv_key IS NULL AND content LIKE @contentLike`,
+  ).run(p).changes;
+}
+
+// ── Turn boundary ──
+
+/** Mark one row served by a turn, addressed by rowid (the shape the claim path holds). */
+export function markServedByRowid(rowid: number, turnNumber: number, src: LegacySrc = 'm'): number {
+  const db = getDb();
+  return db.prepare(`UPDATE ${home(src)} SET served_by_turn = ? WHERE rowid = ?`)
+    .run(turnNumber, rowid).changes;
+}
+
+/** Record which message answered the rows a turn served (the delivery receipt the
+ *  "did I actually reply" probes read). Never overwrites an existing answer. */
+export function setAnswerMessageId(
+  p: { agentId: string; servedByTurn: number; answerMessageId: string }, src: LegacySrc = 'm',
+): number {
+  const db = getDb();
+  return db.prepare(
+    `UPDATE ${home(src)} SET answer_message_id = @answerMessageId
+       WHERE agent_id = @agentId AND served_by_turn = @servedByTurn AND answer_message_id IS NULL`,
+  ).run(p).changes;
+}
+
+// ── Engine-event lifecycle (serve boundary, mig 099/112) ──
+
+/** Retire a queued engine event without serving it. `requireUnclaimed` is the serve
+ *  boundary's guard: a row already claimed by a turn is not ours to sweep. */
+export function sweepByRowid(
+  p: { rowid: number; agentId?: string; requireUnclaimed?: boolean }, src: LegacySrc = 'm',
+): number {
+  const db = getDb();
+  const agent = p.agentId ? 'AND agent_id = @agentId' : '';
+  const unclaimed = p.requireUnclaimed ? 'AND conv_key IS NULL' : '';
+  return db.prepare(
+    `UPDATE ${home(src)} SET swept_at = datetime('now')
+       WHERE rowid = @rowid ${agent} ${unclaimed} AND swept_at IS NULL`,
+  ).run({ rowid: p.rowid, agentId: p.agentId ?? null }).changes;
+}
+
+/** Retire every unclaimed engine event pointing at one referent (a task or a run whose
+ *  premise is spent). The referent column is a fixed enum, never caller SQL. */
+export function sweepByReferent(
+  p: { referent: 'task_id' | 'run_id'; id: string }, src: LegacySrc = 'm',
+): number {
+  const db = getDb();
+  return db.prepare(
+    `UPDATE ${home(src)} SET swept_at = datetime('now')
+       WHERE ${p.referent} = ? AND conv_key IS NULL AND swept_at IS NULL`,
+  ).run(p.id).changes;
+}
+
+/** Retire one row by its message id. */
+export function sweepById(id: string, src: LegacySrc = 'm'): number {
+  const db = getDb();
+  return db.prepare(`UPDATE ${home(src)} SET swept_at = datetime('now') WHERE id = ?`)
+    .run(id).changes;
+}
+
+/** Bookkeep a failed delivery: attempt counter + backoff window (mig 084). */
+export function recordDeliveryAttempt(
+  p: { agentId: string; rowid: number; attempts: number; backoffMinutes: number },
+  src: LegacySrc = 'm',
+): number {
+  const db = getDb();
+  return db.prepare(
+    `UPDATE ${home(src)} SET delivery_attempts = @attempts,
+        next_attempt_at = datetime('now', @offset)
+      WHERE agent_id = @agentId AND rowid = @rowid`,
+  ).run({ agentId: p.agentId, rowid: p.rowid, attempts: p.attempts, offset: `+${p.backoffMinutes} minutes` }).changes;
+}
+
+/** Move a fired-but-undelivered engine event forward across a session reset so the new
+ *  session can still serve it (D-A step 4).
+ *
+ *  `eligibleWhere` is a caller-supplied SQL fragment — deliberately, and it is the only
+ *  one in this module. It is `DELIVERABLE_ENGINE_EVENT_WHERE`, a shared CONSTANT defined
+ *  next to the eligibility reads it must stay identical to (agent/v2/counterparty.ts).
+ *  Copying it here would fork the definition of "deliverable", which is the duplication
+ *  this phase exists to remove. It is never built from user input. T6 owns collapsing it
+ *  onto `lane` along with the rest of the eligibility predicates. */
+export function rehomeUndeliveredCreatedAt(
+  p: { agentId: string; newBoundary: string; eligibleWhere: string; maxAttempts: number; expiryHours: number },
+  src: LegacySrc = 'm',
+): number {
+  const db = getDb();
+  return db.prepare(
+    `UPDATE ${home(src)} SET created_at = @newBoundary
+       WHERE agent_id = @agentId AND ${p.eligibleWhere}
+         AND created_at < @newBoundary
+         AND delivery_attempts < ${p.maxAttempts}
+         AND created_at >= datetime('now', '-${p.expiryHours} hours')`,
+  ).run({ agentId: p.agentId, newBoundary: p.newBoundary }).changes;
+}
+
+// ── Row fields stamped after the insert ──
+
+/** Stamp structured routing metadata onto an inbound row (OR4). Channel producers hold
+ *  the id from their own insert. T4 also passes `channel`/`authorized`/`sender_id` INTO
+ *  the insert, so this now records the full meta blob for the resolver rather than being
+ *  the only carrier of the routing facts. */
+export function stampInboundMeta(id: string, metaJson: string): number {
+  const db = getDb();
+  return db.prepare('UPDATE messages SET inbound_meta = ? WHERE id = ?').run(metaJson, id).changes;
+}
+
+/** Attach (or re-path) a row's attachment manifest. */
+export function setAttachments(id: string, attachmentsJson: string): number {
+  const db = getDb();
+  return db.prepare('UPDATE messages SET attachments = ? WHERE id = ?').run(attachmentsJson, id).changes;
+}
+
+/** Name the human who spoke a voice-session row. */
+export function stampVoiceSpeaker(id: string, speaker: string, voiceSessionId: string | null): number {
+  const db = getDb();
+  return db.prepare(
+    'UPDATE messages SET speaker = ?, voice_session_id = COALESCE(?, voice_session_id) WHERE id = ?',
+  ).run(speaker, voiceSessionId, id).changes;
+}
+
+/** "This assistant row was spoken aloud." Was `source='voice'`; `channel` is where that
+ *  fact lives now (T3-0b §3). `source` is kept in step for the compat window — T10-DELETES
+ *  with the column. Routing columns only, so the cache prefix is untouched. */
+export function markSpokenAloud(id: string): number {
+  const db = getDb();
+  return db.prepare(
+    `UPDATE messages SET channel = 'voice', source = 'voice'
+       WHERE id = ? AND role = 'assistant' AND (channel IS NULL OR channel = '')`,
+  ).run(id).changes;
+}
+
+/** Re-write the agent's persisted SYSTEM-PROMPT row in place.
+ *
+ *  CACHE LAW EXCEPTION, pre-existing and deliberate. The cache-prefix rule is that a row's
+ *  `content` is written once and never rewritten; this is the one row where the platform
+ *  has always done otherwise, because the system prompt IS the prefix and editing the
+ *  agent's instructions is meant to move it. Three call sites had this statement inline
+ *  (the prompt editor, the agent route, the vault's prompt refresh); they are the same
+ *  operation and now say so. It must never be generalised to ordinary history rows —
+ *  one such backfill invalidates every conversation prefix on every provider at once. */
+export function rewriteSystemPromptRow(id: string, content: string): number {
+  const db = getDb();
+  return db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(content, id).changes;
+}
+
+// ── Deletes ──
+
+/** Every message for an agent. Used by agent deletion and by the three singleton agents
+ *  (imaginer/trainer/PM) that reset their own scratch history. */
+export function deleteAllForAgent(agentId: string, src: LegacySrc = 'm'): number {
+  const db = getDb();
+  return db.prepare(`DELETE FROM ${home(src)} WHERE agent_id = ?`).run(agentId).changes;
+}
+
+/** Everything older than a cutoff row, for the PM's bounded scratch history. Deletes the
+ *  dependent summary rows first, in one transaction, exactly as the call site did. */
+export function deleteForAgentBefore(agentId: string, cutoffId: string): number {
+  const db = getDb();
+  const txn = db.transaction((aid: string, cid: string): number => {
+    db.prepare(`
+      DELETE FROM summary_messages
+      WHERE message_id IN (
+        SELECT id FROM messages WHERE agent_id = ? AND rowid < (SELECT rowid FROM messages WHERE id = ?)
+      )
+    `).run(aid, cid);
+    return db.prepare(
+      'DELETE FROM messages WHERE agent_id = ? AND rowid < (SELECT rowid FROM messages WHERE id = ?)',
+    ).run(aid, cid).changes;
+  });
+  return txn(agentId, cutoffId);
+}
+
+/** Wipe an agent's conversation but keep its system rows (identity + session boundary). */
+export function deleteNonSystemForAgent(agentId: string): number {
+  const db = getDb();
+  return db.prepare("DELETE FROM messages WHERE agent_id = ? AND role != 'system'").run(agentId).changes;
 }

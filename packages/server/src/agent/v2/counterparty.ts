@@ -14,6 +14,13 @@ import { deriveOrigin, type Channel, type Relation, type InboundMeta } from '@do
 import { getOwnerName } from '../../config/platform.js';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
+import {
+  claimRowByRowid,
+  recordDeliveryAttempt,
+  rehomeUndeliveredCreatedAt,
+  sweepByReferent,
+  sweepByRowid,
+} from '../../memory/message-store.js';
 import { postAgentNotice } from '../agent-notice.js';
 
 const logger = createLogger('counterparty');
@@ -131,7 +138,6 @@ export function quarantineWaitingConversation(agentId: string, convKey: string):
         AND (origin_kind IS NULL OR origin_kind != 'engine')
         AND source_agent_id IS NULL AND a2a_thread_id IS NULL`,
   ).all(agentId, sessionStart) as Array<WaitingConversation['latest']>;
-  const stamp = db.prepare("UPDATE messages SET swept_at = datetime('now') WHERE agent_id = ? AND rowid = ?");
   let n = 0;
   for (const r of rows) {
     const o = deriveOrigin({
@@ -141,7 +147,7 @@ export function quarantineWaitingConversation(agentId: string, convKey: string):
     });
     if (o.kind !== 'user' || !o.authorized) continue;
     if (conversationKey(o.channel, o.senderId, o.senderName, o.threadId) !== convKey) continue;
-    stamp.run(agentId, r.rowid);
+    sweepByRowid({ rowid: r.rowid, agentId });
     n++;
   }
   return n;
@@ -172,7 +178,6 @@ export function claimAssembledSiblings(agentId: string, convKey: string, assembl
   ).all(agentId, sessionStart, assembledAtIso) as Array<WaitingConversation['latest']>;
   // P4: siblings record WHICH turn served them (forward link), alongside the
   // claim stamp that hides them from the waiting set.
-  const stamp = db.prepare('UPDATE messages SET conv_key = ?, served_by_turn = COALESCE(?, served_by_turn) WHERE agent_id = ? AND rowid = ? AND conv_key IS NULL');
   let n = 0;
   for (const r of rows) {
     const o = deriveOrigin({
@@ -182,7 +187,7 @@ export function claimAssembledSiblings(agentId: string, convKey: string, assembl
     });
     if (o.kind !== 'user') continue;
     if (conversationKey(o.channel, o.senderId, o.senderName, o.threadId) !== convKey) continue;
-    stamp.run(convKey, turnNumber ?? null, agentId, r.rowid);
+    claimRowByRowid({ agentId, rowid: r.rowid, convKey, servedByTurn: turnNumber ?? null });
     n++;
   }
   return n;
@@ -294,11 +299,8 @@ function retireOneEngineEvent(
   detail: { taskId?: string | null; runId?: string | null; createdAt?: string | null; referentState?: string | null },
 ): boolean {
   try {
-    const db = getDb();
-    const res = db.prepare(
-      `UPDATE ${engineEventTable(src)} SET swept_at = datetime('now') WHERE rowid = ? AND conv_key IS NULL AND swept_at IS NULL`,
-    ).run(rowid);
-    if (res.changes === 0) return false;
+    const changed = sweepByRowid({ rowid, requireUnclaimed: true }, src);
+    if (changed === 0) return false;
     logger.info('serve boundary: retired a spent engine event (premise no longer holds; never served)', {
       reason, rowid, src, taskId: detail.taskId ?? null, runId: detail.runId ?? null,
       triggerBorn: detail.createdAt ?? null, referentState: detail.referentState ?? null,
@@ -370,12 +372,8 @@ export function retireSpentEngineEvents(agentId: string): number {
 export function retireEngineEventsForRun(runId: string, reason = 'run_closed'): number {
   let n = 0;
   try {
-    const db = getDb();
-    for (const table of ['messages', 'inter_agent_messages'] as const) {
-      const res = db.prepare(
-        `UPDATE ${table} SET swept_at = datetime('now') WHERE run_id = ? AND conv_key IS NULL AND swept_at IS NULL`,
-      ).run(runId);
-      n += res.changes;
+    for (const src of ['m', 'ia'] as const) {
+      n += sweepByReferent({ referent: 'run_id', id: runId }, src);
     }
     if (n > 0) logger.info('serve boundary: run close retired its unserved trigger(s)', { runId, reason, retired: n });
   } catch { /* best effort */ }
@@ -385,12 +383,8 @@ export function retireEngineEventsForRun(runId: string, reason = 'run_closed'): 
 export function retireEngineEventsForTask(taskId: string, reason = 'task_terminal'): number {
   let n = 0;
   try {
-    const db = getDb();
-    for (const table of ['messages', 'inter_agent_messages'] as const) {
-      const res = db.prepare(
-        `UPDATE ${table} SET swept_at = datetime('now') WHERE task_id = ? AND conv_key IS NULL AND swept_at IS NULL`,
-      ).run(taskId);
-      n += res.changes;
+    for (const src of ['m', 'ia'] as const) {
+      n += sweepByReferent({ referent: 'task_id', id: taskId }, src);
     }
     if (n > 0) logger.info('serve boundary: task terminal state retired its unserved event(s)', { taskId, reason, retired: n });
   } catch { /* best effort */ }
@@ -426,10 +420,8 @@ export function expireExhaustedEngineEvents(agentId: string): number {
         WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${exhaustedTail}`,
     ).all({ agentId }) as Array<{ rowid: number; content: string; _src: EngineEventSrc }>;
     for (const r of rows) {
-      const res = db.prepare(
-        `UPDATE ${engineEventTable(r._src)} SET swept_at = datetime('now') WHERE agent_id = ? AND rowid = ? AND swept_at IS NULL`,
-      ).run(agentId, r.rowid);
-      if (res.changes === 0) continue; // another process expired it first; its notice already posted
+      const changed = sweepByRowid({ rowid: r.rowid, agentId }, r._src);
+      if (changed === 0) continue; // another process expired it first; its notice already posted
       expired++;
       // Strip the engine [SOURCE: ...] attribution tag so the 100-char gist is the
       // actual reminder text, not the tag.
@@ -468,9 +460,7 @@ export function recordEngineEventDeliveryFailure(agentId: string, rowid: number,
     if (!cur) return;
     const attempts = (cur.delivery_attempts ?? 0) + 1;
     const backoffMin = ENGINE_EVENT_BACKOFF_MINUTES[Math.min(attempts, ENGINE_EVENT_BACKOFF_MINUTES.length) - 1];
-    db.prepare(
-      `UPDATE ${table} SET delivery_attempts = ?, next_attempt_at = datetime('now', ?) WHERE agent_id = ? AND rowid = ?`,
-    ).run(attempts, `+${backoffMin} minutes`, agentId, rowid);
+    recordDeliveryAttempt({ agentId, rowid, attempts, backoffMinutes: backoffMin }, src);
     logger.warn('engine event delivery failed; scheduled retry with backoff', { agentId, rowid, attempts, backoffMin }, agentId);
     if (attempts >= ENGINE_EVENT_MAX_ATTEMPTS) expireExhaustedEngineEvents(agentId);
   } catch { /* best effort, failure bookkeeping must never mask the original abort */ }
@@ -537,20 +527,19 @@ export function getNextEngineEventRetryAt(agentId: string): number | null {
  */
 export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string): number {
   try {
-    const db = getDb();
     // D-A step 4: a fired-but-undelivered engine event may live in either table, so
-    // re-home BOTH. The `created_at < newBoundary` guard keeps each UPDATE idempotent
+    // re-home BOTH. The `created_at < newBoundary` guard keeps each re-home idempotent
     // (a re-run finds nothing left below the boundary) and confines it to the row's
     // own table, so there is no per-table rowid hazard here.
-    const rehome = (table: 'messages' | 'inter_agent_messages'): number =>
-      db.prepare(
-        `UPDATE ${table} SET created_at = ?
-           WHERE agent_id = ? AND ${DELIVERABLE_ENGINE_EVENT_WHERE}
-             AND created_at < ?
-             AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
-             AND created_at >= datetime('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours')`,
-      ).run(newBoundary, agentId, newBoundary).changes;
-    const changed = rehome('messages') + rehome('inter_agent_messages');
+    const rehome = (src: EngineEventSrc): number =>
+      rehomeUndeliveredCreatedAt({
+        agentId,
+        newBoundary,
+        eligibleWhere: DELIVERABLE_ENGINE_EVENT_WHERE,
+        maxAttempts: ENGINE_EVENT_MAX_ATTEMPTS,
+        expiryHours: ENGINE_EVENT_EXPIRY_HOURS,
+      }, src);
+    const changed = rehome('m') + rehome('ia');
     if (changed > 0) {
       logger.info('re-homed fired-but-undelivered engine event(s) across session reset', { agentId, count: changed }, agentId);
     }

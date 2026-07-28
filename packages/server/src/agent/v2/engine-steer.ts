@@ -17,14 +17,19 @@
 // the thrash gate / going-idle sites: the most recent steer wins (advance overwrites
 // the field), which is correct because these steers are one-shot per turn.
 
-import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import type { Message, WsEvent } from '@dojo/shared';
+import { insertMessageIfAbsent, type NewMessage, type Persisted } from '../../memory/message-store.js';
 import { advance, type AgentTurnState } from './state.js';
 
 export interface EngineSteerDeps {
-  db: Database.Database;
   broadcast: (event: WsEvent) => void;
+  /** PHASE-1 T4: the steer row goes through the single writer, which holds its own
+   *  connection — so the old `db` handle is gone from this interface and the seam the
+   *  conformance test needs is the WRITE ITSELF. Defaulted, so production call sites
+   *  pass only `broadcast`; the RC-19 test substitutes it to prove the row is still
+   *  written with role='system' and the steer's content. */
+  insertRow?: (m: NewMessage) => Persisted | null;
 }
 
 export interface EngineSteerParams {
@@ -55,11 +60,7 @@ export function persistEngineSteer(
   const { agentId, content, turnNumber } = params;
   const id = uuidv4();
   try {
-    deps.db
-      .prepare(
-        `INSERT OR IGNORE INTO messages (id, agent_id, role, content, turn_number, created_at) VALUES (?, ?, 'system', ?, ?, datetime('now'))`,
-      )
-      .run(id, agentId, content, turnNumber);
+    (deps.insertRow ?? insertMessageIfAbsent)({ id, agentId, role: 'system', content, turnNumber });
     const message: Message = {
       id,
       agentId,
