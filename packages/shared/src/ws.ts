@@ -3,6 +3,7 @@
 // ════════════════════════════════════════
 
 import type { Agent, AgentMessage, AgentStatus, CompletionAnnouncement, HealthData, LogEntry, Message, MessageRole, Project, Task } from './types.js';
+import type { DisplayKind, MessageLane, VisibilityTier } from './visibility.js';
 
 export interface AgentStatusEvent {
   type: 'agent:status';
@@ -70,10 +71,75 @@ export interface ChatToolResultEvent {
   result: string;
 }
 
+/**
+ * The persisted row behind a `chat:message`, copied off the database at the broadcast
+ * seam (PHASE-1 T9, research 17 §C4).
+ *
+ * Why it exists. ~70 sites hand-build the `message` literal above, and nothing ever made
+ * that literal agree with the row that was stored — research 17 measured twelve
+ * live-view-vs-reload divergence points growing out of exactly that. The seam
+ * (`gateway/ws.ts`) now looks every emission up by its own id and attaches what the
+ * database holds, so "what the browser was told" and "what was written" are the same
+ * facts rather than two independent guesses.
+ *
+ * It is also the FIRST production reader of `display_kind` / `display_tier` (T8 wrote
+ * them; nothing read them). Sweep E re-points the dashboard's own classification onto
+ * these fields; until then they ride the wire and the harness asserts on them.
+ *
+ * Absent only when the emission has NO persisted row — which is a defect, reported by the
+ * seam and failed by the kit's BROADCAST_EQUALS_ROW. It is optional in the type because
+ * the seam fills it at fan-out time, after every call site has constructed its event.
+ */
+export interface BroadcastRow {
+  /** The insertion key (`messages.seq`) — strictly monotonic, the ordering key the reload
+   *  route pages on. A client can order live and reloaded rows by the same number. */
+  seq: number;
+  id: string;
+  /** Whose traffic this is. `owner` is the only lane the human chat surface serves. */
+  lane: MessageLane;
+  displayKind: DisplayKind;
+  displayTier: VisibilityTier;
+  /**
+   * ONE time format, epoch-ms (research 17 D7). Before T9 a broadcast carried
+   * `new Date().toISOString()` while the reload route served SQLite's
+   * `YYYY-MM-DD HH:MM:SS`, and the client compared the two lexicographically.
+   * `message.createdAt` now carries the SAME instant in the reload route's text form, so
+   * the two paths agree; this field is that instant as a number, with no format to get
+   * wrong.
+   */
+  createdAt: number;
+  /** The orb mood, in its own column since T8. Null on rows that carry none. */
+  mood: string | null;
+}
+
 export interface ChatMessageEvent {
   type: 'chat:message';
   agentId: string;
   message: Message;
+  /** The persisted row, stamped at the broadcast seam. See `BroadcastRow`. */
+  row?: BroadcastRow;
+}
+
+/**
+ * Remove a bubble the client is already showing (PHASE-1 T9, research 17 §C4).
+ *
+ * This replaces a hack. When the engine decided a streamed bubble should not become a
+ * message — a bare `[no-reply]`, a redundant closeout, a ghosted work ask — it broadcast a
+ * `chat:message` with EMPTY content and the client read "empty" as "delete this". That
+ * overloaded the one event meaning "here is a message" with its own opposite, and it
+ * misfired in a way the owner could see: when no bubble existed for the id, the client
+ * APPENDED the empty message instead, rendering as a bare timestamp (research 17 §4 item
+ * 1). It also made "every broadcast has a row" unstateable, because those three emissions
+ * deliberately had none.
+ *
+ * A retraction is now its own event with its own name. It carries no content, needs no
+ * row, and is a no-op on a bubble that is not there.
+ */
+export interface ChatRetractEvent {
+  type: 'chat:retract';
+  agentId: string;
+  /** The streaming bubble id to drop. */
+  messageId: string;
 }
 
 /**
@@ -121,17 +187,28 @@ export interface ChatSourceUpdatedEvent {
 }
 
 /**
- * One inter-agent message as the dashboard's Inter-Agent lane renders it. This
- * is the DEDICATED lane for agent-to-agent (A2A) traffic and engine-origin
- * notices, which physically live in the `inter_agent_messages` store (D-A), NOT
- * in the primary's `messages` chat table. A2A therefore leaves `chat:message`
- * entirely: the delivery seams (a2a-transport peer delivery, agent-notice engine
- * notices) broadcast `interagent:message` instead, and the lane loads history
- * from GET /api/interagent/:agentId. `agentId` is the RECIPIENT (the woken
- * agent), so the lane filters to the currently-viewed agent exactly like chat.
- * The payload is self-sufficient (no MessageOrigin dependency) so the seam in
- * a2a-transport.ts, which imports @dojo/shared type-only to dodge the packaged-
- * runtime import trap, can build it without a runtime `deriveOrigin` call.
+ * One inter-agent message as the dashboard's Inter-Agent lane renders it. This is the
+ * DEDICATED lane for agent-to-agent (A2A) traffic and engine-origin notices. A2A leaves
+ * `chat:message` entirely and rides `interagent:message`; the lane loads history from
+ * GET /api/interagent/:agentId. The payload is self-sufficient (no MessageOrigin
+ * dependency) so the seam in a2a-transport.ts, which imports @dojo/shared type-only to
+ * dodge the packaged-runtime import trap, can build it without a runtime `deriveOrigin`.
+ *
+ * PHASE-1 T4 corrected WHERE these rows live: not a second physical table any more, but
+ * `lane IN ('a2a','events')` in the one `messages` table, behind a CHECK-constrained
+ * column with the fail-closed `chat_messages` view (`lane='owner'`) as the human surface.
+ *
+ * PHASE-1 T9 completed WHO rides this event. Three seams broadcast it (peer delivery,
+ * engine notices, healer routing) and a fourth was missing: the agent's OWN
+ * inter-agent-turn output — its assistant/tool rows on a coordination turn — was still
+ * going out on `chat:message` even though the lane's history route already served it. So
+ * the lane's live view was structurally missing half its content and the owner's chat feed
+ * carried coordination traffic. Own output now rides here too.
+ *
+ * `agentId` is the agent the lane is scoped to. For inbound traffic that is the RECIPIENT
+ * (the woken agent); for own output it is the AUTHOR. Both are "the agent whose lane this
+ * belongs to", which is what the lane filters on, and the DIRECTION is carried by `role`
+ * exactly as it is on the row (`user` = inbound, `assistant`/`tool` = own output).
  */
 export interface InterAgentMessage {
   id: string;
@@ -400,6 +477,7 @@ export type WsEvent =
   | ChatChunkEvent
   | ChatReasoningChunkEvent
   | ChatMessageEvent
+  | ChatRetractEvent
   | ChatWorkingNoteEvent
   | ChatSourceUpdatedEvent
   | InterAgentMessageEvent
@@ -912,6 +990,12 @@ export const EVENT_BATCHABLE: Record<WsEvent['type'], boolean> = {
   'chat:tool_call': true,
   'chat:tool_result': true,
   'chat:message': true,
+  // T9: a retraction MUST ride the same buffer as the chunks and messages it cancels.
+  // Made immediate it could overtake a still-buffered `chat:chunk` for the same bubble
+  // and the client would re-create the bubble it had just dropped. The pair it replaces
+  // (`chat:chunk done:true` + an empty `chat:message`) were both batched, so this keeps
+  // the observed ordering byte-for-byte.
+  'chat:retract': true,
   // One-shot bubble demotion; must land promptly so the streamed bubble
   // converts before the eye registers a vanish.
   'chat:workingnote': false,

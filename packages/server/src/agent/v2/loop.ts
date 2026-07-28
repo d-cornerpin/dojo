@@ -38,6 +38,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { broadcast } from '../../gateway/ws.js';
+import { ownOutputBroadcast } from '../interagent-broadcast.js';
 import type { AgentStatus, Message, ToolCall, Channel } from '@dojo/shared';
 // classifyTool is the canonical effectful/retrieval/bookkeeping classifier
 // (test-covered against the full tool registry); the closeout machinery
@@ -1676,6 +1677,27 @@ export async function runV2Turn(agentId: string): Promise<void> {
     });
   };
 
+  // T9 (research 17 D4 — "reload-only rows"): the mirror image of the empty-bubble hack.
+  // Three engine steers below each INSERTED a role='system' row and told nobody, so wordy
+  // mode showed them after a refresh and never live. This helper is the pairing, in one
+  // place, so it cannot come apart again. It adds NO new text: regular mode hides every
+  // role='system' row (the client short-circuits before classification), so the only view
+  // that changes is wordy — which now matches its own reload.
+  const persistAndBroadcastSystemRow = (content: string): string => {
+    const rowId = uuidv4();
+    insertMessageIfAbsent({ id: rowId, agentId, role: 'system', content, turnNumber });
+    broadcast({
+      type: 'chat:message',
+      agentId,
+      message: {
+        id: rowId, agentId, role: 'system' as const, content,
+        tokenCount: null, modelId: null, cost: null, latencyMs: null,
+        createdAt: new Date().toISOString(),
+      },
+    });
+    return rowId;
+  };
+
   // RC-1: dual-home a cross-recipient send. When the agent sends to someone who is
   // NOT this turn's counterparty (asking the owner for a datum while replying to a
   // contact), the send's text lives only in the current conversation's tool rows and
@@ -1688,9 +1710,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // retro-stamp the tool rows (that would destabilise the SENDING turn's own
   // assembly). origin_intent='cross_conv_send_echo' keeps it OUT of the start-ack
   // "did I reply" check (which requires origin_intent IS NULL) and lets the dashboard
-  // render it as a routing chip. NOT broadcast live (it belongs to a different
-  // conversation than the one on screen); it surfaces on the recipient's turn + on
-  // reload. Skipped when the echo would land in this turn's own conversation.
+  // render it as a routing chip.
+  //
+  // T9 (research 17 D4): it IS broadcast now. The old comment reasoned "it belongs to a
+  // different conversation than the one on screen" — but the dashboard's chat is scoped
+  // per AGENT, not per conversation, so the reload path has always served this row into
+  // the same feed. Live and reload therefore disagreed, and the row appeared out of
+  // nowhere on the next refresh (research 17 §4 item 5: "[Sent via X to Y] raw envelope
+  // appears only after refresh"). Broadcasting it adds no content the owner was not
+  // already going to be shown; it just stops the appearance being a surprise.
+  // Skipped when the echo would land in this turn's own conversation.
   const persistCrossConvSendEcho = (
     channel: Channel,
     recipientId: string | null,
@@ -1710,6 +1739,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
       insertMessageIfAbsent({
         id: echoId, agentId, role: 'assistant', content, turnNumber,
         convKey: echoKey, originIntent: 'cross_conv_send_echo',
+      });
+      broadcast({
+        type: 'chat:message',
+        agentId,
+        message: {
+          id: echoId, agentId, role: 'assistant' as const, content,
+          tokenCount: null, modelId: null, cost: null, latencyMs: null,
+          createdAt: new Date().toISOString(),
+          convKey: echoKey,
+        },
       });
       logger.info('RC-1: dual-homed cross-recipient send echo into recipient conversation', {
         agentId, turnNumber, echoKey, channel: channelWord,
@@ -4745,22 +4784,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
           !state.surfacedReplyThisTurn && !deferredDeliveredByAck;
         if (ghostedWorkAsk && !state.steeredForGhostedAskThisTurn) {
           broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
-          broadcast({
-            type: 'chat:message',
-            agentId,
-            message: {
-              id: messageId, agentId, role: 'assistant' as const, content: '',
-              tokenCount: null, modelId: null, cost: null, latencyMs: null,
-              createdAt: new Date().toISOString(),
-            },
-          });
+          // T9: was an EMPTY chat:message meaning "drop this bubble" — an event named
+          // "here is a message" carrying its own opposite, and the one shape that made
+          // "every broadcast has a row" unstateable. It is a named event now.
+          broadcast({ type: 'chat:retract', agentId, messageId });
           const steerText =
             '[Engine hint: you ended with [no-reply], but this message is a direct request from the user. ' +
             'A direct ask never ends in silence. If this exact work was already delivered (check the RECENTLY ANSWERED engine record and your tracker), ' +
             'reply with ONE brief line pointing to the existing answer or delivery. Otherwise, do the work now, including creating the tracker task first if the user asked for one.]';
-          const steerRowId = uuidv4();
           try {
-            insertMessageIfAbsent({ id: steerRowId, agentId, role: 'system', content: steerText, turnNumber });
+            persistAndBroadcastSystemRow(steerText);
           } catch { /* dashboard row is best effort */ }
           state = advance(state, { pendingNudge: steerText, steeredForGhostedAskThisTurn: true });
           logger.info('v2 ghosted-work-ask floor: bare [no-reply] on a work-classified human ask with nothing surfaced; steering once (answer-or-point, never silence)', {
@@ -4786,9 +4819,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
             if (excerpt.length > 0) {
               const steer2 =
                 `[Engine record: you again ended with [no-reply] on the user's direct ask, but you already answered this in this conversation. Your recorded answer: "${excerpt}". Reply now with one brief line in your own words pointing back to that. Do not re-do the work and do not stay silent.]`;
-              const steer2RowId = uuidv4();
               try {
-                insertMessageIfAbsent({ id: steer2RowId, agentId, role: 'system', content: steer2, turnNumber });
+                persistAndBroadcastSystemRow(steer2);
               } catch { /* dashboard row is best effort */ }
               broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
               state = advance(state, { pendingNudge: steer2, ghostedAskSecondSteerThisTurn: true });
@@ -4882,8 +4914,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
             //  - chat:chunk done:true ends the bubble's streaming state (without
             //    this the thinking dots stay forever, since the normal done:true
             //    at line ~923 only fires when persistedContent or tools exist).
-            //  - chat:message with empty content tells the dashboard to drop the
-            //    bubble entirely so the chat doesn't show an empty assistant row.
+            //  - chat:retract drops the bubble entirely so the chat doesn't show an
+            //    empty assistant row. T9: this was an EMPTY chat:message, and the
+            //    overload had a visible failure mode — when NO bubble existed for the
+            //    id the client APPENDED the empty message instead of dropping it, and
+            //    it rendered as a bare timestamp (research 17 §4 item 1). A retract on
+            //    a bubble that is not there is a no-op.
             broadcast({
               type: 'chat:chunk',
               agentId,
@@ -4891,16 +4927,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               content: '',
               done: true,
             });
-            broadcast({
-              type: 'chat:message',
-              agentId,
-              message: {
-                id: messageId, agentId, role: 'assistant' as const,
-                content: '',
-                tokenCount: null, modelId: null, cost: null, latencyMs: null,
-                createdAt: new Date().toISOString(),
-              },
-            });
+            broadcast({ type: 'chat:retract', agentId, messageId });
             const sysId = uuidv4();
             // THE COMMA IS GONE (PHASE-1 T8). This literal was written with a comma while
             // both matchers — @dojo/shared's constant and the dashboard's inline copy —
@@ -4957,16 +4984,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
       ) {
         persistedContent = null;
         broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
-        broadcast({
-          type: 'chat:message',
-          agentId,
-          message: {
-            id: messageId, agentId, role: 'assistant' as const,
-            content: '',
-            tokenCount: null, modelId: null, cost: null, latencyMs: null,
-            createdAt: new Date().toISOString(),
-          },
-        });
+        // T9: the third and last empty-chat:message "drop" hack; no row is written here
+        // by design ("No system marker, the agent already replied"), so a retraction is
+        // exactly what this is.
+        broadcast({ type: 'chat:retract', agentId, messageId });
         logger.info('v2: suppressed redundant closeout (a reply already surfaced this turn)', {
           agentId, loopCount: state.loopCount,
         }, agentId);
@@ -5198,32 +5219,25 @@ export async function runV2Turn(agentId: string): Promise<void> {
             reasoningContent: result.reasoningContent ?? null,
           });
         }
-        broadcast({
-          type: 'chat:message',
+        // T9: the event family follows the SAME `interAgentTurn` flag that just picked the
+        // writer, decided in one place (agent/interagent-broadcast.ts). Before this, the
+        // broadcast sat outside the if/else and a coordination turn's tool_use row went out
+        // on the owner's chat feed (research 17 D2). `convKey` rides the owner arm only —
+        // conv_key is stamped on the row at turn TEARDOWN, so a mid-turn broadcast is the
+        // only place the live view can learn it (research 17 §C2 / bug (a), not T9's).
+        broadcast(ownOutputBroadcast({
+          interAgentTurn,
           agentId,
-          message: {
-            id: messageId,
-            agentId,
-            role: 'assistant' as Message['role'],
-            content: JSON.stringify(assistantContentForStore),
-            tokenCount: null,
-            modelId: effectiveModelIdForPersist,
-            cost: null,
-            latencyMs: null,
-            createdAt: new Date().toISOString(),
-            attachments: queuedAttachments.length > 0 ? queuedAttachments : undefined,
-            reasoningContent: result.reasoningContent ?? undefined,
-            source: interAgentTurn ? 'a2a' : null,
-            // Carry the turn's conversation key LIVE so the dashboard can hide
-            // background-run tool chips in regular mode consistently with reload.
-            // conv_key is stamped on the persisted row only at turn end, so this
-            // broadcast (mid-turn) sources it from chosenConvKey directly: a
-            // human conversation key for a user turn (chips stay visible), null
-            // for a background/engine turn (chips hidden). Matches what
-            // rowToMessage serves on the next refetch.
-            convKey: chosenConvKey,
-          },
-        });
+          agentName: (agent.name as string | null) ?? null,
+          id: messageId,
+          role: 'assistant',
+          content: JSON.stringify(assistantContentForStore),
+          createdAt: new Date().toISOString(),
+          modelId: effectiveModelIdForPersist,
+          attachments: queuedAttachments.length > 0 ? queuedAttachments : undefined,
+          reasoningContent: result.reasoningContent ?? undefined,
+          convKey: chosenConvKey,
+        }));
         // v2.7.24, also track text-with-tools iterations as deliverable
         // assistant text. Previously this branch ran (because there are
         // tool calls) without updating lastAssistantTextForIM, which meant
@@ -5263,30 +5277,38 @@ export async function runV2Turn(agentId: string): Promise<void> {
           state = advance(state, { lastAssistantTextForIM: stripMoodMarker(persistedContent) });
           terminalAnswerRowId = messageId; // truthful answer key: a genuine terminal reply
         }
-        // Per v1 runtime.ts:1303-1318, text-only response. The streaming
-        // chunks already delivered the text live, so we'd dupe-render if we
-        // unconditionally fired chat:message. With attachments present,
-        // however, the dashboard's chat:message handler updates the streaming
-        // bubble in-place to ATTACH the files, that's the only way the
-        // attachments reach the live UI without a page reload.
-        if (queuedAttachments.length > 0) {
-          broadcast({
-            type: 'chat:message',
-            agentId,
-            message: {
-              id: messageId,
-              agentId,
-              role: 'assistant' as Message['role'],
-              content: persistedContent,
-              tokenCount: null,
-              modelId: effectiveModelIdForPersist,
-              cost: null,
-              latencyMs: null,
-              createdAt: new Date().toISOString(),
-              attachments: queuedAttachments,
-            },
-          });
-        }
+        // T9 — THE TEXT-ONLY REPLY NOW GETS ITS CORRECTING chat:message, AND THAT IS
+        // THIS TASK'S SHARPEST SINGLE FIX (research 17 D3).
+        //
+        // This used to fire only when attachments were queued. The reason given was "the
+        // streaming chunks already delivered the text live, so we'd dupe-render if we
+        // unconditionally fired chat:message", citing v1 runtime.ts:1303-1318. That reason
+        // has been FALSE since 2026-04-30: the dashboard's handler REPLACES a bubble's
+        // content in place on an id match (it says so in its own comment — "Pre-2026-04-30
+        // this skipped on id match"), and appends only when no bubble exists, which is the
+        // correct outcome for a client that missed the stream.
+        //
+        // What the omission actually cost: the chunks carry the model's RAW output, the row
+        // carries what the writer stored — sanitized, timestamp-stripped, `[no-reply]`-free,
+        // and since T8 with the orb mood marker moved out to its own column. With no
+        // chat:message there was nothing to correct the bubble with, so on a plain text
+        // reply the browser kept the raw string forever while the database held the clean
+        // one. That is research 17 D3 ("streamed text != persisted text") and the live half
+        // of the mood gap recorded at the T8 boundary.
+        //
+        // Found by BROADCAST_EQUALS_ROW on its first real run (bms4dtng747), which is what
+        // a new invariant is for.
+        broadcast(ownOutputBroadcast({
+          interAgentTurn,
+          agentId,
+          agentName: (agent.name as string | null) ?? null,
+          id: messageId,
+          role: 'assistant',
+          content: persistedContent,
+          createdAt: new Date().toISOString(),
+          modelId: effectiveModelIdForPersist,
+          attachments: queuedAttachments.length > 0 ? queuedAttachments : undefined,
+        }));
       }
 
       // A-1 (comms-audit): the end-of-turn channel router routes TEXT only, so a
@@ -5392,9 +5414,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
                     ? 'tell the user it is done and include the deliverable or link. '
                     : 'if the work truly reached the user, say where; if it did NOT, say honestly what remains instead of claiming it is done. ') +
                   'Do NOT call imessage_send or any other send tool; the engine routes your written reply automatically. Do not re-open or re-do the task.]';
-                const steerRowId = uuidv4();
                 try {
-                  insertMessageIfAbsent({ id: steerRowId, agentId, role: 'system', content: steerText, turnNumber });
+                  persistAndBroadcastSystemRow(steerText);
                 } catch { /* dashboard row is best effort */ }
                 broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
                 state = advance(state, { pendingNudge: steerText, steeredForSilentCloseoutThisTurn: true });
@@ -7403,21 +7424,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
             tokenCount: result.outputTokens, modelId: effectiveModelIdForPersist, turnNumber,
           });
         }
-        broadcast({
-          type: 'chat:message',
+        broadcast(ownOutputBroadcast({
+          interAgentTurn,
           agentId,
-          message: {
-            id: messageId,
-            agentId,
-            role: 'assistant' as Message['role'],
-            content: collapsedText,
-            tokenCount: null,
-            modelId: effectiveModelIdForPersist,
-            cost: null,
-            latencyMs: null,
-            createdAt: new Date().toISOString(),
-          },
-        });
+          agentName: (agent.name as string | null) ?? null,
+          id: messageId,
+          role: 'assistant',
+          content: collapsedText,
+          createdAt: new Date().toISOString(),
+          modelId: effectiveModelIdForPersist,
+        }));
         logger.info('v2: collapsed XML-fallback tool calls into plain text', {
           toolCount: result.toolCalls.length,
           tools: result.toolCalls.map((tc) => tc.name),
@@ -7457,16 +7473,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
         } else {
           insertMessageIfAbsent({ id: toolMessageId, agentId, role: 'tool', content: toolResultJson, turnNumber });
         }
-        broadcast({
-          type: 'chat:message',
+        broadcast(ownOutputBroadcast({
+          interAgentTurn,
           agentId,
-          message: {
-            id: toolMessageId, agentId, role: 'tool' as Message['role'],
-            content: JSON.stringify(toolResultContent),
-            tokenCount: null, modelId: null, cost: null, latencyMs: null,
-            createdAt: new Date().toISOString(),
-          },
-        });
+          agentName: (agent.name as string | null) ?? null,
+          id: toolMessageId,
+          role: 'tool',
+          content: JSON.stringify(toolResultContent),
+          createdAt: new Date().toISOString(),
+        }));
       }
 
       clearErrors(agentId);

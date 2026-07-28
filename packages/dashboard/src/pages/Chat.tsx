@@ -1282,19 +1282,6 @@ export const Chat = ({ panel = null }: ChatProps) => {
       setMessages((prev) => {
         const idx = prev.findIndex((m) => m.id === e.message.id);
         if (idx >= 0) {
-          // No-reply path: server broadcasts an empty assistant message to
-          // indicate "drop this bubble". Without this the bubble lingers as
-          // either thinking dots or an empty row. EXCEPTION: keep it if it
-          // carries attachments — on a silent canvas-open the engine surfaces the
-          // "Open in canvas" chip on an otherwise-empty assistant message, and
-          // dropping it would lose the chip.
-          if (
-            e.message.role === 'assistant' &&
-            (!e.message.content || e.message.content.length === 0) &&
-            (!e.message.attachments || e.message.attachments.length === 0)
-          ) {
-            return prev.filter((_, i) => i !== idx);
-          }
           const existing = prev[idx];
           const updated = [...prev];
           updated[idx] = {
@@ -1376,6 +1363,25 @@ export const Chat = ({ panel = null }: ChatProps) => {
       });
     });
 
+    // PHASE-1 T9 — an explicit retraction replaces the empty-chat:message hack.
+    //
+    // The engine sometimes decides a bubble that already streamed should not become a
+    // message: a bare [no-reply], a redundant closeout, a ghosted work ask. It used to say
+    // so by broadcasting a chat:message with EMPTY content, and the handler above read
+    // "empty" as "delete". Two things were wrong with that. The event named "here is a
+    // message" carried its own opposite, so "every broadcast has a persisted row" could
+    // never be stated (those three deliberately had none). And when NO bubble existed for
+    // the id, the empty message fell through to the append branch and rendered as a bare
+    // timestamp — the stray-blank-bubble bug (research 17 §4 item 1).
+    //
+    // A retraction is its own event now. Dropping a bubble that is not there is a no-op,
+    // which is what it always should have been.
+    const unsubRetract = subscribe('chat:retract', (event: WsEvent) => {
+      const e = event as { agentId: string; messageId: string };
+      if (e.agentId !== agentIdRef.current) return;
+      setMessages((prev) => prev.filter((m) => m.id !== e.messageId));
+    });
+
     // Track the agent's working state from agent:status events. This
     // covers external triggers (iMessage, scheduled runs, agent-to-agent
     // messaging) where the user never called handleSend locally — the
@@ -1449,6 +1455,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
       unsubToolResult();
       unsubError();
       unsubMessage();
+      unsubRetract();
       unsubStatus();
       unsubTerminated();
       unsubSource();

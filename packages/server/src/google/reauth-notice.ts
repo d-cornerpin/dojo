@@ -96,6 +96,32 @@ export function notifyGoogleReauthOnce(): void {
         'or a remote/tunneled browser, or Google will reject the sign-in. Nothing else is ' +
         'affected: Microsoft, iMessage, SMS, and phone are unchanged.]';
       insertMessage({ id: hintId, agentId: primaryId, role: 'user', content: hint });
+      // T9 (research 17 D4): this row was persisted and never broadcast. It is an
+      // owner-lane row, so the chat history route has always served it on reload — the
+      // divider above appeared live, this one only after a refresh. Broadcasting shows
+      // nothing new; it shows the same two rows at the same time.
+      //
+      // ⚠ Recorded, not repaired: the row's own comment calls it "agent-only guidance",
+      // but it is written with the writer module's DEFAULT lane (`owner`), so it is not
+      // agent-only at all. Moving it to `lane:'events'` is the honest fix and it is not
+      // T9's: an events-lane row with a NULL conv_key becomes a PENDING ENGINE EVENT and
+      // drives a spurious turn (see the 'engine-notice' sentinel in agent-notice.ts), so
+      // the change is a lane AND a sentinel, i.e. a behaviour decision. Sweep A/E.
+      broadcast({
+        type: 'chat:message',
+        agentId: primaryId,
+        message: {
+          id: hintId,
+          agentId: primaryId,
+          role: 'user' as const,
+          content: hint,
+          tokenCount: null,
+          modelId: null,
+          cost: null,
+          latencyMs: null,
+          createdAt: now,
+        },
+      });
 
       // 3. Queue the persistent toast for the next dashboard connect (so it
       //    isn't lost when no dashboard is open at boot). Flushed by

@@ -28,7 +28,7 @@ import { randomUUID } from 'node:crypto';
 import {
   classifyMessageForDisplay, parseMoodMarker, stripMoodMarker, stripNoReplySentinel,
   parseWorkingNote, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX,
-  type DisplayKind, type MessageLane, type VisibilityTier,
+  type BroadcastRow, type DisplayKind, type MessageLane, type VisibilityTier,
 } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { estimateTokens, NOW_MS, createdAtText } from './store.js';
@@ -355,6 +355,50 @@ export function recentTail(
     ) ORDER BY seq ASC
   `).all(agentId, ...(lanes ?? []), opts.limit) as MessageRowShape[];
   return rows.map(toStored);
+}
+
+/** What the broadcast seam needs off a row, plus the two fields it uses to make the
+ *  emission agree with the row (`content`, and the time in the reload route's own text
+ *  form). PHASE-1 T9. */
+export interface PersistedSnapshot extends BroadcastRow {
+  content: string;
+  /** The identical projection the chat history route serves (`datetime(created_at/1000,
+   *  'unixepoch')`), so live and reloaded rows carry the same characters. */
+  createdAtText: string;
+}
+
+/**
+ * Read one row as the broadcast seam sees it (PHASE-1 T9, research 17 §C4).
+ *
+ * This is the reader that makes "the broadcast carries the persisted row" true at ~70
+ * emission sites without editing ~70 sites: `gateway/ws.ts` calls it for every
+ * `chat:message` and stamps the answer onto the event. It lives HERE because this module
+ * owns reads of `messages` that the platform vouches for, and because a null answer is
+ * meaningful — it means an emission with no row, which is the defect the kit's
+ * BROADCAST_EQUALS_ROW fails on.
+ *
+ * Deliberately NOT the `chat_messages` view: the seam must be able to report an a2a or
+ * events row honestly (that is how the rekey is verifiable), and the view would return
+ * nothing for them, which reads identically to "no row at all". Fail-closed belongs on the
+ * SERVE path, not on the diagnostic that says what was stored.
+ */
+export function readPersistedRow(id: string): PersistedSnapshot | null {
+  const db = getDb();
+  const r = db.prepare(`
+    SELECT seq, id, lane, display_kind, display_tier, mood, content,
+           created_at AS created_at_ms, ${createdAtText('created_at', 'created_at_text')}
+      FROM messages WHERE id = ?
+  `).get(id) as
+    | { seq: number; id: string; lane: Lane; display_kind: DisplayKind; display_tier: DisplayTier;
+        mood: string | null; content: string; created_at_ms: number; created_at_text: string }
+    | undefined;
+  if (!r) return null;
+  return {
+    seq: r.seq, id: r.id, lane: r.lane,
+    displayKind: r.display_kind, displayTier: r.display_tier,
+    createdAt: r.created_at_ms, mood: r.mood ?? null,
+    content: r.content, createdAtText: r.created_at_text,
+  };
 }
 
 export function byIds(ids: string[]): StoredMessage[] {

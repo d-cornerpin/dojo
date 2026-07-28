@@ -241,7 +241,9 @@ chatRouter.get('/:agentId/messages', (c) => {
   const agentId = c.req.param('agentId');
   const limit = parseInt(c.req.query('limit') ?? '50', 10);
   const before = c.req.query('before'); // cursor: message ID for pagination
-  const wordy = c.req.query('wordy') === '1'; // wordy mode also serves own coordination output
+  // `?wordy=1` is still sent by the dashboard and is deliberately IGNORED here as of T9:
+  // it is a client render mode, not a different served set. See the OWNER_LANE_FILTER
+  // note below for what it used to add and where that content lives now.
 
   const db = getDb();
 
@@ -270,11 +272,28 @@ chatRouter.get('/:agentId/messages', (c) => {
   const RETIRED_FILTER = 'retired_at IS NULL';
 
   // The fail-closed human surface. `chat_messages` IS exactly these two predicates
-  // (`WHERE lane = 'owner' AND retired_at IS NULL`), so the regular branches below could
-  // read the view instead — but wordy mode must ALSO serve the agent's own a2a output,
-  // which the view structurally cannot return, and having two branches read two
-  // different surfaces is how the live and reload views drifted apart in the first
-  // place. One surface, one pair of predicates, both branches.
+  // (`WHERE lane = 'owner' AND retired_at IS NULL`).
+  //
+  // PHASE-1 T9 — THE WORDY ARM IS GONE, and this is the demolition note for it.
+  // Wordy mode used to add `OR (lane = 'a2a' AND role IN ('assistant','tool'))`: the one
+  // place in the platform where a human-facing read stepped outside the fail-closed view,
+  // which this phase's architecture line says is "the only human-facing read surface".
+  // T9 rekeyed the LIVE half of those rows onto `interagent:message`, so leaving the arm
+  // here would have manufactured exactly the defect this task exists to remove — a row
+  // the owner sees after a refresh and never live.
+  //
+  // requirement preserved: "wordy mode shows the agent's own inter-agent coordination
+  // output." It shows it in the dashboard's Inter-Agent lane, which is the surface built
+  // for it: `GET /api/interagent/:agentId` has always served these rows
+  // (`lane IN ('a2a','events')`, no role filter), and as of T9 the lane finally receives
+  // them LIVE too — before, its live view was structurally missing the agent's own half.
+  // Nothing was dropped; one surface stopped duplicating another, badly.
+  //
+  // The consequence is that the three branches collapse to two — cursor and no-cursor —
+  // and `wordy` no longer changes what the server serves. It is a client render mode,
+  // which is what research 17's rule table always described. (The deleted branch also
+  // projected `rowid AS _rowid`; nothing outside this file ever read it —
+  // `git grep -n "_rowid" -- packages/dashboard packages/shared` → 0 — so it went with it.)
   const OWNER_LANE_FILTER = "lane = 'owner'";
 
   // ⛔ REVERSAL, 2026-07-06 late night, owner correction — DO NOT RE-ATTEMPT (research 16).
@@ -288,48 +307,9 @@ chatRouter.get('/:agentId/messages', (c) => {
   // mechanism wearing a new column's name. T8 owns the write-side classifier and Sweep E
   // owns what the client does with it; this route's job is one query and one lane
   // predicate, and that is all that changed.
-  if (wordy) {
-    // Wordy mode surfaces the agent's OWN inter-agent coordination output in chat.
-    // Inbound peer A2A (role='user') and engine rows never enter chat; the Threads lane
-    // owns them. That matches the live stream, so live and reload agree.
-    //
-    // T6: ONE query. This was a two-arm UNION over two physical tables with an
-    // anti-join dedup and a synthetic `'a2a' AS source` column whose only purpose was
-    // to make a store row derive the same self-origin pill as a legacy `messages` row.
-    // Both halves of that machinery are gone: the rows are in one table, `lane` carries
-    // the fact the synthesis was faking, and the sort key is the insertion key rather
-    // than a three-part cross-table collation.
-    // requirement preserved: wordy mode serves the owner conversation PLUS the agent's
-    // OWN inter-agent output (role IN ('assistant','tool')) and never inbound peer A2A
-    // or engine rows — the Threads lane owns those.
-    const params: Record<string, unknown> = { agentId, limit: Math.min(limit, 200) };
-    let cursorClause = '';
-    if (before) {
-      // The cursor resolves to the insertion key, which is strictly monotonic — so a
-      // coordination burst's same-second siblings can no longer be skipped by a page
-      // boundary landing inside one second (the reason the old key needed three parts).
-      const cursor = db.prepare(
-        'SELECT rowid AS _rowid FROM messages WHERE id = @before AND agent_id = @agentId',
-      ).get({ before, agentId }) as { _rowid: number } | undefined;
-      if (!cursor) {
-        return c.json({ ok: false, error: 'Invalid cursor message ID' }, 400);
-      }
-      params.cRowid = cursor._rowid;
-      cursorClause = 'AND rowid < @cRowid';
-    }
-
-    rows = db.prepare(`
-      SELECT *, datetime(created_at/1000,'unixepoch') AS created_at, rowid AS _rowid FROM messages
-      WHERE agent_id = @agentId AND ${STOP_MARKER_FILTER} AND ${RETIRED_FILTER}
-        AND (${OWNER_LANE_FILTER} OR (lane = 'a2a' AND role IN ('assistant','tool')))
-        ${cursorClause}
-      ORDER BY rowid DESC
-      LIMIT @limit
-    `).all(params) as Array<Record<string, unknown>>;
-  } else if (before) {
-    // Same cursor shape as wordy mode: the strictly-monotonic insertion key, so both
-    // branches page identically. A `created_at <` cursor could skip a same-second
-    // sibling, and second-granular ties are the normal case in a burst.
+  if (before) {
+    // The cursor is the strictly-monotonic insertion key. A `created_at <` cursor could
+    // skip a same-second sibling, and second-granular ties are the normal case in a burst.
     const cursorMsg = db.prepare('SELECT rowid FROM messages WHERE id = ?').get(before) as { rowid: number } | undefined;
     if (!cursorMsg) {
       return c.json({ ok: false, error: 'Invalid cursor message ID' }, 400);

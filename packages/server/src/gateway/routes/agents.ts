@@ -154,6 +154,19 @@ agentsRouter.post('/', async (c) => {
     // Store initial user message — just the task, no IMPORTANT INSTRUCTIONS
     const initMsgId = uuidv4();
     insertMessageIfAbsent({ id: initMsgId, agentId, role: 'user', content: body.systemPrompt });
+    // T9 (research 17 D4): persisted and never broadcast. It is an owner-lane user row
+    // that the chat history route serves, so the agent's first message used to appear
+    // only on reload. The agent:created event below tells the dashboard the agent exists;
+    // it says nothing about this row.
+    broadcast({
+      type: 'chat:message',
+      agentId,
+      message: {
+        id: initMsgId, agentId, role: 'user' as const, content: body.systemPrompt,
+        tokenCount: null, modelId: null, cost: null, latencyMs: null,
+        createdAt: new Date().toISOString(),
+      },
+    });
 
     // Start the agent runtime
     const runtime = getAgentRuntime();
@@ -547,6 +560,19 @@ agentsRouter.post('/:id/message', async (c) => {
 
   // Persist as user message
   insertMessageIfAbsent({ id: messageId, agentId: id, role: 'user', content });
+  // T9 (research 17 D4): persisted and never broadcast. The dashboard's own send route
+  // (gateway/routes/chat.ts) broadcasts its user row; this one — the API path other
+  // callers use to talk to an agent — did not, so an operator watching the chat saw the
+  // agent start working on a message that was not on screen until they reloaded.
+  broadcast({
+    type: 'chat:message',
+    agentId: id,
+    message: {
+      id: messageId, agentId: id, role: 'user' as const, content,
+      tokenCount: null, modelId: null, cost: null, latencyMs: null,
+      createdAt: new Date().toISOString(),
+    },
+  });
 
   // Trigger the agent runtime
   const runtime = getAgentRuntime();
