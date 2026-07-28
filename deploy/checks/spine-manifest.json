@@ -96,7 +96,7 @@
       "table": "messages",
       "column": "seq",
       "definedIn": "packages/server/src/db/migrations/127_unified_messages.sql",
-      "why": "The stored monotonic sequence that replaces the (created_at, _tag, rowid) ordering key the two-store world needed. Maintained equal to rowid by messages_seq_ai so readers can move onto it before T10 promotes it to the physical primary key; the values never change when it does. Readers arrive with T5 (ORDER BY seq replaces the composite key everywhere)."
+      "why": "The stored monotonic sequence that replaces the (created_at, _tag, rowid) ordering key the two-store world needed. PROMOTED at T10 (migration 133): `seq` IS the table's `INTEGER PRIMARY KEY AUTOINCREMENT`, so it is the rowid rather than a column kept equal to it by the `messages_seq_ai` trigger, which is deleted. AUTOINCREMENT is load-bearing, not decoration: without it SQLite reuses the largest rowid after the top row is deleted, and four live delete paths would then place a NEW row at an OLD position in every `ORDER BY seq` tail and below the vault archive high-water. Readers arrived with T5 (ORDER BY seq replaced the composite key everywhere); a bare `SELECT rowid` now returns a column NAMED `seq`, which is why every reader projects `seq AS rowid` and a source walk in memory/__tests__/lane-readers.test.ts refuses a bare one."
     },
     {
       "id": "messages.lane",

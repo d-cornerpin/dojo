@@ -62,7 +62,7 @@
     "packages/server/src/index.ts": 1272,
     "packages/server/src/memory/assembler.ts": 2564,
     "packages/server/src/memory/compaction.ts": 1269,
-    "packages/server/src/memory/message-store.ts": 740,
+    "packages/server/src/memory/message-store.ts": 753,
     "packages/server/src/memory/open-loops.ts": 619,
     "packages/server/src/memory/recall.ts": 506,
     "packages/server/src/memory/retrieval.ts": 595,
@@ -106,8 +106,8 @@
     "packages/server/src/voice/stt-service.ts": 538,
     "packages/server/src/voice/voice-ws.ts": 2279,
     "packages/shared/src/types.ts": 500,
-    "packages/shared/src/visibility.ts": 811,
+    "packages/shared/src/visibility.ts": 815,
     "packages/shared/src/ws.ts": 1082,
-    "watchdog/src/index.ts": 1164
+    "watchdog/src/index.ts": 1189
   }
 }
