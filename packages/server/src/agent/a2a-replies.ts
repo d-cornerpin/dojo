@@ -75,32 +75,24 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
     .get(agentId) as { session_started_at: string | null } | undefined;
   const sessionStartedAt = sessionRow?.session_started_at ?? null;
 
-  // D-A: peer A2A inbound now lives in inter_agent_messages, not `messages`. Read
-  // the MERGED source (both tables) so the reply-owed machinery keeps working across
-  // the cutover: NEW peer ASSIGNs come from the store, pre-cutover ones from
-  // `messages`; the messages arm excludes ids that exist in the store so a
-  // live-edge backfilled row is never scanned twice. Cross-table tiebreak
-  // (_tag: store=1 first on a created_at tie) keeps "most recent" causally correct.
+  // T6: one table, so "most recent" is the insertion key — causally correct by
+  // construction rather than reconstructed from a second-granular clock plus a
+  // cross-table tiebreak.
   const clauses: string[] = [`agent_id = @agentId`, `role = 'user'`];
   const params: Record<string, unknown> = { agentId, lookback };
   if (sessionStartedAt) { clauses.push(`created_at >= @boundary`); params.boundary = sessionStartedAt; }
   if (maxAgeMinutes != null) { clauses.push(`created_at >= datetime('now', @maxAge)`); params.maxAge = `-${maxAgeMinutes} minutes`; }
   const where = clauses.join(' AND ');
   const sql = `
-    SELECT id, content, created_at, source_agent_id, a2a_thread_id, a2a_intent, origin_kind, rowid AS _rowid, 0 AS _tag
+    SELECT id, content, created_at, source_agent_id, a2a_thread_id, a2a_intent, lane
       FROM messages
      WHERE ${where}
-       AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
-    UNION ALL
-    SELECT id, content, created_at, source_agent_id, a2a_thread_id, a2a_intent, origin_kind, rowid AS _rowid, 1 AS _tag
-      FROM inter_agent_messages
-     WHERE ${where}
-    ORDER BY created_at DESC, _tag DESC, _rowid DESC
-    LIMIT @lookback`;
+     ORDER BY rowid DESC
+     LIMIT @lookback`;
 
   const rows = db
     .prepare(sql)
-    .all(params) as Array<{ id: string; content: string; created_at: string; source_agent_id: string | null; a2a_thread_id: string | null; a2a_intent: string | null; origin_kind: string | null }>;
+    .all(params) as Array<{ id: string; content: string; created_at: string; source_agent_id: string | null; a2a_thread_id: string | null; a2a_intent: string | null; lane: string }>;
 
   for (const row of rows) {
     // Engine-origin rows (Healer/PM/gate/distillation via fromAgent='system') are
@@ -109,8 +101,8 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
     // Excluding them here disarms the missed-reply enforcer for those messages (it
     // would otherwise nag the receiver to send_to_agent 'system') and lets them be
     // classified as an engine turn instead of a mis-framed peer A2A turn. A genuine
-    // peer A2A row has origin_kind NULL and is still detected.
-    if (row.origin_kind === 'engine') continue;
+    // peer A2A row is on the a2a lane and is still detected.
+    if (row.lane === 'events') continue;
     // F7 (harness finding, wave 2): trust the STRUCTURAL columns first. The
     // prose regex required an 8-hex thread id, so any envelope/thread-format
     // drift made this return null and an unreplied QUESTION was silently
@@ -184,18 +176,14 @@ export function findInboundAssignByThread(agentId: string, threadId: string): { 
   // reply to the WRONG thread. Same collision class already fixed in conversationKey (C-2).
   // The wire footer and send_to_agent both carry the full id, so a modern reply always has
   // the full thread id in hand and hits this exact match.
-  // D-A: read the MERGED source (messages ∪ inter_agent_messages). The store is the
-  // new home for peer A2A inbound, so detection and recording must read the SAME
-  // store or the reply loop never closes (F13). messages arm dedups against store ids.
+  // T6: one table, so detection and recording read the same rows by construction —
+  // the F13 defect (detection reading one store while recording read the other, so the
+  // reply loop never closed) cannot recur. Newest-first by the insertion key.
   const exact = db
     .prepare(
-      `SELECT id, a2a_intent, created_at, rowid AS _rowid, 0 AS _tag FROM messages
+      `SELECT id, a2a_intent FROM messages
        WHERE agent_id = @agentId AND role = 'user' AND a2a_thread_id = @threadId
-         AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
-       UNION ALL
-       SELECT id, a2a_intent, created_at, rowid AS _rowid, 1 AS _tag FROM inter_agent_messages
-       WHERE agent_id = @agentId AND role = 'user' AND a2a_thread_id = @threadId
-       ORDER BY created_at DESC, _tag DESC, _rowid DESC
+       ORDER BY rowid DESC
        LIMIT 1`,
     )
     .get({ agentId, threadId }) as { id: string; a2a_intent: string | null } | undefined;
@@ -211,15 +199,10 @@ export function findInboundAssignByThread(agentId: string, threadId: string): { 
   // for genuinely-short legacy rows (the reason the substr existed) without the collision.
   const legacyShort = db
     .prepare(
-      `SELECT id, a2a_intent, created_at, rowid AS _rowid, 0 AS _tag FROM messages
+      `SELECT id, a2a_intent FROM messages
        WHERE agent_id = @agentId AND role = 'user'
          AND a2a_thread_id IS NOT NULL AND length(a2a_thread_id) = 8 AND a2a_thread_id = @threadShort
-         AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
-       UNION ALL
-       SELECT id, a2a_intent, created_at, rowid AS _rowid, 1 AS _tag FROM inter_agent_messages
-       WHERE agent_id = @agentId AND role = 'user'
-         AND a2a_thread_id IS NOT NULL AND length(a2a_thread_id) = 8 AND a2a_thread_id = @threadShort
-       ORDER BY created_at DESC, _tag DESC, _rowid DESC
+       ORDER BY rowid DESC
        LIMIT 1`,
     )
     .get({ agentId, threadShort }) as { id: string; a2a_intent: string | null } | undefined;
@@ -230,13 +213,9 @@ export function findInboundAssignByThread(agentId: string, threadId: string): { 
   // Legacy prose fallback for rows predating the structural columns.
   const rows = db
     .prepare(
-      `SELECT id, content, created_at, rowid AS _rowid, 0 AS _tag FROM messages
+      `SELECT id, content FROM messages
        WHERE agent_id = @agentId AND role = 'user'
-         AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
-       UNION ALL
-       SELECT id, content, created_at, rowid AS _rowid, 1 AS _tag FROM inter_agent_messages
-       WHERE agent_id = @agentId AND role = 'user'
-       ORDER BY created_at DESC, _tag DESC, _rowid DESC
+       ORDER BY rowid DESC
        LIMIT 30`,
     )
     .all({ agentId }) as Array<{ id: string; content: string }>;

@@ -74,7 +74,7 @@ export function getActiveUserDirective(
     baseParams.push(sessionStart);
   }
   if (opts?.excludeEngine) {
-    baseClauses.push("(origin_kind IS NULL OR origin_kind != 'engine')");
+    baseClauses.push("lane <> 'events'");
   }
   // T-1: scope to the current conversation. The current ask is conv_key-stamped at
   // pickup (turn start, before assembly), so it matches; a DIFFERENT human's ask

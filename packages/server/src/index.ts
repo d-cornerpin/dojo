@@ -480,7 +480,7 @@ async function main(): Promise<void> {
       // (box was offline for a long time), suppress it as before.
       const HUMAN_HOLD_LIMIT = 5;
       const HUMAN_PREDICATE =
-        `(origin_kind IS NULL OR origin_kind != 'engine') AND source_agent_id IS NULL AND a2a_thread_id IS NULL`;
+        `lane = 'owner' AND source_agent_id IS NULL AND a2a_thread_id IS NULL`;
       // AUDIT-FIX: count PER AGENT (a global count let 6 asks across 6 agents all
       // get swept), and only count SERVABLE rows (>= the agent's session start,
       // which is the re-drain's own floor). Holding an unservable row parked it in
@@ -530,7 +530,7 @@ async function main(): Promise<void> {
         `SELECT m.rowid AS rowid, m.agent_id AS agent_id FROM messages AS m
           WHERE m.role = 'user' AND m.conv_key IS NULL AND m.swept_at IS NULL
             AND m.created_at < datetime('now', '-30 minutes')
-            AND NOT (m.origin_kind = 'engine'
+            AND NOT (m.lane = 'events'
                      AND ((m.next_attempt_at IS NOT NULL AND m.next_attempt_at > datetime('now'))
                           OR (m.delivery_attempts > 0 AND m.delivery_attempts < 5)))
             ${heldAgents.length > 0 ? `AND NOT (${SERVABLE} AND m.agent_id IN (${heldIdList}))` : ''}`,
@@ -539,30 +539,18 @@ async function main(): Promise<void> {
       for (const r of staleRows) {
         swept += sweepByRowid({ rowid: r.rowid, agentId: r.agent_id, requireUnclaimed: true });
       }
-      // D-A step 4: engine events (scheduler/tracker/healer/notice) now persist to
-      // inter_agent_messages, so the same >30-min attempts=0 backlog disposal must
-      // cover the store arm or a stale store engine event survives the restart and
-      // re-fires via the merged boot re-drain. ENGINE rows only: peer A2A rows in
-      // the store never participate in swept_at semantics (no reader consults it),
-      // and they are governed by the reply-owed/park machinery instead. No
-      // held-agents guard needed, store rows are never genuine human asks.
-      const staleStoreRows = db.prepare(
-        `SELECT m.rowid AS rowid, m.agent_id AS agent_id FROM inter_agent_messages AS m
-          WHERE m.role = 'user' AND m.conv_key IS NULL AND m.swept_at IS NULL
-            AND m.origin_kind = 'engine'
-            AND m.created_at < datetime('now', '-30 minutes')
-            AND NOT ((m.next_attempt_at IS NOT NULL AND m.next_attempt_at > datetime('now'))
-                     OR (m.delivery_attempts > 0 AND m.delivery_attempts < 5))`,
-      ).all() as Array<{ rowid: number; agent_id: string }>;
-      let sweptStore = 0;
-      for (const r of staleStoreRows) {
-        // The store arm is the SAME sweep against the other physical table (T10-DELETES
-        // with it); `src: 'ia'` is how the writer module dispatches, and it is the only
-        // thing in the tree that still knows two tables exist.
-        sweptStore += sweepByRowid({ rowid: r.rowid, agentId: r.agent_id, requireUnclaimed: true }, 'ia');
-      }
-      if (swept > 0 || sweptStore > 0 || heldTotal > 0) {
-        logger.info(`Boot staleness sweep: drain-suppressed ${swept} stale (>30m) row(s) + ${sweptStore} store engine event(s) via swept_at (conv_key preserved for recall)${heldTotal > 0 ? `; HELD ${heldTotal} genuine human ask(s) across ${heldAgents.length} agent(s) for the re-drain` : ''} (tracker untouched)`);
+      // T6: the SECOND sweep arm is gone. D-A step 4 split engine events across two
+      // physical tables, so this sweep needed a store arm or a stale store engine event
+      // survived the restart and re-fired via the merged boot re-drain. Engine events
+      // are `lane='events'` rows in `messages` now, and the predicate above already
+      // reaches them: `lane = 'events'` is exactly the `origin_kind = 'engine'` clause
+      // the store arm carried, and the held-agents exclusion cannot touch them because
+      // HUMAN_PREDICATE is owner-lane only.
+      // requirement preserved: a stale, never-attempted engine event is drain-suppressed
+      // at boot, wherever it was queued, while one still inside its delivery lifecycle
+      // (a future backoff or 1-4 recorded attempts) survives to be retried.
+      if (swept > 0 || heldTotal > 0) {
+        logger.info(`Boot staleness sweep: drain-suppressed ${swept} stale (>30m) row(s) via swept_at (conv_key preserved for recall)${heldTotal > 0 ? `; HELD ${heldTotal} genuine human ask(s) across ${heldAgents.length} agent(s) for the re-drain` : ''} (tracker untouched)`);
       }
     } catch (err) {
       logger.warn('Boot staleness sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
@@ -587,7 +575,7 @@ async function main(): Promise<void> {
             AND conv_key NOT IN ('engine', 'engine-steer')
             AND conv_key NOT LIKE 'park:%' AND conv_key NOT LIKE 'relayed:%'
             AND source_agent_id IS NULL AND a2a_thread_id IS NULL
-            AND (origin_kind IS NULL OR origin_kind != 'engine')
+            AND lane = 'owner'
             AND created_at >= datetime('now', '-30 minutes')`,
       ).all() as Array<{ rowid: number; conv_key: string; agent_id: string; created_at: string }>;
       const hasReply = db.prepare(

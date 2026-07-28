@@ -1154,7 +1154,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   const resolvedInbound = resolveInbound({
     agentId,
     content: lastUserMessageContent,
-    ...legacyOriginInputs(triggerRow?.lane, triggerRow?.channel),
+    channel: triggerRow?.channel ?? null,
     inboundMeta: triggerRow?.inbound_meta ?? null,
   });
   const inboundChannel = resolvedInbound.inboundChannel;
@@ -9180,12 +9180,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
           stampSpokenMessage(answerRow.id, 'agent', getVoiceSessionIdForCall(inboundContext.phoneCallSid));
         } catch { /* best effort */ }
       }
-      // Per-ask outcome: every row this turn served records the reply that
-      // answered it (both stores; sibling rows were stamped served_by_turn in
-      // claimAssembledSiblings above).
+      // Per-ask outcome: every row this turn served records the reply that answered
+      // it (sibling rows were stamped served_by_turn in claimAssembledSiblings above).
+      // T6: one call — this was two, once per physical store.
       if (answerRow) {
         setAnswerMessageId({ agentId, servedByTurn: turnNumber, answerMessageId: answerRow.id });
-        setAnswerMessageId({ agentId, servedByTurn: turnNumber, answerMessageId: answerRow.id }, 'ia');
       }
     } catch { /* best effort, turn teardown must not throw */ }
 

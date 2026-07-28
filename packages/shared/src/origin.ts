@@ -82,7 +82,7 @@ export interface OriginFields {
 export function legacyOriginInputs(
   lane: string | null | undefined,
   channel: string | null | undefined,
-): { source: string | null; originKind: 'engine' | null } {
+): { source: 'voice' | 'a2a' | null; originKind: 'engine' | null } {
   return {
     source: lane === 'a2a' ? 'a2a' : channel === 'voice' ? 'voice' : null,
     originKind: lane === 'events' ? 'engine' : null,

@@ -81,9 +81,9 @@ export function claimAssignmentNoticeForTerminalTask(assignedAgentId: string, ta
   } catch { /* best effort; the LIKE fallback below still neutralizes */ }
   const like = `%ID: ${taskId}%`;
   try {
-    claimTrackerNoticeForTask({ agentId: assignedAgentId, contentLike: like }, 'ia');
-    // Belt-and-suspenders: legacy notices could still live in `messages`.
-    claimTrackerNoticeForTask({ agentId: assignedAgentId, contentLike: like }, 'm');
+    // T6: one home, one call. This was two — the row could be in either physical
+    // table, so the claim had to be attempted against both.
+    claimTrackerNoticeForTask({ agentId: assignedAgentId, contentLike: like });
   } catch (err) {
     logger.warn('Failed to claim assignment notice for terminal task (non-fatal)', {
       taskId, assignedAgentId, error: err instanceof Error ? err.message : String(err),

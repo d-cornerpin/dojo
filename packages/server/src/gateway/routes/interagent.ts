@@ -2,12 +2,12 @@
 // Inter-Agent lane API
 //
 // The dashboard's dedicated lane for agent-to-agent (A2A) traffic and engine-
-// origin notices. Those rows physically live in `inter_agent_messages` (D-A),
-// NOT in the primary's `messages` chat table, so they can never leak into human
-// chat. This route is the lane's history source; the live path is the
-// `interagent:message` WS event. Scope is per-recipient-agent (agentId), which
-// mirrors the chat history route's per-agent model: each agent's store holds the
-// inter-agent messages IT received.
+// origin notices. D-A kept those rows in their own physical table so they could
+// never leak into human chat; Phase 1 moved that separation into the schema —
+// they are `lane IN ('a2a','events')` rows in `messages`, and the human surface
+// is the fail-closed `chat_messages` view (`WHERE lane = 'owner'`). This route is
+// the lane's history source; the live path is the `interagent:message` WS event.
+// Scope is per-recipient-agent (agentId), mirroring the chat history route.
 // ════════════════════════════════════════
 
 import { Hono } from 'hono';
@@ -49,7 +49,7 @@ function engineSenderLabel(content: string, originIntent: string | null): string
   return 'Engine';
 }
 
-interface StoreRow {
+interface LaneRow {
   id: string;
   agent_id: string;
   role: string;
@@ -59,18 +59,26 @@ interface StoreRow {
   a2a_intent: string | null;
   a2a_requires_response: number | null;
   attachments: string | null;
-  origin_kind: string | null;
+  lane: string;
   origin_intent: string | null;
   created_at: string;
 }
 
+/** The two non-owner lanes the Threads view exists to show. The route used to be
+ *  scoped by reading a different TABLE; it is scoped by the column now. */
+const THREADS_LANES = "lane IN ('a2a','events')";
+
+/** Every read below projects exactly this list. */
+const LANE_COLS = `id, agent_id, role, content, source_agent_id, a2a_thread_id, a2a_intent,
+               a2a_requires_response, attachments, lane, origin_intent, created_at`;
+
 function rowToInterAgentMessage(
   db: ReturnType<typeof getDb>,
-  row: StoreRow,
+  row: LaneRow,
   recipientName: string | null,
   cache: Map<string, string | null>,
 ): InterAgentMessage {
-  const isEngine = row.origin_kind === 'engine';
+  const isEngine = row.lane === 'events';
   const senderName = isEngine
     ? engineSenderLabel(row.content ?? '', row.origin_intent)
     : agentName(db, row.source_agent_id, cache);
@@ -111,36 +119,33 @@ interAgentRouter.get('/:agentId', (c) => {
     return c.json({ ok: false, error: 'Agent not found' }, 404);
   }
 
-  let rows: StoreRow[];
+  let rows: LaneRow[];
   try {
     if (before) {
-      // Resolve the cursor id to its full sort key (created_at, rowid). A bare
-      // created_at < ? SKIPS the cursor row's same-second siblings at a page
-      // boundary, and coordination bursts land several rows in one second. Single
-      // table, so the (created_at, rowid) TUPLE predicate is enough: page past
-      // exactly the cursor row and no further. 400-on-miss contract unchanged.
-      const cursor = db.prepare('SELECT created_at, rowid AS _rowid FROM inter_agent_messages WHERE id = ?').get(before) as { created_at: string; _rowid: number } | undefined;
+      // The cursor is the insertion key. It was a (created_at, rowid) TUPLE because a
+      // bare `created_at <` skips the cursor row's same-second siblings at a page
+      // boundary, and coordination bursts land several rows in one second; the
+      // insertion key is strictly monotonic, so one column says the same thing.
+      // 400-on-miss contract unchanged.
+      const cursor = db.prepare('SELECT rowid AS _rowid FROM messages WHERE id = ?').get(before) as { _rowid: number } | undefined;
       if (!cursor) {
         return c.json({ ok: false, error: 'Invalid cursor message ID' }, 400);
       }
       rows = db.prepare(`
-        SELECT id, agent_id, role, content, source_agent_id, a2a_thread_id, a2a_intent,
-               a2a_requires_response, attachments, origin_kind, origin_intent, created_at
-        FROM inter_agent_messages
-        WHERE agent_id = @agentId
-          AND (created_at < @cCreated OR (created_at = @cCreated AND rowid < @cRowid))
-        ORDER BY created_at DESC, rowid DESC
+        SELECT ${LANE_COLS}
+        FROM messages
+        WHERE agent_id = @agentId AND ${THREADS_LANES} AND rowid < @cRowid
+        ORDER BY rowid DESC
         LIMIT @limit
-      `).all({ agentId, cCreated: cursor.created_at, cRowid: cursor._rowid, limit }) as StoreRow[];
+      `).all({ agentId, cRowid: cursor._rowid, limit }) as LaneRow[];
     } else {
       rows = db.prepare(`
-        SELECT id, agent_id, role, content, source_agent_id, a2a_thread_id, a2a_intent,
-               a2a_requires_response, attachments, origin_kind, origin_intent, created_at
-        FROM inter_agent_messages
-        WHERE agent_id = ?
-        ORDER BY created_at DESC, rowid DESC
+        SELECT ${LANE_COLS}
+        FROM messages
+        WHERE agent_id = ? AND ${THREADS_LANES}
+        ORDER BY rowid DESC
         LIMIT ?
-      `).all(agentId, limit) as StoreRow[];
+      `).all(agentId, limit) as LaneRow[];
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

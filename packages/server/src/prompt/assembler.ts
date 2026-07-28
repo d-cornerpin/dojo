@@ -502,7 +502,7 @@ export interface PromptTurnContext {
   /**
    * True when this turn was triggered by an engine event (a scheduler task /
    * reminder firing), not by a human or an agent. The trigger is a role='user'
-   * row with origin_kind='engine'. On such a turn the live tail is scoped to the
+   * row on the EVENTS lane, and the live tail is then scoped to the
    * engine event itself (scopeToEngineTurn) instead of the owner's human
    * conversation, so an hour-old already-answered request can't out-compete the
    * scheduled task and get run in its place (OPEN-11, the gastro-digest-ran-a-
@@ -1184,15 +1184,15 @@ export function resolveInboundContext(agentId: string): InboundContext {
   const empty: InboundContext = { inboundChannel: null, smsFromNumber: null, phoneFromNumber: null, replyDestination: null, lastContent: '' };
   try {
     const db = getDb();
-    const lastRow = db.prepare(
-      `SELECT content, source, inbound_meta FROM messages
+    const lastRow = db.prepare(   // CACHE RIDER (#10): picks the voice/TTS addenda; the four ?source x tts cells stay byte-identical.
+      `SELECT content, channel, inbound_meta FROM messages
            WHERE agent_id = ?
              AND role = 'user'
              AND content NOT LIKE '[SOURCE: SYSTEM%'
              AND content NOT LIKE '[A2A:%'
              AND content NOT LIKE '[SOURCE: AGENT MESSAGE FROM%'
            ORDER BY created_at DESC, rowid DESC LIMIT 1`,
-    ).get(agentId) as { content: string; source: string | null; inbound_meta: string | null } | undefined;
+    ).get(agentId) as { content: string; channel: string | null; inbound_meta: string | null } | undefined;
     const lastContent = lastRow?.content ?? '';
     // v3.0.9, the agent's [Reply destination] hint is computed from the SAME
     // resolver the engine uses to actually route the reply (inbound-channel.ts).
@@ -1203,7 +1203,7 @@ export function resolveInboundContext(agentId: string): InboundContext {
     const resolved = resolveInbound({
       agentId,
       content: lastContent || null,
-      source: lastRow?.source ?? null,
+      channel: lastRow?.channel ?? null,
       inboundMeta: lastRow?.inbound_meta ?? null,
     });
     const inboundChannel: ReplyDestination | null = resolved.inboundChannel;

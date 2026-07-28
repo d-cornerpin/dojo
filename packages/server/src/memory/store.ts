@@ -29,7 +29,7 @@
 
 import { getDb } from '../db/connection.js';
 import type { Message } from '@dojo/shared';
-import { deriveOrigin } from '@dojo/shared';
+import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 
 // ── Session Boundary ──
 
@@ -87,7 +87,7 @@ export function rowToMessage(row: MessageRow): Message {
   // Proven equivalent before the change, on every row the live box holds:
   //   origin_kind mismatches 0 · source mismatches 0 · total rows 3211
   // The two columns themselves are T10's to drop; this is the reader half.
-  const source = row.lane === 'a2a' ? 'a2a' : row.channel === 'voice' ? 'voice' : null;
+  const legacy = legacyOriginInputs(row.lane, row.channel);
   return {
     id: row.id,
     agentId: row.agent_id,
@@ -108,7 +108,7 @@ export function rowToMessage(row: MessageRow): Message {
     // OpenRouter unified reasoning, etc.). Migration 040.
     reasoningContent: row.reasoning_content,
     // ── Attribution ──
-    source,
+    source: legacy.source,
     sourceAgentId: row.source_agent_id,
     a2aThreadId: row.a2a_thread_id,
     a2aIntent: row.a2a_intent,
@@ -119,13 +119,12 @@ export function rowToMessage(row: MessageRow): Message {
     origin: deriveOrigin({
       role: row.role as Message['role'],
       content: row.content,
-      source,
+      ...legacy,
       sourceAgentId: row.source_agent_id,
       a2aThreadId: row.a2a_thread_id,
       a2aIntent: row.a2a_intent,
       a2aRequiresResponse: row.a2a_requires_response,
       inboundMeta: row.inbound_meta,
-      originKind: row.lane === 'events' ? 'engine' : null,
       originIntent: row.origin_intent,
     }),
   };

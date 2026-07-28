@@ -100,23 +100,18 @@ beforeEach(() => {
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
+    -- PHASE-1 T6: the fixture carries the SPINE columns, because the latch's
+    -- carve-out read is one table scoped by lane now. A fixture without a lane
+    -- column would let the carve-out silently stop being tested.
     CREATE TABLE messages (
       id TEXT PRIMARY KEY,
       agent_id TEXT,
       role TEXT,
       content TEXT,
+      lane TEXT NOT NULL DEFAULT 'owner',
+      channel TEXT,
       conv_key TEXT,
       inbound_meta TEXT,
-      source_agent_id TEXT,
-      a2a_thread_id TEXT,
-      a2a_intent TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    );
-    CREATE TABLE inter_agent_messages (
-      id TEXT PRIMARY KEY,
-      agent_id TEXT,
-      role TEXT,
-      content TEXT,
       source_agent_id TEXT,
       a2a_thread_id TEXT,
       a2a_intent TEXT,
@@ -153,11 +148,11 @@ describe('RC-14 awaiting-reply latch', () => {
 
   it('does NOT latch once the receiver has replied on the thread (carve-out)', async () => {
     seedThread({ lastSender: SENDER, lastIntent: 'QUESTION' });
-    // Receiver posted a reply back to the sender on this thread (lands in the
-    // sender's inter_agent_messages inbox: agent_id=sender, source=receiver).
+    // Receiver posted a reply back to the sender on this thread: it lands in the
+    // sender's inbox as an a2a-lane row (agent_id=sender, source_agent_id=receiver).
     mockDb.current!.prepare(
-      `INSERT INTO inter_agent_messages (id, agent_id, role, content, source_agent_id, a2a_thread_id, a2a_intent, created_at)
-       VALUES ('r1', ?, 'user', '[A2A:ANSWER] here you go', ?, ?, 'ANSWER', datetime('now'))`,
+      `INSERT INTO messages (id, agent_id, role, content, lane, source_agent_id, a2a_thread_id, a2a_intent, created_at)
+       VALUES ('r1', ?, 'user', '[A2A:ANSWER] here you go', 'a2a', ?, ?, 'ANSWER', datetime('now'))`,
     ).run(SENDER, RECEIVER, THREAD);
     const result = await deliver({ intent: 'QUESTION' });
     expect(result.reason).not.toBe('AWAITING_REPLY');

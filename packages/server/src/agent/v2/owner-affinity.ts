@@ -22,7 +22,7 @@
 // the conversation row (conversations.last_affinity_promo_at, P5c) so the
 // cooldown survives a restart and belongs to the identity it limits.
 
-import { deriveOrigin } from '@dojo/shared';
+import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 
@@ -37,7 +37,8 @@ interface OwnerAffinityRow {
   a2a_intent: string | null;
   a2a_requires_response: number | null;
   inbound_meta: string | null;
-  origin_kind: string | null;
+  lane: string;
+  channel: string | null;
   origin_intent: string | null;
   created_at: string;
 }
@@ -62,8 +63,8 @@ export function resolveOwnerAffinityChannel(agentId: string, opts: OwnerAffinity
   try {
     const db = getDb();
     const rows = db.prepare(
-      `SELECT content, source, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response,
-              inbound_meta, origin_kind, origin_intent, created_at
+      `SELECT content, lane, channel, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response,
+              inbound_meta, origin_intent, created_at
          FROM messages
         WHERE agent_id = ? AND role = 'user'
           AND created_at >= datetime('now', ?)
@@ -72,9 +73,11 @@ export function resolveOwnerAffinityChannel(agentId: string, opts: OwnerAffinity
     ).all(agentId, `-${windowHours} hours`) as OwnerAffinityRow[];
     for (const r of rows) {
       const o = deriveOrigin({
-        role: 'user', content: r.content, source: r.source, sourceAgentId: r.source_agent_id,
+        role: 'user', content: r.content,
+        ...legacyOriginInputs(r.lane, r.channel),
+        sourceAgentId: r.source_agent_id,
         a2aThreadId: r.a2a_thread_id, a2aIntent: r.a2a_intent, a2aRequiresResponse: r.a2a_requires_response,
-        inboundMeta: r.inbound_meta, originKind: r.origin_kind, originIntent: r.origin_intent,
+        inboundMeta: r.inbound_meta, originIntent: r.origin_intent,
       });
       // The newest authorized OWNER inbound is the one that defines "where the owner
       // is." Skip engine notices, A2A, contacts, and unauthorized notifications.

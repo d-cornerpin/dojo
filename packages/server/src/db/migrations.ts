@@ -209,16 +209,20 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
   db.pragma('foreign_keys = ON');
 
   // ── 075 visibility ──
-  // When migration 075 (structured engine origin_kind) was just applied, surface
-  // how many role='user' rows still have origin_kind NULL yet content that starts
-  // with '[', a bracketed prefix 075's backfill did not recognise. A novel legacy
-  // engine prefix would otherwise render silently as the user speaking; this count
-  // makes it visible so it can be classified instead of leaking as user speech.
+  // When migration 075 was just applied, surface how many role='user' rows are still
+  // UNCLASSIFIED yet carry content that starts with '[', a bracketed prefix 075's
+  // backfill did not recognise. A novel legacy engine prefix would otherwise render
+  // silently as the user speaking; this count makes it visible so it can be classified
+  // instead of leaking as user speech.
+  // T6: "unclassified" was `origin_kind IS NULL`; it is `lane = 'owner'` now (migration
+  // 127 derived the lane FROM origin_kind for every migrated row, so the two select the
+  // same rows). The probe only ever runs on a database old enough for 075 to be pending,
+  // which reaches this code path with the unified table already in place.
   if (pending.includes('075_message_origin_kind.sql')) {
     try {
       const unmatched = (db.prepare(
         `SELECT COUNT(*) AS c FROM messages
-          WHERE role = 'user' AND origin_kind IS NULL AND content LIKE '[%'`,
+          WHERE role = 'user' AND lane = 'owner' AND content LIKE '[%'`,
       ).get() as { c: number }).c;
       logger.info(
         'Migration 075 applied: user rows with a bracketed prefix still unclassified (potential unmatched engine prefixes)',

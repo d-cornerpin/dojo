@@ -25,11 +25,17 @@ import {
 } from '../owner-affinity.js';
 
 let rowid = 0;
-function insertInbound(agentId: string, content: string, inboundMeta: string | null, ageMinutes = 1): void {
+/** PHASE-1 T6: a row is stamped with its LANE at ingest, exactly as the writer module
+ *  does, because the affinity read projects attribution from `lane`/`channel` now.
+ *  Defaulting to the owner lane matches what an inbound channel row really is. */
+function insertInbound(
+  agentId: string, content: string, inboundMeta: string | null, ageMinutes = 1,
+  lane: 'owner' | 'a2a' | 'events' = 'owner', channel: string | null = null,
+): void {
   mockDb.current!.prepare(
-    `INSERT INTO messages (id, agent_id, role, content, inbound_meta, created_at)
-       VALUES (?, ?, 'user', ?, ?, datetime('now', ?))`,
-  ).run(`m${++rowid}`, agentId, content, inboundMeta, `-${ageMinutes} minutes`);
+    `INSERT INTO messages (id, agent_id, role, content, lane, channel, inbound_meta, created_at)
+       VALUES (?, ?, 'user', ?, ?, ?, ?, datetime('now', ?))`,
+  ).run(`m${++rowid}`, agentId, content, lane, channel, inboundMeta, `-${ageMinutes} minutes`);
 }
 
 const ownerImessageMeta = JSON.stringify({
@@ -51,7 +57,8 @@ beforeEach(() => {
       a2a_intent TEXT,
       a2a_requires_response INTEGER,
       inbound_meta TEXT,
-      origin_kind TEXT,
+      lane TEXT NOT NULL DEFAULT 'owner',
+      channel TEXT,
       origin_intent TEXT,
       conv_key TEXT,
       created_at TEXT DEFAULT CURRENT_TIMESTAMP

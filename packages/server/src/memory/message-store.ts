@@ -412,14 +412,14 @@ export function claimRowByRowid(
 /** Claim the assignment notice(s) for a task that has gone terminal. The content LIKE is
  *  the documented legacy fallback for pre-112 rows whose task_id is NULL; it is carried
  *  verbatim, not improved, because narrowing it here would silently change which rows
- *  retire. The `origin_kind` predicate is T6's to convert to `lane`. */
+ *  retire. */
 export function claimTrackerNoticeForTask(
   p: { agentId: string; contentLike: string }, src: LegacySrc = 'm',
 ): number {
   const db = getDb();
   return db.prepare(
     `UPDATE ${home(src)} SET conv_key = 'engine'
-       WHERE agent_id = @agentId AND origin_kind = 'engine' AND origin_intent = 'tracker'
+       WHERE agent_id = @agentId AND lane = 'events' AND origin_intent = 'tracker'
          AND conv_key IS NULL AND content LIKE @contentLike`,
   ).run(p).changes;
 }

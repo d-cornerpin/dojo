@@ -62,17 +62,19 @@ export interface ResolveInboundArgs {
   agentId: string;
   /** The triggering user message content (may be null when there is none). */
   content: string | null;
-  /** The triggering message row's `source` column ('voice' | null | ...). */
-  source: string | null;
+  /** The triggering message row's stamped `channel` ('voice' | 'imessage' | … | null).
+   *  T6: this was the `source` compat column, which carried the voice half of the same
+   *  fact in a nullable free-text field (PHASE-1.md T3-0b §3). */
+  channel: string | null;
   /** The triggering message row's `inbound_meta` column (raw JSON or null). */
   inboundMeta: string | null;
 }
 
 export function resolveInbound(args: ResolveInboundArgs): ResolvedInbound {
-  const { agentId, content, source, inboundMeta } = args;
+  const { agentId, content, channel, inboundMeta } = args;
 
   // ── 1. Voice: in-person speech is its own channel. ──
-  if (source === 'voice') {
+  if (channel === 'voice') {
     return { inboundChannel: 'voice', inboundContext: null };
   }
 
