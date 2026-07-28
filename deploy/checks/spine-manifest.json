@@ -248,7 +248,7 @@
         "kind": "owed",
         "owner": "the task that makes the Stable Bridge EXECUTABLE (PHASE-2 T12 or the release fixture)",
         "date": "2026-07-28",
-        "reason": "The distinguishing value 'migrated' is written by STABLE-BRIDGE.md's merge, which is a skeleton by design (T12; bridge-migrations/129b_stable_merge_messages.sql, deliberately non-executable and outside the dojo repo). A reader before there is anything to distinguish would be theatre. Carried with T13-items #20: the lived-in baseline and the release fixture at Stable baseline 111 ride with the same task."
+        "reason": "The distinguishing value 'migrated' is written by STABLE-BRIDGE.md's merge, which is a skeleton by design (T12; bridge-migrations/129b_stable_merge_messages.sql, deliberately non-executable and outside the dojo repo). A reader before there is anything to distinguish would be theatre. Carried with T13-items #20: the lived-in baseline and the release fixture at Stable baseline 111 ride with the same task. CORRECTED PHASE-2 T0 2026-07-28: both values already exist on a live body (live 3,304 / migrated 2,889 on the dev box; migration 127_unified_messages.sql:180 stamps its copy 'migrated'). Only the READER is owed."
       }
     },
     {
@@ -348,7 +348,7 @@
       ],
       "workShaped": true,
       "why": "Per-agent async media-generation queue: queued -> running -> succeeded | failed (services/generation-jobs.ts). Structurally a work tracker keyed to an agent, and NOT one of the five the plan enumerated — recorded here so Phase 2 decides deliberately instead of discovering it later.",
-      "disposition": "Undecided at Phase 0. Phase 2 judges whether it folds into `work` or stays a typed side-queue."
+      "disposition": "TYPED SIDE-QUEUE — decided PHASE-2 T0, 2026-07-28. Not folded into work: its state is provider-side (provider_job_id, polling cadence, asset_path, cost_usd) and a finished asset nobody was shown is legitimately finished, which work.done's delivery requirement cannot express without sentinel deliveries. It already carries task_id + conversation_id, so the obligation is a work row and the job references it. The two-queues-one-lifecycle duplication with video_jobs is real and is SWEEP-F's."
     },
     {
       "name": "video_jobs",
@@ -362,7 +362,7 @@
       ],
       "workShaped": true,
       "why": "The same shape again for video: queued -> polling -> succeeded | failed | cancelled (services/video-job-poller.ts). Two independent job queues with the same lifecycle is the duplication pattern this project exists to stop.",
-      "disposition": "Undecided at Phase 0. Same Phase 2 judgement as generation_jobs."
+      "disposition": "TYPED SIDE-QUEUE — decided PHASE-2 T0, 2026-07-28. Same reasoning as generation_jobs; consolidation of the two queues is SWEEP-F's."
     },
     {
       "name": "healer_proposals",
