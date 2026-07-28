@@ -18,7 +18,7 @@
     "packages/dashboard/src/lib/voice/voice-client.ts": 873,
     "packages/dashboard/src/pages/AgentConfigPanel.tsx": 438,
     "packages/dashboard/src/pages/Agents.tsx": 678,
-    "packages/dashboard/src/pages/Chat.tsx": 1952,
+    "packages/dashboard/src/pages/Chat.tsx": 1959,
     "packages/dashboard/src/pages/Costs.tsx": 686,
     "packages/dashboard/src/pages/Health.tsx": 650,
     "packages/dashboard/src/pages/Memory.tsx": 499,
@@ -41,7 +41,7 @@
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/state.ts": 686,
     "packages/server/src/costs/tracker.ts": 531,
-    "packages/server/src/gateway/routes/agents.ts": 773,
+    "packages/server/src/gateway/routes/agents.ts": 794,
     "packages/server/src/gateway/routes/chat.ts": 534,
     "packages/server/src/gateway/routes/config.ts": 2531,
     "packages/server/src/gateway/routes/memory.ts": 627,
@@ -62,7 +62,7 @@
     "packages/server/src/index.ts": 1272,
     "packages/server/src/memory/assembler.ts": 2564,
     "packages/server/src/memory/compaction.ts": 1269,
-    "packages/server/src/memory/message-store.ts": 696,
+    "packages/server/src/memory/message-store.ts": 740,
     "packages/server/src/memory/open-loops.ts": 619,
     "packages/server/src/memory/recall.ts": 506,
     "packages/server/src/memory/retrieval.ts": 595,
@@ -107,7 +107,7 @@
     "packages/server/src/voice/voice-ws.ts": 2279,
     "packages/shared/src/types.ts": 500,
     "packages/shared/src/visibility.ts": 811,
-    "packages/shared/src/ws.ts": 998,
+    "packages/shared/src/ws.ts": 1082,
     "watchdog/src/index.ts": 1164
   }
 }

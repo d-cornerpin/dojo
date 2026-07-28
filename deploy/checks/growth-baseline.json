@@ -231,7 +231,7 @@
     "packages/server/src/gateway/routes/upload.ts": 607,
     "packages/server/src/gateway/routes/vault.ts": 251,
     "packages/server/src/gateway/server.ts": 349,
-    "packages/server/src/gateway/ws.ts": 270,
+    "packages/server/src/gateway/ws.ts": 345,
     "packages/server/src/google/accounts.ts": 357,
     "packages/server/src/google/activity-log.ts": 145,
     "packages/server/src/google/auth.ts": 771,
