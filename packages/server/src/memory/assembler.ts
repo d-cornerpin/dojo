@@ -17,6 +17,7 @@ import type { AssemblyTurnState } from '../prompt/registry/types.js';
 import { turnBoundary, currentTurnConvKey } from '../agent/turn-state.js';
 import type { Summary } from './dag.js';
 import type { Message } from '@dojo/shared';
+import { parseDivider, NEW_SESSION_DIVIDER_LABEL } from '@dojo/shared';
 
 const logger = createLogger('memory-assembler');
 
@@ -1636,7 +1637,8 @@ function isSyntheticRow(content: string): boolean {
   return content.startsWith('[SOURCE:') || content.startsWith('[A2A:')
     || content.startsWith('[Engine') || content.startsWith('[ENGINE')
     || content.startsWith('[System') || content.startsWith('[DOJO:')
-    || content.startsWith('── New Session');
+    // PHASE-1 T8: the divider's shape is @dojo/shared's, not a literal re-typed here.
+    || parseDivider(content)?.label.startsWith(NEW_SESSION_DIVIDER_LABEL) === true;
 }
 
 // D4: strip a leading engine/A2A envelope so the recall query is the actual

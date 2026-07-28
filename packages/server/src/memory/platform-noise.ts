@@ -21,10 +21,17 @@
 // inter-agent traffic, not the user's conversation.
 // ════════════════════════════════════════════════════════════════════════
 
+import { NEW_SESSION_DIVIDER } from '@dojo/shared';
+
 export const PLATFORM_NOISE_PATTERNS: RegExp[] = [
   /^\s*\[CONTINUITY BRIEF/i,
   /^\s*\[New Session\]/i,
-  /^\s*── New Session ──/,
+  // PHASE-1 T8: the divider's SHAPE is @dojo/shared's; its MEMBERSHIP in this list is local
+  // policy and stays local. Those are different questions, and this entry proves it — the
+  // display taxonomy classifies a New Session divider as USER-VISIBLE while this list
+  // (what may enter a summary) excludes it. Collapsing the two lists would make a
+  // summariser change a display change.
+  new RegExp(`^\\s*${NEW_SESSION_DIVIDER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
   /^\s*\[System: /i,
   /^\s*\[SOURCE: SYSTEM/i,
   /^\s*\[SOURCE: HEALER/i,

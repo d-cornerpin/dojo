@@ -25,6 +25,7 @@ import { postAgentNotice } from '../agent/agent-notice.js';
 import { insertInterAgentEngineRow } from '../memory/interagent.js';
 import { insertMessage } from '../memory/message-store.js';
 import { getPrimaryAgentId, getPMAgentId, getOwnerName } from '../config/platform.js';
+import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 
 const logger = createLogger('scheduler');
 
@@ -965,7 +966,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
       // non-technical owner, naming the task and its scheduled time. Note text unchanged.
       const when = (task.scheduled_start as string | null) ?? (task.anchor_time as string | null);
       const ownerMsg =
-        `Heads up: a scheduled ${noun}, "${title}"${when ? ` (set for ${when})` : ''}, failed on its final attempt and was not delivered. ` +
+        `${OWNER_ALERT_HEADS_UP_PREFIX} a scheduled ${noun}, "${title}"${when ? ` (set for ${when})` : ''}, failed on its final attempt and was not delivered. ` +
         `Nothing more is scheduled for it, so it will not try again. Let me know if you want me to set it up again.`;
       const primaryId = getPrimaryAgentId();
       postAgentNotice({
@@ -1064,7 +1065,7 @@ export function postSkippedReminderHeadsUp(taskId: string, reason: string): void
     const what = (row.description && row.description.trim()) ? row.description.trim() : row.title;
     const when = row.scheduled_start ?? row.anchor_time;
     const ownerMsg =
-      `Heads up: I skipped a reminder${when ? ` (set for ${when})` : ''}, "${what}", because ${reason}. ` +
+      `${OWNER_ALERT_HEADS_UP_PREFIX} I skipped a reminder${when ? ` (set for ${when})` : ''}, "${what}", because ${reason}. ` +
       `Let me know if you still want it and I will set it up again.`;
     const primaryId = getPrimaryAgentId();
     const ownerMsgId = uuidv4();

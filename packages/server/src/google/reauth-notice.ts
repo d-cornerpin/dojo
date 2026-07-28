@@ -26,6 +26,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { listGoogleAccounts } from './accounts.js';
 import { createLogger } from '../logger.js';
+import { formatDivider } from '@dojo/shared';
 
 const logger = createLogger('google-reauth-notice');
 const FLAG_KEY = 'google_broker_reauth_notified';
@@ -64,7 +65,7 @@ export function notifyGoogleReauthOnce(): void {
       // 1. User-visible divider in the dojo chat (── label ── renders as a
       //    centered system notice in regular mode).
       const dividerId = uuidv4();
-      const divider = '── Google reconnect needed (do it on the DOJO computer): Settings ▸ Channels ▸ Google ──';
+      const divider = formatDivider('Google reconnect needed (do it on the DOJO computer): Settings ▸ Channels ▸ Google');
       insertMessage({ id: dividerId, agentId: primaryId, role: 'system', content: divider });
       broadcast({
         type: 'chat:message',

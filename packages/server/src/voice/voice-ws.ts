@@ -36,6 +36,7 @@ import { getPrimaryAgentName } from '../config/platform.js';
 import { WHISPER_MODELS, KOKORO_MODEL_ID, type WhisperSize } from './model-manager.js';
 import { predictTurnComplete, TURN_COMPLETE_THRESHOLD, warmUpSmartTurn } from './smart-turn.js';
 import type { WsEvent } from '@dojo/shared';
+import { stripNoReplySentinel } from '@dojo/shared';
 
 const logger = createLogger('voice-ws');
 
@@ -1345,11 +1346,11 @@ async function fireFastOpener(session: VoiceSession, transcript: string): Promis
  */
 function stripEngineControlMarkers(text: string): string {
   if (!text) return text;
-  return text
-    .replace(/\[no-reply\]/gi, '')
-    // Collapse runs of spaces produced by the removal so word boundaries
-    // stay intact but we don't end up with double spaces.
-    .replace(/ {2,}/g, ' ');
+  // PHASE-1 T8: `stripNoReplySentinel` is @dojo/shared's, so this and the engine agree on
+  // what the sentinel looks like — including the markdown wrappers the weak model adds,
+  // which this local copy did not tolerate. Collapse runs of spaces afterwards so word
+  // boundaries stay intact without doubling.
+  return stripNoReplySentinel(text).replace(/ {2,}/g, ' ');
 }
 
 function startTtsForAgent(

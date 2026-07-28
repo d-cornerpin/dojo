@@ -27,6 +27,7 @@
 // many minutes and burn a visible chunk of money in one shot.
 // ════════════════════════════════════════════════════════════════════════
 
+import { NEW_SESSION_DIVIDER } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { isPlatformNoise } from './platform-noise.js';
@@ -84,7 +85,8 @@ const SUMMARY_CONTAMINATION_PATTERNS: RegExp[] = [
   /This is batch \d+ of \d+\b/i,
   /You are the (Dreamer|Trainer|Healer|PM|Imaginer)\b/i,
   /\[CONTINUITY BRIEF/i,
-  /── New Session ──/,
+  // PHASE-1 T8: shape from @dojo/shared; membership in this contamination list stays local.
+  new RegExp(NEW_SESSION_DIVIDER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
   /\[New Session\]/i,
 ];
 

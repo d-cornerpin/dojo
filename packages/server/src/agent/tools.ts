@@ -74,6 +74,7 @@ import { getEffectiveAudioGenModel } from '../services/audio-gen-model.js';
 import { getToolConfigGeneration } from './tool-config-generation.js';
 import { getModelVoiceCatalog, defaultVoiceCatalogFor, formatVoiceCatalog } from '../services/voice-catalog.js';
 import type { ToolCall, ToolResult } from '@dojo/shared';
+import { NEW_SESSION_DIVIDER } from '@dojo/shared';
 
 const logger = createLogger('tools');
 
@@ -7088,8 +7089,8 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           // divider still lands inside the new session for every `created_at >=
           // session_started_at` query. The broadcast keeps quoting `boundary` for the UI.
           const markerId = uuidv4();
-          insertMessageIfAbsent({ id: markerId, agentId: resolvedId, role: 'system', content: '── New Session ──' });
-          broadcast({ type: 'chat:message', agentId: resolvedId, message: { id: markerId, agentId: resolvedId, role: 'system', content: '── New Session ──', tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
+          insertMessageIfAbsent({ id: markerId, agentId: resolvedId, role: 'system', content: NEW_SESSION_DIVIDER });
+          broadcast({ type: 'chat:message', agentId: resolvedId, message: { id: markerId, agentId: resolvedId, role: 'system', content: NEW_SESSION_DIVIDER, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: boundary } });
 
           // Inject the reorientation prompt. Picks between full reorient
           // (agent has active tasks → pick up where you left off) and

@@ -8,6 +8,7 @@ import { broadcast } from '../ws.js';
 import { getPrimaryAgentId } from '../../config/platform.js';
 import { assertPublicHttpTarget } from '../../agent/net-guard.js';
 import type { HealthData, LogEntry } from '@dojo/shared';
+import { NEW_SESSION_DIVIDER } from '@dojo/shared';
 
 const systemRouter = new Hono();
 
@@ -220,7 +221,7 @@ systemRouter.post('/system/reset-idle-sessions', async (c) => {
       // session for every `created_at >= session_started_at` query. The broadcast below
       // keeps quoting `boundary` for the UI.
       const markerId = uuidv4();
-      insertMessageIfAbsent({ id: markerId, agentId: agent.id, role: 'system', content: '── New Session ──' });
+      insertMessageIfAbsent({ id: markerId, agentId: agent.id, role: 'system', content: NEW_SESSION_DIVIDER });
       try {
         broadcast({
           type: 'chat:message',
@@ -229,7 +230,7 @@ systemRouter.post('/system/reset-idle-sessions', async (c) => {
             id: markerId,
             agentId: agent.id,
             role: 'system',
-            content: '── New Session ──',
+            content: NEW_SESSION_DIVIDER,
             tokenCount: null,
             modelId: null,
             cost: null,

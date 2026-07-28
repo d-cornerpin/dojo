@@ -19,25 +19,51 @@
 // Type-only import (erased at runtime, so no runtime cycle with origin.js,
 // which imports parseInboundChannel from here). The classifier reads the
 // structured MessageOrigin instead of re-parsing content markers.
-import type { MessageOrigin, Channel } from './origin.js';
+import type { MessageOrigin } from './origin.js';
 
-export type VisibilityTier = 'user-visible' | 'agent-only' | 'never-shown';
+export const DISPLAY_TIERS = ['user-visible', 'agent-only', 'never-shown'] as const;
+export type VisibilityTier = (typeof DISPLAY_TIERS)[number];
 
-// How a classified message should be rendered. The dashboard maps each
-// kind to a component; the engine ignores kind and reads only the tier.
-export type DisplayKind =
-  | 'user-text'                 // the user's own typed message
-  | 'agent-text'                // the agent's reply text
-  | 'inbound-channel'           // a channel-sourced inbound message (badge + stripped header)
-  | 'outbound-routing-marker'   // [Reply routed via ...] (raw hidden, becomes a badge on the prior reply)
-  | 'divider'                   // a lifecycle divider, e.g. New Session
-  | 'memory-compaction-divider' // a compaction divider (agent-only)
-  | 'no-reply-closed'           // the silent-turn close marker (never shown)
-  | 'a2a'                       // inter-agent message (agent-only)
-  | 'engine-injection'          // technique / nudge / context-gap / tracker-notif / tool-note
-  | 'system-other'              // any other system message (agent-only)
-  | 'tool-result'               // a role='tool' result (agent-only)
-  | 'fallback';                 // engine fallback/ack text (agent-only)
+// PHASE-1 T8 — the storage vocabulary of 17 §C1, and the ONLY one.
+//
+// This list is what `messages.display_kind` may hold; migration 132 CHECKs the column
+// against it. It is deliberately SMALLER than the render-kind list it replaces, because
+// four of those values restated a fact the row already carries in its own column and a
+// fifth restated the tier:
+//
+//   inbound-channel            -> `channel` already says which channel it arrived on.
+//   memory-compaction-divider  -> the TIER already says a compaction divider is agent-only.
+//   tool-result vs tool-turn   -> `role` already says which end of the tool call this is.
+//   engine-injection           -> `origin_intent` already names the subsystem that wrote it.
+//
+// A second column holding the same fact is the duplication this rebuild exists to remove,
+// so each of those was folded rather than carried. Nothing read the kind when this landed
+// (measured at 2f54de3: every `classifyMessageForDisplay` call site read `.tier` alone), so
+// the fold changed no answer, and the six values already in the live table are all still
+// legal — no historical row was reclassified and no content byte moved.
+//
+// `unclassified` is the column's DEFAULT and exists for R1 alone: a legacy-form
+// `INSERT OR IGNORE` that reaches the table without going through the writer must still
+// PERSIST rather than be silently dropped. The writer never produces it.
+export const DISPLAY_KINDS = [
+  'user-text',        // a person speaking, on any channel
+  'agent-text',       // the agent's own reply
+  'tool-turn',        // an assistant row of tool_use blocks, or its role='tool' result
+  'working-note',     // demoted mid-work narration ([working-note] / :internal)
+  'divider',          // a lifecycle divider, "── label ──"
+  'routing-marker',   // [Reply routed via ...] — raw hidden, rendered as a badge
+  'owner-alert',      // an allowlisted plain-language heads-up FOR THE OWNER
+  'engine-note',      // platform coordination: steers, [SOURCE:] envelopes, engine events
+  'a2a',              // peer traffic, either direction
+  'no-reply-marker',  // the silent-turn close marker
+  'fallback',         // text the ENGINE composed and signed as the agent (OR2 / Phase 4)
+  'unclassified',     // R1 fail-open default; never written by the writer module
+] as const;
+export type DisplayKind = (typeof DISPLAY_KINDS)[number];
+
+/** The lane a row was stamped with at ingest (OR4). Owned here so the write side, the read
+ *  side and the schema all spell it the same way. */
+export type MessageLane = 'owner' | 'a2a' | 'events';
 
 export interface DisplayClassification {
   tier: VisibilityTier;
@@ -49,6 +75,21 @@ export interface DisplayClassification {
 export interface DisplayMessageInput {
   role: 'user' | 'assistant' | 'tool' | 'system';
   content: string;
+  /**
+   * The row's stored lane, when the caller has it. The WRITE side always does (it is
+   * stamping it), which is why write-time classification never has to guess; the dashboard
+   * does not yet pass it and falls through to the origin/content paths below exactly as
+   * before. A lane can only ever LOWER visibility — see the fail-closed clamp at the end.
+   */
+  lane?: MessageLane;
+  /**
+   * `origin_intent` — the subsystem that produced the row. On an OWNER-lane ASSISTANT row
+   * it means something narrower and load-bearing: the ENGINE composed those words and
+   * signed them as the agent. That is ruling OR2's subject and PHASE 4 removes the
+   * composers; T8's only job is to say so honestly, so such a row classifies `fallback`
+   * while keeping the tier it has today.
+   */
+  originIntent?: string | null;
   /**
    * Optional message source. When `'a2a'`, the message was produced on a
    * dedicated inter-agent turn and the ENTIRE message (planning text AND tool
@@ -69,12 +110,13 @@ export interface DisplayMessageInput {
   origin?: MessageOrigin;
 }
 
-// A human message that physically arrived on one of these channels renders
-// as a user-visible inbound badge (header stripped). dashboard/voice are the
-// owner typing/speaking locally and render as plain user text.
-function isInboundChannel(ch: Channel | null | undefined): boolean {
-  return ch === 'imessage' || ch === 'teams' || ch === 'sms' || ch === 'email' || ch === 'phone';
-}
+// PHASE-1 T8 — `isInboundChannel` was DELETED here, with the `inbound-channel` kind it
+// existed to produce. STRIP; requirement preserved: "a human who arrived on a real channel
+// is distinguishable from the owner typing locally" — carried by the `channel` COLUMN, which
+// every reader already has and which the writer stamps at ingest (OR4). The helper was
+// re-deriving from `origin.channel` a fact the row itself states, and the tier it produced
+// was identical either way; the badge a renderer draws comes from `channel` + the inbound
+// marker parser (parseInboundChannel), both of which are untouched.
 
 // ════════════════════════════════════════
 // Marker constants (the ONLY place these strings live)
@@ -122,8 +164,139 @@ export const ASSISTANT_FALLBACK_PREFIXES: readonly string[] = [
 ];
 
 // The literal the engine persists when the agent ends a turn silently.
+//
+// THE EM-DASH IS DATA. Until PHASE-1 T8 the engine wrote this line with a COMMA
+// (`agent/v2/loop.ts`) while both matchers — this constant and the dashboard's inline copy —
+// expected an em-dash, so the marker was invisible to its own reader and rendered raw in the
+// owner's chat. Two spellings of one marker is what "one matcher per marker" exists to
+// prevent, and the fix is not "pick the right character": it is that the WRITER now uses this
+// constant, so there is only one character to pick. `src/__tests__/marker-ownership.test.ts`
+// on the server side refuses a second copy of this string anywhere in the tree.
 export const NO_REPLY_CLOSED_MARKER =
   '[Agent ended turn without replying — conversation closed]';
+
+// ── The `[no-reply]` sentinel the AGENT emits ──
+//
+// Distinct from the closed marker above: this is the model's own escape hatch (taught by
+// prompt/assembler.ts), swallowed by the engine so it never reaches a person. Three shapes,
+// because the model produces three: the whole message, a tail after a real reply, and — the
+// case that leaked — one that survived mid-text into a row that was already being persisted
+// for another reason. Markdown wrappers are tolerated on all three: the weak model wraps it
+// in backticks or asterisks about as often as it does not.
+const NO_REPLY_SENTINEL_BODY = String.raw`[\`*_]*\s*\[no-reply\]\s*[\`*_]*`;
+/** The entire message IS the sentinel. */
+export const NO_REPLY_BARE_RE = new RegExp(`^\\s*${NO_REPLY_SENTINEL_BODY}\\s*$`, 'i');
+/** The message ENDS with the sentinel after real text. */
+export const NO_REPLY_TAIL_RE = new RegExp(`\\s*${NO_REPLY_SENTINEL_BODY}\\s*$`, 'i');
+
+export function isBareNoReplySentinel(text: string): boolean {
+  return NO_REPLY_BARE_RE.test(text ?? '');
+}
+
+/** Remove every sentinel occurrence. Dropped completely rather than replaced with a space —
+ *  the model writes it on its own line or at end-of-message, and that is the same shape the
+ *  dashboard's own stripper has always used. */
+export function stripNoReplySentinel(text: string): string {
+  if (!text) return text;
+  return text.replace(new RegExp(`\\s*${NO_REPLY_SENTINEL_BODY}\\s*`, 'gi'), '').trim();
+}
+
+// ── The orb mood marker ──
+//
+// `((mood: NAME))` leads a reply and animates the on-screen orb. The prompt promises it is
+// "invisible to the user (stripped before display, never spoken aloud)". It was stripped in
+// exactly one of six renderers, so it printed raw in working notes, owner alerts and channel
+// bubbles — and the same regex was written out FOUR times (engine, TTS sanitizer, dashboard
+// marker lib, dashboard chat). One definition, here; 17 §C3 moves the value itself off the
+// content and into `messages.mood`.
+const MOOD_MARKER_SOURCE = String.raw`\(\(\s*mood\s*:\s*[a-z]+\s*\)\)`;
+
+/** The LAST marker wins, so a mid-message shift takes over. Lower-cased; validation against
+ *  the orb's known emotions is the renderer's job, not this one's. */
+export function parseMoodMarker(text: string): string | null {
+  if (!text) return null;
+  let last: string | null = null;
+  for (const m of text.matchAll(new RegExp(MOOD_MARKER_SOURCE, 'gi'))) {
+    last = m[0].replace(/\(\(\s*mood\s*:\s*/i, '').replace(/\s*\)\)$/, '').trim().toLowerCase();
+  }
+  return last;
+}
+
+export function stripMoodMarker(text: string): string {
+  if (!text) return text;
+  return text.replace(new RegExp(MOOD_MARKER_SOURCE, 'gi'), '').trim();
+}
+
+// ── Working notes (demoted mid-work narration) ──
+//
+// Assistant text that rides in the same model response as tool calls is process narration,
+// never a message to the user. It already STREAMED live, so the engine demotes it in place to
+// a dimmed system row rather than deleting the bubble in front of the owner.
+export const WORKING_NOTE_PREFIX = '[working-note] ';
+/** RC-9: narration from a ROUTED-channel human turn (iMessage / SMS / Teams / email). Exactly
+ *  one string was delivered to that channel while the dashboard mirrors every iteration, so an
+ *  internal note would read as a second, contradictory reply. Agent-only. */
+export const INTERNAL_WORKING_NOTE_PREFIX = '[working-note:internal] ';
+
+export interface WorkingNoteMatch {
+  text: string;
+  internal: boolean;
+}
+
+export function parseWorkingNote(content: string): WorkingNoteMatch | null {
+  if (content.startsWith(INTERNAL_WORKING_NOTE_PREFIX)) {
+    return { text: content.slice(INTERNAL_WORKING_NOTE_PREFIX.length), internal: true };
+  }
+  if (content.startsWith(WORKING_NOTE_PREFIX)) {
+    return { text: content.slice(WORKING_NOTE_PREFIX.length), internal: false };
+  }
+  return null;
+}
+
+// ── Owner alerts ──
+//
+// Default chat hides generic system rows by design. This allowlist is the exception:
+// deliberate, plain-language heads-ups the engine posts into the primary chat FOR THE OWNER
+// (a scheduled item failed for good, an approval request expired, a project fell short).
+//
+// CONTRACT: each server write site prefixes its note with one of these exact strings, and
+// takes the string FROM HERE. Matching contract comments live at the three write sites:
+// scheduler/runner.ts (failed-final-run + skipped-reminder), agent/destructive-gate.ts
+// (approval expiry), tracker/tools.ts (fail-open project_needs_attention).
+//
+// The "[VALIDATION CHECK]" escalation sweep is intentionally NOT allowlisted: it embeds raw
+// task ids and a "**Primary agent**: call ..." tool instruction, and it currently mis-fires on
+// engine-owned pauses. It stays wordy-mode-only until that is fixed and the copy is split.
+export const OWNER_ALERT_HEADS_UP_PREFIX = 'Heads up:';
+export const OWNER_ALERT_PROJECT_ATTENTION_PREFIX = '[tracker:project_needs_attention]';
+export const OWNER_ALERT_SYSTEM_PREFIXES: readonly string[] = [
+  OWNER_ALERT_HEADS_UP_PREFIX,
+  OWNER_ALERT_PROJECT_ATTENTION_PREFIX,
+];
+
+/** Strip notifyPrimaryAgent's automated-update envelope so the owner-alert marker is
+ *  start-anchored. Only tracker system notes carry it; the completion (success) lines it also
+ *  wraps do not start with an allowlisted prefix, so they still stay hidden. */
+export function stripSourceEnvelope(content: string): string {
+  return content.replace(/^\[SOURCE:[^\]]*\]\s*/, '');
+}
+
+export function isOwnerAlertSystemNote(content: string): boolean {
+  const body = stripSourceEnvelope(content.trim());
+  return OWNER_ALERT_SYSTEM_PREFIXES.some((prefix) => body.startsWith(prefix));
+}
+
+// ── Lifecycle dividers ──
+//
+// The engine persists these as a system row shaped "── label ──" (box-drawing U+2500). Six
+// sites wrote the New Session form as a bare literal; the formatter and the constant below
+// are what the parser at `parseDivider` answers to, so a writer cannot invent a shape its own
+// reader will not recognise.
+export function formatDivider(label: string): string {
+  return `── ${label} ──`;
+}
+export const NEW_SESSION_DIVIDER_LABEL = 'New Session';
+export const NEW_SESSION_DIVIDER = formatDivider(NEW_SESSION_DIVIDER_LABEL);
 
 // Inbound channel source markers, per channel. Capturing group 1 is the
 // raw sender label where one exists.
@@ -213,6 +386,15 @@ export interface InboundMeta {
 export interface OutboundRoutingMatch {
   channel: ChannelKind;
   recipient: string | null;
+}
+
+/** The one writer of the current-form marker (`agent/v2/loop.ts`'s persistRoutingMarker).
+ *  `label` always carries the recipient the sender actually resolved — "iMessage to Sam",
+ *  never a bare channel word — because that is what `parseOutboundRouting` above reads back
+ *  out. Formatter and parser sit together so a writer cannot invent a shape its own reader
+ *  will not match; the round trip is asserted in the taxonomy test. */
+export function formatRoutingMarker(label: string): string {
+  return `[Reply routed via ${label}]`;
 }
 
 // Trim a raw sender label down to a clean display name: cut at the first
@@ -309,38 +491,99 @@ function startsWithAny(s: string, prefixes: readonly string[]): boolean {
 }
 
 // ════════════════════════════════════════
-// Message-level classifier
+// Message-level classifier — THE taxonomy (PHASE-1 T8, 17 §C1/§C5)
 //
 // Replaces the scattered content.startsWith('[SOURCE:...') pile that lived
-// in Chat.tsx / AgentDetail.tsx / TechniqueBuilder.tsx. Returns the tier
-// (engine + dashboard agree on this) and a render kind (dashboard only).
+// in Chat.tsx / AgentDetail.tsx / TechniqueBuilder.tsx, AND the write-side stub that T3
+// left in memory/message-store.ts with a note saying T8 would come and take it.
+//
+// ONE function, because the two sides differ only in what they can tell it, never in what
+// the answer should be:
+//   * the WRITE side passes `lane` (+ `originIntent`) — facts it is stamping this instant,
+//     so it never has to guess and never parses prose;
+//   * the READ side passes `origin` (the projection deriveOrigin builds from those same
+//     stored facts), or, for a locally-built streaming bubble that has neither, nothing at
+//     all, and the content-marker path answers.
+// All three paths reach the same kinds and the same tiers, which is the property "one
+// matcher per marker" is actually for.
+//
+// PRECEDENCE, and why it is this order:
+//   1. lane='a2a' / origin.channel='a2a' / source='a2a' — peer traffic is agent-only whatever
+//      else it looks like. Strongest signal, no exceptions (OR4, NO_INTERAGENT_LEAK).
+//   2. role='tool' — a tool result, whatever its bytes say.
+//   3. role='system' — the engine's marker family, most specific first.
+//   4. lane='events' — a platform row with no marker of its own.
+//   5. role='user' / role='assistant'.
+//   6. THE FAIL-CLOSED CLAMP: an events-lane row can never come out user-visible, whatever
+//      kind it earned. Visibility is EARNED, which is the same rule the column's DEFAULT
+//      ('agent-only') encodes at the database.
 // ════════════════════════════════════════
 
 export function classifyMessageForDisplay(msg: DisplayMessageInput): DisplayClassification {
+  const out = classifyInner(msg);
+  // Fail-closed clamp (6). The lane is a stamped fact and it only ever LOWERS visibility.
+  if (msg.lane === 'events' && out.tier === 'user-visible') {
+    return { tier: 'agent-only', kind: out.kind };
+  }
+  return out;
+}
+
+function classifyInner(msg: DisplayMessageInput): DisplayClassification {
   const content = msg.content ?? '';
   const trimmed = content.trim();
   const origin = msg.origin;
 
+  // 1. Peer traffic, either direction, whatever the role.
+  if (msg.lane === 'a2a' || origin?.channel === 'a2a' || msg.source === 'a2a') {
+    return { tier: 'agent-only', kind: 'a2a' };
+  }
+
+  // 2. A tool result. `role` already says this is the result end of the call, so the kind
+  //    does not restate it — `tool-turn` covers both ends and the tier splits them.
   if (msg.role === 'tool') {
-    return { tier: 'agent-only', kind: 'tool-result' };
+    return { tier: 'agent-only', kind: 'tool-turn' };
   }
 
   if (msg.role === 'system') {
     if (isNoReplyClosedMarker(content)) {
-      return { tier: 'never-shown', kind: 'no-reply-closed' };
+      return { tier: 'never-shown', kind: 'no-reply-marker' };
+    }
+    const note = parseWorkingNote(trimmed);
+    if (note) {
+      // A plain note renders in BOTH modes (the narration was visible live in both); an
+      // internal one is agent-only. Same kind, the tier carries the difference.
+      return { tier: note.internal ? 'agent-only' : 'user-visible', kind: 'working-note' };
     }
     const divider = parseDivider(content);
     if (divider) {
-      return divider.isMemoryCompaction
-        ? { tier: 'agent-only', kind: 'memory-compaction-divider' }
-        : { tier: 'user-visible', kind: 'divider' };
+      // Compaction dividers are diagnostic chrome, not user-facing chronology.
+      return { tier: divider.isMemoryCompaction ? 'agent-only' : 'user-visible', kind: 'divider' };
     }
     if (parseOutboundRouting(content)) {
       // Raw marker is hidden; the render turns it into a user-visible badge
       // on the preceding assistant reply.
-      return { tier: 'agent-only', kind: 'outbound-routing-marker' };
+      return { tier: 'agent-only', kind: 'routing-marker' };
     }
-    return { tier: 'agent-only', kind: 'system-other' };
+    if (isOwnerAlertSystemNote(trimmed)) {
+      return { tier: 'user-visible', kind: 'owner-alert' };
+    }
+    return { tier: 'agent-only', kind: 'engine-note' };
+  }
+
+  // 4. A platform row. Checked before the role branches because insertEngineEvent writes
+  //    these with role='user' by default — the lane is the fact, the role is an artefact of
+  //    how the model has to read it.
+  //
+  //    An owner-alert PREFIX on this lane does NOT make it an owner alert, and that is a
+  //    measured distinction rather than a tidy one. `scheduler/runner.ts`'s failed-final-run
+  //    note carries "Heads up:" and is posted through postAgentNotice deliberately — its own
+  //    comment says a role='system' row would be stripped from the model context and the
+  //    primary could never relay it. It is a brief TO THE MODEL. The two rows that really are
+  //    owner alerts (runner.ts's skipped-reminder note, destructive-gate.ts's expiry note)
+  //    are owner-lane role='system' rows and are classified as such above. The lane is what
+  //    tells them apart, which is the whole point of stamping it.
+  if (msg.lane === 'events') {
+    return { tier: 'agent-only', kind: 'engine-note' };
   }
 
   if (msg.role === 'user') {
@@ -364,24 +607,20 @@ export function classifyMessageForDisplay(msg: DisplayMessageInput): DisplayClas
     // `messages` by design and is still hidden in regular mode.)
     if (origin) {
       if (origin.kind === 'engine') {
-        // tracker assignments kept their 'engine-injection' render kind; every
-        // other engine event is 'system-other'. Both are agent-only — the kind
-        // is only a wordy-mode render hint (the dashboard gates on tier alone).
-        const kind: DisplayKind =
-          origin.intent && origin.intent.startsWith('tracker') ? 'engine-injection' : 'system-other';
-        return { tier: 'agent-only', kind };
+        // `origin_intent` already names the subsystem (tracker / scheduler / healer …), so
+        // the kind does not restate it — that was the `engine-injection` vs `system-other`
+        // split, and nothing ever read it (both were agent-only; the dashboard gates on tier).
+        return { tier: 'agent-only', kind: 'engine-note' };
       }
       // origin.kind === 'user' (or 'self', not expected on a user row).
       // Unauthorized human inbound (a mailbox notification about the owner's inbox,
       // an unknown sender, a scam/promo email) is Lane-3 awareness, NOT a conversation
       // — the agent surfaces it to the owner only if it matters; the raw notification
       // never clutters the chat. `authorized` is load-bearing for display too, not
-      // just the turn machine (the prime directive).
+      // just the turn machine (the prime directive). It is still a PERSON speaking, which
+      // is what the kind records; the tier is what it has not earned.
       if (origin.authorized === false) {
-        return { tier: 'agent-only', kind: 'system-other' };
-      }
-      if (isInboundChannel(origin.channel)) {
-        return { tier: 'user-visible', kind: 'inbound-channel' };
+        return { tier: 'agent-only', kind: 'user-text' };
       }
       return { tier: 'user-visible', kind: 'user-text' };
     }
@@ -390,39 +629,43 @@ export function classifyMessageForDisplay(msg: DisplayMessageInput): DisplayClas
     // bubbles). Retired in Phase 7 once every surface carries origin. Mirrors
     // the pre-redesign content-marker pile exactly so behavior is unchanged.
     if (parseInboundChannel(content)) {
-      return { tier: 'user-visible', kind: 'inbound-channel' };
+      return { tier: 'user-visible', kind: 'user-text' };
     }
     if (trimmed.startsWith('[A2A:') || trimmed.startsWith('[SOURCE: AGENT MESSAGE FROM')) {
       return { tier: 'agent-only', kind: 'a2a' };
     }
-    if (trimmed.startsWith('[SOURCE:')) {
-      const kind: DisplayKind = trimmed.startsWith('[SOURCE: TRACKER TASK')
-        ? 'engine-injection'
-        : 'system-other';
-      return { tier: 'agent-only', kind };
-    }
-    if (startsWithAny(trimmed, ENGINE_INJECTION_PREFIXES)) {
-      return { tier: 'agent-only', kind: 'engine-injection' };
-    }
-    if (startsWithAny(trimmed, HIDDEN_USER_CONTENT_PREFIXES)) {
-      return { tier: 'agent-only', kind: 'system-other' };
+    if (
+      trimmed.startsWith('[SOURCE:')
+      || startsWithAny(trimmed, ENGINE_INJECTION_PREFIXES)
+      || startsWithAny(trimmed, HIDDEN_USER_CONTENT_PREFIXES)
+    ) {
+      return { tier: 'agent-only', kind: 'engine-note' };
     }
     return { tier: 'user-visible', kind: 'user-text' };
   }
 
-  // assistant
-  // A2A-turn output is entirely agent-only — both planning text and tool
-  // badges — so an inter-agent turn never surfaces in regular mode. Wordy
-  // mode still renders it. origin.channel==='a2a' is the structured signal;
-  // msg.source==='a2a' covers streaming bubbles that predate the broadcast.
-  if (origin?.channel === 'a2a' || msg.source === 'a2a') {
-    return { tier: 'agent-only', kind: 'a2a' };
-  }
-  // Engine-emitted assistant fallback text (errors, continuity acks) is
-  // hidden. deriveOrigin marks all assistant output kind='self', so origin
-  // can't see this — the prefix match stays. (The agent's real words show.)
+  // ── assistant ──
+  // (The a2a arm ran at step 1; it covers origin.channel and msg.source too.)
+  //
+  // Engine-emitted assistant fallback text (errors, continuity acks) is hidden. deriveOrigin
+  // marks all assistant output kind='self', so origin can't see this — the prefix match
+  // stays. (The agent's real words show.)
   if (startsWithAny(trimmed, ASSISTANT_FALLBACK_PREFIXES)) {
     return { tier: 'agent-only', kind: 'fallback' };
+  }
+  // Engine-composed text signed as the agent, named by `origin_intent` on an OWNER-lane
+  // assistant row (the start-ack, the cross-conversation send echo, the thrash notices).
+  // This is ruling OR2's subject and PHASE 4 removes the composers. T8 records WHAT wrote
+  // it and deliberately does NOT change what the owner sees — the tier stays user-visible,
+  // because hiding these would be Phase 4's change made early and by the wrong task.
+  if (msg.originIntent) {
+    return { tier: 'user-visible', kind: 'fallback' };
+  }
+  // An assistant row whose content is the model's tool_use blocks rather than prose. The
+  // dashboard renders these as chips; `role` and the blocks say which end of the call this
+  // is, so the kind is the same one a role='tool' row gets.
+  if (trimmed.startsWith('[{') && trimmed.includes('"tool_use"')) {
+    return { tier: 'user-visible', kind: 'tool-turn' };
   }
   return { tier: 'user-visible', kind: 'agent-text' };
 }

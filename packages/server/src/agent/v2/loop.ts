@@ -44,6 +44,13 @@ import type { AgentStatus, Message, ToolCall, Channel } from '@dojo/shared';
 // derives "did this turn do real work" from it instead of a hand list that
 // drifted (missed every _ms variant and user_ twin, see countsAsTaskWork).
 import { classifyTool } from '@dojo/shared';
+// PHASE-1 T8 — every engine marker this file writes or matches comes from the ONE taxonomy.
+// Nothing below is spelled out locally any more; `src/__tests__/marker-ownership.test.ts`
+// refuses a second copy of any of these strings anywhere in the tree.
+import {
+  NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX,
+  NO_REPLY_TAIL_RE, isBareNoReplySentinel, stripMoodMarker, formatRoutingMarker,
+} from '@dojo/shared';
 import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 
 import { assembleContext } from '../../memory/assembler.js';
@@ -905,16 +912,16 @@ export function setAgentStatus(agentId: string, status: AgentStatus): void {
   }
 }
 
-// Orb mood marker (`((mood: NAME))`) is an orb-only signal: the dashboard and
-// TTS already strip it before display, but away text channels (iMessage / SMS /
-// Teams / email) were sending it raw, breaking the prompt's promise that it's
-// invisible to the user. Strip it from the channel-routed copy
-// (lastAssistantTextForIM) at set-time; the persisted assistant message keeps
-// the marker so the dashboard can still animate the orb.
-const ORB_MOOD_MARKER_RE = /\(\(\s*mood\s*:\s*[a-z]+\s*\)\)/gi;
-function stripOrbMood(text: string): string {
-  return text.replace(ORB_MOOD_MARKER_RE, '').trim();
-}
+// Orb mood marker (`((mood: NAME))`) is an orb-only signal that away text channels
+// (iMessage / SMS / Teams / email) were sending raw, breaking the prompt's promise that it is
+// invisible to the user. Stripped from the channel-routed copy (lastAssistantTextForIM) at
+// set-time.
+//
+// PHASE-1 T8: the regex used to live here as one of FOUR copies (this one, the TTS sanitizer,
+// and two in the dashboard). It is now `stripMoodMarker` in @dojo/shared, and the PERSISTED
+// row no longer carries the marker either — the writer module extracts it to `messages.mood`
+// at insert (17 §C3), so this call is the channel copy's own safety net rather than the only
+// place it is removed.
 
 // ── Main entry ──
 
@@ -1655,7 +1662,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   const persistRoutingMarker = (label: string, delivery?: Omit<DeliveryInput, 'agentId'>): void => {
     if (delivery) recordDelivery({ agentId, ...delivery });
     const tagId = uuidv4();
-    const tagContent = `[Reply routed via ${label}]`;
+    const tagContent = formatRoutingMarker(label);
     insertMessageIfAbsent({ id: tagId, agentId, role: 'system', content: tagContent, turnNumber });
     broadcast({
       type: 'chat:message',
@@ -3974,10 +3981,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // (runtime.ts), so v2 does the same.
       // Skip embedding the no-reply sentinel, it's not real content and the
       // matching assistant message row never gets persisted.
+      // PHASE-1 T8: was a fourth, slightly narrower spelling of "the whole message is the
+      // sentinel" — it did not tolerate the markdown wrappers the weak model adds about half
+      // the time, so a backtick-wrapped sentinel was embedded as if it were real content.
+      // Same intent, one owner, and the widening only ever skips embedding a non-message.
       const isNoReplySentinel =
         !!result.content &&
         result.toolCalls.length === 0 &&
-        /^\s*\[no-reply\]\s*$/i.test(result.content);
+        isBareNoReplySentinel(result.content);
       if (result.content && result.content.trim().length > 0 && !isNoReplySentinel) {
         try {
           queueEmbedding('message', messageId, agentId, result.content);
@@ -4326,7 +4337,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               (counterparty.relation === 'owner' || counterparty.relation === 'known_contact') &&
               (counterparty.channel === 'imessage' || counterparty.channel === 'sms' ||
                counterparty.channel === 'teams' || counterparty.channel === 'email');
-            const notePrefix = routedHumanChannel ? '[working-note:internal] ' : '[working-note] ';
+            const notePrefix = routedHumanChannel ? INTERNAL_WORKING_NOTE_PREFIX : WORKING_NOTE_PREFIX;
             // Chat-native system note: prefix-marked, NO origin stamp, same
             // convention as routing markers and dividers. An origin_kind of
             // 'engine' here would make the row inter-agent-shaped, and those
@@ -4624,12 +4635,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // appending the sentinel after a real reply (2026-06-02 bug fix:
       // the primary agent was tail-appending `[no-reply]` to user-facing
       // messages and the literal text was rendering in chat).
-      const NO_REPLY_TAIL_RE = /\s*[`*_]*\s*\[no-reply\]\s*[`*_]*\s*$/i;
+      // PHASE-1 T8: both shapes come from @dojo/shared now. They were spelled out here and
+      // again in the dashboard's marker lib, which is the same drift that made the closed
+      // marker unreadable to its own matcher.
       if (
         persistedContent &&
         result.toolCalls.length === 0 &&
         NO_REPLY_TAIL_RE.test(persistedContent) &&
-        !/^\s*[`*_]*\s*\[no-reply\]\s*[`*_]*\s*$/i.test(persistedContent)
+        !isBareNoReplySentinel(persistedContent)
       ) {
         const cleaned = persistedContent.replace(NO_REPLY_TAIL_RE, '').trimEnd();
         if (cleaned.length > 0) {
@@ -4642,7 +4655,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       const isBareNoReply =
         persistedContent !== null &&
         result.toolCalls.length === 0 &&
-        /^\s*[`*_]*\s*\[no-reply\]\s*[`*_]*\s*$/i.test(persistedContent);
+        isBareNoReplySentinel(persistedContent);
 
       // Decline-as-prose: the weak model sometimes states "I'm not going to reply to
       // this" in prose ("No reply needed here, I can't address X…") instead of the
@@ -4889,7 +4902,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
               },
             });
             const sysId = uuidv4();
-            const sysContent = '[Agent ended turn without replying, conversation closed]';
+            // THE COMMA IS GONE (PHASE-1 T8). This literal was written with a comma while
+            // both matchers — @dojo/shared's constant and the dashboard's inline copy —
+            // expected an em-dash, so the row this line writes was invisible to its own
+            // reader and rendered raw in the owner's chat. Taking the constant is what makes
+            // that class impossible rather than merely fixed.
+            const sysContent = NO_REPLY_CLOSED_MARKER;
             try {
               insertMessageIfAbsent({ id: sysId, agentId, role: 'system', content: sysContent, turnNumber });
               broadcast({
@@ -4991,7 +5009,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             const noteId = uuidv4();
             insertMessageIfAbsent({
               id: noteId, agentId, role: 'system',
-              content: `[working-note] ${persistedContent}`, turnNumber,
+              content: `${WORKING_NOTE_PREFIX}${persistedContent}`, turnNumber,
             });
             // Convert the already-streamed dashboard bubble in place into the dimmed note
             // (same demote mechanism as the RC-9 text-with-tools path).
@@ -5216,7 +5234,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // regardless of whether tools rode with it gives the routing
         // block the right value to deliver at end-of-turn.
         if (persistedContent && persistedContent.trim().length > 0) {
-          state = advance(state, { lastAssistantTextForIM: stripOrbMood(persistedContent) });
+          state = advance(state, { lastAssistantTextForIM: stripMoodMarker(persistedContent) });
         }
       } else if (persistedContent) {
         if (interAgentTurn) {
@@ -5242,7 +5260,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           });
         }
         if (persistedContent.trim().length > 0) {
-          state = advance(state, { lastAssistantTextForIM: stripOrbMood(persistedContent) });
+          state = advance(state, { lastAssistantTextForIM: stripMoodMarker(persistedContent) });
           terminalAnswerRowId = messageId; // truthful answer key: a genuine terminal reply
         }
         // Per v1 runtime.ts:1303-1318, text-only response. The streaming
@@ -8176,7 +8194,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString(),
           },
         });
-        state = advance(state, { lastAssistantTextForIM: stripOrbMood(deferredUserReplyWithTools) });
+        state = advance(state, { lastAssistantTextForIM: stripMoodMarker(deferredUserReplyWithTools) });
       terminalAnswerRowId = recoveredId; // truthful answer key: recovered reply delivered
         logger.info('v2 G-SUP-2 recovery: delivered deferred text-with-tools reply (turn ended with no tool-less reply)', {
           agentId, turnNumber,

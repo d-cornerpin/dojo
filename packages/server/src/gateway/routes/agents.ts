@@ -16,7 +16,7 @@ import { broadcast } from '../ws.js';
 import { isPrimaryAgent, getPrimaryAgentId, getHealerAgentId, getDreamerAgentId, getImaginerAgentId } from '../../config/platform.js';
 import { sanitizeMessagesOnModelChange } from '../../agent/model-switch.js';
 import type { AgentDetail, Model, Message, AgentMessage } from '@dojo/shared';
-import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
+import { deriveOrigin, legacyOriginInputs, NEW_SESSION_DIVIDER} from '@dojo/shared';
 
 const logger = createLogger('agents-routes');
 const agentsRouter = new Hono();
@@ -436,12 +436,12 @@ agentsRouter.post('/:id/reset-session', async (c) => {
     // pinned to `boundary` (computed a few lines up). Every session query is
     // `created_at >= session_started_at`, so at-or-after the boundary keeps the row
     // inside the new session; the broadcast still quotes `boundary` for the UI.
-    insertMessageIfAbsent({ id: dividerId, agentId: id, role: 'system', content: '── New Session ──' });
+    insertMessageIfAbsent({ id: dividerId, agentId: id, role: 'system', content: NEW_SESSION_DIVIDER });
     broadcast({
       type: 'chat:message',
       agentId: id,
       message: {
-        id: dividerId, agentId: id, role: 'system', content: '── New Session ──',
+        id: dividerId, agentId: id, role: 'system', content: NEW_SESSION_DIVIDER,
         tokenCount: null, modelId: null, cost: null, latencyMs: null,
         createdAt: boundary,
       },

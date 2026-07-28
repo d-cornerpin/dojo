@@ -30,6 +30,10 @@ import {
   insertMessage, insertEngineEvent, claimForTurn, markServed,
   recentTail, byIds, unservedHead,
 } from '../message-store.js';
+import {
+  NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX,
+  OWNER_ALERT_HEADS_UP_PREFIX, NEW_SESSION_DIVIDER,
+} from '@dojo/shared';
 import { runMigrations } from '../../db/migrations.js';
 
 const AGENT = 'agent-msgstore';
@@ -236,6 +240,155 @@ describe('insertEngineEvent', () => {
     });
     expect(rowOf(p.id).origin_intent).toBe('engine_start_ack');
     expect(rowOf(p.id).lane).toBe('owner');
+  });
+});
+
+// ── T8: classified at insert, stored display-ready ──
+//
+// 17 §C1/§C3. Two obligations, both of them write-side and both asserted against the real
+// migrated schema rather than a hand-built table:
+//   C1  every row is classified IN the INSERT, from the shared taxonomy, never by a later
+//       UPDATE and never by a second matcher living somewhere else.
+//   C3  `content` is stored as it should be READ — no mood marker, no surviving `[no-reply]`
+//       sentinel — and the mood goes to its own column.
+//
+// The scope of C3's strip is deliberately NOT "every row". It applies to text the AGENT
+// authored (role='assistant') and to the engine's working-note wrapper around that text. A
+// tool result is verbatim external data (a file_read of this repo genuinely contains the
+// literal `((mood: NAME))` — the prompt documents it), a user row is the human's own words,
+// and an agent's system-prompt row is its instructions. Editing any of those would be the
+// platform lying about what it was given, so the writer stores them byte-for-byte. That
+// boundary is asserted below in both directions.
+
+describe('T8 — classify at insert', () => {
+  it('stamps a kind from the ONE taxonomy for every lane and role, never `unclassified`', () => {
+    const cases = [
+      { lane: 'owner' as const, role: 'user' as const, content: 'hello', kind: 'user-text', tier: 'user-visible' },
+      { lane: 'owner' as const, role: 'assistant' as const, content: 'hi back', kind: 'agent-text', tier: 'user-visible' },
+      { lane: 'owner' as const, role: 'tool' as const, content: '{}', kind: 'tool-turn', tier: 'agent-only' },
+      { lane: 'events' as const, role: 'user' as const, content: '[Engine note: x]', kind: 'engine-note', tier: 'agent-only' },
+      { lane: 'a2a' as const, role: 'assistant' as const, content: 'peer reply', kind: 'a2a', tier: 'agent-only' },
+    ];
+    for (const c of cases) {
+      const p = insertMessage({ agentId: AGENT, ...c });
+      const row = rowOf(p.id);
+      expect(row.display_kind, `${c.lane}/${c.role}`).toBe(c.kind);
+      expect(row.display_tier, `${c.lane}/${c.role}`).toBe(c.tier);
+    }
+  });
+
+  it('classifies the ENGINE MARKERS a bare lane+role rule cannot see', () => {
+    const marked = [
+      { content: NO_REPLY_CLOSED_MARKER, role: 'system' as const, kind: 'no-reply-marker', tier: 'never-shown' },
+      { content: `${WORKING_NOTE_PREFIX}checking the calendar`, role: 'system' as const, kind: 'working-note', tier: 'user-visible' },
+      { content: `${INTERNAL_WORKING_NOTE_PREFIX}sending now`, role: 'system' as const, kind: 'working-note', tier: 'agent-only' },
+      { content: NEW_SESSION_DIVIDER, role: 'system' as const, kind: 'divider', tier: 'user-visible' },
+      { content: '[Reply routed via iMessage to Sam]', role: 'system' as const, kind: 'routing-marker', tier: 'agent-only' },
+      { content: `${OWNER_ALERT_HEADS_UP_PREFIX} a reminder failed`, role: 'system' as const, kind: 'owner-alert', tier: 'user-visible' },
+    ];
+    for (const m of marked) {
+      const p = insertMessage({ agentId: AGENT, role: m.role, content: m.content });
+      expect(rowOf(p.id).display_kind, m.content.slice(0, 40)).toBe(m.kind);
+      expect(rowOf(p.id).display_tier, m.content.slice(0, 40)).toBe(m.tier);
+    }
+  });
+
+  it('the DATABASE refuses a kind outside the taxonomy', () => {
+    // The third layer, and the reason it exists: TypeScript covers this module's callers and
+    // the conformance walk covers raw SQL, but only the column can refuse a value that
+    // reaches it any other way. `display_tier` has carried this CHECK since 127; `display_kind`
+    // was left `TEXT NOT NULL DEFAULT 'unclassified'` with `T8 owns the classifier + CHECK`
+    // written beside it, and this is that CHECK.
+    expect(() => insertMessage({
+      agentId: AGENT, role: 'user', content: 'x',
+      displayKind: 'invented-kind' as unknown as 'user-text',
+    })).toThrow(/CHECK|display_kind/i);
+  });
+
+  it('classification happens IN the insert — no row is ever written unclassified', () => {
+    for (let i = 0; i < 25; i++) {
+      insertMessage({ agentId: AGENT, role: 'assistant', content: `reply ${i}` });
+    }
+    const unclassified = mockDb.current!.prepare(
+      "SELECT COUNT(*) c FROM messages WHERE display_kind = 'unclassified'",
+    ).get() as { c: number };
+    expect(unclassified.c).toBe(0);
+  });
+});
+
+describe('T8 — content is stored display-ready', () => {
+  it('extracts the orb mood to its column and stores the reply without the marker', () => {
+    const p = insertMessage({
+      agentId: AGENT, role: 'assistant',
+      content: '((mood: curious)) Interesting — what happens if we try it?',
+    });
+    const row = rowOf(p.id);
+    expect(row.mood).toBe('curious');
+    expect(row.content).toBe('Interesting — what happens if we try it?');
+    expect(String(row.content)).not.toContain('((mood:');
+  });
+
+  it('a working note carries the agent\'s narration display-ready too', () => {
+    const p = insertMessage({
+      agentId: AGENT, role: 'system',
+      content: `${WORKING_NOTE_PREFIX}((mood: focused)) Let me check that. [no-reply]`,
+    });
+    const row = rowOf(p.id);
+    expect(String(row.content)).not.toContain('((mood:');
+    expect(String(row.content)).not.toContain('[no-reply]');
+    expect(row.content).toBe(`${WORKING_NOTE_PREFIX}Let me check that.`);
+  });
+
+  it('a surviving [no-reply] sentinel never reaches storage', () => {
+    const p = insertMessage({
+      agentId: AGENT, role: 'assistant', content: 'All set.\n\n`[no-reply]`',
+    });
+    expect(rowOf(p.id).content).toBe('All set.');
+  });
+
+  it('token_count is estimated from the STORED bytes, not the pre-strip ones', () => {
+    const stripped = insertMessage({ agentId: AGENT, role: 'assistant', content: '((mood: happy)) ok' });
+    const plain = insertMessage({ agentId: AGENT, role: 'assistant', content: 'ok' });
+    expect(rowOf(stripped.id).token_count).toBe(rowOf(plain.id).token_count);
+  });
+
+  it('NO agent-authored row in the table carries a display marker', () => {
+    insertMessage({ agentId: AGENT, role: 'assistant', content: '((mood: success)) done' });
+    insertMessage({ agentId: AGENT, role: 'system', content: `${WORKING_NOTE_PREFIX}((mood: neutral)) thinking` });
+    const leaks = mockDb.current!.prepare(`
+      SELECT COUNT(*) c FROM messages
+       WHERE (content LIKE '%((mood:%' OR content LIKE '%[no-reply]%')
+         AND (role = 'assistant' OR content LIKE '[working-note%')
+    `).get() as { c: number };
+    expect(leaks.c).toBe(0);
+  });
+
+  it('leaves a TOOL RESULT byte-identical — it is verbatim external data', () => {
+    // A file_read of this repository returns the prompt's own documentation of the marker.
+    // Stripping it would make the platform lie about the file it was shown.
+    const verbatim = 'assembler.ts:357  - `((mood: curious)) Interesting, what happens if...`';
+    const p = insertMessage({ agentId: AGENT, role: 'tool', content: verbatim });
+    expect(rowOf(p.id).content).toBe(verbatim);
+    expect(rowOf(p.id).mood).toBeNull();
+  });
+
+  it('leaves a USER row and an agent\'s SYSTEM PROMPT row byte-identical', () => {
+    const typed = 'why does ((mood: happy)) show up in my chat?';
+    const u = insertMessage({ agentId: AGENT, role: 'user', content: typed });
+    expect(rowOf(u.id).content).toBe(typed);
+
+    // routes/agents.ts and agent/tools.ts both write an agent's instructions through this
+    // module as a role='system' row. Those instructions legitimately DOCUMENT the marker.
+    const prompt = 'You are Kevin.\n\nLead a reply with `((mood: NAME))` to animate the orb.';
+    const s = insertMessage({ agentId: AGENT, role: 'system', content: prompt });
+    expect(rowOf(s.id).content).toBe(prompt);
+  });
+
+  it('never rewrites content after the insert (cache law)', () => {
+    const p = insertMessage({ agentId: AGENT, role: 'assistant', content: '((mood: calm)) stored once' });
+    const first = rowOf(p.id).content;
+    markServed([p.id], 9);
+    expect(rowOf(p.id).content).toBe(first);
   });
 });
 

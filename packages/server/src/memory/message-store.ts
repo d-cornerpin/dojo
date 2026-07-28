@@ -25,14 +25,22 @@
 // at WRITE, never at read.
 
 import { randomUUID } from 'node:crypto';
+import {
+  classifyMessageForDisplay, parseMoodMarker, stripMoodMarker, stripNoReplySentinel,
+  parseWorkingNote, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX,
+  type DisplayKind, type MessageLane, type VisibilityTier,
+} from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { estimateTokens, NOW_MS, createdAtText } from './store.js';
 
 export { NOW_MS, createdAtText };
 
-export type Lane = 'owner' | 'a2a' | 'events';
+/** The lane vocabulary is owned by `@dojo/shared` (T8) so the write side, the read side and
+ *  the column's CHECK cannot spell it three ways. Kept exported under this name because
+ *  ~30 call sites import it from here. */
+export type Lane = MessageLane;
 export type Role = 'user' | 'assistant' | 'system' | 'tool';
-export type DisplayTier = 'user-visible' | 'agent-only' | 'never-shown';
+export type DisplayTier = VisibilityTier;
 
 export interface NewMessage {
   agentId: string;
@@ -70,7 +78,7 @@ export interface NewMessage {
   rootKind?: string | null;
   rootId?: string | null;
   mood?: string | null;
-  displayKind?: string;
+  displayKind?: DisplayKind;
   displayTier?: DisplayTier;
   /** PHASE2-DELETES — the claim/park machine keeps running unchanged this phase. */
   convKey?: string | null;
@@ -80,7 +88,7 @@ export interface Persisted {
   seq: number;
   id: string;
   lane: Lane;
-  displayKind: string;
+  displayKind: DisplayKind;
   displayTier: DisplayTier;
   tokenCount: number;
   createdAt: string;
@@ -100,7 +108,7 @@ export interface StoredMessage extends Persisted {
 
 interface MessageRowShape {
   seq: number; id: string; agent_id: string; role: Role; content: string;
-  lane: Lane; display_kind: string; display_tier: DisplayTier; token_count: number;
+  lane: Lane; display_kind: DisplayKind; display_tier: DisplayTier; token_count: number;
   created_at: string; sent_at: number; turn_number: number | null; channel: string | null;
   origin_intent: string | null; source_agent_id: string | null; served_by_turn: number | null;
 }
@@ -119,18 +127,60 @@ function toStored(r: MessageRowShape): StoredMessage {
   };
 }
 
-// ── Display classification (write-time, 17 §C1) ──
-// Deliberately minimal here. T8 replaces this with the ONE shared taxonomy in
-// `packages/shared/src/visibility.ts` (kinds, tiers, mood and marker regexes) and adds the
-// enum CHECK to the column. What T3 owes is only this: a row NEVER reaches the table
-// unclassified, so the display contract has a floor from the first commit.
+// ── Display classification (write-time, 17 §C1) — PHASE-1 T8 ──
+//
+// T3 left a five-line lane+role stub here with a note saying T8 would come and take it.
+// This is that. The classifier is `@dojo/shared`'s `classifyMessageForDisplay`, the SAME
+// function the dashboard calls, so the write side and the read side cannot answer
+// differently — which is the defect this replaces, not a tidiness preference: a comma and an
+// em-dash were enough to make one marker invisible to its own reader.
+//
+// The stub's vocabulary was a subset of the shared one, so no historical row changes meaning
+// and nothing was reclassified: the six values already in the live table
+// (`user-text`, `agent-text`, `tool-turn`, `engine-note`, `a2a`, `unclassified`) are all
+// still legal under migration 132's CHECK.
+//
+// ── Display-ready content (17 §C3) ──
+//
+// A row is stored as it should be READ. The orb mood marker goes to `mood`; a `[no-reply]`
+// sentinel that survived the engine's own handling is removed. The mood was previously kept
+// in `content` "so the dashboard can still animate the orb" — measured at 2f54de3, that is
+// no longer why: the orb emotes from the streaming `chat:chunk` text and from the broadcast
+// payload, neither of which this module builds. Nothing reads the marker back out of a
+// stored row.
+//
+// THE STRIP IS SCOPED, DELIBERATELY. It applies to text the AGENT authored — role='assistant'
+// — and to the engine's `[working-note]` wrapper around that same text. It does NOT apply to:
+//   * role='tool'   — verbatim external data. A file_read of this repository genuinely
+//                     returns the literal `((mood: NAME))`; stripping it would make the
+//                     platform lie about the file it was shown.
+//   * role='user'   — the human's own words.
+//   * role='system' without a working-note prefix — this is how an agent's SYSTEM PROMPT is
+//                     stored (routes/agents.ts, agent/tools.ts), and those instructions
+//                     legitimately document the marker.
+// Both directions are asserted in `__tests__/message-store.test.ts`.
+//
+// CACHE LAW: this runs at INSERT only. No historical byte is rewritten, and nothing here
+// touches a row that already exists.
 
-function classify(lane: Lane, role: Role): { kind: string; tier: DisplayTier } {
-  if (lane === 'events') return { kind: 'engine-note', tier: 'agent-only' };
-  if (lane === 'a2a') return { kind: 'a2a', tier: 'agent-only' };
-  if (role === 'tool') return { kind: 'tool-turn', tier: 'agent-only' };
-  if (role === 'system') return { kind: 'engine-note', tier: 'agent-only' };
-  return { kind: role === 'user' ? 'user-text' : 'agent-text', tier: 'user-visible' };
+function displayReady(text: string): string {
+  return stripNoReplySentinel(stripMoodMarker(text));
+}
+
+function prepareContent(role: Role, content: string): { content: string; mood: string | null } {
+  if (role === 'assistant') {
+    return { content: displayReady(content), mood: parseMoodMarker(content) };
+  }
+  if (role === 'system') {
+    // A working note is the engine's WRAPPER around the agent's own narration. The prefix
+    // comes off, the narration is made display-ready, the prefix goes back — rather than
+    // stripping through the prefix and hoping the spacing survives.
+    const note = parseWorkingNote(content);
+    if (!note) return { content, mood: null };
+    const prefix = note.internal ? INTERNAL_WORKING_NOTE_PREFIX : WORKING_NOTE_PREFIX;
+    return { content: `${prefix}${displayReady(note.text)}`, mood: parseMoodMarker(note.text) };
+  }
+  return { content, mood: null };
 }
 
 // PHASE-1 T6: the legacy-column projection is GONE with migration 129. T4 added
@@ -159,24 +209,30 @@ const INSERT_SQL = `
       @convKey, 'live', @sentAt, ${NOW_MS}
     )`;
 
-function bind(m: NewMessage): { lane: Lane; id: string; displayKind: string; displayTier: DisplayTier;
+function bind(m: NewMessage): { lane: Lane; id: string; displayKind: DisplayKind; displayTier: DisplayTier;
   tokenCount: number; sentAt: number; params: Record<string, unknown> } {
   const lane: Lane = m.lane ?? 'owner';
   const id = m.id ?? randomUUID();
-  const display = classify(lane, m.role);
+  const prepared = prepareContent(m.role, m.content);
+  // Classified from the row's OWN stamped facts — lane, role, origin_intent — plus the
+  // display-ready content, so the kind describes what will actually be read.
+  const display = classifyMessageForDisplay({
+    role: m.role, content: prepared.content, lane, originIntent: m.originIntent ?? null,
+  });
   const displayKind = m.displayKind ?? display.kind;
   const displayTier = m.displayTier ?? display.tier;
-  // Estimated at WRITE. Never zero: a row that costs nothing to carry does not exist, and a
-  // zero here would make every budget arithmetic downstream quietly wrong.
-  const tokenCount = m.tokenCount ?? Math.max(1, estimateTokens(m.content));
+  // Estimated at WRITE, from the bytes actually stored — not the pre-strip ones, or every
+  // budget arithmetic downstream would be counting characters the model never sees.
+  // Never zero: a row that costs nothing to carry does not exist.
+  const tokenCount = m.tokenCount ?? Math.max(1, estimateTokens(prepared.content));
   const sentAt = Date.now();
   const channel = m.channel ?? null;
   return {
     lane, id, displayKind, displayTier, tokenCount, sentAt,
     params: {
       id, agentId: m.agentId, conversationId: m.conversationId ?? null, lane,
-      originIntent: m.originIntent ?? null, role: m.role, content: m.content,
-      mood: m.mood ?? null, displayKind, displayTier,
+      originIntent: m.originIntent ?? null, role: m.role, content: prepared.content,
+      mood: m.mood ?? prepared.mood, displayKind, displayTier,
       turnNumber: m.turnNumber ?? null, groupId: m.groupId ?? null,
       channel, senderId: m.senderId ?? null,
       authorized: (m.authorized ?? true) ? 1 : 0,

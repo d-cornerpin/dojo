@@ -13,6 +13,7 @@
  * mid-token. See `StreamingSpeechBuffer` for that buffering.
  */
 
+import { stripMoodMarker } from '@dojo/shared';
 import { normalizeForSpeech } from './text-normalize.js';
 
 const URL_RE = /\bhttps?:\/\/\S+/g;
@@ -22,8 +23,10 @@ export function sanitizeForSpeech(text: string): string {
   let s = text;
 
   // 0. Drop the orb mood marker (`((mood: NAME))`) so it is never spoken — it
-  //    only animates the on-screen orb and is invisible to the user.
-  s = s.replace(/\(\(\s*mood\s*:\s*[a-z]+\s*\)\)/gi, '');
+  //    only animates the on-screen orb and is invisible to the user. PHASE-1 T8: the regex
+  //    that used to be written out here is @dojo/shared's, the same one the engine and the
+  //    writer module use.
+  s = stripMoodMarker(s);
 
   // 1. Drop fenced code blocks entirely (the primary agent uses them for tool examples /
   //    config snippets; spoken word doesn't benefit from "import os newline

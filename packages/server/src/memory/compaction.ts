@@ -22,6 +22,7 @@ import { lastCompactionDividerAt } from '../agent/shared-state.js';
 import { summaryPartyTag } from './party-label.js';
 import { isPlatformNoise } from './platform-noise.js';
 import type { Message } from '@dojo/shared';
+import { formatDivider } from '@dojo/shared';
 
 // Inbound A2A, a peer agent's message TO this agent. For the primary's own context
 // summary this is inter-agent traffic, not the user's conversation, so it is excluded
@@ -305,7 +306,7 @@ function shouldShowCompactionDivider(agentId: string): boolean {
 function insertCompactionDivider(agentId: string, opts: { label: string }): void {
   try {
     const id = uuidv4();
-    const content = `── ${opts.label} ──`;
+    const content = formatDivider(opts.label);
     const createdAt = new Date().toISOString();
     insertMessageIfAbsent({ id, agentId, role: 'system', content });
     broadcast({

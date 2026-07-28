@@ -12,7 +12,7 @@ import { archiveAgentConversation } from '../../vault/archive.js';
 import { replaceContextItems } from '../../memory/dag.js';
 import { broadcast } from '../ws.js';
 import type { Message } from '@dojo/shared';
-import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
+import { deriveOrigin, legacyOriginInputs, NEW_SESSION_DIVIDER} from '@dojo/shared';
 
 const logger = createLogger('chat-routes');
 
@@ -461,7 +461,7 @@ chatRouter.post('/:agentId/new-session', async (c) => {
     //    `created_at >= session_started_at` query. The broadcast keeps quoting `boundary`.
     const markerId = uuidv4();
 
-    insertMessageIfAbsent({ id: markerId, agentId, role: 'system', content: '── New Session ──' });
+    insertMessageIfAbsent({ id: markerId, agentId, role: 'system', content: NEW_SESSION_DIVIDER });
 
     // 5. Broadcast the divider so the chat UI updates in real time
     broadcast({
@@ -471,7 +471,7 @@ chatRouter.post('/:agentId/new-session', async (c) => {
         id: markerId,
         agentId,
         role: 'system',
-        content: '── New Session ──',
+        content: NEW_SESSION_DIVIDER,
         tokenCount: null,
         modelId: null,
         cost: null,

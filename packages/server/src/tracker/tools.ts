@@ -48,6 +48,7 @@ const logger = createLogger('tracker-tools');
 // trackerUpdateStatus call sites keep working with their existing usage.
 // The canonical implementation lives in agent/tool-helpers.ts.
 import { resolveAgentRef as resolveAgentName } from '../agent/tool-helpers.js';
+import { OWNER_ALERT_PROJECT_ATTENTION_PREFIX } from '@dojo/shared';
 
 // ── Notify primary agent of task/project completion ──
 
@@ -480,12 +481,17 @@ export function checkProjectCompletion(projectId: string | null, callingAgentId:
     // same v2.7.2 discipline as the success line above).
     updateProject(projectId, { description: newDescription });
 
-    // The "[tracker:project_needs_attention]" prefix is load-bearing: it makes
-    // this fail-open notice render in the owner's DEFAULT (non-wordy) chat, not
-    // just wordy mode (dashboard OWNER_ALERT_SYSTEM_PREFIXES; the dashboard
-    // strips this tag + notifyPrimaryAgent's [SOURCE: ...] envelope for display).
-    // Keep the prefix if you reword the message.
-    const failureLine = `[tracker:project_needs_attention] "${project.title}" is NOT complete: ${fallen.length} task${fallen.length === 1 ? '' : 's'} fell (${fallenTitles}). The project is left open and flagged for attention.`;
+    // The prefix is load-bearing: it is what the owner-alert allowlist matches on. PHASE-1 T8
+    // takes it FROM that allowlist (@dojo/shared) instead of re-typing it here, so a rewording
+    // cannot drop it.
+    //
+    // ⚠ MEASURED AT 2f54de3, and left alone on purpose: this notice does NOT currently reach
+    // the owner's default chat. `notifyPrimaryAgent` writes it as an EVENTS-lane role='user'
+    // row (a brief to the model), and the dashboard's allowlist check runs only on role='system'
+    // rows — so the sentence this comment used to make is not true of this site. Making it true
+    // would change what the owner sees, which is SWEEP-E's (dashboard chat contract), not T8's.
+    // The taxonomy classifies it honestly today: lane='events' => engine-note / agent-only.
+    const failureLine = `${OWNER_ALERT_PROJECT_ATTENTION_PREFIX} "${project.title}" is NOT complete: ${fallen.length} task${fallen.length === 1 ? '' : 's'} fell (${fallenTitles}). The project is left open and flagged for attention.`;
     notifyPrimaryAgent(failureLine, callingAgentId);
 
     logger.info('Project left open with fallen tasks', { projectId, title: project.title, fallenCount: fallen.length });

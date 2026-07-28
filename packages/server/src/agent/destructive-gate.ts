@@ -25,6 +25,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getPrimaryAgentName, isHealerAgent } from '../config/platform.js';
 import { checkPermission, isProtectedIdentityPath } from './permissions.js';
+import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 
 const logger = createLogger('destructive-gate');
 
@@ -522,11 +523,13 @@ function notifyOwnerApprovalExpired(row: { agent_id: string; request_text: strin
   try {
     const name = (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(row.agent_id) as { name: string } | undefined)?.name ?? 'a helper';
     const primaryId = getPrimaryAgentId();
-    // The "Heads up:" prefix is load-bearing: it makes this note render in the
-    // owner's DEFAULT (non-wordy) chat, not just wordy mode (dashboard
-    // OWNER_ALERT_SYSTEM_PREFIXES). Keep the prefix if you reword the message.
+    // The prefix is load-bearing: it is what makes this note render in the owner's DEFAULT
+    // (non-wordy) chat rather than wordy mode only. PHASE-1 T8: it now comes FROM the
+    // allowlist (@dojo/shared OWNER_ALERT_SYSTEM_PREFIXES) instead of being re-typed here,
+    // so "keep the prefix if you reword the message" is no longer advice a rewording can
+    // ignore — and the row is stamped display_kind='owner-alert' at insert.
     const ownerMsg =
-      `Heads up: "${name}" asked me to approve a sensitive action (${row.request_text.slice(0, 160)}), ` +
+      `${OWNER_ALERT_HEADS_UP_PREFIX} "${name}" asked me to approve a sensitive action (${row.request_text.slice(0, 160)}), ` +
       `but it went unanswered for over an hour, so I let the request expire. Nothing was changed or deleted. ` +
       `If you still want it done, just tell me and I'll approve it.`;
     const ownerMsgId = uuidv4();
