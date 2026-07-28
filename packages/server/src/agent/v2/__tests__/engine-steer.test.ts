@@ -250,3 +250,86 @@ describe('RC-19: no bare-system imperative steer in tracker/ + scheduler/ (build
     expect(systemInsertCount).toBeGreaterThanOrEqual(3);
   });
 });
+
+// ── PHASE-1 T1 (2026-07-27): the DELIVERY half of the same channel ─────────────
+//
+// persistEngineSteer's contract above is "both writes happen". T1 found the other
+// half was broken: the write landed, and the delivery never did. `pendingNudge` is
+// drained into the outgoing messages array by loop.ts, and that drain was gated on
+// the assembled tail being role='assistant'. memory/assembler.ts:301 APPENDS a
+// user-role engine line whenever the tail is an assistant message (so a provider is
+// never handed a trailing assistant turn), which makes that gate structurally
+// unsatisfiable: the tail is always either that appended user line or a tool-result
+// carrier. Every engine steer written after a tool call was therefore logged as sent
+// and never received, from 2026-07-10 until this fix (research 22; reproduced live
+// on five floor-model drives by dojo-test-kit/checks/check-steer-delivery.mjs).
+//
+// The behavioral proof lives in agent/v2/__tests__/integration.test.ts ("T1: engine
+// steer delivery"), which drives runV2Turn against a tool-result-carrier tail and
+// asserts on what callModel actually received. These are the build-enforced source
+// invariants that stop the shape gate being reintroduced.
+
+describe('T1: the pendingNudge drain is not gated on the assembled tail shape', () => {
+  it('the drain injects msg.pending-nudge with no test on the last message role', () => {
+    const lines = fs.readFileSync(LOOP_TS, 'utf8').split('\n');
+    const drainIdx = lines.findIndex((l) => l.includes("injectRegistryMessage('msg.pending-nudge'"));
+    // Guards against the scan silently matching nothing if the site is renamed.
+    expect(drainIdx).toBeGreaterThan(0);
+
+    // The enclosing gate sits just above the injection.
+    const gate = lines
+      .slice(Math.max(0, drainIdx - 4), drainIdx + 1)
+      .filter((l) => !isCommentLine(l))
+      .join('\n');
+    expect(gate).toMatch(/if \(state\.pendingNudge/);
+    // If this fails: a tail-shape condition has been put back on the drain. It
+    // cannot ever be true — assembler.ts:301 guarantees the assembled tail is a
+    // user-role message — so it silently kills every post-tool-call steer.
+    expect(gate).not.toMatch(/messages\[messages\.length - 1\]\.role/);
+  });
+
+  it('the drain clears pendingNudge ONLY when the injection actually landed', () => {
+    const src = fs.readFileSync(LOOP_TS, 'utf8');
+    // The clear must be guarded by the injection's own return value, so a steer
+    // that did not reach the outgoing array survives to the next boundary instead
+    // of being silently dropped.
+    expect(src).toMatch(
+      /if \(injectRegistryMessage\('msg\.pending-nudge'[^\n]*\)[\s\S]{0,120}?pendingNudge: null/,
+    );
+  });
+});
+
+describe('T1: the settled-context [Engine hint] guard is reachable', () => {
+  it('fires on the first iteration (loopCount === 1), not the unreachable === 0', () => {
+    const lines = fs.readFileSync(LOOP_TS, 'utf8').split('\n');
+    const hintIdx = lines.findIndex((l) => l.includes('const SETTLED_HINT ='));
+    expect(hintIdx).toBeGreaterThan(0); // scan must find the guard
+
+    const guard = lines
+      .slice(Math.max(0, hintIdx - 15), hintIdx)
+      .filter((l) => !isCommentLine(l))
+      .join('\n');
+    // The hint is documented in-code against two live incidents (the 2026-07-10
+    // file_read re-verification spiral and the owner's duplicate-answer report) and
+    // must stay FIRST-ITERATION-ONLY: injected mid-turn it lands right after a tool
+    // result, where "respond only to the newest incoming item" reads as verification
+    // pressure on a weak model. First-iteration-only is the requirement; `=== 0` was
+    // the bug, because loopCount is incremented at the top of the enclosing while body.
+    expect(guard).toMatch(/state\.loopCount === 1/);
+  });
+
+  it('no state.loopCount === 0 test survives anywhere in loop.ts (statically unreachable inside the turn loop)', () => {
+    const src = fs.readFileSync(LOOP_TS, 'utf8');
+    // loopCount is incremented at the FIRST statement of the only `while` body in
+    // runV2Turn, so inside that body it is >= 1 on every iteration including the
+    // first; `=== 0` can never be true and the codebase's own first-iteration idiom
+    // is `=== 1` (five sibling sites). If a legitimate PRE-loop use of `=== 0` is
+    // ever added outside the while body, scope this scan to the loop body rather
+    // than deleting it.
+    const hits = src.split('\n')
+      .map((l, i) => ({ l, i }))
+      .filter(({ l }) => /state\.loopCount === 0/.test(l) && !isCommentLine(l))
+      .map(({ l, i }) => `loop.ts:${i + 1} | ${l.trim()}`);
+    expect(hits).toEqual([]);
+  });
+});

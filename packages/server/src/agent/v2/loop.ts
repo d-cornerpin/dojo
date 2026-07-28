@@ -2900,7 +2900,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // purpose ([Engine hint], never an order): user-authored content wins per
       // the precedence ladder, and result-delivery turns (a peer's answer coming
       // back, a reminder firing) must stay free to message the user.
-      if (messages.length > 0 && state.loopCount === 0) {
+      if (messages.length > 0 && state.loopCount === 1) {
         // FIRST ITERATION ONLY: the hint orients the turn at its start. Injected
         // mid-turn it lands directly after a tool result, where "respond only to
         // the newest incoming item" reads as verification pressure on a weak
@@ -2922,13 +2922,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
             'this turn. Every OTHER user conversation visible above has already been answered ' +
             'and is closed; do not re-answer, re-send, or redo any of it, even if it looks ' +
             'recent or unfinished.]';
+        // Fold into a STRING user tail only. A text block pushed into an array tail
+        // makes a pure tool_result carrier impure, and model.ts:231 then strips the
+        // paired tool_use and deletes the assistant message ("agent repeats itself",
+        // model.ts:215-223). Own message otherwise; consecutive user turns are routine.
         const tail = messages[messages.length - 1];
-        if (tail.role === 'user') {
-          if (typeof tail.content === 'string') {
-            tail.content = `${tail.content}\n\n${SETTLED_HINT}`;
-          } else if (Array.isArray(tail.content)) {
-            tail.content.push({ type: 'text', text: SETTLED_HINT });
-          }
+        if (tail.role === 'user' && typeof tail.content === 'string') {
+          tail.content = `${tail.content}\n\n${SETTLED_HINT}`;
         } else {
           messages.push({ role: 'user', content: SETTLED_HINT }); // registry-exempt(2026-07-16): settled-hint fallback needs the in-flight messages array; migrate with the volatile-injection registry refactor
         }
@@ -3512,13 +3512,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }, agentId);
       }
 
-      // Inject pendingNudge if present (synthetic user message, not persisted).
-      // Per v1 runtime.ts:940-947, only inject if last message is assistant
-      // (so alternation stays valid). Then clear the nudge.
-      if (state.pendingNudge && (messages.length === 0 || messages[messages.length - 1].role === 'assistant')) {
+      // Drain pendingNudge (synthetic user message, never persisted). NO tail-shape
+      // gate: assembler.ts:301 appends a user-role engine line after an assistant
+      // tail, so the old assistant-tail test could never be true and every steer
+      // written after a tool call went undelivered 2026-07-10 → 2026-07-27 (r22).
+      if (state.pendingNudge) {
         mctx.pendingNudge = state.pendingNudge;
-        injectRegistryMessage('msg.pending-nudge', messages, mctx);
-        state = advance(state, { pendingNudge: null });
+        if (injectRegistryMessage('msg.pending-nudge', messages, mctx)) state = advance(state, { pendingNudge: null });
       }
 
       // Empty-messages guard (preserve v1 behavior at runtime.ts:1014-1020)

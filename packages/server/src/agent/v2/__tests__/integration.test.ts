@@ -143,11 +143,16 @@ vi.mock('../../../memory/compaction.js', async () => {
   };
 });
 
+// Controllable so a test can seed the SHAPE of the assembled tail (T1 needs a
+// tool-result carrier tail). Returns a FRESH array per call, like the real
+// assembler: assembly rebuilds from persisted rows each iteration, so nothing an
+// engine injection pushed survives into the next round.
+const assembleContextMock = vi.fn(async () => ({
+  systemPrompt: '<system prompt>',
+  messages: [{ role: 'user', content: 'hello' }] as Array<Record<string, unknown>>,
+}));
 vi.mock('../../../memory/assembler.js', () => ({
-  assembleContext: vi.fn(async () => ({
-    systemPrompt: '<system prompt>',
-    messages: [{ role: 'user', content: 'hello' }],
-  })),
+  assembleContext: (...args: unknown[]) => assembleContextMock(...(args as [])),
 }));
 
 // (config/runtime.js mock removed in Phase 9 Stage 2, module deleted)
@@ -356,6 +361,11 @@ beforeEach(() => {
   selectModelMock.mockClear();
   scoreQueryMock.mockImplementation(() => ({ tier: 'standard', scores: [], rawScore: 0, confidence: 0.5, latencyMs: 0 }));
   selectModelMock.mockReset();
+  assembleContextMock.mockClear();
+  assembleContextMock.mockImplementation(async () => ({
+    systemPrompt: '<system prompt>',
+    messages: [{ role: 'user', content: 'hello' }] as Array<Record<string, unknown>>,
+  }));
 });
 
 afterEach(() => {
@@ -1654,5 +1664,195 @@ describe('runV2Turn integration', () => {
     ).get() as { served_by_turn: number | null; answer_message_id: string | null };
     expect(ask.served_by_turn).not.toBeNull();
     expect(ask.answer_message_id).toBe(turn.answer_message_id);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PHASE-1 T1 (2026-07-27): engine steers must actually REACH the model.
+//
+// Every engine steer written after a tool call was structurally undeliverable
+// from 2026-07-10 until this fix. The drain at loop.ts:3518 injected
+// `pendingNudge` only when the assembled tail was role='assistant' — and
+// memory/assembler.ts:301 APPENDS a user-role engine line whenever the tail is an
+// assistant message, precisely so a trailing assistant turn is never handed to a
+// provider. So the tail the drain inspected structurally never was 'assistant':
+// it is either that appended user line or a tool-result carrier. The steer was
+// written, logged as sent, and the model never saw it (research 22; the kit's
+// check-steer-delivery.mjs reproduced it on five independent floor-model drives).
+//
+// These tests drive the real loop with a tool-result-carrier tail — the exact
+// shape a mid-turn steer lands behind — and assert on what `callModel` actually
+// received.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const EMPTY_RESPONSE_NUDGE =
+  "[System: You returned an empty response. Please respond to the user's last message or call a tool to continue your task. If you are finished, say so clearly.]";
+
+/** The assembled shape a mid-turn steer has to survive: … assistant tool_use, tool-result carrier. */
+function toolResultTail(): Array<Record<string, unknown>> {
+  return [
+    { role: 'user', content: 'read the file and tell me what it says' },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'tu-1', name: 'file_read', input: { path: '/tmp/x' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu-1', content: 'file body' }] },
+  ];
+}
+
+describe('T1: engine steer delivery (the pendingNudge drain)', () => {
+  /** Deep snapshots of every messages array handed to callModel, in call order. */
+  let seenByModel: Array<Array<Record<string, unknown>>>;
+
+  function recordingModel(
+    impl: (n: number) => Record<string, unknown>,
+  ): (args: { messages: unknown }) => Promise<Record<string, unknown>> {
+    let n = 0;
+    return async (args: { messages: unknown }) => {
+      n++;
+      // Snapshot: the loop keeps a live reference to this array and mutates it.
+      seenByModel.push(JSON.parse(JSON.stringify(args.messages)));
+      return impl(n);
+    };
+  }
+
+  const EMPTY = { content: '', toolCalls: [], inputTokens: 100, outputTokens: 0, stopReason: 'end_turn' };
+  const DONE = { content: 'Done.', toolCalls: [], inputTokens: 50, outputTokens: 5, stopReason: 'end_turn' };
+
+  function indexOfEntry(msgs: Array<Record<string, unknown>>, content: string): number {
+    return msgs.findIndex((m) => m.content === content);
+  }
+
+  beforeEach(() => {
+    seenByModel = [];
+    assembleContextMock.mockImplementation(async () => ({
+      systemPrompt: '<system prompt>',
+      messages: toolResultTail(),
+    }));
+  });
+
+  it('delivers a steer set mid-turn to the NEXT model call even though the assembled tail is a tool-result carrier', async () => {
+    // Drive the empty-response recovery chain, which is a real in-loop steer
+    // writer: call 1 empty → silent retry; call 2 empty → sets pendingNudge;
+    // call 3 must CARRY that steer. Before the fix call 3 is byte-for-byte the
+    // same array as calls 1 and 2 — the exact "logged as sent, never received"
+    // signature the kit instrument measured live.
+    callModelSpy.mockImplementation(recordingModel((n) => (n <= 2 ? EMPTY : DONE)));
+
+    await runV2Turn('primary');
+
+    expect(seenByModel.length).toBeGreaterThanOrEqual(3);
+    const third = seenByModel[2];
+    expect(indexOfEntry(third, EMPTY_RESPONSE_NUDGE)).toBeGreaterThanOrEqual(0);
+  });
+
+  it('appends the steer as its OWN user-role message, never folded into another message', async () => {
+    callModelSpy.mockImplementation(recordingModel((n) => (n <= 2 ? EMPTY : DONE)));
+
+    await runV2Turn('primary');
+
+    const third = seenByModel[2];
+    const at = indexOfEntry(third, EMPTY_RESPONSE_NUDGE);
+    expect(at).toBeGreaterThanOrEqual(0);
+    // Its own message: exact string content, user role — not appended onto the
+    // tool-result carrier's block array, and not merged into a neighbour.
+    expect(third[at].role).toBe('user');
+    expect(typeof third[at].content).toBe('string');
+    expect(third[at].content).toBe(EMPTY_RESPONSE_NUDGE);
+  });
+
+  it('keeps alternation legal: the steer lands AFTER the tool results, never between tool_use and tool_result', async () => {
+    callModelSpy.mockImplementation(recordingModel((n) => (n <= 2 ? EMPTY : DONE)));
+
+    await runV2Turn('primary');
+
+    const third = seenByModel[2];
+    const useAt = third.findIndex(
+      (m) => Array.isArray(m.content) && (m.content as Array<{ type?: string }>).some((b) => b.type === 'tool_use'),
+    );
+    const resultAt = third.findIndex(
+      (m) => Array.isArray(m.content) && (m.content as Array<{ type?: string }>).some((b) => b.type === 'tool_result'),
+    );
+    const steerAt = indexOfEntry(third, EMPTY_RESPONSE_NUDGE);
+    expect(useAt).toBeGreaterThanOrEqual(0);
+    // The result carrier still IMMEDIATELY follows its tool_use (the conversation
+    // invariant at loop.ts:6415 — nothing may be inserted between the pair).
+    expect(resultAt).toBe(useAt + 1);
+    // And the steer rides behind them, as a fresh user turn.
+    expect(steerAt).toBeGreaterThan(resultAt);
+  });
+
+  it('clears pendingNudge on a successful drain: the steer rides exactly ONE model call, never repeats', async () => {
+    // Call 3 carries the steer and then calls a tool, so the loop assembles a
+    // FOURTH time. A steer that is delivered but never cleared would ride call 4
+    // as well (the engine repeating itself at the model); a steer cleared without
+    // being delivered would ride none.
+    const toolCall: ToolCall = { id: 'tc1', name: 'file_read', arguments: { path: '/x' } };
+    callModelSpy.mockImplementation(
+      recordingModel((n) => {
+        if (n <= 2) return EMPTY;
+        if (n === 3) return { content: 'reading', toolCalls: [toolCall], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
+        return DONE;
+      }),
+    );
+    executeToolSpy.mockResolvedValue({ toolCallId: 'tc1', name: 'file_read', content: 'file body', isError: false });
+
+    await runV2Turn('primary');
+
+    expect(seenByModel.length).toBeGreaterThanOrEqual(4);
+    const carrying = seenByModel.filter((msgs) => indexOfEntry(msgs, EMPTY_RESPONSE_NUDGE) >= 0);
+    expect(carrying).toHaveLength(1);
+    expect(seenByModel.indexOf(carrying[0])).toBe(2);
+  });
+
+  it('settled-context [Engine hint] fires on the FIRST iteration and only the first (loop.ts:2903)', async () => {
+    // The guard is documented in-code against two live incidents (the 2026-07-10
+    // file_read re-verification spiral and the owner's 9:39 PM duplicate answer),
+    // and its condition tested `state.loopCount === 0` — unreachable, because
+    // loopCount is incremented at loop.ts:2280, the first statement of the while
+    // body that contains it. So the hint had never once been injected. Repaired to
+    // the file's own first-iteration idiom (=== 1); the first-iteration-ONLY
+    // guarantee the incidents bought is what this test pins.
+    const toolCall: ToolCall = { id: 'tc1', name: 'file_read', arguments: { path: '/x' } };
+    callModelSpy.mockImplementation(
+      recordingModel((n) =>
+        n === 1
+          ? { content: 'reading', toolCalls: [toolCall], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' }
+          : DONE,
+      ),
+    );
+    executeToolSpy.mockResolvedValue({ toolCallId: 'tc1', name: 'file_read', content: 'file body', isError: false });
+
+    await runV2Turn('primary');
+
+    expect(seenByModel.length).toBeGreaterThanOrEqual(2);
+    const hintCount = (msgs: Array<Record<string, unknown>>): number =>
+      msgs.filter((m) => typeof m.content === 'string' && (m.content as string).includes('[Engine hint: respond only to the newest incoming item')).length;
+    expect(hintCount(seenByModel[0])).toBe(1);
+    expect(hintCount(seenByModel[1])).toBe(0);
+  });
+
+  it('the hint is NEVER folded into a tool-result carrier (it would orphan the paired tool_use)', async () => {
+    // Arming the hint armed its injection path too. Its fold-into-the-tail branch
+    // used to push a {type:'text'} block into an ARRAY tail. When that tail is a
+    // pure tool_result carrier the carrier stops being pure, and callModel's
+    // sanitizeOrphanToolBlocks (model.ts:231) then treats the matching tool_use as
+    // orphaned, strips it, and deletes the assistant message outright — the
+    // "agent repeats itself" regression documented at model.ts:215-223. Measured:
+    // folded → 1 tool_use stripped, assistant message gone; appended → 0 stripped.
+    callModelSpy.mockImplementation(recordingModel(() => DONE));
+
+    await runV2Turn('primary');
+
+    const first = seenByModel[0];
+    const carrier = first.find(
+      (m) => Array.isArray(m.content) && (m.content as Array<{ type?: string }>).some((b) => b.type === 'tool_result'),
+    );
+    expect(carrier).toBeTruthy();
+    // Still a PURE tool-result carrier: nothing was folded into it.
+    expect((carrier!.content as Array<{ type?: string }>).every((b) => b.type === 'tool_result')).toBe(true);
+    // And the hint arrived anyway, as its own string-content user message.
+    const at = first.findIndex(
+      (m) => typeof m.content === 'string' && (m.content as string).includes('[Engine hint: respond only to the newest incoming item'),
+    );
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(first[at].role).toBe('user');
   });
 });
