@@ -21,7 +21,7 @@
     "release": "bash deploy/release.sh",
     "release:verify": "bash deploy/verify-release.sh",
     "gates": "npm run gates:block && npm run gates:report",
-    "gates:block": "node deploy/checks/check-bytes.mjs && node deploy/checks/check-ratchets.mjs && node deploy/checks/check-growth.mjs && node deploy/checks/check-lint-baseline.mjs && node deploy/checks/check-orphans.mjs && node deploy/checks/check-watchdog-contract.mjs && node deploy/checks/check-waivers.mjs && node deploy/checks/check-upgrade-bypass.mjs",
+    "gates:block": "node deploy/checks/check-bytes.mjs && node deploy/checks/check-ratchets.mjs && node deploy/checks/check-growth.mjs && node deploy/checks/check-lint-baseline.mjs && node deploy/checks/check-orphans.mjs && node deploy/checks/check-watchdog-contract.mjs && node deploy/checks/check-watchdog-sql.mjs && node deploy/checks/check-waivers.mjs && node deploy/checks/check-upgrade-bypass.mjs",
     "gates:report": "node deploy/checks/check-iso-writes.mjs; node deploy/checks/check-wiring.mjs; node deploy/checks/check-status-fresh.mjs; node deploy/checks/check-capability-ledger.mjs; node deploy/checks/check-deletion-ratio.mjs || true"
   },
   "devDependencies": {
