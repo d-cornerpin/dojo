@@ -6,7 +6,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import Database from 'better-sqlite3';
-import { setAttachments } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('path-migration');
@@ -98,10 +97,24 @@ function migrateDatabase(oldHome: string, newHome: string, dojoDir: string): voi
     } catch { /* table may not exist */ }
 
     // Upload file paths in messages (attachments JSON)
+    //
+    // PHASE-1 T4 (2026-07-27): this is the ONE write against `messages` that does NOT go
+    // through memory/message-store.ts, and the exemption is deliberate — it is named in
+    // OFFLINE_DB_TOOLS in memory/__tests__/single-writer-conformance.test.ts, with a test
+    // that only lets a file sit there if it really does open its own connection.
+    //
+    // The reason: this function rewrites $HOME references inside a database file taken
+    // from ANOTHER MACHINE, and it opens that file itself (`new Database(dbPath)` above,
+    // closed in the finally). The writer module writes through the app singleton. Routing
+    // this through it would open a SECOND connection to a database the import path is
+    // about to move, and would silently target the wrong file the day `dojoDir` is ever
+    // passed anything other than the live one — a correctness risk taken to satisfy a rule
+    // about the RUNNING platform's store, which this is not.
     try {
       const msgs = db.prepare("SELECT id, attachments FROM messages WHERE attachments LIKE ?").all(`%${oldHome}%`) as Array<{ id: string; attachments: string }>;
+      const updateMsg = db.prepare('UPDATE messages SET attachments = ? WHERE id = ?');
       for (const m of msgs) {
-        setAttachments(m.id, m.attachments.replaceAll(oldHome, newHome));
+        updateMsg.run(m.attachments.replaceAll(oldHome, newHome), m.id);
       }
       if (msgs.length > 0) {
         logger.info('Updated message attachment paths', { count: msgs.length });

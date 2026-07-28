@@ -1,36 +1,23 @@
 // ── PHASE-1 T4 (2026-07-27): the THIRD message store folds in. ─────────────────
 //
-// `agent_messages` was the platform's third place to keep a message — a notification
-// bus between agents (a spawned sub-agent reporting its result to its parent, the PM
-// posting status, the scheduler reporting a skipped run). Research 04 row 6's verdict
-// is REPLACE, fold into the unified `messages`, and this is it. REKEY; requirement
-// preserved: an agent can send another agent a typed notification and the recipient's
-// dashboard can list it, in both directions.
+// `agent_messages` was the platform's third place to keep a message — a notification bus
+// (a sub-agent's result to its parent, PM status, scheduler notices). Research 04 row 6:
+// REPLACE, fold into the unified `messages`. REKEY; requirement preserved: an agent can
+// send another agent a typed notification and the recipient's dashboard can list it, both
+// directions. Mapping, each onto a column that already meant this: to_agent -> agent_id
+// (the recipient owns the row, as for every inbound A2A row) · from_agent ->
+// source_agent_id · message_type -> a2a_intent · metadata -> inbound_meta · lane 'a2a' ·
+// role 'user'. `origin_intent='agent_bus'` keeps the bus distinguishable from ordinary
+// peer traffic — the job the separate table used to do for free.
 //
-// The mapping, column by column, and every one of them lands on a column that already
-// meant this: to_agent -> agent_id (the recipient owns the row, same as every inbound
-// A2A row) · from_agent -> source_agent_id · message_type -> a2a_intent · metadata ->
-// inbound_meta · lane 'a2a' · role 'user'. `origin_intent = 'agent_bus'` is what keeps
-// the bus distinguishable from ordinary peer traffic, which the old table got for free
-// by being a different table.
+// Two consequences, deliberate: (1) these rows now reach the recipient's assembled
+// history, which they did not (one dashboard route was the only reader) — the direction
+// this phase exists for, bounded to three low-frequency producers, and the fail-closed
+// view keeps them off the human surface; (2) `readByRecipient` becomes true once a turn
+// picks the row up, where the old column was written 0 and updated by nothing.
 //
-// TWO CONSEQUENCES, both deliberate and neither invented here:
-//
-//  1. These rows now reach the recipient's assembled history. They did not before —
-//     nothing read `agent_messages` except one dashboard route. This is the direction
-//     Phase 1 exists for ("agent recall finally covering agent-to-agent history"), and
-//     the content is a completion report or a status line addressed to that agent, so
-//     it is what the agent should have been seeing. Bounded: three low-frequency
-//     producers, 2 rows on the live box in the whole of Phase 0. The fail-closed
-//     `chat_messages` view keeps them off the human surface.
-//
-//  2. `readByRecipient` becomes TRUE once a turn picks the row up. The old column was
-//     written 0 and never updated by anything, so the API has always answered "false"
-//     — a field carrying no information. `served_by_turn` is the unified store's own
-//     answer to the same question and it is a real one.
-//
-// The old table is NOT dropped here and still holds its rows; T10 drops it with the
-// rest of the scaffolding, and the Stable Bridge (T12) carries the lived-in rows.
+// The old table is NOT dropped here (T10's) and still holds its rows; the Stable Bridge
+// addendum carries the mapping for lived-in boxes.
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';

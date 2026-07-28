@@ -527,12 +527,6 @@ export function stampInboundMeta(id: string, metaJson: string): number {
   return db.prepare('UPDATE messages SET inbound_meta = ? WHERE id = ?').run(metaJson, id).changes;
 }
 
-/** Attach (or re-path) a row's attachment manifest. */
-export function setAttachments(id: string, attachmentsJson: string): number {
-  const db = getDb();
-  return db.prepare('UPDATE messages SET attachments = ? WHERE id = ?').run(attachmentsJson, id).changes;
-}
-
 /** Name the human who spoke a voice-session row. */
 export function stampVoiceSpeaker(id: string, speaker: string, voiceSessionId: string | null): number {
   const db = getDb();
