@@ -325,13 +325,7 @@
       "table": "turns",
       "column": "effectful_calls",
       "definedIn": "packages/server/src/db/migrations/135_work_spine.sql",
-      "why": "The counted non-idempotent call count for the turn, persisted instead of inferred. Written by finalizeTurn from the live in-memory counter state.nonIdempotentCallsThisTurn (agent/v2/state.ts:119), so it has a real writer on arrival rather than a placeholder.",
-      "zeroReader": {
-        "kind": "owed",
-        "owner": "PHASE-2 T3",
-        "date": "2026-07-28",
-        "reason": "PHASE-2.md T3 Step 1 names it: 'abort WITH effectful calls never re-fires (P6b carried — turns.effectful_calls is the counted input)'. P3/P6b revert a claim only when the turn produced no answer AND executed zero non-idempotent calls; today the second half is read from memory, which does not survive the crash the rule exists for. T3 makes it a read."
-      }
+      "why": "The counted non-idempotent call count for the turn, persisted instead of inferred. DEBT PAID — PHASE-2 T3, 2026-07-28. T2 wrote it once, at finalizeTurn, from the in-memory counter; T3 made it DURABLE at the effect (agent/v2/turn-record.ts bumpEffectfulCalls, called beside the counter's own increment in agent/v2/loop.ts) because a process killed between the effect and the end of the turn never reaches finalize, which is exactly the case the number exists to decide. finalizeTurn now raises it with MAX() and can never lower it. READER: work/store.ts reconcileOrphanedClaims() joins turns on work.claimed_by_turn at boot and holds any claim whose dead turn recorded effectful calls, so a killed turn's side effect is never repeated (P6b). Both directions are proven in work/__tests__/ask-lifecycle.test.ts (crash test B, the mechanical half)."
     },
     {
       "id": "work.hop_count",
