@@ -30,21 +30,24 @@ describe('serve boundary (P2)', () => {
     expect(cp.match(/DELIVERABLE_ENGINE_EVENT_WHERE/g)!.length).toBeGreaterThanOrEqual(3);
   });
 
-  it('the retire helpers target BOTH stores and never touch claimed rows', () => {
+  it('the retire helpers reach every home an unserved event has, and never touch claimed rows', () => {
     const cp = read('agent/v2/counterparty.ts');
     for (const fname of ['retireEngineEventsForRun', 'retireEngineEventsForTask']) {
       const fn = cp.slice(cp.indexOf(`export function ${fname}`));
       const body = fn.slice(0, 1200);
-      // PHASE-1 T4: the retire helpers no longer spell the two table names — the
-      // single writer owns that dispatch and takes the src ('m' | 'ia'). Both halves
-      // of the requirement are still asserted, just at their new addresses: the
-      // helper must still visit BOTH stores, and the "never yank a live turn's
-      // trigger" guard (conv_key IS NULL AND swept_at IS NULL) must still be the
-      // statement's WHERE. The second half moved into memory/message-store.ts, so
-      // that is where it is now read from — dropping it would have left the guard
-      // asserting only against a string this file itself no longer contains.
-      expect(body, `${fname} must iterate both message stores`).toMatch(/\['m',\s*'ia'\]/);
+      // The requirement, unchanged since P2: a retire helper must reach EVERY home an
+      // unserved engine event can live in, and must never yank a live turn's trigger.
+      //
+      // PHASE-1 T4 expressed the first half as `['m','ia']` — the two-table dispatch.
+      // T6 folded the second table's readers away, so an engine event has exactly ONE
+      // home (`messages`, lane='events') and the first half is now true BY CONSTRUCTION.
+      // Asserting the old literal would keep a demolished mechanism alive; asserting
+      // nothing would drop the guard. So it is re-expressed as what can still go wrong:
+      // the helper retires through the SINGLE WRITER (never a hand-rolled UPDATE) and
+      // never re-introduces a table name at the call site.
       expect(body, `${fname} must retire by referent through the single writer`).toMatch(/sweepByReferent\(/);
+      expect(body, `${fname} must not spell a table name — the writer owns the target`)
+        .not.toMatch(/\binter_agent_messages\b|\bFROM messages\b|\bUPDATE messages\b/);
     }
     const store = read('memory/message-store.ts');
     const sweep = store.slice(store.indexOf('export function sweepByReferent'));

@@ -10,7 +10,7 @@
 // Phase 3 computes + surfaces the counterparty and the header. Phase 4 uses the
 // same counterparty to SCOPE the live conversation (fresh tail) down to it.
 // ════════════════════════════════════════
-import { deriveOrigin, type Channel, type Relation, type InboundMeta } from '@dojo/shared';
+import { deriveOrigin, legacyOriginInputs, type Channel, type Relation, type InboundMeta } from '@dojo/shared';
 import { getOwnerName } from '../../config/platform.js';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
@@ -37,9 +37,12 @@ export interface WaitingConversation {
   key: string;
   /** The conversation's NEWEST unanswered message row (kept for logging/context). */
   latest: {
-    rowid: number; id: string; conversation_id: string | null; conv_key: string | null; content: string; source: string | null; source_agent_id: string | null;
+    rowid: number; id: string; conversation_id: string | null; conv_key: string | null; content: string;
+    /** The stamped-at-ingest lane and channel (OR4). Attribution is PROJECTED from these
+     *  (`legacyOriginInputs`) — the two compat columns are never read here. */
+    lane: string; channel: string | null; source_agent_id: string | null;
     a2a_thread_id: string | null; a2a_intent: string | null; a2a_requires_response: number | null;
-    inbound_meta: string | null; origin_kind: string | null; origin_intent: string | null; created_at: string;
+    inbound_meta: string | null; origin_intent: string | null; created_at: string;
   };
   /** The conversation's OLDEST unanswered message row, this is the turn TRIGGER,
    *  so the agent answers a conversation's pending messages oldest-first and a
@@ -53,9 +56,55 @@ export interface WaitingConversation {
   // (loop.ts ~500), so no sibling is collaterally marked served. No bulk-surfacing needed.
 }
 
+/** Every row shape below is read through this one projection list, so no query can
+ *  accidentally omit a column the origin resolver needs. */
+const WAITING_COLS = `rowid, id, conversation_id, conv_key, content, lane, channel,
+  source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta,
+  origin_intent, created_at`;
+
+/**
+ * T6: the candidate narrowing, in ONE place, for the four reads that must agree on it
+ * (the waiting set, the quarantine, the teardown batch-claim and the owed-arrivals probe).
+ * They were four copies of the same predicate kept in step by hand.
+ *
+ * `lane = 'owner'` REPLACES the physical-table separation. Before T4, peer A2A lived in a
+ * second table so `FROM messages` could not see it and `origin_kind != 'engine'` was the
+ * only exclusion needed. T4 folded that traffic in, so the separation is a column now, and
+ * the lane CHECK constraint makes it stronger than the free-text flag it replaces.
+ *
+ * The two structural A2A filters are NOT redundant with the lane and are deliberately
+ * kept: a pre-D-A a2a row in `messages` carried `source` NULL, so migration 127 mapped it
+ * to `lane='owner'` while it still holds `a2a_thread_id`. Dropping them would change WHICH
+ * rows the agent believes it owes a reply to on a lived-in box — the one thing this task
+ * may not do.
+ */
+const WAITING_HUMAN_CANDIDATE_WHERE =
+  `role = 'user' AND created_at >= @sessionStart
+   AND conv_key IS NULL
+   AND swept_at IS NULL
+   AND lane = 'owner'
+   AND source_agent_id IS NULL AND a2a_thread_id IS NULL`;
+
+/** The origin of a candidate row, from the STAMPED lane/channel (never the compat columns). */
+function originOfCandidate(r: WaitingConversation['latest']) {
+  return deriveOrigin({
+    role: 'user', content: r.content,
+    ...legacyOriginInputs(r.lane, r.channel),
+    sourceAgentId: r.source_agent_id,
+    a2aThreadId: r.a2a_thread_id, a2aIntent: r.a2a_intent, a2aRequiresResponse: r.a2a_requires_response,
+    inboundMeta: r.inbound_meta, originIntent: r.origin_intent,
+  });
+}
+
+/** The session boundary every eligibility read is scoped to. */
+function sessionStartOf(agentId: string): string {
+  const db = getDb();
+  return (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
+}
+
 export function getWaitingHumanConversations(agentId: string): WaitingConversation[] {
   const db = getDb();
-  const sessionStart = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
+  const sessionStart = sessionStartOf(agentId);
   // C1: push the candidate-narrowing INTO the WHERE so the LIMIT counts only genuine
   // unanswered-human candidates. The old query took the newest 25 role='user' rows and
   // filtered in JS AFTER the LIMIT, but engine steers, tracker/scheduler notices,
@@ -67,15 +116,11 @@ export function getWaitingHumanConversations(agentId: string): WaitingConversati
   // is still the final filter (an authorized-human vs mailbox-notification decision the SQL
   // can't make).
   const rows = db.prepare(
-    `SELECT rowid, id, conversation_id, conv_key, content, source, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, origin_kind, origin_intent, created_at
+    `SELECT ${WAITING_COLS}
        FROM messages
-      WHERE agent_id = ? AND role = 'user' AND created_at >= ?
-        AND conv_key IS NULL
-        AND swept_at IS NULL
-        AND (origin_kind IS NULL OR origin_kind != 'engine')
-        AND source_agent_id IS NULL AND a2a_thread_id IS NULL
+      WHERE agent_id = @agentId AND ${WAITING_HUMAN_CANDIDATE_WHERE}
       ORDER BY created_at ASC, rowid ASC LIMIT 50`,
-  ).all(agentId, sessionStart) as WaitingConversation['latest'][];
+  ).all({ agentId, sessionStart }) as WaitingConversation['latest'][];
   // OPEN-12 root fix, per-message "served", not "a later reply exists".
   // A user message is UNANSWERED iff its OWN conv_key is still NULL, i.e. no turn
   // ever CLAIMED it at pickup (the loop stamps the trigger's conv_key the moment
@@ -88,11 +133,7 @@ export function getWaitingHumanConversations(agentId: string): WaitingConversati
   const agg = new Map<string, { latest: WaitingConversation['latest']; oldest: WaitingConversation['latest']; oldestWaitingRowid: number }>();
   for (const r of rows) {                              // C1: now OLDEST → newest by rowid (ASC)
     if (r.conv_key != null) continue;                  // defensive: WHERE already filters claimed rows
-    const o = deriveOrigin({
-      role: 'user', content: r.content, source: r.source, sourceAgentId: r.source_agent_id,
-      a2aThreadId: r.a2a_thread_id, a2aIntent: r.a2a_intent, a2aRequiresResponse: r.a2a_requires_response,
-      inboundMeta: r.inbound_meta, originKind: r.origin_kind, originIntent: r.origin_intent,
-    });
+    const o = originOfCandidate(r);
     // The single "owes a reply" definition (see MESSAGE-ATTRIBUTION-REDESIGN §3):
     // a conversation the agent must answer is AUTHORIZED human inbound. Unauthorized
     // inbound (a mailbox notification about the owner's inbox, an unknown sender) is
@@ -128,23 +169,15 @@ export function getWaitingHumanConversations(agentId: string): WaitingConversati
  */
 export function quarantineWaitingConversation(agentId: string, convKey: string): number {
   const db = getDb();
-  const sessionStart = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
+  const sessionStart = sessionStartOf(agentId);
   const rows = db.prepare(
-    `SELECT rowid, content, source, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, origin_kind, origin_intent
+    `SELECT ${WAITING_COLS}
        FROM messages
-      WHERE agent_id = ? AND role = 'user' AND created_at >= ?
-        AND conv_key IS NULL
-        AND swept_at IS NULL
-        AND (origin_kind IS NULL OR origin_kind != 'engine')
-        AND source_agent_id IS NULL AND a2a_thread_id IS NULL`,
-  ).all(agentId, sessionStart) as Array<WaitingConversation['latest']>;
+      WHERE agent_id = @agentId AND ${WAITING_HUMAN_CANDIDATE_WHERE}`,
+  ).all({ agentId, sessionStart }) as Array<WaitingConversation['latest']>;
   let n = 0;
   for (const r of rows) {
-    const o = deriveOrigin({
-      role: 'user', content: r.content, source: r.source, sourceAgentId: r.source_agent_id,
-      a2aThreadId: r.a2a_thread_id, a2aIntent: r.a2a_intent, a2aRequiresResponse: r.a2a_requires_response,
-      inboundMeta: r.inbound_meta, originKind: r.origin_kind, originIntent: r.origin_intent,
-    });
+    const o = originOfCandidate(r);
     if (o.kind !== 'user' || !o.authorized) continue;
     if (conversationKey(o.channel, o.senderId, o.senderName, o.threadId) !== convKey) continue;
     sweepByRowid({ rowid: r.rowid, agentId });
@@ -165,26 +198,18 @@ export function quarantineWaitingConversation(agentId: string, convKey: string):
  */
 export function claimAssembledSiblings(agentId: string, convKey: string, assembledAtIso: string, turnNumber?: number | null): number {
   const db = getDb();
-  const sessionStart = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
+  const sessionStart = sessionStartOf(agentId);
   const rows = db.prepare(
-    `SELECT rowid, content, source, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, origin_kind, origin_intent
+    `SELECT ${WAITING_COLS}
        FROM messages
-      WHERE agent_id = ? AND role = 'user' AND created_at >= ?
-        AND conv_key IS NULL
-        AND swept_at IS NULL
-        AND datetime(created_at) <= datetime(?)
-        AND (origin_kind IS NULL OR origin_kind != 'engine')
-        AND source_agent_id IS NULL AND a2a_thread_id IS NULL`,
-  ).all(agentId, sessionStart, assembledAtIso) as Array<WaitingConversation['latest']>;
+      WHERE agent_id = @agentId AND ${WAITING_HUMAN_CANDIDATE_WHERE}
+        AND datetime(created_at) <= datetime(@assembledAt)`,
+  ).all({ agentId, sessionStart, assembledAt: assembledAtIso }) as Array<WaitingConversation['latest']>;
   // P4: siblings record WHICH turn served them (forward link), alongside the
   // claim stamp that hides them from the waiting set.
   let n = 0;
   for (const r of rows) {
-    const o = deriveOrigin({
-      role: 'user', content: r.content, source: r.source, sourceAgentId: r.source_agent_id,
-      a2aThreadId: r.a2a_thread_id, a2aIntent: r.a2a_intent, a2aRequiresResponse: r.a2a_requires_response,
-      inboundMeta: r.inbound_meta, originKind: r.origin_kind, originIntent: r.origin_intent,
-    });
+    const o = originOfCandidate(r);
     if (o.kind !== 'user') continue;
     if (conversationKey(o.channel, o.senderId, o.senderName, o.threadId) !== convKey) continue;
     claimRowByRowid({ agentId, rowid: r.rowid, convKey, servedByTurn: turnNumber ?? null });
@@ -218,28 +243,20 @@ export function getOwedMidTurnArrivals(
   assembledAtIso: string,
 ): Array<{ rowid: number; content: string }> {
   const db = getDb();
-  const sessionStart = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
+  const sessionStart = sessionStartOf(agentId);
   // Same window claimAssembledSiblings uses (<= the final assembly), plus the
   // strict turnStartedAt lower bound so only mid-turn arrivals qualify.
   const rows = db.prepare(
-    `SELECT rowid, content, source, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, origin_kind, origin_intent
+    `SELECT ${WAITING_COLS}
        FROM messages
-      WHERE agent_id = ? AND role = 'user' AND created_at >= ?
-        AND conv_key IS NULL
-        AND swept_at IS NULL
-        AND datetime(created_at) > datetime(?)
-        AND datetime(created_at) <= datetime(?)
-        AND (origin_kind IS NULL OR origin_kind != 'engine')
-        AND source_agent_id IS NULL AND a2a_thread_id IS NULL
+      WHERE agent_id = @agentId AND ${WAITING_HUMAN_CANDIDATE_WHERE}
+        AND datetime(created_at) > datetime(@turnStartedAt)
+        AND datetime(created_at) <= datetime(@assembledAt)
       ORDER BY created_at ASC, rowid ASC`,
-  ).all(agentId, sessionStart, turnStartedAt, assembledAtIso) as Array<WaitingConversation['latest']>;
+  ).all({ agentId, sessionStart, turnStartedAt, assembledAt: assembledAtIso }) as Array<WaitingConversation['latest']>;
   const owed: Array<{ rowid: number; content: string }> = [];
   for (const r of rows) {
-    const o = deriveOrigin({
-      role: 'user', content: r.content, source: r.source, sourceAgentId: r.source_agent_id,
-      a2aThreadId: r.a2a_thread_id, a2aIntent: r.a2a_intent, a2aRequiresResponse: r.a2a_requires_response,
-      inboundMeta: r.inbound_meta, originKind: r.origin_kind, originIntent: r.origin_intent,
-    });
+    const o = originOfCandidate(r);
     // Same authorized-human gate as getWaitingHumanConversations: only an
     // authorized human's ask is a conversation the agent owes a reply.
     if (o.kind !== 'user' || !o.authorized) continue;
@@ -266,24 +283,24 @@ const ENGINE_EVENT_BACKOFF_MINUTES = [1, 5, 15, 30, 60];
 // Deliverable engine events only: the same intent exclusions as getPendingEngineEvent
 // (thrash-gate steers / hints / system chatter never deliver, so they never expire
 // "loudly" either; the boot sweep disposes them silently as before).
+// T6: `origin_kind = 'engine'` became `lane = 'events'` — the same fact, CHECK-constrained
+// at the database instead of carried in a nullable free-text column. `origin_intent` stays
+// byte-identical: it is the SECOND axis (which subsystem produced this) and `lane` cannot
+// absorb its 17+ live values (PHASE-1.md T3-0b §2).
 const DELIVERABLE_ENGINE_EVENT_WHERE =
-  `role = 'user' AND origin_kind = 'engine' AND conv_key IS NULL
+  `role = 'user' AND lane = 'events' AND conv_key IS NULL
    AND swept_at IS NULL
    AND (origin_intent IS NULL OR origin_intent NOT IN ('thrash_gate', 'hint', 'system'))`;
 
-// D-A step 4: an engine event now lives in EITHER `messages` (legacy + the
-// still-in-messages completion_report/spawner writers) or `inter_agent_messages`
-// (the moved notice/scheduler/tracker/healer writers). Every lifecycle mutation
-// (claim, revert, attempt-bump, expiry, re-home) MUST target the row's ACTUAL home
-// table because rowid is per-table; a write against the wrong table silently misses.
-// The read side merges both tables and tags the source; the write side branches on
-// this tag. Both tables carry the identical lifecycle columns (mig 099 gave the store
-// swept_at/delivery_attempts/next_attempt_at), so DELIVERABLE_ENGINE_EVENT_WHERE and
-// the eligibility gates are valid verbatim against either.
-export type EngineEventSrc = 'm' | 'ia';
-function engineEventTable(src: EngineEventSrc): 'messages' | 'inter_agent_messages' {
-  return src === 'ia' ? 'inter_agent_messages' : 'messages';
-}
+// T6 — THE TWO-TABLE DISPATCH IS GONE. D-A step 4 split an engine event's home between
+// `messages` and `inter_agent_messages`, so every lifecycle read UNIONed both and tagged
+// the source (`_src`) purely so the matching WRITE could address the right table — rowid is
+// per-table, and a claim against the wrong one silently misses and re-delivers forever.
+// T4 folded every writer into `messages` (`lane='events'`), so there is one home, one rowid
+// keyspace, and no tag to carry: `EngineEventSrc` / `engineEventTable` and the six merged
+// reads below collapse to single-table statements.
+// requirement preserved: every lifecycle mutation reaches the row's ACTUAL home — now true
+// by construction rather than by threading a tag through eight call sites.
 
 // ── P2: the serve boundary (lanes & lineage plan, owner invariant 2026-07-20) ──
 // "See if it is done" before doing: every queued engine event with a work
@@ -293,16 +310,15 @@ function engineEventTable(src: EngineEventSrc): 'messages' | 'inter_agent_messag
 // eligibility was 100 percent delivery bookkeeping and the model was asked in
 // prose to "skip stale triggers silently" (the confession this replaces).
 function retireOneEngineEvent(
-  src: EngineEventSrc,
   rowid: number,
   reason: string,
   detail: { taskId?: string | null; runId?: string | null; createdAt?: string | null; referentState?: string | null },
 ): boolean {
   try {
-    const changed = sweepByRowid({ rowid, requireUnclaimed: true }, src);
+    const changed = sweepByRowid({ rowid, requireUnclaimed: true });
     if (changed === 0) return false;
     logger.info('serve boundary: retired a spent engine event (premise no longer holds; never served)', {
-      reason, rowid, src, taskId: detail.taskId ?? null, runId: detail.runId ?? null,
+      reason, rowid, taskId: detail.taskId ?? null, runId: detail.runId ?? null,
       triggerBorn: detail.createdAt ?? null, referentState: detail.referentState ?? null,
     });
     if (detail.taskId) {
@@ -331,13 +347,10 @@ export function retireSpentEngineEvents(agentId: string): number {
   try {
     const db = getDb();
     const candidates = db.prepare(
-      `SELECT rowid, task_id, run_id, created_at, 0 AS _tag, 'm' AS _src FROM messages
-         WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} AND (task_id IS NOT NULL OR run_id IS NOT NULL)
-       UNION ALL
-       SELECT rowid, task_id, run_id, created_at, 1 AS _tag, 'ia' AS _src FROM inter_agent_messages
+      `SELECT rowid, task_id, run_id, created_at FROM messages
          WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} AND (task_id IS NOT NULL OR run_id IS NOT NULL)
        LIMIT 50`,
-    ).all({ agentId }) as Array<{ rowid: number; task_id: string | null; run_id: string | null; created_at: string; _src: EngineEventSrc }>;
+    ).all({ agentId }) as Array<{ rowid: number; task_id: string | null; run_id: string | null; created_at: string }>;
     for (const ev of candidates) {
       let reason: string | null = null;
       let referentState: string | null = null;
@@ -353,7 +366,7 @@ export function retireSpentEngineEvents(agentId: string): number {
         else if (task.status === 'paused' && task.is_paused === 1) { reason = 'task_paused'; referentState = 'task paused'; }
       }
       if (reason) {
-        if (retireOneEngineEvent(ev._src, ev.rowid, reason, {
+        if (retireOneEngineEvent(ev.rowid, reason, {
           taskId: ev.task_id, runId: ev.run_id, createdAt: ev.created_at, referentState,
         })) retired++;
       }
@@ -366,15 +379,13 @@ export function retireSpentEngineEvents(agentId: string): number {
  * P2: keyed trigger retirement at CLOSE time (the other direction of the serve
  * boundary): work retires its drivers the moment it lands, instead of drivers
  * discovering staleness later. Called from run-close and task-terminal
- * transitions. Both stores, unclaimed rows only; claimed rows belong to a turn
- * already running and the serve boundary never yanks a live turn's trigger.
+ * transitions. Unclaimed rows only; a claimed row belongs to a turn already
+ * running and the serve boundary never yanks a live turn's trigger.
  */
 export function retireEngineEventsForRun(runId: string, reason = 'run_closed'): number {
   let n = 0;
   try {
-    for (const src of ['m', 'ia'] as const) {
-      n += sweepByReferent({ referent: 'run_id', id: runId }, src);
-    }
+    n += sweepByReferent({ referent: 'run_id', id: runId });
     if (n > 0) logger.info('serve boundary: run close retired its unserved trigger(s)', { runId, reason, retired: n });
   } catch { /* best effort */ }
   return n;
@@ -383,9 +394,7 @@ export function retireEngineEventsForRun(runId: string, reason = 'run_closed'): 
 export function retireEngineEventsForTask(taskId: string, reason = 'task_terminal'): number {
   let n = 0;
   try {
-    for (const src of ['m', 'ia'] as const) {
-      n += sweepByReferent({ referent: 'task_id', id: taskId }, src);
-    }
+    n += sweepByReferent({ referent: 'task_id', id: taskId });
     if (n > 0) logger.info('serve boundary: task terminal state retired its unserved event(s)', { taskId, reason, retired: n });
   } catch { /* best effort */ }
   return n;
@@ -405,22 +414,17 @@ export function expireExhaustedEngineEvents(agentId: string): number {
   let expired = 0;
   try {
     const db = getDb();
-    // D-A step 4: exhausted events may live in either table. Read MERGED (tagging the
-    // source) and stamp swept_at in the row's ACTUAL home table so the once-guard
+    // One home, one keyspace (T6): stamp swept_at on the row itself, so the once-guard
     // (`swept_at IS NULL` + .changes) stays atomic per row.
     const exhaustedTail =
       `AND (delivery_attempts >= ${ENGINE_EVENT_MAX_ATTEMPTS}
             OR created_at <= datetime('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours'))`;
     const rows = db.prepare(
-      `SELECT rowid, content, 'm' AS _src FROM messages
-        WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${exhaustedTail}
-          AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
-       UNION ALL
-       SELECT rowid, content, 'ia' AS _src FROM inter_agent_messages
+      `SELECT rowid, content FROM messages
         WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${exhaustedTail}`,
-    ).all({ agentId }) as Array<{ rowid: number; content: string; _src: EngineEventSrc }>;
+    ).all({ agentId }) as Array<{ rowid: number; content: string }>;
     for (const r of rows) {
-      const changed = sweepByRowid({ rowid: r.rowid, agentId }, r._src);
+      const changed = sweepByRowid({ rowid: r.rowid, agentId });
       if (changed === 0) continue; // another process expired it first; its notice already posted
       expired++;
       // Strip the engine [SOURCE: ...] attribution tag so the 100-char gist is the
@@ -447,20 +451,15 @@ export function expireExhaustedEngineEvents(agentId: string): number {
  * expired loudly right here so the owner notice never waits on a later
  * eligibility consult.
  */
-export function recordEngineEventDeliveryFailure(agentId: string, rowid: number, src: EngineEventSrc): void {
+export function recordEngineEventDeliveryFailure(agentId: string, rowid: number): void {
   try {
     const db = getDb();
-    // D-A step 4: read + bump the attempt state in the row's ACTUAL home table
-    // (`src` was captured at pickup time from the merged getPendingEngineEvent read).
-    // A bump against the wrong table would leave the real row's attempts unbumped and
-    // its backoff unset, so it would re-deliver on the very next drain, forever.
-    const table = engineEventTable(src);
-    const cur = db.prepare(`SELECT delivery_attempts FROM ${table} WHERE agent_id = ? AND rowid = ?`)
+    const cur = db.prepare('SELECT delivery_attempts FROM messages WHERE agent_id = ? AND rowid = ?')
       .get(agentId, rowid) as { delivery_attempts: number | null } | undefined;
     if (!cur) return;
     const attempts = (cur.delivery_attempts ?? 0) + 1;
     const backoffMin = ENGINE_EVENT_BACKOFF_MINUTES[Math.min(attempts, ENGINE_EVENT_BACKOFF_MINUTES.length) - 1];
-    recordDeliveryAttempt({ agentId, rowid, attempts, backoffMinutes: backoffMin }, src);
+    recordDeliveryAttempt({ agentId, rowid, attempts, backoffMinutes: backoffMin });
     logger.warn('engine event delivery failed; scheduled retry with backoff', { agentId, rowid, attempts, backoffMin }, agentId);
     if (attempts >= ENGINE_EVENT_MAX_ATTEMPTS) expireExhaustedEngineEvents(agentId);
   } catch { /* best effort, failure bookkeeping must never mask the original abort */ }
@@ -475,22 +474,15 @@ export function recordEngineEventDeliveryFailure(agentId: string, rowid: number,
 export function getNextEngineEventRetryAt(agentId: string): number | null {
   try {
     const db = getDb();
-    const sessionStart = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
-    // D-A step 4: parked-on-backoff events may live in either table; take the MIN
-    // across BOTH so the runtime's one-shot retry timer arms at the earliest of them.
+    const sessionStart = sessionStartOf(agentId);
     const retryGates =
       `AND created_at >= @sessionStart
        AND created_at >= datetime('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours')
        AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
        AND next_attempt_at > datetime('now')`;
     const row = db.prepare(
-      `SELECT MIN(t) AS t FROM (
-         SELECT MIN(next_attempt_at) AS t FROM messages
-           WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${retryGates}
-         UNION ALL
-         SELECT MIN(next_attempt_at) AS t FROM inter_agent_messages
-           WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${retryGates}
-       )`,
+      `SELECT MIN(next_attempt_at) AS t FROM messages
+        WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${retryGates}`,
     ).get({ agentId, sessionStart }) as { t: string | null } | undefined;
     if (!row?.t) return null;
     const ms = Date.parse(row.t.replace(' ', 'T') + 'Z'); // SQLite datetime('now') is UTC
@@ -514,10 +506,10 @@ export function getNextEngineEventRetryAt(agentId: string): number | null {
  * Re-home each such row to the new boundary so it survives the reset and gets its
  * turn in the fresh session. Scope is deliberately narrow so the reset-wipe
  * semantics hold and nothing already-answered is resurfaced:
- *   - only DELIVERABLE_ENGINE_EVENT_WHERE rows (origin_kind='engine', conv_key NULL,
+ *   - only DELIVERABLE_ENGINE_EVENT_WHERE rows (lane='events', conv_key NULL,
  *     unswept, not a thrash-gate / hint / system steer): an already-claimed event
- *     (conv_key set, i.e. delivered) or ordinary human conversation (origin_kind
- *     != 'engine') is never touched, so a reset still wipes the chat as intended;
+ *     (conv_key set, i.e. delivered) or ordinary human conversation (any other
+ *     lane) is never touched, so a reset still wipes the chat as intended;
  *   - only rows still inside the delivery lifecycle (under max attempts) and inside
  *     the 6-hour horizon, so an already-exhausted event is left to expire loudly,
  *     never revived.
@@ -527,19 +519,15 @@ export function getNextEngineEventRetryAt(agentId: string): number | null {
  */
 export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string): number {
   try {
-    // D-A step 4: a fired-but-undelivered engine event may live in either table, so
-    // re-home BOTH. The `created_at < newBoundary` guard keeps each re-home idempotent
-    // (a re-run finds nothing left below the boundary) and confines it to the row's
-    // own table, so there is no per-table rowid hazard here.
-    const rehome = (src: EngineEventSrc): number =>
-      rehomeUndeliveredCreatedAt({
-        agentId,
-        newBoundary,
-        eligibleWhere: DELIVERABLE_ENGINE_EVENT_WHERE,
-        maxAttempts: ENGINE_EVENT_MAX_ATTEMPTS,
-        expiryHours: ENGINE_EVENT_EXPIRY_HOURS,
-      }, src);
-    const changed = rehome('m') + rehome('ia');
+    // The `created_at < newBoundary` guard keeps the re-home idempotent: a re-run finds
+    // nothing left below the boundary.
+    const changed = rehomeUndeliveredCreatedAt({
+      agentId,
+      newBoundary,
+      eligibleWhere: DELIVERABLE_ENGINE_EVENT_WHERE,
+      maxAttempts: ENGINE_EVENT_MAX_ATTEMPTS,
+      expiryHours: ENGINE_EVENT_EXPIRY_HOURS,
+    });
     if (changed > 0) {
       logger.info('re-homed fired-but-undelivered engine event(s) across session reset', { agentId, count: changed }, agentId);
     }
@@ -551,7 +539,7 @@ export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string
 
 /**
  * E-A2: the oldest UNPROCESSED engine event (a scheduler/reminder/tracker/healer
- * row, origin_kind='engine', conv_key still NULL) in this session, or null. The
+ * row, lane='events', conv_key still NULL) in this session, or null. The
  * loop stamps an engine event's conv_key when it processes it (mirroring the human
  * pickup-stamp), so conv_key NULL = not yet handled. This lets the engine turn be
  * detected even when it isn't the MOST-RECENT inbound (a human message that raced
@@ -562,7 +550,7 @@ export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string
  */
 /**
  * Newest UNSERVED terminal-wake A2A row (DELIVERABLE/ANSWER/COMPLETE/FAIL,
- * requires_response=1, never claimed by a turn) across both stores. The
+ * requires_response=1, never claimed by a turn). The
  * turn-start wake detection used to test only the absolute most-recent
  * inbound for wake shape, so a peer question arriving AFTER a deliverable
  * BURIED it: the wake run served the question, the deliverable stayed
@@ -571,7 +559,7 @@ export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string
  * unserved-ness fixes the pick; the runtime's turn-end drain uses the same
  * finder so a leftover wake re-queues immediately instead of waiting.
  */
-export function findUnservedTerminalWake(agentId: string): { rowid: number; src: 'm' | 'ia' } | null {
+export function findUnservedTerminalWake(agentId: string): { rowid: number } | null {
   const db = getDb();
   // AGE-BOUNDED (2026-07-23 PRODUCTION STORM, owner box on .20): a lived-in
   // box carries a deep backlog of never-served terminal rows from before
@@ -583,30 +571,20 @@ export function findUnservedTerminalWake(agentId: string): { rowid: number; src:
   // FRESH; older rows return to their pre-.20 state (inert, never served),
   // which is exactly how the box behaved before this finder existed.
   const row = db.prepare(`
-    SELECT rowid, created_at, 'm' AS _src FROM messages
+    SELECT rowid FROM messages
      WHERE agent_id = @agentId AND role = 'user'
-       AND (origin_kind IS NULL OR origin_kind != 'engine')
+       AND lane <> 'events'
        AND a2a_thread_id IS NOT NULL
        AND a2a_intent IN ('DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL')
        AND a2a_requires_response = 1
        AND conv_key IS NULL AND swept_at IS NULL
        AND created_at >= datetime('now', '-45 minutes')
-       AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
-    UNION ALL
-    SELECT rowid, created_at, 'ia' AS _src FROM inter_agent_messages
-     WHERE agent_id = @agentId AND role = 'user'
-       AND (origin_kind IS NULL OR origin_kind != 'engine')
-       AND a2a_thread_id IS NOT NULL
-       AND a2a_intent IN ('DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL')
-       AND a2a_requires_response = 1
-       AND conv_key IS NULL AND swept_at IS NULL
-       AND created_at >= datetime('now', '-45 minutes')
-    ORDER BY created_at DESC LIMIT 1
-  `).get({ agentId }) as { rowid: number; _src: 'm' | 'ia' } | undefined;
-  return row ? { rowid: row.rowid, src: row._src } : null;
+    ORDER BY created_at DESC, rowid DESC LIMIT 1
+  `).get({ agentId }) as { rowid: number } | undefined;
+  return row ? { rowid: row.rowid } : null;
 }
 
-export function getPendingEngineEvent(agentId: string): { rowid: number; id: string; taskId: string | null; runId: string | null; content: string; originIntent: string | null; src: EngineEventSrc } | null {
+export function getPendingEngineEvent(agentId: string): { rowid: number; id: string; taskId: string | null; runId: string | null; content: string; originIntent: string | null } | null {
   const db = getDb();
   // D8: dispose exhausted/overdue events LOUDLY before answering "what's pending",
   // so every consumer of eligibility (loop pickup, runtime drain, boot owed-check)
@@ -617,30 +595,20 @@ export function getPendingEngineEvent(agentId: string): { rowid: number; id: str
   // at the one choke point every consumer (drain, retry timer, boot) funnels
   // through, so a spent intention can never become a turn.
   retireSpentEngineEvents(agentId);
-  const sessionStart = (db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined)?.session_started_at ?? '1970-01-01';
-  // D-A step 4: engine events now live in EITHER table, `messages` (legacy rows +
-  // the still-in-messages completion_report/spawner writers) or inter_agent_messages
-  // (the moved notice/scheduler/tracker/healer writers). Read the MERGED source so a
-  // pending event is found wherever it lives, and TAG the source (_src) so the loop's
-  // claim UPDATE hits the row's ACTUAL home table, a claim against the wrong table
-  // silently misses (per-table rowid) and the event re-delivers forever. The messages
-  // arm dedups against store ids (idiom); an engine row is never double-homed, so this
-  // is a safety net. Cross-table order is created_at, then the stable _tag tiebreak,
-  // then rowid, oldest-first (matching the legacy ORDER BY created_at ASC, rowid ASC).
+  const sessionStart = sessionStartOf(agentId);
+  // T6: one home, one keyspace. The pick is oldest-first by the clock with the INSERTION
+  // key as the tiebreak — a scheduler tick queues several events inside one clock second
+  // and `created_at` is second-granular TEXT, so rowid is what actually orders them.
   const engineGates =
     `AND created_at >= @sessionStart
      AND created_at >= datetime('now', '-${ENGINE_EVENT_EXPIRY_HOURS} hours')
      AND delivery_attempts < ${ENGINE_EVENT_MAX_ATTEMPTS}
      AND (next_attempt_at IS NULL OR next_attempt_at <= datetime('now'))`;
   const row = db.prepare(
-    `SELECT rowid, id, task_id, run_id, content, origin_intent, created_at, 0 AS _tag, 'm' AS _src FROM messages
+    `SELECT rowid, id, task_id, run_id, content, origin_intent FROM messages
        WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${engineGates}
-         AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
-     UNION ALL
-     SELECT rowid, id, task_id, run_id, content, origin_intent, created_at, 1 AS _tag, 'ia' AS _src FROM inter_agent_messages
-       WHERE agent_id = @agentId AND ${DELIVERABLE_ENGINE_EVENT_WHERE} ${engineGates}
-     ORDER BY created_at ASC, _tag ASC, rowid ASC LIMIT 1`,
-  ).get({ agentId, sessionStart }) as { rowid: number; id: string; task_id: string | null; run_id: string | null; content: string; origin_intent: string | null; _src: EngineEventSrc } | undefined;
+     ORDER BY created_at ASC, rowid ASC LIMIT 1`,
+  ).get({ agentId, sessionStart }) as { rowid: number; id: string; task_id: string | null; run_id: string | null; content: string; origin_intent: string | null } | undefined;
   // C6: exclude non-deliverable engine intents (thrash-gate steers, hints, system chatter)
   // so they can never drive an engine turn, a deliverable event (scheduler/reminder/
   // tracker/healer/completion) still qualifies. Belt-and-suspenders on top of the conv_key
@@ -655,7 +623,7 @@ export function getPendingEngineEvent(agentId: string): { rowid: number; id: str
   // historical unstamped engine rows (migration 076 did not backfill conv_key)
   // can't replay as "pending events" (migration 078 backfilled those; this is the
   // runtime guard for anything the backfill missed).
-  return row ? { rowid: row.rowid, id: row.id, taskId: row.task_id, runId: row.run_id, content: row.content, originIntent: row.origin_intent, src: row._src } : null;
+  return row ? { rowid: row.rowid, id: row.id, taskId: row.task_id, runId: row.run_id, content: row.content, originIntent: row.origin_intent } : null;
 }
 
 export interface TurnCounterparty {
@@ -719,7 +687,9 @@ export interface ResolveCounterpartyArgs {
   a2aThreadShort: string | null;
   /** The triggering human message row fields (when this is a user turn). */
   triggerContent: string | null;
-  triggerSource: string | null;
+  /** T6: the STAMPED lane/channel of the trigger row; attribution is projected from them. */
+  triggerLane: string | null;
+  triggerChannel: string | null;
   triggerInboundMeta: string | null;
   /** The resolved inbound channel for the human turn. */
   inboundChannel: Channel | null;
@@ -744,7 +714,7 @@ export function resolveTurnCounterparty(args: ResolveCounterpartyArgs): TurnCoun
   const origin = deriveOrigin({
     role: 'user',
     content: args.triggerContent,
-    source: args.triggerSource,
+    ...legacyOriginInputs(args.triggerLane, args.triggerChannel),
     inboundMeta: args.triggerInboundMeta,
   });
   const name =

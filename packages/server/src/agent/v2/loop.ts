@@ -44,7 +44,7 @@ import type { AgentStatus, Message, ToolCall, Channel } from '@dojo/shared';
 // derives "did this turn do real work" from it instead of a hand list that
 // drifted (missed every _ms variant and user_ twin, see countsAsTaskWork).
 import { classifyTool } from '@dojo/shared';
-import { deriveOrigin } from '@dojo/shared';
+import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 
 import { assembleContext } from '../../memory/assembler.js';
 import { callModel, getContextWindow, STREAM_IDLE_TIMEOUT_ERROR } from '../model.js';
@@ -127,7 +127,7 @@ import {
 import { insertInterAgentEngineRow, insertInterAgentOwnOutput, tagInterAgentOwnOutputConvKey } from '../../memory/interagent.js';
 import { buildOpenLoopsInjection } from '../../memory/open-loops.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
-import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, claimAssembledSiblings, getOwedMidTurnArrivals, conversationKey, type TurnCounterparty, type EngineEventSrc } from './counterparty.js';
+import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, claimAssembledSiblings, getOwedMidTurnArrivals, conversationKey, type TurnCounterparty } from './counterparty.js';
 import { resolveOwnerAffinityChannel, affinityPromotionAllowed, recordAffinityPromotion, affinityPromotionRefusedNoBasis } from './owner-affinity.js';
 import { getProactiveSendStreak, bumpProactiveSendStreak, resetProactiveSendStreak, PROACTIVE_SEND_DEMOTE_THRESHOLD } from './proactive-budget.js';
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
@@ -339,7 +339,7 @@ function userRequestedCloseWantsReply(
     const alreadyAnswered = !!db.prepare(`
       SELECT 1 FROM messages
       WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?
-        AND (source IS NULL OR source != 'a2a')
+        AND lane <> 'a2a'
         AND content NOT LIKE '[{%'
         AND origin_intent IS NULL
         AND length(trim(content)) > 40
@@ -1070,10 +1070,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // D8: set at the engine-event pickup below when THIS turn claims a pending engine
   // event (conv_key stamped 'engine'). Declared here, before the abort revert that
   // reads it, so the closure never touches a TDZ variable.
-  // D-A step 4: also carry the source table (`src`) the event was found in, so the
-  // revert reverts + records the failure against the row's ACTUAL home table
-  // (per-table rowid, a wrong-table revert would re-deliver the event forever).
-  let claimedEngineEvent: { rowid: number; src: EngineEventSrc } | null = null;
+  let claimedEngineEvent: { rowid: number } | null = null;
   const revertTriggerStampOnAbort = () => {
     if (chosenConvKey && triggerRow) {
       try {
@@ -1094,14 +1091,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
     if (claimedEngineEvent != null) {
       try {
         if (state.nonIdempotentCallsThisTurn === 0) {
-          // D-A step 4: revert + record against the event's ACTUAL home table. The writer
-          // module takes the src and owns the dispatch (T4 Step 3); the table name is no
-          // longer spelled here.
-          const reverted = setConvKeyByRowid(
-            { rowid: claimedEngineEvent.rowid, agentId, value: null, expect: 'engine' },
-            claimedEngineEvent.src,
-          );
-          if (reverted > 0) recordEngineEventDeliveryFailure(agentId, claimedEngineEvent.rowid, claimedEngineEvent.src);
+          const reverted = setConvKeyByRowid({ rowid: claimedEngineEvent.rowid, agentId, value: null, expect: 'engine' });
+          if (reverted > 0) recordEngineEventDeliveryFailure(agentId, claimedEngineEvent.rowid);
         }
       } catch { /* best effort, recovery, never block the abort */ }
     }
@@ -1116,8 +1107,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // here and threaded into every assembleContext call below so the
   // voice-conduct block stays in scope across tool-call iterations of
   // a single voice turn.
+  // T6: the voice fact is `channel='voice'` now (T3-0b §3). This selects the
+  // voice-conduct addendum, so it is under the cache-prefix rider: the four
+  // ?source=voice|text × tts=local|cloud matrix cells must stay byte-identical.
   const latestUserSource: 'voice' | 'text' | null =
-    triggerRow?.source === 'voice' ? 'voice' : triggerRow ? 'text' : null;
+    triggerRow?.channel === 'voice' ? 'voice' : triggerRow ? 'text' : null;
   // Hume cloud-TTS brief, extend turn context with the active TTS engine
   // so the assembler can swap between the flat-voice (Kokoro) addendum
   // and the expressive (Hume) addendum that teaches the ((deliver: ...))
@@ -1160,7 +1154,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   const resolvedInbound = resolveInbound({
     agentId,
     content: lastUserMessageContent,
-    source: triggerRow?.source ?? null,
+    ...legacyOriginInputs(triggerRow?.lane, triggerRow?.channel),
     inboundMeta: triggerRow?.inbound_meta ?? null,
   });
   const inboundChannel = resolvedInbound.inboundChannel;
@@ -1192,34 +1186,28 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // runtime.ts finally + turn-state.ts).
   const forcedA2ATurn = forceA2ATurn.has(agentId);
   forceA2ATurn.delete(agentId);
-  // D-A: read the MERGED most-recent inbound. Human/engine rows still live in
-  // `messages`; peer A2A inbound now lives in inter_agent_messages. Merging both is
-  // what lets a NEW store ASSIGN be seen as the most-recent trigger, so mostRecentIsA2A
-  // is true → isA2ATurn → counterparty.kind='agent' → the assembler scopes (not strips)
-  // the merged tail to that thread and the model actually sees the ASSIGN. `_src` tags
-  // the source table so the terminal-wake claim UPDATE below hits the right one; the
-  // messages arm dedups against store ids so a backfilled row is not seen twice.
+  // T6: ONE most-recent inbound, over every lane the agent owns. This was a two-arm
+  // UNION with an anti-join dedup because peer A2A lived in a second physical table;
+  // T4 folded it in, so a NEW peer ASSIGN is the most-recent trigger by insertion order
+  // and mostRecentIsA2A → isA2ATurn → counterparty.kind='agent' without any merging.
+  // requirement preserved: a peer ASSIGN that arrived last is the trigger the assembler
+  // scopes the tail to. The `_src` tag is gone with the second table (one rowid space).
   const mostRecentInbound = db.prepare(`
-    SELECT rowid, content, origin_kind, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, conv_key, created_at, 0 AS _tag, 'm' AS _src
+    SELECT rowid, content, lane, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, conv_key
       FROM messages
      WHERE agent_id = @agentId AND role = 'user'
-       AND id NOT IN (SELECT id FROM inter_agent_messages WHERE agent_id = @agentId)
-    UNION ALL
-    SELECT rowid, content, origin_kind, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, NULL AS inbound_meta, conv_key, created_at, 1 AS _tag, 'ia' AS _src
-      FROM inter_agent_messages
-     WHERE agent_id = @agentId AND role = 'user'
-    ORDER BY created_at DESC, _tag DESC, rowid DESC
-    LIMIT 1
+     ORDER BY created_at DESC, rowid DESC
+     LIMIT 1
   `).get({ agentId }) as {
-    rowid: number; content: string; origin_kind: string | null; origin_intent: string | null;
+    rowid: number; content: string; lane: string; origin_intent: string | null;
     source_agent_id: string | null; a2a_thread_id: string | null; a2a_intent: string | null;
-    a2a_requires_response: number | null; inbound_meta: string | null; conv_key: string | null; _src: 'm' | 'ia';
+    a2a_requires_response: number | null; inbound_meta: string | null; conv_key: string | null;
   } | undefined;
   // A reply-needed peer A2A (QUESTION/ASSIGN/BLOCK) is most-recent. Engine-origin
   // rows (fromAgent='system') are NOT peer A2A, they drive an engine turn instead,
   // so they never count here (else they'd mis-frame the receiver toward send_to_agent).
   const mostRecentIsA2A =
-    mostRecentInbound?.origin_kind !== 'engine' &&
+    mostRecentInbound?.lane !== 'events' &&
     parseA2ATrigger(mostRecentInbound?.content ?? null) !== null;
   // ── Terminal-wake A2A detection (interagent-separation) ──
   // Terminal intents (DELIVERABLE/ANSWER/COMPLETE/FAIL) ALSO wake the receiver by
@@ -1233,10 +1221,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // (a2a_requires_response=1) and has not yet been claimed by a turn (conv_key NULL).
   // Gated with !hasUnansweredUser below so a waiting human always wins (no hijack).
   const TERMINAL_WAKE_INTENTS = new Set(['DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL']);
-  let terminalWakeA2A: { intent: string; threadShort: string; threadId: string; fromName: string; rowid: number; src: 'm' | 'ia' } | null = null;
+  let terminalWakeA2A: { intent: string; threadShort: string; threadId: string; fromName: string; rowid: number } | null = null;
   if (
     mostRecentInbound &&
-    mostRecentInbound.origin_kind !== 'engine' &&
+    mostRecentInbound.lane !== 'events' &&
     mostRecentInbound.a2a_thread_id &&
     mostRecentInbound.a2a_intent &&
     TERMINAL_WAKE_INTENTS.has(mostRecentInbound.a2a_intent) &&
@@ -1252,7 +1240,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
       threadId: mostRecentInbound.a2a_thread_id,
       fromName: senderRow?.name ?? mostRecentInbound.source_agent_id ?? 'another agent',
       rowid: mostRecentInbound.rowid,
-      src: mostRecentInbound._src,
     };
   }
   // Buried-wake fallback (2026-07-23): the check above only sees a wake when
@@ -1265,8 +1252,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       const { findUnservedTerminalWake } = await import('./counterparty.js');
       const buried = findUnservedTerminalWake(agentId);
       if (buried) {
-        const table = buried.src === 'ia' ? 'inter_agent_messages' : 'messages';
-        const b = db.prepare(`SELECT a2a_intent, a2a_thread_id, source_agent_id FROM ${table} WHERE rowid = ?`)
+        const b = db.prepare('SELECT a2a_intent, a2a_thread_id, source_agent_id FROM messages WHERE rowid = ?')
           .get(buried.rowid) as { a2a_intent: string; a2a_thread_id: string; source_agent_id: string | null } | undefined;
         if (b) {
           const senderRow2 = b.source_agent_id
@@ -1278,7 +1264,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
             threadId: b.a2a_thread_id,
             fromName: senderRow2?.name ?? b.source_agent_id ?? 'another agent',
             rowid: buried.rowid,
-            src: buried.src,
           };
           logger.info('v2: buried terminal wake selected (newer non-wake inbound had hidden it)', {
             agentId, intent: b.a2a_intent, thread: b.a2a_thread_id.slice(0, 8),
@@ -1322,12 +1307,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // inert to every other consumer. Mirrors the human/engine pickup-claim above.
   if (terminalWakeDrivesTurn && terminalWakeA2A) {
     try {
-      // D-A: claim in whichever table the row lives in. rowid is per-table, so the src
-      // MUST match or the claim silently misses; the writer module owns that dispatch.
-      setConvKeyByRowid(
-        { rowid: terminalWakeA2A.rowid, agentId, value: 'a2a', expect: null },
-        terminalWakeA2A.src,
-      );
+      setConvKeyByRowid({ rowid: terminalWakeA2A.rowid, agentId, value: 'a2a', expect: null });
     } catch { /* best effort, exactly-once is a safety net, not a correctness gate */ }
     // P1 lineage spine: an A2A wake turn's root is its thread.
     const twThread = (terminalWakeA2A as unknown as { a2a_thread_id?: string | null }).a2a_thread_id;
@@ -1376,17 +1356,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
     !isA2ATurn &&
     !isEngineTurn &&
     mostRecentInbound != null &&
-    mostRecentInbound.origin_kind !== 'engine' &&
+    mostRecentInbound.lane !== 'events' &&
     !mostRecentInbound.a2a_thread_id &&
     deriveOrigin({
       role: 'user',
       content: mostRecentInbound.content,
+      ...legacyOriginInputs(mostRecentInbound.lane, null),
       sourceAgentId: mostRecentInbound.source_agent_id,
       a2aThreadId: mostRecentInbound.a2a_thread_id,
       a2aIntent: mostRecentInbound.a2a_intent,
       a2aRequiresResponse: mostRecentInbound.a2a_requires_response,
       inboundMeta: mostRecentInbound.inbound_meta,
-      originKind: mostRecentInbound.origin_kind,
       originIntent: mostRecentInbound.origin_intent,
     }).authorized === false;
   // Mark the engine event PROCESSED at pickup (mirrors the human pickup-stamp) so it
@@ -1395,18 +1375,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
   if (isEngineTurn && pendingEngineEvent) {
     let engineClaimed = true;
     try {
-      // D-A step 4: claim in whichever table the pending event lives in (tagged by
-      // the merged getPendingEngineEvent read). rowid is per-table, so a claim against
-      // the wrong table stamps nothing, leaves the event conv_key NULL, and it
-      // re-delivers on every subsequent drain, forever, the worst regression here.
-      engineClaimed = setConvKeyByRowid(
-        { rowid: pendingEngineEvent.rowid, agentId, value: 'engine', expect: null },
-        pendingEngineEvent.src,
-      ) > 0;
+      engineClaimed = setConvKeyByRowid({ rowid: pendingEngineEvent.rowid, agentId, value: 'engine', expect: null }) > 0;
     } catch { /* best effort */ }
     // D8: remember OUR claim so a no-answer abort can revert it symmetrically with
     // the human trigger stamp (see revertTriggerStampOnAbort above).
-    if (engineClaimed) claimedEngineEvent = { rowid: pendingEngineEvent.rowid, src: pendingEngineEvent.src };
+    if (engineClaimed) claimedEngineEvent = { rowid: pendingEngineEvent.rowid };
     // P1 lineage spine: this turn serves the engine event; if the row carries a
     // run/task referent (migration 112 columns), the root is that occurrence,
     // and the served task's kind/origin are published to turn-state so lanes
@@ -1489,7 +1462,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
         a2aFromName: a2aCounterpartyIdentity?.fromName ?? null,
         a2aThreadShort: a2aCounterpartyIdentity?.threadShort ?? null,
         triggerContent: lastUserMessageContent,
-        triggerSource: triggerRow?.source ?? null,
+        triggerLane: triggerRow?.lane ?? null,
+        triggerChannel: triggerRow?.channel ?? null,
         triggerInboundMeta: triggerRow?.inbound_meta ?? null,
         inboundChannel,
       });
@@ -1586,10 +1560,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
         markServedByRowid(triggerRow.rowid, turnNumber);
       }
       if (claimedEngineEvent) {
-        markServedByRowid(claimedEngineEvent.rowid, turnNumber, claimedEngineEvent.src);
+        markServedByRowid(claimedEngineEvent.rowid, turnNumber);
       }
       if (terminalWakeA2A) {
-        markServedByRowid(terminalWakeA2A.rowid, turnNumber, terminalWakeA2A.src);
+        markServedByRowid(terminalWakeA2A.rowid, turnNumber);
       }
     } catch { /* best effort */ }
   }
@@ -2322,8 +2296,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
           try {
             // Model-visible steer channel. A role='system' row would be stripped
             // by the assembler (dashboard-only theater), so this ladder rung would
-            // never reach the model. Persist as an origin_kind='engine' inter-agent
-            // row (the EVENTS lane surfaces it next turn) AND set pendingNudge so
+            // never reach the model. Persist on the EVENTS lane (it surfaces next
+            // turn) AND set pendingNudge so
             // the model receives it on the very next iteration. conv_key sentinel
             // 'engine-steer' keeps it un-selectable as a pending event (see the
             // thrash-steer C6 note below).
@@ -2509,10 +2483,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // and the dashboard shows it inline as the engine's voice. Stamp the
             // structured engine origin (mig 075) so it's attributed as an EVENT,
             // not parsed from the [Engine thrash gate] prose.
-            // D-A step 4: an engine steer is inter-agent/engine traffic
-            // (origin_kind='engine'), so it lands in the physical inter-agent store,
-            // not `messages`. conv_key 'engine-steer' (below) keeps it un-selectable
-            // as a pending event; the EVENTS lane still surfaces it via origin_kind.
+            // An engine steer is platform coordination, so it lands on lane='events'.
+            // conv_key 'engine-steer' (below) keeps it un-selectable as a pending
+            // event; the EVENTS lane still surfaces it to the model.
             insertInterAgentEngineRow({
       work: null,
               id: steerMsgId,
@@ -2831,13 +2804,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       let engineEventKeepFullId: string | null = null;
       if (isEngineTurn && pendingEngineEvent?.originIntent === 'a2a_request') {
         try {
-          // D-A step 4: an action-required engine-origin A2A ('a2a_request') is
-          // delivered by deliverA2AMessage, which now persists into the STORE, so
-          // resolve its id from the event's ACTUAL home table. A `messages`-only read
-          // would miss the store row, drop engineEventKeepFullId to null, and let the
-          // approval token / full escalation get clipped into the truncated gist.
-          const kfTable = pendingEngineEvent.src === 'ia' ? 'inter_agent_messages' : 'messages';
-          const idRow = db.prepare(`SELECT id FROM ${kfTable} WHERE agent_id = ? AND rowid = ?`)
+          const idRow = db.prepare('SELECT id FROM messages WHERE agent_id = ? AND rowid = ?')
             .get(agentId, pendingEngineEvent.rowid) as { id: string } | undefined;
           engineEventKeepFullId = idRow?.id ?? null;
         } catch { /* best effort, fall back to the truncated awareness gist */ }
@@ -3383,8 +3350,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
             mctx.delegationHint = `[Engine hint: ${DELEGATION_HINT_BODY}]`;
             injectRegistryMessage('msg.delegation-hint', messages, mctx);
 
-            // Persist for later turns: an origin_kind='engine' inter-agent row the
-            // EVENTS lane surfaces next turn. conv_key sentinel 'engine-steer'
+            // Persist for later turns: a lane='events' row the EVENTS lane
+            // surfaces next turn. conv_key sentinel 'engine-steer'
             // keeps it un-selectable as a pending engine event. Label form
             // ("[Engine hint] body", space not colon) so the events-lane
             // leading-bracket strip drops only the label and keeps the body; a
@@ -7889,22 +7856,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // C9: constrain to reply-warranting intents. The weak model routinely batches a
             // real QUESTION/ASSIGN/BLOCK to a worker AND a STATUS/FYI to the PM in one
             // response; the intent filter keeps only the delegations that actually await a reply.
-            // D-A: this agent's own outbound wake-ask is persisted as the RECIPIENT's inbound
-            // row, and for peer A2A that row now lives in inter_agent_messages, not `messages`.
-            // Read the MERGED source so the structural derivation still finds the sends it just
-            // made (a messages-only read would miss them and silently fall back to the fragile
-            // prose regex). The messages arm dedups against store ids; the cross-table tiebreak
-            // (created_at, then messages-first on a tie, then rowid) preserves hand-off order.
+            // T6: this agent's own outbound wake-ask is persisted as the RECIPIENT's inbound
+            // row. That row used to land in a second table, so this read UNIONed both and
+            // deduped with an anti-join; one table means one arm, ordered by the insertion key
+            // so hand-off order is exact rather than reconstructed from a second-granular clock.
+            // requirement preserved: the structural derivation still finds the sends this turn
+            // just made, so the park encoding never falls back to the fragile prose regex.
             const sentRows = db.prepare(
-              `SELECT a2a_thread_id, created_at, rowid AS _rowid, 0 AS _tag FROM messages
+              `SELECT a2a_thread_id FROM messages
                  WHERE source_agent_id = @agentId AND a2a_thread_id IS NOT NULL
                    AND a2a_intent IN ('QUESTION','ASSIGN','BLOCK') AND created_at >= @turnStartedAt
-                   AND id NOT IN (SELECT id FROM inter_agent_messages WHERE source_agent_id = @agentId)
-               UNION ALL
-               SELECT a2a_thread_id, created_at, rowid AS _rowid, 1 AS _tag FROM inter_agent_messages
-                 WHERE source_agent_id = @agentId AND a2a_thread_id IS NOT NULL
-                   AND a2a_intent IN ('QUESTION','ASSIGN','BLOCK') AND created_at >= @turnStartedAt
-               ORDER BY created_at ASC, _tag ASC, _rowid ASC`,
+               ORDER BY created_at ASC, rowid ASC`,
             ).all({ agentId, turnStartedAt }) as Array<{ a2a_thread_id: string }>;
             // BUG-4 (comms-audit): park under FULL thread ids (never an 8-char prefix). Two
             // threads sharing an 8-hex prefix would otherwise collide in the relay. Full ids
@@ -8307,7 +8269,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         const userAlreadyAnswered = answeredByKey || (justCompletedScaffold.length > 0 && !!db.prepare(`
           SELECT 1 FROM messages
           WHERE agent_id = ? AND role = 'assistant' AND created_at >= ?
-            AND (source IS NULL OR source != 'a2a')
+            AND lane <> 'a2a'
             AND content NOT LIKE '[{%'
             -- Engine acks are excluded STRUCTURALLY by their origin_intent tag.
             AND origin_intent IS NULL
@@ -9139,8 +9101,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
       const parkedRow = !answerRow ? db.prepare(
         `SELECT 1 FROM messages WHERE agent_id = ? AND conv_key LIKE 'park:%' AND created_at >= ? LIMIT 1`,
       ).get(agentId, turnBoundary.get(agentId) ?? new Date().toISOString()) : undefined;
+      // T6: "did this turn hand off to a peer instead of answering?" was a probe of the
+      // second physical table — being IN that table WAS the handoff signal. The equivalent
+      // fact on one table is the a2a lane, and it must exclude this agent's inbound peer
+      // traffic (role='user'), which was never in the probe's reach either.
       const handoffRow = !answerRow && !parkedRow ? db.prepare(
-        `SELECT 1 FROM inter_agent_messages WHERE agent_id = ? AND turn_number = ? LIMIT 1`,
+        `SELECT 1 FROM messages WHERE agent_id = ? AND turn_number = ? AND lane = 'a2a'
+            AND role IN ('assistant','tool') LIMIT 1`,
       ).get(agentId, turnNumber) : undefined;
       const outcome = toolPhaseEndedBySpinBrake ? 'brake'
         : answerRow ? 'answered'

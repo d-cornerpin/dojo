@@ -65,6 +65,30 @@ export interface OriginFields {
   originIntent?: string | null;    // engine event type ('tracker' | 'scheduler' | …)
 }
 
+/**
+ * PHASE-1 T6 — project the two LEGACY attribution inputs above from the STAMPED spine
+ * facts (`lane`, `channel`).
+ *
+ * `origin_kind` was only ever `lane='events'` spelled differently, and `source` was
+ * `lane='a2a'` plus `channel='voice'` folded into one nullable free-text column
+ * (PHASE-1.md T3-0b §1/§3). Every reader that used to SELECT those two columns now reads
+ * `lane`/`channel` and calls this — ONE place, so no reader re-derives the mapping by hand
+ * and the two spellings can never drift while `OriginFields` still carries the old names.
+ *
+ * This is a projection of a stored fact, not a prose re-derivation, so OR4 holds. Deleting
+ * `source`/`originKind` from `OriginFields` (and this helper with them) is SWEEP-E's, once
+ * the dashboard reads `lane`/`channel` off the wire directly.
+ */
+export function legacyOriginInputs(
+  lane: string | null | undefined,
+  channel: string | null | undefined,
+): { source: string | null; originKind: 'engine' | null } {
+  return {
+    source: lane === 'a2a' ? 'a2a' : channel === 'voice' ? 'voice' : null,
+    originKind: lane === 'events' ? 'engine' : null,
+  };
+}
+
 // thread ids are NOT always hex — they're often named (e.g. "pm-review-2026-06-25",
 // "thread-jlpvqj-poke-14a"), and the marker carries a slice(0,8) of that. The old
 // [0-9a-fA-F]+ pattern silently failed every named-thread A2A, so deriveOrigin fell

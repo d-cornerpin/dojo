@@ -665,7 +665,7 @@ class AgentRuntime {
           const { findUnservedTerminalWake, getPendingEngineEvent } = await import('./v2/counterparty.js');
           const leftoverWake = findUnservedTerminalWake(agentId);
           const leftoverEngine = leftoverWake ? null : getPendingEngineEvent(agentId);
-          const head = leftoverWake ? `w:${leftoverWake.src}:${leftoverWake.rowid}` : (leftoverEngine ? `e:${leftoverEngine.src}:${leftoverEngine.rowid}` : null);
+          const head = leftoverWake ? `w:${leftoverWake.rowid}` : (leftoverEngine ? `e:${leftoverEngine.rowid}` : null);
           if (head) {
             const prev = wakeDrainHead.get(agentId);
             const stuck = prev && prev.head === head ? prev.stuck + 1 : 0;
