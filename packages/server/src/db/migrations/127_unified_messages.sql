@@ -17,8 +17,10 @@
 --   * every NOT NULL column carries a DEFAULT, so a legacy-form insert still PERSISTS (R1);
 --   * `origin_kind` and `source` are carried and a compat trigger derives lane/channel/display
 --     from them, so the fail-closed view is never leaky during the changeover -- all `T4-DELETES`;
---   * TEXT time is retained -- `T6-CONVERTS` (R3: T6 converts the format AND its 42 predicates
---     in one owned, rehearsed step);
+--   * TEXT time is retained -- R3 gave the conversion to T6; T6 RE-DERIVED the surface
+--     (162 mentions in 29 files, 46 format-sensitive) and returned it BLOCKED, on measured
+--     evidence that it reaches the model payload, packages/dashboard and the vault. It is
+--     still owed; see the dated resolution under the R1-R6 block in overhaul-plans/PHASE-1.md;
 --   * `conv_key` is carried -- `PHASE2-DELETES` (T3 Step 2's carry-forward: obligation behaviour
 --     does not change this phase);
 --   * only `messages` is renamed. `inter_agent_messages` is dropped by T10 once T5 has deleted
@@ -95,11 +97,11 @@ CREATE TABLE messages (
   external_message_id TEXT, speaker TEXT, voice_session_id TEXT,
   task_id TEXT, run_id TEXT, root_kind TEXT, root_id TEXT,
   served_by_turn INTEGER, answer_message_id TEXT,
-  swept_at TEXT,                                              -- T6-CONVERTS to epoch-ms INTEGER
+  swept_at TEXT,                                              -- TIME-CONVERSION-DELETES: still TEXT (see PHASE-1.md, T6 resolution 2)
   delivery_attempts INTEGER NOT NULL DEFAULT 0,
-  next_attempt_at TEXT,                                       -- T6-CONVERTS to epoch-ms INTEGER
+  next_attempt_at TEXT,                                       -- TIME-CONVERSION-DELETES: still TEXT (see PHASE-1.md, T6 resolution 2)
   retired_at TEXT,                                            -- display suppression ONLY (07§2g)
-                                                              -- T6-CONVERTS to epoch-ms INTEGER
+                                                              -- TIME-CONVERSION-DELETES: still TEXT (see PHASE-1.md, T6 resolution 2)
   origin_kind    TEXT DEFAULT NULL,           -- T10-DELETES (compat: maps onto `lane`, T3-0b §1)
   source         TEXT DEFAULT NULL,           -- T10-DELETES (compat: splits onto `lane`+`channel`, §3)
   -- RE-DATED 2026-07-27 by T4, from `T4-DELETES`, on measured evidence. T4 converted every
@@ -113,7 +115,7 @@ CREATE TABLE messages (
   provenance     TEXT NOT NULL DEFAULT 'live' CHECK (provenance IN ('live','migrated','rescued')),
   sent_at        INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000)
                  CHECK (sent_at > 1600000000000),
-  created_at     TEXT NOT NULL DEFAULT (datetime('now')),     -- T6-CONVERTS to epoch-ms INTEGER
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),     -- TIME-CONVERSION-DELETES: still TEXT (see PHASE-1.md, T6 resolution 2)
   -- AMENDED 2026-07-27 (T3-0b §3): the original `CHECK (lane <> 'a2a' OR source_agent_id IS NOT NULL)`
   -- rejects every OWN-OUTPUT a2a row. Own output has source_agent_id NULL by design (memory/
   -- interagent.ts:145-147, insertInterAgentOwnOutput at :158) -- direction is carried by `role`.
