@@ -16,6 +16,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { getDb } from '../db/connection.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
+import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getOwnerName } from '../config/platform.js';
@@ -405,10 +406,6 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
         channel: 'email', provider: 'gmail', counterpartyId: fromAddr || from,
         threadRoot: (msg as { threadId?: string | null }).threadId ?? msg.id ?? null,
       });
-      db.prepare(`
-        INSERT OR IGNORE INTO messages (id, agent_id, role, content, conversation_id, external_message_id, created_at)
-        VALUES (?, ?, 'user', ?, ?, ?, datetime('now'))
-      `).run(msgId, primaryId, content, conversationId, msg.id ?? null);
       // v3.0.9 — structured routing metadata so the engine auto-routes the
       // reply off reliable data, not by re-parsing this prose. isDirectToAgent
       // already encodes the auth verdict (agent-kind mailbox + safe sender);
@@ -424,6 +421,22 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
         emailAccount: notifyAccount,
         emailSubject: subject,
       };
+      // T4/OR4: channel, sender and the auth verdict are stamped IN the write, from
+      // the meta this watcher just computed — never re-derived. recordInboundMeta
+      // below still records the full blob (account, subject, provider message id).
+      // INSERT OR IGNORE → insertMessageIfAbsent keeps the external_message_id
+      // de-duplication exactly as it was.
+      insertMessageIfAbsent({
+        id: msgId,
+        agentId: primaryId,
+        role: 'user',
+        content,
+        conversationId,
+        externalMessageId: msg.id ?? null,
+        channel: inboundMetaObj.channel,
+        senderId: inboundMetaObj.sender,
+        authorized: inboundMetaObj.authorized,
+      });
       recordInboundMeta(msgId, inboundMetaObj);
 
       broadcast({

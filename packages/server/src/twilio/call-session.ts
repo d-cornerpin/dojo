@@ -43,6 +43,7 @@ import { getTwilioConfig } from './auth.js';
 import { getTwilioVoiceSafeCallers } from '../services/channel-safe-senders.js';
 import { addressesMatch } from '../services/imessage-bridge.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
+import { insertMessageIfAbsent } from '../memory/message-store.js';
 
 const logger = createLogger('twilio-call-session');
 
@@ -496,13 +497,6 @@ export class CallSession {
       const conversationId = resolveOrCreateConversation(primaryId, {
         channel: 'phone', provider: 'twilio', counterpartyId: this.fromNumber ?? null, threadRoot: null,
       });
-      getDb().prepare(`
-        INSERT OR IGNORE INTO messages (id, agent_id, role, content, conversation_id, external_message_id, created_at)
-        VALUES (?, ?, 'user', ?, ?, ?, datetime('now'))
-      `).run(msgId, primaryId, content, conversationId, this.callSid ?? null);
-      // P8 speaker stamp on the id we hold (race-free) + session turn count.
-      stampSpokenMessage(msgId, 'caller', this.voiceSessionRecordId);
-      bumpVoiceSessionTurnCount(this.voiceSessionRecordId);
       // v3.0.9 — structured routing metadata. Stamped synchronously before
       // handleMessage runs below so the turn reads it. A live call is already
       // connected, so the reply is always spoken back via TTS to whoever is
@@ -516,6 +510,24 @@ export class CallSession {
         phoneFromNumber: this.fromNumber,
         recipientAddress: this.fromNumber,
       };
+      // T4/OR4: channel, sender and the auth verdict are stamped IN the write, from
+      // the meta this leg already holds — never re-derived. recordInboundMeta below
+      // still records the full blob (call sid, from number, reply address).
+      // insertMessageIfAbsent keeps the call-sid de-duplication of INSERT OR IGNORE.
+      insertMessageIfAbsent({
+        id: msgId,
+        agentId: primaryId,
+        role: 'user',
+        content,
+        conversationId,
+        externalMessageId: this.callSid ?? null,
+        channel: inboundMetaObj.channel,
+        senderId: inboundMetaObj.sender,
+        authorized: inboundMetaObj.authorized,
+      });
+      // P8 speaker stamp on the id we hold (race-free) + session turn count.
+      stampSpokenMessage(msgId, 'caller', this.voiceSessionRecordId);
+      bumpVoiceSessionTurnCount(this.voiceSessionRecordId);
       recordInboundMeta(msgId, inboundMetaObj);
       broadcast({
         type: 'chat:message',

@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { getDb } from '../db/connection.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
+import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
@@ -350,10 +351,6 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
         channel: 'email', provider: 'outlook', counterpartyId: fromAddr || from,
         threadRoot: (msg as { conversationId?: string | null }).conversationId ?? msg.id ?? null,
       });
-      db.prepare(`
-        INSERT OR IGNORE INTO messages (id, agent_id, role, content, conversation_id, external_message_id, created_at)
-        VALUES (?, ?, 'user', ?, ?, ?, datetime('now'))
-      `).run(msgId, primaryId, content, conversationId, msg.id ?? null);
       // v3.0.9 — structured routing metadata (see gmail-watcher for rationale).
       const inboundMetaObj = {
         channel: 'email' as const,
@@ -365,6 +362,21 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
         emailAccount: notifyAccount,
         emailSubject: subject,
       };
+      // T4/OR4: channel, sender and the auth verdict are stamped IN the write, from
+      // the meta this watcher just computed — never re-derived. recordInboundMeta
+      // below still records the full blob. insertMessageIfAbsent keeps the
+      // external_message_id de-duplication the INSERT OR IGNORE relied on.
+      insertMessageIfAbsent({
+        id: msgId,
+        agentId: primaryId,
+        role: 'user',
+        content,
+        conversationId,
+        externalMessageId: msg.id ?? null,
+        channel: inboundMetaObj.channel,
+        senderId: inboundMetaObj.sender,
+        authorized: inboundMetaObj.authorized,
+      });
       recordInboundMeta(msgId, inboundMetaObj);
 
       broadcast({

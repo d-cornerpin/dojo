@@ -31,6 +31,7 @@ import { StreamingSpeechBuffer } from './text-sanitize.js';
 import { HumeStreamSession, isHumeConfigured } from './hume-engine.js';
 import { createCueExtractor } from './cue-parser.js';
 import { getDb } from '../db/connection.js';
+import { markSpokenAloud } from '../memory/message-store.js';
 import { getPrimaryAgentName } from '../config/platform.js';
 import { WHISPER_MODELS, KOKORO_MODEL_ID, type WhisperSize } from './model-manager.js';
 import { predictTurnComplete, TURN_COMPLETE_THRESHOLD, warmUpSmartTurn } from './smart-turn.js';
@@ -234,10 +235,10 @@ function loadVoiceSettings(): {
 }
 
 /**
- * Mark an assistant message as voice-delivered: stamps messages.source =
- * 'voice' in the DB and broadcasts chat:source_updated so live dashboard
- * sessions update the bubble's "via voice" badge in place. Idempotent ,
- * the SQL only updates rows where source IS NULL, and the broadcast is
+ * Mark an assistant message as voice-delivered: the writer module stamps the
+ * row as spoken aloud and this broadcasts chat:source_updated so live dashboard
+ * sessions update the bubble's "via voice" badge in place. Idempotent , the
+ * statement only updates rows not already on a channel, and the broadcast is
  * cheap, so duplicate calls during a burst are a no-op end-to-end.
  */
 function markAssistantMessageVoiced(agentId: string, messageId: string, recordId?: string | null): void {
@@ -245,11 +246,7 @@ function markAssistantMessageVoiced(agentId: string, messageId: string, recordId
   stampSpokenMessage(messageId, 'agent', recordId ?? null);
   if (!messageId) return;
   try {
-    const db = getDb();
-    const res = db.prepare(
-      "UPDATE messages SET source = 'voice' WHERE id = ? AND role = 'assistant' AND (source IS NULL OR source = '')",
-    ).run(messageId);
-    if (res.changes > 0) {
+    if (markSpokenAloud(messageId) > 0) {
       broadcast({ type: 'chat:source_updated', agentId, messageId, source: 'voice' });
     }
   } catch (err) {

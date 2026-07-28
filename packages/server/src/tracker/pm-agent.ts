@@ -14,6 +14,12 @@ import { postAgentNotice } from '../agent/agent-notice.js';
 import { listTasks, getTask, getLastPoke, logPoke, clearPokeLog } from './schema.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { getRecentObservations, getRecentTransitions, formatEntryLine } from './task-log.js';
+import {
+  deleteForAgentBefore,
+  deleteNonSystemForAgent,
+  insertMessage,
+  insertMessageIfAbsent,
+} from '../memory/message-store.js';
 import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, isSetupCompleted, getOwnerName, isSystemServiceAgent, isDreamerAgent } from '../config/platform.js';
 import type { Message } from '@dojo/shared';
 
@@ -200,10 +206,7 @@ export function ensurePMAgentRunning(): void {
         ORDER BY created_at DESC, rowid DESC LIMIT 1
       `).get(pmId) as { content: string } | undefined;
       if (!existing || existing.content !== freshPrompt) {
-        db.prepare(`
-          INSERT INTO messages (id, agent_id, role, content, created_at)
-          VALUES (?, ?, 'system', ?, datetime('now'))
-        `).run(uuidv4(), pmId, freshPrompt);
+        insertMessage({ id: uuidv4(), agentId: pmId, role: 'system', content: freshPrompt });
         logger.info('PM system prompt refreshed from template', { pmId });
       }
     } catch (err) {
@@ -258,10 +261,7 @@ export function ensurePMAgentRunning(): void {
               ?, ?, NULL, datetime('now'), datetime('now'))
     `).run(pmId, pmName, modelId, primaryId, primaryId, pmPermissions, pmToolsPolicy);
 
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'system', ?, datetime('now'))
-    `).run(uuidv4(), pmId, systemPrompt);
+    insertMessageIfAbsent({ id: uuidv4(), agentId: pmId, role: 'system', content: systemPrompt });
 
     logger.info('PM agent created', { pmId, pmName });
   }
@@ -745,23 +745,12 @@ function pruneOldPMMessages(pmId: string): void {
     // forever (pm-agent log spam observed in production: "Failed to prune PM
     // messages" every 10 min for hours). The PM doesn't need its archived
     // summaries anyway, the tracker is its memory, so wipe the link rows
-    // first, then the messages themselves.
-    const txn = db.transaction(() => {
-      db.prepare(`
-        DELETE FROM summary_messages
-        WHERE message_id IN (
-          SELECT id FROM messages
-          WHERE agent_id = ? AND rowid < (SELECT rowid FROM messages WHERE id = ?)
-        )
-      `).run(pmId, cutoff.id);
-      return db.prepare(`
-        DELETE FROM messages WHERE agent_id = ? AND rowid < (SELECT rowid FROM messages WHERE id = ?)
-      `).run(pmId, cutoff.id);
-    });
-    const deleted = txn();
+    // first, then the messages themselves. Both deletes live inside
+    // deleteForAgentBefore, in one transaction, exactly as they did here.
+    const deleted = deleteForAgentBefore(pmId, cutoff.id);
 
-    if (deleted.changes > 0) {
-      logger.debug('Pruned old PM messages', { pmId, deleted: deleted.changes, kept: PM_MAX_MESSAGES });
+    if (deleted > 0) {
+      logger.debug('Pruned old PM messages', { pmId, deleted, kept: PM_MAX_MESSAGES });
     }
   } catch (err) {
     logger.warn('Failed to prune PM messages', {
@@ -840,18 +829,15 @@ async function runPMReview(): Promise<void> {
   // instructions persist.
   if (pendingValidationCount > 0) {
     try {
-      const wiped = db.prepare(`
-        DELETE FROM messages
-        WHERE agent_id = ? AND role != 'system'
-      `).run(pmId);
-      if (wiped.changes > 0) {
+      const wiped = deleteNonSystemForAgent(pmId);
+      if (wiped > 0) {
         // D7: do NOT reset the dedup hash here. The dedup key is the actionable
         // issue-SET (stableIssuesKey), so keeping the hash means a re-review fires
         // only when the set of tasks needing validation actually CHANGES, not on
         // every 60s poll of an unchanged board. Resetting it forced a fresh LLM
         // review each poll while any task sat unvalidated, the ~900-calls/day loop.
         logger.info('Wiped PM conversation history before validation review', {
-          pmId, deletedMessages: wiped.changes, pendingValidation: pendingValidationCount,
+          pmId, deletedMessages: wiped, pendingValidation: pendingValidationCount,
         });
       }
     } catch (err) {
@@ -1406,8 +1392,7 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
   lastSituationReportHash = reportHash;
 
   const msgId = uuidv4();
-  db.prepare(`INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`)
-    .run(msgId, pmId, situationReport);
+  insertMessageIfAbsent({ id: msgId, agentId: pmId, role: 'user', content: situationReport });
 
   broadcast({
     type: 'chat:message',

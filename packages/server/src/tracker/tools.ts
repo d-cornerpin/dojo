@@ -39,6 +39,7 @@ import { getAgentRuntime } from '../agent/runtime.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { currentTurnNumber, getTurnReceipts, getWorkOriginForAgent, currentTurnRoot } from '../agent/turn-state.js';
 import { getReceiptsByIds, stampReceiptsTask, type ToolReceiptRow } from '../receipts/store.js';
+import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { formatTimeForAgent } from '../services/format-time.js';
 
 const logger = createLogger('tracker-tools');
@@ -72,7 +73,6 @@ function notifyPrimaryAgent(message: string, callingAgentId: string, forceNotify
   if (isPrimaryAgent(callingAgentId) && !forceNotify) return;
 
   try {
-    const db = getDb();
     const msgId = uuidv4();
     // Store as 'system' role -- informational, does NOT need a response.
     // The primary agent will see it in context on its next turn.
@@ -80,10 +80,7 @@ function notifyPrimaryAgent(message: string, callingAgentId: string, forceNotify
     // not conversations that require a reply. This prevents the primary
     // agent from waking up and responding to every sub-agent status change.
     const content = `[SOURCE: TRACKER TASK UPDATE, automated status update, not a message from the user] ${message}`;
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'system', ?, datetime('now'))
-    `).run(msgId, primaryId, content);
+    insertMessageIfAbsent({ id: msgId, agentId: primaryId, role: 'system', content });
 
     broadcast({
       type: 'chat:message',

@@ -27,6 +27,7 @@ import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
+import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
 import { pollProviderVideo, fetchVideoAsset } from './video-generation.js';
 
@@ -89,8 +90,6 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  * assistant message (no LLM turn), mirroring image_create's delivery.
  */
 function deliverVideo(row: VideoJobRow, assetPath: string, sizeBytes: number): void {
-  const db = getDb();
-
   // Copy into the caller's uploads dir with a friendly, title-derived
   // filename so downloads are named sensibly.
   const recipientDir = path.join(os.homedir(), '.dojo', 'uploads', row.agent_id);
@@ -122,10 +121,10 @@ function deliverVideo(row: VideoJobRow, assetPath: string, sizeBytes: number): v
   const caption = DELIVERY_CAPTIONS[Math.floor(Math.random() * DELIVERY_CAPTIONS.length)];
 
   const msgId = uuidv4();
-  db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, created_at)
-    VALUES (?, ?, 'assistant', ?, ?, datetime('now'))
-  `).run(msgId, row.agent_id, caption, JSON.stringify([attachment]));
+  insertMessageIfAbsent({
+    id: msgId, agentId: row.agent_id, role: 'assistant', content: caption,
+    attachments: JSON.stringify([attachment]),
+  });
   broadcast({
     type: 'chat:message', agentId: row.agent_id,
     message: {
@@ -139,15 +138,11 @@ function deliverVideo(row: VideoJobRow, assetPath: string, sizeBytes: number): v
 }
 
 function deliverError(row: VideoJobRow, error: string): void {
-  const db = getDb();
   const msgId = uuidv4();
   const content =
     `I wasn't able to finish that video:\n\n> ${error}\n\n` +
     `You could try a shorter clip or a simpler description.`;
-  db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-    VALUES (?, ?, 'assistant', ?, datetime('now'))
-  `).run(msgId, row.agent_id, content);
+  insertMessageIfAbsent({ id: msgId, agentId: row.agent_id, role: 'assistant', content });
   broadcast({
     type: 'chat:message', agentId: row.agent_id,
     message: {

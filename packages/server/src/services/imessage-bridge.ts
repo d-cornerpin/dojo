@@ -19,6 +19,7 @@ import { v4 as uuidv4 } from 'uuid';
 import Database from 'better-sqlite3';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
+import { insertMessageIfAbsent, sweepById } from '../memory/message-store.js';
 import { isContentFreeCourtesy } from '../agent/v2/classifiers/inbound-courtesy.js';
 import { appleMessageDateToUnixMs } from './imessage-date.js';
 
@@ -1182,24 +1183,32 @@ export async function processInboundIMessage(
     counterpartyName: senderRecord?.name ?? null, threadRoot: null,
   });
   db.transaction(() => {
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, conversation_id, external_message_id, created_at)
-      VALUES (?, ?, 'user', ?, ?, ?, ?, datetime('now'))
-    `).run(
-      msgId,
-      primaryId,
-      msgContent,
-      attachmentResult.uploadedFiles.length > 0 ? JSON.stringify(attachmentResult.uploadedFiles) : null,
+    // T4/OR4: the routing facts this producer ALREADY decided (inboundMetaObj) are
+    // stamped IN the insert, so the row is never briefly unstamped — `authorized` is
+    // this bridge's own safe-sender verdict, `senderId` the address it arrived from,
+    // and `conversationId` lands in the SAME write. recordInboundMeta below still
+    // records the full meta blob (relation, chatType, senderIsAgent) for the resolver.
+    // INSERT OR IGNORE → insertMessageIfAbsent: the external_message_id de-duplication
+    // is preserved exactly (ON CONFLICT DO NOTHING covers the unique index).
+    insertMessageIfAbsent({
+      id: msgId,
+      agentId: primaryId,
+      role: 'user',
+      content: msgContent,
+      attachments: attachmentResult.uploadedFiles.length > 0 ? JSON.stringify(attachmentResult.uploadedFiles) : null,
       conversationId,
-      externalMessageId ?? null,
-    );
+      externalMessageId: externalMessageId ?? null,
+      channel: inboundMetaObj.channel,
+      senderId: inboundMetaObj.sender,
+      authorized: inboundMetaObj.authorized,
+    });
     recordInboundMeta(msgId, inboundMetaObj);
     if (input.staleSentAtIso) {
       // P5c: the reply-vs-note decision, made structurally at ingest. A stale
       // reconnect replay is a NOTE: visible in history and claimable as
       // context by later turns, but swept from the waiting set so the drain
       // never owes it a turn of its own (no days-late auto-reply).
-      db.prepare("UPDATE messages SET swept_at = datetime('now') WHERE id = ?").run(msgId);
+      sweepById(msgId);
     }
     if (advanceRowId !== null) {
       db.prepare(`
@@ -1262,10 +1271,7 @@ export async function processInboundIMessage(
       const markerId = uuidv4();
       const markerContent = `[Courtesy reply from ${senderRecord.name} received; no turn taken]`;
       try {
-        db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-          VALUES (?, ?, 'system', ?, datetime('now'))
-        `).run(markerId, primaryId, markerContent);
+        insertMessageIfAbsent({ id: markerId, agentId: primaryId, role: 'system', content: markerContent });
         broadcast({
           type: 'chat:message',
           agentId: primaryId,

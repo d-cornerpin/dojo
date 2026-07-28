@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import Database from 'better-sqlite3';
+import { setAttachments } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('path-migration');
@@ -99,9 +100,8 @@ function migrateDatabase(oldHome: string, newHome: string, dojoDir: string): voi
     // Upload file paths in messages (attachments JSON)
     try {
       const msgs = db.prepare("SELECT id, attachments FROM messages WHERE attachments LIKE ?").all(`%${oldHome}%`) as Array<{ id: string; attachments: string }>;
-      const updateMsg = db.prepare('UPDATE messages SET attachments = ? WHERE id = ?');
       for (const m of msgs) {
-        updateMsg.run(m.attachments.replaceAll(oldHome, newHome), m.id);
+        setAttachments(m.id, m.attachments.replaceAll(oldHome, newHome));
       }
       if (msgs.length > 0) {
         logger.info('Updated message attachment paths', { count: msgs.length });

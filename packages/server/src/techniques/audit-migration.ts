@@ -18,6 +18,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { insertMessage } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from '../agent/runtime.js';
@@ -96,10 +97,7 @@ export async function runTechniqueDependencyAuditOnce(): Promise<void> {
   // trainer handoffs use.
   try {
     const msgId = uuidv4();
-    db.prepare(`
-      INSERT INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'user', ?, datetime('now'))
-    `).run(msgId, trainerId, message);
+    insertMessage({ id: msgId, agentId: trainerId, role: 'user', content: message });
     broadcast({
       type: 'chat:message',
       agentId: trainerId,

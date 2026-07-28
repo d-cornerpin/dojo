@@ -23,6 +23,7 @@ import { getAgentRuntime } from '../agent/runtime.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { insertInterAgentEngineRow } from '../memory/interagent.js';
+import { insertMessage } from '../memory/message-store.js';
 import { getPrimaryAgentId, getPMAgentId, getOwnerName } from '../config/platform.js';
 
 const logger = createLogger('scheduler');
@@ -1067,10 +1068,7 @@ export function postSkippedReminderHeadsUp(taskId: string, reason: string): void
       `Let me know if you still want it and I will set it up again.`;
     const primaryId = getPrimaryAgentId();
     const ownerMsgId = uuidv4();
-    db.prepare(`
-      INSERT INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'system', ?, datetime('now'))
-    `).run(ownerMsgId, primaryId, ownerMsg);
+    insertMessage({ id: ownerMsgId, agentId: primaryId, role: 'system', content: ownerMsg });
     broadcast({
       type: 'chat:message',
       agentId: primaryId,

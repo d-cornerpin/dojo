@@ -21,6 +21,7 @@
 // ════════════════════════════════════════
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { insertMessage } from '../memory/message-store.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { listGoogleAccounts } from './accounts.js';
@@ -64,9 +65,7 @@ export function notifyGoogleReauthOnce(): void {
       //    centered system notice in regular mode).
       const dividerId = uuidv4();
       const divider = '── Google reconnect needed (do it on the DOJO computer): Settings ▸ Channels ▸ Google ──';
-      db.prepare(
-        `INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))`,
-      ).run(dividerId, primaryId, divider);
+      insertMessage({ id: dividerId, agentId: primaryId, role: 'system', content: divider });
       broadcast({
         type: 'chat:message',
         agentId: primaryId,
@@ -95,9 +94,7 @@ export function notifyGoogleReauthOnce(): void {
         'ON the computer running DOJO (open the dashboard via localhost there), NOT from a phone ' +
         'or a remote/tunneled browser, or Google will reject the sign-in. Nothing else is ' +
         'affected: Microsoft, iMessage, SMS, and phone are unchanged.]';
-      db.prepare(
-        `INSERT INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'user', ?, datetime('now'))`,
-      ).run(hintId, primaryId, hint);
+      insertMessage({ id: hintId, agentId: primaryId, role: 'user', content: hint });
 
       // 3. Queue the persistent toast for the next dashboard connect (so it
       //    isn't lost when no dashboard is open at boot). Flushed by

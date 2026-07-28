@@ -100,8 +100,15 @@ CREATE TABLE messages (
   next_attempt_at TEXT,                                       -- T6-CONVERTS to epoch-ms INTEGER
   retired_at TEXT,                                            -- display suppression ONLY (07§2g)
                                                               -- T6-CONVERTS to epoch-ms INTEGER
-  origin_kind    TEXT DEFAULT NULL,           -- T4-DELETES  (compat: maps onto `lane`, T3-0b §1)
-  source         TEXT DEFAULT NULL,           -- T4-DELETES  (compat: splits onto `lane`+`channel`, §3)
+  origin_kind    TEXT DEFAULT NULL,           -- T10-DELETES (compat: maps onto `lane`, T3-0b §1)
+  source         TEXT DEFAULT NULL,           -- T10-DELETES (compat: splits onto `lane`+`channel`, §3)
+  -- RE-DATED 2026-07-27 by T4, from `T4-DELETES`, on measured evidence. T4 converted every
+  -- WRITER off these two columns (the single writer now derives them from `lane`), but ~120
+  -- `origin_kind` and 39 `source` READS are still live and belong to T5/T6. Rehearsed on a
+  -- VACUUM INTO copy: dropping them here fails 5 of 5 live reader statements to PREPARE,
+  -- including mergedTailQuery — the read behind every assembled turn. R1 forbids that at a
+  -- commit boundary, and T10 Step 1b already owns the drop with grep-zero proof.
+  -- Transcript: .superpowers/sdd/PHASE-1/task-T4-report.md §7 and migration 128's header.
   conv_key       TEXT DEFAULT NULL,           -- PHASE2-DELETES (claim/park machine, unchanged this phase)
   provenance     TEXT NOT NULL DEFAULT 'live' CHECK (provenance IN ('live','migrated','rescued')),
   sent_at        INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000)

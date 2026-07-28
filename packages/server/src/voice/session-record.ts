@@ -15,6 +15,7 @@
 // ════════════════════════════════════════
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { stampVoiceSpeaker } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('voice-session-record');
@@ -87,9 +88,7 @@ export function getVoiceSessionIdForCall(callSid: string): string | null {
  *  and by the turn-finalize reply binding. Idempotent; never throws. */
 export function stampSpokenMessage(messageId: string, speaker: 'owner' | 'caller' | 'agent', voiceSessionId: string | null): void {
   try {
-    getDb().prepare(
-      'UPDATE messages SET speaker = ?, voice_session_id = COALESCE(?, voice_session_id) WHERE id = ?',
-    ).run(speaker, voiceSessionId, messageId);
+    stampVoiceSpeaker(messageId, speaker, voiceSessionId);
   } catch (err) {
     logger.warn('stampSpokenMessage failed (non-fatal)', {
       messageId, speaker, error: err instanceof Error ? err.message : String(err),

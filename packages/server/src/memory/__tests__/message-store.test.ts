@@ -103,17 +103,31 @@ describe('R1 — no writer may lose a row silently', () => {
     expect(stmt.columns().map(c => c.name)).toContain('rowid');
   });
 
-  it('the compat trigger keeps a legacy engine row OUT of the human-facing view', () => {
-    mockDb.current!.prepare(
-      `INSERT OR IGNORE INTO messages (id, agent_id, role, content, origin_kind, origin_intent, created_at)
-       VALUES (?, ?, 'user', ?, 'engine', 'tracker', datetime('now'))`,
-    ).run('legacy-engine', AGENT, '[Engine] a tracker note');
+  it('engine traffic stays OUT of the human-facing view — now by the writer, not a trigger', () => {
+    // PHASE-1 T4 (2026-07-27). This assertion used to drive a LEGACY raw INSERT and check
+    // that the compat trigger reclassified it. Migration 128 dropped that trigger, because
+    // its only job was classifying rows unconverted writers inserted and the conformance
+    // allowlist is now at zero — there are none. Proven on a VACUUM INTO copy before the
+    // drop: the writer module's rows are byte-identical with the trigger and without it,
+    // on all three lanes.
+    //
+    // The REQUIREMENT is untouched and is what is asserted here: an engine row must never
+    // be visible through `chat_messages`. It is now carried by the two things that will
+    // still be standing at T10 — the writer stamping `lane` at ingest, and the fail-closed
+    // view. Keeping the old form would have tested a mechanism that no longer exists.
+    insertEngineEvent({ id: 'engine-note', agentId: AGENT, content: '[Engine] a tracker note', originIntent: 'tracker' });
 
-    expect(rowOf('legacy-engine').lane).toBe('events');
+    expect(rowOf('engine-note').lane).toBe('events');
     const visible = mockDb.current!.prepare(
-      "SELECT COUNT(*) c FROM chat_messages WHERE id = 'legacy-engine'",
+      "SELECT COUNT(*) c FROM chat_messages WHERE id = 'engine-note'",
     ).get() as { c: number };
     expect(visible.c, 'engine traffic leaked into chat_messages').toBe(0);
+
+    // And the same for peer traffic, which the same trigger used to cover.
+    insertMessage({ id: 'peer-in', agentId: AGENT, role: 'user', lane: 'a2a', content: 'hi', sourceAgentId: 'peer-1' });
+    expect(rowOf('peer-in').lane).toBe('a2a');
+    expect((mockDb.current!.prepare("SELECT COUNT(*) c FROM chat_messages WHERE id = 'peer-in'")
+      .get() as { c: number }).c, 'peer traffic leaked into chat_messages').toBe(0);
   });
 });
 

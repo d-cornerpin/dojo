@@ -16,6 +16,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { compileDiagnosticReport } from './diagnostic.js';
@@ -504,10 +505,7 @@ export function ensureHealerAgentRunning(): void {
               ?, ?, NULL, datetime('now'), datetime('now'))
     `).run(healerId, healerName, modelId, primaryId, primaryId, HEALER_PERMISSIONS, HEALER_TOOLS_POLICY);
 
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'system', ?, datetime('now'))
-    `).run(uuidv4(), healerId, systemPrompt);
+    insertMessageIfAbsent({ id: uuidv4(), agentId: healerId, role: 'system', content: systemPrompt });
 
     logger.info('Healer agent created', { healerId, healerName });
   }
@@ -765,10 +763,7 @@ export async function runHealingCycle(): Promise<{ diagnosticId: string; autoFix
 
         // Inject the cycle message and wake the permanent Healer
         const msgId = uuidv4();
-        db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-          VALUES (?, ?, 'user', ?, datetime('now'))
-        `).run(msgId, healerId, cycleMessage);
+        insertMessageIfAbsent({ id: msgId, agentId: healerId, role: 'user', content: cycleMessage });
 
         broadcast({
           type: 'chat:message',

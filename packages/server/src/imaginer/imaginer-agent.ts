@@ -26,6 +26,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { insertMessageIfAbsent, deleteAllForAgent } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 import {
   getPrimaryAgentId,
@@ -196,10 +197,7 @@ export function ensureImaginerAgentRunning(): void {
       IMAGINER_TOOLS_POLICY,
     );
 
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'system', ?, datetime('now'))
-    `).run(uuidv4(), imaginerId, systemPrompt);
+    insertMessageIfAbsent({ id: uuidv4(), agentId: imaginerId, role: 'system', content: systemPrompt });
 
     logger.info('Imaginer agent created', { imaginerId, imaginerName });
   }
@@ -208,16 +206,12 @@ export function ensureImaginerAgentRunning(): void {
 // ── Clear Imaginer session (mirrors the Trainer helper) ───────────────
 
 export function clearImaginerSession(): void {
-  const db = getDb();
   const imaginerId = getImaginerAgentId();
 
-  db.prepare('DELETE FROM messages WHERE agent_id = ?').run(imaginerId);
+  deleteAllForAgent(imaginerId);
 
   const systemPrompt = loadImaginerSoulPrompt();
-  db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-    VALUES (?, ?, 'system', ?, datetime('now'))
-  `).run(uuidv4(), imaginerId, systemPrompt);
+  insertMessageIfAbsent({ id: uuidv4(), agentId: imaginerId, role: 'system', content: systemPrompt });
 
   logger.info('Imaginer session cleared', { imaginerId });
 }

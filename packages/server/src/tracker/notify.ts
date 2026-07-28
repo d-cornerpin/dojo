@@ -21,6 +21,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { insertInterAgentEngineRow } from '../memory/interagent.js';
+import { claimTrackerNoticeForTask } from '../memory/message-store.js';
 import { isDreamerAgent, isPrimaryAgent } from '../config/platform.js';
 
 const logger = createLogger('tracker:notify');
@@ -69,7 +70,6 @@ export interface AssignmentNotificationResult {
  */
 export function claimAssignmentNoticeForTerminalTask(assignedAgentId: string, taskId: string): void {
   if (!assignedAgentId || !taskId) return;
-  const db = getDb();
   // P2 serve boundary, KEYED retirement first (migration 112): every unserved
   // engine event carrying this task_id (assignment notices, triggers, pokes)
   // retires the moment the task goes terminal. The content-LIKE claim below is
@@ -81,17 +81,9 @@ export function claimAssignmentNoticeForTerminalTask(assignedAgentId: string, ta
   } catch { /* best effort; the LIKE fallback below still neutralizes */ }
   const like = `%ID: ${taskId}%`;
   try {
-    db.prepare(
-      `UPDATE inter_agent_messages SET conv_key = 'engine'
-         WHERE agent_id = ? AND origin_kind = 'engine' AND origin_intent = 'tracker'
-           AND conv_key IS NULL AND content LIKE ?`,
-    ).run(assignedAgentId, like);
+    claimTrackerNoticeForTask({ agentId: assignedAgentId, contentLike: like }, 'ia');
     // Belt-and-suspenders: legacy notices could still live in `messages`.
-    db.prepare(
-      `UPDATE messages SET conv_key = 'engine'
-         WHERE agent_id = ? AND origin_kind = 'engine' AND origin_intent = 'tracker'
-           AND conv_key IS NULL AND content LIKE ?`,
-    ).run(assignedAgentId, like);
+    claimTrackerNoticeForTask({ agentId: assignedAgentId, contentLike: like }, 'm');
   } catch (err) {
     logger.warn('Failed to claim assignment notice for terminal task (non-fatal)', {
       taskId, assignedAgentId, error: err instanceof Error ? err.message : String(err),

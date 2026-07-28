@@ -80,21 +80,28 @@ const read = (r: string) => fs.readFileSync(path.join(SRC, r), 'utf8');
 //                                            store `agent_messages` folded in
 //                                            (agent/agent-bus.ts), which is why the
 //                                            matcher above now names it.
-const WRITER_ALLOWLIST: string[] = [
-  // NOT db/migrations.ts: its only `INTO messages…` is `messages_fts`, the FTS shadow
-  // table, which the word boundary correctly excludes. Listing it would have been a stale
-  // entry hiding one file's worth of progress — the stale check below caught exactly that.
-  'google/reauth-notice.ts',
-  'healer/healer-agent.ts', 'imaginer/imaginer-agent.ts',
-  'migration/path-migration.ts',
-  'scheduler/runner.ts', 'services/generation-jobs.ts', 'services/gmail-watcher.ts',
-  'services/imessage-bridge.ts', 'services/outlook-watcher.ts', 'services/teams-watcher.ts',
-  'services/video-job-poller.ts', 'techniques/audit-migration.ts',
-  'techniques/share-import.ts', 'techniques/trainer-agent.ts', 'tracker/notify.ts',
-  'tracker/pm-agent.ts', 'tracker/tools.ts', 'twilio/call-session.ts',
-  'twilio/sms-inbound.ts', 'vault/maintenance.ts', 'voice/session-record.ts',
-  'voice/voice-ws.ts',
-];
+//   T4 cluster 4 (services etc):−13  →   9   imessage-bridge, gmail/outlook/teams
+//                                            watchers, video-job-poller,
+//                                            generation-jobs, sms-inbound,
+//                                            call-session, session-record, voice-ws,
+//                                            reauth-notice, healer-agent
+//   T4 cluster 5 (tracker/vault): −9  →   0   imaginer-agent, trainer-agent,
+//                                            share-import, audit-migration,
+//                                            pm-agent, notify, tracker/tools,
+//                                            scheduler/runner, vault/maintenance
+//
+// ZERO. Every write against `messages`, `inter_agent_messages` and `agent_messages` in the
+// running platform now goes through memory/message-store.ts. The one file that still
+// contains such a statement is `migration/path-migration.ts`, and it is EXEMPT rather than
+// allowlisted — see OFFLINE_DB_TOOLS below and the test that keeps that exemption honest.
+//
+// Emptying this list is what licensed T4's finishing move: migration 128 drops the compat
+// trigger, which is a no-op only because nothing raw writes the table any more.
+//
+// NOT db/migrations.ts: its only `INTO messages…` is `messages_fts`, the FTS shadow table,
+// which the word boundary correctly excludes. Listing it would have been a stale entry
+// hiding one file's worth of progress — the stale check below caught exactly that.
+const WRITER_ALLOWLIST: string[] = [];
 
 // Set A (8 files stamp `authorized`) ∪ Set B (11 files compute `channel` via
 // resolveOrCreateConversation) = 12 files, re-derived at 24fe27e and matching T0's pin.
@@ -137,13 +144,39 @@ describe('the matcher itself (a weakened regex must not pass silently)', () => {
   });
 });
 
+// ── The one standing exemption, and it is NOT an allowlist entry ──
+//
+// PHASE-1 T4. `migration/path-migration.ts` rewrites `$HOME` references inside a database
+// file that has just been IMPORTED from another machine. It opens that file itself
+// (`new Database(dbPath)` at :57, closed at the end) because the app's connection does not
+// point at it and must not — the whole job is to fix the foreign file up BEFORE it becomes
+// this box's database. Routing it through the writer module would send the UPDATE to the
+// wrong database, which is a worse outcome than the rule it would satisfy.
+//
+// So it is exempt, permanently, and the exemption is a named constant with a test rather
+// than a quiet allowlist entry that a later reader would mistake for unfinished work. The
+// test below is what stops the exemption being abused: a file may only sit here if it
+// really does open its own connection.
+const OFFLINE_DB_TOOLS: string[] = ['migration/path-migration.ts'];
+
 describe('single writer for `messages`', () => {
   it('no file outside the writer module writes the table unless it is on the burn-down list', () => {
     const offenders = sourceFiles()
       .filter(f => f !== WRITER_MODULE)
       .filter(f => !WRITER_ALLOWLIST.includes(f))
+      .filter(f => !OFFLINE_DB_TOOLS.includes(f))
       .filter(f => WRITE_RE.test(read(f)));
     expect(offenders, 'a NEW writer appeared outside memory/message-store.ts').toEqual([]);
+  });
+
+  it('the offline-tool exemption is only available to files that open their own database', () => {
+    for (const f of OFFLINE_DB_TOOLS) {
+      const src = read(f);
+      expect(src, `${f} is exempt only because it operates on a FOREIGN database file`)
+        .toMatch(/new Database\(/);
+      expect(src, `${f} must not use the app connection — that is what makes it exempt`)
+        .not.toMatch(/getDb\(\)/);
+    }
   });
 
   it('the writer module actually writes the table (the rule is not vacuous)', () => {
@@ -205,10 +238,31 @@ describe('the fail-closed reader is the only human-facing accessor', () => {
     for (const marker of ['origin_kind', 'source', 'conv_key']) {
       const line = mig.split('\n').find(l =>
         new RegExp(`^\\s{2}${marker}\\s`).test(l));
+      // T4 RE-DATED origin_kind/source from T4-DELETES to T10-DELETES on measured
+      // evidence (T4 report §7): every WRITER is converted off them, but ~120
+      // origin_kind and 39 source READS are still live and belong to T5/T6, and
+      // dropping the columns here fails mergedTailQuery to prepare — a dead box, which
+      // R1 forbids. The marker must be TRUE, not aspirational; a stale one says the
+      // scaffolding is gone when it is standing, which is the failure this rule exists
+      // to prevent.
       expect(line, `compat column ${marker} must declare its demolition owner`)
-        .toMatch(/T4-DELETES|PHASE2-DELETES/);
+        .toMatch(/T4-DELETES|T10-DELETES|PHASE2-DELETES/);
     }
     expect(mig).toMatch(/messages_compat_ai[\s\S]{0,80}/);
     expect(mig).toMatch(/T4 DROPS this trigger/);
+  });
+
+  it('the compat trigger is actually dropped, and only when the allowlist is empty', () => {
+    // The trigger's whole job was classifying rows that UNCONVERTED writers inserted.
+    // Its demolition is not a matter of taste: when the allowlist is at zero it is
+    // provably a no-op (proven on a VACUUM INTO copy — the writer module's rows are
+    // byte-identical with it and without it, on all three lanes). This test ties the two
+    // facts together so neither can drift: an empty allowlist REQUIRES the drop to have
+    // shipped, and a non-empty one forbids it.
+    const drop = fs.readFileSync(
+      path.join(SRC, 'db', 'migrations', '128_drop_messages_compat_trigger.sql'), 'utf8');
+    expect(drop).toMatch(/DROP TRIGGER IF EXISTS messages_compat_ai;/);
+    expect(WRITER_ALLOWLIST.length,
+      'the compat trigger may only be dropped once every writer is converted').toBe(0);
   });
 });

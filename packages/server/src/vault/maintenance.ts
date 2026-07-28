@@ -23,6 +23,7 @@ import {
 } from '../config/platform.js';
 import type { Message } from '@dojo/shared';
 import { isPlatformNoise as isSharedPlatformNoise } from '../memory/platform-noise.js';
+import { insertMessageIfAbsent, rewriteSystemPromptRow } from '../memory/message-store.js';
 import { v4 as uuidv4 } from 'uuid';
 import {
   getConversation,
@@ -885,14 +886,12 @@ export function ensureDreamerAgentRunning(): void {
       ).get(dreamerId) as { id: string; content: string } | undefined;
       if (earliestSystem) {
         if (earliestSystem.content !== freshPrompt) {
-          db.prepare("UPDATE messages SET content = ? WHERE id = ?").run(freshPrompt, earliestSystem.id);
+          rewriteSystemPromptRow(earliestSystem.id, freshPrompt);
           logger.info('Dreamer SOUL.md refreshed in messages table', { dreamerId });
         }
       } else {
         // No system message yet, insert one.
-        db.prepare(
-          "INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at) VALUES (?, ?, 'system', ?, datetime('now'))"
-        ).run(uuidv4(), dreamerId, freshPrompt);
+        insertMessageIfAbsent({ id: uuidv4(), agentId: dreamerId, role: 'system', content: freshPrompt });
         logger.info('Dreamer SOUL.md inserted (was missing)', { dreamerId });
       }
     } catch (err) {
@@ -942,10 +941,7 @@ export function ensureDreamerAgentRunning(): void {
               ?, ?, NULL, datetime('now'), datetime('now'))
     `).run(dreamerId, dreamerName, modelId, primaryId, primaryId, dreamerPermissions, DREAMER_TOOLS_POLICY);
 
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'system', ?, datetime('now'))
-    `).run(uuidv4(), dreamerId, systemPrompt);
+    insertMessageIfAbsent({ id: uuidv4(), agentId: dreamerId, role: 'system', content: systemPrompt });
 
     logger.info('Dreamer agent created', { dreamerId, dreamerName });
   }
@@ -983,19 +979,16 @@ function wakeupDreamer(cycleMessage: string): void {
   logger.debug('Dreamer session reset for fresh context', { dreamerId });
 
   const msgId = uuidv4();
-  // The cycle message is stored as a plain role='user' row (origin_kind left
-  // NULL). It is NOT stamped origin_kind='engine' even though it is engine-
-  // synthetic: the assembler lifts engine-origin user rows OUT of the live tail
-  // into the EVENTS lane (memory/assembler.ts scopeTo* ), which would divert the
-  // Dreamer's actual batch input away from the message it must process. Engine-
-  // cycle scoping of the Dreamer's scaffolding is instead handled on the TRIGGER
-  // side by the isDreamerAgent skips in loop.ts, so no origin stamp is needed
-  // here (P2b). Marking it would require a Dreamer-specific assembler exemption
-  // first, which is out of scope for the cadence fix.
-  db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-    VALUES (?, ?, 'user', ?, datetime('now'))
-  `).run(msgId, dreamerId, cycleMessage);
+  // The cycle message is stored as a plain role='user' row on the OWNER lane
+  // (so origin_kind stays NULL). It is NOT stamped as an engine event even
+  // though it is engine-synthetic: the assembler lifts engine-origin user rows
+  // OUT of the live tail into the EVENTS lane (memory/assembler.ts scopeTo* ),
+  // which would divert the Dreamer's actual batch input away from the message it
+  // must process. Engine-cycle scoping of the Dreamer's scaffolding is instead
+  // handled on the TRIGGER side by the isDreamerAgent skips in loop.ts, so no
+  // lane stamp is needed here (P2b). Marking it would require a Dreamer-specific
+  // assembler exemption first, which is out of scope for the cadence fix.
+  insertMessageIfAbsent({ id: msgId, agentId: dreamerId, role: 'user', content: cycleMessage });
 
   broadcast({
     type: 'chat:message',

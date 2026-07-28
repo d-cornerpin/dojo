@@ -107,11 +107,44 @@ function applySchema(db: Database.Database): void {
       evidence_json TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    -- PHASE-1 T4 (2026-07-27): widened to the migration-127 spine.
+    --
+    -- This fixture hand-rolled a 5-column messages table and never wrote to it, which is
+    -- exactly why a write-only grep missed it and T0 flagged it in advance ("T3/T4 must
+    -- use the CREATE-or-WRITE union, not the write list, or two suites break"). The
+    -- scheduler's owner heads-up now goes through the single writer, whose INSERT names
+    -- the whole spine, so a narrow fixture throws "no column named conversation_id"
+    -- inside the writer's own non-fatal try/catch -- the row silently never lands and the
+    -- test reads undefined. Widening the fixture is the honest fix: the alternative was
+    -- to leave one production site unconverted so a test fixture could stay small.
     CREATE TABLE messages (
+      seq INTEGER,
       id TEXT PRIMARY KEY,
       agent_id TEXT NOT NULL,
+      conversation_id TEXT,
+      lane TEXT NOT NULL DEFAULT 'owner' CHECK (lane IN ('owner','a2a','events')),
+      origin_intent TEXT,
       role TEXT NOT NULL,
       content TEXT NOT NULL,
+      mood TEXT,
+      display_kind TEXT NOT NULL DEFAULT 'unclassified',
+      display_tier TEXT NOT NULL DEFAULT 'agent-only',
+      turn_number INTEGER, group_id TEXT,
+      channel TEXT, sender_id TEXT,
+      authorized INTEGER NOT NULL DEFAULT 0,
+      source_agent_id TEXT, a2a_thread_id TEXT, a2a_intent TEXT,
+      a2a_requires_response INTEGER,
+      token_count INTEGER NOT NULL DEFAULT 0,
+      model_id TEXT, cost REAL, latency_ms INTEGER, reasoning_content TEXT,
+      inbound_meta TEXT, attachments TEXT,
+      external_message_id TEXT, speaker TEXT, voice_session_id TEXT,
+      task_id TEXT, run_id TEXT, root_kind TEXT, root_id TEXT,
+      served_by_turn INTEGER, answer_message_id TEXT,
+      swept_at TEXT, delivery_attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT,
+      retired_at TEXT,
+      origin_kind TEXT DEFAULT NULL, source TEXT DEFAULT NULL, conv_key TEXT DEFAULT NULL,
+      provenance TEXT NOT NULL DEFAULT 'live',
+      sent_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE TABLE projects (

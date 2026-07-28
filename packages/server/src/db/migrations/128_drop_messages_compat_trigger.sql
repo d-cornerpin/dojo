@@ -1,0 +1,46 @@
+-- 128_drop_messages_compat_trigger.sql — PHASE-1 T4's finishing move.
+--
+-- Migration 127 created `messages_compat_ai` with `-- T4-DELETES` on it, and this is T4
+-- keeping that date. The trigger existed for exactly one reason: while the platform's 136
+-- write statements were still raw SQL, a legacy INSERT supplied `origin_kind`/`source` and
+-- knew nothing of `lane`, so without the trigger those rows landed as lane='owner' and
+-- ENGINE AND PEER TRAFFIC WOULD HAVE BEEN VISIBLE THROUGH `chat_messages`. Every one of
+-- those writers now goes through `memory/message-store.ts`, which sets lane, channel,
+-- display_kind, display_tier, authorized and token_count itself. The single-writer
+-- conformance walk holds that line: its burn-down allowlist is at ZERO.
+--
+-- REHEARSED ON A `VACUUM INTO` COPY BEFORE IT RAN HERE (R4), and the rehearsal is what
+-- makes this a measurement rather than a belief. The writer module's exact statement was
+-- run for all three lanes, first with the trigger present and then with it dropped, and
+-- the resulting rows are byte-identical on every column the trigger touched:
+--
+--   lane=owner  -> channel=dashboard  display=user-text/user-visible    authorized=1
+--   lane=a2a    -> channel=NULL       display=a2a/agent-only            authorized=1
+--   lane=events -> channel=NULL       display=engine-note/agent-only    authorized=1
+--
+--   IDENTICAL: true · `chat_messages` sees 0 of the non-owner probes · integrity_check ok
+--
+-- WHAT IS NOT DROPPED HERE, AND WHY — this is the one place T4 does not finish the job,
+-- and it is deliberate, measured, and already owned in writing by T10 Step 1b.
+--
+-- 127 also carries `origin_kind` and `source` marked `-- T4-DELETES`. They CANNOT go yet.
+-- No writer stamps them any more (the module derives both from `lane`), but ~120
+-- `origin_kind` and 39 `source` REFERENCES are still READ across the tree, and re-pointing
+-- those readers is T5's and T6's scope, not T4's. Rehearsed on a copy: with both columns
+-- dropped, 5 of 5 live reader statements fail to even prepare —
+--
+--   mergedTailQuery (memory/store.ts:124, the read behind EVERY assembled turn)
+--                                        -> no such column: source
+--   counterparty waiting set (:63)       -> no such column: source
+--   prompt/assembler.ts:1188             -> no such column: source
+--   loop.ts:338 did-I-reply probe        -> no such column: source
+--   index.ts:541 engine sweep            -> no such column: origin_kind
+--
+-- That is a dead box, which R1 forbids at every commit boundary ("the box stays alive and
+-- OR8-verifiable after EVERY task"). The plan says both things — its T4 row says T4 drops
+-- the columns, its T10 row (Step 1b) says T10 drops them with grep-zero proof — and only
+-- the T10 reading survives R1. The columns therefore keep their marker, re-dated:
+-- `-- T10-DELETES`, dropped in the same commit that re-points the last reader, exactly as
+-- T10 Step 1b already specifies. Recorded in the T4 report §7 for adjudication.
+
+DROP TRIGGER IF EXISTS messages_compat_ai;

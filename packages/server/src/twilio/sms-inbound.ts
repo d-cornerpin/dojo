@@ -12,6 +12,7 @@ import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
+import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getOwnerName } from '../config/platform.js';
@@ -321,10 +322,6 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
   const conversationId = resolveOrCreateConversation(primaryId, {
     channel: 'sms', provider: 'twilio', counterpartyId: payload.fromNumber, threadRoot: null,
   });
-  db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, attachments, conversation_id, external_message_id, created_at)
-    VALUES (?, ?, 'user', ?, ?, ?, ?, datetime('now'))
-  `).run(msgId, primaryId, content, media.files.length > 0 ? JSON.stringify(media.files) : null, conversationId, payload.messageSid ?? null);
   // v3.0.9 — structured routing metadata. knownSender already encodes the
   // safe-sender verdict; an unknown number => authorized:false => the agent
   // sees a notification (it decides whether to surface it) and does not
@@ -338,6 +335,23 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
     smsToNumber: payload.toNumber,
     recipientAddress: payload.fromNumber,
   };
+  // T4/OR4: channel, sender and the safe-sender verdict are stamped IN the write,
+  // from the meta computed just above — never re-derived. recordInboundMeta below
+  // still records the full blob (from/to numbers, reply address).
+  // insertMessageIfAbsent keeps the MessageSid de-duplication the INSERT OR IGNORE
+  // leaned on (the unique index on external_message_id).
+  insertMessageIfAbsent({
+    id: msgId,
+    agentId: primaryId,
+    role: 'user',
+    content,
+    attachments: media.files.length > 0 ? JSON.stringify(media.files) : null,
+    conversationId,
+    externalMessageId: payload.messageSid ?? null,
+    channel: inboundMetaObj.channel,
+    senderId: inboundMetaObj.sender,
+    authorized: inboundMetaObj.authorized,
+  });
   recordInboundMeta(msgId, inboundMetaObj);
 
   broadcast({

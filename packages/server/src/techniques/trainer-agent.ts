@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { insertMessageIfAbsent, deleteAllForAgent } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 import { getPrimaryAgentId, getPrimaryAgentName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, isSetupCompleted, getOwnerName } from '../config/platform.js';
 import { SEND_TO_PEOPLE } from '../agent/sensei-policy.js';
@@ -212,10 +213,7 @@ export function ensureTrainerAgentRunning(): void {
               ?, ?, NULL, datetime('now'), datetime('now'))
     `).run(trainerId, trainerName, modelId, primaryId, primaryId, trainerPermissions, trainerToolsPolicy);
 
-    db.prepare(`
-      INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-      VALUES (?, ?, 'system', ?, datetime('now'))
-    `).run(uuidv4(), trainerId, systemPrompt);
+    insertMessageIfAbsent({ id: uuidv4(), agentId: trainerId, role: 'system', content: systemPrompt });
 
     logger.info('Trainer agent created', { trainerId, trainerName });
   }
@@ -224,17 +222,13 @@ export function ensureTrainerAgentRunning(): void {
 // ── Clear Trainer Session ──
 
 export function clearTrainerSession(): void {
-  const db = getDb();
   const trainerId = getTrainerAgentId();
 
-  db.prepare('DELETE FROM messages WHERE agent_id = ?').run(trainerId);
+  deleteAllForAgent(trainerId);
 
   // Re-inject system prompt so the agent has its identity on next message
   const systemPrompt = loadTrainerSoulPrompt();
-  db.prepare(`
-    INSERT OR IGNORE INTO messages (id, agent_id, role, content, created_at)
-    VALUES (?, ?, 'system', ?, datetime('now'))
-  `).run(uuidv4(), trainerId, systemPrompt);
+  insertMessageIfAbsent({ id: uuidv4(), agentId: trainerId, role: 'system', content: systemPrompt });
 
   logger.info('Trainer session cleared', { trainerId });
 }

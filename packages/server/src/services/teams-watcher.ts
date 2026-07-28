@@ -13,6 +13,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { getDb } from '../db/connection.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
+import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { isSenderAuthorized } from '../agent/v2/channel-auth.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -296,10 +297,6 @@ async function pollForNewMessages(): Promise<void> {
           channel: 'teams', provider: 'teams', counterpartyId: senderEmail ?? senderName ?? null,
           counterpartyName: senderName ?? null, threadRoot: chat.id ?? null,
         });
-        db.prepare(`
-          INSERT OR IGNORE INTO messages (id, agent_id, role, content, conversation_id, external_message_id, created_at)
-          VALUES (?, ?, 'user', ?, ?, ?, datetime('now'))
-        `).run(msgId, primaryId, content, conversationId, (msg as { id?: string | null }).id ?? null);
         // v3.0.9 — structured routing metadata. Teams is an agent-kind channel
         // (the watcher is agent-only); the shared auth check applies the
         // agent-kind gate, so an unknown sender => authorized:false => the
@@ -324,6 +321,22 @@ async function pollForNewMessages(): Promise<void> {
           chatType: (isDm ? 'dm' : 'group') as 'dm' | 'group',
           recipientAddress: senderEmail ?? undefined,
         };
+        // T4/OR4: channel, sender and the group/DM auth verdict above are stamped IN
+        // the write, from this watcher's own meta — never re-derived. recordInboundMeta
+        // below still records the full blob (chatId, chatType, recipientAddress).
+        // insertMessageIfAbsent keeps the external_message_id de-duplication that the
+        // INSERT OR IGNORE provided.
+        insertMessageIfAbsent({
+          id: msgId,
+          agentId: primaryId,
+          role: 'user',
+          content,
+          conversationId,
+          externalMessageId: (msg as { id?: string | null }).id ?? null,
+          channel: inboundMetaObj.channel,
+          senderId: inboundMetaObj.sender,
+          authorized: inboundMetaObj.authorized,
+        });
         recordInboundMeta(msgId, inboundMetaObj);
 
         broadcast({
