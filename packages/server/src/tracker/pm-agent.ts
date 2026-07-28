@@ -739,14 +739,16 @@ function pruneOldPMMessages(pmId: string): void {
 
     if (!cutoff) return;
 
-    // Cascade delete in a transaction. summary_messages.message_id has a
-    // foreign-key reference to messages(id) without ON DELETE CASCADE, so a
-    // raw DELETE on a compacted PM message throws and the prune fails
-    // forever (pm-agent log spam observed in production: "Failed to prune PM
-    // messages" every 10 min for hours). The PM doesn't need its archived
-    // summaries anyway, the tracker is its memory, so wipe the link rows
-    // first, then the messages themselves. Both deletes live inside
-    // deleteForAgentBefore, in one transaction, exactly as they did here.
+    // The incident this line remembers: summary_messages.message_id used to reference
+    // messages(id) WITHOUT ON DELETE CASCADE, so a raw DELETE on a compacted PM message
+    // threw and the prune failed forever ("Failed to prune PM messages" every 10 min for
+    // hours, observed in production). The PM doesn't need its archived summaries anyway —
+    // the tracker is its memory — so the link rows go first, then the messages, both inside
+    // deleteForAgentBefore in one transaction.
+    // PHASE-1 T7 re-stated: the reference is BACK (migration 130, now that one table holds
+    // every lane) and it is ON DELETE CASCADE precisely so this incident cannot return by
+    // way of some other delete path forgetting the ordering. deleteForAgentBefore keeps its
+    // explicit first delete regardless — see the note there.
     const deleted = deleteForAgentBefore(pmId, cutoff.id);
 
     if (deleted > 0) {

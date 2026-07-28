@@ -231,12 +231,44 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
     } catch { /* visibility only; a probe failure must never fail the boot */ }
   }
 
-  // Backfill FTS index for existing messages that predate the trigger
-  const ftsCount = (db.prepare('SELECT COUNT(*) as count FROM messages_fts').get() as { count: number }).count;
-  const msgCount = (db.prepare('SELECT COUNT(*) as count FROM messages').get() as { count: number }).count;
-  if (ftsCount < msgCount) {
-    logger.info(`Backfilling FTS index: ${msgCount - ftsCount} messages`);
-    db.exec(`INSERT INTO messages_fts(rowid, content) SELECT rowid, content FROM messages WHERE rowid NOT IN (SELECT rowid FROM messages_fts)`);
+  // ── The search index covers every message, or it is repaired here (PHASE-1 T7) ──
+  //
+  // `messages_fts` is an fts5 EXTERNAL-CONTENT index (`content='messages'`, migration 127),
+  // and on an external-content table a plain SELECT reads THROUGH to the content table. The
+  // probe this replaced asked `COUNT(*) FROM messages_fts` vs `COUNT(*) FROM messages` and
+  // then repaired with `INSERT … WHERE rowid NOT IN (SELECT rowid FROM messages_fts)` — i.e.
+  // it compared `messages` against itself and its repair selected nothing.
+  //
+  // Measured on a VACUUM INTO copy of the live box, with ONE row genuinely removed from the
+  // index: both counts read 3,629, the NOT-IN subquery returned 0 rows, the `if` never fired,
+  // and the message stayed unsearchable. A self-heal that structurally cannot fire is a dead
+  // guard wearing a live one's clothes, and what it silently costs is recall: rows the agent
+  // holds but can no longer find.
+  //
+  // `messages_fts_docsize` is fts5's own per-row shadow table, so its count is the number of
+  // rows ACTUALLY in the index — the question the old probe meant to ask. The repair is
+  // fts5's `rebuild` command, which is FORBIDDEN inside a migration transaction (the applyOne
+  // wrapper above, and the reason migration 127 had to drop/recreate/repopulate by hand).
+  // This region runs after that loop, in autocommit, which is exactly why it lives here and
+  // not in a migration file.
+  //
+  // Best-effort by design: a search index that cannot be repaired is degraded recall, never a
+  // reason to refuse the boot.
+  try {
+    const indexed = (db.prepare('SELECT COUNT(*) as count FROM messages_fts_docsize').get() as { count: number }).count;
+    const msgCount = (db.prepare('SELECT COUNT(*) as count FROM messages').get() as { count: number }).count;
+    if (indexed !== msgCount) {
+      logger.info('FTS index does not cover every message; rebuilding', {
+        indexed, messages: msgCount, missing: msgCount - indexed,
+      });
+      const started = Date.now();
+      db.exec(`INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`);
+      logger.info('FTS index rebuilt', { rows: msgCount, ms: Date.now() - started });
+    }
+  } catch (err) {
+    logger.error('FTS index check/rebuild failed; message search may be incomplete', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 

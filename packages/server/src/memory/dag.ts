@@ -73,8 +73,25 @@ export function createLeafSummary(
     VALUES (?, ?, 0, 'leaf', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `);
 
+  // PHASE-1 T7. `summary_messages.message_id` carries a real foreign key to `messages(id)`
+  // again (migration 130) now that one table holds every lane — the constraint migration 103
+  // had to remove when agent-to-agent rows lived in a second table with their own ids.
+  //
+  // This SELECT form is what stops the constraint re-opening 103's incident. On 2026-07-06 a
+  // chunk naming an id the constraint rejected took the WHOLE leaf summary down with it: the
+  // context never shrank and reactive compaction re-fired on every turn. The summarizer's
+  // model call still sits BETWEEN reading a chunk and writing it, so a reset_session or the
+  // PM prune can delete a named row inside that window. Selecting the id out of `messages`
+  // makes an unresolvable id a link not written, rather than a compaction that cannot
+  // complete — and OR IGNORE absorbs a chunk that names the same message twice.
+  //
+  // Nothing is lost by the guard that was not already lost: a link whose message does not
+  // exist resolves to nothing in getSummarySourceMessages and counts for nothing in
+  // getCompactedMessageIds. The summary's own `descendant_count` is the chunk size and is
+  // written above, unaffected.
   const insertLink = db.prepare(`
-    INSERT INTO summary_messages (summary_id, message_id) VALUES (?, ?)
+    INSERT OR IGNORE INTO summary_messages (summary_id, message_id)
+      SELECT ?, m.id FROM messages m WHERE m.id = ?
   `);
 
   const txn = db.transaction(() => {

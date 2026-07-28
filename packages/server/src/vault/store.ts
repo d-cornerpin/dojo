@@ -840,15 +840,13 @@ export function archiveConversation(params: {
   tokenCount: number;
   earliestAt: string;
   latestAt: string;
-  // Migration 088: the highest message rowid in this archive, the tie-free
-  // archival high-water. Optional so older callers still compile; null when the
-  // batch carried no rowid.
+  // Migration 088: the highest message `seq` in this archive, the tie-free archival
+  // high-water. THE ONLY ONE — migration 100's `latestIaRowid` twin (the second message
+  // table's independent rowid space) is deleted with its column in migration 130. One
+  // question, one column, one keyspace: `latest_rowid` is compared against `messages.seq`
+  // forever after, and a number from anywhere else silently skips real history.
+  // Optional so older callers still compile; null when the batch carried no key.
   latestRowid?: number | null;
-  // Migration 100: was the STORE-space high-water, when agent-to-agent rows lived in a
-  // second table with its own rowid sequence. PHASE-1 T5 deleted that arm — one table,
-  // one keyspace, `latestRowid` bounds every lane — so nothing passes this any more.
-  // T7 Step 2 drops the column; until then historical rows keep their value.
-  latestIaRowid?: number | null;
 }): string {
   const db = getDb();
   const id = uuidv4();
@@ -860,8 +858,8 @@ export function archiveConversation(params: {
   const lineage = dominantMessageLineage(archiveIds);
 
   db.prepare(`
-    INSERT INTO vault_conversations (id, agent_id, agent_name, messages, message_count, token_count, earliest_at, latest_at, latest_rowid, latest_ia_rowid, conversation_id, is_processed, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
+    INSERT INTO vault_conversations (id, agent_id, agent_name, messages, message_count, token_count, earliest_at, latest_at, latest_rowid, conversation_id, is_processed, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, datetime('now'))
   `).run(
     id,
     params.agentId,
@@ -872,7 +870,6 @@ export function archiveConversation(params: {
     params.earliestAt,
     params.latestAt,
     params.latestRowid ?? null,
-    params.latestIaRowid ?? null,
     lineage.conversationId,
   );
 

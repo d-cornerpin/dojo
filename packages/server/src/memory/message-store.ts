@@ -559,7 +559,15 @@ export function deleteAllForAgent(agentId: string, src: LegacySrc = 'm'): number
 }
 
 /** Everything older than a cutoff row, for the PM's bounded scratch history. Deletes the
- *  dependent summary rows first, in one transaction, exactly as the call site did. */
+ *  dependent summary rows first, in one transaction, exactly as the call site did.
+ *
+ *  PHASE-1 T7: migration 130 gave `summary_messages.message_id` its foreign key back with
+ *  ON DELETE CASCADE, so the database now guarantees this ordering for every delete path,
+ *  not just the two that remembered to. The explicit delete STAYS anyway, and not as
+ *  belt-and-braces duplication: FK enforcement is a per-connection PRAGMA, and it is OFF
+ *  for the whole migration chain (see runSqlMigrations) — a delete performed from a
+ *  migration would otherwise leave the links behind. Same statement, two conditions
+ *  covered. */
 export function deleteForAgentBefore(agentId: string, cutoffId: string): number {
   const db = getDb();
   const txn = db.transaction((aid: string, cid: string): number => {
