@@ -807,7 +807,16 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
         fromAgent: envelope.fromAgent, intent: effectiveIntent, messageId: null, senderName,
       });
     } catch (err) {
-      logger.warn('A2A close-the-loop delivery failed', { error: err instanceof Error ? err.message : String(err) });
+      // RULING 7 rider (b), PHASE-2 T10. This was a `warn` with the error string and nothing
+      // else, and it is where the six-hour phantom-trigger incident hid: the join owns this
+      // thread, so the ordinary "surface this deliverable" hint above is suppressed (C21) —
+      // if the landing fails here, NOBODY tells the owner. The row itself is named by
+      // `loudOnPieceAbort` in `work/store.ts`; this is the second half, at the tier that
+      // matches the consequence.
+      logger.error('A2A close-the-loop delivery failed — the reply came back and was not landed on its join; the owner will not be told', {
+        agentId: target.id, thread: threadShort, fromAgent: envelope.fromAgent,
+        intent: effectiveIntent, error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
   void handledByJoin;

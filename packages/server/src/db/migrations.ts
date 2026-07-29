@@ -3,6 +3,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getDb, getDbPath } from './connection.js';
 import { createLogger } from '../logger.js';
+import {
+  migrationChecksum, ensureMigrationChecksumColumn, reportMigrationChecksums,
+} from './migration-checksums.js';
 
 const logger = createLogger('migrations');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -116,6 +119,9 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
       applied_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
+  // RULING 7 rider (a). Must run BEFORE the chain: the rows this boot writes carry
+  // their checksums, and the audit below reads the column on the same pass.
+  ensureMigrationChecksumColumn(db);
 
   const migrationsDir = path.join(__dirname, 'migrations');
   if (!fs.existsSync(migrationsDir)) return;
@@ -178,7 +184,11 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
     } else {
       db.exec(sqlText);
     }
-    db.prepare('INSERT INTO _migrations (name) VALUES (?)').run(fileName);
+    // RULING 7 rider (a): record WHAT ran, not just that something by this name did.
+    // Inside the same transaction as the apply, so the checksum can never describe a
+    // file other than the one whose DDL just committed.
+    db.prepare('INSERT INTO _migrations (name, checksum) VALUES (?, ?)')
+      .run(fileName, migrationChecksum(sqlText));
   });
 
   // ── Chain timing (info-level, cheap Date.now diffs) ──
@@ -207,6 +217,13 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
 
   // Re-enable FK checks after all migrations
   db.pragma('foreign_keys = ON');
+
+  // RULING 7 rider (a): the boot divergence check. Report tier by construction — see
+  // `migration-checksums.ts` for the refusal-tier argument and the Bridge author's story.
+  reportMigrationChecksums(db, (name) => {
+    try { return fs.readFileSync(path.join(migrationsDir, name), 'utf-8'); }
+    catch { return null; }
+  });
 
   // ── 075 visibility ──
   // When migration 075 was just applied, surface how many role='user' rows are still

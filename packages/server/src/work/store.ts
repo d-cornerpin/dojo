@@ -1142,6 +1142,45 @@ function joinAfter(childId: string): JoinState & { complete: boolean } {
  * after the ASSIGNs went out. A nothing is not a deliverable; the piece stays outstanding so
  * the real one can land, and if it never does the TTL fails the join closed.
  */
+/**
+ * ── PHASE-2 T10, RULING 7 rider (b): a piece landing that ABORTS names its row ──
+ *
+ * On 2026-07-29 a database-side trigger (present on the box, present in no commit) raised
+ * `two-key: completion requires an upheld adjudication` on every fan-out piece landing. The
+ * throw unwound into `a2a-transport.ts`, which logged `A2A close-the-loop delivery failed`
+ * with the error string and nothing else, at `warn`. For six hours the countdown never
+ * reached zero, the engine's deterministic single-piece relay never fired, and the ordinary
+ * "surface this deliverable" hint stayed deliberately suppressed because a join owned the
+ * thread — the platform had taken responsibility for a delivery and was then prevented from
+ * making it, silently.
+ *
+ * The loudness belongs HERE and not at the catch sites, on the same reasoning the empty-piece
+ * refusal already uses: inside the settle function, no caller can forget it. This wrapper only
+ * ADDS a log line — it rethrows, so control flow is exactly as before, and an in-band refusal
+ * (which returns a value rather than throwing) stays quiet.
+ */
+function loudOnPieceAbort<T>(childId: string, settle: () => T): T {
+  try {
+    return settle();
+  } catch (err) {
+    let row: { kind?: string; root_kind?: string; root_id?: string; parent_id?: string; state?: string; agent_id?: string } = {};
+    try {
+      row = (getDb().prepare(
+        'SELECT kind, root_kind, root_id, parent_id, state, agent_id FROM work WHERE id = ?',
+      ).get(childId) ?? {}) as typeof row;
+    } catch { /* naming the row is best-effort; the error below is not */ }
+    logger.error(
+      'PIECE LANDING ABORTED: a delegated piece came back and the spine refused to settle it. The join countdown will not reach zero and the answer will not be relayed.',
+      {
+        workId: childId, kind: row.kind, rootKind: row.root_kind, rootId: row.root_id,
+        parentId: row.parent_id, state: row.state, agentId: row.agent_id,
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+    throw err;
+  }
+}
+
 export function landPiece(
   childId: string,
   p: { deliveryId: string; content: string; messageId?: string | null; actorId?: string | null },
@@ -1156,12 +1195,12 @@ export function landPiece(
       join: joinAfter(childId),
     };
   }
-  const result = transition(childId, {
+  const result = loudOnPieceAbort(childId, () => transition(childId, {
     to: 'done', by: 'agent', actorId: p.actorId ?? 'a2a',
     reason: 'the delegated piece came back',
     resultDeliveryId: p.deliveryId,
     note: body.slice(0, 4000),
-  });
+  }));
   return { result, join: joinAfter(childId) };
 }
 
@@ -1174,10 +1213,10 @@ export function settlePieceWithoutResult(
   childId: string,
   p: { to: 'failed' | 'abandoned'; reason: string; content?: string | null; actorId?: string | null },
 ): PieceSettleResult {
-  const result = transition(childId, {
+  const result = loudOnPieceAbort(childId, () => transition(childId, {
     to: p.to, by: 'agent', actorId: p.actorId ?? 'a2a', reason: p.reason,
     note: p.content ? p.content.slice(0, 4000) : null,
-  });
+  }));
   return { result, join: joinAfter(childId) };
 }
 
