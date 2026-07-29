@@ -135,10 +135,14 @@ import {
 import { buildOpenLoopsInjection } from '../../memory/open-loops.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
 import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, claimAssembledSiblings, getOwedMidTurnArrivals, conversationKey, type TurnCounterparty } from './counterparty.js';
+// PHASE-2 T6 — THE ANSWERED EDGE. One module answers "has the person heard from us" for
+// every gate in this file that used to answer it for itself (research 07 rows 1a/1b/1c/1e/
+// 1g/2d). Nothing below reads the model's prose to decide it any more.
+import { turnDeliveredToPerson } from './answered-edge.js';
 import { resolveOwnerAffinityChannel, affinityPromotionAllowed, recordAffinityPromotion, affinityPromotionRefusedNoBasis } from './owner-affinity.js';
 import { getProactiveSendStreak, bumpProactiveSendStreak, resetProactiveSendStreak, PROACTIVE_SEND_DEMOTE_THRESHOLD } from './proactive-budget.js';
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
-import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, isGenericCloseout, stripLeadingTimeStamp } from './classifiers/output.js';
+import { outputTruncationClassifier, outputPersistenceClassifier, sanitizeAssistantText, stripLeadingTimeStamp } from './classifiers/output.js';
 import { identicalCallSignature, checkIdenticalCallRefusal, recordIdenticalCallResult, isSignatureTerminal, type RepeatCallState } from './identical-call-brake.js';
 import { SEND_TO_PEOPLE } from '../sensei-policy.js';
 import { getPresence } from '../../services/presence.js';
@@ -301,6 +305,11 @@ const BOOKKEEPING_NUDGE_USER_REQUESTED = `\n\n[Engine note: the user asked you t
 // tracker/tools.ts keeps, to avoid a static import of the classifier from this
 // hot path). The turn-start classifier prefixes it onto the PROJECT description
 // of any user-requested multi-step work.
+/** The redundant-closeout floor's only narrowing, carried VERBATIM from the deleted
+ *  `isGenericCloseout` (PHASE-2 T6, C1). A LENGTH, not a reading of the text: anything
+ *  longer is substantive and is never dropped, whatever the delivery ledger says. */
+const REDUNDANT_CLOSEOUT_MAX_CHARS = 30;
+
 const ENGINE_AUTO_MARKER_MIRROR = '[engine:multistep] ';
 
 // The two close tools whose task_id lets us tell a user-requested close from
@@ -5036,20 +5045,28 @@ export async function runV2Turn(agentId: string): Promise<void> {
       }
 
       // ── Redundant-closeout floor (engine-enforced "respond once") ──
-      // If a user-facing reply already surfaced earlier THIS turn and this
-      // continuation iteration is nothing but a generic closeout ("Done.",
-      // "All set.", "Got it.") with no tool calls, swallow it the same way a
-      // bare [no-reply] is swallowed, clear the already-streamed bubble so it
-      // doesn't linger. This is the deterministic backstop for the model
-      // forgetting to [no-reply] a redundant closeout. It can ONLY ever drop a
-      // duplicate: the first reply is never touched (surfacedReplyThisTurn is
-      // false until one lands), and substantive text never matches
-      // isGenericCloseout. No system marker, the agent already replied.
+      //
+      // PHASE-2 T6 (C1, requirement 1a): the AUTHORITY here is now a RECEIPT.
+      //
+      // It used to be two guesses stacked: a turn-local boolean for "a reply already
+      // surfaced", and a twenty-phrase regex for "this line is only a closeout". Both are
+      // gone. The question the floor actually needs answered is "has this turn already put
+      // the result in front of this person", and since PHASE-2 T5 that is a row —
+      // `deliveries`, written by the transport door that performed the send, for every
+      // channel including the dashboard bubble that recorded nothing at all before T5.
+      //
+      // The ≤30-character bound is carried over VERBATIM from the deleted
+      // `isGenericCloseout` (it had the same cap) and is the only narrowing left: it is a
+      // length, not a reading of the text, and it is what keeps this from ever dropping a
+      // substantive second answer. Nothing was tuned and no threshold was invented (#14).
+      //
+      // requirement preserved: the person gets ONE answer per turn, and the engine drops a
+      // duplicate only when it can point at the answer they already have.
       if (
         persistedContent &&
+        persistedContent.trim().length <= REDUNDANT_CLOSEOUT_MAX_CHARS &&
         result.toolCalls.length === 0 &&
-        (state.surfacedReplyThisTurn || deferredDeliveredByAck) &&
-        isGenericCloseout(persistedContent)
+        turnDeliveredToPerson(agentId, turnNumber, currentTurnRoot.get(agentId)?.conversationId ?? null)
       ) {
         persistedContent = null;
         broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
@@ -5057,8 +5074,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // by design ("No system marker, the agent already replied"), so a retraction is
         // exactly what this is.
         broadcast({ type: 'chat:retract', agentId, messageId });
-        logger.info('v2: suppressed redundant closeout (a reply already surfaced this turn)', {
-          agentId, loopCount: state.loopCount,
+        logger.info('v2: suppressed a redundant closeout — the engine holds a delivery receipt for this turn, so the person already has the answer', {
+          agentId, turnNumber, loopCount: state.loopCount,
         }, agentId);
       }
 

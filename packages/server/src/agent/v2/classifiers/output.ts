@@ -117,28 +117,22 @@ export function outputPersistenceClassifier(
   return { decision: 'persist', reason: 'normal text persistence' };
 }
 
-// ── Generic-closeout detection ──
-
-// Matches text that is ENTIRELY a generic acknowledgment/closeout and nothing
-// else: "Done.", "All set.", "Got it.", "Done. Locked in.". Used by the loop
-// to suppress a redundant closeout on a continuation iteration AFTER a real
-// reply already surfaced this turn. Deliberately strict — anything with
-// substantive content (a sentence, a specific confirmation like "Cancelled the
-// noon reminder.", anything past ~30 chars) does NOT match and is never
-// suppressed.
-const CLOSEOUT_PHRASE =
-  '(?:done|all done|all set|you\'?re all set|you are all set|all cleared|all wrapped|wrapped up|complete|completed|task complete|marked complete|finished|all good|noted|got it|on it|roger|understood|will do|consider it done|locked in)';
-const CLOSEOUT_WHOLE_RE = new RegExp(
-  `^[\\s\`*_>-]*${CLOSEOUT_PHRASE}(?:[.!,\\s—–-]+${CLOSEOUT_PHRASE})*[.!\\s\`*_]*$`,
-  'i',
-);
-
-export function isGenericCloseout(text: string | null): boolean {
-  if (!text) return false;
-  const t = text.trim();
-  if (t.length === 0 || t.length > 30) return false; // real closeouts are short
-  return CLOSEOUT_WHOLE_RE.test(t);
-}
+// ── Generic-closeout detection — DELETED, PHASE-2 T6 (cluster C1, requirement 1a) ──
+//
+// `CLOSEOUT_PHRASE` / `CLOSEOUT_WHOLE_RE` / `isGenericCloseout` were a twenty-phrase regex
+// that decided whether the model's last line "was a closeout", and the redundant-closeout
+// floor in the loop used that verdict to DROP the row. That is prose as authority in the
+// suppression direction — the same shape as the near-duplicate swallow deleted beside it
+// (P4b, "its known worst case silently ate a genuinely different short answer") and as the
+// deliverable-claim floor removed twice on 2026-07-19 (research 21, caution 2: honesty
+// floors are receipt-keyed, never prose-keyed).
+//
+// requirement preserved — "respond once": the floor still exists, in `agent/v2/loop.ts`,
+// but its authority is now `turnDeliveredToPerson()` (agent/v2/answered-edge.ts) — a
+// DELIVERY ROW written by the transport door that performed the send. The engine suppresses
+// a second bare line because it can point at the answer the person already received, not
+// because the line matched a phrase list. The ≤30-character bound is carried over verbatim
+// from this function so nothing substantive can ever be dropped; no threshold was invented.
 
 // ── Sanitization ──
 

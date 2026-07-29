@@ -332,7 +332,7 @@ export const ENGINE_EVENT_MAX_ATTEMPTS = 5;
 export const ENGINE_EVENT_EXPIRY_HOURS = 6;
 // Backoff after the Nth failed delivery (minutes). Attempts 1-4 schedule a retry;
 // the 5th failure exhausts the event (expired loudly), so its slot is a formality.
-const ENGINE_EVENT_BACKOFF_MINUTES = [1, 5, 15, 30, 60];
+export const ENGINE_EVENT_BACKOFF_MINUTES = [1, 5, 15, 30, 60];
 
 // Deliverable engine events only: the same intent exclusions as getPendingEngineEvent
 // (thrash-gate steers / hints / system chatter never deliver, so they never expire

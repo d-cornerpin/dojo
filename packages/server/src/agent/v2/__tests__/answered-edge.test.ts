@@ -1,0 +1,576 @@
+// PHASE-2 T6 Step 1 — the obligation machinery, rekeyed onto the answered edge.
+//
+// Seven mechanisms in this tree each had their own answer to "has the person heard from
+// us": a prose classifier, a turn-local boolean, a task-status scan, an in-memory latch, a
+// message column, a `conv_key IS NULL` predicate and a `swept_at` stamp. Research 07's
+// requirements table (rows 1a–2g) asks for ONE edge that serves every read, and this file
+// is that edge's acceptance, written BEFORE the readers were re-pointed at it.
+//
+// Every test below names the requirement row it holds, and every one of them has a
+// NEGATIVE control of the same shape — a reader that returns "answered" for everything is
+// not a reader, it is a rubber stamp.
+//
+//   1a  did THIS turn already put the result in front of the person?   (receipt, not prose)
+//   1b  did work close WITHOUT a delivery?                             (a join, not a scan)
+//   1c  what work is still claimed by this agent at turn end?          (with identity)
+//   1e  is anything open for a human counterparty right now?           (ONE query)
+//   1g  the delivery reference set only on a genuine user-facing send
+//   2b  `abandoned` reachable from >= 3 causes, single-transition once-guard, re-openable
+//   2c  the retry policy, carried VERBATIM
+//   2d  the answered edge serves BOTH the answer-receipt and the closeout-owe read
+//
+// Plus the disposition the plan clause and the P2 drive boundary had to be reconciled on
+// (PHASE-2 progress.md, T1 adjudication #2): a turn that SPOKE to the owner and left its
+// work in the drive state hands the ball over — the work reconciles to `paused`, keyed on
+// the ENGINE's own recorded turn outcome, never on the shape of the model's prose — and
+// the owner's next message REOPENS it.
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import Database from 'better-sqlite3';
+
+const mockDb: { current: Database.Database | null } = { current: null };
+
+vi.mock('../../../db/connection.js', async () => {
+  const os = await import('node:os');
+  const path = await import('node:path');
+  return {
+    getDb: () => {
+      if (!mockDb.current) throw new Error('test DB not initialized');
+      return mockDb.current;
+    },
+    closeDb: vi.fn(),
+    getDbPath: () => path.join(os.tmpdir(), 'dojo-answered-edge-test', 'dojo.db'),
+  };
+});
+
+import { runMigrations } from '../../../db/migrations.js';
+import {
+  answerReceiptForAsk,
+  closedWithoutDelivery,
+  hasOpenHumanWork,
+  pauseDriveWorkWaitingOnOwner,
+  resumeWorkOnOwnerAsk,
+  stillClaimedWork,
+  turnDeliveredToPerson,
+  turnOutcome,
+} from '../answered-edge.js';
+import {
+  ENGINE_EVENT_BACKOFF_MINUTES,
+  ENGINE_EVENT_EXPIRY_HOURS,
+  ENGINE_EVENT_MAX_ATTEMPTS,
+} from '../counterparty.js';
+import { openAsk, transition } from '../../../work/store.js';
+
+const AGENT = 'kevin';
+const CONV = 'conv-1';
+
+const db = (): Database.Database => mockDb.current!;
+
+function seedAgent(): void {
+  db().prepare(
+    `INSERT INTO agents (id, name, status, session_started_at)
+     VALUES (?, 'Kevin', 'idle', '1970-01-01')`,
+  ).run(AGENT);
+  db().prepare(
+    `INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, created_at)
+     VALUES (?, ?, 'dashboard', NULL, 'owner', datetime('now'))`,
+  ).run(CONV, AGENT);
+}
+
+function seedTurn(turnNumber: number, over: Record<string, unknown> = {}): void {
+  const row = {
+    agent_id: AGENT, turn_number: turnNumber, kind: 'user', subject_kind: 'conv',
+    subject_id: CONV, root_kind: 'ask', root_id: null, source_message_id: null,
+    conv_key: 'owner', started_at: new Date().toISOString(), ended_at: null,
+    exit_reason: null, answered: 0, effectful_calls: 0, answer_message_id: null, lane: null,
+    ...over,
+  };
+  const cols = Object.keys(row);
+  db().prepare(
+    `INSERT INTO turns (${cols.join(', ')}) VALUES (${cols.map((c) => '@' + c).join(', ')})`,
+  ).run(row);
+}
+
+/** A delivery row, written the way the doors write it (PHASE-2 T5). */
+function seedDelivery(id: string, over: Record<string, unknown> = {}): string {
+  const row = {
+    id, agent_id: AGENT, turn_number: 1, tool: 'auto-route', channel: 'dashboard',
+    recipient_id: 'owner', recipient_display: null, conversation_id: CONV,
+    root_kind: null, root_id: null, message_id: null, receipt_id: null,
+    outcome: 'delivered', detail: null,
+    ...over,
+  };
+  const cols = Object.keys(row);
+  db().prepare(
+    `INSERT INTO deliveries (${cols.join(', ')}, created_at, updated_at)
+     VALUES (${cols.map((c) => '@' + c).join(', ')}, datetime('now'), datetime('now'))`,
+  ).run(row);
+  return id;
+}
+
+/** A legacy tracker task in the drive state — where a task's live state STILL lives until
+ *  PHASE-2 T8 moves the tracker onto the spine. */
+function seedLegacyTask(id: string, over: Record<string, unknown> = {}): void {
+  const row = {
+    id, project_id: null, title: 'summarise the project', description: null,
+    status: 'in_progress', assigned_to: AGENT, created_by: 'owner', priority: 'normal',
+    is_paused: 0, repeat_interval: null, source_message_id: null, origin_turn: null,
+    ...over,
+  };
+  const cols = Object.keys(row);
+  db().prepare(
+    `INSERT INTO legacy_tasks (${cols.join(', ')}, created_at, updated_at)
+     VALUES (${cols.map((c) => '@' + c).join(', ')}, datetime('now'), datetime('now'))`,
+  ).run(row);
+}
+
+function seedInbound(id: string, over: Record<string, unknown> = {}): void {
+  const row = {
+    id, agent_id: AGENT, conversation_id: CONV, lane: 'owner', role: 'user',
+    content: 'can you check the roof quote?', channel: 'dashboard', sender_id: 'owner',
+    authorized: 1, created_at: Date.now(), provenance: 'live',
+    display_kind: 'user-text', display_tier: 'user-visible',
+    ...over,
+  };
+  const cols = Object.keys(row);
+  db().prepare(
+    `INSERT INTO messages (${cols.join(', ')}) VALUES (${cols.map((c) => '@' + c).join(', ')})`,
+  ).run(row);
+}
+
+beforeEach(() => {
+  const fresh = new Database(':memory:');
+  fresh.pragma('foreign_keys = ON');
+  mockDb.current = fresh;
+  runMigrations();
+  fresh.pragma('foreign_keys = ON');
+  seedAgent();
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+describe('1a — "did THIS turn already put the result in front of the person" is a RECEIPT', () => {
+  it('a recorded delivery on this turn and conversation says yes', () => {
+    seedTurn(7);
+    seedDelivery('d1', { turn_number: 7 });
+    expect(turnDeliveredToPerson(AGENT, 7, CONV)).toBe(true);
+  });
+
+  it('NEGATIVE: a FAILED send is not a delivery', () => {
+    seedTurn(7);
+    seedDelivery('d1', { turn_number: 7, outcome: 'failed' });
+    expect(turnDeliveredToPerson(AGENT, 7, CONV)).toBe(false);
+  });
+
+  it('NEGATIVE: the engine\'s own start-ack is not the answer', () => {
+    seedTurn(7);
+    seedDelivery('d1', { turn_number: 7, tool: 'engine-ack' });
+    expect(turnDeliveredToPerson(AGENT, 7, CONV)).toBe(false);
+  });
+
+  it('NEGATIVE: a delivery from ANOTHER turn is not this turn\'s', () => {
+    seedTurn(7); seedTurn(8);
+    seedDelivery('d1', { turn_number: 8 });
+    expect(turnDeliveredToPerson(AGENT, 7, CONV)).toBe(false);
+  });
+
+  it('NEGATIVE: a delivery into another conversation is not this one\'s answer', () => {
+    seedTurn(7);
+    db().prepare(
+      `INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, created_at)
+       VALUES ('conv-2', ?, 'imessage', 'imessage', '+15550000', datetime('now'))`,
+    ).run(AGENT);
+    seedDelivery('d1', { turn_number: 7, conversation_id: 'conv-2' });
+    expect(turnDeliveredToPerson(AGENT, 7, CONV)).toBe(false);
+  });
+
+  it('the a2a lane is not a person: a peer hand-back never counts as telling the owner', () => {
+    seedTurn(7);
+    seedDelivery('d1', { turn_number: 7, channel: 'a2a', conversation_id: null });
+    expect(turnDeliveredToPerson(AGENT, 7, null)).toBe(false);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+describe('1b — "did work close without a delivery" is a JOIN, not a status scan', () => {
+  it('work that closed with nothing delivered for it is returned', () => {
+    seedInbound('m-1');
+    const askId = openAsk({
+      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
+      openedAt: Date.now(), title: 'roof quote',
+    });
+    transition(askId, { to: 'abandoned', by: 'agent', actorId: AGENT, reason: 'gave up' });
+    const rows = closedWithoutDelivery(AGENT, Date.now() - 60_000);
+    expect(rows.map((r) => r.workId)).toContain(askId);
+  });
+
+  it('NEGATIVE: work that closed AGAINST a delivery is not owed a closeout', () => {
+    seedInbound('m-1');
+    seedTurn(3);
+    const askId = openAsk({
+      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
+      openedAt: Date.now(), title: 'roof quote',
+    });
+    transition(askId, { to: 'claimed', by: 'agent', actorId: AGENT, claimedByTurn: 3, reason: 'pickup' });
+    seedDelivery('d1', { turn_number: 3 });
+    transition(askId, {
+      to: 'done', by: 'agent', actorId: AGENT, resultDeliveryId: 'd1', reason: 'delivered',
+    });
+    expect(closedWithoutDelivery(AGENT, Date.now() - 60_000).map((r) => r.workId)).not.toContain(askId);
+  });
+
+  it('NEGATIVE: still-open work has not closed and is not in the set', () => {
+    seedInbound('m-1');
+    const askId = openAsk({
+      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
+      openedAt: Date.now(), title: 'roof quote',
+    });
+    expect(closedWithoutDelivery(AGENT, Date.now() - 60_000).map((r) => r.workId)).not.toContain(askId);
+  });
+
+  it('the window is honoured: work closed before it is history, not this turn\'s miss', () => {
+    seedInbound('m-1');
+    const askId = openAsk({
+      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
+      openedAt: Date.now(), title: 'roof quote',
+    });
+    transition(askId, { to: 'abandoned', by: 'agent', actorId: AGENT, reason: 'gave up' });
+    expect(closedWithoutDelivery(AGENT, Date.now() + 60_000)).toEqual([]);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+describe('1c — turn end enumerates still-claimed work, WITH the identity to escalate', () => {
+  it('claimed work comes back carrying its conversation and its claiming turn', () => {
+    seedInbound('m-1');
+    seedTurn(4);
+    const askId = openAsk({
+      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
+      openedAt: Date.now(), title: 'roof quote',
+    });
+    transition(askId, { to: 'claimed', by: 'agent', actorId: AGENT, claimedByTurn: 4, reason: 'pickup' });
+    const rows = stillClaimedWork(AGENT);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ workId: askId, conversationId: CONV, claimedByTurn: 4 });
+  });
+
+  it('NEGATIVE: settled work is not still claimed', () => {
+    seedInbound('m-1');
+    const askId = openAsk({
+      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
+      openedAt: Date.now(), title: 'roof quote',
+    });
+    transition(askId, { to: 'abandoned', by: 'agent', actorId: AGENT, reason: 'gave up' });
+    expect(stillClaimedWork(AGENT)).toEqual([]);
+  });
+
+  it('scoping to one turn returns only that turn\'s claims', () => {
+    seedInbound('m-1'); seedInbound('m-2', { id: 'm-2' });
+    seedTurn(4); seedTurn(5);
+    const a = openAsk({ agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner', openedAt: Date.now(), title: 'a' });
+    const b = openAsk({ agentId: AGENT, messageId: 'm-2', conversationId: CONV, requesterId: 'owner', openedAt: Date.now(), title: 'b' });
+    transition(a, { to: 'claimed', by: 'agent', actorId: AGENT, claimedByTurn: 4, reason: 'pickup' });
+    transition(b, { to: 'claimed', by: 'agent', actorId: AGENT, claimedByTurn: 5, reason: 'pickup' });
+    expect(stillClaimedWork(AGENT, { turnNumber: 5 }).map((r) => r.workId)).toEqual([b]);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+describe('1e — "settled" is ONE query: is anything open for a human counterparty', () => {
+  it('an open ask makes the agent un-settled', () => {
+    seedInbound('m-1');
+    openAsk({
+      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
+      openedAt: Date.now(), title: 'roof quote',
+    });
+    expect(hasOpenHumanWork(AGENT)).toBe(true);
+  });
+
+  it('NEGATIVE: once every ask is claimed or settled, the agent is settled', () => {
+    seedInbound('m-1');
+    seedTurn(2);
+    const askId = openAsk({
+      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
+      openedAt: Date.now(), title: 'roof quote',
+    });
+    transition(askId, { to: 'claimed', by: 'agent', actorId: AGENT, claimedByTurn: 2, reason: 'pickup' });
+    expect(hasOpenHumanWork(AGENT)).toBe(false);
+  });
+
+  it('NEGATIVE: another agent\'s open ask never makes THIS agent un-settled', () => {
+    db().prepare(
+      `INSERT INTO agents (id, name, status, session_started_at)
+       VALUES ('other', 'Other', 'idle', '1970-01-01')`,
+    ).run();
+    seedInbound('m-1', { agent_id: 'other', conversation_id: null });
+    openAsk({
+      agentId: 'other', messageId: 'm-1', conversationId: null, requesterId: 'owner',
+      openedAt: Date.now(), title: 'roof quote',
+    });
+    expect(hasOpenHumanWork(AGENT)).toBe(false);
+  });
+
+  it('a PAUSED ask is not OPEN: the ball is with the owner, so the agent is settled', () => {
+    seedInbound('m-1');
+    const askId = openAsk({
+      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
+      openedAt: Date.now(), title: 'roof quote',
+    });
+    transition(askId, { to: 'paused', by: 'agent', actorId: AGENT, reason: 'waiting on the owner' });
+    expect(hasOpenHumanWork(AGENT)).toBe(false);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+describe('2d — ONE edge serves BOTH the answer-receipt read and the closeout-owe read', () => {
+  it('an ask closed against a delivery reports the receipt AND stops owing', () => {
+    seedInbound('m-1');
+    seedTurn(3);
+    const askId = openAsk({
+      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
+      openedAt: Date.now(), title: 'roof quote',
+    });
+    transition(askId, { to: 'claimed', by: 'agent', actorId: AGENT, claimedByTurn: 3, reason: 'pickup' });
+    seedDelivery('d1', { turn_number: 3 });
+    transition(askId, { to: 'done', by: 'agent', actorId: AGENT, resultDeliveryId: 'd1', reason: 'delivered' });
+
+    const r = answerReceiptForAsk('m-1');
+    expect(r.answered).toBe(true);
+    expect(r.deliveryId).toBe('d1');
+  });
+
+  it('NEGATIVE: an ask with no delivery still OWES, and names no receipt', () => {
+    seedInbound('m-1');
+    openAsk({
+      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
+      openedAt: Date.now(), title: 'roof quote',
+    });
+    const r = answerReceiptForAsk('m-1');
+    expect(r.answered).toBe(false);
+    expect(r.deliveryId).toBeNull();
+  });
+
+  it('a row that predates the ticket falls back to the mig-113 stamp, and says so', () => {
+    // No ask ticket at all — the shape of every message written before PHASE-2 T3.
+    seedInbound('m-legacy', { id: 'm-legacy' });
+    db().prepare('UPDATE messages SET answer_message_id = ? WHERE id = ?').run('a-1', 'm-legacy');
+    const r = answerReceiptForAsk('m-legacy');
+    expect(r.answered).toBe(true);
+    expect(r.answerMessageId).toBe('a-1');
+    expect(r.deliveryId).toBeNull();
+  });
+
+  it('NEGATIVE: an unknown message id is not silently "answered"', () => {
+    expect(answerReceiptForAsk('nope').answered).toBe(false);
+    expect(answerReceiptForAsk(null).answered).toBe(false);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+describe('the turn-outcome reader (PHASE-2 T2 adjudication #3 — the orphan-gate debt)', () => {
+  it('reads back what finalizeTurn recorded, instead of re-deriving it', () => {
+    seedTurn(9, {
+      ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1,
+      answer_message_id: 'a-9', effectful_calls: 2,
+    });
+    expect(turnOutcome(AGENT, 9)).toMatchObject({
+      exitReason: 'answered', answered: true, answerMessageId: 'a-9', effectfulCalls: 2,
+    });
+  });
+
+  it('NEGATIVE: a turn that never happened has no outcome to read', () => {
+    expect(turnOutcome(AGENT, 99)).toBeNull();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// The clarifying-question disposition (PHASE-2 progress.md, T1 adjudication #2).
+// ══════════════════════════════════════════════════════════════════════════════
+describe('a turn that SPOKE to the owner and closed nothing hands the ball over (paused)', () => {
+  it('drive-state work reconciles to paused, keyed on the recorded turn outcome', () => {
+    seedTurn(6, {
+      ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1,
+      answer_message_id: 'a-6', effectful_calls: 0,
+    });
+    seedDelivery('d1', { turn_number: 6 });
+    seedLegacyTask('t-1');
+
+    const r = pauseDriveWorkWaitingOnOwner(AGENT, 6);
+    expect(r.paused).toBe(1);
+    const row = db().prepare('SELECT status, status_before_pause FROM legacy_tasks WHERE id = ?').get('t-1') as
+      { status: string; status_before_pause: string | null };
+    expect(row.status).toBe('paused');
+    expect(row.status_before_pause).toBe('in_progress');
+  });
+
+  it('NEGATIVE (P2 drive boundary): a turn that ACTED is still working — nothing is paused', () => {
+    seedTurn(6, {
+      ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1,
+      answer_message_id: 'a-6', effectful_calls: 3,
+    });
+    seedDelivery('d1', { turn_number: 6 });
+    seedLegacyTask('t-1');
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 6).paused).toBe(0);
+    expect((db().prepare('SELECT status FROM legacy_tasks WHERE id = ?').get('t-1') as { status: string }).status)
+      .toBe('in_progress');
+  });
+
+  it('NEGATIVE: a turn that never spoke to the owner leaves the work DRIVING', () => {
+    seedTurn(6, {
+      ended_at: new Date().toISOString(), exit_reason: 'no_reply_intended', answered: 0,
+      effectful_calls: 0,
+    });
+    seedLegacyTask('t-1');
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 6).paused).toBe(0);
+  });
+
+  it('NEGATIVE: "answered" with NO delivery on the ledger is not a receipt — nothing pauses', () => {
+    seedTurn(6, {
+      ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1,
+      answer_message_id: 'a-6', effectful_calls: 0,
+    });
+    seedLegacyTask('t-1');
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 6).paused).toBe(0);
+  });
+
+  it('NEGATIVE: a recurring schedule is never paused by a missed close-out', () => {
+    seedTurn(6, {
+      ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1,
+      answer_message_id: 'a-6', effectful_calls: 0,
+    });
+    seedDelivery('d1', { turn_number: 6 });
+    seedLegacyTask('t-1', { repeat_interval: 1 });
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 6).paused).toBe(0);
+  });
+
+  it('it is keyed on the RECORD, not the prose: the reply text is never consulted', () => {
+    // Two identical turns; only the recorded outcome differs. If the disposition were
+    // prose-keyed these would agree, because there is no prose here at all.
+    seedTurn(6, { ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1, effectful_calls: 0 });
+    seedTurn(7, { ended_at: new Date().toISOString(), exit_reason: 'brake', answered: 0, effectful_calls: 0 });
+    seedDelivery('d1', { turn_number: 6 });
+    seedDelivery('d2', { turn_number: 7 });
+    seedLegacyTask('t-1');
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 7).paused).toBe(0);
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 6).paused).toBe(1);
+  });
+
+  it('the pause is recorded where somebody can find it, not just applied', () => {
+    seedTurn(6, { ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1, effectful_calls: 0 });
+    seedDelivery('d1', { turn_number: 6 });
+    seedLegacyTask('t-1');
+    pauseDriveWorkWaitingOnOwner(AGENT, 6);
+    const log = db().prepare('SELECT entry_kind, to_status FROM task_log WHERE task_id = ?').all('t-1') as
+      Array<{ entry_kind: string; to_status: string | null }>;
+    expect(log.some((e) => e.to_status === 'paused')).toBe(true);
+  });
+});
+
+describe('THE REOPEN EDGE — the owner\'s answer resumes the work', () => {
+  it('a new owner ask restores the paused work to the state it was paused from', () => {
+    seedTurn(6, { ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1, effectful_calls: 0 });
+    seedDelivery('d1', { turn_number: 6 });
+    seedLegacyTask('t-1');
+    pauseDriveWorkWaitingOnOwner(AGENT, 6);
+
+    const r = resumeWorkOnOwnerAsk(AGENT);
+    expect(r.resumed).toBe(1);
+    const row = db().prepare('SELECT status, status_before_pause FROM legacy_tasks WHERE id = ?').get('t-1') as
+      { status: string; status_before_pause: string | null };
+    expect(row.status).toBe('in_progress');
+    expect(row.status_before_pause).toBeNull();
+  });
+
+  it('NEGATIVE: work the OWNER paused by hand is not resumed by the engine', () => {
+    seedLegacyTask('t-1', { status: 'paused', is_paused: 1 });
+    expect(resumeWorkOnOwnerAsk(AGENT).resumed).toBe(0);
+  });
+
+  it('NEGATIVE: another agent\'s paused work is untouched', () => {
+    db().prepare(
+      `INSERT INTO agents (id, name, status, session_started_at)
+       VALUES ('other', 'Other', 'idle', '1970-01-01')`,
+    ).run();
+    seedTurn(6, { ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1, effectful_calls: 0 });
+    seedDelivery('d1', { turn_number: 6 });
+    seedLegacyTask('t-1', { assigned_to: 'other' });
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 6).paused).toBe(0);
+  });
+
+  it('paused work stays VISIBLE to the aging surface (it keeps its own clock)', () => {
+    seedTurn(6, { ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1, effectful_calls: 0 });
+    seedDelivery('d1', { turn_number: 6 });
+    seedLegacyTask('t-1');
+    pauseDriveWorkWaitingOnOwner(AGENT, 6);
+    const row = db().prepare(
+      `SELECT status, updated_at FROM legacy_tasks WHERE id = ? AND status = 'paused'`,
+    ).get('t-1') as { status: string; updated_at: string } | undefined;
+    expect(row?.updated_at).toBeTruthy();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+describe('2b — `abandoned` is reachable from >= 3 causes with a single-transition once-guard', () => {
+  const openOne = (mid: string): string => {
+    seedInbound(mid, { id: mid });
+    return openAsk({
+      agentId: AGENT, messageId: mid, conversationId: CONV, requesterId: 'owner',
+      openedAt: Date.now(), title: mid,
+    });
+  };
+
+  it('cause 1 — a quarantined conversation gives up on its ask', () => {
+    const id = openOne('m-q');
+    expect(transition(id, {
+      to: 'abandoned', by: 'agent', actorId: AGENT,
+      reason: 'quarantined: this conversation repeatedly aborted its turn',
+    }).kind).toBe('applied');
+  });
+
+  it('cause 2 — a delegated piece the peer never answered', () => {
+    const id = openOne('m-p');
+    expect(transition(id, {
+      to: 'abandoned', by: 'agent', actorId: 'a2a', reason: 'the peer abandoned the thread',
+    }).kind).toBe('applied');
+  });
+
+  it('cause 3 — an ask nobody can ever serve or close (no identity)', () => {
+    seedInbound('m-x', { id: 'm-x', conversation_id: null });
+    const id = openAsk({
+      agentId: AGENT, messageId: 'm-x', conversationId: null, requesterId: null,
+      openedAt: Date.now(), title: 'orphan',
+    });
+    expect(transition(id, {
+      to: 'abandoned', by: 'agent', actorId: 'work-reaper',
+      reason: 'no conversation identity: nothing delivered can ever match this ask',
+    }).kind).toBe('applied');
+  });
+
+  it('THE ONCE-GUARD: the second transition is refused, so exactly one caller acts', () => {
+    const id = openOne('m-1');
+    const first = transition(id, { to: 'abandoned', by: 'agent', actorId: AGENT, reason: 'first', expectedState: 'open' });
+    const second = transition(id, { to: 'abandoned', by: 'agent', actorId: AGENT, reason: 'second', expectedState: 'open' });
+    expect(first.kind).toBe('applied');
+    expect(second.kind).toBe('conflict');
+  });
+
+  it('THE REOPEN AUTHORITY covers a quarantine-abandoned ask (T3 adjudication #4)', () => {
+    const id = openOne('m-1');
+    transition(id, { to: 'abandoned', by: 'agent', actorId: AGENT, reason: 'quarantined' });
+    // NEGATIVE first: a worker agent cannot resurrect its own abandonment.
+    expect(transition(id, { to: 'open', by: 'agent', actorId: AGENT, reason: 'try again' }).kind).toBe('rejected');
+    // The owner can, and that is the late-answer path.
+    expect(transition(id, {
+      to: 'open', by: 'owner', actorId: 'owner', claim: 'authoritative',
+      reason: 'the owner asked again on the same conversation',
+    }).kind).toBe('applied');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+describe('2c — the engine-event retry policy, carried VERBATIM', () => {
+  it('5 attempts, a 6-hour horizon, and the exact backoff ladder', () => {
+    expect(ENGINE_EVENT_MAX_ATTEMPTS).toBe(5);
+    expect(ENGINE_EVENT_EXPIRY_HOURS).toBe(6);
+    expect(ENGINE_EVENT_BACKOFF_MINUTES).toEqual([1, 5, 15, 30, 60]);
+  });
+});

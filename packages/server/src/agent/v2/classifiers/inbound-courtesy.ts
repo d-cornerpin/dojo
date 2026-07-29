@@ -13,8 +13,9 @@
 // that actually carries a request or a fact must NOT match. A missed turn is
 // the cost of a false positive, so we lean toward NOT firing):
 //   (a) a small pleasantry family (talk soon / sounds good / thanks / you too /
-//       have a good one / no rush ...), short-only, modeled on the strictness
-//       of isGenericCloseout in classifiers/output.ts.
+//       have a good one / no rush ...), short-only. It was modelled on the
+//       strictness of `isGenericCloseout`, which PHASE-2 T6 DELETED; the
+//       strictness stayed, the borrowed neighbour did not.
 //   (b) exact string match against the engine's OWN ack pools (an inbound that
 //       IS verbatim one of our emitted lines is provably machine courtesy).
 //
@@ -53,7 +54,15 @@ const PLEASANTRY_PHRASE =
 
 // Whole-message only: one pleasantry, optionally chained with more via light
 // connective punctuation or "and". Leading/trailing markdown + closing
-// punctuation tolerated, exactly like CLOSEOUT_WHOLE_RE in output.ts.
+// punctuation tolerated.
+//
+// PHASE-2 T6 note (C1): the sibling this comment used to point at — `CLOSEOUT_WHOLE_RE` in
+// classifiers/output.ts — is DELETED. The resemblance was in the ANCHORING IDIOM, never in
+// the job: that one read the model's OUTBOUND prose to decide whether the person had been
+// answered (an honesty question, now keyed on the delivery ledger), while this one reads an
+// INBOUND peer message to decide whether a content-free "thanks!" should wake an agent. The
+// second is a routing question about somebody else's text and is not part of the answered
+// edge, so it stays.
 const PLEASANTRY_WHOLE_RE = new RegExp(
   `^[\\s\`*_>-]*${PLEASANTRY_PHRASE}(?:[.!,\\s]+(?:and\\s+)?${PLEASANTRY_PHRASE})*[.!\\s\`*_]*$`,
   'i',

@@ -264,10 +264,12 @@ describe('the deliberate non-folds', () => {
     },
     {
       file: 'server/src/agent/v2/loop.ts',
-      what: 'DECLINE_OPENER_RE and isGenericCloseout',
-      why: 'Engine BEHAVIOUR classifiers over the model\'s prose ("is this a decline?", "is '
-        + 'this a redundant closeout?"), deciding whether a row is written at all. They read '
-        + 'meaning, not markers. OR2 / PHASE 4 owns the engine\'s prose judgements.',
+      what: 'DECLINE_OPENER_RE',
+      why: 'An engine BEHAVIOUR classifier over the model\'s prose ("is this a decline?"), '
+        + 'deciding whether a row is written at all. It reads meaning, not markers. OR2 / '
+        + 'PHASE 4 owns the engine\'s prose judgements. (Its former neighbour here, '
+        + '`isGenericCloseout`, was DELETED by PHASE-2 T6: the redundant-closeout floor it '
+        + 'served is keyed on the delivery ledger now, not on a phrase list.)',
     },
   ];
 

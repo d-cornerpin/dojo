@@ -25,6 +25,7 @@
 //        R1 raw inline SQL that sets status: 36 sites / 8 files
 //        R2 updateTask({ status }) call sites: 11 sites / 2 files
 //        GRID TOTAL: 47 state-writing sites across 9 files
+//     (+2 declared by PHASE-2 T6 — see the note on the allowlist below: 49 across 10 files)
 //
 // CORRECTION TO PHASE-2.md's PINNED §13, recorded rather than silently adopted (#14): the
 // plan's table says "48 state-writing sites ... across 12 files" and labels R2 as 12. Its
@@ -78,7 +79,16 @@ const stripComments = (s: string): string => s
 
 // ── PART B's burn-down allowlist. Each entry is {file: sites}. PHASE-2 T8 empties it. ──
 // TOTAL 47. When a T8 cluster lands, its line drops out and the total below drops with it.
+//
+// PHASE-2 T6 ADDS TWO, and says why rather than quietly bumping the number. The turn-end
+// disposition (the receipt-keyed pause and its reopen — `agent/v2/answered-edge.ts`) has to
+// write where a TASK'S LIVE STATE ACTUALLY IS, and that is still `legacy_tasks.status`: T2
+// moved the schema, T8 moves the writers, and a task created today has no `work` row at
+// all. Writing the disposition to the spine would have written it where nothing reads.
+// They are declared here, like every other outstanding conversion, and T8 routes them
+// through `transition()` with the rest. 47 -> 49.
 const LEGACY_STATE_WRITERS: Record<string, number> = {
+  'agent/v2/answered-edge.ts': 2,   // PHASE-2 T6: the pause + its reopen
   'scheduler/runner.ts': 13,
   'tracker/tools.ts': 19,        // 9 raw UPDATE + 10 updateTask({status})
   'tracker/pm-agent.ts': 4,
@@ -159,7 +169,7 @@ describe('PART B — the burn-down: legacy state writes still outstanding (PHASE
   });
 
   it('records the outstanding total so the number is visible on every run', () => {
-    expect(BURN_DOWN_TOTAL).toBe(47);
+    expect(BURN_DOWN_TOTAL).toBe(49);
   });
 
   it('SELF-TEST: the legacy counter sees both routes and ignores prose', () => {
