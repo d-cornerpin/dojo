@@ -493,21 +493,12 @@
       "verifiedBy": "git grep -l 'origin_kind' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
     },
     {
-      "id": "work.deliverable_shown",
-      "kind": "column",
-      "table": "work",
-      "column": "deliverable_shown",
-      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
-      "why": "`deliverable_shown` is the RETASK BACKSTOP with an incident behind it; `a2a_thread_id` ties an auto-created ASSIGN task to its thread; `last_smell_flag` is rendered on the dashboard. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/tools.ts, work/tracker-store.ts.",
-      "verifiedBy": "git grep -l 'deliverable_shown' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
-    },
-    {
       "id": "work.a2a_thread_id",
       "kind": "column",
       "table": "work",
       "column": "a2a_thread_id",
       "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
-      "why": "`deliverable_shown` is the RETASK BACKSTOP with an incident behind it; `a2a_thread_id` ties an auto-created ASSIGN task to its thread; `last_smell_flag` is rendered on the dashboard. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/schema.ts, tracker/tools.ts.",
+      "why": "`a2a_thread_id` ties an auto-created ASSIGN task to its thread. (This `why` used to open with `deliverable_shown`, the retask backstop's legacy stamp; PHASE-2 T10F dropped that column at migration `145` after converting the backstop to a predicate over the two live disjuncts, so its declaration is retired and this sentence no longer names it.) Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/schema.ts, tracker/tools.ts.",
       "verifiedBy": "git grep -l 'a2a_thread_id' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
     },
     {
@@ -516,7 +507,7 @@
       "table": "work",
       "column": "last_smell_flag",
       "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
-      "why": "`deliverable_shown` is the RETASK BACKSTOP with an incident behind it; `a2a_thread_id` ties an auto-created ASSIGN task to its thread; `last_smell_flag` is rendered on the dashboard. Readers at PHASE-2 T8b: tracker/pm-agent.ts, gateway/routes/tracker.ts, dashboard/lib/api.ts.",
+      "why": "`last_smell_flag` is rendered on the dashboard. (This `why` used to open with `deliverable_shown`; PHASE-2 T10F dropped that column at migration `145`.) Readers at PHASE-2 T8b: tracker/pm-agent.ts, gateway/routes/tracker.ts, dashboard/lib/api.ts.",
       "verifiedBy": "git grep -l 'last_smell_flag' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
     },
     {
