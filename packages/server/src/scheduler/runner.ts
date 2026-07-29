@@ -21,8 +21,11 @@ import {
 import {
   patchWork, setTrackerStatus, bumpWorkAttempts, upholdClaim, clearUserVerdict,
   recordValidationEscalation, deleteTrackerRow, deliveryForTaskClose,
-  claimOccurrence, stopLiveSchedule,
+  deliveryForAgentSince, stopLiveSchedule,
 } from '../work/tracker-store.js';
+import {
+  claimOccurrence, releaseOccurrence, settleOccurrence, occurrenceOf, inFlightOccurrence,
+} from '../work/occurrences.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getTask } from '../tracker/schema.js';
@@ -637,10 +640,14 @@ export async function checkScheduledTasks(): Promise<void> {
     const repeatInterval = taskRow.repeat_interval as number | null;
     const repeatUnit = taskRow.repeat_unit as string | null;
     if (repeatInterval && repeatUnit && runCount > 0) {
-      const nextRunIso = taskRow.next_run_at as string | null;
+      // The RAW instant, not the display copy: the missed-run rule is a COMPARISON, and
+      // `msToText` truncates. A second's error cannot flip the 1.5x test on any real
+      // interval, but the rule for this whole surface is that comparisons take the raw
+      // column — that is what stopped the CAS defect being findable for two weeks.
+      const nextRunMs = occurrenceOf(taskRow);
       const intervalMs = intervalApproxMs(repeatUnit, repeatInterval);
-      if (nextRunIso && intervalMs) {
-        const overdueMs = Date.now() - new Date(normalizeDbTimestamp(nextRunIso)).getTime();
+      if (nextRunMs !== null && intervalMs) {
+        const overdueMs = Date.now() - nextRunMs;
         if (overdueMs > intervalMs * 1.5) {
           const missedSlots = Math.max(1, Math.floor(overdueMs / intervalMs));
           alertMissedRuns(taskRow, missedSlots);
@@ -674,16 +681,18 @@ export async function checkScheduledTasks(): Promise<void> {
       } catch { /* ignore parse errors */ }
     }
 
-    // ── D21: atomic occurrence claim + advance-at-fire ──
-    // Exactly one process may fire a given occurrence: the claim UPDATE is
-    // keyed on the exact occurrence value this tick read (next_run_at = ?)
-    // plus the not-already-claimed convention (schedule_status = 'waiting',
-    // is_paused = 0), and .changes === 1 is the claim token. Overlapping
-    // ticks and duplicate dev processes lose the claim and skip. The NEXT
-    // occurrence is computed and written HERE, at fire time, instead of at
-    // model close-out, so a hung or crashed turn can no longer stall the
-    // cadence: close-out (onTaskRunComplete) only flips the schedule back
-    // to 'waiting' and honors the already-advanced next_run_at.
+    // ── D21's occurrence claim, now a WORK ROW (PHASE-2 T8c2 item 4) ──
+    // Exactly one process may fire a given occurrence, and that is now a CONSTRAINT rather
+    // than a plea: the claim INSERTs `work(kind='occurrence', parent_id=<schedule>,
+    // sequence=<run number>)` and `ux_work_occurrence` refuses the second one. The schedule's
+    // own preconditions (still waiting, not paused, still pointing at THIS occurrence) are
+    // checked in the same transaction against the RAW epoch-ms column — `occurrenceOf`, never
+    // the display text, which drops milliseconds and made this CAS unwinnable for any
+    // schedule started from a real clock reading. Overlapping ticks and duplicate dev
+    // processes lose the claim and skip. The NEXT occurrence is still computed and written
+    // HERE, at fire time, so a hung or crashed turn cannot stall the cadence; and because the
+    // occurrence is a durable row, a crashed fire can no longer LOSE it either.
+    const claimedOccurrenceMs = occurrenceOf(taskRow);
     const claimedOccurrence = taskRow.next_run_at as string;
     const nextAtFire = calculateNextRun({
       id: taskId,
@@ -700,21 +709,22 @@ export async function checkScheduledTasks(): Promise<void> {
       repeat_days_of_week: taskRow.repeat_days_of_week as string | null,
       anchor_time: taskRow.anchor_time as string | null,
     });
-    // D21's atomic occurrence claim, preserved exactly: the CAS is still one UPDATE keyed
-    // on the exact occurrence this tick read, and `.changes === 1` is still the claim token.
-    // Only the state assignment moved out of it — that is `transition()`'s — and it runs
-    // AFTER the claim is won, so two processes still cannot both fire an occurrence.
-    const claim = { changes: claimOccurrence(taskId, tsToMs(claimedOccurrence), nowMs, tsToMs(nextAtFire)) ? 1 : 0 };
-    if (claim.changes === 1) {
-      setTrackerStatus(taskId, 'in_progress', {
-        by: 'scheduler', actorId: 'scheduler',
-        reason: `scheduled occurrence ${claimedOccurrence} fired`,
-      });
-    }
-    if (claim.changes !== 1) {
-      logger.info('Scheduler: occurrence already claimed elsewhere, skipping', { taskId, occurrence: claimedOccurrence });
+    // The occurrence id IS the claim token. The state assignment stays outside it — that is
+    // `transition()`'s — and runs AFTER the claim is won, so two processes still cannot both
+    // fire an occurrence.
+    const occurrenceId = claimOccurrence({
+      workId: taskId, sequence: runNumber, occurrenceMs: claimedOccurrenceMs,
+      nowMs, nextRunMs: tsToMs(nextAtFire),
+      agentId: (taskRow.assigned_to as string | null) ?? 'scheduler',
+    });
+    if (!occurrenceId) {
+      logger.info('Scheduler: occurrence already claimed elsewhere, skipping', { taskId, occurrence: claimedOccurrence, sequence: runNumber });
       continue;
     }
+    setTrackerStatus(taskId, 'in_progress', {
+      by: 'scheduler', actorId: 'scheduler',
+      reason: `scheduled occurrence ${claimedOccurrence} fired`,
+    });
 
     const runId = uuidv4();
 
@@ -740,9 +750,12 @@ export async function checkScheduledTasks(): Promise<void> {
           });
         // Mark run as skipped
         db.prepare("UPDATE task_runs SET status = 'skipped', error = 'No available agent in group' WHERE id = ?").run(runId);
-        // D21: release the claim taken above and restore the occurrence and
-        // prior last_run_at, so the task retries on the next tick exactly as
-        // it did before the claim existed.
+        // D21: release the claim taken above and restore the occurrence and prior
+        // last_run_at, so the task retries on the next tick exactly as it did before the
+        // claim existed. The occurrence ROW goes with it — releasing the sequence is what
+        // lets the same occurrence be claimed again once the group has somebody free.
+        // Both instants are the RAW columns: restoring a truncated `last_run_at` would
+        // silently shift it by up to 999ms every time a group was momentarily empty.
         const stillRunning = db.prepare('SELECT schedule_status FROM work WHERE id = ?')
           .get(taskId) as { schedule_status: string } | undefined;
         if (stillRunning?.schedule_status === 'running') {
@@ -750,11 +763,11 @@ export async function checkScheduledTasks(): Promise<void> {
             by: 'scheduler', actorId: 'scheduler',
             reason: 'no agent was available for this occurrence; the claim is released',
           });
-          patchWork(taskId, {
-            schedule_status: 'waiting',
-            next_run_at: tsToMs(claimedOccurrence),
-            last_run_at: tsToMs(taskRow.last_run_at as string | null),
-          });
+          releaseOccurrence(
+            occurrenceId, taskId, claimedOccurrenceMs,
+            (taskRow.last_run_at_ms as number | null) ?? null,
+            'no available agent in the assigned group',
+          );
         }
         continue;
       }
@@ -892,6 +905,23 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   // done, so any unserved trigger row for this run retires now instead of
   // waking a turn later to redo finished work.
   retireEngineEventsForRun(runId);
+
+  // PHASE-2 T8c2 item 4: settle the occurrence ROW with the run that closed it. Its terminal
+  // state is the run's own outcome — a run that reached nobody cannot be `done`, because G7
+  // is a DB CHECK, and no sentinel delivery is invented to pretend otherwise.
+  const inFlight = inFlightOccurrence(taskId);
+  if (inFlight) {
+    const occRow = db.prepare('SELECT agent_id, opened_at FROM work WHERE id = ?')
+      .get(inFlight.id) as { agent_id: string; opened_at: number } | undefined;
+    const delivered = occRow ? deliveryForAgentSince(occRow.agent_id, occRow.opened_at) : null;
+    const settled = settleOccurrence(inFlight.id, status, delivered, summary);
+    if (settled.kind !== 'applied') {
+      logger.warn('Scheduler: occurrence did not settle', {
+        taskId, occurrenceId: inFlight.id, result: settled.kind,
+        gate: 'gate' in settled ? settled.gate : undefined,
+      });
+    }
+  }
 
   // Update task run count
   bumpWorkAttempts(taskId);

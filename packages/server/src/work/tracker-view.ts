@@ -327,6 +327,17 @@ export const taskRowColumns = (): string => `SELECT
  * function did not: the columns come out of `work` in the shape it already reads. The
  * thirteen schedule columns collapse into `schedule_json`/`tz`/`sequence` at T8c, and this
  * projection is what that collapse replaces.
+ *
+ * ⚠ PHASE-2 T8c2 item 4 — `next_run_at` COMES OUT TWICE, AND THAT IS THE FIX FOR A REAL
+ * DEFECT. `msToText` is `strftime('%Y-%m-%d %H:%M:%S', col/1000, 'unixepoch')`, so it drops
+ * milliseconds BY CONSTRUCTION. That is right for everything that RENDERS an instant (the
+ * tracker's readers and the dashboard have always printed this form) and fatal for anything
+ * that COMPARES one: the scheduler's occurrence CAS read the text, converted it back with
+ * `tsToMs`, and compared 1785316028000 against a stored 1785316028089 — so any schedule whose
+ * start carried milliseconds could never be claimed, and the server logged "1 task(s) due"
+ * followed by "occurrence already claimed elsewhere" forever. `next_run_at_ms` is the RAW
+ * column; every comparison takes it. `work/occurrences.ts:occurrenceOf` is its only reader,
+ * so the claim's input is derived in exactly one place.
  */
 export const scheduleRowColumns = (a = 'w'): string => `
   ${a}.id AS id,
@@ -342,6 +353,8 @@ export const scheduleRowColumns = (a = 'w'): string => `
   ${a}.is_paused AS is_paused,
   ${msToText(a + '.last_run_at')} AS last_run_at,
   ${msToText(a + '.next_run_at')} AS next_run_at,
+  ${a}.next_run_at AS next_run_at_ms,
+  ${a}.last_run_at AS last_run_at_ms,
   COALESCE(${a}.schedule_status, 'unscheduled') AS schedule_status,
   ${msToText(a + '.missed_runs_paused_at')} AS missed_runs_paused_at,
   ${a}.agent_id AS assigned_to,

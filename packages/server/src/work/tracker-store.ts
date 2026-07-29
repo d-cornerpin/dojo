@@ -372,7 +372,7 @@ export function deliveryForCompletedChildren(projectId: string): string | null {
  * Null when the agent delivered nothing, and the close is then refused by G7. That refusal
  * is the phase's central requirement, not a failure of this function.
  */
-function deliveryForAgentSince(agentId: string, sinceMs: number): string | null {
+export function deliveryForAgentSince(agentId: string, sinceMs: number): string | null {
   const r = getDb().prepare(
     `SELECT id FROM deliveries
       WHERE agent_id = ? AND outcome = 'delivered' AND tool <> 'engine-ack'
@@ -390,29 +390,15 @@ export function deliveryForTaskClose(workId: string): string | null {
   return deliveryForAgentSince(w.agent_id, w.opened_at);
 }
 
-/**
- * D21's atomic occurrence claim, kept EXACTLY the CAS it was.
- *
- * Exactly one process may fire a given occurrence: the UPDATE is keyed on the precise
- * occurrence value the caller read plus the not-already-claimed convention, and
- * `changes === 1` is the claim token. It lives here rather than in the scheduler because
- * clause (a) of the single-writer property says every `work` write is under `work/` — and
- * because a CAS that anybody may re-write is not a CAS.
- *
- * The STATE half is deliberately NOT here: the caller moves the row through
- * `setTrackerStatus` after it has won the claim, so `work.state` still has one writer.
- */
-export function claimOccurrence(
-  workId: string, occurrenceMs: number | null, nowMs: number, nextRunMs: number | null,
-): boolean {
-  const r = getDb().prepare(`
-    UPDATE work
-       SET schedule_status = 'running', last_run_at = ?, next_run_at = ?, updated_at = ?
-     WHERE id = ? AND schedule_status = 'waiting' AND is_paused = 0
-       AND next_run_at = ? AND next_run_at <= ?
-  `).run(nowMs, nextRunMs, now(), workId, occurrenceMs, nowMs);
-  return r.changes === 1;
-}
+// ⟨TOMBSTONE⟩ `claimOccurrence` lived here and was D21's timestamp CAS: one UPDATE keyed on
+// `next_run_at = ?`. It moved to `work/occurrences.ts` and CHANGED SHAPE in PHASE-2 T8c2
+// item 4, because keying exactly-once on a clock was the defect, not the implementation:
+// the caller could only obtain that clock through `msToText`, which drops milliseconds, so
+// every schedule started from a real clock reading was permanently unclaimable. The claim is
+// now the INSERT of a `work(kind='occurrence')` row, refused by `ux_work_occurrence` — a
+// constraint, and durable, so a crashed fire cannot lose the occurrence either.
+// requirement preserved: exactly-once, the claim token, advance-at-fire, and the unfired
+// release — all four asserted in `work/__tests__/occurrences.test.ts`.
 
 /** Stop a live schedule, once. `changes === 1` is the token that says THIS caller won the
  *  race, which is what keeps two terminators from both announcing a termination. */

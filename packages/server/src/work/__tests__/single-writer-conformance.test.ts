@@ -211,3 +211,119 @@ describe('PART B — the burn-down: legacy state writes still outstanding (PHASE
     expect(countLegacyStateWrites('db.prepare(`UPDATE legacy_tasks SET notes = ? WHERE id = ?`)')).toBe(0);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════
+// PART C — PHASE-2 T8c2 item 4: two decisions made structural, so neither can be
+// re-opened by accident.
+// ════════════════════════════════════════════════════════════════════════════════
+
+/** An UPDATE of `work` whose SET list assigns `attempts`. */
+const ATTEMPTS_WRITE_RE = /UPDATE\s+work\b([\s\S]{0,600}?)(?=`|;\s*$|WHERE\s)/gi;
+function writesWorkAttempts(text: string): boolean {
+  const src = stripComments(text);
+  ATTEMPTS_WRITE_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = ATTEMPTS_WRITE_RE.exec(src))) if (/\battempts\s*=/.test(m[1])) return true;
+  return false;
+}
+
+/**
+ * The defect's exact shape: an epoch-ms value derived by parsing a PROJECTED ROW's instant
+ * back out of its display text.
+ *
+ * Scoped to a property read off a ROW, which is the distinction that matters and is not
+ * cosmetic: every instant leaving `work` through a projection has been through `msToText`
+ * and is second-resolution, so re-parsing one gives a number that is wrong by up to 999ms.
+ * `tsToMs` applied to a request body, to `calculateNextRun`'s ISO return, or to `now` is an
+ * honest text -> ms conversion of something that was never truncated, and the rule leaves
+ * those alone — a rule that failed on them would be enforcing something nobody wrote.
+ */
+const TRUNCATED_COMPARISON_RE =
+  /tsToMs\(\s*\(?\s*[\w.]*(?:row|Row|task|Task)\w*\.(?:next_run_at|last_run_at|scheduled_start|paused_until)\b/;
+function derivesAnInstantFromDisplayText(text: string): boolean {
+  return TRUNCATED_COMPARISON_RE.test(stripComments(text));
+}
+
+describe('PART C — `work.attempts` is the RECURRENCE fire count and has one writer', () => {
+  // THE DECISION, recorded here because a decision nobody can trip over is a wish.
+  //
+  // T8a concern 3 flagged `run_count` and `attempts` as "two facts, one column": migration
+  // `135` backfilled `legacy_tasks.run_count` into `work.attempts`, whose own DDL comment
+  // pairs it with `next_attempt_at` as a RETRY mechanism, while `work.next_run_at` is the
+  // recurrence clock. Re-derived at PHASE-2 T8c2's HEAD, the framing is half right:
+  //
+  //   writers of `work.attempts`  : ONE — `work/tracker-store.ts:bumpWorkAttempts`, called
+  //                                 from exactly one place, `onTaskRunComplete`.
+  //   readers of `work.attempts`  : FOUR, every one of them aliasing it to `run_count`
+  //                                 (`work/tracker-view.ts` x2, `tracker/tools.ts` x2), and
+  //                                 every consumer downstream is recurrence: the
+  //                                 `after_count` end condition, the never-run first-fire
+  //                                 rule, and the run number.
+  //   `work.next_attempt_at`      : ZERO production readers and ZERO production writers.
+  //
+  // So the two facts are not sharing a column TODAY — the retry fact has never been written.
+  // DECIDED: `work.attempts` IS the recurrence fire count, and no second column is added,
+  // because the data already migrated there and duplicating it is the disease this phase
+  // exists to remove.
+  //
+  // THE HAZARD IS PROSPECTIVE AND IT HAS A NAME: PHASE-2 T9 Step 2 plans to make the
+  // E-A2/drain retry counters restart-safe by moving them onto `work.attempts`. That would
+  // put a retry count and a fire count in one integer, and the first `after_count` schedule
+  // to be retried would end early. T9 must give the retry fact its own storage (the unread
+  // `next_attempt_at` is already there for its clock) or re-express it as work events.
+  // This clause is how T9 finds that out — from a red test naming the decision, not from a
+  // schedule that silently stopped.
+
+  it('exactly one production file writes work.attempts, and it is the tracker store', () => {
+    const writers = sourceFiles().filter((f) => writesWorkAttempts(read(f)));
+    expect(writers).toEqual(['work/tracker-store.ts']);
+  });
+
+  it('the fire count has readers, so the rule above is not vacuous', () => {
+    const readers = sourceFiles().filter((f) => /attempts AS run_count/.test(read(f)));
+    expect(readers.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('PLANTED FAULT: a second writer — T9 landing its retry counter here — is caught', () => {
+    expect(writesWorkAttempts(
+      'db.prepare(`UPDATE work SET attempts = attempts + 1 WHERE id = ?`).run(id)',
+    )).toBe(true);
+    // and the rule is about the SET list, not the word appearing anywhere
+    expect(writesWorkAttempts(
+      'db.prepare(`UPDATE work SET notes = ? WHERE attempts > 3`).run(n)',
+    )).toBe(false);
+  });
+});
+
+describe('PART C — no comparison instant is derived from a truncated display column', () => {
+  // The ms-CAS defect in one rule. `work/tracker-view.ts:msToText` is
+  // `strftime('%Y-%m-%d %H:%M:%S', col/1000, 'unixepoch')`: right for rendering, lossy for
+  // comparing. The scheduler read `next_run_at` through it, converted the text back with
+  // `tsToMs`, and compared the result against the stored epoch-ms — so every schedule whose
+  // start carried milliseconds was permanently unclaimable and the logs read like a benign
+  // race. The projections now carry `next_run_at_ms` / `last_run_at_ms` beside the display
+  // copies, and this walk forbids the shape that caused it.
+
+  it('no production file parses a schedule instant back out of its display text', () => {
+    const offenders = sourceFiles().filter((f) => derivesAnInstantFromDisplayText(read(f)));
+    expect(offenders).toEqual([]);
+  });
+
+  it('PLANTED FAULT: the exact expression the defect was written as is caught', () => {
+    expect(derivesAnInstantFromDisplayText(
+      'const claim = claimOccurrence(taskId, tsToMs(taskRow.next_run_at as string), nowMs)',
+    )).toBe(true);
+    expect(derivesAnInstantFromDisplayText(
+      'last_run_at: tsToMs(taskRow.last_run_at as string | null)',
+    )).toBe(true);
+    // …and prose describing it is not
+    expect(derivesAnInstantFromDisplayText(
+      '// the old code did tsToMs(taskRow.next_run_at) and lost the milliseconds',
+    )).toBe(false);
+    // …and the honest conversions the tree is full of are not this rule's business:
+    // `calculateNextRun` returns an ISO string, the dashboard sends one, `now` is one.
+    expect(derivesAnInstantFromDisplayText('const t = tsToMs(nextAtFire)')).toBe(false);
+    expect(derivesAnInstantFromDisplayText('scheduled_start: tsToMs(body.scheduled_start)')).toBe(false);
+    expect(derivesAnInstantFromDisplayText('patchWork(id, { last_run_at: tsToMs(now) })')).toBe(false);
+  });
+});

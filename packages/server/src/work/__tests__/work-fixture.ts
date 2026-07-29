@@ -70,6 +70,11 @@ export function createWorkTable(db: DatabaseType.Database): void {
       by_agent TEXT NOT NULL, evidence_ref TEXT, note TEXT, created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS ix_work_a2a ON work(a2a_thread_id);
+    -- PHASE-2 T8c2 item 4: "execute this occurrence once" is a CONSTRAINT, so a fixture
+    -- without it would let the claim's own exactly-once test pass vacuously. Copied
+    -- character for character from 135_work_spine.sql:70-71.
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_work_occurrence ON work(parent_id, sequence)
+      WHERE kind='occurrence';
   `);
 }
 
