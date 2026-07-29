@@ -79,7 +79,8 @@ describe('buildSpinningNudge', () => {
     const nudge = buildSpinningNudge(baseProgress, false);
     expect(nudge).not.toContain('complete_task');
     expect(nudge).toContain('blocking');
-    expect(nudge).toContain('tracker_update_status');
+    // PHASE-2 T8V: the nudge names the live status verb, not the retired name.
+    expect(nudge).toContain('work_update(action="status")');
   });
 
   it('starts with [System: marker', () => {

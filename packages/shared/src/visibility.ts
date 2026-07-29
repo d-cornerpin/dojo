@@ -690,6 +690,23 @@ function classifyInner(msg: DisplayMessageInput): DisplayClassification {
 // override. The split here matches DOJO-CHAT-VISIBILITY-PLAN.md §3a.
 // ════════════════════════════════════════
 
+// ── PHASE-2 T8V: the sliver of work-verb knowledge this leaf needs ──
+// `@dojo/shared` cannot import the server's tools/work-verbs.ts (the dependency
+// runs the other way), so the ONE discriminator that changes a display class is
+// read here. The full matcher stays single-sourced server-side; this reads the
+// same `kind` argument and the same `what`/`when` shape fallback.
+const WORK_VERB_NAMES: ReadonlySet<string> = new Set([
+  'work_open', 'work_update', 'work_note', 'work_close_request', 'work_validate', 'work_schedule',
+]);
+
+function workDisplayOp(name: string, args?: Record<string, unknown>): string {
+  if (name !== 'work_open') return name;
+  const kind = typeof args?.kind === 'string' ? args.kind.trim().toLowerCase() : null;
+  if (kind) return `work_open:${kind}`;
+  if (args?.what !== undefined || args?.when !== undefined) return 'work_open:reminder';
+  return 'work_open:other';
+}
+
 export type ToolDisplayClass = 'effectful-action' | 'retrieval' | 'bookkeeping' | 'delivery';
 
 // Exceptions the verb heuristic gets wrong.
@@ -733,6 +750,17 @@ const BOOKKEEPING_PREFIXES: readonly string[] = [
   'memory_',
   'recall_',
   'squad_',
+  // PHASE-2 T8V: `work_` is the live surface. This entry is load-bearing, not
+  // cosmetic: without it `work_update` tokenises to the effectful verb "update"
+  // and every board write would flip from hidden bookkeeping to a user-visible
+  // badge AND start counting as effectful work in four separate loop gates
+  // (thrash progress, countsAsTaskWork, the promise floor, workedATaskThisTurn).
+  'work_',
+  // `tracker_` STAYS, for HISTORY only. No live tool carries the prefix any
+  // more, but every persisted tool_use block from before the collapse does, and
+  // the dashboard re-classifies those rows on every render. Removing it would
+  // silently re-render two years of chat, flipping past tracker calls from
+  // hidden to user-visible. It costs nothing and is not a live-surface entry.
   'tracker_',
   'credential_',
   'contact_',
@@ -776,9 +804,31 @@ const RETRIEVAL_VERBS: ReadonlySet<string> = new Set([
   'read', 'list', 'search', 'get', 'inbox', 'agenda', 'fetch', 'browse', 'outline',
 ]);
 
-export function classifyTool(name: string): ToolDisplayClass {
+/**
+ * PHASE-2 T8V — the ONE operation whose display class was not `bookkeeping`
+ * before the collapse, kept by name.
+ *
+ * `reminder_create` had no override and no bookkeeping prefix, so the verb
+ * heuristic classified it EFFECTFUL on the token "create" — meaning setting a
+ * reminder showed the user a badge and counted as real work in the promise floor
+ * and the task-work test. Folded into `work_open`, it would silently have become
+ * bookkeeping like its 23 siblings. Measured, not assumed: this map is the
+ * difference, and it is the reason `classifyTool` now accepts arguments.
+ *
+ * A caller with no arguments gets the safe answer (bookkeeping), which is what
+ * 23 of the 24 retired verbs were.
+ */
+const WORK_OP_DISPLAY_CLASS: Readonly<Record<string, ToolDisplayClass>> = {
+  'work_open:reminder': 'effectful-action',
+};
+
+export function classifyTool(name: string, args?: Record<string, unknown>): ToolDisplayClass {
   const override = TOOL_OVERRIDES[name];
   if (override) return override;
+
+  if (WORK_VERB_NAMES.has(name)) {
+    return WORK_OP_DISPLAY_CLASS[workDisplayOp(name, args)] ?? 'bookkeeping';
+  }
 
   if (BOOKKEEPING_EXACT.has(name)) return 'bookkeeping';
   if (BOOKKEEPING_PREFIXES.some((p) => name.startsWith(p))) return 'bookkeeping';

@@ -30,9 +30,11 @@ const toolIcons: Record<string, string> = {
   kill_agent: '\u{274C}',
   send_to_agent: '\u{1F4E8}',
   broadcast_to_group: '\u{1F4E2}',
-  tracker_create_project: '\u{1F4CB}',
-  tracker_create_task: '\u{1F4CB}',
-  tracker_update_status: '\u{1F4CB}',
+  // PHASE-2 T8V: three tracker names became one verb, so one clipboard entry
+  // covers every open/update/note/close.
+  work_open: '\u{1F4CB}',
+  work_update: '\u{1F4CB}',
+  work_note: '\u{1F4CB}',
 };
 
 // Bucket-icon fallback keyed off the canonical display class, so an unlisted
@@ -75,12 +77,16 @@ function toolSummary(name: string, input: Record<string, unknown>): string {
       return String(input.agent ?? input.agent_id ?? '').slice(0, 20);
     case 'broadcast_to_group':
       return `group: ${String(input.group_id ?? '').slice(0, 12)}`;
-    case 'tracker_create_project':
-      return String(input.title ?? '');
-    case 'tracker_create_task':
-      return String(input.title ?? '');
-    case 'tracker_update_status':
-      return `${String(input.task_id ?? '').slice(0, 8)} → ${input.status ?? ''}`;
+    // PHASE-2 T8V: one verb, several operations, so the summary reads the
+    // discriminator instead of the name.
+    case 'work_open':
+      return String(input.title ?? input.what ?? input.description ?? '');
+    case 'work_update':
+      return input.status
+        ? `${String(input.task_id ?? input.project_id ?? '').slice(0, 8)} → ${input.status}`
+        : `${String(input.action ?? 'list')} ${String(input.task_id ?? input.project_id ?? '').slice(0, 8)}`.trim();
+    case 'work_note':
+      return String(input.task_id ?? '').slice(0, 8);
     default:
       return Object.keys(input).slice(0, 3).join(', ');
   }

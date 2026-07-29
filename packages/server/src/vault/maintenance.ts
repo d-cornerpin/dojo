@@ -802,9 +802,9 @@ const DREAMER_TOOLS_POLICY = JSON.stringify({
     // credential is the user's call, never the curator's).
     'credential_add', 'credential_list',
     'file_read', 'file_write',
-    'tracker_create_project', 'tracker_create_task',
-    'tracker_update_status', 'tracker_add_notes', 'tracker_complete_step',
-    'tracker_list_active',
+    // PHASE-2 T8V: six tracker names, three verbs. tools_policy.allow is a NAME
+    // list (it filters the advertised surface), so it can only name verbs.
+    'work_open', 'work_update', 'work_note',
     'get_current_time', 'load_tool_docs', 'complete_task',
   ],
 });

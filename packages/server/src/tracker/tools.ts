@@ -313,7 +313,7 @@ export async function closeEngineScaffoldSameTurn(
  * deliverable receipt itself. When the ASSIGNED worker returns a terminal
  * success reply on the very thread its ASSIGN auto-task was created from, the
  * delivered content IS the close-out in substance; the weakest model routinely
- * delivers the work and then skips the tracker_update_status form. The engine
+ * delivers the work and then skips the work_update(action="status") form. The engine
  * files ONLY Key 1: status='complete' with complete_validated = 0 and the
  * delivered text attached as result/evidence; the PM independently validates
  * (Key 2 untouched) and rejects/reopens garbage. This is NOT the demolished
@@ -499,7 +499,7 @@ export function checkProjectCompletion(projectId: string | null, callingAgentId:
       //      the action that completed it and their own response wraps
       //      up the work. The notification was firing mid-turn, getting
       //      pulled into their next context iteration, and prompting a
-      //      duplicate tracker_update_status + redundant "Done" wrap-up.
+      //      duplicate work_update(action="status") + redundant "Done" wrap-up.
       //
       //      Sub-agent completing the last task still notifies primary,
       //      because callingAgentId != primaryId and the function's
@@ -594,10 +594,10 @@ interface DuplicateMatch {
   createdMinutesAgo: number;
   /** True when the existing project was opened by the engine's multistep
    * classifier on the agent's most recent user turn (not by the agent
-   * calling tracker_create_project themselves). */
+   * calling work_open(kind="project") themselves). */
   engineAutoCreated: boolean;
   /** First in_progress / on_deck task on the existing project, if any, 
-   * the natural target for tracker_edit_task. */
+   * the natural target for work_update(action="edit"). */
   firstOpenTask: { id: string; title: string } | null;
 }
 
@@ -735,18 +735,18 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
     // pokes piling up, and no recovery path. The fix is at the engine,
     // not in the prompt: refuse the create if `tasks` is missing or
     // empty. The agent can always add more tasks later with
-    // tracker_create_task once the work shape clarifies.
+    // work_open(kind="task") once the work shape clarifies.
     if (!tasksInput || tasksInput.length === 0 || !tasksInput.some((t) => typeof t.title === 'string' && t.title.trim().length > 0)) {
       return (
-        `Error: tracker_create_project requires at least one task. ` +
+        `Error: work_open(kind="project") requires at least one task. ` +
         `Open it like this:\n` +
-        `  tracker_create_project(\n` +
+        `  work_open(kind="project", \n` +
         `    title: "...",\n` +
         `    level: 1,\n` +
         `    tasks: [{ title: "<the first concrete thing you'll do>", assigned_to: "${agentId}" }]\n` +
         `  )\n\n` +
         `If you don't know every step upfront, that's fine, just put down the FIRST one (e.g. "scope the deliverable", ` +
-        `"draft the outline", "pull source data"). Add more tasks incrementally with tracker_create_task as the shape clarifies. ` +
+        `"draft the outline", "pull source data"). Add more tasks incrementally with work_open(kind="task") as the shape clarifies. ` +
         `A project with zero tasks is a stuck project, PM has no row to poke, you have nothing to mark complete, ` +
         `and the tracker can't tell whether the work is done.`
       );
@@ -754,7 +754,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
 
     // Resolve inline task assignees (name / short id -> full agent id) BEFORE
     // anything is written. tasks.assigned_to carries a FOREIGN KEY to agents(id);
-    // the standalone tracker_create_task verb resolves refs (below, ~:790) but
+    // the standalone work_open(kind="task") verb resolves refs (below, ~:790) but
     // this inline path passed them through raw, so an agent NAME failed the FK
     // mid-create and stranded an empty project row (2026-07-17 run bmrpkqai2v6:
     // two orphan projects, raw "FOREIGN KEY constraint failed" to the model).
@@ -785,7 +785,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
         if (dup.engineAutoCreated) {
           // NEXT-WAVE item 4 (absorb, don't refuse): the engine auto-opened this
           // project for the CURRENT user turn (the multi-step classifier does this
-          // so the agent doesn't have to remember to call tracker_create_project),
+          // so the agent doesn't have to remember to call work_open(kind="project")),
           // so the agent's own create is a duplicate of it. The old "Refused:" wall
           // burned turns on rediscovery AND reads to the battery as an engine-
           // refusal signature. Absorb it instead: an OK-shaped no-op that names the
@@ -793,15 +793,15 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
           // without a scold.
           return (
             `[OK] Already tracked, no new project created. The engine auto-opened project "${dup.title}" (id=${shortPid}) for this request, so you don't need to create one, keep going in it.${firstTaskHint} ` +
-            `Continue inside it: tracker_edit_task(task_id=<id>, title=..., description=...) to refine the first task, ` +
-            `tracker_create_task(project_id="${shortPid}", title=..., step_number=..., assigned_to=...) to add more steps, ` +
-            `and tracker_update_status / tracker_complete_step as you finish each. ` +
+            `Continue inside it: work_update(action="edit", task_id=<id>, title=..., description=...) to refine the first task, ` +
+            `work_open(kind="task", project_id="${shortPid}", title=..., step_number=..., assigned_to=...) to add more steps, ` +
+            `and work_update(action="status") / work_update(action="complete_step") as you finish each. ` +
             `(If you genuinely need a separate, unrelated project, retry with allow_duplicate=true.)`
           );
         }
         return (
           `Refused: project "${dup.title}" (id=${shortPid}) was already created by you ${dup.createdMinutesAgo} minute(s) ago and is still active, the new title "${title}" looks like a near-duplicate.${firstTaskHint} ` +
-          `Use the existing project: tracker_get_status(id="${shortPid}") to see current tasks, tracker_edit_task to rename/rescope a task, tracker_create_task(project_id="${shortPid}", ...) to add new steps, or tracker_close_project(project_id="${shortPid}", status="cancelled", reason="...") if it was a mistake. ` +
+          `Use the existing project: work_update(action="get", id="${shortPid}") to see current tasks, work_update(action="edit") to rename/rescope a task, work_open(kind="task", project_id="${shortPid}", ...) to add new steps, or work_update(action="close_project", project_id="${shortPid}", status="cancelled", reason="...") if it was a mistake. ` +
           `If this really is unrelated work that happens to share keywords, retry with allow_duplicate=true.`
         );
       }
@@ -820,7 +820,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
     // goal field, so createProject left them goal=NULL, which makes them
     // impossible for PM to validate ("(none recorded)"): PM reverts each
     // completion and the agent re-submits forever (the validation ping-pong the
-    // user reported). Mirror tracker_create_task: default the goal from the
+    // user reported). Mirror work_open(kind="task"): default the goal from the
     // caller-provided goal (if any), else the task's description, else its
     // title. Only fill when empty, never overwrite a real goal.
     for (let i = 0; i < result.taskIds.length; i++) {
@@ -879,7 +879,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       });
     }
 
-    return `[OK] project_id=${result.projectId} | title=${title}\n\nProject created successfully.${taskSummary}\n\nUse tracker_complete_step(task_id="<full task ID>") to mark steps complete.`;
+    return `[OK] project_id=${result.projectId} | title=${title}\n\nProject created successfully.${taskSummary}\n\nUse work_update(action="complete_step", task_id="<full task ID>") to mark steps complete.`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('trackerCreateProject failed', { error: msg }, agentId);
@@ -906,7 +906,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       // forgot. Logged so we can see who needs prompt updates. Once every
       // caller is migrated this fallback can be removed and we hard-reject.
       goal = description.trim();
-      logger.info('tracker_create_task: goal omitted, defaulted from description', { agentId, title }, agentId);
+      logger.info('work_open(kind="task"): goal omitted, defaulted from description', { agentId, title }, agentId);
     }
     if (!goal) {
       return 'Error: `goal` is required. One-sentence definition of done that PM will compare result + evidence against. Example: goal="migrate all 12 routes under packages/server/src/gateway/routes/ to the new auth middleware, with each route\'s tests passing".';
@@ -922,7 +922,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     if (projectId) {
       const projectRow = getDb().prepare(`SELECT 1 FROM work w WHERE ${projectScope('w')} AND w.id = ?`).get(projectId);
       if (!projectRow) {
-        return `Error: project '${projectId}' does not exist (it may have been deleted or completed). Call tracker_list_active to see current projects, or omit projectId to start a fresh one.`;
+        return `Error: project '${projectId}' does not exist (it may have been deleted or completed). Call work_update(action="list") to see current projects, or omit projectId to start a fresh one.`;
       }
     }
     const priority = args.priority as 'high' | 'normal' | 'low' | undefined;
@@ -951,7 +951,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     // next_run_at; the scheduler's `next_run_at <= <now ISO>` string
     // comparison then never matches, so the task sits schedule_status=
     // 'waiting' forever and SILENTLY never fires (observed live via the
-    // behavioral harness: reminder_create when="in 2 minutes" produced a
+    // behavioral harness: work_open(kind="reminder") when="in 2 minutes" produced a
     // reminder that never fired). The engine rejects it at the boundary with
     // a corrective hint; resolving relative phrases is the model's job
     // (get_current_time + offset), per the tool docs it already has.
@@ -987,7 +987,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
 
     // Near-duplicate guard (2026-06-02 bug fix). Without this, a hoarding-
     // gate error on file_read/exec can put the agent into a loop where
-    // every iteration calls tracker_create_task with the same title, 27
+    // every iteration calls work_open(kind="task") with the same title, 27
     // duplicates landed in one session before this guard. Two prongs,
     // both within a 5-minute window because tasks turn over faster than
     // projects:
@@ -1011,7 +1011,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       if (exact) {
         return (
           `Error: a task with this exact title was created by you in the last 5 minutes (id=${exact.id8}, assigned to the same agent). ` +
-          `If you meant to update that task, call tracker_update_status / tracker_edit_task on id=${exact.id8}. ` +
+          `If you meant to update that task, call work_update(action="status") / work_update(action="edit") on id=${exact.id8}. ` +
           `If this is genuinely separate work that happens to share a title, re-call with allow_duplicate=true.`
         );
       }
@@ -1038,7 +1038,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
           if (jaccard >= 0.6) {
             return (
               `Error: a near-duplicate task "${row.title}" (id=${row.id8}) was created by you in the last 5 minutes (token-overlap ${(jaccard * 100).toFixed(0)}%). ` +
-              `If you meant to update that task, call tracker_update_status / tracker_edit_task on id=${row.id8}. ` +
+              `If you meant to update that task, call work_update(action="status") / work_update(action="edit") on id=${row.id8}. ` +
               `If this is genuinely separate work, re-call with allow_duplicate=true.`
             );
           }
@@ -1164,7 +1164,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     if (assignedToGroup) {
       const groupRow = getDb().prepare('SELECT 1 FROM agent_groups WHERE id = ?').get(assignedToGroup);
       if (!groupRow) {
-        return `Error: agent group '${assignedToGroup}' does not exist. The task was created assigned to you; use tracker_edit_task to reassign once you have a valid group id.`;
+        return `Error: agent group '${assignedToGroup}' does not exist. The task was created assigned to you; use work_update(action="edit") to reassign once you have a valid group id.`;
       }
       patchWork(taskId, { assigned_to_group: assignedToGroup, assignee_agent: null });
     }
@@ -1233,7 +1233,7 @@ export function reminderCreate(agentId: string, args: Record<string, unknown>): 
       'ASK_USER: This reminder needs a time. Ask the user when they would like to be ' +
       'reminded ("in 5 minutes", "tomorrow at 8am", "every Monday at 9am"). ' +
       'Once they answer, either call get_current_time to anchor relative times and re-call ' +
-      'reminder_create with `when` set to the resolved ISO 8601 datetime, OR pass ' +
+      'work_open(kind="reminder") with `when` set to the resolved ISO 8601 datetime, OR pass ' +
       'local_time="YYYY-MM-DDThh:mm" (24-hour wall clock) and let the engine do the timezone ' +
       'conversion. Do NOT create the reminder yet.'
     );
@@ -1247,7 +1247,7 @@ export function reminderCreate(agentId: string, args: Record<string, unknown>): 
     return (
       `Error: when="${when}" is not a parseable datetime, so this reminder would never fire. ` +
       `Resolve the relative time yourself: call get_current_time, add the offset ` +
-      `(e.g. "in 2 minutes" = current UTC + 2 minutes), then re-call reminder_create with an ` +
+      `(e.g. "in 2 minutes" = current UTC + 2 minutes), then re-call work_open(kind="reminder") with an ` +
       `ISO 8601 UTC timestamp, e.g. when="2026-07-03T16:38:00Z". Or pass local_time="YYYY-MM-DDThh:mm".`
     );
   }
@@ -1266,7 +1266,7 @@ export function reminderCreate(agentId: string, args: Record<string, unknown>): 
     local_timezone: args.local_timezone,
     tz: args.tz,
     // Caller may pass repeat params through for recurring reminders
-    // ("every Monday at 9am"). Same shape as tracker_create_task.
+    // ("every Monday at 9am"). Same shape as work_open(kind="task").
     repeat_interval: args.repeat_interval,
     repeat_unit: args.repeat_unit,
     repeat_end_type: args.repeat_end_type,
@@ -1363,7 +1363,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     const priorStatus = taskRow?.prior_status ?? null;
 
     // v2.10.1, idempotency check. When the agent calls
-    // tracker_update_status with a status that the task is already at,
+    // work_update(action="status") with a status that the task is already at,
     // do nothing and tell the agent clearly. Pre-fix the call still ran
     // the full update + emitted "[OK] Task updated" + sent the success
     // notification, which read to the agent as "I did real work" and
@@ -1420,7 +1420,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
           `Error: status="on_deck" is reserved for tasks with a FUTURE scheduled_start ` +
           `(or a recurring schedule). This task has no future schedule, so it belongs in ` +
           `"in_progress" until you actively work it. If you want to park it for later, ` +
-          `set a scheduled_start with tracker_edit_task first, then move to on_deck. ` +
+          `set a scheduled_start with work_update(action="edit") first, then move to on_deck. ` +
           `If you're done, use status="complete". If you're waiting on the user, use ` +
           `status="paused" with notes naming what you're waiting for.`
         );
@@ -1443,7 +1443,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // pattern: agents marked tasks paused just to silence PM pokes. The
     // engine refuses empty/short notes here; PM validates the SUBSTANCE of
     // the reason on its next tick (see pause_validated column + the
-    // tracker_validate tool).
+    // work_validate(action="validate") tool).
     if (status === 'paused' && !callerIsPM) {
       const pauseNotes = typeof args.notes === 'string' ? args.notes.trim() : '';
       const MIN_PAUSE_NOTES_LEN = 15;
@@ -1481,7 +1481,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         const breaker = noteHardGateRejection(taskId, agentId, 'missing result field on complete');
         return (
           `Error: status="complete" requires a non-empty \`result\` field describing what was done. ` +
-          `Example call: tracker_update_status(task_id="${taskId}", status="complete", result="migrated 12 routes to new auth middleware", evidence=[{kind:"file_modified", claim:"12 routes updated", pointer:"packages/server/src/gateway/routes/"}, {kind:"tool_call_ref", claim:"18 file_edit calls completed"}]).` +
+          `Example call: work_update(action="status", task_id="${taskId}", status="complete", result="migrated 12 routes to new auth middleware", evidence=[{kind:"file_modified", claim:"12 routes updated", pointer:"packages/server/src/gateway/routes/"}, {kind:"tool_call_ref", claim:"18 file_edit calls completed"}]).` +
           breaker
         );
       }
@@ -1662,7 +1662,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         return (
           `[NO-OP] task_id=${taskId} | status=complete, no open scheduled run to complete, no change made.\n\n` +
           `Task: ${taskRow?.title ?? '(unknown title)'}\n\n` +
-          `To STOP the whole recurring schedule, call tracker_update_status with complete_all_runs=true.`
+          `To STOP the whole recurring schedule, call work_update(action="status") with complete_all_runs=true.`
         );
       }
 
@@ -1761,7 +1761,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     if (statusUpdate) {
       const sr = setTaskStatusResult(taskId, statusUpdate as TrackerStatus, {
         by: callerIsPM ? 'pm' : 'agent', actorId: agentId,
-        reason: `tracker_update_status -> ${String(statusUpdate)}`,
+        reason: `work_update(action="status") -> ${String(statusUpdate)}`,
         resultDeliveryId: statusUpdate === 'complete' ? deliveryForTaskClose(taskId) : null,
         pausedUntilMs: updates.pausedUntil !== undefined ? tsToMs(updates.pausedUntil as string | null) : undefined,
         // The tool path is the one that stops the schedule with the status (updateTask's
@@ -1797,7 +1797,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
           entryKind: 'transition',
           fromStatus: priorStatus,
           toStatus: status,
-          actionTaken: 'tracker_update_status',
+          actionTaken: 'work_update(action="status")',
         });
         // Event-driven PM wake: buffer + 10s debounce, then runPMReview.
         // Smell detector also fires inside noteTransitionForReview.
@@ -1836,7 +1836,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       relayAssignHandbackIfMissing(taskId);
       // Handle one-time scheduled task completion. Recurring tasks are
       // gated out, their per-run advance happens only after the PM
-      // validates this run via tracker_validate. Calling
+      // validates this run via work_validate(action="validate"). Calling
       // onTaskRunComplete here would silently advance the schedule and
       // bypass PM review (the bug v2.8.2 fixes).
       if (!isScheduledRecurring) {
@@ -1882,15 +1882,15 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     }
 
     // Apprentice safety net: if an apprentice just marked their OWN primary task
-    // 'complete' via tracker_update_status, they almost certainly meant to finalize
-    // their work. tracker_update_status alone leaves them idle, their parent will
+    // 'complete' via work_update(action="status"), they almost certainly meant to finalize
+    // their work. work_update(action="status") alone leaves them idle, their parent will
     // never get the structured completion notification. Nudge them to call
     // complete_task on the next turn.
     if (status === 'complete') {
       const agentRow = db.prepare('SELECT classification, task_id FROM agents WHERE id = ?').get(agentId) as { classification: string; task_id: string | null } | undefined;
       if (agentRow && agentRow.classification === 'apprentice' && agentRow.task_id === taskId) {
         parts.push('');
-        parts.push('[REMINDER] You just marked your own assigned task complete, but you have NOT finalized your work. tracker_update_status alone does not terminate you or notify your parent. Call complete_task(status="complete", summary="<your result>") on your next turn to wrap up properly.');
+        parts.push('[REMINDER] You just marked your own assigned task complete, but you have NOT finalized your work. work_update(action="status") alone does not terminate you or notify your parent. Call complete_task(status="complete", summary="<your result>") on your next turn to wrap up properly.');
       }
     }
 
@@ -1907,7 +1907,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
 // auto-creates a thread-linked tracker task (autoCreateAssignTask) and the
 // delivery footer promises the sender "gets the completion notice". Pre-fix
 // nothing enforced that promise: the assignee could close the task via
-// tracker_update_status WITHOUT ever sending the work product back on the
+// work_update(action="status") WITHOUT ever sending the work product back on the
 // thread, and a non-primary assigner heard nothing (behavioral run
 // bmr59ix4lsg, multi-agent-project). Correctness is the engine's job, so at
 // complete-time: if the assigner has not received ANY on-thread message from
@@ -1949,7 +1949,7 @@ function relayAssignHandbackIfMissing(taskId: string): void {
 
     void (async () => {
       // Grace period, then re-check. Models routinely batch
-      // tracker_update_status(complete) and the real send_to_agent hand-back
+      // work_update(action="status", complete) and the real send_to_agent hand-back
       // in the SAME tool batch (either order); relaying immediately at
       // complete-time double-delivers when the send lands milliseconds later
       // (observed: primary agent completing a delegated office task). The
@@ -2083,11 +2083,11 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       priority, notes, goal,
     ];
     if (editableKeys.every(v => v === undefined)) {
-      return 'Error: at least one editable field must be provided. Editable: title, description, goal, depends_on, step_number, phase, scheduled_start, repeat_interval, repeat_unit, repeat_end_type, repeat_end_value, repeat_days_of_week, anchor_time, priority, notes. (For status changes use tracker_update_status; for assignee changes use tracker_reassign_task; for pause/resume use tracker_pause_schedule.)';
+      return 'Error: at least one editable field must be provided. Editable: title, description, goal, depends_on, step_number, phase, scheduled_start, repeat_interval, repeat_unit, repeat_end_type, repeat_end_value, repeat_days_of_week, anchor_time, priority, notes. (For status changes use work_update(action="status"); for assignee changes use work_update(action="reassign"); for pause/resume use work_schedule(action="pause").)';
     }
 
     // Recurring-schedule integrity gate. Same shape as the gate in
-    // tracker_create_task's dispatch, the edit path is the OTHER way to
+    // work_open(kind="task")'s dispatch, the edit path is the OTHER way to
     // produce a partial schedule (e.g. add repeat_interval to a row that
     // had no repeat_unit, or strip repeat_unit while leaving
     // repeat_interval set). Compute the EFFECTIVE post-edit values and
@@ -2467,7 +2467,7 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
               : renderDeliveryEvidence(ev!);
             parts.push(
               `\n[ENGINE RECORD: this task's work appears ALREADY DELIVERED, ${evLine}. ` +
-              `If that delivery completed the task, close it NOW with tracker_update_status(status="complete") (or tracker_complete_step) ` +
+              `If that delivery completed the task, close it NOW with work_update(action="status", status="complete") (or work_update(action="complete_step")) ` +
               `and do NOT redo or re-deliver the work. Only continue working if something genuinely remains.]`
             );
           }
@@ -2637,9 +2637,9 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
     if (totalShown > 0) {
       parts.push('');
       if (verbose) {
-        parts.push('Tip: tracker_get_status(id="<task_id>") for notes, depends_on, schedule, and full description.');
+        parts.push('Tip: work_update(action="get", id="<task_id>") for notes, depends_on, schedule, and full description.');
       } else {
-        parts.push(`${totalShown} task/project row${totalShown === 1 ? '' : 's'} shown (compact). For full detail on one: tracker_get_status(id=<task_or_project_id>). For descriptions on every result: re-call tracker_list_active with verbose=true.`);
+        parts.push(`${totalShown} task/project row${totalShown === 1 ? '' : 's'} shown (compact). For full detail on one: work_update(action="get", id=<task_or_project_id>). For descriptions on every result: re-call work_update(action="list") with verbose=true.`);
       }
     }
 
@@ -2669,7 +2669,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
       if (candidates.length === 1) {
         rawTaskId = candidates[0].id;
       } else if (candidates.length === 0) {
-        return 'Error: `task_id` is required, and you have no in-progress task to complete. Start a task first (tracker_update_status status="in_progress") or pass the task_id explicitly.';
+        return 'Error: `task_id` is required, and you have no in-progress task to complete. Start a task first (work_update(action="status") status="in_progress") or pass the task_id explicitly.';
       } else {
         const shown = candidates.map(c => `${c.id.slice(0, 8)} (${c.title})`).join(', ');
         return `Error: \`task_id\` is required. You have ${candidates.length} in-progress tasks, so I cannot guess which one to complete. Pass the task_id explicitly. Candidates: ${shown}`;
@@ -2689,11 +2689,11 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
 
     // Guard: don't complete a paused task, it was intentionally put on hold
     if (task.status === 'paused') {
-      return `Error: Task "${task.title}" is paused. It cannot be completed while paused. Unpause it first (tracker_update_status with status="in_progress") or ask ${getOwnerName()} for instructions.`;
+      return `Error: Task "${task.title}" is paused. It cannot be completed while paused. Unpause it first (work_update(action="status") with status="in_progress") or ask ${getOwnerName()} for instructions.`;
     }
 
     // ── RC-17.3: recurring-aware refusal ──
-    // tracker_complete_step is the project-step sequencer: it does a bare
+    // work_update(action="complete_step") is the project-step sequencer: it does a bare
     // updateTask(status='complete') with ZERO run bookkeeping. On a scheduled
     // recurring task that is fatal, it flips the row to 'complete' while the
     // scheduler's occurrence (task_runs row + schedule_status='running') stays
@@ -2704,9 +2704,9 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
     if (isScheduledRecurring) {
       return (
         `Error: "${task.title}" (${taskId.slice(0, 8)}) is a scheduled recurring task, so it is not a project step to sequence. ` +
-        `Do NOT use tracker_complete_step on it (that would leave the scheduler's run open and skip the per-run advance). ` +
-        `To finish THIS run, call tracker_update_status(task_id="${taskId}", status="complete", result="...", evidence=[...]); the engine advances the schedule to the next run. ` +
-        `To stop the whole recurring schedule (no more runs), call tracker_update_status(task_id="${taskId}", status="complete", complete_all_runs=true).`
+        `Do NOT use work_update(action="complete_step") on it (that would leave the scheduler's run open and skip the per-run advance). ` +
+        `To finish THIS run, call work_update(action="status", task_id="${taskId}", status="complete", result="...", evidence=[...]); the engine advances the schedule to the next run. ` +
+        `To stop the whole recurring schedule (no more runs), call work_update(action="status", task_id="${taskId}", status="complete", complete_all_runs=true).`
       );
     }
 
@@ -2714,7 +2714,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
     const stepDelivery = deliveryForTaskClose(taskId);
     const stepRes = setTrackerStatus(taskId, 'complete', {
       by: 'agent', actorId: agentId, resultDeliveryId: stepDelivery,
-      reason: 'tracker_complete_step: the step is finished',
+      reason: 'work_update(action="complete_step"): the step is finished',
       note: notes ? `[Completed] ${notes}` : '[Completed]',
     });
     if (stepRes.kind !== 'applied' && stepRes.kind !== 'noop') {
@@ -2840,7 +2840,7 @@ export function trackerEditProject(agentId: string, args: Record<string, unknown
 // is "I abandoned this project / it duplicates something else / scope
 // changed, just close it out cleanly." Without this tool, agents either
 // leave tasks stranded forever in on_deck or have to loop calling
-// tracker_update_status one task at a time.
+// work_update(action="status") one task at a time.
 
 export function trackerCloseProject(agentId: string, args: Record<string, unknown>): string {
   const rawProjectId = (args.project_id ?? args.projectId) as string | undefined;
@@ -2938,7 +2938,7 @@ export async function trackerValidatePause(
       entryKind: 'transition',
       fromStatus: 'paused',
       toStatus: 'paused',
-      actionTaken: 'tracker_validate(kind=pause, valid=true)',
+      actionTaken: 'work_validate(action="validate", kind=pause, valid=true)',
       reason: 'PM blessed the pause as legitimate',
     });
     // Real-time dashboard sync: the validate-success path bypasses
@@ -2981,7 +2981,7 @@ export async function trackerValidatePause(
     entryKind: 'reject',
     fromStatus: 'paused',
     toStatus: targetStatus,
-    actionTaken: 'tracker_validate(kind=pause, valid=false)',
+    actionTaken: 'work_validate(action="validate", kind=pause, valid=false)',
     reason: rejectReason,
   });
   // Check whether revert_count just crossed the stalemate threshold.
@@ -3080,10 +3080,10 @@ export async function trackerRetask(
     task.deliverable_shown === 1 /* legacy rows, pre drive-boundary */ ||
     (task.status === 'complete' && task.complete_validated === 0) /* Key-1 filed, awaiting PM validation */;
   if (deliveredProtection && args.allow_regenerate !== true) {
-    return `Error: task "${task.title}" (${taskId.slice(0, 8)}) already had its deliverable delivered to the user (deliverable_shown=1). Retasking it would regenerate and overwrite delivered work, producing a divergent second version. If the delivered work genuinely misses the goal and you want the assignee to redo it, re-call tracker_retask with allow_regenerate=true. Otherwise, if the delivery meets the goal, let the assignee close it out (tracker_update_status) and validate that with tracker_validate; if entirely new work is needed, create a NEW task with tracker_create_task.`;
+    return `Error: task "${task.title}" (${taskId.slice(0, 8)}) already had its deliverable delivered to the user (deliverable_shown=1). Retasking it would regenerate and overwrite delivered work, producing a divergent second version. If the delivered work genuinely misses the goal and you want the assignee to redo it, re-call work_validate(action="retask") with allow_regenerate=true. Otherwise, if the delivery meets the goal, let the assignee close it out (work_update(action="status")) and validate that with work_validate(action="validate"); if entirely new work is needed, create a NEW task with work_open(kind="task").`;
   }
   if (!task.assigned_to) {
-    return `Error: task "${task.title}" (${taskId}) has no assigned agent. Use tracker_reassign_task first, then retask.`;
+    return `Error: task "${task.title}" (${taskId}) has no assigned agent. Use work_update(action="reassign") first, then retask.`;
   }
 
   const targetStatus = args.target_status ?? 'in_progress';
@@ -3121,7 +3121,7 @@ export async function trackerRetask(
     entryKind: 'directive',
     fromStatus: task.status,
     toStatus: targetStatus,
-    actionTaken: 'tracker_retask',
+    actionTaken: 'work_validate(action="retask")',
     reason: directive,
   });
 
@@ -3136,7 +3136,7 @@ export async function trackerRetask(
       `PM retask on "${task.title}" (${taskId.slice(0, 8)}). Task is back to ${targetStatus}.\n\n` +
       `PM directive: ${directive}\n\n` +
       `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
-      `Do the work the directive describes, then close out (tracker_update_status with status="complete", a clear result, and evidence pointing at the concrete artifact, file path, message id, tool_call_ref, etc.). Don't just acknowledge; do the thing.`;
+      `Do the work the directive describes, then close out (work_update(action="status") with status="complete", a clear result, and evidence pointing at the concrete artifact, file path, message id, tool_call_ref, etc.). Don't just acknowledge; do the thing.`;
     const { v4: uuidv4 } = await import('uuid');
     await deliverA2AMessage({
       intent: 'QUESTION',
@@ -3177,10 +3177,10 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
   if (!task) return `Error: Task ${taskId} was deleted before pause could be applied.`;
   if (task.schedule_status === 'unscheduled') {
     return (
-      `Refused: tracker_pause_schedule is for recurring/scheduled tasks only, "${task.title}" has no schedule. ` +
-      `For a one-shot task: if the work is DONE, call tracker_update_status(task_id="${task.id}", status="complete"). ` +
-      `If you're stuck, call tracker_update_status(..., status="blocked", notes="why"). ` +
-      `If the task is no longer needed, call tracker_update_status(..., status="paused", resume_at="<ISO datetime>") to pause until a specific time, or, if you want it cleanly off the active board, tracker_close_project for whole-project cleanup. ` +
+      `Refused: work_schedule(action="pause") is for recurring/scheduled tasks only, "${task.title}" has no schedule. ` +
+      `For a one-shot task: if the work is DONE, call work_update(action="status", task_id="${task.id}", status="complete"). ` +
+      `If you're stuck, call work_update(action="status", ..., status="blocked", notes="why"). ` +
+      `If the task is no longer needed, call work_update(action="status", ..., status="paused", resume_at="<ISO datetime>") to pause until a specific time, or, if you want it cleanly off the active board, work_update(action="close_project") for whole-project cleanup. ` +
       `Pausing a one-shot task without a resume_at strands it: it sits in the Paused column, can\'t be completed without unpausing, and the PM stops watching it.`
     );
   }
@@ -3285,7 +3285,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
     // tool takes precedence over the fallback when called first.
     if (task.missed_runs_paused_at != null) patchWork(taskId, { missed_runs_paused_at: null });
     logger.info('Missed-runs resolved: pause', { taskId }, agentId);
-    return `OK: task "${title}" stays paused. The user can resume it from the dashboard, or you can later call tracker_resume_schedule.`;
+    return `OK: task "${title}" stays paused. The user can resume it from the dashboard, or you can later call work_schedule(action="resume").`;
   }
 
   if (action === 'skip') {
@@ -3336,7 +3336,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
 }
 
 /**
- * tracker_apply_user_validation, used by the primary agent when the user
+ * work_validate(action="apply_user_validation"), used by the primary agent when the user
  * replies to a "[VALIDATION CHECK]" system message in chat. The user is
  * telling us whether work that's been sitting unvalidated is actually
  * done or not.
@@ -3571,7 +3571,7 @@ function clearHardGateBreaker(taskId: string, agentId: string): void {
  * Helper: after PM rejects a transition, see if revert_count has reached
  * the per-priority stalemate threshold. If so, flip awaiting_user_verdict
  * and dispatch a directive A2A to the assigned agent telling them to
- * call tracker_request_user_verdict.
+ * call work_close_request(action="user_verdict").
  */
 async function maybeTriggerStalemate(taskId: string, pmAgentId: string): Promise<void> {
   const db = getDb();
@@ -3612,7 +3612,7 @@ async function maybeTriggerStalemate(taskId: string, pmAgentId: string): Promise
     const directive =
       `STALEMATE on task "${row.title}" (${taskId.slice(0, 8)}). ` +
       `Your submissions have been rejected ${row.revert_count} times (priority=${row.priority}, threshold=${threshold}). ` +
-      `Call tracker_request_user_verdict with task_id="${taskId}", status_requested="<the status you believe is correct>", ` +
+      `Call work_close_request(action="user_verdict") with task_id="${taskId}", status_requested="<the status you believe is correct>", ` +
       `agent_summary="<one-paragraph recap of what you did>", and ` +
       `pm_rejection_summary="<one-paragraph recap of PM's stated objections>". ` +
       `The user will make the final call. While awaiting_user_verdict=1 the PM will leave this task alone, do not retry the rejected transition.`;
@@ -3632,7 +3632,7 @@ async function maybeTriggerStalemate(taskId: string, pmAgentId: string): Promise
 }
 
 /**
- * tracker_validate, PM-only.
+ * work_validate(action="validate"), PM-only.
  *
  * Mirrors trackerValidatePause. On valid=true, complete_validated=1
  * fires, the dependency cascade runs, and (for recurring tasks) the
@@ -3679,7 +3679,7 @@ export async function trackerValidateComplete(
   // agent has explicitly asked PM to make a judgment call. Validating the
   // underlying close without resolving the override leaves the override
   // queue stale and bypasses the structured ask. Refuse and direct PM to
-  // tracker_override(override_request_id=..., approve=true|false).
+  // work_validate(action="override", override_request_id=..., approve=true|false).
   const pendingOverride = db.prepare(`
     SELECT id FROM task_override_requests
     WHERE task_id = ? AND status = 'pending'
@@ -3688,7 +3688,7 @@ export async function trackerValidateComplete(
   if (pendingOverride) {
     return (
       `Error: task "${task.title}" (${taskId.slice(0, 8)}) has a pending OVERRIDE_REQUEST (id=${pendingOverride.id.slice(0, 8)}). ` +
-      `Resolve that first via tracker_override(override_request_id="${pendingOverride.id}", approve=true|false, reason="..."). ` +
+      `Resolve that first via work_validate(action="override", override_request_id="${pendingOverride.id}", approve=true|false, reason="..."). ` +
       `Validating directly here would leave the override queue stale.`
     );
   }
@@ -3713,7 +3713,7 @@ export async function trackerValidateComplete(
         entryKind: 'transition',
         fromStatus: 'complete',
         toStatus: 'pending-advance',
-        actionTaken: `tracker_validate(kind=complete, valid=true), recurring per-run`,
+        actionTaken: `work_validate(action="validate", kind=complete, valid=true), recurring per-run`,
         reason: 'PM blessed this run',
         note: task.result,
         evidenceJson: task.evidence_json,
@@ -3792,7 +3792,7 @@ export async function trackerValidateComplete(
       entryKind: 'transition',
       fromStatus: 'complete',
       toStatus: 'complete',
-      actionTaken: 'tracker_validate(kind=complete, valid=true), terminal',
+      actionTaken: 'work_validate(action="validate", kind=complete, valid=true), terminal',
       reason: 'PM blessed the complete',
     });
     try {
@@ -3840,7 +3840,7 @@ export async function trackerValidateComplete(
     entryKind: 'reject',
     fromStatus: 'complete',
     toStatus: targetStatus,
-    actionTaken: 'tracker_validate(kind=complete, valid=false)',
+    actionTaken: 'work_validate(action="validate", kind=complete, valid=false)',
     reason: rejectReason,
   });
 
@@ -3851,7 +3851,7 @@ export async function trackerValidateComplete(
         `Your complete on "${task.title}" (${taskId.slice(0, 8)}) was reverted to ${targetStatus} for a recheck, this is a routine PM check, not a penalty.\n\n` +
         `PM's reason: ${rejectReason}\n\n` +
         `Task goal: ${task.goal ?? '(none recorded)'}\n\n` +
-        `To close this out: address what PM flagged, then call tracker_update_status(status='complete') again with a clear result + evidence pointing at the concrete work (file paths, tool_call_ref, output paste, external_action). You don't have to redo work that's already done, just fix the gap PM named. PM validates fast when the evidence matches the goal. revert_count=${(updated as { revertCount?: number }).revertCount ?? '(incremented)'}.`;
+        `To close this out: address what PM flagged, then call work_update(action="status", status='complete') again with a clear result + evidence pointing at the concrete work (file paths, tool_call_ref, output paste, external_action). You don't have to redo work that's already done, just fix the gap PM named. PM validates fast when the evidence matches the goal. revert_count=${(updated as { revertCount?: number }).revertCount ?? '(incremented)'}.`;
       await deliverA2AMessage({
         intent: 'QUESTION',
         threadId: '',
@@ -3872,7 +3872,7 @@ export async function trackerValidateComplete(
 }
 
 /**
- * tracker_validate, PM-only. Mirror of validate_complete for the
+ * work_validate(action="validate"), PM-only. Mirror of validate_complete for the
  * blocked transition. Bless or revert.
  */
 export async function trackerValidateBlocked(
@@ -3916,7 +3916,7 @@ export async function trackerValidateBlocked(
       entryKind: 'transition',
       fromStatus: 'blocked',
       toStatus: 'blocked',
-      actionTaken: 'tracker_validate(kind=blocked, valid=true)',
+      actionTaken: 'work_validate(action="validate", kind=blocked, valid=true)',
       reason: 'PM blessed the block as real',
     });
     // comms-audit (actionable-but-invisible correctness bug): this is an ACTIONABLE
@@ -3960,7 +3960,7 @@ export async function trackerValidateBlocked(
     entryKind: 'reject',
     fromStatus: 'blocked',
     toStatus: targetStatus,
-    actionTaken: 'tracker_validate(kind=blocked, valid=false)',
+    actionTaken: 'work_validate(action="validate", kind=blocked, valid=false)',
     reason: rejectReason,
   });
 
@@ -3992,7 +3992,7 @@ export async function trackerValidateBlocked(
 }
 
 /**
- * tracker_request_override, agent-side. Queues a request for PM (or
+ * work_close_request(action="override"), agent-side. Queues a request for PM (or
  * the user via dashboard) to manually force a status change that the
  * engine's hard gate refused, or that the agent thinks should land
  * despite a PM rejection.
@@ -4043,7 +4043,7 @@ export function trackerRequestOverride(
     taskId,
     fromEntity: `agent:${agentId}`,
     entryKind: 'override',
-    actionTaken: 'tracker_request_override',
+    actionTaken: 'work_close_request(action="override")',
     reason: justification,
     toStatus: requestedStatus,
   });
@@ -4053,12 +4053,12 @@ export function trackerRequestOverride(
 }
 
 /**
- * tracker_override, PM-only. Resolves a queued OVERRIDE_REQUEST by
+ * work_validate(action="override"), PM-only. Resolves a queued OVERRIDE_REQUEST by
  * either approving (force the requested status through, bypassing the
  * engine hard gate) or denying (the engine was right; notify the
  * agent).
  *
- * Distinct from PM bare tracker_update_status: bare update_status is
+ * Distinct from PM bare work_update(action="status"): bare update_status is
  * proactive PM action with no pending request. Override resolves an
  * explicit ask.
  */
@@ -4115,7 +4115,7 @@ export async function trackerOverride(
       fromEntity: 'pm',
       entryKind: 'override',
       toStatus: req.requested_status,
-      actionTaken: 'tracker_override(approve=true)',
+      actionTaken: 'work_validate(action="override", approve=true)',
       reason,
     });
 
@@ -4146,7 +4146,7 @@ export async function trackerOverride(
     taskId: req.task_id,
     fromEntity: 'pm',
     entryKind: 'override',
-    actionTaken: 'tracker_override(approve=false)',
+    actionTaken: 'work_validate(action="override", approve=false)',
     reason: `denied: ${reason}`,
   });
   try {
@@ -4168,7 +4168,7 @@ export async function trackerOverride(
 }
 
 /**
- * tracker_request_user_verdict, assigned-agent-side, only callable
+ * work_close_request(action="user_verdict"), assigned-agent-side, only callable
  * while awaiting_user_verdict=1. Composes a user-facing message
  * describing the stalemate and routes it.
  */
@@ -4216,7 +4216,7 @@ export async function trackerRequestUserVerdict(
     taskId,
     fromEntity: `agent:${agentId}`,
     entryKind: 'user_verdict_request',
-    actionTaken: 'tracker_request_user_verdict composed and routed',
+    actionTaken: 'work_close_request(action="user_verdict") composed and routed',
     note: userMessage,
     toStatus: statusRequested,
   });
@@ -4235,7 +4235,7 @@ export async function trackerRequestUserVerdict(
       const relayPayload =
         `Please relay to ${getOwnerName()}: a stalemate has been flagged on task "${task.title}" (${taskId.slice(0, 8)}) ` +
         `assigned to me (${agentId}). The user verdict request follows. Show this verbatim to ${getOwnerName()} in chat and ` +
-        `then call tracker_apply_user_verdict(task_id="${taskId}", status="<the owner's choice>", user_quote="<their exact reply>") on my behalf.\n\n` +
+        `then call work_validate(action="apply_user_verdict", task_id="${taskId}", status="<the owner's choice>", user_quote="<their exact reply>") on my behalf.\n\n` +
         userMessage;
       await deliverA2AMessage({
         intent: 'ASSIGN',
@@ -4255,7 +4255,7 @@ export async function trackerRequestUserVerdict(
 }
 
 /**
- * tracker_apply_user_verdict, the receiving agent (primary if relayed,
+ * work_validate(action="apply_user_verdict"), the receiving agent (primary if relayed,
  * assigned agent if it owns the user chat) calls this with the user's
  * reply to land the final decision.
  */

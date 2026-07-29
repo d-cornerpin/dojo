@@ -102,9 +102,12 @@ const KEY1_ALLOW: Record<string, string[]> = {
   // `complete_validated = 0` meant: the PM's key still turns.
   'tracker/tools.ts': [
     "reason: 'agent asserts every run is done; the schedule stops here'",   // complete_all_runs
-    "reason: 'schedule stopped and the work marked complete'",              // tracker_pause_schedule(mark_complete)
-    "reason: 'tracker_complete_step: the step is finished'",                // tracker_complete_step
-    "reason: `tracker_update_status -> ${String(statusUpdate)}`",           // tracker_update_status
+    "reason: 'schedule stopped and the work marked complete'",              // work_schedule(action="pause", mark_complete)
+    // PHASE-2 T8V: these two reasons name the verb that wrote them, and the verb
+    // was renamed. Same two definition sites, same two writes, same review — only
+    // the literal the scan matches moved, in the same change as the product.
+    "reason: 'work_update(action=\"complete_step\"): the step is finished'",
+    "reason: `work_update(action=\"status\") -> ${String(statusUpdate)}`",
     // Narrow carve-out (demolition Phase 1.7 #2): closeEngineScaffoldSameTurn. The ONLY
     // engine close of its OWN same-turn scaffold, and it now has to POINT AT the delivery
     // (G6+G7) rather than assert it.

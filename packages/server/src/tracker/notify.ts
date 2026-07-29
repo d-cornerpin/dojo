@@ -2,7 +2,7 @@
 // Task assignment notification (v2.3.6)
 //
 // Single helper used by every path that creates a task assigned to an
-// agent — agent-driven (tracker_create_task / tracker_create_project /
+// agent — agent-driven (work_open(kind="task") / work_open(kind="project") /
 // send_to_agent ASSIGN) and engine-driven (multistep auto-create).
 //
 // Persists a synthetic [SOURCE: TRACKER TASK ASSIGNMENT] user message
@@ -141,8 +141,8 @@ export function injectTaskAssignmentNotification(
     // where this work came from, so the ticket is never a floating title.
     (() => { try { const o = findTaskOriginChain(taskId); return o ? `Origin: ${renderTaskOriginChain(o)}` : ''; } catch { return ''; } })(),
     ``,
-    `Begin working on this task. When finished, call tracker_update_status(task_id="${taskId}", status="complete", notes="what you did").`,
-    `If you get stuck, call tracker_update_status(task_id="${taskId}", status="blocked", notes="why you're blocked").`,
+    `Begin working on this task. When finished, call work_update(action="status", task_id="${taskId}", status="complete", notes="what you did").`,
+    `If you get stuck, call work_update(action="status", task_id="${taskId}", status="blocked", notes="why you're blocked").`,
   ].filter(Boolean);
   const content = lines.join('\n');
 

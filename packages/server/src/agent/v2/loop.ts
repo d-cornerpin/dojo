@@ -79,6 +79,19 @@ import { pushEngineMessage } from './engine-message.js';
 import { findRecentDeliveries, findRecentDeliveriesKeyed, getRecentOutbound, mostRecentDeliveryTo, mostRecentDeliveryToConversation, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
 import { writeToolReceipt } from '../../receipts/store.js';
 import { resolveToolAlias } from '../../tools/aliases.js';
+// PHASE-2 T8V: the six work verbs made tool NAMES insufficient to identify an
+// operation, so every gate below matches `toolOpKey(name, args)` — the operation
+// id for a work verb, the plain name for everything else. One matcher, one marker.
+import {
+  toolOpKey,
+  isTrackerFamilyCall,
+  CLOSE_OPS_WITH_TASK_ID,
+  CLOSING_WORK_OPS,
+  PROGRESS_WORK_OPS,
+  SATISFYING_WORK_OPS,
+  CLOSE_OUT_WORK_OPS,
+  DISARMING_WORK_OPS,
+} from '../../tools/work-verbs.js';
 import { taskScope, msToText, tsToMs, STATE_TO_STATUS_SQL } from '../../work/tracker-view.js';
 import { setTrackerStatus, patchWork, upholdClaim } from '../../work/tracker-store.js';
 
@@ -261,7 +274,7 @@ function appendVisibilityHintIfRelevant<T extends { content?: string; isError?: 
 }
 
 // v2.7.22, Soft nudge after internal-bookkeeping tools. These tools
-// (vault_remember, tracker_update_status, complete_task, credential_*,
+// (vault_remember, work_update(action="status"), complete_task, credential_*,
 // etc.) reliably trigger the model's "wrap up with a closeout line"
 // reflex even though the prompt teaches [no-reply] as the escape
 // hatch. The prompt sits at the top of the context; the tool result
@@ -283,8 +296,8 @@ function appendVisibilityHintIfRelevant<T extends { content?: string; isError?: 
 // do not nudge after a scratchpad_set or a tracker read); drift here only mutes
 // a soft nudge on a new tool, never a correctness issue.
 const BOOKKEEPING_NUDGE_TOOLS = new Set([
-  'tracker_update_status',
-  'tracker_complete_step',
+  'work_update:status',
+  'work_update:complete_step',
   'complete_task',
   'vault_remember',
   'vault_update',
@@ -318,10 +331,24 @@ const REDUNDANT_CLOSEOUT_MAX_CHARS = 30;
 
 const ENGINE_AUTO_MARKER_MIRROR = '[engine:multistep] ';
 
-// The two close tools whose task_id lets us tell a user-requested close from
-// incidental bookkeeping. vault_*/credential_* have no task, so they always get
-// the generic note (their [no-reply] reason is real).
-const CLOSE_TOOLS_WITH_TASK_ID = new Set(['tracker_update_status', 'tracker_complete_step']);
+/**
+ * A tool RESULT carries no arguments, but the operation a work verb performed is
+ * IN its arguments — so every result-side match resolves the args from the tool
+ * CALL that produced it. Without this a `work_update` result would be
+ * indistinguishable from any other and the four result-side gates below
+ * (transitioned-this-turn, counts-as-task-work, the promise floor, the
+ * bookkeeping nudge) would each have to guess. Returns undefined for a result
+ * with no matching call, which `workOperation` then resolves by shape.
+ */
+function argsForResult(
+  toolCalls: ReadonlyArray<{ id: string; name: string; arguments: Record<string, unknown> }>,
+  tr: { toolCallId?: string; name?: string },
+): Record<string, unknown> | undefined {
+  for (let i = toolCalls.length - 1; i >= 0; i--) {
+    if (toolCalls[i].id === tr.toolCallId) return toolCalls[i].arguments;
+  }
+  return undefined;
+}
 
 /**
  * True when this close targets a USER-REQUESTED task (project description
@@ -339,7 +366,7 @@ function userRequestedCloseWantsReply(
   args: Record<string, unknown>,
   agentId: string,
 ): boolean {
-  if (!toolName || !CLOSE_TOOLS_WITH_TASK_ID.has(toolName)) return false;
+  if (!toolName || !CLOSE_OPS_WITH_TASK_ID.has(toolOpKey(toolName, args))) return false;
   const rawId = args?.task_id;
   if (typeof rawId !== 'string' || !rawId.trim()) return false;
   const id = rawId.trim();
@@ -391,8 +418,8 @@ function userRequestedCloseWantsReply(
 // disarms the multi-step enforcement floor (state.trackerWriteThisTurn).
 //
 // NON-DISARMING (close / abandon / handoff), and so DELIBERATELY absent:
-// tracker_close_project, tracker_reassign_task, tracker_resolve_missed_runs, and
-// tracker_update_status when its status ARGUMENT is a terminal / non-active value
+// work_update:close_project, work_update:reassign, work_schedule:resolve_missed,
+// and work_update:status when its status ARGUMENT is a terminal / non-active value
 // (complete / fallen / paused / blocked). These REMOVE or hand off the thing the
 // PM watches, so they must NOT disarm, otherwise new multi-step work started
 // LATER in the same turn rides in behind an earlier close and escapes both the
@@ -400,26 +427,18 @@ function userRequestedCloseWantsReply(
 // hasRecentlyTendedTask DB check, which reflects whether an OPEN task actually
 // still exists after the mutation.
 //
-// READS (tracker_get_status / tracker_list_active) are absent from both sets: a
-// bare status peek never disarms enforcement (FN-9 invariant). PM / validation-
-// lane governance tools (tracker_validate, tracker_retask, tracker_override,
-// tracker_request_override, tracker_request_user_verdict,
-// tracker_apply_user_verdict, tracker_apply_user_validation,
-// tracker_pause_schedule, tracker_resume_schedule) are also absent: those are
+// READS (work_update:get / work_update:list) are absent from both sets: a bare
+// status peek never disarms enforcement (FN-9 invariant). PM / validation-lane
+// governance operations (every work_validate action, both work_close_request
+// asks, work_schedule:pause / :resume) are also absent: those are
 // override/governance actions, not a worker opening or advancing its own task.
-const TRACKER_DISARMING_MUTATION_TOOLS = new Set([
-  'tracker_create_project',
-  'tracker_create_task',
-  'tracker_add_notes',
-  'tracker_edit_task',
-  'tracker_edit_project',
-  'tracker_complete_step',
-]);
-
-// FA-T2: tracker_update_status disarms the floor ONLY when its status argument
+// The two obligation ops (work_open:commitment, work_close_request:commitment)
+// are absent for a different reason — a promise is not multi-step work, and
+// `work_open(kind="commitment")` never disarmed this floor before the collapse either.
+// FA-T2: a status change disarms the floor ONLY when its status argument
 // ADVANCES the task to an active state. These are the canonical active statuses
-// plus the weak-model synonyms the tracker_update_status normalizer accepts for
-// them (kept in sync with STATUS_SYNONYMS in tracker/tools.ts). A transition to
+// plus the weak-model synonyms the status normalizer accepts for them (kept in
+// sync with STATUS_SYNONYMS in tracker/tools.ts). A transition to
 // complete / fallen / paused / blocked, an update with no status (a bare
 // reassign/repriority), or an unrecognized value is NOT advancing and does not
 // disarm, it falls through to the hasRecentlyTendedTask DB check. That is safe
@@ -454,8 +473,8 @@ function isAdvancingStatusArg(rawStatus: unknown): boolean {
 // real work, and the untracked-multistep-floor scenario locks file_read +
 // file_write as the NON-trivial signal that must keep driving the floor.
 // Likewise exec, every send / create / write, and document/drive/pdf reads stay
-// NON-trivial. (tracker_* reads are already excluded upstream by the tracker_
-// prefix filter, so they aren't listed here.)
+// NON-trivial. (Work-tracker reads are already excluded upstream by the
+// tracker-family filter, so they aren't listed here.)
 const TRIVIAL_TOOLS = new Set([
   // Time / utility (no artifact, no side effect)
   'get_current_time',
@@ -562,7 +581,7 @@ const ENGINE_START_ACK_STREAM_GRACE_MS = 60000;
 // inject a specific steer message naming the exact gated signature and
 // activate a per-signature refusal gate. The agent can still call the
 // same tool with DIFFERENT args. Only the exact spinning signature is
-// refused. Cleared on any tracker_update_status.
+// refused. Cleared on any work_update(action="status").
 //
 // LAST RESORT: if the gate has had to refuse THRASH_GATE_BREAKER_LIMIT+
 // calls without the agent transitioning, the engine auto-blocks the task
@@ -686,8 +705,8 @@ async function dispatchPMRenameHandoff(params: {
       `First task id: ${params.taskId}\n` +
       `Current first-task title: ${params.taskTitle}\n\n` +
       `Original user prompt:\n${params.originalPrompt.slice(0, 1500)}\n\n` +
-      `Please call tracker_edit_project(project_id="${params.projectId}", title="<short 3-6 word umbrella name>") ` +
-      `and tracker_edit_task(task_id="${params.taskId}", title="<short 3-6 word first-step name>"). ` +
+      `Please call work_update(action="edit", project_id="${params.projectId}", title="<short 3-6 word umbrella name>") ` +
+      `and work_update(action="edit", task_id="${params.taskId}", title="<short 3-6 word first-step name>"). ` +
       `The project name describes the WHOLE effort; the first-task name is the first concrete thing to do. ` +
       `Make them distinct, don't reuse the same string for both. After both edits land, send NO message ` +
       `back to anyone, this is a silent rename. Do not contact ${primaryName}.`
@@ -807,8 +826,8 @@ function detectTaskThrashing(agentId: string): {
         const name = String(block.name ?? '');
         if (!name) continue;
         const failed = block.id != null && failedToolUseIds.has(String(block.id));
-        // tracker_update_status / complete_task count as forward progress,
-        // an agent that calls these is at least transitioning. Same for
+        // A status flip / step completion / note, and complete_task, count as
+        // forward progress: an agent that calls these is at least transitioning. Same for
         // send_to_user / chat-style replies (they finish the work).
         // D5 (2026-07-08 defect-class sweep): a SUCCESSFUL effectful-action tool
         // is ALSO forward progress. This used to be a hand list (isMutatingTool,
@@ -825,9 +844,9 @@ function detectTaskThrashing(agentId: string): {
         // does not open a thrash hole.)
         if (
           !failed && (
-            name === 'tracker_update_status' || name === 'complete_task' ||
-            name === 'tracker_complete_step' || name === 'tracker_add_notes' ||
-            classifyTool(name) === 'effectful-action'
+            PROGRESS_WORK_OPS.has(toolOpKey(name, block.input)) ||
+            name === 'complete_task' ||
+            classifyTool(name, block.input) === 'effectful-action'
           )
         ) {
           madeProgress = true;
@@ -2272,7 +2291,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         if (evidenced.length > 0) {
           sections.push(
             `ENGINE RECORDS show these were already ANSWERED/DELIVERED on their own conversations:\n${evidenced.join('\n')}\n` +
-            `For each of these, the correct call is tracker_update_status(status="complete") with the result (or tracker_complete_step). ` +
+            `For each of these, the correct call is work_update(action="status", status="complete") with the result (or work_update(action="complete_step")). ` +
             `Do NOT pause them, do NOT add a "still working" note, and do NOT redo or re-deliver the work.`
           );
         }
@@ -2287,10 +2306,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
         `[System: REQUIRED close-out, you have abandoned work on the tracker.\n\n` +
         `${sections.join('\n\n')}\n\n` +
         `**This turn must start with a tracker tool call, not a user-facing reply.** ` +
-        `Resolve at least one item before doing anything else - call tracker_complete_step (multi-step projects), ` +
-        `tracker_update_status (status="complete" | "blocked" | "paused" with resume_at), ` +
-        `tracker_add_notes (if you are STILL actively working it - then KEEP GOING on this same turn, do not stop after writing the note), ` +
-        `or - if the whole project was abandoned/duplicated/superseded - tracker_close_project(project_id, status="cancelled", reason="..."). ` +
+        `Resolve at least one item before doing anything else - call work_update(action="complete_step") (multi-step projects), ` +
+        `work_update(action="status") (status="complete" | "blocked" | "paused" with resume_at), ` +
+        `work_note (if you are STILL actively working it - then KEEP GOING on this same turn, do not stop after writing the note), ` +
+        `or - if the whole project was abandoned/duplicated/superseded - work_update(action="close_project", project_id, status="cancelled", reason="..."). ` +
         `The engine will REFUSE every non-tracker tool call until one of those lands; after that the gate releases for the rest of the turn so you can keep resolving the others alongside other work. ` +
         `Do NOT generate a user-facing response on this turn until the gate is satisfied - the user does not expect a reply yet; they expect the tracker to come back in sync. ` +
         `Results already delivered to the user must NOT be repeated; after your tracker call, reply [no-reply] unless the user asked something new.]`
@@ -2446,8 +2465,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
       //       ignored the refusals.
       //   (2) Drift exceeded, gate has been on for THRASH_GATE_DRIFT_LIMIT
       //       iterations and the agent kept dodging the gate by varying
-      //       its calls (different ids, get_current_time, tracker_get_status)
-      //       without ever calling tracker_update_status to wrap up. This
+      //       its calls (different ids, get_current_time, work_update(action="get"))
+      //       without ever calling work_update(action="status") to wrap up. This
       //       is the "look around to avoid finishing" failure mode.
       // We block (not pause) so the task hits a real terminal state.
       const drift =
@@ -2473,7 +2492,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           const driftNudge =
             `[Engine hint] The engine thrash gate has been active for ${drift} iterations and you keep ` +
             `varying your tool calls without recording progress. If you ARE making progress, record it with ` +
-            `tracker_update_status (or tracker_add_notes), then continue. If you are stuck, wrap up and tell ` +
+            `work_update(action="status") (or work_note), then continue. If you are stuck, wrap up and tell ` +
             `the user where things stand. ${ENGINE_BLOCK_ESCAPE_HATCH}`;
           const driftNudgeId = uuidv4();
           try {
@@ -2591,7 +2610,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             agentId,
             content:
               `[System] The engine auto-blocked your current task because ${breakerReasonSecondPerson}. Next turn, either ` +
-              `re-state the goal and resume (tracker_update_status), or tell the user it is blocked and why. ` +
+              `re-state the goal and resume (work_update(action="status")), or tell the user it is blocked and why. ` +
               `If this block looks wrong and is stopping something the user needs, tell them what you were attempting so they can decide.`,
             sourceAgentId: null,
             originIntent: 'thrash_block',
@@ -2630,13 +2649,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // Task-thrash detector, steer + per-signature gate (not pause).
       //
       // When the model re-runs the SAME canonical signature 4+ times in 2
-      // minutes without calling tracker_update_status, inject a specific
+      // minutes without calling work_update(action="status"), inject a specific
       // steer message that names the exact tool + args + count + window
       // and gate further calls to that one signature. The agent can keep
       // calling the same tool with DIFFERENT args (legitimate iteration
       // over a list of N items stays unblocked). Last resort: if the gate
       // has refused THRASH_GATE_BREAKER_LIMIT+ calls without a
-      // tracker_update_status transition, the engine auto-blocks the task
+      // work_update(action="status") transition, the engine auto-blocks the task
       // so it reaches a clean terminal state instead of looping forever.
       if (!isPMAgent(agentId) && state.loopCount >= 4) {
         const thrash = detectTaskThrashing(agentId);
@@ -2661,8 +2680,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
             `Your next action MUST be one of:\n` +
             `  (a) Call \`${thrash.toolName}\` with DIFFERENT args (e.g., a different id / target) if you genuinely have more to read.\n` +
             `  (b) Reply to the user with the answer you can give using the data you already have.\n` +
-            `  (c) Call tracker_update_status(status='complete') with a result + evidence if this is a tracker task.\n` +
-            `  (d) Call tracker_update_status(status='blocked') if you genuinely cannot proceed.\n` +
+            `  (c) Call work_update(action="status", status='complete') with a result + evidence if this is a tracker task.\n` +
+            `  (d) Call work_update(action="status", status='blocked') if you genuinely cannot proceed.\n` +
             `  (e) Send the user a specific question if you need clarification.\n\n` +
             `If you keep hitting refused signatures the engine will auto-block this task to stop the loop.`;
           const steerMsgId = uuidv4();
@@ -2802,7 +2821,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           `[System: This turn ran for ${elapsedMin} minutes. Pausing here and continuing on a fresh turn ` +
           `(${continuationCount} of ${MAX_TURN_AUTO_CONTINUATIONS}). ` +
           `Your earlier conversation has been summarized, pick up where you left off. ` +
-          `Check tracker_list_active for the task you were working on; do not start over.]`
+          `Check work_update(action="list") for the task you were working on; do not start over.]`
         );
         const sysMsgId = uuidv4();
         insertMessageIfAbsent({ id: sysMsgId, agentId, role: 'system', content: sysMsg, turnNumber });
@@ -3389,12 +3408,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   // step → status='in_progress'). Otherwise the task lands
                   // in on_deck and waits for someone to pull it forward.
                   // Matches the pattern when an agent calls
-                  // tracker_create_project on itself.
+                  // work_open(kind="project") on itself.
                   //
                   // Description carries the ENGINE_AUTO_MARKER prefix so
-                  // tracker_create_project's dup guard can detect this
+                  // work_open(kind="project")'s dup guard can detect this
                   // project as engine-auto-created and steer the agent
-                  // toward tracker_edit_task instead of refusing them into
+                  // toward work_update(action="edit") instead of refusing them into
                   // a parallel project.
                   const created = createProject({
                     origin: { kind: 'engine_scaffold', sourceMessageId: state.lastUserMessageId, turn: turnNumber, convKey: chosenConvKey },
@@ -3426,8 +3445,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   state = advance(state, { autoScaffoldedTaskIdThisTurn: created.taskIds[0] });
 
                   // Inject the standard task-assignment notification, 
-                  // same payload tracker_create_task uses, including the
-                  // explicit "When finished, call tracker_update_status"
+                  // same payload work_open(kind="task") uses, including the
+                  // explicit "When finished, call work_update(action="status")"
                   // instruction. Persists to DB (survives compaction)
                   // and broadcasts WS for the dashboard. skipWake=true
                   // because we ARE the running turn, handleMessage
@@ -4459,7 +4478,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       if (persistedContent && result.toolCalls.length > 0) {
         // GOVERNING RULE (comms-audit G-SUP-2): on a turn a HUMAN is waiting on,
         // this text MIGHT be the genuine answer the weak model paired with a
-        // closing tool (tracker_update_status, etc.), the v2.7.24 capture below
+        // closing tool (work_update(action="status"), etc.), the v2.7.24 capture below
         // exists for exactly that, but this blanket null defeated it (two patches
         // in conflict). Don't show it as a mid-turn bubble (avoid preamble leak),
         // but REMEMBER it: if the turn ends with no proper tool-less reply, the
@@ -4754,8 +4773,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // ── Duplicate-final-answer prevention (v2.7.2, scoped down v2.7.3) ──
       //
       // The v2.7.2 fix exited the loop whenever the agent paired wrap-up
-      // text with ANY task-closing tool call (tracker_close_project,
-      // tracker_complete_step, tracker_update_status with terminal
+      // text with ANY task-closing tool call (work_update(action="close_project"),
+      // work_update(action="complete_step"), work_update(action="status") with terminal
       // status, complete_task). The intent was good (skip the duplicate
       // "All set." follow-up turn) but the trigger was way too broad:
       //
@@ -5223,8 +5242,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // pills in non-wordy mode and have no slot to display
       // attachments - draining onto them silently swallowed the files.
       // The 2026-06-06 JJ-report incident lost the deliverable this
-      // way: show_to_user → tracker_complete_step → end. Attachments
-      // drained onto the tracker_complete_step pill and vanished. Now
+      // way: show_to_user → work_update(action="complete_step") → end. Attachments
+      // drained onto the work_update(action="complete_step") pill and vanished. Now
       // the queue persists across tool iterations and only drains
       // when text accompanies the persist - and an end-of-turn safety
       // net catches anything still queued so files can't be lost.
@@ -5591,7 +5610,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           } catch { /* best effort; the teardown detector still logs the miss */ }
         }
         // ── v2.7.17: "added a note then stopped" detector ──
-        // Common failure: agent is mid-project, calls tracker_add_notes as
+        // Common failure: agent is mid-project, calls work_note as
         // a status checkpoint, then ends the turn silently because the
         // model treats the note as a stopping point. The user is left
         // wondering why the agent went idle. Detect that pattern and
@@ -5599,7 +5618,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         //
         // Conditions:
         //   - had any tool calls this turn
-        //   - LAST tool call was tracker_add_notes
+        //   - LAST tool call was work_note
         //   - the target task is still in_progress
         //   - not already nudged this turn (one-shot, no loop)
         if (
@@ -5607,13 +5626,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
           state.toolResults.length > 0
         ) {
           const lastTool = state.toolResults[state.toolResults.length - 1];
-          if (lastTool && lastTool.name === 'tracker_add_notes') {
+          if (lastTool && lastTool.name === 'work_note') {
             // Pull the task_id from the original tool call args. The args
             // live on the matching toolCall record by id; search both lists.
             let nudgedTaskId: string | null = null;
             for (let i = state.toolCalls.length - 1; i >= 0; i--) {
               const tc = state.toolCalls[i];
-              if (tc.id === lastTool.toolCallId && tc.name === 'tracker_add_notes') {
+              if (tc.id === lastTool.toolCallId && tc.name === 'work_note') {
                 const tid = (tc.arguments as { task_id?: unknown })?.task_id;
                 if (typeof tid === 'string') nudgedTaskId = tid;
                 break;
@@ -5628,7 +5647,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   `That task is STILL in_progress. If you have more work to do on it, KEEP GOING - call your next tool now, do not end the turn. ` +
                   `If you are genuinely waiting on something (user input, an external response, a scheduled time), say so explicitly: ` +
                   `update the task status to "blocked" or "paused" with a clear reason, OR write one sentence in your reply telling the user what you are waiting for. ` +
-                  `Silently going idle after tracker_add_notes leaves the user with no idea what is happening.]`
+                  `Silently going idle after a work_note leaves the user with no idea what is happening.]`
                 );
                 // RC-19: via persistEngineSteer so the nudge reaches the model
                 // (pendingNudge) AND keeps its dashboard row. The prior bare
@@ -5678,12 +5697,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
           `).all(agentId) as Array<{ id: string; title: string }>;
 
           // Skip if no in_progress tasks - then the agent is fine to idle.
-          // Also skip if the agent ALREADY transitioned a task this turn
-          // (any tracker_update_status / tracker_complete_step call), since
-          // that signals they DID make a deliberate state choice and just
-          // happened to leave another task in_progress for legitimate reasons.
+          // Also skip if the agent ALREADY transitioned a task this turn (any
+          // status flip / step completion / project close), since that signals
+          // they DID make a deliberate state choice and just happened to leave
+          // another task in_progress for legitimate reasons.
           const transitionedThisTurn = state.toolResults.some(
-            tr => tr.name === 'tracker_update_status' || tr.name === 'tracker_complete_step' || tr.name === 'tracker_close_project',
+            tr => CLOSING_WORK_OPS.has(toolOpKey(tr.name, argsForResult(state.toolCalls, tr))),
           );
 
           // ── Channel-awareness: enforce task bookkeeping only on a TASK-EXECUTION
@@ -5708,15 +5727,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // the production box 2026-07-08). classifyTool is the canonical,
           // test-covered classifier (every tool in categories.ts must classify,
           // per the shared V5 test), so new tools can never silently fall out.
-          // tracker_add_notes / tracker_create_task classify as bookkeeping but
-          // counted in the old list on purpose (tending the tracker IS task
-          // work); keep them explicitly.
-          const countsAsTaskWork = (name: string): boolean =>
-            classifyTool(name) === 'effectful-action' ||
-            name === 'tracker_add_notes' || name === 'tracker_create_task';
+          // work_note / work_open:task classify as bookkeeping but counted in the
+          // old list on purpose (tending the tracker IS task work); keep them
+          // explicitly.
+          const countsAsTaskWork = (name: string, args?: Record<string, unknown>): boolean => {
+            const key = toolOpKey(name, args);
+            return classifyTool(name, args) === 'effectful-action' ||
+              key === 'work_note' || key === 'work_open:task';
+          };
           const schedulerTurn = mostRecentInbound?.origin_intent === 'scheduler' || (lastUserMessageContent ?? '').includes('[SOURCE: SCHEDULER');
           const workedATaskThisTurn = schedulerTurn || isA2ATurn ||
-            state.toolResults.some(tr => !tr.isError && !!tr.name && countsAsTaskWork(tr.name));
+            state.toolResults.some(tr => !tr.isError && !!tr.name && countsAsTaskWork(tr.name, argsForResult(state.toolCalls, tr)));
 
           if (openTasks.length > 0 && !transitionedThisTurn && workedATaskThisTurn) {
             // v2.10.2, detect scheduler-triggered turns AND scan this
@@ -5761,7 +5782,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               ? `\nYou successfully called ${recentSideEffects.length === 1 ? 'a side-effecting tool' : 'side-effecting tools'} this turn:\n` +
                 recentSideEffects.map(s => `  - \`${s.name}\` returned: ${s.preview}`).join('\n') + `\n\n` +
                 `These are NON-IDEMPOTENT actions that already executed. Re-running them would duplicate the side effect (double email, double text, double charge). The work is done. Close the task NOW:\n` +
-                `\`tracker_update_status(task_id="${openTasks[0].id}", status="complete", result="<one-line summary of what landed>", evidence=[{kind: "tool_call_ref", claim: "${recentSideEffects[0].name} succeeded"}])\`\n`
+                `\`work_update(action="status", task_id="${openTasks[0].id}", status="complete", result="<one-line summary of what landed>", evidence=[{kind: "tool_call_ref", claim: "${recentSideEffects[0].name} succeeded"}])\`\n`
               : '';
             const nudgeText = (
               `[System: you are about to end this turn with ${openTasks.length} task${openTasks.length === 1 ? '' : 's'} still in_progress and assigned to you:\n` +
@@ -5770,9 +5791,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
               auditHint +
               `\nPick exactly one of these before ending the turn:\n\n` +
               `  1. KEEP GOING - call your next tool NOW to continue from EXACTLY where you stopped. Long file reads, batch operations, multi-step processes, don't restart, don't re-read content you already processed, just advance to the next line / next item / next step.\n` +
-              `  2. DONE - tracker_update_status(task_id, status="complete", result="...", evidence=[...]) (or tracker_complete_step for multi-step projects).\n` +
-              `  3. WAITING ON USER (already asked them) - tracker_update_status(task_id, status="paused", notes="waiting for X"). PM will ignore this task entirely; no pokes.\n` +
-              `  4. BLOCKED (needs escalation - user does not know yet) - tracker_update_status(task_id, status="blocked", notes="why"). PM will surface this to the primary user.\n\n` +
+              `  2. DONE - work_update(action="status", task_id, status="complete", result="...", evidence=[...]) (or work_update(action="complete_step") for multi-step projects).\n` +
+              `  3. WAITING ON USER (already asked them) - work_update(action="status", task_id, status="paused", notes="waiting for X"). PM will ignore this task entirely; no pokes.\n` +
+              `  4. BLOCKED (needs escalation - user does not know yet) - work_update(action="status", task_id, status="blocked", notes="why"). PM will surface this to the primary user.\n\n` +
               `If you go idle with a task still in_progress, the engine will auto-pause it and escalate to PM. Pre-fix for non-idempotent tasks (gmail_send, sms_send, voice_call, exec hitting live APIs), PM was then forced into a re-run remediation that duplicated the side effect. Save everyone the work: close the task now.]`
             );
             // v3.1.10: if the agent ALREADY produced a user-facing reply this
@@ -6022,14 +6043,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
           isForwardPromiseReply(persistedContent)
         ) {
           const didEffectfulWorkThisTurn = state.toolResults.some(
-            (tr) => !tr.isError && !!tr.name && classifyTool(tr.name) === 'effectful-action',
+            (tr) => !tr.isError && !!tr.name && classifyTool(tr.name, argsForResult(state.toolCalls, tr)) === 'effectful-action',
           );
           const transitionedATaskThisTurn = state.toolResults.some(
-            (tr) => !tr.isError && (
-              tr.name === 'tracker_update_status' ||
-              tr.name === 'tracker_complete_step' ||
-              tr.name === 'tracker_close_project'
-            ),
+            (tr) => !tr.isError && CLOSING_WORK_OPS.has(toolOpKey(tr.name, argsForResult(state.toolCalls, tr))),
           );
           if (!didEffectfulWorkThisTurn && !transitionedATaskThisTurn) {
             const quoted = persistedContent.replace(/\s+/g, ' ').trim().slice(0, 200);
@@ -6299,7 +6316,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // The PM agent's poke chain eventually catches it but costs a 30-min
         // wait. Detect at the moment of failure: agent is ending the turn
         // with text, has at least one in_progress task assigned, AND made
-        // no tracker_update_status / tracker_complete_step call this turn.
+        // no work_update(action="status") / work_update(action="complete_step") call this turn.
         //
         // Hardcap mirrors the A2A enforcer: if the agent already saw the
         // nudge once this turn and STILL produces text without updating
@@ -6330,7 +6347,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // UNRELATED idle/stranded tracker task existed, with no human-waiting
             // guard. On the weak-model floor the agent routinely answers a fresh,
             // unrelated human question in plain text (without first calling a
-            // tracker_* tool); the gate then ate that answer and the user got
+            // work verb); the gate then ate that answer and the user got
             // silence (inv 2). That is the same silent-drop class as the whole P0,
             // and it contradicts the sibling going-idle hardcap which was already
             // fixed (2026-06-25, ~line 3333) to KEEP the closeout visible. Apply the
@@ -6482,7 +6499,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               const nudgeText = (
                 `[System: ${openTasks.length} in_progress task${openTasks.length === 1 ? '' : 's'} assigned to you was not closed out this turn:\n` +
                 `${taskList}\n` +
-                `REQUIRED ACTION: call tracker_complete_step (for multi-step projects) or tracker_update_status (complete | blocked | paused) on each task above. Make ONLY the tool call(s). Do NOT write any user-facing text, the user already received your previous response and a duplicate reply is worse than a stale tracker. ` +
+                `REQUIRED ACTION: call work_update(action="complete_step") (for multi-step projects) or work_update(action="status") (complete | blocked | paused) on each task above. Make ONLY the tool call(s). Do NOT write any user-facing text, the user already received your previous response and a duplicate reply is worse than a stale tracker. ` +
                 `If a task is genuinely still in progress, end your turn now with NO text output (no tool call, no message); the engine will continue you on the next user turn.]`
               );
               // RC-19: via persistEngineSteer so the close-out directive reaches the
@@ -6733,8 +6750,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 `You've already called this exact signature multiple times and have the result from the first call.\n\n` +
                 `Pick a different next action:\n` +
                 `  (a) Call \`${tc.name}\` with DIFFERENT args (a different id / target) if you have more to read.\n` +
-                `  (b) Call tracker_update_status(status='complete', result='...', evidence=[...]) using the data you've already gathered.\n` +
-                `  (c) Call tracker_update_status(status='blocked', notes='<specific obstacle>') if you genuinely cannot proceed.\n` +
+                `  (b) Call work_update(action="status", status='complete', result='...', evidence=[...]) using the data you've already gathered.\n` +
+                `  (c) Call work_update(action="status", status='blocked', notes='<specific obstacle>') if you genuinely cannot proceed.\n` +
                 `  (d) Send the user a direct question if you need clarification.\n\n` +
                 ENGINE_BLOCK_ESCAPE_HATCH;
               state = advance(state, { thrashGateRefusalCount: state.thrashGateRefusalCount + 1 });
@@ -6756,8 +6773,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }
           // ── Anti-hoarding gate (v2.5.43) ──
           // Refuse loading-tool calls past LOADING_GATE_THRESHOLD when no
-          // structuring (tracker_create_*, file_write/append/patch,
-          // scratchpad_set, tracker_update_status, etc.) has happened
+          // structuring (work_open, file_write/append/patch,
+          // scratchpad_set, work_update(action="status"), etc.) has happened
           // this turn. Engine enforcement of the corpus-synthesis pattern
           //, prompt-level guidance was being ignored on prod by
           // DeepSeek V4 Pro. See classifiers/hoarding.ts for full
@@ -6792,7 +6809,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           if (
             !state.structuringToolCalledThisTurn &&
             !state.nudgedForHoardingThisTurn &&
-            !isStructuringTool(tc.name) &&
+            !isStructuringTool(tc.name, tc.arguments) &&
             state.heavyLoadsThisTurn >= LOADING_GATE_THRESHOLD &&
             state.lastContextRatio >= 0.85
           ) {
@@ -6831,39 +6848,31 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // for the rest of the turn (re-arms next turn if there are
           // still danglers).
           //
-          // HAND-PICKED, NOT DERIVABLE, and legitimately so: this is a tracker-
-          // FAMILY allowlist (the stable tracker_* surface plus load_tool_docs so
-          // the agent can fetch a close-out tool's schema). Its domain is the
-          // tracker family, which does not span the google/microsoft/_ms/user_
-          // tool explosion that drifts, so it does not have the defect-class
-          // disease. No display/effect classifier encodes "counts as engaging
-          // with your dangling tasks"; that is exactly this gate's private rule.
-          const CLOSE_OUT_TRACKER_TOOLS = new Set([
-            'tracker_update_status',
-            'tracker_complete_step',
-            'tracker_add_notes',
-            'tracker_close_project',      // bulk-resolve a whole stranded project
-            'tracker_get_status',         // read-only allowed (investigate before resolving)
-            'tracker_list_active',        // ditto
-            'tracker_edit_task',           // editing the task counts as engagement
-            'tracker_pause_schedule',
-            'tracker_resume_schedule',
-            'tracker_resolve_missed_runs',
-            'load_tool_docs',              // schema lookup must work, agents may need to fetch
-                                           // schemas for the close-out tools above before calling them
-          ]);
+          // HAND-PICKED, NOT DERIVABLE, and legitimately so: this is a work-FAMILY
+          // allowlist (the stable tracker surface plus load_tool_docs so the agent
+          // can fetch a close-out tool's schema). Its domain is the work family,
+          // which does not span the google/microsoft/_ms/user_ tool explosion that
+          // drifts, so it does not have the defect-class disease. No display/effect
+          // classifier encodes "counts as engaging with your dangling tasks"; that
+          // is exactly this gate's private rule.
+          //
+          // PHASE-2 T8V: keyed on OPERATIONS. Allowing the bare verb `work_update`
+          // would let the agent past the gate with anything that verb can do; the
+          // ops below are exactly the retired names this list used to carry, and
+          // the two obligation ops are deliberately NOT here (closing a promise is
+          // not engaging with a dangling task).
           if (
             state.danglingTaskIds.length > 0 &&
             !state.closeOutGateSatisfied &&
-            !CLOSE_OUT_TRACKER_TOOLS.has(tc.name)
+            !CLOSE_OUT_WORK_OPS.has(toolOpKey(tc.name, tc.arguments))
           ) {
             const taskListShort = state.danglingTaskIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ');
             const refusalText = (
               `Refused: engine close-out gate. You have ${state.danglingTaskIds.length} in_progress ` +
               `task(s) from a previous turn that you never closed (ids: ${taskListShort}${state.danglingTaskIds.length > 5 ? '...' : ''}). ` +
-              `Before any other tool call, resolve at least one with tracker_complete_step, ` +
-              `tracker_update_status (complete | blocked | paused), or, if you're genuinely still working ` +
-              `on it across turns, tracker_add_notes to signal "in flight." After ANY one of those, the gate ` +
+              `Before any other tool call, resolve at least one with work_update(action="complete_step"), ` +
+              `work_update(action="status", status="complete" | "blocked" | "paused"), or, if you're genuinely still working ` +
+              `on it across turns, work_note to signal "in flight." After ANY one of those, the gate ` +
               `disengages for the rest of this turn and "${tc.name}" will work normally. ` +
               `Results already delivered to the user must NOT be repeated; after your tracker call, reply [no-reply] unless the user asked something new.\n\n` +
               ENGINE_BLOCK_ESCAPE_HATCH
@@ -6905,25 +6914,24 @@ export async function runV2Turn(agentId: string): Promise<void> {
             }
           }
           // ── Close-out gate satisfaction (v2.5.46) ──
-          // If the agent is taking a qualifying tracker action this
-          // turn (status update, complete_step, add_notes, close_project),
-          // disengage the close-out gate for the remainder of the turn.
-          // They can keep resolving the other dangling tasks but they're
-          // no longer forced to.
+          // If the agent is taking a qualifying work action this turn (status
+          // update, complete_step, note, close_project), disengage the close-out
+          // gate for the remainder of the turn. They can keep resolving the other
+          // dangling tasks but they're no longer forced to.
           if (
             state.danglingTaskIds.length > 0 &&
             !state.closeOutGateSatisfied &&
-            (tc.name === 'tracker_update_status' || tc.name === 'tracker_complete_step' || tc.name === 'tracker_add_notes' || tc.name === 'tracker_close_project')
+            SATISFYING_WORK_OPS.has(toolOpKey(tc.name, tc.arguments))
           ) {
             state = advance(state, { closeOutGateSatisfied: true });
             logger.info('v2: close-out gate satisfied', { agentId, tool: tc.name }, agentId);
           }
-          // Thrash-gate clear on any tracker transition. Any successful
-          // tracker_update_status (complete/blocked/paused/in_progress) is
-          // forward progress, the gate's purpose was to force the agent
-          // to wrap up, so wrapping up clears it.
+          // Thrash-gate clear on any tracker transition. Any successful status
+          // change (complete/blocked/paused/in_progress) is forward progress; the
+          // gate's purpose was to force the agent to wrap up, so wrapping up
+          // clears it.
           if (
-            (tc.name === 'tracker_update_status' || tc.name === 'tracker_complete_step' || tc.name === 'tracker_close_project') &&
+            CLOSING_WORK_OPS.has(toolOpKey(tc.name, tc.arguments)) &&
             (state.thrashGatedSignatures.length > 0 || state.thrashGateRefusalCount > 0 || state.thrashGateActivatedAtLoopCount !== null)
           ) {
             state = advance(state, {
@@ -6965,7 +6973,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // the 2026-07-08 rewrite it ticks on measured RESULT SIZE, which is only
           // known after the executor returns, so it lives at the post-result site
           // below (search "heavyLoadsThisTurn + 1").
-          if (isStructuringTool(tc.name)) {
+          if (isStructuringTool(tc.name, tc.arguments)) {
             state = advance(state, { structuringToolCalledThisTurn: true });
           }
           // ── Destructive-action gate (remediation 4d, open question 6) ──
@@ -7147,7 +7155,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             }
             // v2.7.22, soft nudge toward [no-reply] after bookkeeping tools.
             // C22: NEVER append this nudge on a turn serving a waiting human. On the
-            // weak model, "Booked for Tuesday." + tracker_update_status in one iteration
+            // weak model, "Booked for Tuesday." + work_update(action="status") in one iteration
             // defers the text (G-SUP-2); the tool result then carries the "end with
             // [no-reply]" nudge; iteration 2 emits [no-reply] as instructed → the REG-3
             // clear discards the deferred genuine answer → the user gets silence. Gating
@@ -7229,8 +7237,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // techniques carve-out (per-agent + per-args) applies here too.
           if (
             !toolResult.isError &&
-            !isStructuringTool(tc.name) &&
-            !isLoadCountExemptRead(tc.name) &&
+            !isStructuringTool(tc.name, tc.arguments) &&
+            !isLoadCountExemptRead(tc.name, tc.arguments) &&
             !isTrainerOwnTechniquesRead(agentId, tc.name, tc.arguments)
           ) {
             const rawText = typeof toolResult.content === 'string'
@@ -7482,7 +7490,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // engine guard refuses the call (a persistent agent that shouldn't be
           // able to self-terminate emitted it), the tool returns an error and the
           // agent is NOT terminated, so the loop must keep running to let it act
-          // on the guidance (report the block / use tracker_update_status) rather
+          // on the guidance (report the block / use work_update(action="status")) rather
           // than end the turn silently. Mirrors the fire-and-forget check below.
           if (tc.name === 'complete_task' && !toolResult.isError) calledCompleteTask = true;
           // Only a SUCCESSFUL generator call is terminal (the job started and
@@ -7656,8 +7664,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // lost from context. The reflex in the tool index header tells
       // agents to do this; this nudge is the runtime safety net for
       // agents that ignored it.
+      // PHASE-2 T8V: `startsWith('tracker_')` became `isTrackerFamilyCall`, which
+      // is the SAME membership — reminders and the two obligation ops are excluded
+      // there for exactly the reason they were excluded here: `work_open(kind="reminder")`,
+      // `work_open(kind="commitment")` and `work_close_request(action="commitment")` never carried the prefix, so
+      // widening to "any work verb" would silently move both counters below.
       const trackerInThisIter = result.toolCalls.filter(
-        (tc) => tc.name.startsWith('tracker_'),
+        (tc) => isTrackerFamilyCall(tc.name, tc.arguments),
       ).length;
       // FA-T3: the multi-step floor counts REAL WORK calls only, calls that are
       // neither tracker ops nor TRIVIAL_TOOLS (read-only reconnaissance / utility
@@ -7667,29 +7680,29 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // CLOSEOUT_MISS at the PM. Trivial lookups are not multi-step work. Reads
       // still never DISARM the floor (FN-9); they simply no longer COUNT toward it.
       const nonTrackerInThisIter = result.toolCalls.filter(
-        (tc) => !tc.name.startsWith('tracker_') && !TRIVIAL_TOOLS.has(tc.name),
+        (tc) => !isTrackerFamilyCall(tc.name, tc.arguments) && !TRIVIAL_TOOLS.has(tc.name),
       ).length;
-      // tracker_update_status / tracker_complete_step are the status-mutation
-      // tools, they're the signal "agent advanced or closed a task this
-      // turn", distinct from broad tracker engagement (which includes
-      // tracker_create_project / tracker_list_active / tracker_get_status).
+      // The status-mutation OPERATIONS are the signal "agent advanced or closed a
+      // task this turn", distinct from broad tracker engagement (which includes
+      // work_open:project and the two read ops).
       const trackerStatusInThisIter = result.toolCalls.some(
-        (tc) => tc.name === 'tracker_update_status' || tc.name === 'tracker_complete_step' || tc.name === 'tracker_close_project',
+        (tc) => CLOSING_WORK_OPS.has(toolOpKey(tc.name, tc.arguments)),
       );
       // v3.1.11 (FN-9) + FA-T2: disarm the multi-step floor only when the agent
       // OPENS or ADVANCES its own work. Creating / editing / adding-notes /
-      // advancing-a-step is tending; tracker_update_status disarms only when its
-      // status arg advances the task to an active state. CLOSING / abandoning /
-      // handing off (tracker_close_project, tracker_reassign_task,
-      // tracker_resolve_missed_runs, update_status -> complete/fallen/paused/blocked)
-      // does NOT disarm: it removes what the PM watches, so new multi-step work
-      // later in the SAME turn must not ride in behind an earlier close. For those
-      // the floor falls through to the hasRecentlyTendedTask DB check. READS never
-      // disarm (they are absent from the disarming set).
+      // advancing-a-step is tending; a status change disarms only when its status
+      // arg advances the task to an active state. CLOSING / abandoning / handing
+      // off (close_project, reassign, resolve_missed, status -> complete/fallen/
+      // paused/blocked) does NOT disarm: it removes what the PM watches, so new
+      // multi-step work later in the SAME turn must not ride in behind an earlier
+      // close. For those the floor falls through to the hasRecentlyTendedTask DB
+      // check. READS never disarm (they are absent from the disarming set).
       const trackerWriteInThisIter = result.toolCalls.some(
-        (tc) =>
-          TRACKER_DISARMING_MUTATION_TOOLS.has(tc.name) ||
-          (tc.name === 'tracker_update_status' && isAdvancingStatusArg(tc.arguments?.status)),
+        (tc) => {
+          const op = toolOpKey(tc.name, tc.arguments);
+          return DISARMING_WORK_OPS.has(op) ||
+            (op === 'work_update:status' && isAdvancingStatusArg(tc.arguments?.status));
+        },
       );
       if (nonTrackerInThisIter > 0 || trackerInThisIter > 0) {
         state = advance(state, {
@@ -7726,7 +7739,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         !counterpartyIsAgentSender && // RC-4.2: no start-ack to an agent-flagged sender
         !engineStartAckDeliveredThisTurn &&
         !startAckSteerArmedThisTurn && !startAckSteerRequested &&
-        result.toolCalls.some((tc) => tc.name === 'tracker_create_project')
+        result.toolCalls.some((tc) => toolOpKey(tc.name, tc.arguments) === 'work_open:project')
       ) {
         // Owner ruling 2026-07-22 (engine detects, agent speaks): request the
         // steer; the next iteration boundary injects it and the model speaks.
@@ -7867,7 +7880,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             const autoNoteText = (
               `[System] The engine opened tracker task "${scaffoldName}" (task_id: ${scaffoldTaskId ?? created.projectId}) for this work ` +
               `(you made ${state.nonTrackerToolCalls} work calls with no tracker entry; untracked multi-step work drifts and the PM cannot monitor it). ` +
-              `Keep working; update it with tracker_add_notes as you go and close it with tracker_update_status(complete) plus result/evidence when done.`
+              `Keep working; update it with work_note as you go and close it with work_update(action="status", complete) plus result/evidence when done.`
             );
             const autoNoteId = uuidv4();
             try {
@@ -7941,15 +7954,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
             ? (
               `[System: you've made ${state.nonTrackerToolCalls} work tool calls this turn, but the only open tracker task assigned to you ("${staleOpenTask.title}", task_id ${staleOpenTask.id.slice(0, 8)}) hasn't been updated in a while. ` +
               `Multi-step work that isn't reflected in a live tracker task drifts and stalls (the PM agent can't intervene because there's nothing current to monitor) and your context is filling up which means compaction is coming and you'll lose source detail you've already read. ` +
-              `Decide now: if what you've been doing IS that task, bring it current via tracker_update_status / tracker_add_notes; otherwise this is NEW work, so open a project for it with tracker_create_project(title="<short name>", level=2, tasks=[…one task per discrete batch…]). ` +
-              `Then keep each task current via tracker_update_status, and use scratchpad_set to keep a running outline that survives compaction. ` +
+              `Decide now: if what you've been doing IS that task, bring it current via work_update(action="status") / work_note; otherwise this is NEW work, so open a project for it with work_open(kind="project", title="<short name>", level=2, tasks=[…one task per discrete batch…]). ` +
+              `Then keep each task current via work_update(action="status"), and use scratchpad_set to keep a running outline that survives compaction. ` +
               `Resume the work once the tracker reflects it.]`
             )
             : (
               `[System: you've made ${state.nonTrackerToolCalls} work tool calls this turn without an active tracker task assigned to you. ` +
               `Multi-step work without a tracker entry drifts and stalls (the PM agent can't intervene because there's nothing to monitor) and your context is filling up which means compaction is coming and you'll lose source detail you've already read. ` +
-              `STOP what you're doing right now and call tracker_create_project(title="<short name>", level=2, tasks=[…one task per discrete batch…]) describing the steps for what you've been doing and what's left. ` +
-              `Then update each task as you complete it via tracker_update_status, and use scratchpad_set to keep a running outline that survives compaction. ` +
+              `STOP what you're doing right now and call work_open(kind="project", title="<short name>", level=2, tasks=[…one task per discrete batch…]) describing the steps for what you've been doing and what's left. ` +
+              `Then update each task as you complete it via work_update(action="status"), and use scratchpad_set to keep a running outline that survives compaction. ` +
               `Resume the work after the project is opened.]`
             );
           // RC-19 (F-18): via persistEngineSteer so the STOP/open-a-project directive
@@ -8140,9 +8153,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
             pendingNudge:
               // FN-8: complete_task is not available to every agent, so don't
               // name it here where the filtered tool list isn't in scope. Point
-              // at tracker_update_status (universally available) instead.
+              // at work_update(action="status") (universally available) instead.
               '[System: You are repeating yourself, your last two responses were identical. ' +
-              'Try a different approach. If the task is complete, mark it done (e.g. tracker_update_status) and stop. ' +
+              'Try a different approach. If the task is complete, mark it done (e.g. work_update(action="status")) and stop. ' +
               'If you need help, explain what you are stuck on.]',
           });
           continue;

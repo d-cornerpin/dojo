@@ -62,8 +62,11 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     // group because the thing it closed was recovered from remembered prose; a promise the
     // agent makes is not a memory operation, and grouping it as one is what made it feel
     // optional.
+    // PHASE-2 T8V: both verbs absorbed into work_open / work_close_request. The
+    // group survives as a POINTER so the "what you still owe" framing that made
+    // the promise feel non-optional is not lost in the merge.
     label: 'Open Work (what you still owe)',
-    tools: ['commitment_open', 'commitment_resolve'],
+    tools: ['work_open', 'work_close_request'],
   },
   {
     // Squad-shared memory for multi-agent coordination (Phase 7 / Part X).
@@ -73,8 +76,11 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
     tools: ['squad_share', 'squad_recall'],
   },
   {
-    label: 'Project Tracker',
-    tools: ['tracker_create_project', 'tracker_create_task', 'tracker_update_status', 'tracker_edit_task', 'tracker_edit_project', 'tracker_complete_step', 'tracker_close_project', 'tracker_add_notes', 'tracker_list_active', 'tracker_pause_schedule', 'tracker_resume_schedule', 'tracker_get_status', 'tracker_reassign_task', 'tracker_retask', 'tracker_resolve_missed_runs', 'tracker_validate', 'tracker_override', 'tracker_request_override', 'tracker_request_user_verdict', 'tracker_apply_user_verdict', 'tracker_apply_user_validation', 'reminder_create'],
+    // PHASE-2 T8V: twenty-two names became six verbs. The index lists NAMES, so it
+    // lists six; the operations each verb performs are in its own description,
+    // which `load_tool_docs` fetches.
+    label: 'Work Tracker (projects, tasks, reminders, promises)',
+    tools: ['work_open', 'work_update', 'work_note', 'work_close_request', 'work_validate', 'work_schedule'],
   },
   {
     // Tools the primary agent uses to create, edit, organize, and communicate
@@ -268,12 +274,12 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
   // v2.5.42, primary-class agents (the primary agent and equivalents) get the structured
   // 5-bullet reflex block even in compact mode. Field test showed DeepSeek V4
   // Pro skimming past the one-paragraph version: the primary agent had file_append,
-  // scratchpad_set, and tracker_create_project always-loaded on prod but
+  // scratchpad_set, and work_open always-loaded on prod but
   // never used them on a multi-source flowchart task. The dense paragraph
   // was technically present; structurally invisible. Sub-agents stay on the
   // short paragraph since they rarely run the corpus-synthesis pattern.
   const isPrimaryClass =
-    alwaysLoadedSet.has('tracker_create_project') &&
+    alwaysLoadedSet.has('work_open') &&
     alwaysLoadedSet.has('file_append') &&
     alwaysLoadedSet.has('scratchpad_set');
   if (!isPrimaryClass) {
@@ -287,8 +293,8 @@ export function generateToolIndex(agentTools: ToolDefinition[], alwaysLoaded: st
     lines.push('- **Before defaulting to `exec`**, scan the index below for a purpose-built tool, file/web/office/forms/tracker/vault/technique/chat-recall all have dedicated tools. `exec` is the fallback, not the default.');
     lines.push('- **If you feel disoriented, just got compacted, or just switched models**, call `recall_recent_thread` first, it reads the actual chat history from your messages table and is your fastest path back to context.');
     lines.push('- **When sharing a URL or file path with the user**: paste the literal string from the most recent tool result, ONCE, surrounded by spaces. Never wrap a URL in backticks (it gets sucked into the href and the browser encodes it as `%60`, breaking the link). Never write the same URL twice in a row. Never paraphrase, truncate, or type one from memory, if you don\'t have the full string, call the source tool again.');
-    lines.push('- **Default ON tracker for any work that isn\'t a one-shot lookup.** Open `tracker_create_project` BEFORE starting work on **any** request that has a deliverable, requires multiple steps, or could take more than ~3 tool calls. Don\'t try to predict whether you\'ll finish in one push, you usually can\'t, and the failure mode is silent context loss (compaction summarizes older turns, you write the deliverable from your own summarized memory, and confabulate). Tracker rows survive compaction AND session reset; scratchpad survives compaction but NOT reset; raw context survives neither. **Cost of opening a tracker entry you didn\'t end up needing: zero. Cost of not opening one for work that turns out to be multi-step: 30+ minutes of stalled work, PM pokes, and lost context.** Skip the tracker only for one-shot Q&A where you\'re answering from existing context or a single tool call. After opening the tracker: scaffold the deliverable with `file_write`; loop (read 3-5 sources, write findings with `file_append`/`file_patch`, update `scratchpad_set` for in-flight memory, mark tracker step complete, move on); verify at the end. The engine backstops this: after ~4 work calls with no tracker entry you get a reminder, and at 6+ the engine opens a task for you automatically (nothing is ever refused). Better to open it yourself first with a real title and task list.');
-    lines.push('- **Close out tracker tasks the moment you finish them.** Don\'t end a turn with `in_progress` tasks you\'ve actually completed. For multi-step projects use `tracker_complete_step` (auto-advances). For standalone tasks use `tracker_update_status(complete)`. Blocked → mark blocked. Paused → mark paused **only for recurring/scheduled tasks**, pausing a one-shot task as a sloppy substitute for "complete" strands it forever. If a whole project was abandoned, duplicated, or superseded, call `tracker_close_project(project_id, status="cancelled", reason="…")` to clean up the project AND every open task in one call (vastly better than looping `tracker_update_status` per task). The engine catches dangling `in_progress` and stranded `on_deck` tasks at the start of every turn and refuses non-tracker tools until you resolve them; ignoring the gate means the engine suppresses your reply and resolves them itself.');
+    lines.push('- **Default ON tracker for any work that isn\'t a one-shot lookup.** Open `work_open(kind="project")` BEFORE starting work on **any** request that has a deliverable, requires multiple steps, or could take more than ~3 tool calls. Don\'t try to predict whether you\'ll finish in one push, you usually can\'t, and the failure mode is silent context loss (compaction summarizes older turns, you write the deliverable from your own summarized memory, and confabulate). Tracker rows survive compaction AND session reset; scratchpad survives compaction but NOT reset; raw context survives neither. **Cost of opening a tracker entry you didn\'t end up needing: zero. Cost of not opening one for work that turns out to be multi-step: 30+ minutes of stalled work, PM pokes, and lost context.** Skip the tracker only for one-shot Q&A where you\'re answering from existing context or a single tool call. After opening the tracker: scaffold the deliverable with `file_write`; loop (read 3-5 sources, write findings with `file_append`/`file_patch`, update `scratchpad_set` for in-flight memory, mark the step complete, move on); verify at the end. The engine backstops this: after ~4 work calls with no tracker entry you get a reminder, and at 6+ the engine opens a task for you automatically (nothing is ever refused). Better to open it yourself first with a real title and task list.');
+    lines.push('- **Close out tracker tasks the moment you finish them.** Don\'t end a turn with `in_progress` tasks you\'ve actually completed. For multi-step projects use `work_update(action="complete_step")` (auto-advances). For standalone tasks use `work_update(action="status", status="complete")`. Blocked → mark blocked. Paused → mark paused **only for recurring/scheduled tasks**, pausing a one-shot task as a sloppy substitute for "complete" strands it forever. If a whole project was abandoned, duplicated, or superseded, call `work_update(action="close_project", project_id, status="cancelled", reason="…")` to clean up the project AND every open task in one call (vastly better than looping status changes per task). The engine catches dangling `in_progress` and stranded `on_deck` tasks at the start of every turn and refuses non-work tools until you resolve them; ignoring the gate means the engine suppresses your reply and resolves them itself.');
     lines.push('- **Never read a timestamp without a timezone label.** If a time you encounter (calendar event, email, scraped web text, raw unix epoch, a tool result you\'re unsure of) does NOT include BOTH a timezone abbreviation (PT/ET/UTC/etc.) AND a UTC ISO, call `convert_time` to disambiguate before quoting it to the user or putting it in a reminder/email/task. The default failure mode is reading "19:00" as your local time when it\'s actually UTC, and getting every downstream time wrong by 7+ hours.');
     lines.push('- **Hand off technique authorship to the trainer agent.** `save_technique` / `update_technique` / `publish_technique` / `delete_technique` are reserved for the trainer agent only, the engine refuses them from anyone else. **Why:** techniques are shareable across dojos; that only works if every file the technique needs is inside the technique\'s own directory and every external install (npm/brew/git/model) is declared in `dependencies.json`. If you create a script somewhere arbitrary on disk and reference it from TECHNIQUE.md, the technique silently breaks on every other user\'s machine. To avoid this, **don\'t write files for a future technique on your own**, when you realize a piece of work could become a reusable technique, send the trainer a message describing what you want with any custom file contents inline (use `file_read` to grab existing scripts), and they\'ll build it correctly. You can still `technique_read` and `use_technique` freely, those stay open to every agent.');
   }

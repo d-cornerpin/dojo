@@ -38,11 +38,13 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'file_read',
   'file_write',
   'file_append',
-  'tracker_list_active',
-  'tracker_create_task',
-  'tracker_create_project',
-  'tracker_update_status',
-  'reminder_create',
+  // PHASE-2 T8V: the five tracker/reminder names below collapsed into two verbs.
+  // `work_open` covers create-project / create-task / reminder / commitment;
+  // `work_update` covers list + status. Both must be one call away for the same
+  // reason each retired name was: a load_tool_docs round-trip is the friction
+  // that makes a weak model skip the tracker entirely.
+  'work_open',
+  'work_update',
   'vault_search',
   'vault_remember',
   'send_to_agent',
@@ -67,10 +69,12 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   'recall_recent_thread',
   // PHASE-2 T7: the primary is the agent that gets the OPEN WORK block injected, so both
   // commitment verbs must be callable in a single step, with no load_tool_docs round-trip.
-  // `commitment_open` in particular is worthless behind one: the promise is recorded at the
+  // Opening a promise in particular is worthless behind one: the promise is recorded at the
   // MOMENT it is made, and a round-trip is exactly the friction that makes a model skip it.
-  'commitment_open',
-  'commitment_resolve',
+  // T8V: `work_open` is already above; `work_close_request` closes it, `work_note` is the
+  // in-flight checkpoint.
+  'work_close_request',
+  'work_note',
   'scratchpad_set',
   'technique_read',
   // v2.9.16: DOJO contacts store. Primary uses these on nearly every
@@ -88,15 +92,13 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
 // each time would burn a turn for what should be a single-call rename.
 export const PM_AGENT_ALWAYS_LOADED = [
   ...DEFAULT_ALWAYS_LOADED_TOOLS,
-  'tracker_list_active',
-  'tracker_get_status',
-  'tracker_update_status',
-  'tracker_add_notes',
-  'tracker_edit_task',
-  'tracker_edit_project',
-  'tracker_close_project',
-  'tracker_validate',
-  'tracker_retask',
+  // PHASE-2 T8V: nine tracker names became three verbs. Pre-loading `work_update`
+  // does NOT widen the PM's authority — `pmMayCall` in tracker/pm-agent.ts still
+  // refuses the operations the PM was never allowed (the status flip, the step
+  // advance), at the executor, which is the only place that ever enforced them.
+  'work_update',
+  'work_note',
+  'work_validate',
   'send_to_agent',
   'list_agents',
   // v2.9.20: validator dereference tools. PM-SOUL tells PM to verify
@@ -161,14 +163,10 @@ export const TRAINER_AGENT_ALWAYS_LOADED = [
   'file_read',
   'file_write',
   'show_to_user',
-  'tracker_list_active',
-  'tracker_create_task',
-  'tracker_create_project',
-  'tracker_update_status',
-  'tracker_add_notes',
-  'tracker_edit_task',
-  'tracker_edit_project',
-  'tracker_close_project',
+  // PHASE-2 T8V: eight tracker names, three verbs.
+  'work_open',
+  'work_update',
+  'work_note',
 ];
 
 // Healer agent: diagnostic + agent management for injury recovery.
@@ -214,7 +212,7 @@ export const SUB_AGENT_ALWAYS_LOADED = [
   'file_write',
   'send_to_agent',
   'vault_search',
-  'tracker_update_status',
+  'work_update',
   'image_create',
   'show_to_user',
   'recall_recent_thread',

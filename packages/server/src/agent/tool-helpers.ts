@@ -72,7 +72,7 @@ export function pickArg<T>(args: Record<string, unknown>, ...keys: string[]): T 
 // `FOREIGN KEY constraint failed: agents.name` are useless to a model — it
 // can't act on them. This produces actionable strings.
 //
-// Use in catch blocks: `return friendlyDbError(err, 'tracker_create_task');`
+// Use in catch blocks: `return friendlyDbError(err, 'work_open(kind="task")');`
 
 export function friendlyDbError(err: unknown, context?: string): string {
   const msg = err instanceof Error ? err.message : String(err);

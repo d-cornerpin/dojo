@@ -328,7 +328,7 @@ export async function multistepLLMClassify(
 // Used by:
 //  - The tracker dup-guard, to detect "the engine just opened this for
 //    you on this same user turn" and steer the agent toward
-//    tracker_edit_task rather than spinning a parallel project.
+//    work_update(action="edit") rather than spinning a parallel project.
 //  - The post-create rename handoff, which fires an A2A-style message
 //    at the PM agent asking it to rename the project and first task
 //    using its local model (gemma4:31b). Naming runs async on the PM's
@@ -348,7 +348,7 @@ export const ENGINE_AUTO_MARKER = '[engine:multistep] ';
 // Fix: when the user explicitly asks the agent to create a tracker
 // entity ("start a project", "create a task", "add to the tracker"),
 // skip auto-create and let the agent do it themselves. The new v2.5.46
-// reflex bullet defaults agents toward tracker_create_project for any
+// reflex bullet defaults agents toward work_open(kind="project") for any
 // non-trivial work, so we can trust the agent to follow through.
 
 // Engine-generated user-role messages — never trigger auto-create on these.
@@ -451,7 +451,7 @@ export async function detectMultistep(
     // is worse"), but in practice over-creation triggers the close-out gate
     // loop and produces 2-3 replies for one user prompt. The v2.5.46 reflex
     // bullets + close-out gate already direct agents to call
-    // tracker_create_project themselves when work is genuinely multi-step —
+    // work_open(kind="project") themselves when work is genuinely multi-step —
     // trust the agent rather than preempting.
     if (looksLikeQuestion(query)) {
       return { multistep: false, name: null, source: 'fallback_single_question', heuristic };

@@ -8,6 +8,7 @@ import { toolDefinitions, getFilteredTools } from '../agent/tools.js';
 import { isPrimaryAgent, isPMAgent, isTrainerAgent, getPrimaryAgentName, getPrimaryAgentId, getPMAgentName, getPMAgentId, getOwnerName, getTrainerAgentId, getTrainerAgentName, isTrainerEnabled, getHealerAgentId, getHealerAgentName } from '../config/platform.js';
 import type { TurnCounterparty } from '../agent/v2/counterparty.js';
 import type { Channel } from '@dojo/shared';
+import { isWorkVerb } from '../tools/work-verbs.js';
 import { getAgentGoogleAccessLevel, getGoogleWorkspaceConfig, isGoogleConnected, isEmailMonitoringEnabled, isEmailSendingEnabled } from '../google/auth.js';
 import { getAgentMicrosoftAccessLevel, getMsAccountType, getMicrosoftWorkspaceConfig, isMicrosoftConnected, isMsEmailMonitoringEnabled, isMsEmailSendingEnabled } from '../microsoft/auth.js';
 import { getChannelCapabilities, listIntegrationStatuses } from '../services/capability-registry.js';
@@ -311,7 +312,7 @@ export function generateToolsGuidance_v2(agentId: string): string {
 **You always have an escape hatch.** When a turn doesn't warrant a user-facing message, internal bookkeeping just completed, you already gave the real reply earlier this turn, a notification arrived that doesn't need surfacing, a tool result resolved something with no new info for the user, end the turn by emitting the literal sentinel \`[no-reply]\` on a line by itself, nothing else. The engine swallows it: no chat bubble, no iMessage, no noise. The turn ends cleanly. This is your release valve from the "I must say something" reflex.
 
 Use \`[no-reply]\` whenever any of these apply:
-- You just called \`tracker_update_status\` / \`complete_task\` / \`vault_remember\` / \`credential_add\` / \`tracker_complete_step\` as **incidental bookkeeping**, something you did on your own initiative or while doing other work, and the user already has what they needed. The tool result is the bookkeeping; the user does not need a parallel "Done." or "All set." line. **Exception:** if the user DIRECTLY told you to do this exact thing this turn ("cancel that reminder", "save my key", "delete X", "mark it done"), reply with ONE short line confirming it ("Cancelled the noon reminder." / "Saved your key."). That confirmation IS the reply they're waiting for, not noise, staying silent on a direct request reads as ignoring them.
+- You just called \`work_update(action="status")\` / \`complete_task\` / \`vault_remember\` / \`credential_add\` / \`work_update(action="complete_step")\` as **incidental bookkeeping**, something you did on your own initiative or while doing other work, and the user already has what they needed. The tool result is the bookkeeping; the user does not need a parallel "Done." or "All set." line. **Exception:** if the user DIRECTLY told you to do this exact thing this turn ("cancel that reminder", "save my key", "delete X", "mark it done"), reply with ONE short line confirming it ("Cancelled the noon reminder." / "Saved your key."). That confirmation IS the reply they're waiting for, not noise, staying silent on a direct request reads as ignoring them.
 - The trigger for this turn was an internal event (scheduler firing, tool result handoff, tracker auto-close re-prompt) and there's nothing new the user needs to know.
 - You already produced a substantive reply earlier in this turn and the only thing you'd add now is a restatement or wrap-up.
 - An incoming notification doesn't meet the bar for surfacing (routine receipt, no-reply auto-ack, promo email, etc.).
@@ -420,10 +421,13 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
     lines.push('');
   }
 
-  const hasTracker = agentTools.some(t => t.name.startsWith('tracker_'));
+  // PHASE-2 T8V: the tracker section shows when the agent holds ANY work verb —
+  // the same question `startsWith('tracker_')` was asking, now asked of the
+  // collapsed surface.
+  const hasTracker = agentTools.some(t => isWorkVerb(t.name));
   if (hasTracker) {
     lines.push(`## Tracker`);
-    lines.push(`Use the tracker for multi-step work. The DOJO auto-creates tasks when it sees you're about to make 2+ non-trivial tool calls without one, you can also create tasks explicitly with \`tracker_create_task\`.`);
+    lines.push(`Use the tracker for multi-step work. The DOJO auto-creates tasks when it sees you're about to make 2+ non-trivial tool calls without one, you can also create tasks explicitly with \`work_open(kind="task")\`.`);
     lines.push('');
   }
 
@@ -444,7 +448,7 @@ Tools default to **compact**: focused summaries, not raw dumps. The engine caps 
   const canSpawn = agentTools.some(t => t.name === 'spawn_agent');
   if (canSpawn) {
     lines.push(`## Spawning Sub-Agents`);
-    lines.push(`Create a tracker_create_project first, then spawn agents into a group with \`spawn_agent\` and \`create_agent_group\`. Clean up via \`delete_group(terminate_members=true)\`. PM monitors all tasks, don't create your own monitoring agents.`);
+    lines.push(`Create a work_open(kind="project") first, then spawn agents into a group with \`spawn_agent\` and \`create_agent_group\`. Clean up via \`delete_group(terminate_members=true)\`. PM monitors all tasks, don't create your own monitoring agents.`);
     lines.push('');
   }
 
@@ -1046,7 +1050,7 @@ Your conversation was compacted ${when}. Older raw messages were summarized into
 
 **If you can't tell what you're mid-doing from the live tail**, do not guess - the most reliable sources are (in order):
 
-1. \`tracker_list_active\`, your active tasks. Tracker entries survive compaction unchanged and are the source of truth for "what am I working on."
+1. \`work_update(action="list")\`, your active tasks. Tracker entries survive compaction unchanged and are the source of truth for "what am I working on."
 2. \`scratchpad_set\` (called with no value, or read via the assistant message log), your own in-flight working notes.
 3. \`recall_recent_thread\`, pull raw messages from before the compaction. Use sparingly (it costs tokens) but call it when you need the actual words rather than a summary.
 4. \`vault_search\` / \`history_search\`: specific facts, decisions, or instructions you remember being said but can't find.

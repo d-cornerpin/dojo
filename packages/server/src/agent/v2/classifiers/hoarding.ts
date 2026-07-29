@@ -5,7 +5,7 @@
 // loading sources" was being ignored by DeepSeek V4 Pro on
 // corpus-synthesis tasks. The primary agent made 9 source-loading calls in 4 turns
 // (use_technique, file_read x3, list_agents, exec, get_agent_profile x3)
-// without ever calling tracker_create_project, file_write, or
+// without ever opening work (work_open), calling file_write, or
 // scratchpad_set. The reflex was in its prompt; it just plowed through.
 //
 // CLAUDE.md rule: "The engine enforces. The model follows prompts."
@@ -47,7 +47,7 @@
 //     recent turns (conversation-scoped as of OPEN-15), an orientation read the
 //     agent uses to answer "what was just happening", not external corpus that
 //     confabulates. Counting it pushed routine lookups over the gate.
-//   - tracker_* reads (OPEN-2): the tracker is the agent's own STRUCTURED state;
+//   - work-tracker reads (OPEN-2): the tracker is the agent's own STRUCTURED state;
 //     it survives compaction (the nudge text says so), so reading it cannot
 //     confabulate. Reading N tasks to answer "send me the project status" is the
 //     behavior the gate WANTS, not hoarding. (tracker WRITES are structuring, see
@@ -104,6 +104,8 @@ export const LOADING_GATE_THRESHOLD = 6;
  * config (median 153) not counting is CORRECT: it loads little corpus and applies
  * no compaction pressure, which is the only hazard this gate exists for.
  */
+import { isTrackerFamilyCall, toolOpKey } from '../../../tools/work-verbs.js';
+
 export const LOADING_RESULT_MIN_TOKENS = 250;
 
 /**
@@ -115,8 +117,14 @@ export const LOADING_RESULT_MIN_TOKENS = 250;
  * structuring and satisfy the gate outright; exempting the whole family here
  * keeps a future tracker read tool exempt by construction).
  */
-export function isLoadCountExemptRead(name: string): boolean {
-  return name === 'recall_recent_thread' || name.startsWith('tracker_');
+export function isLoadCountExemptRead(name: string, args?: Record<string, unknown>): boolean {
+  // PHASE-2 T8V: the `tracker_` prefix became `isTrackerFamilyCall` — the SAME
+  // membership. Reminders and the two obligation ops are deliberately outside it
+  // (they never carried the prefix, so they never had this exemption), and the
+  // "any future tracker read is exempt by construction" property survives, since
+  // a new read is a new work_update action and every work_update action is in
+  // the family.
+  return name === 'recall_recent_thread' || isTrackerFamilyCall(name, args);
 }
 
 /**
@@ -139,20 +147,23 @@ export function isLoadCountExemptRead(name: string): boolean {
  * the agent does write), which is the safe direction and does not earn full
  * registry accounting. The tool-list conformance test states this judgment.
  */
-export const STRUCTURING_TOOLS = new Set<string>([
-  'tracker_create_project',
-  'tracker_create_task',
-  'tracker_update_status',
-  'tracker_complete_step',
-  'tracker_add_notes',
-  'tracker_edit_task',
+export const STRUCTURING_OPS = new Set<string>([
+  'work_open:project',
+  'work_open:task',
+  'work_update:status',
+  'work_update:complete_step',
+  'work_note',
+  'work_update:edit',
   'file_write',
   'file_append',
   'file_patch',
 ]);
 
-export function isStructuringTool(name: string): boolean {
-  return STRUCTURING_TOOLS.has(name);
+// PHASE-2 T8V: OPERATIONS, not names. `work_update` alone would let a bare LIST
+// satisfy the structuring gate — the exact "cheapest escape" the v2.5.46 note
+// above removed scratchpad_set for.
+export function isStructuringTool(name: string, args?: Record<string, unknown>): boolean {
+  return STRUCTURING_OPS.has(toolOpKey(name, args));
 }
 
 // D3 removed the count-based refusal (and buildHoardingRefusal, which carried

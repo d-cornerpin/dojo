@@ -73,17 +73,77 @@ export const TOOL_ALIASES: Record<string, AliasEntry> = {
   tunnel_start: { to: 'tunnel', added: 'C27p1 2026-07-03', transform: (a) => ({ ...a, action: 'start' }) },
   tunnel_stop: { to: 'tunnel', added: 'C27p1 2026-07-03', transform: (a) => ({ ...a, action: 'stop' }) },
   tunnel_restart: { to: 'tunnel', added: 'C27p1 2026-07-03', transform: (a) => ({ ...a, action: 'restart' }) },
-  tracker_validate_pause: { to: 'tracker_validate', added: 'C27p1 2026-07-03', transform: (a) => ({ ...a, kind: 'pause' }) },
-  tracker_validate_complete: { to: 'tracker_validate', added: 'C27p1 2026-07-03', transform: (a) => ({ ...a, kind: 'complete' }) },
-  tracker_validate_blocked: { to: 'tracker_validate', added: 'C27p1 2026-07-03', transform: (a) => ({ ...a, kind: 'blocked' }) },
   // update_agent_* pass through unchanged (the merged tool reads whichever fields are present).
   update_agent_model: { to: 'update_agent', added: 'C27p1 2026-07-03' },
   update_agent_profile: { to: 'update_agent', added: 'C27p1 2026-07-03' },
   update_agent_permissions: { to: 'update_agent', added: 'C27p1 2026-07-03' },
 
+  // ── PHASE-2 T8V (added: dc34dfb): the verb collapse, 24 names -> 6 verbs ──
+  //
+  // Every retired name routes to its verb with the discriminator INJECTED, so a
+  // model still holding the old name in vault memory, in an in-flight task
+  // description, or in a technique step reaches the same operation it always
+  // did. Resolution hook 1 runs at loop ingestion, BEFORE any gate or classifier
+  // reads the call — which is exactly why the engine sites had to be rekeyed in
+  // the same change: after this table runs, a classifier watching for
+  // `tracker_create_task` sees `work_open` and never fires again.
+  //
+  // SWEEP-F T7 removes every row below. The `added:` stamp is the commit these
+  // landed on.
+  tracker_create_project: { to: 'work_open', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, kind: 'project' }) },
+  tracker_create_task: { to: 'work_open', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, kind: 'task' }) },
+  reminder_create: { to: 'work_open', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, kind: 'reminder' }) },
+  commitment_open: { to: 'work_open', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, kind: 'commitment' }) },
+
+  tracker_update_status: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'status' }) },
+  tracker_edit_task: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'edit' }) },
+  tracker_edit_project: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'edit' }) },
+  tracker_reassign_task: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'reassign' }) },
+  tracker_complete_step: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'complete_step' }) },
+  tracker_close_project: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'close_project' }) },
+  tracker_list_active: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'list' }) },
+  tracker_get_status: { to: 'work_update', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'get' }) },
+
+  tracker_add_notes: { to: 'work_note', added: 'T8V dc34dfb 2026-07-29' },
+
+  tracker_request_override: { to: 'work_close_request', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'override' }) },
+  tracker_request_user_verdict: { to: 'work_close_request', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'user_verdict' }) },
+  commitment_resolve: { to: 'work_close_request', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'commitment' }) },
+
+  tracker_validate: { to: 'work_validate', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'validate' }) },
+  tracker_retask: { to: 'work_validate', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'retask' }) },
+  tracker_override: { to: 'work_validate', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'override' }) },
+  tracker_apply_user_verdict: { to: 'work_validate', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'apply_user_verdict' }) },
+  tracker_apply_user_validation: { to: 'work_validate', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'apply_user_validation' }) },
+
+  tracker_pause_schedule: { to: 'work_schedule', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'pause' }) },
+  tracker_resume_schedule: { to: 'work_schedule', added: 'T8V dc34dfb 2026-07-29', transform: (a) => ({ ...a, action: 'resume' }) },
+  // THE ONE TRANSFORM THAT IS NOT A BARE INJECTION. The retired verb's own
+  // parameter was called `action`, and one of its values was "pause" — the same
+  // word as a work_schedule action. Left alone, `tracker_resolve_missed_runs({
+  // action: 'pause' })` would canonicalise to "pause the schedule", which is a
+  // DIFFERENT operation that would silently swallow the missed-run alert. The
+  // choice therefore moves to `resolution` and `action` is overwritten.
+  tracker_resolve_missed_runs: {
+    to: 'work_schedule',
+    added: 'T8V dc34dfb 2026-07-29',
+    transform: (a) => {
+      const { action, ...rest } = a as { action?: unknown } & Record<string, unknown>;
+      return { ...rest, action: 'resolve_missed', resolution: rest.resolution ?? action };
+    },
+  },
+
   // ── C27 Phase 1: removed dead stubs (tombstones, no replacement tool) ──
-  tracker_edit_notes: { added: 'C27p1 2026-07-03', tombstone: 'Error: tracker_edit_notes was removed. To append a note use tracker_add_notes; to replace the notes field use tracker_edit_task({ task_id, notes }).' },
-  tracker_clear_notes: { added: 'C27p1 2026-07-03', tombstone: 'Error: tracker_clear_notes was removed. To append a note use tracker_add_notes; to replace/clear the notes field use tracker_edit_task({ task_id, notes: "" }).' },
+  // Their pointer text names the CURRENT surface, so an agent that still holds
+  // one of these gets told what to call today, not what it should have called
+  // in 2026-07.
+  tracker_edit_notes: { added: 'C27p1 2026-07-03', tombstone: 'Error: tracker_edit_notes was removed. To append a note use work_note({ task_id, notes }); to replace the notes field use work_update({ action: "edit", task_id, notes }).' },
+  tracker_clear_notes: { added: 'C27p1 2026-07-03', tombstone: 'Error: tracker_clear_notes was removed. To append a note use work_note({ task_id, notes }); to replace/clear the notes field use work_update({ action: "edit", task_id, notes: "" }).' },
+  // Retired by C27 into `tracker_validate`, which T8V retired into `work_validate`.
+  // Chained through in one hop so the oldest names still land on the live verb.
+  tracker_validate_pause: { to: 'work_validate', added: 'C27p1 2026-07-03', transform: (a) => ({ ...a, action: 'validate', kind: 'pause' }) },
+  tracker_validate_complete: { to: 'work_validate', added: 'C27p1 2026-07-03', transform: (a) => ({ ...a, action: 'validate', kind: 'complete' }) },
+  tracker_validate_blocked: { to: 'work_validate', added: 'C27p1 2026-07-03', transform: (a) => ({ ...a, action: 'validate', kind: 'blocked' }) },
 };
 
 export interface ResolvedAlias {

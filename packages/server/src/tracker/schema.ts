@@ -450,7 +450,7 @@ export function closeProjectAndOpenTasks(params: {
       entryKind: 'transition',
       fromStatus: tx.from,
       toStatus: tx.to,
-      actionTaken: `bulk-closed via tracker_close_project (${noteMarker})`,
+      actionTaken: `bulk-closed via work_update(action="close_project") (${noteMarker})`,
       reason,
     });
   }
@@ -608,8 +608,8 @@ export function autoCreateAssignTask(params: {
 
     // v2.10.2, never auto-create tracker rows when the SENDER is the
     // PM agent. PM's remediation flow is supposed to re-open the
-    // existing task via tracker_retask (or close it via tracker_override
-    // / tracker_validate), NOT fork a new task. Pre-fix, PM
+    // existing task via work_validate(action="retask") (or close it via work_validate(action="override")
+    // / work_validate(action="validate")), NOT fork a new task. Pre-fix, PM
     // sending send_to_agent(intent='ASSIGN') to remediate a close-out
     // miss spawned a duplicate task and left the original abandoned,
     // producing two tasks for one unit of work and, for non-idempotent
@@ -619,7 +619,7 @@ export function autoCreateAssignTask(params: {
     // after an auto-pause. The ASSIGN message itself still delivers
     // and wakes the receiver; just no fork.
     if (isPMAgent(params.senderId)) {
-      logger.info('autoCreateAssignTask skipped, sender is PM (remediation should use tracker_retask)', {
+      logger.info('autoCreateAssignTask skipped, sender is PM (remediation should use work_validate(action="retask"))', {
         senderId: params.senderId, receiverId: params.receiverId, threadId: params.threadId,
       }, params.senderId);
       return null;
@@ -739,7 +739,7 @@ function resolveIdIn(kind: 'task' | 'project', idOrPrefix: string, agentId?: str
   if (matches.length > 1) return { ok: false, reason: 'ambiguous', matches: matches.map(m => m.id) };
 
   // Correctness-floor: the weak model routinely passes the human-readable
-  // TITLE it saw in a tracker_list_active row where an id is expected
+  // TITLE it saw in a work_update(action="list") row where an id is expected
   // ("Mechanical Keyboards Research"). Rather than hard-fail with not_found,
   // fall back to resolving that string as a TITLE scoped to THIS agent's own
   // task/project before erroring. Only runs when the id/prefix search found
@@ -879,7 +879,7 @@ export function updateTask(id: string, updates: Partial<{
   title: string;
   description: string | null;
   pausedUntil: string | null;
-  // Editable structural fields, added so tracker_edit_task can change them
+  // Editable structural fields, added so work_update(action="edit") can change them
   // without forcing a delete+recreate. None of these have notification or
   // scheduler side-effects that the simpler tools (update_status, pause)
   // already cover, so it's safe to update them in the generic edit path.

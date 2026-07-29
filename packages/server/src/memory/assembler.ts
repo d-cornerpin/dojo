@@ -697,7 +697,7 @@ async function assembleMessageContext(
   // scaffolding injects ONLY on session-start turns (first turn after a
   // session reset, or first turn ever for an agent). Mid-session turns
   // skip scaffolding entirely. The agent retrieves anything they need
-  // on demand via vault_search / tracker_get_status / etc.
+  // on demand via vault_search / work_update(action="get") / etc.
   //
   // v2.9.20: that original design assumed the agent would *know* to
   // retrieve. After compaction, the live tail can lose enough

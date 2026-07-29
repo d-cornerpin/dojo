@@ -410,7 +410,7 @@ export interface A2ADeliveryResult {
   /**
    * For ASSIGN-intent deliveries, the engine auto-creates a tracker task
    * for the receiver. The ID is returned here so the sender's tool result
-   * can surface it ("Task tracker_xyz created and assigned to Maddy").
+   * can surface it ("Task 9f2c1a04 created and assigned to Maddy").
    * Undefined for non-ASSIGN intents and for ASSIGN messages that reused
    * an existing thread's task.
    */
@@ -690,13 +690,13 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
     threadInfo = `\n\n[Thread ${threadShort} | Reply on this thread, use send_to_agent with thread_id="${threadId}" and an appropriate intent]`;
     if (effectiveIntent === 'ASSIGN' && autoTask) {
       // Receiver-visible tracker line. The DOJO created the task for them,
-      // so they don't need to call tracker_create_task, they just need
-      // to call tracker_update_status when done so the sender gets the
+      // so they don't need to call work_open(kind="task"), they just need
+      // to call work_update(action="status") when done so the sender gets the
       // completion notification automatically.
       const taskShort = autoTask.taskId.slice(0, 8);
       threadInfo += autoTask.isNew
-        ? `\n[Tracker: task ${taskShort} was auto-created when ${senderName} assigned this work to you. Call tracker_update_status(task_id="${autoTask.taskId}", status="completed", notes="…") when you finish so ${senderName} gets the completion notice.]`
-        : `\n[Tracker: continuing work on task ${taskShort} (assigned earlier on this thread by ${senderName}). Update status with tracker_update_status when state changes.]`;
+        ? `\n[Tracker: task ${taskShort} was auto-created when ${senderName} assigned this work to you. Call work_update(action="status", task_id="${autoTask.taskId}", status="completed", notes="…") when you finish so ${senderName} gets the completion notice.]`
+        : `\n[Tracker: continuing work on task ${taskShort} (assigned earlier on this thread by ${senderName}). Update status with work_update(action="status") when state changes.]`;
     }
   } else if (effectiveIntent === 'ANSWER' || effectiveIntent === 'DELIVERABLE') {
     // Terminal but wake, receiver should USE the content (relay to user,

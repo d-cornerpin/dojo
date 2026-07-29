@@ -35,7 +35,7 @@ const trackerRouter = new Hono();
 // vault cycles, the PM's bookkeeping, Healer's injury triage) are
 // engine artifacts the user never asked for and shouldn't see in
 // their kanban. Filtered out of the dashboard list endpoints by
-// default; agent-side tools (tracker_list_active, the PM agent's
+// default; agent-side tools (work_update(action="list"), the PM agent's
 // monitor loops) still see them — internal agents need to keep
 // coordinating with each other for the platform to work.
 //
@@ -238,7 +238,7 @@ trackerRouter.post('/tasks/:id/observation', async (c) => {
 });
 
 // POST /tasks/:id/user-validate — user validates a complete/paused/blocked task from the dashboard.
-// This is the user-side counterpart to tracker_validate_*. Bypasses PM entirely; user authority is final.
+// This is the user-side counterpart to work_validate. Bypasses PM entirely; user authority is final.
 trackerRouter.post('/tasks/:id/user-validate', async (c) => {
   const rawId = c.req.param('id');
   const resolved = resolveTaskId(rawId);
@@ -394,7 +394,7 @@ trackerRouter.get('/hygiene', async (c) => {
 });
 
 // POST /override-requests/:id/resolve — user (via dashboard) approves or denies an override.
-// Mirrors the PM-side tracker_override tool but credits the user as the resolver.
+// Mirrors the PM-side work_validate(action="override") tool but credits the user as the resolver.
 trackerRouter.post('/override-requests/:id/resolve', async (c) => {
   const id = c.req.param('id');
   let body: { approve?: boolean; reason?: string };
@@ -530,7 +530,7 @@ trackerRouter.post('/tasks', async (c) => {
   // silently degrading to a single fire then complete (the scheduler's
   // specific_days walk can't advance with no allowed weekday). Only matters
   // when a schedule is actually written (scheduled_start present). Mirrors the
-  // agent-side creator check in tracker_create_task.
+  // agent-side creator check in work_open(kind="task").
   if (body.scheduled_start && body.repeat_unit === 'specific_days') {
     const { parseDaysOfWeek } = await import('../../scheduler/engine.js');
     if (!parseDaysOfWeek((body.repeat_days_of_week ?? null) as string | null)) {

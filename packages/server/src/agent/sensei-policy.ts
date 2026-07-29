@@ -126,10 +126,11 @@ export const SEND_TO_PEOPLE_NA: Readonly<Record<string, string>> = {
   'recall_*': 'conversation recall (own history)',
   'history_*': 'conversation history reads',
   'squad_*': 'agent-to-agent shared memory (not an owner channel)',
-  'tracker_*': 'internal project bookkeeping',
-  'reminder_create': 'internal reminder bookkeeping',
-  'commitment_open': 'records a promise the agent just made; internal bookkeeping, sends nothing',
-  'commitment_resolve': 'closes or drops a tracked promise; internal bookkeeping, sends nothing',
+  // PHASE-2 T8V: `tracker_*` + reminder_create + the two commitment verbs became
+  // the six `work_*` verbs. None of them reaches a person on an owner channel:
+  // the closest is work_validate(action="retask"), which delivers over A2A, and
+  // A2A is explicitly not an owner comms channel (see send_to_agent below).
+  'work_*': 'internal work-tracker bookkeeping (projects, tasks, reminders, promises); reaches no person on an owner channel',
   'list_agents': 'agent management',
   'list_groups': 'agent management',
   'list_models': 'agent management',

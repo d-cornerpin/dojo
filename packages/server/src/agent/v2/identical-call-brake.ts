@@ -1,7 +1,7 @@
 // ════════════════════════════════════════
 // Identical-call brake (2026-07-17)
 //
-// Observed live: the PM agent called tracker_get_status with the same wrong
+// Observed live: the PM agent called work_update(action="get") with the same wrong
 // argument (a task TITLE where an id belongs) 189 times in one turn, each call
 // failing identically, until the last-resort runaway invariant (201 tool
 // calls) killed the loop. Every graduated defense missed: the not-found error

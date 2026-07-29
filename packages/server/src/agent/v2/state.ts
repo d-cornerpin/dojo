@@ -151,7 +151,7 @@ export interface AgentTurnState {
   // When the task-thrash detector trips on a specific canonical tool
   // signature, that signature gets added here and any further tool call
   // matching it is refused with a structured steer. Cleared on
-  // tracker_update_status (any transition counts as progress). Distinct
+  // work_update(action="status") (any transition counts as progress). Distinct
   // from recentToolSignatures (which is the loopDetector's rolling
   // window).
   thrashGatedSignatures: string[];
@@ -162,7 +162,7 @@ export interface AgentTurnState {
   thrashGateRefusalCount: number;
   // loopCount when the thrash gate first activated this turn. Lets the
   // "drift" detector escalate: if the gate has been on for N iterations
-  // and the agent still hasn't called tracker_update_status (just varied
+  // and the agent still hasn't called work_update(action="status") (just varied
   // its non-gated calls to dodge the refusal), engine auto-blocks too.
   thrashGateActivatedAtLoopCount: number | null;
 
@@ -228,8 +228,8 @@ export interface AgentTurnState {
    * ADVANCES its own tracker work this turn (create / add-notes / edit /
    * advance-a-step, or update_status to an active state, see
    * TRACKER_DISARMING_MUTATION_TOOLS in loop.ts). Distinct from
-   * trackerToolCalledThisTurn, which fires on ANY tracker_* call INCLUDING
-   * reads (tracker_get_status / tracker_list_active). The multi-step
+   * trackerToolCalledThisTurn, which fires on ANY tracker-family call INCLUDING
+   * reads (work_update(action="get") / work_update(action="list")). The multi-step
    * enforcement gate keys on THIS field: a bare status peek must not disarm
    * enforcement, and neither may CLOSING / abandoning / handing off a task
    * (that removes what the PM watches, FA-T2), only actually opening or
@@ -259,10 +259,10 @@ export interface AgentTurnState {
    */
   nudgedForTrackerThisTurn: boolean;
   /**
-   * v2.5.40, set when the agent calls tracker_update_status or
-   * tracker_complete_step in this turn. Different from
-   * trackerToolCalledThisTurn (which fires on ANY tracker_* call,
-   * including tracker_create_project). Used by the end-of-turn close-out
+   * v2.5.40, set when the agent calls work_update(action="status") or
+   * work_update(action="complete_step") in this turn. Different from
+   * trackerToolCalledThisTurn (which fires on ANY tracker-family call,
+   * including work_open(kind="project")). Used by the end-of-turn close-out
    * check to distinguish "agent is engaging with tracker" (broad) from
    * "agent advanced or closed a task in this turn" (specific).
    */
@@ -288,8 +288,9 @@ export interface AgentTurnState {
   heavyLoadsThisTurn: number;
   /**
    * v2.5.43, flips true the moment the agent calls any structuring
-   * tool (tracker_create_project, tracker_create_task, tracker_update_
-   * status, tracker_complete_step, tracker_add_notes, tracker_edit_task,
+   * tool (work_open(kind="project"), work_open(kind="task"),
+   * work_update(action="status"), work_update(action="complete_step"),
+   * work_note, work_update(action="edit"),
    * file_write, file_append, file_patch) THIS turn. Once true, the
    * anti-hoarding gate is permanently satisfied for the remainder of
    * this turn.
@@ -318,7 +319,7 @@ export interface AgentTurnState {
    * v2.5.46, pre-turn close-out gate. At preflight we look up the
    * agent's in_progress tasks that were NOT touched in the previous
    * turn. If any exist, this list is populated. Until at least one of
-   * them is resolved (tracker_update_status / tracker_complete_step),
+   * them is resolved (work_update(action="status") / work_update(action="complete_step")),
    * the tool dispatcher refuses non-tracker tool calls.
    */
   danglingTaskIds: readonly string[];
@@ -338,7 +339,7 @@ export interface AgentTurnState {
   nudgedForCloseOutThisTurn: boolean;
   /**
    * Set true the first time the "added a note then stopped" detector fires
-   * in a turn. Pattern: agent's last tool call was tracker_add_notes, the
+   * in a turn. Pattern: agent's last tool call was work_note, the
    * task is still in_progress, and the model produced text without further
    * tool calls. Without the flag the nudge would re-fire every loop
    * iteration if the model insists on stopping. One-shot: after the nudge,
@@ -449,8 +450,8 @@ export interface AgentTurnState {
   /**
    * v2.7.2, set true the first time an assistant block in this turn pairs
    * non-trivial wrap-up text (≥ ~10 chars after trim) with a tracker
-   * close-out tool call (tracker_update_status complete/blocked/paused,
-   * tracker_complete_step, tracker_close_project). Suppresses any later
+   * close-out tool call (work_update(action="status") complete/blocked/paused,
+   * work_update(action="complete_step"), work_update(action="close_project")). Suppresses any later
    * text-only assistant block in the same turn, the model has already
    * given the user their response, and any further "Done." / "Read it."
    * follow-up is the duplicate-final-answer failure shape.

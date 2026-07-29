@@ -27,6 +27,7 @@ import {
 } from '../memory/message-store.js';
 import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, isSetupCompleted, getOwnerName, isSystemServiceAgent, isDreamerAgent } from '../config/platform.js';
 import type { Message } from '@dojo/shared';
+import { workOperation, type WorkOp } from '../tools/work-verbs.js';
 
 const logger = createLogger('pm-agent');
 
@@ -131,20 +132,55 @@ const PM_PERMISSIONS_JSON = JSON.stringify({
 // a tool name from free text and reach the executor), so the PM verb enforcement
 // re-checks this same set and rejects any tool outside it with a TOOL-RESULT
 // error naming the overseer verbs.
-export const PM_ALLOWED_TOOLS: readonly string[] = [
-  'tracker_list_active', 'tracker_get_status',
-  'tracker_add_notes',
-  'tracker_pause_schedule', 'tracker_resume_schedule',
-  'tracker_validate', 'tracker_retask', 'tracker_reassign_task',
-  'tracker_override', 'tracker_request_override',
-  'tracker_apply_user_verdict',
-  // tracker_edit_task is REQUIRED by the engine's scaffold rename handoff
+// PHASE-2 T8V — THE SITE THE VERB COLLAPSE BREAKS HARDEST, so it moved from
+// NAMES to OPERATIONS rather than being renamed.
+//
+// The rule this list encodes is not "the PM may call these tools". It is "the
+// PM may perform these OPERATIONS": it may close a whole project, but it may
+// NOT flip a worker's task status; it may edit, but it may not complete a step.
+// Before the collapse those were different tool names, so a name set said it.
+// After the collapse `work_update` performs all of them, so a name set can no
+// longer distinguish them — allowing `work_update` would hand the PM the status
+// flip and the step advance that this gate has refused since the demolition,
+// and refusing it would take away the edit the scaffold rename handoff needs.
+// So the authority is the OP list; the NAME list below is derived from it and
+// is only what the advertised surface can express.
+export const PM_ALLOWED_WORK_OPS: readonly WorkOp[] = [
+  'work_update:list', 'work_update:get',        // read-only inspection
+  'work_note',                                   // leave a note on a task
+  'work_schedule:pause', 'work_schedule:resume',
+  'work_validate:validate', 'work_validate:retask',
+  'work_update:reassign',
+  'work_validate:override',
+  'work_close_request:override',
+  'work_validate:apply_user_verdict',
+  // The edit ops are REQUIRED by the engine's scaffold rename handoff
   // (loop.ts dispatchPMRenameHandoff explicitly instructs the PM to call it).
-  // Omitting it (2026-07-17 battery, untracked-multistep-floor red) made the
+  // Omitting them (2026-07-17 battery, untracked-multistep-floor red) made the
   // executor gate refuse the rename; the PM's local model then compensated by
-  // rewriting the PROJECT description via tracker_edit_project (stripping the
-  // ENGINE_AUTO_MARKER) and FYI-ing the primary to do the task rename for it.
-  'tracker_edit_project', 'tracker_edit_task', 'tracker_close_project',
+  // rewriting the PROJECT description (stripping the ENGINE_AUTO_MARKER) and
+  // FYI-ing the primary to do the task rename for it.
+  'work_update:edit',
+  'work_update:close_project',
+];
+
+const PM_ALLOWED_WORK_OPS_SET: ReadonlySet<string> = new Set<string>(PM_ALLOWED_WORK_OPS);
+
+/**
+ * Operations only the PM may perform, whichever verb carries them. Kept as ops
+ * for the same reason: `work_validate`'s five actions are all PM-only today,
+ * but the executor gate states the rule rather than relying on that.
+ */
+export const PM_ONLY_WORK_OPS: ReadonlySet<string> = new Set<string>([
+  'work_validate:validate',
+  'work_validate:retask',
+  'work_validate:override',
+  'work_validate:apply_user_verdict',
+  'work_validate:apply_user_validation',
+]);
+
+// Non-work tools the PM may call. Plain names: these tools were not collapsed.
+const PM_ALLOWED_OTHER_TOOLS: readonly string[] = [
   'send_to_agent', 'broadcast_to_group', 'list_agents', 'list_groups',
   'vault_search', 'vault_remember', 'history_search', 'history_get',
   'load_tool_docs', 'get_current_time',
@@ -154,7 +190,27 @@ export const PM_ALLOWED_TOOLS: readonly string[] = [
   'file_read', 'file_list',
 ];
 
-// O(1) membership check for the executor gate.
+// The ADVERTISED surface (tools_policy.allow, written to the agents row by the
+// three sync sites below). It can only name verbs, so a verb appears here as
+// soon as ANY of its operations is allowed — the executor gate below is what
+// enforces which operation. That asymmetry is deliberate and is exactly
+// Architecture Rule 1: the surface is advice, the engine enforces.
+export const PM_ALLOWED_TOOLS: readonly string[] = [
+  ...new Set(PM_ALLOWED_WORK_OPS.map((op) => op.split(':')[0])),
+  ...PM_ALLOWED_OTHER_TOOLS,
+];
+
+/**
+ * The executor gate's real check. `args` are required for a work verb because
+ * the operation — not the name — is what the PM is or is not allowed to do.
+ */
+export function pmMayCall(name: string, args?: Record<string, unknown>): boolean {
+  const op = workOperation(name, args);
+  if (op !== null) return PM_ALLOWED_WORK_OPS_SET.has(op);
+  return PM_ALLOWED_OTHER_TOOLS.includes(name);
+}
+
+// O(1) membership check for surface-level (name-only) callers. NOT the gate.
 export const PM_ALLOWED_TOOLS_SET: ReadonlySet<string> = new Set(PM_ALLOWED_TOOLS);
 
 // ── Ensure PM Agent Running ──

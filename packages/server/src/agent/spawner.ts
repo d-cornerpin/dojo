@@ -361,7 +361,7 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
 IMPORTANT INSTRUCTIONS:
 1. Begin working immediately.
 2. Use absolute file paths (e.g., /Users/<your-user>/Desktop/...), do NOT use ~ or relative paths, as they may resolve differently in your context.
-3. If you have been assigned a tracker task, call tracker_update_status(task_id=YOUR_TASK_ID, status="complete", notes="what you did") BEFORE calling complete_task.
+3. If you have been assigned a tracker task, call work_update(action="status", task_id=YOUR_TASK_ID, status="complete", notes="what you did") BEFORE calling complete_task.
 4. When you have completed the task, you MUST call the complete_task tool with status="complete", a summary of what you did, and any results. Do NOT just stop responding, call complete_task so your parent agent knows you are done.
 5. If you get stuck or cannot complete the task, call complete_task with status="blocked" or status="fallen" and explain why.
 6. Do not wait for further instructions unless you need clarification, just do the work and report back via complete_task.`;
@@ -700,7 +700,7 @@ export async function completeAgent(
   // affected project ids so the success-vs-fail-open check can run after all
   // rows have landed. Complete transitions are deliberately NOT collected
   // here: their project check fires downstream when the PM validates
-  // (tracker_validate), fallen has no validation flag so this is its only hook.
+  // (work_validate(action="validate")), fallen has no validation flag so this is its only hook.
   const fallenProjectIds = new Set<string>();
 
   // If task_id: update task status

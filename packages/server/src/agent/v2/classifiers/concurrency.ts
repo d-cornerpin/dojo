@@ -12,6 +12,7 @@
 // ════════════════════════════════════════
 
 import type { ToolCall } from '@dojo/shared';
+import { workOperation } from '../../../tools/work-verbs.js';
 
 export type ToolCategory = 'safe' | 'serial' | 'agent' | 'special';
 
@@ -56,8 +57,6 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   web_search: 'safe',
   web_fetch: 'safe',
   vault_search: 'safe',
-  tracker_get_status: 'safe',
-  tracker_list_active: 'safe',
   get_current_time: 'safe',
   list_agents: 'safe',
   list_models: 'safe',
@@ -89,15 +88,11 @@ export const TOOL_CATEGORY: Record<string, ToolCategory> = {
   applescript_run: 'serial',
   vault_remember: 'serial',
   vault_forget: 'serial',
-  tracker_create_project: 'serial',
-  tracker_create_task: 'serial',
-  tracker_update_status: 'serial',
-  tracker_add_notes: 'serial',
-  tracker_edit_task: 'serial',
-  tracker_complete_step: 'serial',
-  tracker_pause_schedule: 'serial',
-  tracker_resume_schedule: 'serial',
-  tracker_reassign_task: 'serial',
+  // PHASE-2 T8V: the eleven tracker entries moved to WORK_OP_CONCURRENCY below.
+  // They cannot live in this name-keyed map any more: `work_update` is both the
+  // status write (serial) and the two reads (safe), so a single entry would
+  // either serialise every board read or — far worse — mark a status write safe
+  // and let two of them run concurrently.
   healer_log_action: 'serial',
   healer_propose: 'serial',
   set_user_presence: 'serial',
@@ -240,7 +235,24 @@ export function getRegisteredMaxResultTokens(toolName: string): number | undefin
  *   2. Hardcoded TOOL_CATEGORY map (Phase 1A baseline)
  *   3. 'special' (safest serial default for unknown tools)
  */
-export function classifyConcurrency(toolName: string): ToolCategory {
+/**
+ * PHASE-2 T8V — the collapsed verbs' concurrency, keyed on the OPERATION.
+ *
+ * `work_update` is the reason this map has to exist: it performs both the two
+ * read operations (parallelisable) and the status/edit writes (must serialise).
+ * A single name-keyed entry could only be one of those, and the wrong direction
+ * is not a parallelism cost but a correctness bug — two concurrent status writes
+ * to the same task. Anything not listed falls through to 'special' (serial),
+ * which is the safe direction and is what the eleven retired write entries had.
+ */
+export const WORK_OP_CONCURRENCY: Readonly<Record<string, ToolCategory>> = {
+  'work_update:list': 'safe',
+  'work_update:get': 'safe',
+};
+
+export function classifyConcurrency(toolName: string, args?: Record<string, unknown>): ToolCategory {
+  const op = workOperation(toolName, args);
+  if (op !== null) return WORK_OP_CONCURRENCY[op] ?? 'special';
   const override = REGISTRY_OVERRIDES.get(toolName);
   if (override) return override;
   return TOOL_CATEGORY[toolName] ?? 'special';
@@ -260,7 +272,7 @@ export function classifyConcurrency(toolName: string): ToolCategory {
 export function partitionTools(toolCalls: ToolCall[]): ToolBatch[] {
   const batches: ToolBatch[] = [];
   for (const tc of toolCalls) {
-    const category = classifyConcurrency(tc.name);
+    const category = classifyConcurrency(tc.name, tc.arguments);
     const last = batches[batches.length - 1];
     // Only `safe` batches accumulate calls. All other categories produce
     // single-element batches so each gets its own awaited execution.

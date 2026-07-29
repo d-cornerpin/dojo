@@ -101,7 +101,7 @@ export function buildSpinningNudge(input: ProgressInput, canSelfComplete: boolea
       `status='blocked' and a clear explanation of what you need.]`
     : `If you're stuck, stop and explain what's blocking you in your reply so ` +
       `the user can act. If the work is actually done, mark it done ` +
-      `(e.g. tracker_update_status) and wrap up.]`;
+      `(e.g. work_update(action="status")) and wrap up.]`;
   return (
     `[System: You've been working for ${turns} turn${turns === 1 ? '' : 's'} ` +
     `with little visible progress. ` +

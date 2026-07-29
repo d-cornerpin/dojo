@@ -102,7 +102,7 @@ export function outputPersistenceClassifier(
   // agent-internal — the response goes to the other agent via send_to_agent,
   // never to the user. ALL user-facing text on such a turn is suppressed,
   // including intermediate planning text that rides alongside tool calls
-  // ("Let me check the tracker for that deployment ticket" + tracker_list_active).
+  // ("Let me check the tracker for that deployment ticket" + work_update(action="list")).
   // Previously this only fired once send_to_agent had been called, so the
   // pre-reply planning text leaked into the user's dashboard. The agent's
   // text is still seen by the enforcer (raw) so the missed-reply nudge works,

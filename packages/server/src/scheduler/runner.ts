@@ -64,7 +64,7 @@ function intervalApproxMs(unit: string | null, interval: number | null): number 
 /**
  * Pause the task and wake the assigned (or primary) agent with a system
  * message describing the missed-runs situation and the four resolution
- * options. The agent decides via tracker_resolve_missed_runs.
+ * options. The agent decides via work_schedule(action="resolve_missed").
  *
  * Per user spec: when many slots have gone by while the daemon was down
  * (or the task was paused), the engine doesn't get to silently decide
@@ -139,17 +139,17 @@ function alertMissedRuns(taskRow: Record<string, unknown>, missedSlots: number):
   // run, current time, likely cause, plus a FOUR-option resolution matrix each with a
   // 2-line explanation and a call template — into the agent's messages + dashboard chat.
   // Worse than verbose: role='system' is SKIPPED by the model-context builder, so the
-  // woken agent's MODEL never saw the alert and could never call tracker_resolve_missed_runs
+  // woken agent's MODEL never saw the alert and could never call work_schedule(action="resolve_missed")
   // — the whole resolve flow was silently broken (a correctness bug). Now a brief, model-
   // visible awareness note (role='user' origin_kind='engine'); the run_now/skip/pause option
-  // semantics live just-in-time in the tracker_resolve_missed_runs tool description the
+  // semantics live just-in-time in the work_schedule(action="resolve_missed") tool description the
   // agent reads WHEN it calls the tool.
   postAgentNotice({
     toAgentId: assignedAgent,
     fromName: 'Scheduler',
     selfIntro: false,
     intent: 'scheduler_missed_runs',
-    brief: `Your recurring task "${taskTitle}" (${cadence}) missed ${missedSlots} run${missedSlots === 1 ? '' : 's'} while the box was offline or paused, so I auto-paused it. Call tracker_resolve_missed_runs(task_id="${taskId}", action="run_now"|"skip"|"pause"): action="run_now" fires one catch-up run now, action="skip" jumps to the next scheduled slot, action="pause" leaves it paused. The action argument is required.`,
+    brief: `Your recurring task "${taskTitle}" (${cadence}) missed ${missedSlots} run${missedSlots === 1 ? '' : 's'} while the box was offline or paused, so I auto-paused it. Call work_schedule(action="resolve_missed", task_id="${taskId}", action="run_now"|"skip"|"pause"): action="run_now" fires one catch-up run now, action="skip" jumps to the next scheduled slot, action="pause" leaves it paused. The action argument is required.`,
   });
 
   // Wake the agent so it sees the alert. handleMessage with a thin
@@ -238,7 +238,7 @@ async function sweepStaleOverrideRequests(): Promise<void> {
           payload:
             `Your override request on task ${r.task_id.slice(0, 8)} (status="${r.requested_status}") ` +
             `timed out after ${STALE_REQUEST_HOURS}h with no PM resolution. The request is auto-denied. ` +
-            `Address the engine's original concern and resubmit cleanly, or file a fresh tracker_request_override.`,
+            `Address the engine's original concern and resubmit cleanly, or file a fresh work_close_request(action="override").`,
           toAgent: r.requested_by,
           fromAgent: getPMAgentId(),
         });
@@ -403,15 +403,15 @@ async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
         `but the PM agent has not validated it. ` +
         `${getOwnerName()}, is this actually ${t.status === 'complete' ? 'done' : t.status}? Reply yes/no with any context. ` +
         `\n\n` +
-        `**Primary agent**: when ${getOwnerName()} replies, call tracker_apply_user_validation(task_id="${t.id}", validated=<true if yes / false if no>, user_quote="<the user's exact reply>", feedback="<optional details if validated=false>"). ` +
+        `**Primary agent**: when ${getOwnerName()} replies, call work_validate(action="apply_user_validation", task_id="${t.id}", validated=<true if yes / false if no>, user_quote="<the user's exact reply>", feedback="<optional details if validated=false>"). ` +
         `validated=true clears the bug icon; validated=false reverts to in_progress and notifies the assigned agent with the user's feedback.`;
 
       // Dead-channel demolition (Phase 0.2): deliver the validation question AND the
-      // primary's tracker_apply_user_validation instruction as a model-VISIBLE
+      // primary's work_validate(action="apply_user_validation") instruction as a model-VISIBLE
       // awareness NOTICE (role='user' origin_kind='engine'), the same idiom
       // alertMissedRuns uses above, NOT a bare role='system' row. role='system' rows
       // are stripped by the model-context builder, so the primary's model never saw
-      // the "when the owner replies, call tracker_apply_user_validation(...)"
+      // the "when the owner replies, call work_validate(action="apply_user_validation", ...)"
       // instruction and the validation-relay flow was silently dead. As a NOTICE the
       // primary sees it, relays the question to the owner in its own voice (dashboard
       // chat, or imessage_send when the owner is away), and calls the tool when the
@@ -467,7 +467,7 @@ async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
 // ── D12: deterministic missed-runs fallback ──
 //
 // alertMissedRuns pauses an overdue recurring task and asks the assigned
-// agent to resolve via tracker_resolve_missed_runs. Before D12 that model
+// agent to resolve via work_schedule(action="resolve_missed"). Before D12 that model
 // call was the ONLY path back to 'waiting': a model that ignored the notice
 // once left the recurring task paused forever, silently. The engine now
 // auto-resolves as SKIP once the pause has sat unresolved for more than
@@ -544,7 +544,7 @@ async function autoResolveStaleMissedRunPauses(): Promise<void> {
           fromStatus: 'paused',
           toStatus: 'on_deck',
           actionTaken: `engine auto-skipped ${missedSlots} missed run${missedSlots === 1 ? '' : 's'} to the next scheduled time`,
-          reason: `paused-for-missed-runs was not resolved within ${MISSED_RUNS_AUTO_RESOLVE_MINUTES} minutes (tracker_resolve_missed_runs never ran); schedule resumed, next run at ${nextRun}`,
+          reason: `paused-for-missed-runs was not resolved within ${MISSED_RUNS_AUTO_RESOLVE_MINUTES} minutes (work_schedule(action="resolve_missed") never ran); schedule resumed, next run at ${nextRun}`,
         });
         logger.warn('Scheduler: AUTO-RESOLVED stale missed-runs pause, skipped to next future anchor', {
           taskId, title: task.title, missedSlots, nextRun, pausedAt: task.missed_runs_paused_at,
@@ -628,7 +628,7 @@ export async function checkScheduledTasks(): Promise<void> {
     // platform was offline or the task was paused longer than expected.
     // Per user spec, the engine doesn't get to silently backfill or skip:
     // wake the assigned agent and let them decide via
-    // tracker_resolve_missed_runs.
+    // work_schedule(action="resolve_missed").
     // D12: a NEVER-run task (run_count = 0) whose start is in the past is a
     // first fire, not a missed run; the old detector funneled it into the
     // pause-and-ask trap. Only a task that has genuinely fired before can
@@ -803,8 +803,8 @@ export async function checkScheduledTasks(): Promise<void> {
     // delivery to the user. The agent should say the thing in its
     // normal voice and silently close out.
     const message = taskKind === 'reminder'
-      ? `[Reminder due] ${taskDesc ?? taskTitle}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nDeliver this reminder to the user now as a single short chat message in your normal voice. Do NOT prefix with "Reminder:" or "Here's your reminder", just say the thing naturally (e.g. user asked to be reminded to "go get coffee" → "Hey, time to go get coffee."). When you're done speaking, silently call tracker_update_status with task_id="${taskId}" and status="complete". The close-out is internal bookkeeping; do NOT write any user-facing message about marking the reminder complete ("Task closed", "All done", "Marked complete"). The reminder message itself is the entire user-facing output.`
-      : `[Scheduled Task, Run #${runNumber}${totalRuns}] ${taskTitle}${taskDesc ? '\n' + taskDesc : ''}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nWhen this run is finished, call tracker_update_status with task_id="${taskId}" and status="complete". The close-out is internal bookkeeping; do NOT write any user-facing message about marking the task complete (e.g. "Task closed", "All done", "Marked complete"). The user already received your reminder/output above; an extra "task closed" line is just noise.`;
+      ? `[Reminder due] ${taskDesc ?? taskTitle}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nDeliver this reminder to the user now as a single short chat message in your normal voice. Do NOT prefix with "Reminder:" or "Here's your reminder", just say the thing naturally (e.g. user asked to be reminded to "go get coffee" → "Hey, time to go get coffee."). When you're done speaking, silently call work_update(action="status") with task_id="${taskId}" and status="complete". The close-out is internal bookkeeping; do NOT write any user-facing message about marking the reminder complete ("Task closed", "All done", "Marked complete"). The reminder message itself is the entire user-facing output.`
+      : `[Scheduled Task, Run #${runNumber}${totalRuns}] ${taskTitle}${taskDesc ? '\n' + taskDesc : ''}\n\nTask ID: ${taskId}\nRun ID: ${runId}\n\nWhen this run is finished, call work_update(action="status") with task_id="${taskId}" and status="complete". The close-out is internal bookkeeping; do NOT write any user-facing message about marking the task complete (e.g. "Task closed", "All done", "Marked complete"). The user already received your reminder/output above; an extra "task closed" line is just noise.`;
 
     // Inject as engine event and trigger runtime.
     // D-A step 4: a scheduler fire is inter-agent/engine traffic (origin_kind=
@@ -867,7 +867,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   if (!run) {
     // No active run, either a non-scheduled task or the occurrence was already
     // closed by another path. Nothing to advance. RC-17: report the no-op with a
-    // boolean so callers (tracker_validate) don't misread an unchanged, already-
+    // boolean so callers (work_validate(action="validate")) don't misread an unchanged, already-
     // 'complete' row as a fresh terminal close and kill the whole schedule.
     return false;
   }
@@ -1256,7 +1256,7 @@ function cleanupStaleRuns(): void {
   // ── RC-17.4: task_runs-keyed orphan sweep ──
   // The recovery machinery below keys on TASKS (schedule_status='running'),
   // so it cannot see runs that were orphaned when a path reset the task row
-  // WITHOUT closing the run: tracker_complete_step closes a fired recurring
+  // WITHOUT closing the run: work_update(action="complete_step") closes a fired recurring
   // task with zero run bookkeeping, and the force-reset / missed-runs paths
   // rewrite schedule_status directly. Those 'running' task_runs rows then
   // accumulate forever (transcript-proven pool drain: runs 42/43/44/45 never
@@ -1295,7 +1295,7 @@ function cleanupStaleRuns(): void {
   // 1. Standard stale-running detection. Use the OLDER of (per-task
   // updated_at, agent last message) — same per-task pattern as PM's poke
   // loop in v2.3.6. Catches a recurring run that the agent finished but
-  // never called tracker_update_status on.
+  // never called work_update(action="status") on.
   //
   // PHASE-1 T6b — THE SILENT INVERSION, and why `MAX(m.created_at)` is wrapped.
   // `messages.created_at` is epoch-ms INTEGER from migration 131; `tasks.updated_at` is

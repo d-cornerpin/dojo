@@ -39,8 +39,9 @@ import {
   COORDINATION_TOOLS,
   MUTATING_TOOLS,
 } from '../../agent/v2/classifiers/loop.js';
-import { STRUCTURING_TOOLS } from '../../agent/v2/classifiers/hoarding.js';
-import { TOOL_CATEGORY } from '../../agent/v2/classifiers/concurrency.js';
+import { STRUCTURING_OPS } from '../../agent/v2/classifiers/hoarding.js';
+import { TOOL_CATEGORY, WORK_OP_CONCURRENCY } from '../../agent/v2/classifiers/concurrency.js';
+import { isWorkOp } from '../work-verbs.js';
 import { SELF_ACKNOWLEDGING_TOOLS } from '../../agent/v2/classifiers/ack.js';
 import { RECEIPT_TOOLS, RECEIPT_EXEMPT } from '../../receipts/store.js';
 import { SEND_TO_PEOPLE, SEND_TO_PEOPLE_NA, USER_TWINNED_SEND_PREFIXES } from '../../agent/sensei-policy.js';
@@ -52,7 +53,15 @@ import { SEND_TO_PEOPLE, SEND_TO_PEOPLE_NA, USER_TWINNED_SEND_PREFIXES } from '.
 // categories, so a user_ name resolves by stripping the prefix and checking the
 // base tool exists.
 const REGISTRY = new Set(TOOL_CATEGORIES.flatMap((c) => c.tools));
+// PHASE-2 T8V: a hand list may now name an OPERATION (`work_update:status`) as
+// well as a tool. That is not a loosening — it is the same anti-phantom rule
+// applied to the new key space: an op id must be one of the 23 declared in
+// tools/work-verbs.ts, so `work_update:staus` still fails the build exactly as
+// `tracker_update_staus` used to. A bare work VERB in one of these behavioural
+// lists is itself a phantom now (it names six operations at once, which is the
+// ambiguity the collapse created), and `isWorkOp` rejects it.
 function isRealTool(name: string): boolean {
+  if (name.includes(':')) return isWorkOp(name);
   if (REGISTRY.has(name)) return true;
   if (name.startsWith('user_') && REGISTRY.has(name.slice(5))) return true;
   return false;
@@ -70,8 +79,9 @@ const HAND_LISTS: Array<{ label: string; names: string[] }> = [
   // survives as the small curated durable-write satisfier set and is pinned for
   // phantoms only (an omission there merely over-nudges; see its docstring for
   // why it does NOT earn full registry-exhaustive accounting).
-  { label: 'hoarding.STRUCTURING_TOOLS', names: [...STRUCTURING_TOOLS] },
+  { label: 'hoarding.STRUCTURING_OPS', names: [...STRUCTURING_OPS] },
   { label: 'concurrency.TOOL_CATEGORY (keys)', names: Object.keys(TOOL_CATEGORY) },
+  { label: 'concurrency.WORK_OP_CONCURRENCY (keys)', names: Object.keys(WORK_OP_CONCURRENCY) },
   { label: 'ack.SELF_ACKNOWLEDGING_TOOLS', names: [...SELF_ACKNOWLEDGING_TOOLS] },
   { label: 'receipts.RECEIPT_TOOLS (keys)', names: Object.keys(RECEIPT_TOOLS) },
   { label: 'sensei.SEND_TO_PEOPLE', names: [...SEND_TO_PEOPLE] },

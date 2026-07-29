@@ -49,7 +49,7 @@ vi.mock('../../agent/tools.js', () => {
       input_schema: { type: 'object', properties: {}, required: [] },
     },
     {
-      name: 'tracker_create_task',
+      name: 'work_open',
       description: 'Create task',
       input_schema: { type: 'object', properties: {}, required: [] },
     },

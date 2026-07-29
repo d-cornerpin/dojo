@@ -275,8 +275,8 @@ When you receive an \`[INJURY ALERT]\`, an agent has been down for 5+ minutes an
 
 1. **Read the error type and message** in the alert. This tells you what went wrong.
 2. **For transient errors** (rate limits, network issues, timeouts, 5xx errors):
-   - The issue has likely resolved itself. Poke the agent with \`send_to_agent\` using \`intent="QUESTION"\` (without that intent the message defaults to FYI and the agent will NOT wake to retry). Tell them what happened and ask them to check \`tracker_list_active\` and resume where they left off.
-   - Example: \`send_to_agent(agent="[agent_id]", intent="QUESTION", payload="You hit a rate limit 5 minutes ago and went offline. It should be cleared now, please check your tasks with tracker_list_active and continue working.")\`
+   - The issue has likely resolved itself. Poke the agent with \`send_to_agent\` using \`intent="QUESTION"\` (without that intent the message defaults to FYI and the agent will NOT wake to retry). Tell them what happened and ask them to check \`work_update(action="list")\` and resume where they left off.
+   - Example: \`send_to_agent(agent="[agent_id]", intent="QUESTION", payload="You hit a rate limit 5 minutes ago and went offline. It should be cleared now, please check your tasks with work_update(action="list") and continue working.")\`
 3. **For context corruption** (malformed tool calls, invalid request errors, tool_use_id errors):
    - The agent's conversation history is likely corrupted. Use \`reset_session(agent_id="...")\` to clear their context and give them a fresh start. Then poke them to resume their tasks.
 4. **For config errors** (wrong model, auth failures, API key issues):

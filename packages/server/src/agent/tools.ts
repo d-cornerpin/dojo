@@ -13,6 +13,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { writeToolReceipt } from '../receipts/store.js';
 import { resolveToolAlias } from '../tools/aliases.js';
+import { workOperation } from '../tools/work-verbs.js';
 import {
   withOutboundAsyncIfAbsent, outboundChannelForTool, outboundRecipientForTool,
 } from './v2/outbound.js';
@@ -55,7 +56,7 @@ import {
 } from '../tracker/tools.js';
 // Single source of truth for the PM overseer allow-list; re-checked at the
 // executor chokepoint (demolition Phase 1.7 PM verb enforcement).
-import { PM_ALLOWED_TOOLS_SET } from '../tracker/pm-agent.js';
+import { pmMayCall, PM_ONLY_WORK_OPS } from '../tracker/pm-agent.js';
 import { webSearch, webFetch } from './web-tools.js';
 import { mouseClick, mouseMove, keyboardType, screenRead, applescriptRun } from './system-control.js';
 import { executeWebBrowse } from './browser.js';
@@ -1263,7 +1264,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'scratchpad_set',
-    description: '**Use this INSIDE a tracker step, not instead of one.** Scratchpad is your in-flight working memory for the CURRENT iteration of work, which sources you\'ve read so far, what\'s left, decisions you\'ve made on this step. The engine re-injects it at the top of your context regardless of compaction, so it survives within a session.\n\n**Critical distinction**: scratchpad survives compaction but does NOT survive session reset, and is invisible to the user and PM. Only the tracker survives reset and is visible. **If you\'re using scratchpad without an open tracker project for non-trivial work, you\'ve made the wrong call**, the work will silently vanish on the next reset with no way to resume. For any work involving a deliverable, multiple steps, or more than ~3 tool calls, open `tracker_create_project` FIRST, then use scratchpad for the in-flight thinking inside each step.\n\nThe scratchpad is a single string; calling `scratchpad_set` REPLACES the current contents (it does not append). To make a small edit, copy the current scratchpad from the YOUR SCRATCHPAD block in your context, modify, and call this with the full new text. Cap is 8000 characters, if you\'re approaching that, move detail into a real file and keep the scratchpad as a high-level index. Clears automatically on session reset. Use `scratchpad_clear` to empty it mid-session.\n\nExample (in-flight research on step 2 of a tracker project):\n  scratchpad_set({ content: "## Current tracker step: Step 2, Cover sources A-D\\n\\n## Sources covered so far\\n- [x] /Users/me/notes/a.md (covered in §1)\\n- [x] /Users/me/notes/b.md (covered in §2)\\n- [ ] /Users/me/notes/c.md\\n- [ ] /Users/me/notes/d.md\\n\\n## Open questions\\n- Does Y depend on Z or vice-versa? (check c.md)" }).',
+    description: '**Use this INSIDE a tracker step, not instead of one.** Scratchpad is your in-flight working memory for the CURRENT iteration of work, which sources you\'ve read so far, what\'s left, decisions you\'ve made on this step. The engine re-injects it at the top of your context regardless of compaction, so it survives within a session.\n\n**Critical distinction**: scratchpad survives compaction but does NOT survive session reset, and is invisible to the user and PM. Only the tracker survives reset and is visible. **If you\'re using scratchpad without an open tracker project for non-trivial work, you\'ve made the wrong call**, the work will silently vanish on the next reset with no way to resume. For any work involving a deliverable, multiple steps, or more than ~3 tool calls, open `work_open(kind="project")` FIRST, then use scratchpad for the in-flight thinking inside each step.\n\nThe scratchpad is a single string; calling `scratchpad_set` REPLACES the current contents (it does not append). To make a small edit, copy the current scratchpad from the YOUR SCRATCHPAD block in your context, modify, and call this with the full new text. Cap is 8000 characters, if you\'re approaching that, move detail into a real file and keep the scratchpad as a high-level index. Clears automatically on session reset. Use `scratchpad_clear` to empty it mid-session.\n\nExample (in-flight research on step 2 of a tracker project):\n  scratchpad_set({ content: "## Current tracker step: Step 2, Cover sources A-D\\n\\n## Sources covered so far\\n- [x] /Users/me/notes/a.md (covered in §1)\\n- [x] /Users/me/notes/b.md (covered in §2)\\n- [ ] /Users/me/notes/c.md\\n- [ ] /Users/me/notes/d.md\\n\\n## Open questions\\n- Does Y depend on Z or vice-versa? (check c.md)" }).',
     input_schema: {
       type: 'object',
       properties: {
@@ -1571,7 +1572,7 @@ export const toolDefinitions: ToolDefinition[] = [
   // ── Multi-Agent Tools ──
   {
     name: 'spawn_agent',
-    description: 'Create a new sub-agent to work on a task. This is THE tool for spawning sub-agents, do NOT try to create agents by writing files or inserting into the database. BEFORE spawning, call list_agents to check whether an agent with that name already exists and is still running; if so, use send_to_agent instead of spawning a duplicate. Returns the new agent ID for tracking.\n\nTIMEOUT (you own it): non-ronin sub-agents REQUIRE `timeout_minutes`, the number of minutes the sub-agent may run before YOU (its creator) are asked to decide. There is no default. When the timeout is reached the engine does NOT kill it, it notifies you and the sub-agent keeps running until you call spawn_timeout_decision(action="extend"|"terminate"). Size timeout_minutes to the task (a quick lookup ~5, a longer build ~30-60). For open-ended/scheduled work that should have no timeout, use classification="ronin" (ronin has no timeout and is dismissed only by the user).\n\nSQUADS (mandatory): every agent you spawn lands in a squad, so the owner can see which spawned agents belong to which work. If you pass a `task_id` linked to a project, the sub-agent joins (or the engine auto-creates) a squad NAMED AFTER THAT PROJECT and stamps the squad on the project; later spawns for the same project auto-join it. With no project link, pass `group_id` for a squad you own, or the engine auto-creates one named after you. The tool result names the squad it landed in. You can only dismiss squads you created (delete_group); user-created squads are dismissed only from the dashboard.\n\nTASK LINKAGE, IMPORTANT: if the apprentice is meant to do work tracked in the tracker, you MUST link the task to the agent OR the agent\'s work won\'t update the task on completion. Two valid patterns:\n  1. Pass `task_id` here at spawn time → the agent.task_id is set AND the task is REASSIGNED to the spawned agent (assigned_to = new agent), because you are delegating the work; complete_task then auto-marks the task complete. Pass keep_assignment=true to keep the task assigned to yourself.\n  2. After spawning, call tracker_create_task (or tracker_reassign_task) with `assigned_to=<this agent_id>` → completeAgent\'s fallback finds the task by assignment.\nIf you create tasks before spawning the apprentices, those tasks default to assigned_to=YOU (the parent); passing task_id at spawn now hands the task off to the apprentice for you. Always one of: assign the task to the apprentice, or pass task_id at spawn.',
+    description: 'Create a new sub-agent to work on a task. This is THE tool for spawning sub-agents, do NOT try to create agents by writing files or inserting into the database. BEFORE spawning, call list_agents to check whether an agent with that name already exists and is still running; if so, use send_to_agent instead of spawning a duplicate. Returns the new agent ID for tracking.\n\nTIMEOUT (you own it): non-ronin sub-agents REQUIRE `timeout_minutes`, the number of minutes the sub-agent may run before YOU (its creator) are asked to decide. There is no default. When the timeout is reached the engine does NOT kill it, it notifies you and the sub-agent keeps running until you call spawn_timeout_decision(action="extend"|"terminate"). Size timeout_minutes to the task (a quick lookup ~5, a longer build ~30-60). For open-ended/scheduled work that should have no timeout, use classification="ronin" (ronin has no timeout and is dismissed only by the user).\n\nSQUADS (mandatory): every agent you spawn lands in a squad, so the owner can see which spawned agents belong to which work. If you pass a `task_id` linked to a project, the sub-agent joins (or the engine auto-creates) a squad NAMED AFTER THAT PROJECT and stamps the squad on the project; later spawns for the same project auto-join it. With no project link, pass `group_id` for a squad you own, or the engine auto-creates one named after you. The tool result names the squad it landed in. You can only dismiss squads you created (delete_group); user-created squads are dismissed only from the dashboard.\n\nTASK LINKAGE, IMPORTANT: if the apprentice is meant to do work tracked in the tracker, you MUST link the task to the agent OR the agent\'s work won\'t update the task on completion. Two valid patterns:\n  1. Pass `task_id` here at spawn time → the agent.task_id is set AND the task is REASSIGNED to the spawned agent (assigned_to = new agent), because you are delegating the work; complete_task then auto-marks the task complete. Pass keep_assignment=true to keep the task assigned to yourself.\n  2. After spawning, call work_open(kind="task") (or work_update(action="reassign")) with `assigned_to=<this agent_id>` → completeAgent\'s fallback finds the task by assignment.\nIf you create tasks before spawning the apprentices, those tasks default to assigned_to=YOU (the parent); passing task_id at spawn now hands the task off to the apprentice for you. Always one of: assign the task to the apprentice, or pass task_id at spawn.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1702,7 +1703,7 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'send_to_agent',
-    description: '**USE THIS TOOL when responding to any inbound message that starts with `[A2A:` or `[SOURCE: AGENT MESSAGE FROM`.** Other agents CANNOT see your chat, they only see what you send via this tool. If you write a chat reply instead of calling send_to_agent on an inter-agent turn, the originating agent gets nothing and the engine will nudge you to retry. The pattern: do the work, call send_to_agent once with the right intent on the same thread_id, end your turn. Do not also write a chat summary, it\'s invisible to the originator and gets suppressed by the engine.\n\nSend a structured message to another agent. Every message MUST specify an intent, there is no default. The intent controls whether the receiver wakes to act. **Default to a wake intent unless you are certain the receiver has nothing to do with the message.** Wake intents (receiver wakes): QUESTION, ASSIGN, BLOCK (open thread, response expected); ANSWER, DELIVERABLE (close thread but receiver still wakes because they were waiting); COMPLETE, FAIL (close thread and wake, receiver almost always needs to react to your work being done or failed: forward, notify, decide next step). No-wake intents (ambient context only, receiver does NOT wake): FYI, STATUS. Use FYI/STATUS only when the content is genuinely just for awareness and requires no action. Messages are grouped by thread_id, omit to start a new thread, or include the thread_id from the inbound message to reply on that thread. Silence is a valid response. Do not acknowledge acknowledgements.\n\nTracker integration: when you use intent="ASSIGN", the DOJO automatically creates a tracker task assigned to the receiver. You do NOT need to call tracker_create_task, the task is structurally created at delivery time. The tool result returns the task ID so you can track progress with tracker_get_status. The receiver gets the task ID in their incoming message and is told to call tracker_update_status when done. This means PM can spot stalled assignments automatically. Use ASSIGN whenever the work is multi-step; use QUESTION or BLOCK for one-shot exchanges that don\'t need tracking.',
+    description: '**USE THIS TOOL when responding to any inbound message that starts with `[A2A:` or `[SOURCE: AGENT MESSAGE FROM`.** Other agents CANNOT see your chat, they only see what you send via this tool. If you write a chat reply instead of calling send_to_agent on an inter-agent turn, the originating agent gets nothing and the engine will nudge you to retry. The pattern: do the work, call send_to_agent once with the right intent on the same thread_id, end your turn. Do not also write a chat summary, it\'s invisible to the originator and gets suppressed by the engine.\n\nSend a structured message to another agent. Every message MUST specify an intent, there is no default. The intent controls whether the receiver wakes to act. **Default to a wake intent unless you are certain the receiver has nothing to do with the message.** Wake intents (receiver wakes): QUESTION, ASSIGN, BLOCK (open thread, response expected); ANSWER, DELIVERABLE (close thread but receiver still wakes because they were waiting); COMPLETE, FAIL (close thread and wake, receiver almost always needs to react to your work being done or failed: forward, notify, decide next step). No-wake intents (ambient context only, receiver does NOT wake): FYI, STATUS. Use FYI/STATUS only when the content is genuinely just for awareness and requires no action. Messages are grouped by thread_id, omit to start a new thread, or include the thread_id from the inbound message to reply on that thread. Silence is a valid response. Do not acknowledge acknowledgements.\n\nTracker integration: when you use intent="ASSIGN", the DOJO automatically creates a tracker task assigned to the receiver. You do NOT need to call work_open, the task is structurally created at delivery time. The tool result returns the task ID so you can track progress with work_update(action="get"). The receiver gets the task ID in their incoming message and is told to close it with work_update(action="status") when done. This means PM can spot stalled assignments automatically. Use ASSIGN whenever the work is multi-step; use QUESTION or BLOCK for one-shot exchanges that don\'t need tracking.',
     input_schema: {
       type: 'object',
       properties: {
@@ -1782,28 +1783,34 @@ export const toolDefinitions: ToolDefinition[] = [
       required: ['status', 'summary'],
     },
   },
-  // ── Tracker Tools ──
+  // ── Work Tools (PHASE-2 T8V: 24 verbs collapsed onto six) ──
+  // Every operation the retired twenty-four performed is still reachable; each
+  // verb selects one by a discriminator, and `tools/work-verbs.ts` is the single
+  // place a (name, args) pair is turned back into that operation. The weak-model
+  // training the retired defs carried — status synonyms, 8-char-prefix AND title
+  // resolution, same-status NO-OP, absorb-don't-refuse, the END-OF-TURN DECISION
+  // MATRIX, and the recurring-schedule integrity gate — is LIFTED here verbatim,
+  // not rewritten. Old names still route (tools/aliases.ts) for one release.
   {
-    name: 'tracker_create_project',
-    description: '**Open this BEFORE starting any work that has a deliverable, requires multiple steps, or takes more than ~3 tool calls.** The tracker is your durable plan, it survives compaction, session resets, and agent restarts; your context does not. Source files you read get summarized; tracker rows do not. For anything beyond a one-shot Q&A, this is your safety net against losing the plan halfway through.\n\nDon\'t try to predict whether you\'ll finish in one push, you usually can\'t, and the failure mode is silent context loss followed by writing the deliverable from your own summarized memory (i.e. confabulating). The cost of opening a tracker entry you didn\'t end up needing is zero. The cost of NOT opening one for work that turns out to be multi-step is 30+ minutes of stalled work, PM pokes, and lost context.\n\n**Cheap to open, just a title and a level is enough.** You don\'t need to know every task upfront. Add tasks incrementally with `tracker_create_task` as you discover the shape of the work. If you\'re unsure whether to open one, open one.\n\nASSIGNMENT MATTERS (read once, internalize): nested tasks default `assigned_to=YOU` (the calling agent) when not specified. If apprentices will do the work, either spawn them FIRST and pass their agent_id in each task\'s `assigned_to`, or spawn them with `task_id` pointing at tasks already created here. If neither happens, apprentice work won\'t close out the tasks.',
+    name: 'work_open',
+    description: 'Open a new piece of work. `kind` picks what: "project" (multi-step work with tasks), "task" (a single piece of work, optionally scheduled or recurring), "reminder" (something to tell the user at a time), "commitment" (a promise you just made).\n\n**Open a project or task BEFORE starting any work that has a deliverable, requires multiple steps, or takes more than ~3 tool calls.** The work board is your durable plan, it survives compaction, session resets, and agent restarts; your context does not. Source files you read get summarized; work rows do not. For anything beyond a one-shot Q&A, this is your safety net against losing the plan halfway through.\n\nDon\'t try to predict whether you\'ll finish in one push, you usually can\'t, and the failure mode is silent context loss followed by writing the deliverable from your own summarized memory (i.e. confabulating). The cost of opening an entry you didn\'t end up needing is zero. The cost of NOT opening one for work that turns out to be multi-step is 30+ minutes of stalled work, PM pokes, and lost context.\n\n**Cheap to open, just a title and a level is enough.** You don\'t need to know every task upfront. Add tasks incrementally with `work_open(kind="task", project_id=…)` as you discover the shape of the work. If you\'re unsure whether to open one, open one.\n\nASSIGNMENT MATTERS (read once, internalize): nested tasks default `assigned_to=YOU` (the calling agent) when not specified. If apprentices will do the work, either spawn them FIRST and pass their agent_id in each task\'s `assigned_to`, or spawn them with `task_id` pointing at tasks already created here. If neither happens, apprentice work won\'t close out the tasks.\n\n**kind="task"** can run immediately, at a scheduled time, or on a repeating schedule. To schedule: set scheduled_start to an ISO8601 datetime (e.g., "2026-03-20T22:35:00Z"). To repeat: also set repeat_interval and repeat_unit (e.g., repeat_interval=2, repeat_unit="hours" for every 2 hours). Use repeat_end_type="after_count" with repeat_end_value="3" to stop after 3 runs. Use get_current_time to find the current time, then add minutes/hours for the start time. Tasks without scheduled_start run immediately when assigned.\n\n**kind="reminder"** sets a reminder for the user. When the scheduled time arrives, you (the agent) will be woken with the reminder text and should deliver it to the user as a single short chat message in your normal voice, no preamble like "Reminder:" or "Here\'s your reminder", just say the thing. **If the user did not specify a time, call this WITHOUT `when`.** The tool will return an instruction telling you to ask the user. Get their answer, then call `get_current_time` to resolve relative phrases ("in 5 minutes", "tomorrow at 8am"), and re-call with `when` set to the resolved ISO 8601 datetime. Do not invent a time, always ask. Use kind="reminder" whenever the user asks to be reminded of something, NOT kind="task": reminders get a lighter scheduler prompt that produces a natural one-line message instead of the generic "[Scheduled Task, Run #1]" boilerplate.\n\n**kind="commitment"** records a promise you just made, at the moment you make it. When you tell someone "I\'ll do X", "I\'ll send that after Y", or "I\'ll get back to you on this", call this straight away with what you promised in `description`, in your own words. It becomes a tracked item you still owe, shown back to you in the "OPEN WORK" block until it is delivered or dropped. This is bookkeeping, do NOT write a user-facing message about it, and do NOT use it for work you have already finished this turn. Use kind="task" instead when the promise is a piece of project work that belongs on the board.',
     input_schema: {
       type: 'object',
       properties: {
-        title: {
+        kind: {
           type: 'string',
-          description: 'Project title',
+          enum: ['project', 'task', 'reminder', 'commitment'],
+          description: 'What to open. Omit and the engine infers it from the fields you passed (`what` → reminder, `tasks`/`level` → project, `description` with no title → commitment, otherwise task).',
         },
+        title: { type: 'string', description: 'Project or task title.' },
         description: {
           type: 'string',
-          description: 'Project description',
+          description: 'Project/task description. For kind="commitment": what you promised, in one line, in your own words (e.g. "email Bob the roof quote after the site visit").',
         },
-        level: {
-          type: 'number',
-          description: 'Importance level: 1 (routine), 2 (important), 3 (critical)',
-        },
+        level: { type: 'number', description: 'Project only. Importance level: 1 (routine), 2 (important), 3 (critical).' },
         tasks: {
           type: 'array',
-          description: 'REQUIRED: at least one task. The engine refuses project creation with zero tasks, a tracker project with nothing to do can\'t be poked, completed, or audited, and silently strands work. If you don\'t know every task upfront, that\'s fine, just put down the FIRST concrete thing you\'ll do (e.g. "scope the deliverable", "draft outline", "pull source data"). Add more later with tracker_create_task as the shape clarifies.',
+          description: 'Project only. REQUIRED for kind="project": at least one task. The engine refuses project creation with zero tasks, a project with nothing to do can\'t be poked, completed, or audited, and silently strands work. If you don\'t know every task upfront, that\'s fine, just put down the FIRST concrete thing you\'ll do (e.g. "scope the deliverable", "draft outline", "pull source data"). Add more later with work_open(kind="task", project_id=…) as the shape clarifies.',
           minItems: 1,
           items: {
             type: 'object',
@@ -1819,57 +1826,25 @@ export const toolDefinitions: ToolDefinition[] = [
             required: ['title'],
           },
         },
-        allow_duplicate: {
-          type: 'boolean',
-          description: 'Set true to bypass the near-duplicate guard. The engine refuses creation if you already opened a similarly-titled project in the last 60 minutes (catches the post-compaction "I forgot I already opened this" failure mode). Only override when the new project is genuinely unrelated work that happens to share keywords.',
-        },
-      },
-      required: ['title', 'level', 'tasks'],
-    },
-  },
-  {
-    name: 'tracker_create_task',
-    description: 'Create a task, optionally with scheduling. Can run immediately, at a scheduled time, or on a repeating schedule. To schedule: set scheduled_start to an ISO8601 datetime (e.g., "2026-03-20T22:35:00Z"). To repeat: also set repeat_interval and repeat_unit (e.g., repeat_interval=2, repeat_unit="hours" for every 2 hours). Use repeat_end_type="after_count" with repeat_end_value="3" to stop after 3 runs. Use get_current_time to find the current time, then add minutes/hours for the start time. Tasks without scheduled_start run immediately when assigned.\n\nASSIGNMENT MATTERS: `assigned_to` defaults to YOU (the calling agent) if omitted. If you want an apprentice to handle this task, pass their agent_id (or name) explicitly, otherwise the apprentice\'s complete_task call will not update this row, and the project will look unfinished even after the work is done.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        project_id: {
+        project_id: { type: 'string', description: 'Task only. Optional project ID to attach this task to.' },
+        assigned_to: { type: 'string', description: 'Task only. Agent ID or name to assign this task to.' },
+        assigned_to_group: { type: 'string', description: 'Task only. Assign to a group instead of a specific agent. The PM picks an available agent at run time.' },
+        priority: { type: 'string', enum: ['high', 'normal', 'low'], description: 'Task priority (default: normal).' },
+        step_number: { type: 'number', description: 'Step number for ordered execution.' },
+        depends_on: { type: 'array', items: { type: 'string' }, description: 'Task IDs that must complete before this task can start.' },
+        phase: { type: 'number', description: 'Phase number for phased execution.' },
+        goal: { type: 'string', description: 'The definition of done. PM compares the close-out result against it.' },
+        what: {
           type: 'string',
-          description: 'Optional project ID to attach this task to',
+          description: 'Reminder only. What to remind the user about, in their own words. ("go get coffee", "call mom", "stand up and stretch")',
         },
-        title: {
+        when: {
           type: 'string',
-          description: 'Task title',
-        },
-        description: {
-          type: 'string',
-          description: 'Task description',
-        },
-        assigned_to: {
-          type: 'string',
-          description: 'Agent ID or name to assign this task to',
-        },
-        priority: {
-          type: 'string',
-          enum: ['high', 'normal', 'low'],
-          description: 'Task priority (default: normal)',
-        },
-        step_number: {
-          type: 'number',
-          description: 'Step number for ordered execution',
-        },
-        depends_on: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Task IDs that must complete before this task can start',
-        },
-        phase: {
-          type: 'number',
-          description: 'Phase number for phased execution',
+          description: 'Reminder only. ISO 8601 datetime for when the reminder should fire (e.g. "2026-05-19T14:35:00Z"). Omit if the user did not specify a time, the tool will tell you to ask them. Call get_current_time first to resolve relative phrases like "in 5 minutes".',
         },
         scheduled_start: {
           type: 'string',
-          description: 'When to run this task. Use ISO8601 format like "2026-03-20T22:35:00Z". Call get_current_time first to get the current time, then calculate your target time. If omitted, task runs immediately.',
+          description: 'Task only. When to run this task. Use ISO8601 format like "2026-03-20T22:35:00Z". Call get_current_time first to get the current time, then calculate your target time. If omitted, task runs immediately.',
         },
         repeat_interval: {
           type: 'number',
@@ -1888,7 +1863,7 @@ export const toolDefinitions: ToolDefinition[] = [
         repeat_end_type: {
           type: 'string',
           enum: ['never', 'after_count', 'on_date'],
-          description: 'When to stop repeating. For repeating tasks that should stop after N runs, set repeat_end_type="after_count" and repeat_end_value="N". If omitted, the task repeats forever.',
+          description: 'When to stop repeating. For repeating work that should stop after N runs, set repeat_end_type="after_count" and repeat_end_value="N". If omitted, it repeats forever.',
         },
         repeat_end_value: {
           type: 'string',
@@ -1896,88 +1871,40 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         anchor_time: {
           type: 'string',
-          description: 'For recurring tasks: ISO 8601 timestamp that anchors all future runs (only the time-of-day matters, date components reflect when the anchor was set). DEFAULTS to scheduled_start; pass explicitly only if you want a different wall-clock time. Use this when the task should ALWAYS fire at a specific time-of-day regardless of how long each run takes, e.g. "every Monday at 06:00", not "every Monday whenever the previous run happened to finish." Without this, a 5-minute completion drifts the schedule by 5 minutes every cycle.',
-        },
-        assigned_to_group: {
-          type: 'string',
-          description: 'Assign this task to a group instead of a specific agent. The PM will pick an available agent from the group at run time.',
+          description: 'For recurring work: ISO 8601 timestamp that anchors all future runs (only the time-of-day matters, date components reflect when the anchor was set). DEFAULTS to scheduled_start (or `when` for a reminder); pass explicitly only if you want a different wall-clock time. Use this when it should ALWAYS fire at a specific time-of-day regardless of how long each run takes, e.g. "every Monday at 06:00", not "every Monday whenever the previous run happened to finish." Without this, a 5-minute completion drifts the schedule by 5 minutes every cycle.',
         },
         allow_duplicate: {
           type: 'boolean',
-          description: 'Set true to bypass the near-duplicate guard. The engine refuses creation if you already opened a similarly-titled task in the last 5 minutes (catches runaway loops where an error on one tool causes the agent to spawn duplicates instead of recovering). Only override when the new task is genuinely unrelated work that happens to share keywords.',
+          description: 'Set true to bypass the near-duplicate guard. The engine refuses creation if you already opened a similarly-titled project in the last 60 minutes (task: 5 minutes) — it catches the post-compaction "I forgot I already opened this" failure mode and runaway loops where an error causes duplicates instead of recovery. Only override when the new work is genuinely unrelated work that happens to share keywords.',
         },
       },
-      required: ['title'],
+      required: [],
     },
   },
   {
-    name: 'reminder_create',
-    description: 'Set a reminder for the user. When the scheduled time arrives, you (the agent) will be woken with the reminder text and should deliver it to the user as a single short chat message in your normal voice, no preamble like "Reminder:" or "Here\'s your reminder", just say the thing.\n\n**If the user did not specify a time, call this WITHOUT `when`.** The tool will return an instruction telling you to ask the user. Get their answer, then call `get_current_time` to resolve relative phrases ("in 5 minutes", "tomorrow at 8am"), and re-call this tool with `when` set to the resolved ISO 8601 datetime. Do not invent a time, always ask.\n\nFor recurring reminders ("remind me every Monday at 9am"), pass `repeat_interval`/`repeat_unit` the same way as `tracker_create_task`.\n\nUse this tool whenever the user asks to be reminded of something. Do NOT use `tracker_create_task` for reminders, reminders get a lighter scheduler prompt that produces a natural one-line message instead of the generic "[Scheduled Task, Run #1]" boilerplate.',
+    name: 'work_update',
+    description: 'Update, read, or close existing work. `action` picks what: "status" (change a task\'s status), "edit" (change structural fields on a task or project), "reassign", "complete_step" (finish a step and start the next), "close_project" (close a whole project and its open tasks), "list" (see active work), "get" (full detail on one item).\n\n**action="status" — END-OF-TURN DECISION MATRIX** - before you end any turn with an in_progress task assigned to you, pick exactly one:\n\n  1. **You finished the task** → status="complete" (or use action="complete_step" if multi-step project, auto-advances to the next step).\n  2. **You\'ll take the next action on this same turn** → leave status="in_progress", just call the next tool now. Do not end the turn.\n  3. **You are waiting on the USER to do something they already know about** (you just asked them, e.g., "please reboot the ESP", "send me the file", "approve X") → status="paused" with notes explaining what you\'re waiting for. **Paused tasks are INVISIBLE to the PM agent, no pokes, no nags, ever.** The user resumes the task by replying or by manually flipping the status. This is the right call for ALL "I asked the user and now I\'m waiting" situations.\n  4. **You are blocked by something the user does NOT know about yet** (missing API key, external service down, you need a decision the user hasn\'t been asked about) → status="blocked" with notes. **This escalates**, the PM surfaces it to the primary user as a BLOCKED issue. Use this for "someone needs to know something is wrong."\n  5. **The whole project is no longer relevant** → use action="close_project" with reason. Not a status change.\n\n**Difference between paused and blocked:** paused = "user has the ball, I\'m on standby, no escalation needed." blocked = "this needs attention." When in doubt with a user-facing question already asked, pick paused.\n\n**NEVER leave a task in_progress when you go idle UNLESS option 2 applies.** If you go idle with status=in_progress, the PM will poke you after ~2 minutes assuming you stalled, and you\'ll get nudged to either pause/block or close it out. Skip the noise by transitioning correctly at end of turn.\n\nFor recurring tasks: if you completed ALL iterations in a single run, set `complete_all_runs=true` to stop the schedule entirely.\n\n**For multi-step projects, prefer action="complete_step" over action="status"**, it auto-advances to the next step so you don\'t accidentally leave the project with no task in_progress. Marks this task "complete" and moves the next step (by step_number) to "in_progress", and checks whether the entire project is now complete. Using status=complete to mark a step complete leaves the project with no in_progress task and is the most common cause of "agent finished a batch but the next batch never started." Call it the moment you finish a step, don\'t batch up multiple completions.\n\n**Close-outs are silent, ALWAYS, not just for scheduler-triggered tasks.** After a status change to complete (or paused/blocked/fallen), and after every step completion, do NOT write a trailing user-facing message about it ("Task closed", "All done", "Marked complete", "All set", "Smoke test passed", "All three cleared", "You\'re set", "Step closed", "Moving to next step"). The tool result is the only acknowledgment needed; the board shows the change directly. The user already saw your work above; a closeout line is noise. This applies to every kind of work, assigned by the user, auto-created from a chat message, scheduler-triggered, wakeup-triggered, manually created.\n\n**action="edit"** changes any structural field on a task, title, description, dependencies, step ordering, schedule (including the day-of-week list for "specific_days" recurrence), priority, notes. Pass any subset. Editing any schedule field automatically recomputes next_run_at so the scheduler picks up the change. Pass `project_id` instead of `task_id` to rename a project or change its description — use that when a project was auto-named badly (the engine\'s multi-step classifier names projects with a slice of the user prompt, which often reads poorly on the kanban) or when scope shifts and the title no longer describes the work. Use action="status" for status changes, action="reassign" for assignee changes, and work_schedule for pause/resume, those have side-effects edit intentionally skips.\n\n**action="close_project"** closes an entire project AND every open task on it in one call. Use it when you want to abandon a project, when you discover a duplicate, when scope changed and the work is no longer relevant, or when every remaining task has genuinely been completed but is still showing as open. Pass status="cancelled" for abandoned/duplicate/scope-change cases (the default, leaves a "cancelled" marker on each task) and status="complete" only when all the work was actually done. `reason` is required and gets appended as a note on every task closed, this is the audit trail for whoever sees the kanban next. Far better than looping action="status" one task at a time, and the only correct response when the engine tells you a project of yours is stranded (open tasks left behind on an abandoned project).\n\n**action="list"** lists active projects and tasks with their status, assignee, and priority. Default returns compact rows (no descriptions); pass verbose=true for descriptions on every result. **action="get"** returns the full details of ONE task or project, including description/instructions, notes, dependencies, step number, assigned agent, and timestamps — use it to read the instructions for any task. Accepts a full UUID or an 8+ char prefix from a list, as `id`, `task_id`, or `project_id` (all accepted).',
     input_schema: {
       type: 'object',
       properties: {
-        what: {
+        action: {
           type: 'string',
-          description: 'What to remind the user about, in their own words. ("go get coffee", "call mom", "stand up and stretch")',
+          enum: ['status', 'edit', 'reassign', 'complete_step', 'close_project', 'list', 'get'],
+          description: 'Which update to perform. Omit and the engine infers it from the fields you passed (`status` → status, `assigned_to` → reassign, a `project_id` with a `reason` → close_project, editable fields → edit, a bare id → get, nothing → list).',
         },
-        when: {
-          type: 'string',
-          description: 'ISO 8601 datetime for when the reminder should fire (e.g. "2026-05-19T14:35:00Z"). Omit if the user did not specify a time, the tool will tell you to ask them. Call get_current_time first to resolve relative phrases like "in 5 minutes".',
-        },
-        repeat_interval: {
-          type: 'number',
-          description: 'For recurring reminders. e.g. 1 with repeat_unit="weeks" for weekly.',
-        },
-        repeat_unit: {
-          type: 'string',
-          enum: ['minutes', 'hours', 'days', 'weekdays', 'specific_days', 'weeks', 'months', 'years'],
-          description: 'Unit for repeat_interval. Same semantics as tracker_create_task.',
-        },
-        repeat_end_type: {
-          type: 'string',
-          enum: ['never', 'after_count', 'on_date'],
-          description: 'When to stop a recurring reminder. Defaults to "never".',
-        },
-        repeat_end_value: {
-          type: 'string',
-          description: 'For after_count: the number of runs (e.g. "5"). For on_date: an ISO date (e.g. "2026-06-01").',
-        },
-        repeat_days_of_week: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Required when repeat_unit="specific_days". List of weekday names, e.g. ["mon","wed","fri"].',
-        },
-        anchor_time: {
-          type: 'string',
-          description: 'For recurring reminders that should fire at a fixed wall-clock time each cycle. Defaults to `when`. Same semantics as tracker_create_task.',
-        },
-      },
-      required: ['what'],
-    },
-  },
-  {
-    name: 'tracker_update_status',
-    description: 'Update the status of a task in the tracker. **Call this AT the moments of transition.**\n\n**END-OF-TURN DECISION MATRIX** - before you end any turn with an in_progress task assigned to you, pick exactly one:\n\n  1. **You finished the task** → status="complete" (or use `tracker_complete_step` if multi-step project, auto-advances to the next step).\n  2. **You\'ll take the next action on this same turn** → leave status="in_progress", just call the next tool now. Do not end the turn.\n  3. **You are waiting on the USER to do something they already know about** (you just asked them, e.g., "please reboot the ESP", "send me the file", "approve X") → status="paused" with notes explaining what you\'re waiting for. **Paused tasks are INVISIBLE to the PM agent, no pokes, no nags, ever.** The user resumes the task by replying or by manually flipping the status. This is the right call for ALL "I asked the user and now I\'m waiting" situations.\n  4. **You are blocked by something the user does NOT know about yet** (missing API key, external service down, you need a decision the user hasn\'t been asked about) → status="blocked" with notes. **This escalates**, the PM surfaces it to the primary user as a BLOCKED issue. Use this for "someone needs to know something is wrong."\n  5. **The whole project is no longer relevant** → use `tracker_close_project` with reason. Not this tool.\n\n**Difference between paused and blocked:** paused = "user has the ball, I\'m on standby, no escalation needed." blocked = "this needs attention." When in doubt with a user-facing question already asked, pick paused.\n\n**NEVER leave a task in_progress when you go idle UNLESS option 2 applies.** If you go idle with status=in_progress, the PM will poke you after ~2 minutes assuming you stalled, and you\'ll get nudged to either pause/block or close it out. Skip the noise by transitioning correctly at end of turn.\n\nFor recurring tasks: if you completed ALL iterations in a single run, set `complete_all_runs=true` to stop the schedule entirely.\n\n**For multi-step projects, prefer `tracker_complete_step` over this tool**, it auto-advances to the next step so you don\'t accidentally leave the project with no task in_progress.\n\n**Close-outs are silent, ALWAYS, not just for scheduler-triggered tasks.** After calling this with status=complete (or paused/blocked/fallen), do NOT write a trailing user-facing message about the status change ("Task closed", "All done", "Marked complete", "All set", "Smoke test passed", "All three cleared", "You\'re set"). The tracker tool result is the only acknowledgment needed; the tracker UI shows the status change directly. The user already saw your work above; a closeout line is noise. This applies to every kind of task, assigned by the user, auto-created from a chat message, scheduler-triggered, wakeup-triggered, manually created. Silence is the default after EVERY tracker_update_status call.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        task_id: {
-          type: 'string',
-          description: 'The task ID to update',
-        },
+        task_id: { type: 'string', description: 'The task ID (full UUID or 8+ char prefix). For action="complete_step", the step you just completed.' },
+        project_id: { type: 'string', description: 'The project ID (full UUID or 8+ char prefix). Used by action="edit" (rename a project), "close_project", and "get".' },
+        id: { type: 'string', description: 'Alias for task_id / project_id on action="get".' },
         status: {
           type: 'string',
-          enum: ['on_deck', 'in_progress', 'complete', 'blocked', 'fallen', 'paused'],
-          description: 'New status. Quick reference: "in_progress" = actively working / about to take an action this turn. "complete" = done. "paused" = waiting on the user (already asked them), PM ignores entirely, no pokes. "blocked" = needs escalation/attention, PM surfaces this to the primary user. "on_deck" = queued, not yet started. "fallen" = abandoned/dropped, kept for history.',
+          enum: ['on_deck', 'in_progress', 'complete', 'blocked', 'fallen', 'paused', 'cancelled'],
+          description: 'action="status": the new status. Quick reference: "in_progress" = actively working / about to take an action this turn. "complete" = done. "paused" = waiting on the user (already asked them), PM ignores entirely, no pokes. "blocked" = needs escalation/attention, PM surfaces this to the primary user. "on_deck" = queued, not yet started. "fallen" = abandoned/dropped, kept for history. action="close_project": the terminal status for the project and every open task, "complete" | "cancelled" (default "cancelled").',
         },
         notes: {
           type: 'string',
-          description: 'For paused (min 15 chars, names a specific external trigger) or blocked (min 15 chars, names the obstacle). On complete, use the `result` field instead, not notes.',
+          description: 'For paused (min 15 chars, names a specific external trigger) or blocked (min 15 chars, names the obstacle). On complete, use the `result` field instead, not notes. On action="edit", REPLACES the notes field (to append instead, use work_note). On action="complete_step", notes about what was done in this step.',
         },
-        result: {
-          type: 'string',
-          description: 'Required when status="complete". Non-empty string describing what was accomplished. PM compares this to the task goal.',
-        },
+        result: { type: 'string', description: 'Required when status="complete". Non-empty string describing what was accomplished. PM compares this to the goal.' },
         evidence: {
           type: 'array',
           description: 'Required when status="complete". Non-empty array of text-only evidence records. Each entry is {kind, claim, pointer?}. Supported kinds: claim, file_modified, file_read, tool_call_ref, output_paste, external_action, quote. Engine enforces structure; PM reads content and judges substance. Example: [{kind:"file_modified", claim:"updated 12 routes", pointer:"packages/server/src/gateway/routes/"}, {kind:"tool_call_ref", claim:"18 file_edit calls succeeded"}].',
@@ -1999,335 +1926,125 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'boolean',
           description: 'For recurring tasks only: if true, marks ALL remaining runs as complete and stops the schedule. Use when you handled all iterations in a single run.',
         },
-      },
-      required: ['task_id', 'status'],
-    },
-  },
-  {
-    name: 'tracker_add_notes',
-    description: 'APPEND a timestamped note to a task. Preserves all prior notes - each call adds a new `[ISO timestamp] <your text>` line. Good for progress logs and issue trails. **Does NOT replace the existing notes.** To replace the entire notes field with new content, call tracker_edit_task({notes}).\n\n**CRITICAL - this is a checkpoint, NOT a stopping point.** Adding a note does not pause your work. If the task is still in_progress after you write the note, CONTINUE EXECUTING the project on the same turn - call the next tool, do the next step, do not just end the turn. Only end your turn when (a) you have completed a meaningful chunk that needs user acknowledgement, OR (b) you have hit a genuine blocker. In either case, your final assistant message must explicitly say WHY you stopped ("completed step 3, waiting on user input about X", "blocked - can\'t proceed without Y"). A silent stop after tracker_add_notes leaves the user staring at idle progress with no idea what is happening.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        task_id: {
-          type: 'string',
-          description: 'The task ID to append notes to',
-        },
-        notes: {
-          type: 'string',
-          description: 'The note text to append (will be prefixed with a timestamp)',
-        },
-      },
-      required: ['task_id', 'notes'],
-    },
-  },
-  // C27: tracker_edit_notes + tracker_clear_notes were already dead v2.8.0 stubs
-  // (always returned Error). DELETED and registered as tombstone aliases. To
-  // append notes use tracker_add_notes; to replace notes use tracker_edit_task({notes}).
-  {
-    name: 'tracker_edit_task',
-    description: 'Edit any structural field on a task, title, description, dependencies, step ordering, schedule (including the day-of-week list for "specific_days" recurrence), priority, notes. Pass any subset of fields. Editing any schedule field automatically recomputes next_run_at so the scheduler picks up the change. Use tracker_update_status for status changes, tracker_reassign_task for assignee changes, and tracker_pause_schedule for pause/resume, those have side-effects this tool intentionally skips.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        task_id: { type: 'string', description: 'The task ID to edit' },
-        title: { type: 'string', description: 'New title (optional)' },
-        description: { type: 'string', description: 'New description/instructions. Pass an empty string to clear.' },
-        goal: { type: 'string', description: 'Edit the definition of done. Both the prior and new goal are logged to task_log so PM can see the history when validating. Editing the goal narrower after work started will be flagged by PM as goalpost-moving.' },
-        depends_on: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Replace the dependency list with these task IDs. Pass [] to clear all dependencies.',
-        },
-        step_number: { type: 'number', description: 'New step number within the project (1-indexed)' },
-        phase: { type: 'number', description: 'New phase number within the project' },
-        scheduled_start: { type: 'string', description: 'New scheduled start time (ISO 8601 UTC, e.g. 2026-05-10T14:00:00Z). Pass null or empty string to clear and run immediately.' },
-        repeat_interval: { type: 'number', description: 'Repeat interval value (e.g. 1, 2). Pair with repeat_unit.' },
+        reason: { type: 'string', description: 'Required for action="close_project". A short sentence on why you are closing the project. Gets appended as a note on every closed task, this is the audit trail for the user.' },
+        assigned_to: { type: 'string', description: 'action="reassign": agent ID to assign to (use this OR assigned_to_group, not both).' },
+        assigned_to_group: { type: 'string', description: 'action="reassign": group ID to assign to, the PM will pick an available agent at run time.' },
+        title: { type: 'string', description: 'action="edit": new title.' },
+        description: { type: 'string', description: 'action="edit": new description/instructions. Pass an empty string to clear.' },
+        goal: { type: 'string', description: 'action="edit": edit the definition of done. Both the prior and new goal are logged so PM can see the history when validating. Editing the goal narrower after work started will be flagged by PM as goalpost-moving.' },
+        depends_on: { type: 'array', items: { type: 'string' }, description: 'action="edit": replace the dependency list with these task IDs. Pass [] to clear all dependencies.' },
+        step_number: { type: 'number', description: 'action="edit": new step number within the project (1-indexed).' },
+        phase: { type: 'number', description: 'action="edit": new phase number within the project.' },
+        priority: { type: 'string', description: 'Priority: "high" | "normal" | "low".' },
+        scheduled_start: { type: 'string', description: 'action="edit": new scheduled start time (ISO 8601 UTC, e.g. 2026-05-10T14:00:00Z). Pass null or empty string to clear and run immediately.' },
+        repeat_interval: { type: 'number', description: 'action="edit": repeat interval value (e.g. 1, 2). Pair with repeat_unit.' },
         repeat_unit: {
           type: 'string',
           enum: ['minutes', 'hours', 'days', 'weekdays', 'specific_days', 'weeks', 'months', 'years'],
-          description: 'Repeat unit. "weekdays" = Mon–Fri only (skips weekends). "specific_days" = an explicit set of weekdays you provide via repeat_days_of_week (e.g. "every Monday and Wednesday"). For specific_days, repeat_interval is ignored, the task fires on each listed day every week.',
+          description: 'action="edit": repeat unit. "weekdays" = Mon–Fri only (skips weekends). "specific_days" = an explicit set of weekdays you provide via repeat_days_of_week (e.g. "every Monday and Wednesday"). For specific_days, repeat_interval is ignored, the task fires on each listed day every week.',
         },
         repeat_days_of_week: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Required when repeat_unit="specific_days". List of weekday names: ["mon","wed"] for Mondays and Wednesdays, ["mon","tue","wed","thu"] for weekdays except Friday. Accepted names: sun/mon/tue/wed/thu/fri/sat (case-insensitive). Integers 0-6 (0=Sun..6=Sat) also accepted. Pass [] to clear.',
+          description: 'action="edit": required when repeat_unit="specific_days". List of weekday names: ["mon","wed"] for Mondays and Wednesdays, ["mon","tue","wed","thu"] for weekdays except Friday. Accepted names: sun/mon/tue/wed/thu/fri/sat (case-insensitive). Integers 0-6 (0=Sun..6=Sat) also accepted. Pass [] to clear.',
         },
-        repeat_end_type: {
-          type: 'string',
-          enum: ['never', 'after_count', 'on_date'],
-          description: 'How the recurrence ends: "never" | "after_count" | "on_date".',
-        },
-        repeat_end_value: { type: 'string', description: 'Value for repeat_end_type ("after_count" → count of runs as string, "on_date" → ISO date).' },
-        anchor_time: { type: 'string', description: 'For recurring tasks: ISO 8601 timestamp that anchors all future runs (only the time-of-day matters for the drift fix, date components reflect when the anchor was set). Defaults to scheduled_start at task creation. Use this to change WHEN a recurring task fires without recreating it (e.g. "the weekly Monday task should run at 06:00 instead of 06:05"). Pass null or empty string to clear (next run will fall back to scheduled_start).' },
-        priority: { type: 'string', description: 'Priority: "high" | "normal" | "low"' },
-        notes: { type: 'string', description: 'Replace the notes field. To append rather than replace, use tracker_add_notes.' },
-      },
-      required: ['task_id'],
-    },
-  },
-  {
-    name: 'tracker_resolve_missed_runs',
-    description: 'Resolve a "missed runs" alert from the scheduler. When a recurring task is overdue by more than one full interval (typically because the platform was offline or the task was paused longer than expected), the scheduler auto-pauses the task and asks the assigned agent how to proceed. Call this with one of three actions: "run_now" (fire ONE catch-up run now, then resume normal anchor schedule, best when work is cumulative like "summarize what happened since last run"), "skip" (skip all missed slots, resume from the NEXT future anchor, best when each scheduled run is independent and stale, like "post today\'s reminder"), or "pause" (leave paused; the human user will resume via the dashboard). Only valid when the task is currently in the missed-runs paused state.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        task_id: { type: 'string', description: 'The task ID the missed-runs alert was about.' },
-        action: { type: 'string', enum: ['run_now', 'skip', 'pause'], description: 'How to resolve. See the tool description for guidance on which to pick.' },
-      },
-      required: ['task_id', 'action'],
-    },
-  },
-  {
-    name: 'tracker_get_status',
-    description: 'Get the full details of a task or project, including description/instructions, notes, dependencies, step number, assigned agent, and timestamps. Use this to read the instructions for any task. Accepts a task ID or project ID (full UUID or 8+ char prefix from tracker_list_active). Pass it as `id`, or as `task_id` / `project_id` (all accepted).',
-    input_schema: {
-      type: 'object',
-      properties: {
-        // NEXT-WAVE item 3: get_status was the lone tracker tool taking `id` while
-        // its 13 siblings take `task_id`, so the floor model passed `task_id` here
-        // and tripped the unknown-arg schema warning even though the dispatcher
-        // already aliases it. Declaring task_id / project_id here silences the
-        // warning; the dispatch maps whichever one is set onto `id`.
-        id: {
-          type: 'string',
-          description: 'Task ID or Project ID to look up',
-        },
-        task_id: {
-          type: 'string',
-          description: 'Alias for id (a task ID). Accepted so this tool matches the other tracker tools.',
-        },
-        project_id: {
-          type: 'string',
-          description: 'Alias for id (a project ID).',
-        },
-      },
-      // No hard `required`: any one of id / task_id / project_id resolves the
-      // lookup (the dispatcher maps whichever is set onto `id` and errors clearly
-      // if none was provided). Leaving all three optional is what stops the floor
-      // model's `task_id` call from tripping the unknown-arg schema warning.
-      required: [],
-    },
-    concurrency: 'safe',
-    maxResultTokens: 3000,
-  },
-  {
-    name: 'tracker_list_active',
-    description: 'List active projects and tasks with their status, assignee, and priority. Default returns compact rows (no descriptions). For descriptions on every result, pass verbose=true; for the full instructions + notes + depends_on of ONE task, use tracker_get_status(id).',
-    input_schema: {
-      type: 'object',
-      properties: {
-        filter: {
-          type: 'string',
-          enum: ['all', 'mine', 'blocked', 'overdue'],
-          description: 'Filter to apply (default: all)',
-        },
-        verbose: { type: 'boolean', description: 'If true, include each task\'s description (truncated to 200 chars). Default false (compact rows).' },
+        repeat_end_type: { type: 'string', enum: ['never', 'after_count', 'on_date'], description: 'action="edit": how the recurrence ends.' },
+        repeat_end_value: { type: 'string', description: 'action="edit": value for repeat_end_type ("after_count" → count of runs as string, "on_date" → ISO date).' },
+        anchor_time: { type: 'string', description: 'action="edit": ISO 8601 timestamp that anchors all future runs (only the time-of-day matters for the drift fix). Use this to change WHEN a recurring task fires without recreating it (e.g. "the weekly Monday task should run at 06:00 instead of 06:05"). Pass null or empty string to clear.' },
+        filter: { type: 'string', enum: ['all', 'mine', 'blocked', 'overdue'], description: 'action="list": filter to apply (default: all).' },
+        verbose: { type: 'boolean', description: 'action="list": if true, include each task\'s description (truncated to 200 chars). Default false (compact rows).' },
       },
       required: [],
     },
-    concurrency: 'safe',
     maxResultTokens: 3000,
   },
   {
-    name: 'tracker_complete_step',
-    description: 'Complete the current step in a multi-step project and automatically start the next one. Marks this task as "complete" and moves the next step (by step_number) to "in_progress". Also checks if the entire project is now complete. **Strongly preferred over `tracker_update_status(status="complete")` for multi-step projects**, using update_status to mark a step complete leaves the project with no in_progress task and is the most common cause of "agent finished a batch but the next batch never started." This tool advances the project pointer atomically: one call closes the current step and opens the next. Call it the moment you finish a step, don\'t batch up multiple completions.\n\n**Step completions are silent.** Don\'t write a user-facing message about marking the step done ("Step closed", "Moving to next step"). The advancement is internal bookkeeping, your actual work output above is what the user sees. A trailing "step complete" line is noise.',
+    name: 'work_note',
+    description: 'APPEND a timestamped note to a task. Preserves all prior notes - each call adds a new `[ISO timestamp] <your text>` line. Good for progress logs and issue trails. **Does NOT replace the existing notes.** To replace the entire notes field with new content, call work_update({action:"edit", task_id, notes}).\n\n**CRITICAL - this is a checkpoint, NOT a stopping point.** Adding a note does not pause your work. If the task is still in_progress after you write the note, CONTINUE EXECUTING the project on the same turn - call the next tool, do the next step, do not just end the turn. Only end your turn when (a) you have completed a meaningful chunk that needs user acknowledgement, OR (b) you have hit a genuine blocker. In either case, your final assistant message must explicitly say WHY you stopped ("completed step 3, waiting on user input about X", "blocked - can\'t proceed without Y"). A silent stop after a note leaves the user staring at idle progress with no idea what is happening.',
     input_schema: {
       type: 'object',
       properties: {
-        task_id: {
-          type: 'string',
-          description: 'The task ID of the step you just completed',
-        },
-        notes: {
-          type: 'string',
-          description: 'Notes about what was done in this step',
-        },
+        task_id: { type: 'string', description: 'The task ID to append notes to.' },
+        notes: { type: 'string', description: 'The note text to append (will be prefixed with a timestamp).' },
       },
-      required: ['task_id'],
+      required: ['task_id', 'notes'],
     },
   },
   {
-    name: 'commitment_open',
-    description: 'Record a promise you just made, at the moment you make it. When you tell someone "I\'ll do X", "I\'ll send that after Y", or "I\'ll get back to you on this", call this straight away with what you promised, in your own words. It becomes a tracked item you still owe, shown back to you in the "OPEN WORK" block until it is delivered or dropped. This is bookkeeping, do NOT write a user-facing message about it, and do NOT use it for work you have already finished this turn. Use tracker_create_task instead when the promise is a piece of project work that belongs on the board.',
+    name: 'work_close_request',
+    description: 'Ask for a close you cannot make yourself (Key 1 of the two-key close). `action` picks which ask:\n\n**action="override"** queues an explicit ask for the PM (or the user via dashboard) to force a status change that the engine\'s hard gate refused, OR that you believe the PM\'s last rejection got wrong. Auto-fired by the engine when the hard-gate circuit-breaker trips after 3 consecutive same-task hard-gate rejections by you (in which case you do NOT need to call this yourself, the engine queued it on your behalf). `justification` must be at least 30 characters explaining concretely why the engine/PM was wrong. Rate limit: at most one pending request per (task, you) at a time. Auto-denied after 12 hours if PM does not resolve.\n\n**action="user_verdict"** is only callable on tasks where the engine has flagged a stalemate (after revert_count crossed the per-priority threshold of high=2/normal=3/low=5). It composes a user-facing message describing the stalemate and routes it to the user (direct chat if you are primary, A2A relay through primary otherwise). The user\'s reply becomes the final verdict, applied via work_validate({action:"apply_user_verdict"}).\n\n**action="commitment"** closes an item from the OPEN WORK block once you have actually delivered it, or drops it when it is no longer owed. Call it with the id in [brackets] exactly as shown. Use disposition "kept" the moment you deliver the thing — that only works if the message or file really went out this turn, because a promise is kept by delivering it, not by saying so. Use disposition "dropped" when the person told you to forget it or it no longer applies. If you are unsure whether it is truly done, leave it open — an unfulfilled promise is meant to survive until it is actually fulfilled.',
     input_schema: {
       type: 'object',
       properties: {
-        description: {
+        action: {
           type: 'string',
-          description: 'What you promised, in one line, in your own words (e.g. "email Bob the roof quote after the site visit").',
+          enum: ['override', 'user_verdict', 'commitment'],
+          description: 'Which ask. Omit and the engine infers it (a `disposition` or a `cmt:` id → commitment, `status_requested` → user_verdict, otherwise override).',
         },
-      },
-      required: ['description'],
-    },
-  },
-  {
-    name: 'commitment_resolve',
-    description: 'Close an item from the OPEN WORK block once you have actually delivered it, or drop it when it is no longer owed. Call this with the id in [brackets] exactly as shown. Use disposition "kept" the moment you deliver the thing — that only works if the message or file really went out this turn, because a promise is kept by delivering it, not by saying so. Use disposition "dropped" when the person told you to forget it or it no longer applies. If you are unsure whether it is truly done, leave it open — an unfulfilled promise is meant to survive until it is actually fulfilled.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        id: {
-          type: 'string',
-          description: 'The id shown in [brackets] in the OPEN WORK block, e.g. "cmt:1a2b3c4d5e6f".',
-        },
+        task_id: { type: 'string', description: 'Task ID for action="override" / "user_verdict".' },
+        requested_status: { type: 'string', description: 'action="override": the status you want the task to land in (e.g. "complete", "blocked").' },
+        justification: { type: 'string', description: 'action="override": at least 30 characters. Why was the engine/PM wrong? Be specific.' },
+        status_requested: { type: 'string', description: 'action="user_verdict": the status you believe is correct (presented as your ask to the user).' },
+        agent_summary: { type: 'string', description: 'action="user_verdict": at least 30 characters. One-paragraph recap of what you did.' },
+        pm_rejection_summary: { type: 'string', description: 'action="user_verdict": at least 20 characters. One-paragraph recap of PM\'s stated objections.' },
+        id: { type: 'string', description: 'action="commitment": the id shown in [brackets] in the OPEN WORK block, e.g. "cmt:1a2b3c4d5e6f".' },
         disposition: {
           type: 'string',
           enum: ['kept', 'dropped'],
-          description: '"kept" = you delivered it this turn. "dropped" = it is no longer owed.',
+          description: 'action="commitment": "kept" = you delivered it this turn. "dropped" = it is no longer owed.',
         },
-        note: {
+        note: { type: 'string', description: 'action="commitment": short note on how it was resolved or why it was dropped (for the log; not shown to the user).' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'work_validate',
+    description: '**PM AGENT ONLY** (the owner reaches these through the dashboard). Key 2 of the two-key close: adjudicate somebody else\'s claim. `action` picks which:\n\n**action="validate"** adjudicates an agent\'s status claim. Pass `kind`:\n  - "pause": is the pause legitimate? valid=true if the reason names a real, specific external trigger the agent actually requested (e.g. "waiting for user to reboot ESP", "waiting for vendor tracking number"); valid=false if vague, complains about the PM, or is really a block. (Call for every UNVALIDATED_PAUSE in the situation report.)\n  - "complete": does the goal match the result + evidence? Read the file/audit-log/output named in evidence first, do NOT validate on prose alone. valid=false when the evidence does not demonstrate the goal.\n  - "blocked": is the block real and external (no workaround the agent could try)? valid=false when the agent has not attempted the work, has not asked a question they could ask, or the "block" is confusion.\nOn valid=true the status stands (per-kind side effects: complete fires the dependency cascade / archives a recurring per-run and resets to on_deck; blocked notifies the primary to investigate). On valid=false the task reverts to target_status (default in_progress) and the assigned agent gets the one-sentence directive in reject_reason.\n\n**action="retask"** sends a task back to its assigned agent with explicit corrective instructions. Use when the agent\'s outcome is wrong (work skipped, wrong channel, evidence doesn\'t match goal, claim doesn\'t match actual artifact) and you want them to redo it, instead of just confirming a pause or rejecting a complete. Works from any non-terminal status. Resets validation flags, increments revert_count, delivers the directive over A2A. `directive` must be at least 30 chars and concrete (what they did wrong + what to do instead). Distinct from validate(kind="pause", valid=false): that\'s reactive (adjudicating an existing pause); retask is proactive (redirecting the agent\'s effort). PROTECTED: if the task\'s work was already delivered to the user (a Key-1 close request is filed awaiting validation, or a legacy delivered flag), retask REFUSES unless you pass allow_regenerate=true, so delivered work is not silently regenerated and overwritten.\n\n**action="override"** resolves a queued OVERRIDE_REQUEST. Approve forces the requested status through (bypassing the engine hard gate); deny notifies the agent the engine was right. Distinct from a bare status change: override is for resolving an explicit pending request.\n\n**action="apply_user_verdict"** — call ONLY when a task is awaiting a user verdict. Apply the user\'s reply to that stalemate. Quote the user\'s exact words in user_quote for the audit log. The status flips immediately with the user as the authority, the validation flag for that status is set, revert_count resets, and the stalemate flag clears. The user\'s authority is supreme, PM is told not to revisit.\n\n**action="apply_user_validation"** — call ONLY when the user replied to a "[VALIDATION CHECK]" message in chat. The engine asks the user about a task that has been sitting unvalidated for 5 minutes. The user\'s reply tells us whether the work was actually done. validated=true confirms it (clears the bug icon). validated=false reverts the task to in_progress and pings the assigned agent with any feedback the user provided. Quote the user\'s exact reply in user_quote for audit.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        action: {
           type: 'string',
-          description: 'Short note on how it was resolved or why it was dropped (for the log; not shown to the user).',
+          enum: ['validate', 'retask', 'override', 'apply_user_verdict', 'apply_user_validation'],
+          description: 'Which adjudication. Omit and the engine infers it (`directive` → retask, `override_request_id` → override, `validated` → apply_user_validation, `user_quote` → apply_user_verdict, otherwise validate).',
         },
-      },
-      required: ['id', 'disposition'],
-    },
-  },
-  {
-    name: 'tracker_edit_project',
-    description: 'Rename a project or change its description. Use this when a project was auto-named badly (the engine\'s multi-step classifier names projects with a slice of the user prompt, which often reads poorly on the kanban) or when scope shifts and the title no longer describes the work. For task-level edits use tracker_edit_task; for status changes use tracker_update_status or tracker_close_project.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        project_id: { type: 'string', description: 'The project ID (full UUID or 8-char prefix).' },
-        title: { type: 'string', description: 'New project title. Optional.' },
-        description: { type: 'string', description: 'New project description. Optional. Pass empty string to clear.' },
-      },
-      required: ['project_id'],
-    },
-  },
-  {
-    name: 'tracker_validate',
-    description: '**PM AGENT ONLY.** Adjudicate an agent\'s status claim. Pass `kind`:\n  - "pause": is the pause legitimate? valid=true if the reason names a real, specific external trigger the agent actually requested (e.g. "waiting for user to reboot ESP", "waiting for vendor tracking number"); valid=false if vague, complains about the PM, or is really a block. (Call for every UNVALIDATED_PAUSE in the situation report.)\n  - "complete": does the goal match the result + evidence? Read the file/audit-log/output named in evidence first, do NOT validate on prose alone. valid=false when the evidence does not demonstrate the goal.\n  - "blocked": is the block real and external (no workaround the agent could try)? valid=false when the agent has not attempted the work, has not asked a question they could ask, or the "block" is confusion.\nOn valid=true the status stands (per-kind side effects: complete fires the dependency cascade / archives a recurring per-run to task_log and resets to on_deck; blocked notifies the primary to investigate). On valid=false the task reverts to target_status (default in_progress) and the assigned agent gets the one-sentence directive in reject_reason.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        kind: { type: 'string', enum: ['pause', 'complete', 'blocked'], description: 'Which claim to adjudicate: pause, complete, or blocked.' },
-        task_id: { type: 'string', description: 'Task ID. pause: status=paused; complete: status=complete & complete_validated=0; blocked: status=blocked & blocked_validated=0.' },
-        valid: { type: 'boolean', description: 'true = the claim stands; false = rejected and reverted.' },
-        reject_reason: { type: 'string', description: 'Required when valid=false. One-sentence directive for the agent.' },
-        target_status: { type: 'string', enum: ['in_progress', 'on_deck', 'blocked'], description: 'Optional. Where to send the task on rejection. Default in_progress. Use blocked if a rejected pause was really a block.' },
-      },
-      required: ['kind', 'task_id', 'valid'],
-    },
-  },
-  {
-    name: 'tracker_retask',
-    description: '**PM AGENT ONLY.** Send a task back to its assigned agent with explicit corrective instructions. Use when the agent\'s outcome is wrong (work skipped, wrong channel, evidence doesn\'t match goal, claim doesn\'t match actual artifact) and you want them to redo it, instead of just confirming a pause or rejecting a complete. Works from any non-terminal status (in_progress, on_deck, paused, blocked, complete). Resets validation flags, increments revert_count, delivers the directive over A2A. directive must be at least 30 chars and concrete (what they did wrong + what to do instead). Distinct from validate_pause(valid=false): that\'s reactive (PM adjudicating an existing pause); retask is proactive (PM redirecting the agent\'s effort). PROTECTED: if the task\'s work was already delivered to the user (a Key-1 close request is filed awaiting validation, or a legacy delivered flag), retask REFUSES unless you pass allow_regenerate=true, so delivered work is not silently regenerated and overwritten.',
-    input_schema: {
-      type: 'object',
-      properties: {
         task_id: { type: 'string', description: 'Task ID (full or 8-char prefix).' },
-        directive: { type: 'string', description: 'At least 30 characters. Tell the agent concretely what they did wrong and what to do instead (e.g. "you posted the brief in chat but the task specifies email delivery; call send_email with the same content").' },
-        target_status: { type: 'string', enum: ['in_progress', 'on_deck'], description: 'Optional. Where to land the task after retask. Default in_progress.' },
-        allow_regenerate: { type: 'boolean', description: 'Optional. Set true ONLY when the task\'s deliverable was already delivered to the user AND you have judged it genuinely misses the goal, so the assignee should redo and overwrite it. Without this, retask refuses to protect delivered work. Default false.' },
+        kind: { type: 'string', enum: ['pause', 'complete', 'blocked'], description: 'action="validate": which claim to adjudicate.' },
+        valid: { type: 'boolean', description: 'action="validate": true = the claim stands; false = rejected and reverted.' },
+        reject_reason: { type: 'string', description: 'action="validate": required when valid=false. One-sentence directive for the agent.' },
+        target_status: { type: 'string', enum: ['in_progress', 'on_deck', 'blocked'], description: 'Where to send the task on rejection or after a retask. Default in_progress. Use blocked if a rejected pause was really a block.' },
+        directive: { type: 'string', description: 'action="retask": at least 30 characters. Tell the agent concretely what they did wrong and what to do instead (e.g. "you posted the brief in chat but the task specifies email delivery; call send_email with the same content").' },
+        allow_regenerate: { type: 'boolean', description: 'action="retask": set true ONLY when the deliverable was already delivered to the user AND you have judged it genuinely misses the goal, so the assignee should redo and overwrite it. Without this, retask refuses to protect delivered work. Default false.' },
+        override_request_id: { type: 'string', description: 'action="override": the OVERRIDE_REQUEST id (full or 8-char prefix).' },
+        approve: { type: 'boolean', description: 'action="override": true = force the status through; false = deny and notify the agent.' },
+        reason: { type: 'string', description: 'action="override": one sentence on why you approved or denied.' },
+        status: { type: 'string', description: 'action="apply_user_verdict": the status the user chose. Typically complete, blocked, paused, in_progress, or on_deck.' },
+        validated: { type: 'boolean', description: 'action="apply_user_validation": true = user confirmed the work is done. false = user said it is NOT done.' },
+        user_quote: { type: 'string', description: 'The user\'s exact reply for the audit trail. Required for both user-verdict actions.' },
+        feedback: { type: 'string', description: 'action="apply_user_validation", when validated=false: any feedback to relay to the assigned agent (e.g. "the file is empty, rerun").' },
       },
-      required: ['task_id', 'directive'],
-    },
-  },
-  // C27: tracker_validate_complete + tracker_validate_blocked merged into
-  // tracker_validate({kind}) above (schemas were near-identical).
-  {
-    name: 'tracker_request_override',
-    description: 'Queue an explicit ask for the PM (or the user via dashboard) to force a status change that the engine\'s hard gate refused, OR that you believe the PM\'s last rejection got wrong. Auto-fired by the engine when the hard-gate circuit-breaker trips after 3 consecutive same-task hard-gate rejections by you (in which case you do NOT need to call this yourself, the engine queued it on your behalf). Justification must be at least 30 characters explaining concretely why the engine/PM was wrong. Rate limit: at most one pending request per (task, you) at a time. Auto-denied after 12 hours if PM does not resolve.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        task_id: { type: 'string', description: 'Task ID.' },
-        requested_status: { type: 'string', description: 'The status you want the task to land in (e.g. "complete", "blocked").' },
-        justification: { type: 'string', description: 'At least 30 characters. Why was the engine/PM wrong? Be specific.' },
-      },
-      required: ['task_id', 'requested_status', 'justification'],
+      required: [],
     },
   },
   {
-    name: 'tracker_override',
-    description: '**PM AGENT ONLY.** Resolve a queued OVERRIDE_REQUEST. Approve forces the requested status through (bypassing the engine hard gate); deny notifies the agent the engine was right. Distinct from bare tracker_update_status: override is for resolving an explicit pending request, bare update_status is for proactive PM correction.',
+    name: 'work_schedule',
+    description: '**Scheduled/recurring tasks ONLY.** `action` picks what:\n\n**action="pause"** pauses a recurring task\'s schedule so it stops firing. **DO NOT use this to "finish" a non-recurring task**, for a one-shot task you completed, call `work_update({action:"status", status:"complete"})` instead. Pausing a one-shot task strands it forever (it sits in the Paused column, cannot be completed without unpausing, and PM monitoring ignores it). If the recurring task\'s remaining runs are no longer needed, set mark_complete=true to stop the schedule AND mark the task complete in one call.\n\n**action="resume"** resumes a paused recurring task.\n\n**action="resolve_missed"** resolves a "missed runs" alert from the scheduler. When a recurring task is overdue by more than one full interval (typically because the platform was offline or the task was paused longer than expected), the scheduler auto-pauses the task and asks the assigned agent how to proceed. Pass `resolution` as one of three: "run_now" (fire ONE catch-up run now, then resume normal anchor schedule, best when work is cumulative like "summarize what happened since last run"), "skip" (skip all missed slots, resume from the NEXT future anchor, best when each scheduled run is independent and stale, like "post today\'s reminder"), or "pause" (leave paused; the human user will resume via the dashboard). Only valid when the task is currently in the missed-runs paused state.',
     input_schema: {
       type: 'object',
       properties: {
-        override_request_id: { type: 'string', description: 'The OVERRIDE_REQUEST id (full or 8-char prefix).' },
-        approve: { type: 'boolean', description: 'true = force the status through; false = deny and notify the agent.' },
-        reason: { type: 'string', description: 'One sentence on why you approved or denied.' },
-      },
-      required: ['override_request_id', 'approve', 'reason'],
-    },
-  },
-  {
-    name: 'tracker_request_user_verdict',
-    description: 'Only callable on tasks where the engine has flagged a stalemate (awaiting_user_verdict=1, set after revert_count crossed the per-priority threshold of high=2/normal=3/low=5). Composes a user-facing message describing the stalemate and routes it to the user (direct chat if you are primary, A2A relay through primary otherwise). The user\'s reply becomes the final verdict, applied via tracker_apply_user_verdict.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        task_id: { type: 'string', description: 'The stalled task id.' },
-        status_requested: { type: 'string', description: 'The status you believe is correct (will be presented as your ask to the user).' },
-        agent_summary: { type: 'string', description: 'At least 30 characters. One-paragraph recap of what you did.' },
-        pm_rejection_summary: { type: 'string', description: 'At least 20 characters. One-paragraph recap of PM\'s stated objections.' },
-      },
-      required: ['task_id', 'status_requested', 'agent_summary', 'pm_rejection_summary'],
-    },
-  },
-  {
-    name: 'tracker_apply_user_verdict',
-    description: 'Call ONLY when a task is in awaiting_user_verdict (=1). Apply the user\'s reply to that stalemate. Quote the user\'s exact words in user_quote for the audit log. The status flips immediately with from_entity="user", the validation flag for that status is set to 1, revert_count resets, and the stalemate flag clears. The user\'s authority is supreme, PM is told not to revisit.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        task_id: { type: 'string', description: 'The stalled task id.' },
-        status: { type: 'string', description: 'The status the user chose. Typically complete, blocked, paused, in_progress, or on_deck.' },
-        user_quote: { type: 'string', description: 'The user\'s exact reply for audit. Required.' },
-      },
-      required: ['task_id', 'status', 'user_quote'],
-    },
-  },
-  {
-    name: 'tracker_apply_user_validation',
-    description: 'Call ONLY when the user replied to a "[VALIDATION CHECK]" message in chat. The engine asks the user about a task that has been sitting unvalidated for 5 minutes. The user\'s reply tells us whether the work was actually done. validated=true confirms it (clears the bug icon). validated=false reverts the task to in_progress and pings the assigned agent with any feedback the user provided. Quote the user\'s exact reply in user_quote for audit.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        task_id: { type: 'string', description: 'The task id from the validation-check system message.' },
-        validated: { type: 'boolean', description: 'true = user confirmed the work is done. false = user said it is NOT done.' },
-        user_quote: { type: 'string', description: 'The user\'s exact reply for the audit trail.' },
-        feedback: { type: 'string', description: 'Optional. When validated=false: any feedback to relay to the assigned agent (e.g. "the file is empty, rerun").' },
-      },
-      required: ['task_id', 'validated', 'user_quote'],
-    },
-  },
-  {
-    name: 'tracker_close_project',
-    description: 'Close an entire project AND every open task on it in one call. Use this when you want to abandon a project, when you discover a duplicate project, when scope changed and the work is no longer relevant, or when every remaining task has genuinely been completed but is still showing as open. Pass status="cancelled" for abandoned/duplicate/scope-change cases (the default, leaves a "cancelled" marker on each task) and status="complete" only when all the work was actually done. The reason string is required and gets appended as a note on every task closed, this is the audit trail for whoever sees the kanban next. Far better than looping tracker_update_status one task at a time, and the only correct response when the engine tells you a project of yours is stranded (open tasks left behind on an abandoned project).',
-    input_schema: {
-      type: 'object',
-      properties: {
-        project_id: { type: 'string', description: 'The project ID to close (full UUID or 8-char prefix from tracker_list_active).' },
-        status: { type: 'string', enum: ['complete', 'cancelled'], description: 'Terminal status to set on the project and every open task. Default "cancelled". Use "complete" ONLY when all the work actually finished, otherwise "cancelled".' },
-        reason: { type: 'string', description: 'Required. A short sentence on why you are closing the project. Gets appended as a note on every closed task, this is the audit trail for the user.' },
-      },
-      required: ['project_id', 'reason'],
-    },
-  },
-  // ── Schedule Tools (Phase 6) ──
-  {
-    name: 'tracker_pause_schedule',
-    description: '**Scheduled/recurring tasks ONLY.** Pause a recurring task\'s schedule so it stops firing. **DO NOT use this to "finish" a non-recurring task**, for a one-shot task you completed, call `tracker_update_status(status="complete")` instead. Pausing a one-shot task strands it forever (it sits in the Paused column, cannot be completed without unpausing, and PM monitoring ignores it). If the recurring task\'s remaining runs are no longer needed, set mark_complete=true to stop the schedule AND mark the task complete in one call.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        task_id: { type: 'string', description: 'The task ID to pause' },
-        mark_complete: { type: 'boolean', description: 'If true, also mark the task as complete (use when the work is already done and remaining runs are unnecessary)' },
-      },
-      required: ['task_id'],
-    },
-  },
-  {
-    name: 'tracker_resume_schedule',
-    description: 'Resume a paused recurring task.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        task_id: { type: 'string', description: 'The task ID to resume' },
+        action: {
+          type: 'string',
+          enum: ['pause', 'resume', 'resolve_missed'],
+          description: 'Which schedule operation. Omit and the engine infers it (a `resolution` → resolve_missed, otherwise pause).',
+        },
+        task_id: { type: 'string', description: 'The task ID.' },
+        mark_complete: { type: 'boolean', description: 'action="pause": if true, also mark the task as complete (use when the work is already done and remaining runs are unnecessary).' },
+        resolution: {
+          type: 'string',
+          enum: ['run_now', 'skip', 'pause'],
+          description: 'action="resolve_missed": how to resolve. REQUIRED for that action. See the tool description for guidance on which to pick.',
+        },
       },
       required: ['task_id'],
     },
@@ -2607,19 +2324,6 @@ export const toolDefinitions: ToolDefinition[] = [
     },
     concurrency: 'safe',
     maxResultTokens: 2000,
-  },
-  {
-    name: 'tracker_reassign_task',
-    description: 'Reassign a task to a different agent or group.',
-    input_schema: {
-      type: 'object',
-      properties: {
-        task_id: { type: 'string', description: 'Task ID to reassign' },
-        assigned_to: { type: 'string', description: 'Agent ID to assign to (use this OR assigned_to_group, not both)' },
-        assigned_to_group: { type: 'string', description: 'Group ID to assign to, the PM will pick an available agent at run time' },
-      },
-      required: ['task_id'],
-    },
   },
   // C27: update_agent_permissions merged into update_agent({permissions}) above.
   // ── Public file sharing ──
@@ -4521,7 +4225,7 @@ function permissionDeniedMessage(reason: string | undefined, agentId: string): s
   return `[BLOCKED] Permission denied: ${reason ?? 'not allowed'}\n\nThis operation is permanently blocked by your permission settings. Retrying will fail every time.\n\nInstead, you should:\n${numbered}`;
 }
 
-// v2.5.3, shared by tracker_create_task and tracker_edit_task. Accepts an
+// v2.5.3, shared by work_open(kind="task") and work_update(action="edit"). Accepts an
 // array of names ("mon", "wednesday"), an array of ints (0-6), or a CSV
 // string and returns the canonical CSV-of-ints stored in the DB ("1,3").
 // Returns null when the input is null (caller wants to clear), undefined
@@ -4652,17 +4356,18 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
   // never flips a worker's status directly. computeFilteredTools already strips
   // non-allow-list tools from the PM's advertised surface, but per Architecture
   // Rule 1 that strip is advice only: the floor model can emit a worker verb
-  // (tracker_update_status, spawn_agent, an exec/send) from free text and reach
-  // here. Re-check the SAME single-source allow-list (PM_ALLOWED_TOOLS_SET, owned
-  // by tracker/pm-agent.ts) at the executor and refuse anything outside it,
+  // (a work_update status flip, spawn_agent, an exec/send) from free text and reach
+  // here. Re-check the SAME single-source allow-list (`pmMayCall`, owned by
+  // tracker/pm-agent.ts, which matches the OPERATION not the verb name — see the
+  // T8V note there) at the executor and refuse anything outside it,
   // naming the overseer verbs so the PM redirects instead of doing the work.
-  if (isPMAgent(agentId) && !PM_ALLOWED_TOOLS_SET.has(name)) {
+  if (isPMAgent(agentId) && !pmMayCall(name, args)) {
     auditLog(agentId, name, null, 'denied', `${name} is outside the PM overseer allow-list`);
     logger.warn('Blocked PM tool call outside overseer allow-list', { tool: name }, agentId);
     return {
       toolCallId: id,
       name,
-      content: `[BLOCKED by engine] You are the project manager (overseer), so "${name}" is not available to you. You do NOT execute or edit work; you oversee it. Your overseer verbs are: tracker_validate (bless or reject a close-out), tracker_retask (send work back with a directive), tracker_reassign_task, tracker_override and tracker_apply_user_verdict (adjudicate), tracker_pause_schedule / tracker_resume_schedule, plus read-only inspection (tracker_get_status, tracker_list_active, file_read/file_list, history_search, vault_search) and messaging (send_to_agent, broadcast_to_group). If a worker needs to do "${name}", direct the assigned agent to do it via send_to_agent or tracker_retask.`,
+      content: `[BLOCKED by engine] You are the project manager (overseer), so "${name}" is not available to you. You do NOT execute or edit work; you oversee it. Your overseer verbs are: work_validate (bless or reject a close-out with action="validate", send work back with action="retask", adjudicate with action="override" / "apply_user_verdict"), work_update(action="reassign") to hand work to another agent, work_schedule (pause / resume), plus read-only inspection (work_update with action="get" or "list", file_read/file_list, history_search, vault_search) and messaging (send_to_agent, broadcast_to_group). If a worker needs to do "${name}", direct the assigned agent to do it via send_to_agent or work_validate(action="retask").`,
       isError: true,
     };
   }
@@ -4671,7 +4376,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
   let isError = false;
 
   // ── v2.3.19 (Scenario 18 finding), unknown-arg detection ──
-  // Pre-spec, an agent could call e.g. tracker_create_task with
+  // Pre-spec, an agent could call e.g. work_open(kind="task") with
   // schedule_cron="every fortnight" and the engine silently dropped the
   // unknown arg. Net result: the agent thought it scheduled a task and
   // it didn't, with no feedback. Now we detect args not in the tool's
@@ -4790,10 +4495,18 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     }
   }
 
-  if (name === 'tracker_validate' || name === 'tracker_override' || name === 'tracker_retask') {
-    if (!isPMAgent(agentId)) {
-      auditLog(agentId, name, null, 'denied', `${name} is restricted to the PM agent`);
-      return { toolCallId: id, name, content: `Permission denied: only the PM agent can call ${name}. If you think the engine or PM got it wrong, call tracker_request_override with a justification instead.`, isError: true };
+  // PHASE-2 T8V: this gate protected THREE PM-only operations that used to be
+  // three tool names. After the collapse they are three ACTIONS on one verb, so
+  // the gate matches the operation, not the name — otherwise it would either
+  // lock the PM out of nothing (matching `work_validate` alone still works, but
+  // only because every work_validate action happens to be PM-only) or, the day
+  // a non-PM action is added to the verb, silently start refusing it. Deriving
+  // the op keeps the rule stated where the rule actually lives.
+  {
+    const pmOnlyOp = workOperation(name, args);
+    if (pmOnlyOp !== null && PM_ONLY_WORK_OPS.has(pmOnlyOp) && !isPMAgent(agentId)) {
+      auditLog(agentId, name, null, 'denied', `${pmOnlyOp} is restricted to the PM agent`);
+      return { toolCallId: id, name, content: `Permission denied: only the PM agent can call ${pmOnlyOp}. If you think the engine or PM got it wrong, call work_close_request(action="override") with a justification instead.`, isError: true };
     }
   }
 
@@ -4998,7 +4711,14 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
       return { toolCallId: id, name, content, isError };
     }
 
-    switch (name) {
+    // PHASE-2 T8V: dispatch on the OPERATION, not the raw tool name. For the six
+    // work verbs `workOperation` turns (name, args) into `<verb>:<discriminator>`;
+    // every other tool keys on its own name exactly as before. Case labels below
+    // therefore read `work_update:status` rather than a retired verb name, so
+    // nothing in this switch can be mistaken for a tool name and T10's grep-zero
+    // over the retired verb list has nothing left to find here.
+    const dispatchKey = workOperation(name, args) ?? name;
+    switch (dispatchKey) {
       case 'load_tool_docs': {
         const { executeLoadToolDocs } = await import('../tools/tool-docs.js');
         const requestedTools = (args.tools as string[]) ?? [];
@@ -5838,11 +5558,11 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
             // Engine-driven task discipline (Phase 7+): ASSIGN intent
             // auto-creates a tracker task. Surface the ID so the sender
             // knows where to track progress without having to call
-            // tracker_create_task themselves.
+            // work_open(kind="task") themselves.
             if (result.autoCreatedTaskId) {
               const taskShort = result.autoCreatedTaskId.slice(0, 8);
               content += result.autoTaskIsNew
-                ? `\nTask ${taskShort} auto-created and assigned to "${agentRef}", track progress with tracker_get_status(task_id="${result.autoCreatedTaskId}"). You will be notified automatically when they mark it complete.`
+                ? `\nTask ${taskShort} auto-created and assigned to "${agentRef}", track progress with work_update(action="get", task_id="${result.autoCreatedTaskId}"). You will be notified automatically when they mark it complete.`
                 : `\nContinuing on existing task ${taskShort} (created by an earlier ASSIGN on this thread).`;
             }
           } else {
@@ -6008,7 +5728,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         ]);
         if (validationError) { content = validationError; isError = true; break; }
         // Normalize case/synonyms at the tool boundary (mirrors the
-        // tracker_update_status STATUS_SYNONYMS fix). A weak floor model saying
+        // work_update(action="status") STATUS_SYNONYMS fix). A weak floor model saying
         // "done"/"failed"/"stuck" previously hard-errored here even though the
         // intent was unambiguous. Map ONLY words whose intent is unambiguous so
         // the divergent side effects are preserved: complete fires the dependency
@@ -6051,7 +5771,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         if (!agentCanSelfCompleteById(agentId)) {
           content =
             `complete_task ends a spawned agent's lifecycle and is not available to a persistent agent. ` +
-            `To mark tracker work done use tracker_update_status(task_id=..., status="complete"). ` +
+            `To mark tracker work done use work_update(action="status", task_id=..., status="complete"). ` +
             `If you are blocked, say so in your reply so the user can act.`;
           isError = true;
           break;
@@ -6072,7 +5792,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
       }
 
       // ── Tracker Tools ──
-      case 'tracker_create_project': {
+      case 'work_open:project': {
         const projErr = checkRequired([
           { name: 'title', value: args.title, type: 'string' },
         ]);
@@ -6095,12 +5815,12 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
             allow_duplicate: args.allow_duplicate as boolean | undefined,
           });
         } catch (err) {
-          content = friendlyDbError(err, 'tracker_create_project');
+          content = friendlyDbError(err, 'work_open(kind="project")');
         }
         isError = content.startsWith('Error');
         break;
       }
-      case 'tracker_create_task': {
+      case 'work_open:task': {
         const taskErr = checkRequired([
           { name: 'title', value: args.title, type: 'string' },
         ]);
@@ -6109,7 +5829,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         // v2.5.2, normalize repeat_days_of_week from agent-friendly
         // formats (array of names, array of ints, or CSV string) into
         // the canonical CSV-of-ints stored in the DB. v2.5.3, shared
-        // with tracker_edit_task via normalizeRepeatDaysOfWeek().
+        // with work_update(action="edit") via normalizeRepeatDaysOfWeek().
         const normalizedDays = normalizeRepeatDaysOfWeek(args.repeat_days_of_week);
         if (normalizedDays === '__INVALID__') {
           content = 'Error: repeat_days_of_week contained no valid days. Accepted: sun/mon/tue/wed/thu/fri/sat or 0-6.';
@@ -6215,18 +5935,18 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
             goal: args.goal as string | undefined,
           });
         } catch (err) {
-          content = friendlyDbError(err, 'tracker_create_task');
+          content = friendlyDbError(err, 'work_open(kind="task")');
         }
         isError = content.startsWith('Error');
         break;
       }
-      case 'reminder_create': {
+      case 'work_open:reminder': {
         const remErr = checkRequired([
           { name: 'what', value: args.what, type: 'string' },
         ]);
         if (remErr) { content = remErr; isError = true; break; }
 
-        // Mirror tracker_create_task's day-of-week normalization for the
+        // Mirror the task path's day-of-week normalization for the
         // recurring reminder case so callers can pass ["mon","wed"] and
         // get the canonical CSV-of-ints the scheduler expects.
         const normalizedDays = normalizeRepeatDaysOfWeek(args.repeat_days_of_week);
@@ -6242,7 +5962,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           break;
         }
 
-        // Same recurring-schedule integrity gate as tracker_create_task.
+        // Same recurring-schedule integrity gate as kind="task".
         // Reminders go through the same scheduler, so a partial config
         // produces the same silent never-fires failure mode here.
         const VALID_REMINDER_REPEAT_UNITS = new Set([
@@ -6250,7 +5970,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         ]);
         const remHasInterval = args.repeat_interval !== undefined && args.repeat_interval !== null;
         const remHasUnit = args.repeat_unit !== undefined && args.repeat_unit !== null && args.repeat_unit !== '';
-        // Same ordering rule as tracker_create_task: catch invalid unit
+        // Same ordering rule as kind="task": catch invalid unit
         // first so a misspelled value ("weekly") produces a corrective
         // hint instead of a misleading "missing interval" message.
         if (remHasUnit && !VALID_REMINDER_REPEAT_UNITS.has(args.repeat_unit as string)) {
@@ -6299,13 +6019,13 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
             anchor_time: args.anchor_time,
           });
         } catch (err) {
-          content = friendlyDbError(err, 'reminder_create');
+          content = friendlyDbError(err, 'work_open(kind="reminder")');
         }
         // ASK_USER is an instruction to the agent, not an error.
         isError = content.startsWith('Error');
         break;
       }
-      case 'tracker_update_status': {
+      case 'work_update:status': {
         const updErr = checkRequired([
           { name: 'task_id', value: args.task_id, type: 'string' },
           { name: 'status', value: args.status, type: 'string' },
@@ -6329,7 +6049,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         isError = content.startsWith('Error');
         break;
       }
-      case 'tracker_add_notes': {
+      case 'work_note': {
         const notesErr = checkRequired([
           { name: 'task_id', value: args.task_id, type: 'string' },
           { name: 'notes', value: args.notes, type: 'string' },
@@ -6343,8 +6063,20 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       // C27: tracker_edit_notes + tracker_clear_notes deleted (dead v2.8.0 stubs);
-      // now tombstone aliases. Append via tracker_add_notes; replace via tracker_edit_task({notes}).
-      case 'tracker_edit_task': {
+      // now tombstone aliases. Append via work_note; replace via work_update({action:"edit", notes}).
+      case 'work_update:edit': {
+        // PHASE-2 T8V: one `edit` discriminator covers both nouns. A project_id
+        // with no task_id edits the PROJECT (the §7.2 absorb-don't-refuse rule);
+        // this is the merged body of the retired project-edit verb, unchanged.
+        if (typeof args.project_id === 'string' && args.project_id.trim() && !args.task_id) {
+          content = trackerEditProject(agentId, {
+            project_id: args.project_id as string,
+            title: args.title as string | undefined,
+            description: args.description as string | null | undefined,
+          });
+          isError = content.startsWith('Error');
+          break;
+        }
         const editErr = checkRequired([
           { name: 'task_id', value: args.task_id, type: 'string' },
         ]);
@@ -6402,7 +6134,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         isError = content.startsWith('Error');
         break;
       }
-      case 'tracker_get_status': {
+      case 'work_update:get': {
         // F6 (harness finding): sibling tools take task_id / project_id, so weak
         // models naturally pass those here too. Accept them as aliases for id
         // instead of warning-and-ignoring (which left the call id-less).
@@ -6420,7 +6152,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         isError = content.startsWith('Error');
         break;
       }
-      case 'tracker_list_active': {
+      case 'work_update:list': {
         const listFilter = args.filter as string | undefined;
         const verbose = args.verbose as boolean | undefined;
         if (listFilter === 'mine') {
@@ -6439,14 +6171,14 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
       // and it is closed by a delivery or by an explicit drop. Both verbs route through
       // `work/store.ts` — the spine's one writer — and neither can reach `done` without the
       // delivery `transition()` demands.
-      case 'commitment_open': {
+      case 'work_open:commitment': {
         const coErr = checkRequired([{ name: 'description', value: args.description, type: 'string' }]);
         if (coErr) { content = coErr; isError = true; break; }
         const coTurn = currentTurnNumber.get(agentId) ?? null;
         if (coTurn === null) {
           // Origin is required on the spine, and a commitment's origin is the turn that made
           // it. Refusing here is honest; minting a row with a fabricated turn is not.
-          content = 'Error: commitment_open can only be called inside a turn.';
+          content = 'Error: work_open(kind="commitment") can only be called inside a turn.';
           isError = true;
           break;
         }
@@ -6466,7 +6198,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         content = `[OK] Recorded: ${(args.description as string).trim()} — id ${coId}. It stays open until you deliver it or drop it.`;
         break;
       }
-      case 'commitment_resolve': {
+      case 'work_close_request:commitment': {
         const crErr = checkRequired([
           { name: 'id', value: args.id, type: 'string' },
           { name: 'disposition', value: args.disposition, type: 'string' },
@@ -6508,7 +6240,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         }
         break;
       }
-      case 'tracker_complete_step': {
+      case 'work_update:complete_step': {
         // task_id is intentionally NOT hard-required here: a single-task agent
         // (the floor model working its one assigned step) routinely omits it.
         // trackerCompleteStep resolves the obvious task when exactly one is in
@@ -6521,22 +6253,11 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         isError = content.startsWith('Error');
         break;
       }
-      case 'tracker_edit_project': {
-        const tepErr = checkRequired([{ name: 'project_id', value: args.project_id, type: 'string' }]);
-        if (tepErr) { content = tepErr; isError = true; break; }
-        content = trackerEditProject(agentId, {
-          project_id: args.project_id as string,
-          title: args.title as string | undefined,
-          description: args.description as string | null | undefined,
-        });
-        isError = content.startsWith('Error');
-        break;
-      }
-      // C27: tracker_validate_{pause,complete,blocked} merged into tracker_validate({kind}).
-      case 'tracker_validate': {
+      // C27: three validate verbs merged into one {kind} discriminator; T8V merged that verb into work_validate({action:"validate", kind}).
+      case 'work_validate:validate': {
         const vkind = args.kind as 'pause' | 'complete' | 'blocked' | undefined;
         if (!vkind || !['pause', 'complete', 'blocked'].includes(vkind)) {
-          content = 'Error: tracker_validate requires kind to be one of: pause, complete, blocked.';
+          content = 'Error: work_validate(action="validate") requires kind to be one of: pause, complete, blocked.';
           isError = true;
           break;
         }
@@ -6557,7 +6278,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         else content = await trackerMod.trackerValidateBlocked(agentId, vp);
         break;
       }
-      case 'tracker_retask': {
+      case 'work_validate:retask': {
         const trErr = checkRequired([
           { name: 'task_id', value: args.task_id, type: 'string' },
           { name: 'directive', value: args.directive, type: 'string' },
@@ -6573,9 +6294,9 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         isError = content.startsWith('Error');
         break;
       }
-      // C27: tracker_validate_complete + tracker_validate_blocked folded into
-      // the tracker_validate({kind}) case above.
-      case 'tracker_request_override': {
+      // C27: the two extra validate verbs folded into the {kind} discriminator
+      // handled by the work_validate:validate case above.
+      case 'work_close_request:override': {
         const troErr = checkRequired([
           { name: 'task_id', value: args.task_id, type: 'string' },
           { name: 'requested_status', value: args.requested_status, type: 'string' },
@@ -6590,7 +6311,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         });
         break;
       }
-      case 'tracker_override': {
+      case 'work_validate:override': {
         const toErr = checkRequired([
           { name: 'override_request_id', value: args.override_request_id, type: 'string' },
           { name: 'approve', value: args.approve, type: 'boolean' },
@@ -6605,7 +6326,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         });
         break;
       }
-      case 'tracker_request_user_verdict': {
+      case 'work_close_request:user_verdict': {
         const truvErr = checkRequired([
           { name: 'task_id', value: args.task_id, type: 'string' },
           { name: 'status_requested', value: args.status_requested, type: 'string' },
@@ -6622,7 +6343,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         });
         break;
       }
-      case 'tracker_apply_user_verdict': {
+      case 'work_validate:apply_user_verdict': {
         const tauvErr = checkRequired([
           { name: 'task_id', value: args.task_id, type: 'string' },
           { name: 'status', value: args.status, type: 'string' },
@@ -6637,7 +6358,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         });
         break;
       }
-      case 'tracker_apply_user_validation': {
+      case 'work_validate:apply_user_validation': {
         const tauvErr = checkRequired([
           { name: 'task_id', value: args.task_id, type: 'string' },
           { name: 'validated', value: args.validated, type: 'boolean' },
@@ -6653,7 +6374,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         });
         break;
       }
-      case 'tracker_close_project': {
+      case 'work_update:close_project': {
         const tcpErr = checkRequired([
           { name: 'project_id', value: args.project_id, type: 'string' },
           { name: 'reason', value: args.reason, type: 'string' },
@@ -6669,28 +6390,38 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
       }
 
       // ── Schedule Tools (Phase 6) ──
-      case 'tracker_pause_schedule': {
+      case 'work_schedule:pause': {
         const tpsErr = checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
         if (tpsErr) { content = tpsErr; isError = true; break; }
         content = trackerPauseSchedule(agentId, { taskId: args.task_id as string, mark_complete: args.mark_complete as boolean | undefined });
         isError = content.startsWith('Error');
         break;
       }
-      case 'tracker_resume_schedule': {
+      case 'work_schedule:resume': {
         const trsErr = checkRequired([{ name: 'task_id', value: args.task_id, type: 'string' }]);
         if (trsErr) { content = trsErr; isError = true; break; }
         content = trackerResumeSchedule(agentId, { taskId: args.task_id as string });
         isError = content.startsWith('Error');
         break;
       }
-      case 'tracker_resolve_missed_runs': {
+      case 'work_schedule:resolve_missed': {
+        // PHASE-2 T8V: the discriminator collision. The retired verb's own
+        // parameter was called `action` and one of its values was "pause", which
+        // is also a work_schedule action — so the missed-run choice moved to
+        // `resolution` and is mapped back onto the handler's `action` here. A
+        // model that still sends the old shape (`action:"run_now"|"skip"`) is
+        // absorbed: workOperation only reads pause/resume/resolve_missed, so an
+        // unrecognised value falls through to this case and is used as-is.
+        const rawResolution = args.resolution ?? (
+          args.action === 'run_now' || args.action === 'skip' ? args.action : undefined
+        );
         const trmrErr = checkRequired([
           { name: 'task_id', value: args.task_id, type: 'string' },
-          { name: 'action', value: args.action, type: 'string' },
+          { name: 'resolution', value: rawResolution, type: 'string' },
         ]);
         if (trmrErr) { content = trmrErr; isError = true; break; }
         const { trackerResolveMissedRuns } = await import('../tracker/tools.js');
-        content = trackerResolveMissedRuns(agentId, args);
+        content = trackerResolveMissedRuns(agentId, { ...args, action: rawResolution });
         isError = content.startsWith('Error');
         break;
       }
@@ -7798,13 +7529,13 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         }
         break;
       }
-      case 'tracker_reassign_task': {
+      case 'work_update:reassign': {
         const rawReassignTaskId = args.task_id as string;
         if (!rawReassignTaskId) { content = 'Error: task_id is required'; isError = true; break; }
 
         // Resolve task id prefix to the full UUID so this tool accepts
-        // the 8-char ids emitted by tracker_list_active, same pattern as
-        // the other tracker_* tools.
+        // the 8-char ids emitted by work_update(action="list"), same pattern as
+        // every other work operation.
         const { resolveTaskId, formatResolveError, clearPokeLog } = await import('../tracker/schema.js');
         const reassignResolved = resolveTaskId(rawReassignTaskId);
         if (!reassignResolved.ok) {

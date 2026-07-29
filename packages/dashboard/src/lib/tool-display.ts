@@ -24,7 +24,7 @@ const FRIENDLY_LABELS: Record<string, string> = {
   file_write: 'wrote a file',
   file_patch: 'edited a file',
   exec: 'ran a command',
-  reminder_create: 'set a reminder',
+  work_open: 'open work',
   calendar_create: 'created a calendar event',
   calendar_create_ms: 'created a calendar event',
   calendar_update: 'updated a calendar event',

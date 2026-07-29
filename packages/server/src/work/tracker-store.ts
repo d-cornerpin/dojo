@@ -273,10 +273,10 @@ export interface SetStatusInput {
    *
    * They are TWO AXES and conflating them is a live bug, not a tidiness point: T6's reopen
    * edge negative-controls them against each other, because the engine's "the ball is with
-   * the owner" pause must NOT stop a recurring schedule, while `tracker_update_status
+   * the owner" pause must NOT stop a recurring schedule, while `work_update(action="status")
    * (status='paused')` deliberately does — `updateTask`'s own comment said so ("keep
-   * is_paused in sync ... regardless of whether the pause came from tracker_update_status
-   * or tracker_pause_schedule"). Default false; the tool paths opt IN.
+   * is_paused in sync ... regardless of whether the pause came from work_update(action="status")
+   * or work_schedule(action="pause")"). Default false; the tool paths opt IN.
    */
   syncSchedulePause?: boolean;
 }
