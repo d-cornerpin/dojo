@@ -1232,7 +1232,7 @@ function cleanupOrphanedRuns(): void {
   const db = getDb();
 
   const orphans = db.prepare(`
-    SELECT tr.id as run_id, tr.taskId, tr.assigned_to
+    SELECT tr.id as run_id, tr.task_id, tr.assigned_to
     FROM task_runs tr
     LEFT JOIN agents a ON a.id = tr.assigned_to
     WHERE tr.status = 'running'
@@ -1297,9 +1297,9 @@ function cleanupStaleRuns(): void {
   // live reminder the owner needs told about. A short age guard avoids racing an
   // in-flight advance.
   const orphanRuns = db.prepare(`
-    SELECT tr.id AS run_id, tr.taskId, tr.run_number
+    SELECT tr.id AS run_id, tr.task_id, tr.run_number
     FROM task_runs tr
-    LEFT JOIN work t ON t.id = tr.taskId
+    LEFT JOIN work t ON t.id = tr.task_id
     WHERE tr.status IN ('pending', 'running')
       AND (t.id IS NULL OR t.schedule_status != 'running')
       AND COALESCE(tr.started_at, tr.created_at) < datetime('now', '-5 minutes')
