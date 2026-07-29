@@ -138,7 +138,10 @@ import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngine
 // PHASE-2 T6 — THE ANSWERED EDGE. One module answers "has the person heard from us" for
 // every gate in this file that used to answer it for itself (research 07 rows 1a/1b/1c/1e/
 // 1g/2d). Nothing below reads the model's prose to decide it any more.
-import { closedWithoutDelivery, owesAnswer, turnDeliveredToPerson } from './answered-edge.js';
+import {
+  closedWithoutDelivery, owesAnswer, pauseDriveWorkWaitingOnOwner, resumeWorkOnOwnerAsk,
+  stillClaimedWork, turnDeliveredToPerson,
+} from './answered-edge.js';
 import { resolveOwnerAffinityChannel, affinityPromotionAllowed, recordAffinityPromotion, affinityPromotionRefusedNoBasis } from './owner-affinity.js';
 import { getProactiveSendStreak, bumpProactiveSendStreak, resetProactiveSendStreak, PROACTIVE_SEND_DEMOTE_THRESHOLD } from './proactive-budget.js';
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
@@ -1066,6 +1069,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
       claimed = res.kind === 'applied';
       if (!claimed && res.kind !== 'conflict') {
         logger.warn('v2: pickup claim refused by the work spine', { agentId, workId: triggerWorkId, res }, agentId);
+      }
+      // ── PHASE-2 T6 (C3) — THE REOPEN EDGE ──
+      // The owner has spoken, so work the engine parked BECAUSE it was waiting on them is
+      // waiting no longer: it returns to exactly the state it was paused from. This is the
+      // second half of the disposition at turn end and is not optional — a pause with no
+      // reopen is how a ticket rots quietly, which is precisely what the P2 drive boundary
+      // was protecting against (T1 adjudication #2, rider b).
+      if (claimed) {
+        try { resumeWorkOnOwnerAsk(agentId); }
+        catch (err) {
+          logger.warn('v2: reopen-on-owner-ask failed (non-fatal)', {
+            agentId, error: err instanceof Error ? err.message : String(err),
+          }, agentId);
+        }
       }
     }
     // Identity, always, and independent of the claim: this row belongs to this
@@ -9302,6 +9319,48 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // only when the turn produced no answer AND executed zero non-idempotent calls.
         state.nonIdempotentCallsThisTurn,
       );
+      // ── PHASE-2 T6 (C3) — THE TURN RECORD'S FIRST READER, AND THE DISPOSITION ──
+      //
+      // R-0, the one-line proof of this whole rebuild: `finalizeTurn` has always written
+      // the true turn outcome and NO turn-end gate ever read it (research 21). It is read
+      // here, one statement after it is written, and what it decides is what the plan
+      // clause and the P2 drive boundary were argued over (PHASE-2 progress.md, T1
+      // adjudication #2, ruled 2026-07-28).
+      //
+      // 1c — ENUMERATE what is still claimed, with the identity to escalate. A claim that
+      // survives the turn is a person whose question this turn did not close; before the
+      // spine this had to be reconstructed from `legacy_tasks.status='in_progress'` and the
+      // identity was not in the row at all.
+      //
+      // THE DISPOSITION — a turn that ANSWERED, performed nothing and closed nothing has
+      // handed the ball to the owner, so its drive-state work stops being driven and starts
+      // waiting, VISIBLY. Every input is a record: `turns.exit_reason` / `turns.answered` /
+      // `turns.effectful_calls` and a `deliveries` row. No prose is read (research 21,
+      // caution 2). The P2 boundary is preserved by the effectful-call clause: a turn that
+      // ACTED is still working and nothing is paused.
+      try {
+        const claimedAtTurnEnd = stillClaimedWork(agentId, { turnNumber });
+        if (claimedAtTurnEnd.length > 0 && !answerRow) {
+          logger.warn('v2 closeout miss: the turn ended without delivering, and work is still claimed', {
+            agentId, turnNumber, exitReason,
+            claimed: claimedAtTurnEnd.map((w) => ({ id: w.workId, kind: w.kind, conversation: w.conversationId })),
+          }, agentId);
+        }
+        if (counterparty.kind === 'user' && !isA2ATurn && !isEngineTurn) {
+          pauseDriveWorkWaitingOnOwner(agentId, turnNumber, {
+            transitionedThisTurn: state.trackerStatusUpdatedThisTurn,
+            conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+            // SCOPE: only work THIS TURN touched. A backlog item nobody moved belongs to
+            // the poke ladder ("an in_progress task does not EVER just get ignored"), and
+            // this window is what keeps the disposition from ever reaching it.
+            touchedSince: turnStartedAt,
+          });
+        }
+      } catch (err) {
+        logger.warn('v2: turn-end obligation disposition failed (non-fatal)', {
+          agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
+        }, agentId);
+      }
       // Ticket stamps (owner design 2026-07-22): the ONE stamping point. The
       // engine writes what it observed onto every ticket this turn's root
       // touches, so the model reads state instead of guessing it.

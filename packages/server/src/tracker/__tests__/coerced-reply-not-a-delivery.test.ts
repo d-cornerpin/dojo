@@ -192,9 +192,19 @@ describe('turn-outcome conformance: brake outranks answered (loop.ts)', () => {
   it('that same exit reason is what finalizeTurn and the ticket stamps both receive', () => {
     const src = loopSrc();
     const idx = src.indexOf('const exitReason: TurnExitReason = ');
-    const block = src.slice(idx, idx + 1600);
-    expect(block).toMatch(/finalizeTurn\(\s*agentId, turnNumber, exitReason/);
-    expect(block).toMatch(/stampTasksAtTurnFinalize\(\{[\s\S]{0,200}outcome/);
+    // The finalize call is the next statement after the ternary, so it stays a tight
+    // window. The STAMP call is anchored to `finalizeTurn` instead of to a character
+    // count: PHASE-2 T6 landed the turn-record's first reader between them (the closeout
+    // enumeration and the waiting-on-owner disposition), and a fixed slice would have
+    // turned "something else happens at the boundary now" into a failure about a
+    // requirement that still holds. What the requirement actually says is ORDER and
+    // ARGUMENT — the stamps run after finalize and receive the same outcome — so that is
+    // what is asserted.
+    expect(src.slice(idx, idx + 600)).toMatch(/finalizeTurn\(\s*agentId, turnNumber, exitReason/);
+    const afterFinalize = src.slice(src.indexOf('finalizeTurn(\n', idx));
+    const stampAt = afterFinalize.indexOf('stampTasksAtTurnFinalize({');
+    expect(stampAt).toBeGreaterThan(-1);
+    expect(afterFinalize.slice(stampAt, stampAt + 200)).toMatch(/outcome/);
   });
 
   // ...and the ANSWERED half is now its own recorded fact rather than a word to infer from.

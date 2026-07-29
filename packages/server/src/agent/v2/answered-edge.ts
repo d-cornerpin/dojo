@@ -329,10 +329,22 @@ export interface PauseResult { paused: number; ids: string[] }
  * Recurring schedules are carved out: a schedule is never paused by a missed close-out
  * (janitorial, not forgery — the carve-out is carried verbatim from the going-idle
  * reconciliation this replaces).
+ *
+ * `touchedSince` IS THE SCOPE, and it is the difference between this and the stamp P2
+ * deleted. That one marked EVERY in_progress task delivered; this one may only dispose of
+ * work THIS TURN ACTUALLY TOUCHED — `updated_at` inside the turn's own window. A backlog
+ * item nobody moved is not this turn's to park, it is the poke ladder's to drive, and the
+ * "idle in_progress task gets driven, always" invariant survives untouched because the rows
+ * it guards are exactly the rows this window excludes.
  */
 export function pauseDriveWorkWaitingOnOwner(
   agentId: string, turnNumber: number | null | undefined,
-  opts?: { transitionedThisTurn?: boolean; conversationId?: string | null },
+  opts?: {
+    transitionedThisTurn?: boolean;
+    conversationId?: string | null;
+    /** SQLite datetime text ('YYYY-MM-DD HH:MM:SS'). Omitted only in unit tests. */
+    touchedSince?: string | null;
+  },
 ): PauseResult {
   const none: PauseResult = { paused: 0, ids: [] };
   if (opts?.transitionedThisTurn) return none;
@@ -342,12 +354,14 @@ export function pauseDriveWorkWaitingOnOwner(
   if (!turnDeliveredToPerson(agentId, turnNumber, opts?.conversationId ?? null)) return none;
 
   const db = getDb();
+  const since = opts?.touchedSince ?? null;
   const rows = db.prepare(
     `SELECT id, status FROM legacy_tasks
       WHERE assigned_to = ? AND status IN (${DRIVE_STATES.join(', ')})
         AND is_paused = 0 AND repeat_interval IS NULL
+        ${since ? 'AND updated_at >= ?' : ''}
       ORDER BY updated_at DESC LIMIT 10`,
-  ).all(agentId) as Array<{ id: string; status: string }>;
+  ).all(...(since ? [agentId, since] : [agentId])) as Array<{ id: string; status: string }>;
   if (rows.length === 0) return none;
 
   const ids: string[] = [];

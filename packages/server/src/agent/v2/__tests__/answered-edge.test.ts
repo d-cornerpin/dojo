@@ -454,6 +454,26 @@ describe('a turn that SPOKE to the owner and closed nothing hands the ball over 
     expect(pauseDriveWorkWaitingOnOwner(AGENT, 6).paused).toBe(1);
   });
 
+  it('THE SCOPE: work this turn never touched belongs to the poke ladder, not to this', () => {
+    seedTurn(6, { ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1, effectful_calls: 0 });
+    seedDelivery('d1', { turn_number: 6 });
+    seedLegacyTask('t-fresh');
+    seedLegacyTask('t-stale');
+    db().prepare("UPDATE legacy_tasks SET updated_at = datetime('now', '-2 hours') WHERE id = 't-stale'").run();
+    const since = new Date(Date.now() - 60_000).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+    const r = pauseDriveWorkWaitingOnOwner(AGENT, 6, { touchedSince: since });
+    expect(r.ids).toEqual(['t-fresh']);
+    expect((db().prepare('SELECT status FROM legacy_tasks WHERE id = ?').get('t-stale') as { status: string }).status)
+      .toBe('in_progress');
+  });
+
+  it('NEGATIVE: a ticket the model itself transitioned this turn is not second-guessed', () => {
+    seedTurn(6, { ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1, effectful_calls: 0 });
+    seedDelivery('d1', { turn_number: 6 });
+    seedLegacyTask('t-1');
+    expect(pauseDriveWorkWaitingOnOwner(AGENT, 6, { transitionedThisTurn: true }).paused).toBe(0);
+  });
+
   it('the pause is recorded where somebody can find it, not just applied', () => {
     seedTurn(6, { ended_at: new Date().toISOString(), exit_reason: 'answered', answered: 1, effectful_calls: 0 });
     seedDelivery('d1', { turn_number: 6 });
@@ -480,8 +500,16 @@ describe('THE REOPEN EDGE — the owner\'s answer resumes the work', () => {
     expect(row.status_before_pause).toBeNull();
   });
 
-  it('NEGATIVE: work the OWNER paused by hand is not resumed by the engine', () => {
-    seedLegacyTask('t-1', { status: 'paused', is_paused: 1 });
+  it('NEGATIVE: work paused by the OWNER or the MODEL is not resumed by the engine', () => {
+    // The distinguisher is `status_before_pause` — the engine's own record that IT parked
+    // this row. A deliberate pause carries no such record and must survive the owner's
+    // next message untouched, which is why the column is written rather than assumed.
+    seedLegacyTask('t-1', { status: 'paused' });
+    expect(resumeWorkOnOwnerAsk(AGENT).resumed).toBe(0);
+    expect((db().prepare('SELECT status FROM legacy_tasks WHERE id = ?').get('t-1') as { status: string }).status)
+      .toBe('paused');
+    // ...and a SCHEDULE pause (is_paused) is a different axis again, also untouched.
+    seedLegacyTask('t-2', { status: 'paused', is_paused: 1, status_before_pause: 'in_progress' });
     expect(resumeWorkOnOwnerAsk(AGENT).resumed).toBe(0);
   });
 
