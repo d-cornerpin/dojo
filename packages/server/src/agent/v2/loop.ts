@@ -138,7 +138,7 @@ import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngine
 // PHASE-2 T6 — THE ANSWERED EDGE. One module answers "has the person heard from us" for
 // every gate in this file that used to answer it for itself (research 07 rows 1a/1b/1c/1e/
 // 1g/2d). Nothing below reads the model's prose to decide it any more.
-import { turnDeliveredToPerson } from './answered-edge.js';
+import { closedWithoutDelivery, owesAnswer, turnDeliveredToPerson } from './answered-edge.js';
 import { resolveOwnerAffinityChannel, affinityPromotionAllowed, recordAffinityPromotion, affinityPromotionRefusedNoBasis } from './owner-affinity.js';
 import { getProactiveSendStreak, bumpProactiveSendStreak, resetProactiveSendStreak, PROACTIVE_SEND_DEMOTE_THRESHOLD } from './proactive-budget.js';
 import { findUnrepliedAssignForAgent, hasPriorReplyOnThread } from '../a2a-replies.js';
@@ -5447,12 +5447,31 @@ export async function runV2Turn(agentId: string): Promise<void> {
           !Object.values(state.explicitSendThisTurn).some(Boolean)
         ) {
           try {
+            // PHASE-2 T6 (C2, requirement 1b): "did work close WITHOUT a delivery" is a
+            // JOIN now, not a scan plus a per-row lookup.
+            //
+            // Two halves, one question. The SPINE half asks it directly —
+            // `closedWithoutDelivery()` is `work` rows that reached a terminal state inside
+            // this turn with `result_delivery_id IS NULL`, and the DDL's own CHECK makes
+            // that set exact (a row cannot be `done` without pointing at a delivery). The
+            // LEGACY half covers tracker tasks, whose live state is still `legacy_tasks`
+            // until PHASE-2 T8 moves the writers; its owe-filter is the same one reader,
+            // `owesAnswer()`, instead of the hand-rolled `SELECT answer_message_id` that
+            // used to sit inside this loop.
+            const turnStartedAtMs = Date.parse(`${turnStartedAt.replace(' ', 'T')}Z`);
+            const closedWorkThisTurn = closedWithoutDelivery(agentId, Number.isFinite(turnStartedAtMs) ? turnStartedAtMs : Date.now() - 60_000);
             const closedThisTurn = db.prepare(`
               SELECT title, result, created_at, source_message_id FROM legacy_tasks
                WHERE assigned_to = ? AND status = 'complete'
                  AND repeat_interval IS NULL AND completed_at >= ?
                ORDER BY completed_at ASC LIMIT 3
             `).all(agentId, turnStartedAt) as Array<{ title: string; result: string | null; created_at: string; source_message_id: string | null }>;
+            if (closedWorkThisTurn.length > 0) {
+              logger.info('v2 silent-closeout: work settled this turn with NO delivery to point at', {
+                agentId, turnNumber,
+                work: closedWorkThisTurn.map((w) => ({ id: w.workId, kind: w.kind, state: w.state })),
+              }, agentId);
+            }
             if (closedThisTurn.length > 0) {
               // Receipt-keyed owe, PER TASK (2026-07-23, owner production
               // transcript: duplicate status reply after the real answer). The
@@ -5468,13 +5487,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
               //     only when this turn is serving a live human ask; on a
               //     wake/bookkeeping turn its close is incidental, exactly
               //     what the tracker engine-note tells the model to [no-reply].
-              const owedTasks = closedThisTurn.filter((t) => {
-                if (t.source_message_id) {
-                  const row = db.prepare('SELECT answer_message_id FROM messages WHERE id = ?').get(t.source_message_id) as { answer_message_id: string | null } | undefined;
-                  return !row?.answer_message_id;
-                }
-                return hasUnansweredUser;
-              });
+              const owedTasks = closedThisTurn.filter((t) => (
+                t.source_message_id ? owesAnswer(t.source_message_id) : hasUnansweredUser
+              ));
               if (owedTasks.length > 0) {
                 const first = owedTasks[0];
                 const whichTask = owedTasks.length === 1
