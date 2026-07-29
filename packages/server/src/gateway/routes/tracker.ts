@@ -11,7 +11,7 @@ import {
   closeProjectAndOpenTasks,
   resolveTaskId,
   formatResolveError,
-  setTaskStatus,
+  setTaskStatusResult,
 } from '../../tracker/schema.js';
 import { getDb } from '../../db/connection.js';
 import {
@@ -668,11 +668,30 @@ trackerRouter.put('/tasks/:id', async (c) => {
         // The owner dragging a card IS the authority (Q5), so the transition carries
         // `claim: 'authoritative'` and files its own adjudication — the three
         // `*_validated = 1` assignments below used to do that by hand.
-        setTaskStatus(id, statusUpdate as TrackerStatus, {
+        //
+        // PHASE-2 T8b2 — THE REFUSAL IS ANSWERED, NOT SWALLOWED. T8b routed this through
+        // `transition()`, so G7 (`done` means DELIVERED) now reaches the dashboard close.
+        // `setTaskStatus` returns null on a refusal; this handler ignored it and replied
+        // 200 {ok:true} with the UNCHANGED task, then logged a `task_log` transition for a
+        // move that never happened. Measured before this fix: PUT {status:'complete'} on a
+        // task with no resolvable delivery -> HTTP 200, `work.state` still 'claimed', and a
+        // `to_status='complete'` audit row. A false receipt in the history the owner reads
+        // is worse than the refusal it hid.
+        const { result } = setTaskStatusResult(id, statusUpdate as TrackerStatus, {
           by: 'owner', actorId: 'user', claim: 'authoritative',
           reason: 'dashboard PUT /tracker/tasks/:id',
           resultDeliveryId: statusUpdate === 'complete' ? deliveryForTaskClose(id) : null,
         });
+        if (result.kind !== 'applied' && result.kind !== 'noop') {
+          const detail = result.kind === 'conflict'
+            ? `the task moved to "${result.actual}" while this request was in flight`
+            : `${result.gate}: ${result.detail}`;
+          return c.json({
+            ok: false,
+            error: `status change to "${statusUpdate}" was refused — ${detail}`,
+            data: { taskId: id, refusedStatus: statusUpdate, otherUpdatesApplied: Object.keys(columnUpdates) },
+          }, 409);
+        }
       }
       if (body.status && body.status !== fromStatus) {
         const { writeTaskLog } = await import('../../tracker/task-log.js');
