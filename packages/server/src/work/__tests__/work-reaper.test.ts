@@ -20,18 +20,18 @@
 //      comments and one literal inside a finder. They are now a predicate over `work` and a
 //      named deadline, and the reaper obeys the same law the runtime drain does.
 //
-//   4. THE DRAIN'S BOUND SURVIVES A RESTART. The `stuck` counters were `Map`s in one
-//      process, so a crash loop reset the storm protection to zero on every boot — which is
-//      the upgrade-day storm hazard by another name. The count is DERIVED from `turns`, the
-//      spine's own record of what the agent did, so there is nothing to lose.
+//   4. THE DERIVED DRAIN BOUND IS A REFUSED DESIGN, AND IT STAYS REFUSED. T9 built it here
+//      and the battery took it away again; the last describe block is the landmine note, with
+//      the run id and the clause that failed.
 //
 // ⚠ WHY NOT `work.attempts` (the collision T8c2 named). PHASE-2.md T9 Step 2 as written says
 // the drain counters become `work.attempts`. `single-writer-conformance.test.ts` PART C
 // measured that column and DECIDED it: `work.attempts` IS the recurrence fire count, with one
 // writer and four readers all aliasing it to `run_count`. Putting a retry count in the same
-// integer would end the first retried `after_count` schedule early. So the retry fact gets a
-// home that is not a column at all — see property 4 — and this file records the reasoning
-// where the next reader of that plan step will find it.
+// integer would end the first retried `after_count` schedule early. `messages.delivery_attempts`
+// fails on its own measurement too. The restart-safe home is therefore still OWED, and every
+// remaining candidate needs DDL — which this task was told not to write. The full enumeration
+// is in `work-reaper.ts`'s own header.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -55,7 +55,7 @@ vi.mock('../../db/connection.js', async () => {
 
 import {
   DEADLINES, DEADLINE_IDS, REAPER_KINDS, REAPER_BASE_TICK_MS,
-  humanAsksOpen, selfWakeStandDown, endedTurnsSince, drainStuck,
+  humanAsksOpen, selfWakeStandDown,
 } from '../work-reaper.js';
 
 const REPO = path.resolve(__dirname, '..', '..', '..', '..', '..');
@@ -312,56 +312,40 @@ describe('T9 — the storm law reads WORK STATE: self-wakes stand down while a h
   });
 });
 
-describe('T9 — the drain bound is DERIVED from `turns`, so a restart cannot reset it', () => {
-  const endTurn = (n: number, endedAt: string): void => {
-    db.prepare("INSERT INTO turns (agent_id, turn_number, started_at, ended_at) VALUES (?, ?, ?, ?)")
-      .run(AGENT, n, endedAt, endedAt);
-  };
-  // 2026-07-29 12:00:00Z = 1785326400
-  const T = (offsetSec: number): string => new Date((1785326400 + offsetSec) * 1000)
-    .toISOString().replace('T', ' ').replace(/\..*$/, '');
-  const HEAD_MS = 1785326400 * 1000;
+describe('T9 — the DERIVED drain bound is a refused design, and it stays refused', () => {
+  // A landmine note with a test behind it. T9 built `drainStuck()` here and the battery
+  // refused it: a deliverable that arrives MID-ORCHESTRATION is followed by several
+  // legitimate turns (serving the human, during whom the drain stands down entirely under
+  // the storm law), so a count anchored on the head's ARRIVAL is already past the bound
+  // before the drain's first real look — and the wake turn never runs.
+  //
+  //   `multi-agent-project`, run `bms651uo8lh`: 0/3, retry lane used, runner's own verdict
+  //   "NOT a flake". Every other target clause PASSED; only "final owner answer integrates
+  //   codeword" was false.
+  //
+  // The full write-up, including the two column candidates already refused on their own
+  // measurements (`work.attempts`, `messages.delivery_attempts`), is in `work-reaper.ts`.
+  // This clause exists so the next person to reach for the same clean-looking derivation
+  // finds the measurement before spending the battery time again.
 
-  it('no ended turn since the head arrived -> stuck 0', () => {
-    expect(endedTurnsSince(AGENT, HEAD_MS)).toBe(0);
-    expect(drainStuck(AGENT, HEAD_MS)).toBe(0);
+  it('the reaper exports no derived stuck counter', async () => {
+    const mod = await import('../work-reaper.js');
+    expect(Object.keys(mod)).not.toContain('drainStuck');
+    expect(Object.keys(mod)).not.toContain('endedTurnsSince');
   });
 
-  it('the pass that FOUND the head is not a failure to advance (1 turn -> stuck 0)', () => {
-    endTurn(1, T(10));
-    expect(endedTurnsSince(AGENT, HEAD_MS)).toBe(1);
-    expect(drainStuck(AGENT, HEAD_MS)).toBe(0);
+  it('the ladder in runtime.ts is the consecutive-pass counter, and says why in place', () => {
+    const rt = read('agent/runtime.ts');
+    expect(rt).toMatch(/const stuck = prev && prev\.head === head \? prev\.stuck \+ 1 : 0;/);
+    expect(rt).toMatch(/const stuck = prev && prev\.rowid === head \? prev\.stuck \+ 1 : 0;/);
+    expect(rt).toMatch(/THE BATTERY REFUSED IT/);
   });
 
-  it('the second pass on the same head is stuck 1, the third is stuck 2 — the drain\'s own ladder', () => {
-    endTurn(1, T(10)); endTurn(2, T(20));
-    expect(drainStuck(AGENT, HEAD_MS)).toBe(1);
-    endTurn(3, T(30));
-    expect(drainStuck(AGENT, HEAD_MS)).toBe(2);
-  });
-
-  it('turns that ended BEFORE the head existed do not count against it', () => {
-    endTurn(1, T(-600)); endTurn(2, T(-300));
-    expect(drainStuck(AGENT, HEAD_MS)).toBe(0);
-  });
-
-  it('an OPEN turn is not an ended one — the in-flight turn has not failed yet', () => {
-    db.prepare("INSERT INTO turns (agent_id, turn_number, started_at, ended_at) VALUES (?, 9, ?, NULL)")
-      .run(AGENT, T(5));
-    expect(endedTurnsSince(AGENT, HEAD_MS)).toBe(0);
-  });
-
-  it('THE POINT: the count survives a process restart, because it was never in the process', () => {
-    endTurn(1, T(10)); endTurn(2, T(20)); endTurn(3, T(30));
-    const before = drainStuck(AGENT, HEAD_MS);
-    // A restart clears every Map in the runtime. It cannot clear `turns`.
-    expect(drainStuck(AGENT, HEAD_MS)).toBe(before);
-    expect(before).toBe(2);
-  });
-
-  it('another agent\'s turns are not this agent\'s drain passes', () => {
-    db.prepare("INSERT INTO turns (agent_id, turn_number, started_at, ended_at) VALUES ('other', 1, ?, ?)")
-      .run(T(10), T(10));
-    expect(endedTurnsSince(AGENT, HEAD_MS)).toBe(0);
+  it('and the storm law it sits beside is still read from the spine', () => {
+    // NEGATIVE CONTROL for the two clauses above: they must not pass by the drain block
+    // having been deleted wholesale.
+    const rt = read('agent/runtime.ts');
+    expect(rt).toMatch(/getWaitingHumanConversations\(agentId\)\.length/);
+    expect(rt).toMatch(/humanAsksOpen: waitingHumans/);
   });
 });

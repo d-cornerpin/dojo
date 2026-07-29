@@ -233,43 +233,50 @@ export function selfWakeStandDown(agentId: string): { standDown: boolean; humanA
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
-// THE DRAIN BOUND, DERIVED (restart-safe by construction)
+// THE DRAIN BOUND — A REFUSED DESIGN, RECORDED SO IT IS NOT RE-ATTEMPTED
 // ════════════════════════════════════════════════════════════════════════════════
-
-/** This agent's turns that have ENDED at or after `sinceMs`. One drain pass happens at the
- *  end of each turn, so this counts drain passes without the drain having to remember any. */
-export function endedTurnsSince(agentId: string, sinceMs: number): number {
-  try {
-    const row = getDb().prepare(
-      `SELECT count(*) AS n FROM turns
-        WHERE agent_id = ? AND ended_at IS NOT NULL
-          AND (unixepoch(ended_at) * 1000) >= ?`,
-    ).get(agentId, sinceMs) as { n: number } | undefined;
-    return row?.n ?? 0;
-  } catch (err) {
-    logger.warn('drain bound: could not read the turn record', {
-      agentId, error: err instanceof Error ? err.message : String(err),
-    }, agentId);
-    // A bound that cannot be read is treated as EXHAUSTED by the caller's own comparison:
-    // returning a large number stands the self-drain down and hands the work to the
-    // periodics. Fail-closed, same direction as the storm law.
-    return Number.MAX_SAFE_INTEGER;
-  }
-}
-
-/**
- * How many times this agent's drain has failed to advance `head`.
- *
- * The pass that FIRST saw the head is not a failure — it is the pass that queued the re-run
- * — so the count is one less than the ended turns since the head arrived. That reproduces
- * the in-memory ladder exactly for the ordinary case (head appears → 0 → 1 → stand down at
- * 2) and is STRICTER for a head that was buried behind a newer inbound for several turns,
- * which is the safe direction: standing down hands the row to this module's own periodic
- * sweeps rather than dropping it.
- */
-export function drainStuck(agentId: string, headFirstEligibleMs: number): number {
-  return Math.max(0, endedTurnsSince(agentId, headFirstEligibleMs) - 1);
-}
+//
+// PHASE-2 T9 built `drainStuck(agentId, headArrivalMs) = endedTurnsSince(...) - 1` here, to
+// give the two drains' `stuck` counters a restart-safe home that is not `work.attempts`. It
+// is deleted, and this block is why — a landmine note, not an apology.
+//
+// THE ARGUMENT WAS: a drain pass happens at the end of every turn, so "consecutive passes on
+// this head" == "turns ended since the head arrived, minus the one that found it". Clean,
+// derivable, no column, survives a restart.
+//
+// THE ARGUMENT IS WRONG, AND THE BATTERY IS WHAT SAID SO. A deliverable arrives
+// MID-ORCHESTRATION. The primary then runs several legitimate turns — serving the human, who
+// takes priority, and during whom the drain stands down ENTIRELY under the storm law — before
+// the drain ever looks at that head. Turns that happened while the drain was not looking are
+// not failures to advance, and the derivation counts them anyway. By the drain's first real
+// look the derived count is already past the bound, so it stands down immediately and the
+// wake turn never runs.
+//
+//   MEASURED: `multi-agent-project`, run `bms651uo8lh`, 0/3 with the retry lane used and the
+//   runner's own verdict "NOT a flake". Every other clause of its target PASSED — assign
+//   auto-task created, thread-linked, status complete, peer deliverable with the codeword,
+//   deliverable arrived during orchestration — and only "final owner answer integrates
+//   codeword" was false: the primary never woke to integrate what the peer had delivered.
+//   Restored to the consecutive-pass ladder in `agent/runtime.ts`, GREEN again.
+//
+// WHAT A CORRECT DERIVATION WOULD NEED is an anchor for "when did this head BECOME the head",
+// and no durable column in this tree records it. So the restart-safe home is still OWED, and
+// the candidates are enumerated rather than left to be rediscovered:
+//   * `work.attempts`               — REFUSED by `single-writer-conformance.test.ts` PART C,
+//                                     which measured it as the recurrence fire count (one
+//                                     writer, four readers, all aliasing it to `run_count`).
+//                                     A retry count in the same integer ends the first
+//                                     retried `after_count` schedule early.
+//   * `messages.delivery_attempts`  — REFUSED on its own measurement: it is the engine
+//                                     event's failed-DELIVERY counter and five of them expire
+//                                     the event loudly. A head that failed to advance twice
+//                                     is not a delivery that failed twice.
+//   * a derivation from `turns`     — REFUSED above, by a reproducing battery red.
+// Everything left needs DDL, and T9 was told to write no migration. The consequence, stated
+// plainly: a crash loop still resets both `stuck` ladders to zero on each boot. What survives
+// a restart today is the wake FRESHNESS bound (45 min), the engine-event EXPIRY horizon
+// (6 h), and the boot staleness sweep — all three of which cap the same hazard by age rather
+// than by count.
 
 // ════════════════════════════════════════════════════════════════════════════════
 // THE ONE CLOCK

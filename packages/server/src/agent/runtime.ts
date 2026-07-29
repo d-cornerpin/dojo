@@ -333,10 +333,6 @@ import {
 import { turnBoundary, forceA2ATurn, a2aTurnRetries, MAX_A2A_TURN_RETRIES, lastTurnWasA2A, drainHead, MAX_DRAIN_STUCK, currentTurnKind } from './turn-state.js';
 import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, quarantineWaitingConversation } from './v2/counterparty.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
-// PHASE-2 T9: the drain's bound is derived from `turns` rather than remembered in a Map, so
-// a restart cannot reset the storm protection. See `work/work-reaper.ts`'s header for why it
-// is neither `work.attempts` nor `messages.delivery_attempts`.
-import { drainStuck } from '../work/work-reaper.js';
 import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';
 
 // Recovery-streak Map and cap moved to shared-state.ts (Phase 6 2026-05-04)
@@ -683,22 +679,29 @@ class AgentRuntime {
           const leftoverEngine = leftoverWake ? null : getPendingEngineEvent(agentId);
           const head = leftoverWake ? `w:${leftoverWake.rowid}` : (leftoverEngine ? `e:${leftoverEngine.rowid}` : null);
           if (head) {
-            // PHASE-2 T9 — THE BOUND SURVIVES A RESTART. `wakeDrainHead` was a Map, so a
-            // crash loop reset this counter to zero on every boot and the storm protection
-            // with it. The count is now DERIVED from `turns` (the spine's own record of
-            // what this agent did) via `drainStuck`, and the Map is kept only as the
-            // in-process memory of WHICH head we are on — losing that on a restart is
-            // correct, because a restart genuinely has no head yet.
+            // ⚠ PHASE-2 T9 TRIED TO DERIVE THIS FROM `turns` AND THE BATTERY REFUSED IT.
             //
-            // It is not `work.attempts` and not `messages.delivery_attempts`: both are
-            // OTHER counters with their own consumers, and the reasoning (with the
-            // measurements) is in `work/work-reaper.ts`'s header.
-            const headRowMs = (getDb().prepare('SELECT created_at AS t FROM messages WHERE rowid = ?')
-              .get(leftoverWake ? leftoverWake.rowid : leftoverEngine!.rowid) as { t: number } | undefined)?.t ?? Date.now();
+            // The counter is "how many CONSECUTIVE drain passes have seen this same head",
+            // and a drain pass is a turn end — so `endedTurnsSince(headArrival) - 1` looks
+            // equivalent, and is not. A deliverable arrives MID-ORCHESTRATION: the primary
+            // then runs several legitimate turns (serving the human, who takes priority and
+            // during whom the drain stands down entirely) before the drain ever looks at the
+            // head. The derived count is already >= 2 by then, so the drain stood down on
+            // its FIRST look and the wake turn never ran.
+            //
+            // Measured, not reasoned about: `multi-agent-project` went 0/3 with every other
+            // clause of its target passing — assign created, peer delivered, deliverable
+            // arrived during orchestration — and only "final owner answer integrates
+            // codeword" false. Restored here, GREEN again.
+            //
+            // The anchor a correct derivation needs is "when did this head BECOME the head",
+            // and no durable column in this tree records it. The restart-safe home for this
+            // counter is therefore still owed, with its constraints written up in T9's
+            // report: it is NOT `work.attempts` (T8c2's conformance clause: that is the
+            // recurrence fire count) and NOT `messages.delivery_attempts` (five of those
+            // expire an engine event loudly), and every remaining candidate needs DDL.
             const prev = wakeDrainHead.get(agentId);
-            const stuck = prev && prev.head === head
-              ? drainStuck(agentId, headRowMs)
-              : 0;
+            const stuck = prev && prev.head === head ? prev.stuck + 1 : 0;
             wakeDrainHead.set(agentId, { head, stuck });
             if (stuck < 2) {
               pendingWakeups.add(agentId);
@@ -741,13 +744,10 @@ class AgentRuntime {
           if (waiting.length > 0) {
             const head = waiting[0].oldestWaitingRowid;
             const prev = drainHead.get(agentId);
-            // PHASE-2 T9 — restart-safe, same derivation as the unserved-wake drain above.
-            // The human drain's head is a message row whose ticket is still `open`, so "how
-            // many of this agent's turns have ENDED since it arrived without serving it" is
-            // exactly the number the Map was counting, and `turns` already holds it.
-            const headMs = (getDb().prepare('SELECT created_at AS t FROM messages WHERE rowid = ?')
-              .get(head) as { t: number } | undefined)?.t ?? Date.now();
-            const stuck = prev && prev.rowid === head ? drainStuck(agentId, headMs) : 0;
+            // PHASE-2 T9: left as the consecutive-pass ladder for the same reason as the
+            // unserved-wake drain above — see that block. A derived count anchored on the
+            // head's ARRIVAL counts turns during which the drain was not looking at it.
+            const stuck = prev && prev.rowid === head ? prev.stuck + 1 : 0;
             if (stuck < MAX_DRAIN_STUCK) {
               drainHead.set(agentId, { rowid: head, stuck });
               // D2: cap self-re-triggers so a multi-row backlog can't spin into
