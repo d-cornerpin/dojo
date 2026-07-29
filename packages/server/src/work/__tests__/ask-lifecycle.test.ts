@@ -310,9 +310,15 @@ describe('quick asks auto-close on their delivery', () => {
       "SELECT count(*) AS c FROM work WHERE kind IN ('task','project')",
     ).get() as { c: number };
     expect(board.c).toBe(0);
-    // and it is not a tracker row either: the ask never enters the legacy board tables
-    const legacy = mockDb.current!.prepare('SELECT count(*) AS c FROM legacy_tasks').get() as { c: number };
-    expect(legacy.c).toBe(0);
+    // The second half of this clause used to count rows in `legacy_tasks` ("the ask never
+    // enters the legacy board tables"). PHASE-2 T10's migration `141` dropped that table, so
+    // the requirement is now true BY CONSTRUCTION and the honest assertion is that the table
+    // is gone — checked here rather than deleted, because a reader arriving later is exactly
+    // what this clause existed to catch.
+    const legacyStillThere = (mockDb.current!.prepare(
+      `SELECT count(*) AS c FROM sqlite_master WHERE type='table' AND name='legacy_tasks'`,
+    ).get() as { c: number }).c;
+    expect(legacyStillThere).toBe(0);
   });
 });
 

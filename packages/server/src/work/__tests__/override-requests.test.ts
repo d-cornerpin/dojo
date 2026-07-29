@@ -109,12 +109,24 @@ describe('the ask is filable, and it lands on the spine', () => {
     expect(String(p.justification)).toContain('audit log rotated');
   });
 
-  it('writes NOTHING to task_override_requests — the table is dead to production', () => {
-    file();
-    const n = (mockDb.current!.prepare(
-      'SELECT count(*) AS c FROM task_override_requests',
+  // RE-EXPRESSED AT PHASE-2 T10, and STRICTER than what it replaces. This clause used to
+  // count rows in `task_override_requests` to prove nothing wrote it. Migration `141` DROPPED
+  // that table (RULING 3's deferral discharged), so the old form now dies on a missing table
+  // instead of asserting anything. The requirement is unchanged and is asserted at the only
+  // level left that can be wrong: the table must not exist at all, and filing an ask must
+  // still work — so this cannot pass by the filing having been deleted.
+  it('the table is GONE, and filing still lands on the spine', () => {
+    const gone = (mockDb.current!.prepare(
+      `SELECT count(*) AS c FROM sqlite_master WHERE type='table' AND name='task_override_requests'`,
     ).get() as { c: number }).c;
-    expect(n).toBe(0);
+    expect(gone).toBe(0);
+
+    // POSITIVE CONTROL: the mechanism that replaced it is live in this same body.
+    file();
+    const events = (mockDb.current!.prepare(
+      `SELECT count(*) AS c FROM work_events WHERE kind='override_request'`,
+    ).get() as { c: number }).c;
+    expect(events).toBe(1);
   });
 
   it('the rate limit is per (task, agent): the same agent is blocked, a DIFFERENT agent is not', () => {

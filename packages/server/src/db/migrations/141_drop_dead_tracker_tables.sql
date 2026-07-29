@@ -1,0 +1,92 @@
+-- 141_drop_dead_tracker_tables.sql — PHASE-2 T10: three tables the phase replaced, removed.
+--
+-- ── THE EVIDENCE IS POSITIVE, NOT AN ABSENCE (#15) ──
+--
+-- Each table below is dropped because its REPLACING MECHANISM IS NAMED AND LIVE, and because
+-- every production statement against it was enumerated by command at this HEAD (`6d357ec` +
+-- this task's commits) across `packages/server`, `packages/dashboard` AND `watchdog/`, and
+-- came back at ZERO. Row counts are NOT the evidence and are recorded only as facts about
+-- this box — `task_runs` is the worked example in non-negotiable #15 of why a row count is
+-- never a verdict.
+--
+--   command (per table, run at HEAD, non-test, non-migration):
+--     grep -rnaE "(FROM|INTO|UPDATE|JOIN|TABLE)[[:space:]]+<name>\b|DELETE FROM <name>\b" \
+--       packages/server/src packages/dashboard/src watchdog
+--
+-- ┌─ poke_log ─────────────────────────────────────────────────────────────────────────────┐
+-- │ VERDICT: STRIP.                                                                        │
+-- │ requirement preserved: "how many times has the PM poked this task, and when was the    │
+-- │ last one" — the ladder that stops the PM nagging forever. It is `work_events` rows      │
+-- │ (kind='poke') read by `work/poke-ladder.ts`, which computes the same MAX(poke_number)   │
+-- │ the old `poke_log.poke_number DESC LIMIT 1` did. Landed PHASE-2 T8c item 1, with the    │
+-- │ PM ladder's history surviving the move.                                                 │
+-- │ evidence: 0 production SQL statements. The 5 surviving mentions are comments in         │
+-- │ `tracker/schema.ts`, `tracker/pm-agent.ts` (×2), `work/poke-ladder.ts` and              │
+-- │ `work/override-requests.ts`, every one of them describing what was replaced.            │
+-- │ this box: 1 row.                                                                        │
+-- └────────────────────────────────────────────────────────────────────────────────────────┘
+--
+-- ┌─ task_override_requests ───────────────────────────────────────────────────────────────┐
+-- │ VERDICT: STRIP.                                                                        │
+-- │ requirement preserved: "an agent asked to be let past a gate, and somebody answered" —  │
+-- │ the ask is a `work_events` row (kind='override_request'), its answer an                 │
+-- │ `override_resolved` row, and PENDING is the ask having no answer after it, ordered by   │
+-- │ `work_events.id`. Landed PHASE-2 T8T RESUMED-2 under RULING 4, burn-down 19 -> 0 across │
+-- │ four files, with all five preserved requirements carrying a test (21 clauses RED-first).│
+-- │ Its DDL was last rebuilt at `138` (RULING 3's FK re-point) — that rebuild is what this   │
+-- │ file removes.                                                                           │
+-- │ evidence: 0 production SQL statements. ONE surviving mention, a comment in               │
+-- │ `work/override-requests.ts` naming what it replaced.                                     │
+-- │ this box: 0 rows.                                                                        │
+-- └────────────────────────────────────────────────────────────────────────────────────────┘
+--
+-- ┌─ legacy_tasks ─────────────────────────────────────────────────────────────────────────┐
+-- │ VERDICT: STRIP.                                                                        │
+-- │ requirement preserved: THE TRACKER ITSELF — every task the platform has ever held. It   │
+-- │ is `work(kind='task')` with the ids carried 1:1 (PHASE-2 T2, migration `135`), the 40   │
+-- │ attribute columns that had live readers moved with them (`137`, each declared in the    │
+-- │ spine manifest with its reader named), and the 61 post-`135` rows that had no twin      │
+-- │ adopted at `138`. `work/tracker-view.ts` is the projection every consumer that used to  │
+-- │ do `SELECT * FROM legacy_tasks` reads instead.                                           │
+-- │ evidence: 0 production SQL statements — the burn-down T8b drove from 49 to 0,           │
+-- │ re-derived at this HEAD rather than inherited. The 3 surviving mentions are comments    │
+-- │ (`agent/created-by-kind.ts:16`, `agent/v2/answered-edge.ts:14,:264`,                     │
+-- │ `work/tracker-view.ts`), each recording a measurement or naming what moved.              │
+-- │ this box: 50 rows, all of them carried into `work` before this file runs.                │
+-- │ NOTHING REFERENCES IT: `SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE   │
+-- │ '%REFERENCES%legacy_tasks%'` returns EMPTY, so this drop needs no table rebuild.         │
+-- └────────────────────────────────────────────────────────────────────────────────────────┘
+--
+-- ── WHAT IS DELIBERATELY NOT IN THIS FILE, AND WHY ──
+--
+-- `legacy_projects` is NOT dropped here even though it is equally dead to production (1
+-- comment, 0 statements). `techniques.build_project_id` carries
+-- `REFERENCES "legacy_projects"(id)` — a LIVE column, written by `techniques/store.ts:188`
+-- and read at `:571`. Found by asking the schema which tables reference it
+-- (`SELECT name FROM sqlite_master WHERE sql LIKE '%REFERENCES%legacy_projects%'` -> the pair
+-- `legacy_tasks`, `techniques`) rather than by assuming the two legacy tables died together.
+--
+-- THE CONSEQUENCE WAS MEASURED, NOT REASONED ABOUT, and it is worse than the first draft of
+-- this comment claimed — the rehearsal is what corrected it. On a body with the parent
+-- dropped, driven on a throwaway copy:
+--   * `PRAGMA foreign_key_check` does NOT error. It reports EVERY child row as a violation
+--     (1 genuine -> 2 of 2 rows in the probe), so the platform's integrity signal does not
+--     break loudly, it turns to noise — which is the harder failure to notice.
+--   * an INSERT into `techniques` fails with `no such table: main.legacy_projects` **even
+--     when `build_project_id` IS NULL**. Not "techniques that name a build project break":
+--     ALL technique creation and every share-import breaks.
+-- So `legacy_projects` needs `techniques` REBUILT with the reference re-pointed at `work(id)`,
+-- which is RULING 3's shape and its own migration.
+--
+-- `task_log` and `task_runs` are NOT dropped here and NOT because of an oversight: they still
+-- have 8 and 18 live production statements respectively. See the task report — they are the
+-- one part of this step's list whose replacement was never built.
+--
+-- Destructive: YES, and deliberately. On a lived-in box these rows are preserved by
+-- `135b_stable_work_spine.sql`, which sorts strictly BEFORE this file — the same ordering
+-- argument Bridge Entry 13 makes for `136`, and the same consequence: a box running the local
+-- chain WITHOUT the Bridge loses them, which on a developer or preflight box is correct.
+
+DROP TABLE IF EXISTS poke_log;
+DROP TABLE IF EXISTS task_override_requests;
+DROP TABLE IF EXISTS legacy_tasks;

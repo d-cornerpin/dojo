@@ -78,16 +78,29 @@ describe('migration 135: the work table exists with its declared shape', () => {
     expect(names.map((n) => n.name)).toEqual(['adjudications', 'work', 'work_events']);
   });
 
-  it('renames the legacy tables and leaves nothing behind under the old names', () => {
+  // RE-EXPRESSED AT PHASE-2 T10. `135` renamed `tasks`/`projects` to `legacy_*` so a reader
+  // nobody re-pointed would fail loud rather than read a stale twin; this clause asserted both
+  // halves of that rename. `141` then DROPPED `legacy_tasks`, which is the rename's whole
+  // purpose arriving — so asserting the retirement name still exists would pin the interim.
+  // Both requirements are asserted, at the end state each has reached.
+  it('the pre-rename names are gone, and legacy_tasks has now gone with them', () => {
     const db = mockDb.current!;
     const gone = db.prepare(
-      "SELECT count(*) c FROM sqlite_master WHERE type='table' AND name IN ('tasks','projects')",
+      "SELECT count(*) c FROM sqlite_master WHERE type='table' AND name IN ('tasks','projects','legacy_tasks')",
     ).get() as { c: number };
     expect(gone.c).toBe(0);
-    const kept = db.prepare(
-      "SELECT count(*) c FROM sqlite_master WHERE type='table' AND name IN ('legacy_tasks','legacy_projects')",
+    // `legacy_projects` is deliberately STILL HERE: `techniques.build_project_id` references
+    // it, and dropping the parent breaks ALL technique creation (measured on a copy — even a
+    // NULL build_project_id insert fails with "no such table"). It needs `techniques` rebuilt,
+    // which is its own migration. Asserted so the survivor is a decision, not a leftover.
+    const stillHere = db.prepare(
+      "SELECT count(*) c FROM sqlite_master WHERE type='table' AND name='legacy_projects'",
     ).get() as { c: number };
-    expect(kept.c).toBe(2);
+    expect(stillHere.c).toBe(1);
+    expect(
+      (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='techniques'")
+        .get() as { sql: string }).sql,
+    ).toMatch(/REFERENCES "?legacy_projects"?/);
   });
 
   it('gives work.agent_id NO foreign key — a terminated agent must not take its work with it (T0 D1)', () => {
