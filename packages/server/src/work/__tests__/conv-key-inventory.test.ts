@@ -98,34 +98,34 @@ function measure(): Record<string, number> {
 // ── THE SURVIVORS, each with the mechanism it belongs to and the task that owns it ──
 // Every entry below was opened and read at T3, not inherited from a list.
 const RESOLVED: Record<string, number> = {
-  // B + D, all in the message writer:
-  //   :570 setConvKeyByRowid's `expect: null` branch — the CAS for the ENGINE-EVENT pickup
-  //        (value 'engine', owner T6/T9). The owner-ask caller went at T3 and the terminal
-  //        A2A wake caller went at T4; this one remains, with one owner instead of two.
-  //   :593 tagTurnOutputConvKey — "do not re-tag an already-tagged output row". IDENTITY.
-  //   :629 claimTrackerNoticeForTask — retires an assignment notice. PHASE-2 T8c DISPOSED of
-  //        this one and the verdict is KEEP-AND-SCOPE, with the measurement in the
-  //        function's own docblock: on the owner's real backup body 185 assignment notices
-  //        carry NO task_id and 14 are STILL UNCLAIMED, so the keyed retirement
-  //        (`sweepByReferent{referent:'task_id'}`) cannot reach them and deleting this arm
-  //        would leave them to be re-delivered as fresh "begin working on this task"
-  //        prompts. The dev box's count of 0 is the absence #15 forbids reading as death.
-  //        Scoped to `task_id IS NULL` so the two arms no longer both claim one row; it
-  //        retires when the Bridge's pre-112 rows are gone (T12/Bridge, not Phase 2).
-  //   :674 sweepByRowid(requireUnclaimed) and :689 sweepByReferent — the ENGINE-EVENT serve
-  //        boundary ("a row already claimed by a turn is not ours to sweep"). T6/T9.
-  'packages/server/src/memory/message-store.ts': 5,
+  // ── BUCKET B IS EMPTY (PHASE-2 T9, 2026-07-29). ──
+  // T6 owed this and named T9 the owner: the five ENGINE-EVENT sites re-expressed on
+  // `served_by_turn IS NULL` before T10 drops the column, exactly the rekey T4 performed for
+  // the terminal A2A wake. All five moved, and the fifth one had a trap in it:
+  //   * `DELIVERABLE_ENGINE_EVENT_WHERE`   (counterparty.ts)  -> `served_by_turn IS NULL`
+  //   * `sweepByRowid(requireUnclaimed)`   (message-store.ts) -> `served_by_turn IS NULL`
+  //   * `sweepByReferent`                  (message-store.ts) -> `served_by_turn IS NULL`
+  //   * the boot staleness sweep's engine arm — moved WHOLE into `work/work-reaper.ts`
+  //     (`sweepBootStaleness`), predicate on `served_by_turn IS NULL`
+  //   * the pickup CAS `setConvKeyByRowid({value:'engine', expect:null})` -> the atomic claim
+  //     is `claimEngineEventByRowid` at turn-identity allocation, its revert is
+  //     `releaseEngineEventByRowid`, and the `expect` parameter is STRIPPED because it had no
+  //     caller left.
+  // ⚠ AND THE ONE THAT WOULD HAVE GONE WRONG SILENTLY: `claimTrackerNoticeForTask` WROTE the
+  // sentinel `conv_key='engine'` to retire a legacy assignment notice, and only worked
+  // because eligibility asked `conv_key IS NULL`. Moving eligibility without moving the
+  // writer would have left the sentinel excluding nothing and re-delivered the 14 still
+  // unclaimed pre-112 notices on the owner's real body as fresh "begin working on this task"
+  // prompts. It writes `swept_at` now — the same retirement the keyed arm already used.
+  //
+  // What is LEFT in the message writer is bucket D only:
+  //   tagTurnOutputConvKey — "do not re-tag an already-tagged output row". IDENTITY.
+  'packages/server/src/memory/message-store.ts': 1,
   // D — conversation-scoped recall. The comment at :275 states the requirement exactly:
   // an untagged row is this turn's own scratch, and a bare `conv_key IS NULL` would bleed
   // ANOTHER human's unclaimed inbound into this recall (inv 4). 3l keeps this half
   // first-class; it dies with the column at T10.
   'packages/server/src/memory/recall.ts': 2,
-  // B — the boot staleness sweep's ENGINE-EVENT arm. T3 split this block in two and took
-  // the owner-ask arm onto the work spine; the engine arm keeps its own claim column.
-  'packages/server/src/index.ts': 1,
-  // B (:345 DELIVERABLE_ENGINE_EVENT_WHERE, T6). C (findUnservedTerminalWake) was the second
-  // one and T4 removed it — the finder reads `served_by_turn IS NULL` now.
-  'packages/server/src/agent/v2/counterparty.ts': 1,
   // ── REMOVED BY T7 (2026-07-29) ──
   // `packages/server/src/memory/open-loops.ts` carried ONE occurrence and it was never on
   // `messages` at all: it was `open_loops.conv_key`, the dedup key of the prose-parsed
@@ -136,10 +136,9 @@ const RESOLVED: Record<string, number> = {
   // in that module (`:123`, the store-contradiction probe) was already rekeyed onto the work
   // lookup by T3 and is asserted below.
   //
-  // The conformance test that PINS the engine-event serve boundary's SQL. PHASE-2.md
-  // predicted this assertion "fails by design when T3 lands"; it does not, and the reason
-  // is the correction above: what it pins is sweepByReferent, which is bucket B.
-  'packages/server/src/tracker/__tests__/serve-boundary-conformance.test.ts': 1,
+  // (The serve-boundary conformance test's copy of this predicate went with bucket B — it
+  // now pins `served_by_turn IS NULL AND swept_at IS NULL`, the same requirement on the
+  // column that means it.)
 };
 
 describe('PHASE-2 T3 — the conv_key claim predicate, resolved site by site', () => {
@@ -175,11 +174,47 @@ describe('PHASE-2 T3 — the conv_key claim predicate, resolved site by site', (
     expect(wd).not.toMatch(/conv_key/);
     expect(wd).toMatch(/JOIN work w ON w\.agent_id = a\.id/);
 
-    // 5. the boot staleness sweep's human arm
-    const idx = src('packages/server/src/index.ts');
-    expect(idx).toMatch(/w\.kind = 'ask' AND w\.state = 'open'/);
+    // 5. the boot staleness sweep's human arm. T9 moved the whole sweep out of the boot
+    //    sequence and into the one reaper; both arms travelled unchanged except for the
+    //    engine arm's predicate, which is bucket B's rekey.
+    const reaper = src('packages/server/src/work/work-reaper.ts');
+    expect(reaper).toMatch(/w\.kind = 'ask' AND w\.state = 'open'/);
     // ...and what is left of that block is explicitly the events lane, not "any user row".
-    expect(idx).toMatch(/m\.role = 'user' AND m\.lane = 'events'\s+AND m\.conv_key IS NULL/);
+    expect(reaper).toMatch(/m\.role = 'user' AND m\.lane = 'events'\s+AND m\.served_by_turn IS NULL/);
+    // ...and the block is GONE from the boot sequence rather than copied out of it.
+    expect(src('packages/server/src/index.ts')).not.toMatch(/Boot staleness sweep: drain-suppressed/);
+  });
+
+  it('T9: the ENGINE-EVENT claim is the serve edge, and the conv_key sentinel is gone', () => {
+    const src = (rel: string): string => stripComments(fs.readFileSync(path.join(REPO, rel), 'utf8'));
+    const cp = src('packages/server/src/agent/v2/counterparty.ts');
+    expect(cp).toMatch(/lane = 'events' AND served_by_turn IS NULL/);
+    // Nothing writes the 'engine' sentinel any more. NEGATIVE CONTROL: the identity stamp
+    // that legitimately puts 'engine' on a turn's OWN OUTPUT rows must still be here, or this
+    // clause would pass by deleting the wrong thing — the re-answer guard and the assembler
+    // both read that stamp to tell engine chatter from a human conversation.
+    const store = src('packages/server/src/memory/message-store.ts');
+    expect(store).not.toMatch(/SET conv_key = 'engine'/);
+    const loop = src('packages/server/src/agent/v2/loop.ts');
+    expect(loop).not.toMatch(/value: 'engine', expect: null/);
+    expect(loop).toMatch(/isEngineTurn \? 'engine'/);
+    // The claim and its revert are a matched CAS pair on one column.
+    expect(store).toMatch(/SET served_by_turn = @turnNumber\s+WHERE rowid = @rowid AND agent_id = @agentId AND served_by_turn IS NULL/);
+    expect(store).toMatch(/SET served_by_turn = NULL\s+WHERE rowid = @rowid AND agent_id = @agentId AND served_by_turn = @turnNumber/);
+    // And `setConvKeyByRowid` no longer offers a claim guard to anybody.
+    const setter = store.slice(store.indexOf('export function setConvKeyByRowid'));
+    expect(setter.slice(0, 500)).not.toMatch(/expect/);
+  });
+
+  it('T9: the LEGACY assignment-notice arm retires by the same edge, not by the sentinel', () => {
+    // If this arm had been left writing `conv_key='engine'` while eligibility moved to
+    // `served_by_turn`, the 14 still-unclaimed pre-112 notices on the owner's real body would
+    // have become re-deliverable. It writes `swept_at` now — what the KEYED arm always wrote.
+    const store = stripComments(fs.readFileSync(path.join(REPO, 'packages/server/src/memory/message-store.ts'), 'utf8'));
+    const fn = store.slice(store.indexOf('export function claimTrackerNoticeForTask'));
+    expect(fn.slice(0, 1800)).toMatch(/SET swept_at =/);
+    expect(fn.slice(0, 1800)).toMatch(/served_by_turn IS NULL AND swept_at IS NULL/);
+    expect(fn.slice(0, 1800)).toMatch(/task_id IS NULL/);   // the scope T8c measured and kept
   });
 
   it('T4: the terminal A2A wake is claimed by the SERVE edge, and the fake conversation key is gone', () => {
@@ -189,12 +224,17 @@ describe('PHASE-2 T3 — the conv_key claim predicate, resolved site by site', (
     const finder = cp.slice(finderStart, cp.indexOf('export function', finderStart + 10));
     expect(finder).toMatch(/served_by_turn IS NULL AND swept_at IS NULL/);
     expect(finder).not.toMatch(/conv_key/);
-    // ...and nothing in the tree writes the sentinel any more. NEGATIVE CONTROL: the OTHER
-    // sentinel writes ('engine') must still be here, or this clause would pass by deleting
-    // the wrong thing.
+    // ...and nothing in the tree writes the sentinel any more.
+    //
+    // NEGATIVE CONTROL, RE-EXPRESSED (PHASE-2 T9). T4 pinned "the OTHER sentinel write
+    // (`value: 'engine', expect: null`) must still be here", so that this clause could not
+    // pass by somebody deleting every conv_key write. T9 removed exactly that write — it was
+    // the engine-event pickup claim, the last claim job on the column — so the control has to
+    // point at what genuinely survives instead of at a demolished mechanism. The surviving
+    // write is the one requirement 3l keeps: the trigger row's conversation IDENTITY stamp.
     const loop = src('packages/server/src/agent/v2/loop.ts');
     expect(loop).not.toMatch(/value: 'a2a'/);
-    expect(loop).toMatch(/value: 'engine', expect: null/);
+    expect(loop).toMatch(/setConvKeyByRowid\(\{ rowid: triggerRow\.rowid, agentId, value: chosenConvKey \}\)/);
     // The serve stamp is GATED on the wake actually driving the turn. Ungated, it would mark a
     // wake served that LOST the turn to a waiting human — swallowing it — because that stamp
     // is now the finder's own predicate. This clause is what stops the gate being "tidied" away.

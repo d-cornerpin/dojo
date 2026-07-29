@@ -198,6 +198,19 @@ export function pickAvailableAgentFromGroup(groupId: string): string | null {
 
 const STALE_REQUEST_HOURS = 12;
 
+/**
+ * PHASE-2 T9 — the reaper's entry point for this file's two 12-hour SLAs.
+ *
+ * One export rather than two, because they are one kind: "a request a human never answered
+ * inside `DEADLINES.stale_request` auto-resolves so the system stays honest while people are
+ * away." Sequential and independently guarded — each already swallows its own failure — so a
+ * failure in one cannot silence the other.
+ */
+export async function sweepStaleRequests(): Promise<void> {
+  await sweepStaleOverrideRequests();
+  await sweepStaleUserVerdictRequests();
+}
+
 async function sweepStaleOverrideRequests(): Promise<void> {
   try {
     // PHASE-2 T8T RESUMED-2 (RULING 4): the queue moved to `work_events`; the 12-hour bound
@@ -599,9 +612,12 @@ export async function checkScheduledTasks(): Promise<void> {
   resumeExpiredPauses();
   // D12: engine fallback for missed-runs pauses the model never resolved.
   await autoResolveStaleMissedRunPauses();
-  // Phase B.1: 12-hour auto-expire sweeps.
-  await sweepStaleOverrideRequests();
-  await sweepStaleUserVerdictRequests();
+  // PHASE-2 T9: the two 12-hour auto-expire sweeps moved to the ONE reaper
+  // (`work/work-reaper.ts`, kind `stale-override-and-verdict-requests`). They ran here
+  // because the scheduler tick was the nearest 30-second clock, not because they are
+  // scheduling — their deadline is `DEADLINES.stale_request`, which the reaper now owns
+  // alongside the other twelve cliffs. The functions themselves are unchanged and are
+  // exported as `sweepStaleRequests` below; the CADENCE is carried, not re-chosen.
   // 5-minute validation escalation: if PM hasn't validated within the
   // threshold, ask the user via primary chat (and iMessage if available).
   await sweepUnvalidatedTasksForUserEscalation();

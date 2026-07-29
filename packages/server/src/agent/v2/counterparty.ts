@@ -342,8 +342,17 @@ export const ENGINE_EVENT_BACKOFF_MINUTES = [1, 5, 15, 30, 60];
 // at the database instead of carried in a nullable free-text column. `origin_intent` stays
 // byte-identical: it is the SECOND axis (which subsystem produced this) and `lane` cannot
 // absorb its 17+ live values (PHASE-1.md T3-0b §2).
+//
+// ⚠ PHASE-2 T9 — "UNCLAIMED" IS `served_by_turn IS NULL`, THE REAL SERVE EDGE.
+// This predicate read `conv_key IS NULL` and the pickup wrote the sentinel `conv_key='engine'`
+// — a fake conversation key written onto the column that carries conversation IDENTITY,
+// purely so this WHERE would stop returning the row. It is the same shape T4 deleted for the
+// terminal A2A wake, it was the LAST claim job left on `conv_key` (requirement 3l keeps the
+// identity half and only that), and T6 named T9 its owner with T10 as backstop because
+// `conv_key` drops there. `served_by_turn` already means exactly "a turn took this", is
+// already stamped on this very row by the same turn, and has no second meaning to destroy.
 const DELIVERABLE_ENGINE_EVENT_WHERE =
-  `role = 'user' AND lane = 'events' AND conv_key IS NULL
+  `role = 'user' AND lane = 'events' AND served_by_turn IS NULL
    AND swept_at IS NULL
    AND (origin_intent IS NULL OR origin_intent NOT IN ('thrash_gate', 'hint', 'system'))`;
 

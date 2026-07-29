@@ -7,8 +7,9 @@ import { v4 as uuidv4 } from 'uuid';
 import { createLogger, setLogBroadcast } from './logger.js';
 import { getDb } from './db/connection.js';
 import { runMigrations } from './db/migrations.js';
-import { sweepByRowid } from './memory/message-store.js';
-import { transition, reconcileOrphanedClaims, abandonUnservableAsks } from './work/store.js';
+// PHASE-2 T9: `sweepByRowid` and `transition` left this file with the boot staleness sweep,
+// which now lives in `work/work-reaper.ts` beside the other obligation sweeps.
+import { reconcileOrphanedClaims, abandonUnservableAsks } from './work/store.js';
 import { loadSecrets } from './config/loader.js';
 import { createServer } from './gateway/server.js';
 import { broadcast } from './gateway/ws.js';
@@ -454,124 +455,17 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4b1. Boot staleness sweep (incident 2026-07-02). When the box has been offline or
-  // behind for a while, its message backlog fills with role='user' rows whose conv_key is
-  // still NULL (unanswered/unstamped), old human inbounds AND old engine events. The boot
-  // re-drain below, plus the runtime/engine drains, treat those as freshly-waiting and would
-  // force-wake EVERY agent into a mass "catch up on weeks of work" storm (agents re-running
-  // ancient reminders, the healer backfilling a diagnostic for every past day, a sub-agent
-  // publishing without approval). A message pending from a genuine QUICK restart is
-  // seconds-to-minutes old; anything older than 30 minutes at boot is stale history, not
-  // in-flight work. Stamp those stale rows with a dead sentinel conv_key so no drain can pick
-  // them up, silently, with NO user prompt (the user has no context to judge "catch up on
-  // weeks of backlog?" and one wrong 'yes' is irreversible).
-  //
-  // SCOPE, this touches the messages table ONLY (conversation/context/notification rows). It
-  // NEVER touches the tracker (tasks/projects/schedules): those are the system of record, and
-  // the PM keeps picking up and completing stale tracker tasks at its normal pace, exactly as
-  // before. Nothing is completed, paused, expired, or deleted. A pending message UNDER 30
-  // minutes old is left NULL so the re-drain below still catches a genuine just-before-restart
-  // message.
-  {
-    try {
-      const db = getDb();
-      // D11: how many stale UNANSWERED asks are genuine authorized-human ones? A quick
-      // restart with a handful of these is a person waiting on an answer, HOLD those for
-      // the re-drain below to serve (never silently drop a question). A large backlog is
-      // stale history (box was offline for a long time), suppress it as before.
-      //
-      // PHASE-2 T3: this arm reads the WORK SPINE. An unanswered human ask is
-      // `work(kind='ask', state='open')`, not "a role='user' row whose conv_key is NULL",
-      // and suppression is `abandoned` rather than a `swept_at` stamp on the message.
-      // requirement preserved, all three parts: counted PER AGENT (a global count let 6
-      // asks across 6 agents all get swept), only SERVABLE rows counted (>= the agent's
-      // session start, the re-drain's own floor — holding an unservable row parked it in
-      // limbo forever), and a genuine just-before-restart message stays untouched because
-      // the 30-minute floor is unchanged. The engine-event half of this sweep follows
-      // below, still on `messages`, because an engine event is not an ask.
-      const HUMAN_HOLD_LIMIT = 5;
-      const STALE_ASK_WHERE =
-        `w.kind = 'ask' AND w.state = 'open'
-         AND w.opened_at < (unixepoch('now', '-30 minutes') * 1000)
-         AND w.opened_at >= (unixepoch(COALESCE((SELECT session_started_at FROM agents WHERE id = w.agent_id), '1970-01-01')) * 1000)`;
-      const heldAgents = (db.prepare(
-        `SELECT w.agent_id AS id, COUNT(*) AS c FROM work w
-          WHERE ${STALE_ASK_WHERE}
-          GROUP BY w.agent_id HAVING COUNT(*) <= ${HUMAN_HOLD_LIMIT}`,
-      ).all() as Array<{ id: string; c: number }>);
-      const heldTotal = heldAgents.reduce((s, a) => s + a.c, 0);
-      const heldIds = new Set(heldAgents.map((a) => a.id));
-      const staleAsks = db.prepare(
-        `SELECT w.id AS id, w.agent_id AS agent_id FROM work w WHERE ${STALE_ASK_WHERE}`,
-      ).all() as Array<{ id: string; agent_id: string }>;
-      let suppressed = 0;
-      for (const a of staleAsks) {
-        if (heldIds.has(a.agent_id)) continue;      // held for the re-drain below
-        const res = transition(a.id, {
-          to: 'abandoned', by: 'agent', actorId: a.agent_id,
-          reason: 'boot staleness sweep: older than 30 minutes at startup and beyond the hold limit',
-        });
-        if (res.kind === 'applied') suppressed++;
-      }
-      //
-      // D8: also EXCLUDE engine events still inside their delivery lifecycle
-      // (migration 084), i.e. rows carrying proof of an in-process delivery:
-      // a future retry backoff (next_attempt_at > now) or 1-4 recorded failed
-      // attempts. Only the D8 abort-revert path ever writes that state, so mass
-      // stale backlog (the boot-storm class this sweep exists for) has
-      // delivery_attempts = 0 / next_attempt_at NULL and is swept silently
-      // exactly as before. The exclusion cannot weaken the storm protection:
-      // getPendingEngineEvent's own eligibility requires created_at within the
-      // 6-hour expiry horizon AND attempts < 5, so nothing older than 6 hours
-      // can EVER wake an agent regardless of what survives this sweep; an
-      // in-lifecycle row past the horizon is disposed LOUDLY (swept + one
-      // owner notice, which never wakes anyone) at the first eligibility
-      // consult. Exhausted rows (attempts >= 5) are not excluded here. The
-      // IS NOT NULL guard matters: without it a NULL next_attempt_at makes
-      // the comparison NULL, the OR NULL, the AND NULL, and NOT(NULL) is
-      // NULL = row skipped, which would shield ALL plain engine backlog
-      // from the sweep (verified against an aged DB copy).
-      //
-      // T4: the row SELECTION is unchanged — the predicate below is carried verbatim,
-      // it just names the candidates now instead of updating them in place. The
-      // disposal itself goes through the writer module's sweep, which re-applies the
-      // same two guards per row (`swept_at IS NULL`, and `conv_key IS NULL` via
-      // requireUnclaimed), so a row that was claimed in between is still not ours.
-      //
-      // T3: `lane = 'events'` is now EXPLICIT here rather than implied. This arm was always
-      // two sweeps sharing one predicate — owner asks and engine events — and the ask half
-      // moved to the work spine above. An engine event's claim still lives on `conv_key`
-      // (`'engine'` when a turn has picked it up), which is a DIFFERENT queue with its own
-      // retry lifecycle and its own owners in this phase (PHASE-2 T6 for the retry policy,
-      // T9 for the one reaper); collapsing it into the ask queue is not this task's to do
-      // and would be the two-mechanism disease in the other direction.
-      const staleRows = db.prepare(
-        `SELECT m.seq AS rowid, m.agent_id AS agent_id FROM messages AS m
-          WHERE m.role = 'user' AND m.lane = 'events'
-            AND m.conv_key IS NULL AND m.swept_at IS NULL
-            AND m.created_at < (unixepoch('now', '-30 minutes') * 1000)
-            AND NOT ((m.next_attempt_at IS NOT NULL AND m.next_attempt_at > (unixepoch('now') * 1000))
-                     OR (m.delivery_attempts > 0 AND m.delivery_attempts < 5))`,
-      ).all() as Array<{ rowid: number; agent_id: string }>;
-      let swept = 0;
-      for (const r of staleRows) {
-        swept += sweepByRowid({ rowid: r.rowid, agentId: r.agent_id, requireUnclaimed: true });
-      }
-      // T6: the SECOND sweep arm is gone. D-A step 4 split engine events across two
-      // physical tables, so this sweep needed a store arm or a stale store engine event
-      // survived the restart and re-fired via the merged boot re-drain. Engine events
-      // are `lane='events'` rows in `messages` now, and the predicate above reaches them
-      // directly: `lane = 'events'` is exactly the `origin_kind = 'engine'` clause the
-      // store arm carried.
-      // requirement preserved: a stale, never-attempted engine event is drain-suppressed
-      // at boot, wherever it was queued, while one still inside its delivery lifecycle
-      // (a future backoff or 1-4 recorded attempts) survives to be retried.
-      if (swept > 0 || suppressed > 0 || heldTotal > 0) {
-        logger.info(`Boot staleness sweep: drain-suppressed ${swept} stale (>30m) engine event(s) via swept_at and abandoned ${suppressed} stale ask(s)${heldTotal > 0 ? `; HELD ${heldTotal} genuine human ask(s) across ${heldAgents.length} agent(s) for the re-drain` : ''} (tracker untouched)`);
-      }
-    } catch (err) {
-      logger.warn('Boot staleness sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
-    }
+  // 4b1. Boot staleness sweep (incident 2026-07-02) — MOVED, WHOLE, TO THE ONE REAPER
+  // (PHASE-2 T9). The function is `sweepBootStaleness()` in `work/work-reaper.ts`, where it
+  // sits beside the thirteen-cliff deadline table and the four periodic kinds instead of
+  // three hundred lines away from the timers that repeat its siblings. Its SQL, its
+  // thirty-minute floor, its per-agent hold limit and its `requirement preserved:` notes went
+  // across byte-for-byte; only the owner changed.
+  try {
+    const { sweepBootStaleness } = await import('./work/work-reaper.js');
+    sweepBootStaleness();
+  } catch (err) {
+    logger.warn('Boot staleness sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
   }
 
   // 4b1. D19: boot crash-reconciliation — CRASH TEST B's durable half.
@@ -1145,17 +1039,11 @@ async function main(): Promise<void> {
   // actually arrived but never landed, the reaper lands it and relays the REAL answer instead.
   // Engine-enforced and model-independent: the owner is never left in silence because the
   // asked agent died, was terminated, or dropped the ask.
-  // PHASE-2 T9 folds this into the one reaper with its per-kind deadline table.
-  setInterval(() => {
-    void (async () => {
-      try {
-        const { sweepExpiredJoins } = await import('./agent/a2a-transport.js');
-        await sweepExpiredJoins();
-      } catch (err) {
-        logger.warn('join TTL reaper failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
-      }
-    })();
-  }, 10 * 60_000);
+  // PHASE-2 T9 FOLDED THIS INTO THE ONE REAPER. The sweep is unchanged; what moved is the
+  // CLOCK. It is now `REAPER_KINDS['join-ttl']` in `work/work-reaper.ts`, still every ten
+  // minutes (the period is carried from this timer, not re-chosen), alongside the other
+  // three obligation sweeps and the thirteen-row deadline table that names the age it
+  // enforces (`join_ttl` = 60 min, `join_max_age` = 7 days).
 
   // D17: one-time re-embed of vault entries left with a NULL embedding (pre-C12
   // Ollama drops). Without an embedding they can never match a semantic
@@ -1223,17 +1111,17 @@ async function main(): Promise<void> {
     logger.warn('Failed to rehydrate injured agents', { error: err instanceof Error ? err.message : String(err) });
   }
 
-  // FA-P1: sweep stale destructive-approval requests on boot, then on the same
-  // 30s cadence as the agent reaper below. Bounded/idempotent: re-wakes the
-  // primary at most once per request, then loudly expires anything still undecided
-  // at the TTL. Reuses this existing maintenance home rather than a new timer.
+  // PHASE-2 T9: the destructive-approval boot sweep is the reaper's FIRST TICK, not a
+  // separate call. `runReaperTick()` runs every kind whose period divides tick 0, which is
+  // all of them, so boot gets one pass of every obligation sweep from the one place that
+  // knows what they are — instead of four boot calls that had drifted out of step with the
+  // four timers that repeated them.
   try {
-    const { sweepStaleApprovals } = await import('./agent/destructive-gate.js');
-    sweepStaleApprovals().catch((err) => {
-      logger.warn('Destructive-approval boot sweep failed', { error: err instanceof Error ? err.message : String(err) });
-    });
+    const { runReaperTick } = await import('./work/work-reaper.js');
+    const first = await runReaperTick();
+    logger.info('Reaper boot pass complete', { ran: first.ran, failed: first.failed });
   } catch (err) {
-    logger.warn('Destructive-approval boot sweep import failed', { error: err instanceof Error ? err.message : String(err) });
+    logger.warn('Reaper boot pass failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
   }
 
   // P3 boot re-arm: spawn timeout timers are in-memory and vanish on restart.
@@ -1244,13 +1132,18 @@ async function main(): Promise<void> {
     logger.warn('Spawn timeout boot re-arm failed', { error: err instanceof Error ? err.message : String(err) });
   }
 
+  // PHASE-2 T9: ONE CLOCK for every obligation sweep. `startReaper` installs the single
+  // 30-second tick that drives all four kinds at their own carried periods (see
+  // `work/work-reaper.ts`); this interval keeps ONLY `checkTimeouts`, which is the SPAWN
+  // decision timer — an agent-lifecycle deadline, not one of the thirteen obligation cliffs
+  // — and is left where it is rather than folded in on a resemblance.
+  const { startReaper } = await import('./work/work-reaper.js');
+  startReaper();
+
   const timeoutInterval = setInterval(() => {
     try { checkTimeouts(); } catch (err) {
       logger.error('Timeout checker failed', { error: err instanceof Error ? err.message : String(err) });
     }
-    import('./agent/destructive-gate.js')
-      .then(({ sweepStaleApprovals }) => sweepStaleApprovals())
-      .catch((err) => logger.warn('Destructive-approval sweep failed', { error: err instanceof Error ? err.message : String(err) }));
   }, 30_000);
 
   const shutdown = (): void => {

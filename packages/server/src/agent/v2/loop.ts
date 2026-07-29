@@ -146,6 +146,7 @@ import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOM
 import { estimateTokens } from '../../memory/store.js';
 import {
   insertMessageIfAbsent, insertEngineEventIfAbsent, setConvKeyByRowid, tagTurnOutputConvKey,
+  claimEngineEventByRowid, releaseEngineEventByRowid, isRowUnserved,
   markServedByRowid, setAnswerMessageId,
 } from '../../memory/message-store.js';
 import { buildOpenWorkInjection } from '../../work/obligations.js';
@@ -1159,7 +1160,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // D8: set at the engine-event pickup below when THIS turn claims a pending engine
   // event (conv_key stamped 'engine'). Declared here, before the abort revert that
   // reads it, so the closure never touches a TDZ variable.
-  let claimedEngineEvent: { rowid: number } | null = null;
+  let claimedEngineEvent: { rowid: number; turnNumber: number } | null = null;
+  /** PHASE-2 T9: the event this turn INTENDS to claim, decided at engine-turn detection.
+   *  It becomes `claimedEngineEvent` only when the CAS at turn-identity allocation wins. */
+  let pendingEngineClaim: { rowid: number } | null = null;
   const revertTriggerStampOnAbort = () => {
     if (triggerWorkId) {
       try {
@@ -1169,11 +1173,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
         );
       } catch { /* best effort, recovery, never block the abort */ }
     }
-    // D8: symmetric revert for an ENGINE trigger claim. The engine pickup stamps
-    // conv_key='engine' the moment the event is picked up, so a model/provider abort
+    // D8: symmetric revert for an ENGINE trigger claim. The engine pickup stamps the
+    // serve edge the moment the event is picked up, so a model/provider abort
     // on the engine turn used to leave the event permanently "processed": the
     // reminder was never spoken and nothing ever retried it. Revert our own claim
-    // (AND conv_key = 'engine' keeps it idempotent against a concurrent re-stamp)
+    // (AND served_by_turn = OUR turn keeps it idempotent against a concurrent re-claim)
     // and record the failed delivery (attempt counter + backoff, migration 084) so
     // the retry timer / boot re-drain re-serves it, bounded by the 5-attempt /
     // 6-hour lifecycle. Guarded by the SAME no-non-idempotent-execution rule as
@@ -1183,7 +1187,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
     if (claimedEngineEvent != null) {
       try {
         if (state.nonIdempotentCallsThisTurn === 0) {
-          const reverted = setConvKeyByRowid({ rowid: claimedEngineEvent.rowid, agentId, value: null, expect: 'engine' });
+          const reverted = releaseEngineEventByRowid({
+            rowid: claimedEngineEvent.rowid, agentId, turnNumber: claimedEngineEvent.turnNumber,
+          });
           if (reverted > 0) recordEngineEventDeliveryFailure(agentId, claimedEngineEvent.rowid);
         }
       } catch { /* best effort, recovery, never block the abort */ }
@@ -1480,16 +1486,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
       originIntent: mostRecentInbound.origin_intent,
     }).authorized === false;
   // Mark the engine event PROCESSED at pickup (mirrors the human pickup-stamp) so it
-  // can't re-fire and so getPendingEngineEvent stops returning it. conv_key='engine'
-  // is a non-human sentinel (the human waiting-set ignores engine rows by origin).
+  // can't re-fire and so getPendingEngineEvent stops returning it.
+  //
+  // PHASE-2 T9: the sentinel `conv_key='engine'` is gone. "Processed" is `served_by_turn`,
+  // the real serve edge, which this turn already stamps on this very row below — so the
+  // ATOMIC claim moved down there (`claimEngineEventByRowid`), where the turn number it
+  // records exists. What is left here is the cheap READ of the same edge, which still bails
+  // the common stray-process case before the turn does any work.
   if (isEngineTurn && pendingEngineEvent) {
     let engineClaimed = true;
     try {
-      engineClaimed = setConvKeyByRowid({ rowid: pendingEngineEvent.rowid, agentId, value: 'engine', expect: null }) > 0;
-    } catch { /* best effort */ }
-    // D8: remember OUR claim so a no-answer abort can revert it symmetrically with
-    // the human trigger stamp (see revertTriggerStampOnAbort above).
-    if (engineClaimed) claimedEngineEvent = { rowid: pendingEngineEvent.rowid };
+      engineClaimed = isRowUnserved(pendingEngineEvent.rowid, agentId);
+    } catch { /* best effort: the CAS below is the authoritative answer */ }
+    // D8: remember OUR intent to claim; `claimedEngineEvent` is only SET once the CAS wins,
+    // so a no-answer abort can revert exactly what it took (see revertTriggerStampOnAbort).
+    if (engineClaimed) pendingEngineClaim = { rowid: pendingEngineEvent.rowid };
     // P1 lineage spine: this turn serves the engine event; if the row carries a
     // run/task referent (migration 112 columns), the root is that occurrence,
     // and the served task's kind/origin are published to turn-state so lanes
@@ -1512,11 +1523,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
       }
     }
     if (!engineClaimed) {
-      // C24: symmetry with the human pickup-claim above, the atomic engine-event claim
-      // affected 0 rows, so ANOTHER process already picked up this engine event. Bail cleanly
-      // instead of running a DUPLICATE engine turn. Single-process production never hits this
-      // (changes is always 1); guards stray dev `tsx watch` processes on the one SQLite DB.
-      logger.warn('v2: engine-event claim lost, another process already claimed it; skipping to avoid a duplicate engine turn', { agentId, rowid: pendingEngineEvent.rowid }, agentId);
+      // C24: symmetry with the human pickup-claim above — the event is already served, so
+      // ANOTHER process picked it up. Bail cleanly instead of running a DUPLICATE engine
+      // turn. Single-process production never hits this; it guards stray dev `tsx watch`
+      // processes on the one SQLite DB.
+      logger.warn('v2: engine event already served, another process claimed it; skipping to avoid a duplicate engine turn', { agentId, rowid: pendingEngineEvent.rowid }, agentId);
       setAgentStatus(agentId, 'idle');
       return;
     }
@@ -1680,8 +1691,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
     if (triggerRow) {
       markServedByRowid(triggerRow.rowid, turnNumber);
     }
-    if (claimedEngineEvent) {
-      markServedByRowid(claimedEngineEvent.rowid, turnNumber);
+    // PHASE-2 T9 — THE ENGINE EVENT'S ATOMIC CLAIM, and it is this stamp.
+    // It used to be an unconditional re-stamp of a row already claimed by the
+    // `conv_key='engine'` sentinel 155 lines above. With the sentinel gone, the stamp IS the
+    // claim: a CAS on `served_by_turn IS NULL`. A loss means another process took the event,
+    // and the turn continues WITHOUT owning it — so no revert and no delivery-failure
+    // bookkeeping is recorded against a claim it never held.
+    if (pendingEngineClaim) {
+      const won = claimEngineEventByRowid({ rowid: pendingEngineClaim.rowid, agentId, turnNumber }) > 0;
+      if (won) {
+        claimedEngineEvent = { rowid: pendingEngineClaim.rowid, turnNumber };
+      } else {
+        logger.warn('v2: engine-event claim lost at the serve edge; this turn does not own the event', {
+          agentId, rowid: pendingEngineClaim.rowid, turnNumber,
+        }, agentId);
+      }
     }
     // GATED on driving the turn, and that gate is load-bearing since T4. A terminal wake that
     // exists but LOST the turn (an unreplied QUESTION/ASSIGN/BLOCK wins the counterparty, or a

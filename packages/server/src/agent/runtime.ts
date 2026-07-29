@@ -333,6 +333,10 @@ import {
 import { turnBoundary, forceA2ATurn, a2aTurnRetries, MAX_A2A_TURN_RETRIES, lastTurnWasA2A, drainHead, MAX_DRAIN_STUCK, currentTurnKind } from './turn-state.js';
 import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, quarantineWaitingConversation } from './v2/counterparty.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
+// PHASE-2 T9: the drain's bound is derived from `turns` rather than remembered in a Map, so
+// a restart cannot reset the storm protection. See `work/work-reaper.ts`'s header for why it
+// is neither `work.attempts` nor `messages.delivery_attempts`.
+import { drainStuck } from '../work/work-reaper.js';
 import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';
 
 // Recovery-streak Map and cap moved to shared-state.ts (Phase 6 2026-05-04)
@@ -659,8 +663,19 @@ class AgentRuntime {
           // The human's own trigger runs the next turn; leftover wakes get
           // re-checked at THAT turn's end. Self-wakes never compete with a
           // waiting human, full stop.
-          if (getWaitingHumanConversations(agentId).length > 0) {
+          //
+          // PHASE-2 T9 — THE LAW IS MEASURED, NOT ONLY OBEYED. The count is taken ONCE and
+          // carried onto every log line this block writes, because the storm invariant
+          // cannot tell a healthy drain from a violation unless the firing itself says how
+          // many people were waiting when it fired. Taking it once also means a future edit
+          // that deletes the stand-down branch still leaves the number on the record — the
+          // clause bites on the fault instead of going quiet with it.
+          const waitingHumans = getWaitingHumanConversations(agentId).length;
+          if (waitingHumans > 0) {
             wakeDrainHead.delete(agentId);
+            logger.info('unserved-wake drain: standing down, a human is waiting', {
+              agentId, humanAsksOpen: waitingHumans,
+            }, agentId);
             throw { __skipWakeDrain: true };
           }
           const { findUnservedTerminalWake, getPendingEngineEvent } = await import('./v2/counterparty.js');
@@ -668,17 +683,31 @@ class AgentRuntime {
           const leftoverEngine = leftoverWake ? null : getPendingEngineEvent(agentId);
           const head = leftoverWake ? `w:${leftoverWake.rowid}` : (leftoverEngine ? `e:${leftoverEngine.rowid}` : null);
           if (head) {
+            // PHASE-2 T9 — THE BOUND SURVIVES A RESTART. `wakeDrainHead` was a Map, so a
+            // crash loop reset this counter to zero on every boot and the storm protection
+            // with it. The count is now DERIVED from `turns` (the spine's own record of
+            // what this agent did) via `drainStuck`, and the Map is kept only as the
+            // in-process memory of WHICH head we are on — losing that on a restart is
+            // correct, because a restart genuinely has no head yet.
+            //
+            // It is not `work.attempts` and not `messages.delivery_attempts`: both are
+            // OTHER counters with their own consumers, and the reasoning (with the
+            // measurements) is in `work/work-reaper.ts`'s header.
+            const headRowMs = (getDb().prepare('SELECT created_at AS t FROM messages WHERE rowid = ?')
+              .get(leftoverWake ? leftoverWake.rowid : leftoverEngine!.rowid) as { t: number } | undefined)?.t ?? Date.now();
             const prev = wakeDrainHead.get(agentId);
-            const stuck = prev && prev.head === head ? prev.stuck + 1 : 0;
+            const stuck = prev && prev.head === head
+              ? drainStuck(agentId, headRowMs)
+              : 0;
             wakeDrainHead.set(agentId, { head, stuck });
             if (stuck < 2) {
               pendingWakeups.add(agentId);
               logger.info('unserved-wake drain: leftover wake/engine event after turn end; queuing immediate re-run', {
-                agentId, head, stuck,
+                agentId, head, stuck, humanAsksOpen: waitingHumans,
               }, agentId);
             } else {
               logger.warn('unserved-wake drain: head not advancing after re-runs; standing down to the periodics', {
-                agentId, head,
+                agentId, head, stuck, humanAsksOpen: waitingHumans,
               }, agentId);
             }
           } else {
@@ -712,7 +741,13 @@ class AgentRuntime {
           if (waiting.length > 0) {
             const head = waiting[0].oldestWaitingRowid;
             const prev = drainHead.get(agentId);
-            const stuck = prev && prev.rowid === head ? prev.stuck + 1 : 0;
+            // PHASE-2 T9 — restart-safe, same derivation as the unserved-wake drain above.
+            // The human drain's head is a message row whose ticket is still `open`, so "how
+            // many of this agent's turns have ENDED since it arrived without serving it" is
+            // exactly the number the Map was counting, and `turns` already holds it.
+            const headMs = (getDb().prepare('SELECT created_at AS t FROM messages WHERE rowid = ?')
+              .get(head) as { t: number } | undefined)?.t ?? Date.now();
+            const stuck = prev && prev.rowid === head ? drainStuck(agentId, headMs) : 0;
             if (stuck < MAX_DRAIN_STUCK) {
               drainHead.set(agentId, { rowid: head, stuck });
               // D2: cap self-re-triggers so a multi-row backlog can't spin into

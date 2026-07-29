@@ -51,8 +51,13 @@ describe('serve boundary (P2)', () => {
     }
     const store = read('memory/message-store.ts');
     const sweep = store.slice(store.indexOf('export function sweepByReferent'));
+    // PHASE-2 T9: the serve boundary is `served_by_turn`, the real serve edge, not the
+    // `conv_key` sentinel that used to stand in for it. The REQUIREMENT is unchanged and is
+    // what this clause pins: a retire helper must never yank a live turn's trigger. Only the
+    // column that answers "has a turn taken this" changed, and it changed to the one that
+    // already meant it. (T6 named T9 the owner of this rekey; T10 drops `conv_key`.)
     expect(sweep.slice(0, 600), 'sweepByReferent must not yank a live turn\'s trigger')
-      .toMatch(/conv_key IS NULL AND swept_at IS NULL/);
+      .toMatch(/served_by_turn IS NULL AND swept_at IS NULL/);
   });
 
   it('run close claims its trigger by key; terminal tasks retire their events by key', () => {
@@ -150,8 +155,15 @@ describe('turn record (P4)', () => {
     // asserted in memory/message-store.ts so the SQL itself is still pinned
     // somewhere. Three claim sites: the human trigger, the engine event, the
     // terminal A2A wake.
+    //
+    // PHASE-2 T9: the ENGINE EVENT's site is `claimEngineEventByRowid` rather than a bare
+    // `markServedByRowid`, because with the `conv_key='engine'` sentinel gone that stamp IS
+    // the atomic claim and its `.changes` has to be read. Still three sites, still the same
+    // column; the clause counts both spellings so it keeps its whole subject.
     const loop = read('agent/v2/loop.ts');
-    expect((loop.match(/markServedByRowid\(/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    const claimSites = (loop.match(/markServedByRowid\(/g) ?? []).length
+      + (loop.match(/claimEngineEventByRowid\(/g) ?? []).length;
+    expect(claimSites).toBeGreaterThanOrEqual(3);
     expect(loop).toMatch(/setAnswerMessageId\(\{/);
     const store = read('memory/message-store.ts');
     expect(store).toMatch(/SET served_by_turn = \? WHERE rowid = \?/);

@@ -69,47 +69,52 @@ function seed(): void {
     );
   `);
   const ins = db.prepare(
-    `INSERT INTO messages (id, agent_id, lane, origin_intent, conv_key, task_id, swept_at, content)
-     VALUES (@id, @agent_id, @lane, @origin_intent, @conv_key, @task_id, @swept_at, @content)`,
+    `INSERT INTO messages (id, agent_id, lane, origin_intent, conv_key, task_id, swept_at, served_by_turn, content)
+     VALUES (@id, @agent_id, @lane, @origin_intent, @conv_key, @task_id, @swept_at, @served_by_turn, @content)`,
   );
   // 1. The post-112 assignment notice: keyed by task_id, still pending.
   ins.run({
     id: 'm-keyed', agent_id: AGENT, lane: 'events', origin_intent: 'tracker',
-    conv_key: null, task_id: TASK, swept_at: null,
+    conv_key: null, task_id: TASK, swept_at: null, served_by_turn: null,
     content: `[SOURCE: TRACKER TASK ASSIGNMENT] Begin working on this task. ID: ${TASK}`,
   });
   // 2. A pre-112 notice for the SAME task: task_id NULL, so only the legacy
   //    content-LIKE arm can reach it. This is the row the scar note is about.
   ins.run({
     id: 'm-legacy', agent_id: AGENT, lane: 'events', origin_intent: 'tracker',
-    conv_key: null, task_id: null, swept_at: null,
+    conv_key: null, task_id: null, swept_at: null, served_by_turn: null,
     content: `[SOURCE: TRACKER TASK ASSIGNMENT] Begin working on this task. ID: ${TASK}`,
   });
   // 3. A notice for a DIFFERENT task, same agent — must be untouched.
   ins.run({
     id: 'm-other-task', agent_id: AGENT, lane: 'events', origin_intent: 'tracker',
-    conv_key: null, task_id: OTHER_TASK, swept_at: null,
+    conv_key: null, task_id: OTHER_TASK, swept_at: null, served_by_turn: null,
     content: `[SOURCE: TRACKER TASK ASSIGNMENT] Begin working on this task. ID: ${OTHER_TASK}`,
   });
   // 4. A pre-112 notice for THIS task but belonging to ANOTHER agent — the LIKE
   //    arm is agent-scoped, so it must be untouched.
   ins.run({
     id: 'm-other-agent', agent_id: OTHER, lane: 'events', origin_intent: 'tracker',
-    conv_key: null, task_id: null, swept_at: null,
+    conv_key: null, task_id: null, swept_at: null, served_by_turn: null,
     content: `[SOURCE: TRACKER TASK ASSIGNMENT] Begin working on this task. ID: ${TASK}`,
   });
-  // 5. A row for this task that a LIVE TURN already claimed (conv_key set). The
-  //    serve boundary says a claimed row is not ours to sweep.
+  // 5. A row for this task that a LIVE TURN already claimed. The serve boundary says a
+  //    claimed row is not ours to sweep.
+  //    PHASE-2 T9: "claimed by a live turn" is `served_by_turn`, the real serve edge. This
+  //    fixture used to model the claim as the sentinel `conv_key='engine'`, which was the
+  //    stand-in for that fact until the engine-event queue was rekeyed onto the edge itself
+  //    (T6 owed it, T9 executed it, `conv_key` drops at T10). The REQUIREMENT under test is
+  //    unchanged; only the column that records the claim moved.
   ins.run({
     id: 'm-claimed', agent_id: AGENT, lane: 'events', origin_intent: 'tracker',
-    conv_key: 'engine', task_id: TASK, swept_at: null,
+    conv_key: null, task_id: TASK, swept_at: null, served_by_turn: 7,
     content: `[SOURCE: TRACKER TASK ASSIGNMENT] already served. ID: ${TASK}`,
   });
   // 6. An ordinary owner-lane chat row mentioning the id — never an engine
   //    event, must never be swept or re-keyed.
   ins.run({
     id: 'm-chat', agent_id: AGENT, lane: 'owner', origin_intent: null,
-    conv_key: 'owner', task_id: null, swept_at: null,
+    conv_key: 'owner', task_id: null, swept_at: null, served_by_turn: null,
     content: `I asked about ID: ${TASK} earlier`,
   });
   mockDb.current = db;
@@ -129,12 +134,18 @@ describe('claimAssignmentNoticeForTerminalTask lifecycle (research 21 §guards-m
     expect(row('m-keyed').swept_at).not.toBeNull();
   });
 
-  it('LEGACY ARM: a pre-112 notice (task_id NULL) is claimed by the content LIKE', () => {
-    expect(row('m-legacy').conv_key).toBeNull();
+  it('LEGACY ARM: a pre-112 notice (task_id NULL) is retired by the content LIKE', () => {
+    expect(row('m-legacy').swept_at).toBeNull();
     claimAssignmentNoticeForTerminalTask(AGENT, TASK);
-    // conv_key='engine' is the same sentinel the loop stamps when it actually
-    // serves an engine event: excluded from the pending pickup, not deleted.
-    expect(row('m-legacy').conv_key).toBe('engine');
+    // PHASE-2 T9: it stamps `swept_at` — the SAME retirement the keyed arm has always used —
+    // rather than the sentinel `conv_key='engine'`. That sentinel worked only while
+    // eligibility asked `conv_key IS NULL`; once eligibility moved onto the serve edge it
+    // would have excluded nothing, and the 14 still-unclaimed pre-112 notices on a lived-in
+    // body would have been re-delivered as fresh "begin working on this task" prompts.
+    // requirement preserved: excluded from the pending pickup, NOT deleted.
+    expect(row('m-legacy').swept_at).not.toBeNull();
+    expect(row('m-legacy').content).toContain('Begin working on this task');
+    expect(row('m-legacy').conv_key).toBeNull();
   });
 
   it('BLAST RADIUS: another task, another agent, a claimed row and ordinary chat are all untouched', () => {
@@ -144,7 +155,7 @@ describe('claimAssignmentNoticeForTerminalTask lifecycle (research 21 §guards-m
     expect(row('m-other-task').conv_key).toBeNull();
     // Same task id in ANOTHER agent's history: the LIKE arm is agent-scoped.
     expect(row('m-other-agent').conv_key).toBeNull();
-    // A row a live turn already claimed is not the sweeper's to retire.
+    // A row a live turn already claimed (served_by_turn) is not the sweeper's to retire.
     expect(row('m-claimed').swept_at).toBeNull();
     // Ordinary owner chat is not an engine event.
     expect(row('m-chat').conv_key).toBe('owner');
@@ -154,11 +165,13 @@ describe('claimAssignmentNoticeForTerminalTask lifecycle (research 21 §guards-m
   it('IDEMPOTENT: a second call changes nothing and does not throw', () => {
     claimAssignmentNoticeForTerminalTask(AGENT, TASK);
     const sweptFirst = row('m-keyed').swept_at;
+    const sweptLegacyFirst = row('m-legacy').swept_at;
     expect(() => claimAssignmentNoticeForTerminalTask(AGENT, TASK)).not.toThrow();
     // sweepByReferent requires swept_at IS NULL, so the first stamp survives
     // verbatim — a repeat call cannot re-date the retirement.
     expect(row('m-keyed').swept_at).toBe(sweptFirst);
-    expect(row('m-legacy').conv_key).toBe('engine');
+    // Same guard on the legacy arm: `swept_at IS NULL` means a repeat call cannot re-date it.
+    expect(row('m-legacy').swept_at).toBe(sweptLegacyFirst);
   });
 
   it('NO-OP GUARD: a missing agent id or task id does nothing at all', () => {

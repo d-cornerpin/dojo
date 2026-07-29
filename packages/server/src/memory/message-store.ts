@@ -574,28 +574,28 @@ export function unservedHead(agentId: string): StoredMessage[] {
 // their own owners this phase (T6/T9 for the engine retry lifecycle and its one reaper,
 // T4 for the park machine).
 
-/** Compare-and-swap a row's conv_key by rowid. `expect` is the guard the call sites all
- *  carried inline: `null` = only if unclaimed, a string = only if it still holds that key,
- *  `undefined` = unconditional. Returns rows changed, which every caller uses to detect a
- *  concurrent claim — so it must stay a real count, never a boolean.
+/** Stamp a row's conversation IDENTITY by rowid.
  *
- *  T3 MEASURED, and this is a correction to the plan's own list: the `expect: null` branch
- *  is NOT solely the owner-ask claim. THREE claims share it, and T3 removes exactly one.
- *  The owner ask's pickup CAS is gone from here (it is `transition(… expectedState:'open')`
- *  on the ticket now, where a lost race is a `conflict` value rather than a zero somebody
- *  has to remember to check). The other two survive because they are other queues with
- *  other owners in this phase: the ENGINE-EVENT pickup (`value:'engine'`, PHASE-2 T6 owns
- *  its retry lifecycle, T9 its reaper) and the terminal A2A WAKE (`value:'a2a'`, PHASE-2
- *  T4). Deleting the branch for them would not be a demolition, it would be a hole. */
+ *  ── STRIP (PHASE-2 T9): the `expect` guard is gone, and with it the last claim job on
+ *  `conv_key`. requirement preserved: every claim this parameter served is now a
+ *  compare-and-swap on the column that actually means "somebody took this" —
+ *    * the owner ask     -> `transition(… expectedState: 'open')` on the ticket (T3), where a
+ *                           lost race is a `conflict` value rather than a zero somebody has
+ *                           to remember to check;
+ *    * the terminal wake -> `served_by_turn`, gated on the wake driving the turn (T4);
+ *    * the engine event  -> `claimEngineEventByRowid` / `releaseEngineEventByRowid` (T9).
+ *  Enumerated, not assumed: at this HEAD the ONE production caller
+ *  (`agent/v2/loop.ts`, the trigger row's identity stamp) passes no `expect` at all, so the
+ *  branch had nothing left to guard. What remains is an unconditional identity write, which
+ *  is what requirement 3l says this column is for, and it dies with the column at T10. */
 export function setConvKeyByRowid(
-  p: { rowid: number; agentId?: string; value: string | null; expect?: string | null },
+  p: { rowid: number; agentId?: string; value: string | null },
 ): number {
   const db = getDb();
-  const guard = p.expect === undefined ? '' : p.expect === null ? 'AND conv_key IS NULL' : 'AND conv_key = @expect';
   const agent = p.agentId ? 'AND agent_id = @agentId' : '';
   return db.prepare(
-    `UPDATE messages SET conv_key = @value WHERE rowid = @rowid ${agent} ${guard}`,
-  ).run({ rowid: p.rowid, agentId: p.agentId ?? null, value: p.value, expect: p.expect ?? null }).changes;
+    `UPDATE messages SET conv_key = @value WHERE rowid = @rowid ${agent}`,
+  ).run({ rowid: p.rowid, agentId: p.agentId ?? null, value: p.value }).changes;
 }
 
 /** Tag this turn's OWN output rows with the conversation they served, so one
@@ -674,11 +674,23 @@ export function claimTrackerNoticeForTask(
   p: { agentId: string; contentLike: string },
 ): number {
   const db = getDb();
+  // ⚠ PHASE-2 T9 — THIS ARM HAD TO MOVE WITH THE PREDICATE, OR THE 14 WOULD COME BACK.
+  // It retired a notice by writing the sentinel `conv_key='engine'`, which worked only
+  // because eligibility asked `conv_key IS NULL`. T9 moved eligibility onto
+  // `served_by_turn IS NULL`, so the sentinel would have stopped excluding anything and the
+  // fourteen still-unclaimed pre-112 notices on the owner's real body would have become
+  // re-deliverable "begin working on this task" prompts — the exact incident this function
+  // exists to prevent, re-opened by a change three files away.
+  // It now writes `swept_at`, which is what the KEYED arm (`sweepByReferent`) has always
+  // written and what the eligibility predicate has always excluded: one retirement mechanism
+  // instead of two, and no sentinel on the identity column.
+  // requirement preserved: a task that has gone terminal never re-delivers its assignment
+  // notice, on either vintage of row.
   return db.prepare(
-    `UPDATE messages SET conv_key = 'engine'
+    `UPDATE messages SET swept_at = ${NOW_MS}
        WHERE agent_id = @agentId AND lane = 'events' AND origin_intent = 'tracker'
          AND task_id IS NULL
-         AND conv_key IS NULL AND content LIKE @contentLike`,
+         AND served_by_turn IS NULL AND swept_at IS NULL AND content LIKE @contentLike`,
   ).run(p).changes;
 }
 
@@ -689,6 +701,55 @@ export function markServedByRowid(rowid: number, turnNumber: number): number {
   const db = getDb();
   return db.prepare(`UPDATE messages SET served_by_turn = ? WHERE rowid = ?`)
     .run(turnNumber, rowid).changes;
+}
+
+/**
+ * PHASE-2 T9 — the ENGINE EVENT's atomic pickup claim, on the serve edge.
+ *
+ * The compare-and-swap that used to be `setConvKeyByRowid({value:'engine', expect:null})`.
+ * A `.changes` of 0 means another process already took this event, and the caller MUST read
+ * it: running a second engine turn on one event delivers a reminder twice.
+ *
+ * ── WHY IT FIRES LATER THAN THE OLD ONE DID, SAID PLAINLY ──
+ * The old CAS ran at engine-turn detection, ~155 lines before the turn number exists, because
+ * it could write a constant. This one writes the turn's identity, so it can only run after
+ * `startTurn`. Between the two points the loop does context assembly and no `await` on
+ * another agent's behalf, and `activeRuns` already forbids a second turn for the same agent
+ * IN THIS PROCESS — so the window this narrows is exactly the one the old code documented as
+ * "single-process production never hits this (changes is always 1); guards stray dev
+ * `tsx watch` processes on the one SQLite DB". The detection site keeps a cheap READ of the
+ * same edge so the common stray-process case still bails before doing any work.
+ */
+export function claimEngineEventByRowid(
+  p: { rowid: number; agentId: string; turnNumber: number },
+): number {
+  const db = getDb();
+  return db.prepare(
+    `UPDATE messages SET served_by_turn = @turnNumber
+       WHERE rowid = @rowid AND agent_id = @agentId AND served_by_turn IS NULL`,
+  ).run(p).changes;
+}
+
+/** Hand a claimed engine event back, idempotently. The `served_by_turn = @turnNumber` guard
+ *  is what keeps it safe against a concurrent re-claim: only the turn that took it may
+ *  return it. */
+export function releaseEngineEventByRowid(
+  p: { rowid: number; agentId: string; turnNumber: number },
+): number {
+  const db = getDb();
+  return db.prepare(
+    `UPDATE messages SET served_by_turn = NULL
+       WHERE rowid = @rowid AND agent_id = @agentId AND served_by_turn = @turnNumber`,
+  ).run(p).changes;
+}
+
+/** Is this row still unclaimed? The cheap pre-check the engine-turn detection uses before
+ *  committing to a turn; the authoritative answer is `claimEngineEventByRowid`'s CAS. */
+export function isRowUnserved(rowid: number, agentId: string): boolean {
+  const db = getDb();
+  const row = db.prepare('SELECT served_by_turn FROM messages WHERE rowid = ? AND agent_id = ?')
+    .get(rowid, agentId) as { served_by_turn: number | null } | undefined;
+  return row != null && row.served_by_turn == null;
 }
 
 /** Record which message answered the rows a turn served (the delivery receipt the
@@ -717,13 +778,17 @@ function nowPlusExpr(param: string): string {
 }
 
 /** Retire a queued engine event without serving it. `requireUnclaimed` is the serve
- *  boundary's guard: a row already claimed by a turn is not ours to sweep. */
+ *  boundary's guard: a row already claimed by a turn is not ours to sweep.
+ *
+ *  PHASE-2 T9: "claimed by a turn" is `served_by_turn`, not the `conv_key='engine'` sentinel.
+ *  Same edge, same rows, one fewer job on the identity column — see
+ *  `DELIVERABLE_ENGINE_EVENT_WHERE` in `agent/v2/counterparty.ts` for the full reasoning. */
 export function sweepByRowid(
   p: { rowid: number; agentId?: string; requireUnclaimed?: boolean },
 ): number {
   const db = getDb();
   const agent = p.agentId ? 'AND agent_id = @agentId' : '';
-  const unclaimed = p.requireUnclaimed ? 'AND conv_key IS NULL' : '';
+  const unclaimed = p.requireUnclaimed ? 'AND served_by_turn IS NULL' : '';
   return db.prepare(
     `UPDATE messages SET swept_at = ${NOW_MS}
        WHERE rowid = @rowid ${agent} ${unclaimed} AND swept_at IS NULL`,
@@ -738,7 +803,7 @@ export function sweepByReferent(
   const db = getDb();
   return db.prepare(
     `UPDATE messages SET swept_at = ${NOW_MS}
-       WHERE ${p.referent} = ? AND conv_key IS NULL AND swept_at IS NULL`,
+       WHERE ${p.referent} = ? AND served_by_turn IS NULL AND swept_at IS NULL`,
   ).run(p.id).changes;
 }
 
