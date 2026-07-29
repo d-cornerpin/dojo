@@ -2,7 +2,7 @@
 // Lives in its own module to avoid circular imports (runtime ↔ assembler).
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { clearAllDrainLadders } from './drain-state.js';
+import { clearDrainLadder } from './drain-state.js';
 
 // Timestamp of when each agent's current turn started, context assembly
 // uses this to exclude user messages that arrived mid-turn so they get
@@ -155,9 +155,17 @@ export const a2aTurnRetries = new Map<string, number>();
 
 /** Reset the per-agent turn-continuity scratch state on a new session. The
  *  "served" signal itself is DB-derived, so there's nothing to clear there; this resets the
- *  drain spin-guards (durable since T10) and the cross-turn untracked-work counter. */
+ *  human-conversation drain spin-guard (durable since T10) and the cross-turn untracked-work
+ *  counter.
+ *
+ *  SCOPE IS DELIBERATE AND IT IS THE OLD SCOPE. The Map this replaced was `drainHead` — the
+ *  HUMAN drain only. Clearing both ladders here would hand the unserved-wake drain two extra
+ *  passes on every session start, i.e. MORE self-wakes, on the one path a session reset
+ *  touches. RULING 5 moved this counter's storage; it does not get to move its semantics, and
+ *  the wider clear was caught by `fanout-serves-all-pieces` tripping the platform's own wake
+ *  budget before it was caught by reading the diff. */
 export function clearServedConversations(agentId: string): void {
-  clearAllDrainLadders(agentId);
+  clearDrainLadder(agentId, 'human_conversation');
   untrackedWorkAcrossTurns.delete(agentId);
 }
 
