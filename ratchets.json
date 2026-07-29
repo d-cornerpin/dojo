@@ -371,6 +371,41 @@
       "to": 520,
       "by": "PHASE-2 T8c item 2 (2026-07-29)",
       "why": "T6 concern 5 booked the mig-113 answer stamp to go PURE-LEGACY here once tasks lived on the spine. Re-derived at this HEAD the measurement REFUSED it: 586 stamped messages have no ask ticket (genuinely legacy) but 19 have a ticket, and all 19 are state='abandoned' \u2014 asks a person WAS answered on that T6's reaper later abandoned. Ranking the ticket above the stamp would flip those nineteen to 'not answered' and re-tell somebody something they already have, which is the direction T6 chose against on purpose. The union stands, and what these lines buy is that it now stands on a measurement plus a RETIREMENT CONDITION WRITTEN AS A COMMAND that T10 can run, instead of on the next worker re-deriving the same thing or, worse, doing the booked change without measuring."
+    },
+    {
+      "path": "packages/server/src/work/tracker-view.ts",
+      "from": 410,
+      "to": 432,
+      "by": "PHASE-2 T8c item 3 (2026-07-29)",
+      "why": "`engine_scaffold` becomes the third tracker root kind \u2014 the ENGINE_AUTO_MARKER rekey. What it BUYS is measured elsewhere in the same change: `agent/v2/loop.ts` -190 and `tracker/tools.ts` -110, because the prose marker had THREE declarations (two of them hand-kept mirrors apologising for the duplication in their own comments), five LIKE/startsWith readers, and an edit-guard that silently re-prefixed the string on every description rewrite. One declaration replaces all of it."
+    },
+    {
+      "path": "packages/server/src/tools/work-verbs.ts",
+      "from": 357,
+      "to": 375,
+      "by": "PHASE-2 T8c item 3 (2026-07-29)",
+      "why": "`OPENING_WORK_OPS` \u2014 the narrow question DECIDED D4 needs (did a work ROW come into existence) as opposed to the wide DISARMING set (did the agent tend its work). D4's contradiction was precisely that the >=6 floor borrowed the wide question and was therefore disarmed by the >3 nudge's own success. Two names and their reasoning; the alternative was the floor asking its question inline, which is how a set of tool names becomes eleven scattered predicates again."
+    },
+    {
+      "path": "packages/server/src/agent/v2/classifiers/multistep.ts",
+      "from": 468,
+      "to": 484,
+      "by": "PHASE-2 T8c item 3 (2026-07-29)",
+      "why": "The ENGINE_AUTO_MARKER constant is REPLACED by its own tombstone: the string is gone, the paragraph explaining what the marker was, why it had three declarations and an edit-guard, and where the fact lives now stays. A deleted constant with no note is how the next worker re-invents it (#15)."
+    },
+    {
+      "path": "packages/server/src/agent/v2/state.ts",
+      "from": 687,
+      "to": 703,
+      "by": "PHASE-2 T8c item 3 (2026-07-29)",
+      "why": "`workRowOpenedThisTurn` and the paragraph that says why it is NOT `trackerWriteThisTurn`. The distinction IS D4's root cause, and a flag whose difference from its neighbour is undocumented gets collapsed into it by the next refactor."
+    },
+    {
+      "path": "packages/server/src/work/tracker-store.ts",
+      "from": 502,
+      "to": 505,
+      "by": "PHASE-2 T8c item 3 (2026-07-29)",
+      "why": "`rootKind` becomes an optional field on `OpenTrackerTaskInput` so the engine floor can stamp its own row. One field, one default, one comment."
     }
   ],
   "maxNewFileLines": 400,
@@ -409,12 +444,12 @@
     "packages/server/src/agent/runtime.ts": 1340,
     "packages/server/src/agent/spawner.ts": 1378,
     "packages/server/src/agent/tools.ts": 10475,
-    "packages/server/src/agent/v2/classifiers/multistep.ts": 468,
+    "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 891,
     "packages/server/src/agent/v2/loop.ts": 9578,
     "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/recovery.ts": 596,
-    "packages/server/src/agent/v2/state.ts": 687,
+    "packages/server/src/agent/v2/state.ts": 703,
     "packages/server/src/costs/tracker.ts": 531,
     "packages/server/src/gateway/routes/agents.ts": 820,
     "packages/server/src/gateway/routes/chat.ts": 484,
@@ -485,8 +520,8 @@
     "packages/shared/src/ws.ts": 1082,
     "watchdog/src/index.ts": 1198,
     "packages/server/src/agent/v2/answered-edge.ts": 520,
-    "packages/server/src/work/tracker-store.ts": 502,
-    "packages/server/src/tools/work-verbs.ts": 357,
-    "packages/server/src/work/tracker-view.ts": 410
+    "packages/server/src/work/tracker-store.ts": 505,
+    "packages/server/src/tools/work-verbs.ts": 375,
+    "packages/server/src/work/tracker-view.ts": 432
   }
 }
