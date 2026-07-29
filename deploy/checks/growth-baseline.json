@@ -427,7 +427,7 @@
     "packages/server/src/work/obligations.ts": 118,
     "packages/server/src/work/store.ts": 1455,
     "packages/server/src/work/tracker-store.ts": 492,
-    "packages/server/src/work/tracker-view.ts": 345,
+    "packages/server/src/work/tracker-view.ts": 432,
     "packages/shared/src/a2a-protocol.ts": 90,
     "packages/shared/src/api.ts": 182,
     "packages/shared/src/index.ts": 6,
@@ -437,5 +437,14 @@
     "packages/shared/src/ws.ts": 1082,
     "watchdog/src/auto-rollback.ts": 197,
     "watchdog/src/index.ts": 1198
-  }
+  },
+  "_handEdits": [
+    {
+      "file": "packages/server/src/work/tracker-view.ts",
+      "from": 345,
+      "to": 432,
+      "by": "PHASE-2 T8c item 4 (2026-07-29)",
+      "why": "SURGICAL, not a `--record`. A full re-record would widen the tolerance on all 428 files at once to admit one file's argued growth, which is the quiet-widening the detector's own comment warns about. This single entry moves to 432 — the file's size at `d00f270`, i.e. AFTER T8c items 2 and 3 (the stamp collapse's six expressions and the `engine_scaffold` root kind, both with their own ratchet raises and their own reasons) and BEFORE item 4. Item 4's own +11 is then measured against that, at +2.5%, well inside the 25% limit. Every other file's baseline is untouched and still dated dc34dfb."
+    }
+  ]
 }
