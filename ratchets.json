@@ -441,6 +441,48 @@
       "to": 1477,
       "by": "PHASE-2 T8c2 item 7 (2026-07-29)",
       "why": "SIXTH consecutive raise on this file, and this one is +1 line of code and +16 of the measurement that justifies it. `on_deck` was UNREACHABLE: eleven production callers ask to put work back in the queue (the scheduler's recurring cadence reset, its unfired release, the PM ladder's rung-4 auto-reset, scheduling for later, resuming a paused schedule, resolving missed runs, the healer, the owner's own drag) and every one moves from `claimed` or `paused`, neither of which carried `on_deck` in the legal table. Measured on this box: 536 recorded transitions across 8 distinct moves, ZERO into `on_deck` from any state, zero rows in it. A regression with a date — before T8b these were an ungated `updateTask({status})` and simply worked. The comment is the measurement plus the RULE (`on_deck` is a non-terminal queue state; every non-terminal state may return to it; terminal states keep their single reopen edge), because a table row with no reasoning beside it is how the omission happened the first time. The directory split T6 authorized is still unexecuted and is T9's."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 1477,
+      "to": 1573,
+      "by": "PHASE-2 T8T (2026-07-29)",
+      "why": "THE SEVENTH CONSECUTIVE RAISE ON THIS FILE, and it is recorded as that rather than as a number. RULING 1's gate G9 lands here: a task/project close by anyone but an authority or a system closer is a Key-1 REQUEST, the adjudication moves to the TOP of the transaction so migration 139's BEFORE-UPDATE trigger can see it, and the whole transaction takes ONE instant instead of four Date.now() readings. Most of the count is the argument for each of those, which this project has decided belongs beside the code. The `work/` directory split the T6 acceptance authorised is still unexecuted and is now overdue: T9 owns it, and this raise is the strongest evidence for it on the record."
+    },
+    {
+      "path": "packages/server/src/work/tracker-view.ts",
+      "from": 443,
+      "to": 508,
+      "by": "PHASE-2 T8T (2026-07-29)",
+      "why": "Key 1 became a QUERY. `pendingCloseRequestExpr` + `closeRequestDeliveryExpr` are the successors to the state `complete + complete_validated=0`, which migration 139 makes unrepresentable for a worker's own close, plus the done-only scoping clause on `validatedExpr` that keeps the PM's verdict distinct from the trigger's key. The prose is the reason the two questions are different — reading one as the other restores migration 108's demolished forgery."
+    },
+    {
+      "path": "packages/server/src/tracker/pm-agent.ts",
+      "from": 2068,
+      "to": 2090,
+      "by": "PHASE-2 T8T (2026-07-29)",
+      "why": "The validation rung has TWO shapes now (`done`+unblessed for the engine's receipt closes, `claimed`+pending-request for a worker's own) and so do the three pending-validation counts. Without the second arm the queue reads empty while work waits in it."
+    },
+    {
+      "path": "packages/server/src/agent/tools.ts",
+      "from": 10475,
+      "to": 10481,
+      "by": "PHASE-2 T8T (2026-07-29)",
+      "why": "Group-delete teardown re-stamped `by: 'engine'` with its evidence: the agent that owned the task has just been terminated and is not claiming anything, and under RULING 1 an agent close would leave every orphaned task open behind a request nobody will validate."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/tracker.ts",
+      "from": 899,
+      "to": 904,
+      "by": "PHASE-2 T8T (2026-07-29)",
+      "why": "The dashboard's bulk project close declares the OWNER as its authority. Without it the owner's own close would file a Key-1 request per row and the board would not move — the same defect T8b2 found on the single-task PUT, one route over."
+    },
+    {
+      "path": "packages/server/src/agent/spawner.ts",
+      "from": 1378,
+      "to": 1382,
+      "by": "PHASE-2 T8T (2026-07-29)",
+      "why": "A dangler that INHERITS the primary task's close is the engine drawing an inference, not the agent asserting one; it now says so and points at the delivery (G6)."
     }
   ],
   "maxNewFileLines": 400,
@@ -477,8 +519,8 @@
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 687,
     "packages/server/src/agent/runtime.ts": 1340,
-    "packages/server/src/agent/spawner.ts": 1378,
-    "packages/server/src/agent/tools.ts": 10475,
+    "packages/server/src/agent/spawner.ts": 1382,
+    "packages/server/src/agent/tools.ts": 10481,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 891,
     "packages/server/src/agent/v2/loop.ts": 9578,
@@ -491,7 +533,7 @@
     "packages/server/src/gateway/routes/config.ts": 2531,
     "packages/server/src/gateway/routes/memory.ts": 635,
     "packages/server/src/gateway/routes/setup-deps.ts": 512,
-    "packages/server/src/gateway/routes/tracker.ts": 899,
+    "packages/server/src/gateway/routes/tracker.ts": 904,
     "packages/server/src/gateway/routes/twilio.ts": 501,
     "packages/server/src/gateway/routes/update.ts": 1022,
     "packages/server/src/gateway/routes/upload.ts": 607,
@@ -535,7 +577,7 @@
     "packages/server/src/techniques/store.ts": 609,
     "packages/server/src/techniques/tools.ts": 890,
     "packages/server/src/tools/unified-read.ts": 753,
-    "packages/server/src/tracker/pm-agent.ts": 2068,
+    "packages/server/src/tracker/pm-agent.ts": 2090,
     "packages/server/src/tracker/schema.ts": 1155,
     "packages/server/src/tracker/tools.ts": 4394,
     "packages/server/src/twilio/call-session.ts": 884,
@@ -549,7 +591,7 @@
     "packages/server/src/voice/model-manager.ts": 583,
     "packages/server/src/voice/stt-service.ts": 538,
     "packages/server/src/voice/voice-ws.ts": 2299,
-    "packages/server/src/work/store.ts": 1477,
+    "packages/server/src/work/store.ts": 1573,
     "packages/shared/src/types.ts": 500,
     "packages/shared/src/visibility.ts": 865,
     "packages/shared/src/ws.ts": 1082,
@@ -557,7 +599,7 @@
     "packages/server/src/agent/v2/answered-edge.ts": 520,
     "packages/server/src/work/tracker-store.ts": 505,
     "packages/server/src/tools/work-verbs.ts": 375,
-    "packages/server/src/work/tracker-view.ts": 443,
+    "packages/server/src/work/tracker-view.ts": 508,
     "packages/server/src/work/occurrences.ts": 254
   }
 }
