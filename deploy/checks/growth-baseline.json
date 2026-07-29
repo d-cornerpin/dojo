@@ -171,7 +171,7 @@
     "packages/server/src/agent/v2/classifiers/technique.ts": 192,
     "packages/server/src/agent/v2/classifiers/vault.ts": 129,
     "packages/server/src/agent/v2/counterparty.ts": 891,
-    "packages/server/src/agent/v2/deliveries.ts": 127,
+    "packages/server/src/agent/v2/deliveries.ts": 184,
     "packages/server/src/agent/v2/engine-message.ts": 36,
     "packages/server/src/agent/v2/engine-steer.ts": 80,
     "packages/server/src/agent/v2/error-format.ts": 220,
@@ -445,6 +445,13 @@
       "to": 432,
       "by": "PHASE-2 T8c item 4 (2026-07-29)",
       "why": "SURGICAL, not a `--record`. A full re-record would widen the tolerance on all 428 files at once to admit one file's argued growth, which is the quiet-widening the detector's own comment warns about. This single entry moves to 432 — the file's size at `d00f270`, i.e. AFTER T8c items 2 and 3 (the stamp collapse's six expressions and the `engine_scaffold` root kind, both with their own ratchet raises and their own reasons) and BEFORE item 4. Item 4's own +11 is then measured against that, at +2.5%, well inside the 25% limit. Every other file's baseline is untouched and still dated dc34dfb."
+    },
+    {
+      "file": "packages/server/src/agent/v2/deliveries.ts",
+      "from": 127,
+      "to": 184,
+      "by": "PHASE-2 T8c2 item 5 (2026-07-29)",
+      "why": "SURGICAL, not a `--record`: one entry moves, the other 428 stay dated dc34dfb. The growth is real and argued, and it is +44.9% only because the module was small (127 lines). It gains ONE exported function, `recordOwnerCloseReceipt` (14 lines), plus the argument for the one place this phase's central constraint is deliberately satisfied by something that is not a send. The comment was cut from ~70 lines to 22 before recording — the fuller argument, the enumeration of all ten `deliveries` readers, and the refused alternative live in the T8c2 report and PHASE-2.md's AS-BUILT, which is where a design decision belongs. The alternative to growing this file was a second module writing `deliveries`, i.e. two writers for one table, which is the disease. Still 184 of a 400-line cap; T10's `task_runs` absorption is the next task that touches this area."
     }
   ]
 }

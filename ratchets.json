@@ -427,6 +427,13 @@
       "to": 252,
       "by": "PHASE-2 T8c item 4 (2026-07-29)",
       "why": "NEW ENTRY (the file crossed 60% of the 400-line new-file cap, so the decision is made here rather than argued at 400). It is one job — the occurrence claim — split from `tracker-store.ts`, which lost the old timestamp CAS in the same change. Five exported functions and roughly 110 lines of the 252 are the block comment recording WHY the shape changed, because the defect it fixes was invisible for two weeks precisely because nobody had written down that `msToText` truncates. Pinned decrease-only from here; T9's reaper and T10's `task_runs` absorption are the two tasks that should shrink it."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/tracker.ts",
+      "from": 886,
+      "to": 899,
+      "by": "PHASE-2 T8c2 item 5 (2026-07-29)",
+      "why": "The owner's own close reaches `done`. Two call sites gain `?? recordOwnerCloseReceipt(...)` (the task board and the project board), and the +13 is the block comment saying WHY the phase's central constraint is deliberately satisfied here by something that is not a send: G7 stops the ENGINE and the AGENT asserting completion on their own say-so, and the owner is the person the work was FOR. The argument itself, the enumeration of all ten `deliveries` readers, and why this is the owner's exemption and NOT the PM's, live in `agent/v2/deliveries.ts` beside the function; this file carries the pointer so a reader of the route is not left guessing."
     }
   ],
   "maxNewFileLines": 400,
@@ -477,7 +484,7 @@
     "packages/server/src/gateway/routes/config.ts": 2531,
     "packages/server/src/gateway/routes/memory.ts": 635,
     "packages/server/src/gateway/routes/setup-deps.ts": 512,
-    "packages/server/src/gateway/routes/tracker.ts": 886,
+    "packages/server/src/gateway/routes/tracker.ts": 899,
     "packages/server/src/gateway/routes/twilio.ts": 501,
     "packages/server/src/gateway/routes/update.ts": 1022,
     "packages/server/src/gateway/routes/upload.ts": 607,
