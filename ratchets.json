@@ -1,5 +1,5 @@
 {
-  "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
+  "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit \u2014 that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
       "path": "packages/server/src/work/store.ts",
@@ -7,6 +7,83 @@
       "to": 1145,
       "by": "PHASE-2 T4 (2026-07-28)",
       "why": "The fan-out join is +551 lines of the ONE writer, and it cannot live anywhere else: `single-writer-conformance.test.ts` keeps an EMPTY allowlist for `work`/`work_events`/`adjudications`, so a second module holding `openDelegationJoin`/`landPiece` fails the walk, and the only way to make it pass would be the move the walk exists to refuse. What it BUYS is a bigger cut elsewhere in the same commit: `a2a-transport.ts` 2037 -> 1773 (-264) and `loop.ts` 9336 -> 9341 net after the delegation rewrite, with the park string machine gone entirely. T3's report flagged this exact growth and asked, at T9, whether the walk should learn about a `work/` DIRECTORY rather than a file; that question is now overdue and is the real fix."
+    },
+    {
+      "path": "packages/server/src/services/imessage-bridge.ts",
+      "from": 2230,
+      "to": 2300,
+      "by": "PHASE-2 T5 (2026-07-28)",
+      "why": "THE iMESSAGE DOOR, plus its two attachment siblings and the two platform sends that live in this file (sendAlert, the busy-ack). This is the largest single raise of the task and it is the one that buys the most: this file is the transport EVERY iMessage in the product passes through \u2014 the auto-route, the imessage_send tool, alerts, the busy-ack, the first-run welcome, the healer's approval prompt, the A2A owner hand-back \u2014 and before it, only the first two produced a ledger row and only when the caller had already decided the send worked. Recording here closes six of PINNED s8's unrecorded paths at one physical point instead of six. The two attachment siblings are wrapped for a named reason: sendIMessageWithAttachment calls sendIMessage for the caption, so without one scope over the pair every captioned file would have written TWO rows for one thing the person received."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9341,
+      "to": 9389,
+      "by": "PHASE-2 T5 (2026-07-28)",
+      "why": "The engine's ten evidence-writing sites become identity DECLARATIONS. persistRoutingMarker lost its delivery parameter entirely (a net deletion inside this file) and each auto-route / engine-ack branch gained a `withOutboundAsync` wrapper around the send it was already making. The scope wrappers cost more lines than the argument objects they replaced, and what they buy is that the loop can no longer claim a delivery: the row is written by the transport from what it observed, which is what makes `outcome='failed'` expressible for the first time."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 1141,
+      "to": 1175,
+      "by": "PHASE-2 T5 (2026-07-28)",
+      "why": "The boot reconciliation's THIRD outcome, which `index.ts` named as owed to T5 in its own comment. Deliveries are universal now, so `was this ask answered` is a recorded edge rather than an inference, and an ask whose claiming turn DELIVERED and was then killed is closed pointing at that delivery instead of being re-answered (re-serving a question the person already had answered) or held forever. Still the ONE writer of `work.state`; the single-writer walk's allowlist is still EMPTY. The `work/` DIRECTORY question T3 raised and T4 repeated is now three tasks old and belongs to T9."
+    },
+    {
+      "path": "packages/server/src/agent/tools.ts",
+      "from": 10611,
+      "to": 10640,
+      "by": "PHASE-2 T5 (2026-07-28)",
+      "why": "ONE outbound scope per send-tool call, opened at the single dispatch door every path already goes through \u2014 the same place and the same reasoning as the P6a tool-call identity that sits three lines above it. This is what closes the ten unrecorded send paths in ONE change instead of ten: `gmail_reply`, `gmail_forward`, `outlook_reply`, `outlook_forward`, `teams_send_message`, `teams_send_channel_message` and `voice_call` are now recorded without any of them being named anywhere. The alias-resolution tail was extracted to `dispatchResolved` so the scope can wrap it; that extraction is most of the count."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 1773,
+      "to": 1799,
+      "by": "PHASE-2 T5 (2026-07-28)",
+      "why": "The T4/T5 collision, resolved by ROUTING rather than duplicating. T4 recorded the join relay with its own `recordDelivery` call; T5 puts a recorder on the dashboard, iMessage, SMS and provider doors that same relay pushes through, so leaving both would have written TWO rows for one relay. The relay now declares its identity once and every door it crosses folds into that single row. `recordPieceDelivery` is routed through the same door recorder for the same reason. Against this: the file is still 238 lines below where T4 found it (2037 at the phase base)."
+    },
+    {
+      "path": "packages/server/src/voice/voice-ws.ts",
+      "from": 2277,
+      "to": 2299,
+      "by": "PHASE-2 T5 (2026-07-28)",
+      "why": "THE BROWSER SPEECH-OUT DOOR, on both engine tiers (OR3 keeps both, so both are instrumented). Research 03 measured voice as recording NOTHING on either path. One row per BURST rather than per clause \u2014 the clause queue is how one reply is transported, not several replies \u2014 recorded where synthesis actually starts, so a turn whose text sanitizes to nothing speakable never claims a delivery, and corrected to `failed` if the stream dies mid-reply."
+    },
+    {
+      "path": "packages/server/src/twilio/call-session.ts",
+      "from": 873,
+      "to": 884,
+      "by": "PHASE-2 T5 (2026-07-28)",
+      "why": "THE PHONE SPEECH-OUT DOOR. Research 03 named `every spoken utterance in call-session.ts` among the paths recording nothing. Inside the outbound scope the auto-route declares, the sentences of one reply fold into ONE row; outside a scope (the call's own opener) an utterance stands as its own row."
+    },
+    {
+      "path": "packages/server/src/healer/approval-routing.ts",
+      "from": 490,
+      "to": 496,
+      "by": "PHASE-2 T5 (2026-07-28)",
+      "why": "The healer's approval prompt reaches the owner's phone and recorded nothing (research 03 names `approval-routing:473`). Six lines: it declares itself a PLATFORM outbound rather than an agent's, because the healer speaks for the box."
+    },
+    {
+      "path": "packages/server/src/index.ts",
+      "from": 1265,
+      "to": 1267,
+      "by": "PHASE-2 T5 (2026-07-28)",
+      "why": "Two lines: the boot crash-reconciliation log now reports the third outcome it can produce. The comment above it stops saying T5 owes this rekey, because T5 landed it."
+    },
+    {
+      "path": "packages/server/src/agent/pending-attachments.ts",
+      "from": 236,
+      "to": 267,
+      "by": "PHASE-2 T5 (2026-07-28)",
+      "why": "Not a raise \u2014 a first PIN, at the count the growth detector caught. `linkArtifactsToDelivery` lands here because this module is the sole owner of `turn_artifacts` writes, and the Phase-1 exit named `turn_artifacts.delivery_id` as a Phase-2 debt that must not be closed half-way. Putting the write anywhere else would give that table a second writer to pay for a column, which is the disease. Pinned decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/outbound.ts",
+      "from": 0,
+      "to": 455,
+      "by": "PHASE-2 T5 (2026-07-28)",
+      "why": "A NEW file above the 400-line cap, pinned deliberately rather than split. What it holds is ONE mechanism with no seam in it: a send declares an identity, the transport it passes through records the outcome, and the receipt writer links itself to that same row \u2014 three parties to one scope, and splitting them puts an import cycle between the scope and its own doors. Roughly half the count is the reasoning: which clause of the dashboard predicate exists for which observed defect, why `held` needs a named entry point instead of a door, why a failure downgrades and a success never upgrades. That text is the reason the next reader can tell an honest ledger from a convenient one, and stripping it to reach 400 would be the arithmetic-over-functionality move the owner ruled out on 2026-07-26. Pinned decrease-only from here; the honest shrink is PHASE-4's, when OR2 removes the engine-ack lane this file currently has to describe."
     }
   ],
   "maxNewFileLines": 400,
@@ -35,18 +112,20 @@
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1381,
-    "packages/server/src/agent/a2a-transport.ts": 1773,
+    "packages/server/src/agent/a2a-transport.ts": 1799,
     "packages/server/src/agent/browser.ts": 412,
     "packages/server/src/agent/destructive-gate.ts": 552,
     "packages/server/src/agent/model.ts": 2655,
     "packages/server/src/agent/pdf-tools.ts": 1007,
+    "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 687,
     "packages/server/src/agent/runtime.ts": 1339,
     "packages/server/src/agent/spawner.ts": 1335,
-    "packages/server/src/agent/tools.ts": 10611,
+    "packages/server/src/agent/tools.ts": 10640,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 468,
     "packages/server/src/agent/v2/counterparty.ts": 890,
-    "packages/server/src/agent/v2/loop.ts": 9341,
+    "packages/server/src/agent/v2/loop.ts": 9389,
+    "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/state.ts": 686,
     "packages/server/src/costs/tracker.ts": 531,
@@ -64,11 +143,11 @@
     "packages/server/src/google/tools-read.ts": 938,
     "packages/server/src/google/tools-slides.ts": 2964,
     "packages/server/src/google/tools-write.ts": 1831,
-    "packages/server/src/healer/approval-routing.ts": 490,
+    "packages/server/src/healer/approval-routing.ts": 496,
     "packages/server/src/healer/diagnostic.ts": 1035,
     "packages/server/src/healer/healer-agent.ts": 1170,
     "packages/server/src/healer/injury-recovery.ts": 809,
-    "packages/server/src/index.ts": 1265,
+    "packages/server/src/index.ts": 1267,
     "packages/server/src/memory/assembler.ts": 2564,
     "packages/server/src/memory/compaction.ts": 1267,
     "packages/server/src/memory/message-store.ts": 842,
@@ -89,7 +168,7 @@
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/gmail-watcher.ts": 592,
     "packages/server/src/services/image-generation.ts": 483,
-    "packages/server/src/services/imessage-bridge.ts": 2230,
+    "packages/server/src/services/imessage-bridge.ts": 2300,
     "packages/server/src/services/outlook-watcher.ts": 517,
     "packages/server/src/services/teams-watcher.ts": 461,
     "packages/server/src/services/transcription.ts": 443,
@@ -103,7 +182,7 @@
     "packages/server/src/tracker/pm-agent.ts": 1929,
     "packages/server/src/tracker/schema.ts": 1155,
     "packages/server/src/tracker/tools.ts": 4229,
-    "packages/server/src/twilio/call-session.ts": 873,
+    "packages/server/src/twilio/call-session.ts": 884,
     "packages/server/src/twilio/sms-inbound.ts": 406,
     "packages/server/src/vault/archive.ts": 304,
     "packages/server/src/vault/maintenance.ts": 2163,
@@ -113,8 +192,8 @@
     "packages/server/src/voice/hume-engine.ts": 605,
     "packages/server/src/voice/model-manager.ts": 583,
     "packages/server/src/voice/stt-service.ts": 538,
-    "packages/server/src/voice/voice-ws.ts": 2277,
-    "packages/server/src/work/store.ts": 1141,
+    "packages/server/src/voice/voice-ws.ts": 2299,
+    "packages/server/src/work/store.ts": 1175,
     "packages/shared/src/types.ts": 500,
     "packages/shared/src/visibility.ts": 815,
     "packages/shared/src/ws.ts": 1082,
