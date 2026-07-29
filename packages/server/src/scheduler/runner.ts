@@ -16,7 +16,7 @@ import { retireEngineEventsForRun, retireEngineEventsForTask } from '../agent/v2
 import { getDb } from '../db/connection.js';
 import {
   taskScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
-  validatedExpr, awaitingUserVerdictExpr, statusToState, type TrackerStatus,
+  validatedExpr, awaitingUserVerdictExpr, pendingCloseRequestExpr, statusToState, type TrackerStatus,
 } from '../work/tracker-view.js';
 import {
   patchWork, setTrackerStatus, bumpWorkAttempts, upholdClaim, clearUserVerdict,
@@ -363,6 +363,12 @@ async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
         AND COALESCE(w.requester_id, '') NOT IN (${servicePlaceholders})
         AND (
           (w.state = 'done' AND ${validatedExpr('w', 'done')} = 0)
+          -- PHASE-2 T8T: the other half of "an unvalidated close does not sit
+          -- forever". Migration 139 means a worker's own close leaves the row
+          -- claimed with a Key-1 request on it instead of moving it to done, so
+          -- reading only the done arm would let exactly the rows this sweep exists
+          -- for age out of its sight. Same requirement, both shapes.
+          OR (w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1)
           -- An active missed_runs_paused_at means the ENGINE paused this task for
           -- missed runs (alertMissedRuns), not the agent. Demolition Phase 1
           -- stopped alertMissedRuns pre-blessing it (it now lands

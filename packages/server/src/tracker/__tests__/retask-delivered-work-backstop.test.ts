@@ -27,6 +27,7 @@ const facts = (over: Partial<RetaskProtectionFacts> = {}): RetaskProtectionFacts
   deliverableShown: false,
   status: 'in_progress',
   completeValidated: false,
+  closeRequestPending: false,
   ...over,
 });
 
@@ -72,6 +73,43 @@ describe('branch 2 — Key 1 filed, Key 2 not (SURVIVES T10)', () => {
       expect(retaskWouldOverwriteDeliveredWork(facts({ status, completeValidated: true })),
         `${status} must not be read as delivered`).toBe(false);
     }
+  });
+});
+
+// PHASE-2 T8T — BRANCH 3, and the reason it had to exist in the same change as the trigger.
+// Branch 2 reads "`complete` and unblessed". Migration `139` makes that state unreachable for
+// a WORKER's own close: the row stays `in_progress` and the claim is a `validation_requested`
+// event. So the exact situation branch 2 was written for stopped matching branch 2, and every
+// clause in this file would still have been green. Same requirement, third store.
+describe('branch 3 — Key 1 filed and the row has NOT moved (PHASE-2 T8T)', () => {
+  it("a worker's close request on an in_progress row is delivered-and-awaiting-adjudication", () => {
+    expect(retaskWouldOverwriteDeliveredWork(
+      facts({ status: 'in_progress', closeRequestPending: true }),
+    )).toBe(true);
+  });
+
+  it('POSITIVE CONTROL of the same shape: the identical row with no request is retaskable', () => {
+    expect(retaskWouldOverwriteDeliveredWork(
+      facts({ status: 'in_progress', closeRequestPending: false }),
+    )).toBe(false);
+  });
+
+  it('and the hatch still opens it, exactly as for the other two branches', () => {
+    const f = facts({ status: 'in_progress', closeRequestPending: true });
+    expect(retaskIsRefused(f, undefined)).toBe(true);
+    expect(retaskIsRefused(f, true)).toBe(false);
+    expect(retaskIsRefused(f, 'yes')).toBe(true);   // strictly === true, as branch 1 and 2
+  });
+
+  it('THE REGRESSION THIS BRANCH PREVENTS, stated as a test: a delivered close request that the trigger left in_progress is not retaskable just because its status changed', () => {
+    // Before T8T this row would have been `complete` + unvalidated (branch 2). After T8T it
+    // is `in_progress` + pending request. Both must refuse; only the store moved.
+    expect(retaskWouldOverwriteDeliveredWork(
+      facts({ status: 'complete', completeValidated: false }),
+    )).toBe(true);
+    expect(retaskWouldOverwriteDeliveredWork(
+      facts({ status: 'in_progress', closeRequestPending: true }),
+    )).toBe(true);
   });
 });
 

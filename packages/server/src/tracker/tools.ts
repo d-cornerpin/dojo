@@ -210,20 +210,39 @@ export interface RetaskProtectionFacts {
   /** Whether an authority has upheld the CURRENT complete claim (`adjudications`, via
    *  `tracker-view.ts:validatedExpr`). */
   completeValidated: boolean;
+  /**
+   * PHASE-2 T8T — THE THIRD VINTAGE OF THE SAME FACT, and the one that keeps this guard
+   * alive after migration `139`.
+   *
+   * Disjunct 2 below reads "`complete` and nobody has blessed it". The trigger makes that
+   * state unreachable for a WORKER's own close: the row stays `in_progress` and the claim
+   * lives in a `validation_requested` event instead. So the exact situation this guard was
+   * written for — the assignee delivered, the close is filed, no authority has ruled — would
+   * have stopped matching the guard on the day the trigger landed, silently, with every test
+   * still green. Same requirement, third store.
+   * (`tracker-view.ts:pendingCloseRequestExpr`.)
+   */
+  closeRequestPending: boolean;
 }
 
 /**
  * Is this row's work already in the user's hands?
  *
- * TWO independent ways for that to be true, and they are different vintages of the same
- * fact, not a belt-and-braces pair:
+ * THREE independent ways for that to be true, and they are different vintages of the same
+ * fact, not a belt-and-braces set:
  *   1. `deliverable_shown = 1` — a row stamped before the drive boundary deleted the writer.
- *   2. Key 1 is filed and Key 2 is not: the assignee closed it (`complete`) and no authority
- *      has validated yet. The close itself required a real delivery (G7), so "complete and
- *      unvalidated" IS "delivered, awaiting adjudication".
+ *   2. Key 1 is filed and Key 2 is not: the ENGINE closed it on a delivery receipt
+ *      (`complete`) and no authority has validated yet. The close itself required a real
+ *      delivery (G7), so "complete and unvalidated" IS "delivered, awaiting adjudication".
+ *   3. PHASE-2 T8T: Key 1 is filed and the row has not MOVED — a worker's own close request
+ *      (`tracker-view.ts:pendingCloseRequestExpr`). Migration `139` is what turned the
+ *      assignee's close from shape 2 into shape 3, so without this clause the guard would
+ *      have kept passing while protecting nobody.
  */
 export function retaskWouldOverwriteDeliveredWork(f: RetaskProtectionFacts): boolean {
-  return f.deliverableShown || (f.status === 'complete' && !f.completeValidated);
+  return f.deliverableShown
+    || (f.status === 'complete' && !f.completeValidated)
+    || f.closeRequestPending;
 }
 
 /** The whole gate: protected AND the caller did not deliberately opt in. `allowRegenerate` is
@@ -3015,9 +3034,10 @@ export async function trackerRetask(
     `SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
             w.agent_id AS assigned_to, w.goal AS goal,
             ${validatedExpr('w', 'done')} AS complete_validated,
+            ${pendingCloseRequestExpr('w')} AS close_request_pending,
             w.deliverable_shown AS deliverable_shown
        FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
-  ).get(taskId) as { id: string; title: string; status: string; assigned_to: string | null; goal: string | null; complete_validated: number; deliverable_shown: number } | undefined;
+  ).get(taskId) as { id: string; title: string; status: string; assigned_to: string | null; goal: string | null; complete_validated: number; close_request_pending: number; deliverable_shown: number } | undefined;
 
   if (!task) return `Error: task ${taskId} not found.`;
   if (task.status === 'cancelled') {
@@ -3036,8 +3056,9 @@ export async function trackerRetask(
     deliverableShown: task.deliverable_shown === 1,
     status: task.status,
     completeValidated: task.complete_validated === 1,
+    closeRequestPending: task.close_request_pending === 1,
   }, args.allow_regenerate)) {
-    return `Error: task "${task.title}" (${taskId.slice(0, 8)}) already had its deliverable delivered to the user (deliverable_shown=1). Retasking it would regenerate and overwrite delivered work, producing a divergent second version. If the delivered work genuinely misses the goal and you want the assignee to redo it, re-call work_validate(action="retask") with allow_regenerate=true. Otherwise, if the delivery meets the goal, let the assignee close it out (work_update(action="status")) and validate that with work_validate(action="validate"); if entirely new work is needed, create a NEW task with work_open(kind="task").`;
+    return `Error: task "${task.title}" (${taskId.slice(0, 8)}) has already had its work delivered to the user and is awaiting adjudication. Retasking it would regenerate and overwrite delivered work, producing a divergent second version. If the delivered work genuinely misses the goal and you want the assignee to redo it, re-call work_validate(action="retask") with allow_regenerate=true. Otherwise, if the delivery meets the goal, bless the close with work_validate(action="validate", kind="complete", valid=true); if entirely new work is needed, create a NEW task with work_open(kind="task").`;
   }
   if (!task.assigned_to) {
     return `Error: task "${task.title}" (${taskId}) has no assigned agent. Use work_update(action="reassign") first, then retask.`;
