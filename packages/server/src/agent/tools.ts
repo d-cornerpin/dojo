@@ -5551,7 +5551,6 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
               const { resolveTaskId } = await import('../tracker/schema.js');
               const resolvedTask = resolveTaskId(args.task_id as string);
               if (resolvedTask.ok) {
-                const reDb = getDb();
                 patchWork(resolvedTask.id, { agent_id: result.agentId, assignee_agent: result.agentId, assigned_to_group: null });
                 const { writeTaskLog } = await import('../tracker/task-log.js');
                 writeTaskLog({

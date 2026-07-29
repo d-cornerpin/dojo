@@ -18,7 +18,7 @@
 // ════════════════════════════════════════
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { taskScope, msToText } from '../work/tracker-view.js';
+import { taskScope } from '../work/tracker-view.js';
 import { stampTicket } from '../work/tracker-store.js';
 
 const logger = createLogger('task-stamps');

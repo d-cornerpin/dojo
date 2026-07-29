@@ -1586,7 +1586,6 @@ const PRUNE_INTERVAL_MS = 3600_000; // Once per hour is plenty
  */
 function resumeExpiredPauses(): void {
   const db = getDb();
-  const now = new Date().toISOString();
 
   const expired = db.prepare(`
     SELECT w.id AS id, w.title AS title, w.status_before_pause AS status_before_pause,

@@ -1162,8 +1162,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     // surface as a raw FK error the model cannot act on)
     const assignedToGroup = args.assigned_to_group as string | undefined;
     if (assignedToGroup) {
-      const db = getDb();
-      const groupRow = db.prepare('SELECT 1 FROM agent_groups WHERE id = ?').get(assignedToGroup);
+      const groupRow = getDb().prepare('SELECT 1 FROM agent_groups WHERE id = ?').get(assignedToGroup);
       if (!groupRow) {
         return `Error: agent group '${assignedToGroup}' does not exist. The task was created assigned to you; use tracker_edit_task to reassign once you have a valid group id.`;
       }

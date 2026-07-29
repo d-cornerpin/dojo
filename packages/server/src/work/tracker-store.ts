@@ -368,7 +368,7 @@ export function deliveryForCompletedChildren(projectId: string): string | null {
  * Null when the agent delivered nothing, and the close is then refused by G7. That refusal
  * is the phase's central requirement, not a failure of this function.
  */
-export function deliveryForAgentSince(agentId: string, sinceMs: number): string | null {
+function deliveryForAgentSince(agentId: string, sinceMs: number): string | null {
   const r = getDb().prepare(
     `SELECT id FROM deliveries
       WHERE agent_id = ? AND outcome = 'delivered' AND tool <> 'engine-ack'
@@ -448,7 +448,7 @@ export function stampTicket(workId: string, f: {
  *  `transition()` files the adjudication when a state actually moves; this is the case where
  *  the state is already right and only the verdict is missing. */
 export function upholdClaim(
-  id: string, claimState: WorkState, by: Actor, byId: string, note: string,
+  id: string, claimState: WorkState, _by: Actor, byId: string, note: string,
 ): number {
   const info = getDb().prepare(
     `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, evidence_ref, note, created_at)

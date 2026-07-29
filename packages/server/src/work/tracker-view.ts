@@ -111,7 +111,7 @@ export const STATE_TO_STATUS_SQL = (col: string): string =>
  *   * `store.ts:openDelegationJoin`   -> root_kind 'a2a_thread'  (join pieces, NOT the board)
  * Command: `git grep -n "INTO work" -- packages/server/src | grep -v __tests__`.
  */
-export const TRACKER_ROOT_KINDS = "('legacy','tracker')";
+const TRACKER_ROOT_KINDS = "('legacy','tracker')";
 
 /** The tracker's task rows. `a` is the table alias the caller used for `work`. */
 export const taskScope = (a = 'w'): string =>
@@ -121,9 +121,6 @@ export const taskScope = (a = 'w'): string =>
 export const projectScope = (a = 'w'): string =>
   `${a}.kind = 'project' AND ${a}.root_kind IN ${TRACKER_ROOT_KINDS}`;
 
-/** Board rows of either shape (research 07's `kind IN ('task','project')`). */
-export const boardScope = (a = 'w'): string =>
-  `${a}.kind IN ('task','project') AND ${a}.root_kind IN ${TRACKER_ROOT_KINDS}`;
 
 /** `root_kind` for rows this platform opens from now on. Migrated rows keep `'legacy'`;
  *  both are in scope, and the pair is the whole enumeration. */
@@ -144,9 +141,6 @@ export const TRACKER_ROOT_KIND = 'tracker';
 export const msToText = (col: string): string =>
   `CASE WHEN ${col} IS NULL THEN NULL ELSE strftime('%Y-%m-%d %H:%M:%S', ${col} / 1000, 'unixepoch') END`;
 
-/** The reverse, for a predicate that still carries a TEXT instant as a bound parameter. */
-export const textToMs = (expr: string): string =>
-  `CASE WHEN ${expr} IS NULL THEN NULL ELSE CAST(strftime('%s', ${expr}) AS INTEGER) * 1000 END`;
 
 /** TypeScript side of the same conversion, for values crossing the boundary in code. */
 export function tsToMs(text: string | null | undefined): number | null {
@@ -155,11 +149,6 @@ export function tsToMs(text: string | null | undefined): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
-/** ms -> the same SQLite text form, in TypeScript. */
-export function msToTs(ms: number | null | undefined): string | null {
-  if (ms == null) return null;
-  return new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
-}
 
 // ════════════════════════════════════════════════════════════════════════════════
 // 4 — THE TWO-KEY FACTS, WHICH ARE NOW ROWS
@@ -250,52 +239,58 @@ export const revertCountExpr = (a: string): string =>
 // ════════════════════════════════════════════════════════════════════════════════
 
 /**
- * The legacy `TaskRow` projection, built from `work`.
+ * The legacy `TaskRow` projection, built from `work` — a COMPLETE `SELECT … FROM work`, not a
+ * bare column list. That is deliberate and it is not style: the orphan gate only inspects
+ * string literals that look like SQL (`SELECT|INSERT INTO|UPDATE|DELETE FROM`), so a fragment
+ * holding only columns is invisible to it and four real readers — `phase`, `level`,
+ * `phase_count`, `current_phase` — declared as spine structures would have looked like orphans
+ * and cost four of the arc's five waivers to explain away. Naming the table and the verb in
+ * the same literal is free, reads better at the call sites, and keeps the gate able to see.
  *
  * Every consumer that did `SELECT * FROM legacy_tasks` gets this instead, so `mapTaskRow`
  * and the shared `Task` type — and therefore the dashboard board — do not move at all.
  */
-export const taskRowColumns = (a = 'w'): string => `
-  ${a}.id AS id,
-  ${a}.parent_id AS project_id,
-  ${a}.title AS title,
-  ${a}.description AS description,
-  ${STATE_TO_STATUS_SQL(`${a}.state`)} AS status,
-  ${a}.agent_id AS assigned_to,
-  ${a}.requester_id AS created_by,
-  ${a}.priority AS priority,
-  ${a}.step_number AS step_number,
-  ${a}.total_steps AS total_steps,
-  ${a}.phase AS phase,
-  COALESCE(${a}.depends_on, '[]') AS depends_on,
-  ${a}.notes AS notes,
-  ${msToText(`${a}.scheduled_start`)} AS scheduled_start,
-  ${a}.repeat_interval AS repeat_interval,
-  ${a}.repeat_unit AS repeat_unit,
-  ${a}.repeat_end_type AS repeat_end_type,
-  ${a}.repeat_end_value AS repeat_end_value,
-  ${a}.repeat_days_of_week AS repeat_days_of_week,
-  ${a}.anchor_local AS anchor_time,
-  ${msToText(`${a}.next_run_at`)} AS next_run_at,
-  ${a}.attempts AS run_count,
-  ${a}.is_paused AS is_paused,
-  ${msToText(`${a}.paused_until`)} AS paused_until,
-  ${a}.status_before_pause AS status_before_pause,
-  ${msToText(`${a}.last_run_at`)} AS last_run_at,
-  COALESCE(${a}.schedule_status, 'unscheduled') AS schedule_status,
-  ${a}.assigned_to_group AS assigned_to_group,
-  ${a}.task_kind AS kind,
-  ${msToText(`${a}.opened_at`)} AS created_at,
-  ${msToText(`${a}.updated_at`)} AS updated_at,
-  ${msToText(`${a}.closed_at`)} AS completed_at,
-  ${validatedExpr(a, 'paused')} AS pause_validated,
-  ${validatedExpr(a, 'done')} AS complete_validated,
-  ${validatedExpr(a, 'blocked')} AS blocked_validated,
-  ${validationEscalatedAtExpr(a)} AS validation_escalated_at,
-  ${a}.goal AS goal,
-  ${a}.result AS result,
-  ${a}.evidence_json AS evidence_json
-`;
+export const taskRowColumns = (): string => `SELECT
+  work.id AS id,
+  work.parent_id AS project_id,
+  work.title AS title,
+  work.description AS description,
+  ${STATE_TO_STATUS_SQL('work.state')} AS status,
+  work.agent_id AS assigned_to,
+  work.requester_id AS created_by,
+  work.priority AS priority,
+  work.step_number AS step_number,
+  work.total_steps AS total_steps,
+  work.phase AS phase,
+  COALESCE(work.depends_on, '[]') AS depends_on,
+  work.notes AS notes,
+  ${msToText('work.scheduled_start')} AS scheduled_start,
+  work.repeat_interval AS repeat_interval,
+  work.repeat_unit AS repeat_unit,
+  work.repeat_end_type AS repeat_end_type,
+  work.repeat_end_value AS repeat_end_value,
+  work.repeat_days_of_week AS repeat_days_of_week,
+  work.anchor_local AS anchor_time,
+  ${msToText('work.next_run_at')} AS next_run_at,
+  work.attempts AS run_count,
+  work.is_paused AS is_paused,
+  ${msToText('work.paused_until')} AS paused_until,
+  work.status_before_pause AS status_before_pause,
+  ${msToText('work.last_run_at')} AS last_run_at,
+  COALESCE(work.schedule_status, 'unscheduled') AS schedule_status,
+  work.assigned_to_group AS assigned_to_group,
+  work.task_kind AS kind,
+  ${msToText('work.opened_at')} AS created_at,
+  ${msToText('work.updated_at')} AS updated_at,
+  ${msToText('work.closed_at')} AS completed_at,
+  ${validatedExpr('work', 'paused')} AS pause_validated,
+  ${validatedExpr('work', 'done')} AS complete_validated,
+  ${validatedExpr('work', 'blocked')} AS blocked_validated,
+  ${validationEscalatedAtExpr('work')} AS validation_escalated_at,
+  work.goal AS goal,
+  work.result AS result,
+  work.evidence_json AS evidence_json
+  FROM work`;
 
 /**
  * The `ScheduledTask` projection the scheduler's recurrence maths takes.
@@ -309,7 +304,7 @@ export const taskRowColumns = (a = 'w'): string => `
 export const scheduleRowColumns = (a = 'w'): string => `
   ${a}.id AS id,
   ${a}.title AS title,
-  ${msToText(`${a}.scheduled_start`)} AS scheduled_start,
+  ${msToText(a + '.scheduled_start')} AS scheduled_start,
   ${a}.repeat_interval AS repeat_interval,
   ${a}.repeat_unit AS repeat_unit,
   ${a}.repeat_end_type AS repeat_end_type,
@@ -318,10 +313,10 @@ export const scheduleRowColumns = (a = 'w'): string => `
   ${a}.anchor_local AS anchor_time,
   ${a}.attempts AS run_count,
   ${a}.is_paused AS is_paused,
-  ${msToText(`${a}.last_run_at`)} AS last_run_at,
-  ${msToText(`${a}.next_run_at`)} AS next_run_at,
+  ${msToText(a + '.last_run_at')} AS last_run_at,
+  ${msToText(a + '.next_run_at')} AS next_run_at,
   COALESCE(${a}.schedule_status, 'unscheduled') AS schedule_status,
-  ${msToText(`${a}.missed_runs_paused_at`)} AS missed_runs_paused_at,
+  ${msToText(a + '.missed_runs_paused_at')} AS missed_runs_paused_at,
   ${a}.agent_id AS assigned_to,
   ${a}.parent_id AS project_id,
   ${a}.assigned_to_group AS assigned_to_group,
@@ -329,22 +324,22 @@ export const scheduleRowColumns = (a = 'w'): string => `
   ${a}.task_kind AS kind,
   ${a}.description AS description,
   ${a}.goal AS goal,
-  ${msToText(`${a}.updated_at`)} AS updated_at,
-  ${STATE_TO_STATUS_SQL(`${a}.state`)} AS status
+  ${msToText(a + '.updated_at')} AS updated_at,
+  ${STATE_TO_STATUS_SQL(a + '.state')} AS status
 `;
 
 /** The legacy `ProjectRow` projection. `legacy_projects` had no `assigned_to`; its status
  *  vocabulary is the `active | complete | cancelled` arm of the same map. */
-export const projectRowColumns = (a = 'w'): string => `
-  ${a}.id AS id,
-  ${a}.title AS title,
-  ${a}.description AS description,
-  COALESCE(${a}.level, 1) AS level,
-  ${STATE_TO_STATUS_SQL(`${a}.state`)} AS status,
-  ${a}.requester_id AS created_by,
-  COALESCE(${a}.phase_count, 1) AS phase_count,
-  COALESCE(${a}.current_phase, 1) AS current_phase,
-  ${msToText(`${a}.opened_at`)} AS created_at,
-  ${msToText(`${a}.updated_at`)} AS updated_at,
-  ${msToText(`${a}.closed_at`)} AS completed_at
-`;
+export const projectRowColumns = (): string => `SELECT
+  work.id AS id,
+  work.title AS title,
+  work.description AS description,
+  COALESCE(work.level, 1) AS level,
+  ${STATE_TO_STATUS_SQL('work.state')} AS status,
+  work.requester_id AS created_by,
+  COALESCE(work.phase_count, 1) AS phase_count,
+  COALESCE(work.current_phase, 1) AS current_phase,
+  ${msToText('work.opened_at')} AS created_at,
+  ${msToText('work.updated_at')} AS updated_at,
+  ${msToText('work.closed_at')} AS completed_at
+  FROM work`;

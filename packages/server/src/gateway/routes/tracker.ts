@@ -558,7 +558,6 @@ trackerRouter.post('/tasks', async (c) => {
 
     // Handle scheduling if provided
     if (body.scheduled_start) {
-      const db = getDb();
       const { calculateNextRun } = await import('../../scheduler/engine.js');
       // v2.5.2 — specific_days requires the day-of-week allowlist.
       // Dashboard sends repeat_days_of_week as a CSV string (e.g. "1,3").
@@ -715,7 +714,6 @@ trackerRouter.put('/tasks/:id', async (c) => {
 
     // Handle schedule updates
     if (body.scheduled_start !== undefined) {
-      const db = getDb();
       if (body.scheduled_start === null) {
         // Remove schedule
         patchWork(id, {

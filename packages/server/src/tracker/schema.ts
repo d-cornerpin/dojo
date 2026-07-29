@@ -101,10 +101,10 @@ interface PokeRow {
 
 /** The two projections, built once. Interpolating a constant fragment rather than re-typing
  *  the column list at each call site is what keeps "the row shape" one fact. */
-const TASK_COLS = taskRowColumns('w');
-const PROJECT_COLS = projectRowColumns('w');
-const TASK_WHERE = taskScope('w');
-const PROJECT_WHERE = projectScope('w');
+const TASK_COLS = taskRowColumns();      // names the table literally — see tracker-view.ts
+const PROJECT_COLS = projectRowColumns();
+const TASK_WHERE = taskScope('work');
+const PROJECT_WHERE = projectScope('work');
 
 // ── Row Mappers ──
 
@@ -314,15 +314,15 @@ export function getProject(id: string): ProjectDetail | null {
   const db = getDb();
 
   const row = db.prepare(
-    `SELECT ${PROJECT_COLS} FROM work w WHERE ${PROJECT_WHERE} AND w.id = ?`,
+    `${PROJECT_COLS} WHERE ${PROJECT_WHERE} AND work.id = ?`,
   ).get(id) as ProjectRow | undefined;
   if (!row) return null;
 
   const project = mapProjectRow(row);
 
   const taskRows = db.prepare(
-    `SELECT ${TASK_COLS} FROM work w WHERE ${TASK_WHERE} AND w.parent_id = ?
-      ORDER BY w.step_number ASC, w.opened_at ASC`,
+    `${TASK_COLS} WHERE ${TASK_WHERE} AND work.parent_id = ?
+      ORDER BY work.step_number ASC, work.opened_at ASC`,
   ).all(id) as TaskRow[];
   const tasks = taskRows.map(mapTaskRow);
 
@@ -352,15 +352,15 @@ export function getProject(id: string): ProjectDetail | null {
 export function listProjects(filter?: { status?: string }): Project[] {
   const db = getDb();
 
-  let sql = `SELECT ${PROJECT_COLS} FROM work w WHERE ${PROJECT_WHERE}`;
+  let sql = `${PROJECT_COLS} WHERE ${PROJECT_WHERE}`;
   const params: unknown[] = [];
 
   if (filter?.status) {
-    sql += ' AND w.state = ?';
+    sql += ' AND work.state = ?';
     params.push(statusToState(filter.status));
   }
 
-  sql += ' ORDER BY w.updated_at DESC';
+  sql += ' ORDER BY work.updated_at DESC';
 
   const rows = db.prepare(sql).all(...params) as ProjectRow[];
   return rows.map(mapProjectRow);
@@ -398,7 +398,7 @@ export function closeProjectAndOpenTasks(params: {
   const noteMarker = taskStatus === 'cancelled' ? '[CANCELLED]' : '[Completed via bulk close]';
 
   const tasks = db
-    .prepare(`SELECT w.id AS id, w.state AS state FROM work w WHERE ${TASK_WHERE} AND w.parent_id = ?`)
+    .prepare(`SELECT work.id AS id, work.state AS state FROM work WHERE ${TASK_WHERE} AND work.parent_id = ?`)
     .all(projectId) as Array<{ id: string; state: string }>;
 
   let tasksClosed = 0;
@@ -627,7 +627,7 @@ export function autoCreateAssignTask(params: {
 
     // Reuse if a task already exists for this thread.
     const existing = db
-      .prepare(`SELECT w.id AS id FROM work w WHERE ${TASK_WHERE} AND w.a2a_thread_id = ? LIMIT 1`)
+      .prepare(`SELECT work.id AS id FROM work WHERE ${TASK_WHERE} AND work.a2a_thread_id = ? LIMIT 1`)
       .get(params.threadId) as { id: string } | undefined;
     if (existing?.id) {
       return { taskId: existing.id, isNew: false };
@@ -687,7 +687,7 @@ export function autoCreateAssignTask(params: {
 export function getTask(id: string): Task | null {
   const db = getDb();
   const row = db.prepare(
-    `SELECT ${TASK_COLS} FROM work w WHERE ${TASK_WHERE} AND w.id = ?`,
+    `${TASK_COLS} WHERE ${TASK_WHERE} AND work.id = ?`,
   ).get(id) as TaskRow | undefined;
   if (!row) return null;
   return mapTaskRow(row);
@@ -725,14 +725,14 @@ function resolveIdIn(kind: 'task' | 'project', idOrPrefix: string, agentId?: str
 
   // Full UUID form (with or without dashes), try direct lookup first.
   if (input.length >= 32) {
-    const row = db.prepare(`SELECT w.id AS id FROM work w WHERE ${scope} AND w.id = ?`)
+    const row = db.prepare(`SELECT work.id AS id FROM work WHERE ${scope} AND work.id = ?`)
       .get(input) as { id: string } | undefined;
     if (row) return { ok: true, id: row.id };
     // Fall through to prefix match, the "full" id may be malformed
   }
 
   // Prefix match. Limit to 5 so we can detect ambiguity cheaply.
-  const matches = db.prepare(`SELECT w.id AS id FROM work w WHERE ${scope} AND w.id LIKE ? LIMIT 5`)
+  const matches = db.prepare(`SELECT work.id AS id FROM work WHERE ${scope} AND work.id LIKE ? LIMIT 5`)
     .all(`${input}%`) as Array<{ id: string }>;
 
   if (matches.length === 1) return { ok: true, id: matches[0].id };
@@ -763,12 +763,12 @@ function resolveIdIn(kind: 'task' | 'project', idOrPrefix: string, agentId?: str
 function resolveByTitleScoped(kind: 'task' | 'project', title: string, agentId: string): IdResolution | null {
   const db = getDb();
   const scope = kind === 'task' ? TASK_WHERE : PROJECT_WHERE;
-  const scopeSql = kind === 'task' ? '(w.agent_id = ? OR w.requester_id = ?)' : 'w.requester_id = ?';
+  const scopeSql = kind === 'task' ? '(work.agent_id = ? OR work.requester_id = ?)' : 'work.requester_id = ?';
   const scopeParams = kind === 'task' ? [agentId, agentId] : [agentId];
 
   // Exact, case-insensitive.
   let rows = db.prepare(
-    `SELECT w.id AS id FROM work w WHERE ${scope} AND lower(w.title) = lower(?) AND ${scopeSql} LIMIT 5`,
+    `SELECT work.id AS id FROM work WHERE ${scope} AND lower(work.title) = lower(?) AND ${scopeSql} LIMIT 5`,
   ).all(title, ...scopeParams) as Array<{ id: string }>;
 
   // Prefix, for trailing wording drift, only if exact found nothing. Escape
@@ -776,7 +776,7 @@ function resolveByTitleScoped(kind: 'task' | 'project', title: string, agentId: 
   if (rows.length === 0) {
     const escaped = title.replace(/[\\%_]/g, '\\$&');
     rows = db.prepare(
-      `SELECT w.id AS id FROM work w WHERE ${scope} AND w.title LIKE ? ESCAPE '\\' AND ${scopeSql} LIMIT 5`,
+      `SELECT work.id AS id FROM work WHERE ${scope} AND work.title LIKE ? ESCAPE '\\' AND ${scopeSql} LIMIT 5`,
     ).all(`${escaped}%`, ...scopeParams) as Array<{ id: string }>;
   }
 
@@ -841,24 +841,24 @@ export function listTasks(filter?: {
   const params: unknown[] = [];
 
   if (filter?.status) {
-    conditions.push('w.state = ?');
+    conditions.push('work.state = ?');
     params.push(statusToState(filter.status));
   }
   if (filter?.assignedTo) {
-    conditions.push('w.agent_id = ?');
+    conditions.push('work.agent_id = ?');
     params.push(filter.assignedTo);
   }
   if (filter?.priority) {
-    conditions.push('w.priority = ?');
+    conditions.push('work.priority = ?');
     params.push(filter.priority);
   }
   if (filter?.projectId) {
-    conditions.push('w.parent_id = ?');
+    conditions.push('work.parent_id = ?');
     params.push(filter.projectId);
   }
 
-  const sql = `SELECT ${TASK_COLS} FROM work w WHERE ${conditions.join(' AND ')}`
-    + ' ORDER BY w.priority DESC, w.step_number ASC, w.opened_at ASC';
+  const sql = `${TASK_COLS} WHERE ${conditions.join(' AND ')}`
+    + ' ORDER BY work.priority DESC, work.step_number ASC, work.opened_at ASC';
 
   const rows = db.prepare(sql).all(...params) as TaskRow[];
   return rows.map(mapTaskRow);

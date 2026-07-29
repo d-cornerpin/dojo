@@ -1470,7 +1470,6 @@ export async function runPokeCheck(): Promise<void> {
   // created tasks.
   try {
     const STALE_A2A_GRACE_MS = 30 * 60 * 1000;
-    const sweepCutoff = new Date(Date.now() - STALE_A2A_GRACE_MS).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
     const candidates = db.prepare(`
       SELECT t.id AS id, t.title AS title, t.agent_id AS assigned_to,
              ${msToText('t.opened_at')} AS created_at, t.parent_id AS project_id
@@ -1669,7 +1668,6 @@ export async function runPokeCheck(): Promise<void> {
 
     // ── Auto-reset: escalation failed, take direct action ──
     if (pokeType === 'auto_reset') {
-      const db = getDb();
       const idleMinutes = Math.floor(idleSeconds / 60);
 
       // Move task back to on_deck so it can be retried
