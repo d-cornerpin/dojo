@@ -230,24 +230,34 @@ describe('Phase D scenario suite', () => {
     expect(fin.awaiting_user_verdict).toBe(1);
   });
 
-  it('Scenario P: hard-gate circuit-breaker pattern stores 3 attempts in task_override_requests', () => {
-    const taskId = makeTask(testDb);
-    // Simulate the engine queuing an OVERRIDE_REQUEST after the 3rd hard-gate rejection.
-    const id = `or-${Math.random().toString(36).slice(2, 8)}`;
-    testDb.prepare(`
-      INSERT INTO task_override_requests
-        (id, task_id, requested_by, requested_status, justification, last_engine_error, attempts_attached, status, created_at)
-      VALUES (?, ?, 'primary', 'complete', ?, ?, 3, 'pending', datetime('now'))
-    `).run(
-      id,
-      taskId,
-      'Engine hard-gate circuit-breaker auto-fired after 3 consecutive same-task hard-gate rejections by primary.',
-      'evidence[0] missing kind or claim',
-    );
-    const row = testDb.prepare(`SELECT status, attempts_attached, requested_status FROM task_override_requests WHERE id = ?`).get(id) as { status: string; attempts_attached: number; requested_status: string };
-    expect(row.status).toBe('pending');
-    expect(row.attempts_attached).toBe(3);
-    expect(row.requested_status).toBe('complete');
+  // ── TOMBSTONE (PHASE-2 T8T RESUMED-2, orchestrator RULING 4) ──
+  // Scenario P used to INSERT a row into this file's hand-rolled `task_override_requests`
+  // and SELECT it straight back. It asserted SQLite, not the platform: no production code
+  // was on the path, so it could not have failed if the circuit-breaker had stopped writing
+  // anything at all. RULING 4 moved the mechanism onto the spine, and the requirement —
+  // "the breaker's ask carries the attempt count that produced it" — now has a test that
+  // actually exercises the writer, in `work/__tests__/override-requests.test.ts` §1.
+  //
+  // requirement preserved: an engine-fired override request is distinguishable from an
+  // agent's own, and carries how many rejections produced it.
+  //
+  // What stays here is the INVERSION: production must no longer name the table at all. It is
+  // the same shape T8c gave `closeEngineScaffoldSameTurn` — a removal that keeps a guard
+  // rather than deleting one — and it has a NEGATIVE CONTROL so it cannot pass by reading
+  // nothing.
+  it('Scenario P (TOMBSTONE): the override queue left this table, and production does not name it', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = (rel: string) =>
+      readFileSync(fileURLToPath(new URL(`../../${rel}`, import.meta.url)), 'utf8');
+
+    for (const f of ['tracker/tools.ts', 'tracker/pm-agent.ts', 'scheduler/runner.ts', 'gateway/routes/tracker.ts']) {
+      expect(src(f), `${f} still names task_override_requests`).not.toContain('task_override_requests');
+    }
+    // NEGATIVE CONTROL of the same shape: the walk is reading real files with real content,
+    // so "not found" means absent rather than unread.
+    expect(src('tracker/tools.ts')).toContain('fileOverrideRequest');
+    expect(src('scheduler/runner.ts')).toContain('staleOverrideRequests');
   });
 
   it('Scenario G: recurring task per-run completion archives result and resets to on_deck', () => {

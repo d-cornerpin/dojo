@@ -12,6 +12,7 @@ import {
   stampColumns,
 } from '../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../work/tracker-store.js';
+import { listOverrideRequests, PENDING_OVERRIDE_COUNT_SQL } from '../work/override-requests.js';
 import { activeRuns as pmActiveRuns } from '../agent/shared-state.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -863,7 +864,7 @@ async function runPMReview(): Promise<void> {
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1 AND ${awaitingUserVerdictExpr('w')} = 0) +
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'blocked' AND ${validatedExpr('w','blocked')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'paused' AND ${validatedExpr('w','paused')} = 0) +
-          (SELECT COUNT(*) FROM task_override_requests WHERE status = 'pending')
+          ${PENDING_OVERRIDE_COUNT_SQL}
         AS c
       `).get() as { c: number }).c;
     } catch {
@@ -958,7 +959,7 @@ async function runPMReview(): Promise<void> {
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1 AND ${awaitingUserVerdictExpr('w')} = 0) +
         (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'blocked' AND ${validatedExpr('w','blocked')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
         (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'paused' AND ${validatedExpr('w','paused')} = 0) +
-        (SELECT COUNT(*) FROM task_override_requests WHERE status = 'pending')
+        ${PENDING_OVERRIDE_COUNT_SQL}
       AS c
     `).get() as { c: number };
     if (pendingCount.c === 0) return;
@@ -1381,33 +1382,22 @@ async function runPMReview(): Promise<void> {
   }
 
   // ── Phase B.1: OVERRIDE_REQUEST ──
-  const overrideRows = db.prepare(`
-    SELECT r.id, r.task_id, r.requested_by, r.requested_status, r.justification, r.last_engine_error, r.attempts_attached, r.created_at,
-           t.title as task_title, t.goal as task_goal
-    FROM task_override_requests r
-    LEFT JOIN work t ON t.id = r.task_id
-    WHERE r.status = 'pending'
-    ORDER BY r.created_at ASC
-    LIMIT 10
-  `).all() as Array<{
-    id: string; task_id: string; requested_by: string;
-    requested_status: string; justification: string; last_engine_error: string | null;
-    attempts_attached: number; created_at: string;
-    task_title: string | null; task_goal: string | null;
-  }>;
+  // PHASE-2 T8T RESUMED-2 (RULING 4): the queue is `work_events` now, and the ordering key
+  // is the event sequence rather than a TEXT clock — oldest ask first, exactly as before.
+  const overrideRows = listOverrideRequests({ status: 'pending', limit: 10 });
 
   for (const oRow of overrideRows) {
-    const agentName = oRow.requested_by === 'engine'
+    const agentName = oRow.requestedBy === 'engine'
       ? 'engine (circuit-breaker)'
-      : agents.find(a => a.id === oRow.requested_by)?.name ?? oRow.requested_by;
+      : agents.find(a => a.id === oRow.requestedBy)?.name ?? oRow.requestedBy;
     issues.push({
       stableId: `override|${oRow.id}`,
       text:
-        `OVERRIDE_REQUEST (id=${oRow.id.slice(0, 8)}): ${agentName} wants task "${oRow.task_title ?? '?'}" (${oRow.task_id.slice(0, 8)}) forced to "${oRow.requested_status}".\n` +
-        `  Goal: ${oRow.task_goal ?? '(no goal recorded)'}\n` +
+        `OVERRIDE_REQUEST (id=${oRow.id.slice(0, 8)}): ${agentName} wants task "${oRow.taskTitle ?? '?'}" (${oRow.taskId.slice(0, 8)}) forced to "${oRow.requestedStatus}".\n` +
+        `  Goal: ${oRow.taskGoal ?? '(no goal recorded)'}\n` +
         `  Justification: ${oRow.justification}\n` +
-        (oRow.last_engine_error ? `  Last engine error: ${oRow.last_engine_error}\n` : '') +
-        (oRow.attempts_attached > 1 ? `  Engine-auto-fired after ${oRow.attempts_attached} hard-gate rejections, the agent was thrashing on shape.\n` : '') +
+        (oRow.lastEngineError ? `  Last engine error: ${oRow.lastEngineError}\n` : '') +
+        (oRow.attemptsAttached > 1 ? `  Engine-auto-fired after ${oRow.attemptsAttached} hard-gate rejections, the agent was thrashing on shape.\n` : '') +
         `  Approve: work_validate(action="override", override_request_id="${oRow.id}", approve=true, reason="..."). ` +
         `Deny: work_validate(action="override", override_request_id="${oRow.id}", approve=false, reason="...").`,
     });
@@ -1674,7 +1664,7 @@ export async function runPokeCheck(): Promise<void> {
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1 AND ${awaitingUserVerdictExpr('w')} = 0) +
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'blocked' AND ${validatedExpr('w','blocked')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'paused' AND ${validatedExpr('w','paused')} = 0) +
-          (SELECT COUNT(*) FROM task_override_requests WHERE status = 'pending')
+          ${PENDING_OVERRIDE_COUNT_SQL}
         AS c
       `).get() as { c: number };
       return row.c;

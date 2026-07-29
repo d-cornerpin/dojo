@@ -20,6 +20,12 @@ import {
 } from '../../work/tracker-view.js';
 import {
   upholdClaim, resetRevertCount, recordValidationEscalation, clearUserVerdict,
+} from '../../work/tracker-store.js';
+import {
+  findOverrideRequest, resolveOverrideRequest, listOverrideRequests,
+  overrideRollup as overrideRollupSince, type OverrideStatus,
+} from '../../work/override-requests.js';
+import {
   patchWork, deleteTrackerRow, deliveryForTaskClose, deliveryForCompletedChildren,
 } from '../../work/tracker-store.js';
 import { statusToState, tsToMs } from '../../work/tracker-view.js';
@@ -343,11 +349,7 @@ trackerRouter.get('/hygiene', async (c) => {
     `).all() as Array<{ category: string; count: number }>;
 
     // Override request rollup (last 7 days).
-    const overrideRollup = db.prepare(`
-      SELECT status, COUNT(*) as count FROM task_override_requests
-      WHERE datetime(created_at) > datetime('now', '-7 days')
-      GROUP BY status
-    `).all() as Array<{ status: string; count: number }>;
+    const overrideRollup = overrideRollupSince(7);
 
     // Tasks currently elevated: high revert_count or awaiting verdict.
     const elevated = db.prepare(`
@@ -409,12 +411,7 @@ trackerRouter.post('/override-requests/:id/resolve', async (c) => {
   if (!reason) return c.json({ ok: false, error: 'reason is required' }, 400);
 
   try {
-    const { getDb } = await import('../../db/connection.js');
-    const db = getDb();
-    const req = db.prepare(`
-      SELECT id, task_id, requested_by, requested_status, status
-      FROM task_override_requests WHERE id = ?
-    `).get(id) as { id: string; task_id: string; requested_by: string; requested_status: string; status: string } | undefined;
+    const req = findOverrideRequest(id);
     if (!req) return c.json({ ok: false, error: 'override request not found' }, 404);
     if (req.status !== 'pending') {
       return c.json({ ok: false, error: `override request is already ${req.status}` }, 400);
@@ -426,46 +423,40 @@ trackerRouter.post('/override-requests/:id/resolve', async (c) => {
       // `transition()` files the upheld adjudication in the same transaction as the move
       // (`claim: 'authoritative'`), which is what the three flag columns were imitating.
       const { setTaskStatus } = await import('../../tracker/schema.js');
-      const updated = setTaskStatus(req.task_id, req.requested_status as TrackerStatus, {
+      const updated = setTaskStatus(req.taskId, req.requestedStatus as TrackerStatus, {
         by: 'owner', actorId: 'user', claim: 'authoritative',
         reason: `owner approved override request ${id}: ${reason}`,
-        resultDeliveryId: req.requested_status === 'complete' ? deliveryForTaskClose(req.task_id) : null,
+        resultDeliveryId: req.requestedStatus === 'complete' ? deliveryForTaskClose(req.taskId) : null,
       });
       if (!updated) return c.json({ ok: false, error: 'task vanished before override could be applied' }, 500);
-      resetRevertCount(req.task_id, 'user', `override ${id} approved`);
-      clearUserVerdict(req.task_id, 'user', `override ${id} approved`);
-      db.prepare(`
-        UPDATE task_override_requests
-        SET status = 'approved', resolved_by = 'user', resolved_reason = ?, resolved_at = datetime('now')
-        WHERE id = ?
-      `).run(reason, id);
+      resetRevertCount(req.taskId, 'user', `override ${id} approved`);
+      clearUserVerdict(req.taskId, 'user', `override ${id} approved`);
+      // The verdict is already in `adjudications` — `setTaskStatus` above carries
+      // `claim: 'authoritative'`. This answers the ASK.
+      resolveOverrideRequest(req.id, { outcome: 'approved', resolvedBy: 'user', reason });
       writeTaskLog({
-        taskId: req.task_id,
+        taskId: req.taskId,
         fromEntity: 'user',
         entryKind: 'override',
-        toStatus: req.requested_status,
+        toStatus: req.requestedStatus,
         actionTaken: 'dashboard override(approve=true)',
         reason,
       });
       // D-K: an approved override to 'fallen' can be the transition that
       // empties the project of open tasks; run the fail-open check (idempotent).
-      if (req.requested_status === 'fallen') {
+      if (req.requestedStatus === 'fallen') {
         try {
           const { checkProjectCompletion } = await import('../../tracker/tools.js');
           checkProjectCompletion(updated.projectId, 'user:dashboard');
         } catch { /* best-effort */ }
       }
-      logger.info('Override approved via dashboard', { taskId: req.task_id, requestId: id });
+      logger.info('Override approved via dashboard', { taskId: req.taskId, requestId: id });
       return c.json({ ok: true, data: { approved: true } });
     }
 
-    db.prepare(`
-      UPDATE task_override_requests
-      SET status = 'denied', resolved_by = 'user', resolved_reason = ?, resolved_at = datetime('now')
-      WHERE id = ?
-    `).run(reason, id);
+    resolveOverrideRequest(req.id, { outcome: 'denied', resolvedBy: 'user', reason });
     writeTaskLog({
-      taskId: req.task_id,
+      taskId: req.taskId,
       fromEntity: 'user',
       entryKind: 'override',
       actionTaken: 'dashboard override(approve=false)',
@@ -479,12 +470,12 @@ trackerRouter.post('/override-requests/:id/resolve', async (c) => {
         intent: 'QUESTION',
         threadId: '',
         requiresResponse: true,
-        payload: `Your override request on task ${req.task_id.slice(0, 8)} was denied by the user. Reason: ${reason}. Address the original engine objection and resubmit cleanly.`,
-        toAgent: req.requested_by,
+        payload: `Your override request on task ${req.taskId.slice(0, 8)} was denied by the user. Reason: ${reason}. Address the original engine objection and resubmit cleanly.`,
+        toAgent: req.requestedBy,
         fromAgent: getPMAgentId(),
       });
     } catch { /* best-effort */ }
-    logger.info('Override denied via dashboard', { taskId: req.task_id, requestId: id });
+    logger.info('Override denied via dashboard', { taskId: req.taskId, requestId: id });
     return c.json({ ok: true, data: { approved: false } });
   } catch (err) {
     logger.error('POST /override-requests/:id/resolve failed', { id, error: err instanceof Error ? err.message : String(err) });
@@ -496,21 +487,21 @@ trackerRouter.post('/override-requests/:id/resolve', async (c) => {
 trackerRouter.get('/override-requests', async (c) => {
   const statusParam = c.req.query('status');
   try {
-    const { getDb } = await import('../../db/connection.js');
-    const db = getDb();
     const allowed = new Set(['pending', 'approved', 'denied', 'auto_denied']);
-    const where = statusParam && allowed.has(statusParam) ? `WHERE r.status = '${statusParam}'` : '';
-    const rows = db.prepare(`
-      SELECT r.id, r.task_id, r.requested_by, r.requested_status, r.justification,
-             r.last_engine_error, r.attempts_attached, r.status, r.resolved_by,
-             r.resolved_reason, r.created_at, r.resolved_at,
-             t.title as task_title, t.goal as task_goal
-      FROM task_override_requests r
-      LEFT JOIN work t ON t.id = r.task_id
-      ${where}
-      ORDER BY r.created_at DESC
-      LIMIT 100
-    `).all();
+    // PHASE-2 T8T RESUMED-2 (RULING 4): the dashboard's wire shape is preserved
+    // field-for-field — this route's consumer is a UI that reads snake_case keys, and
+    // changing them here would be this rekey silently changing the product.
+    const rows = listOverrideRequests({
+      status: statusParam && allowed.has(statusParam) ? statusParam as OverrideStatus : undefined,
+      limit: 100,
+    }).map((r) => ({
+      id: r.id, task_id: r.taskId, requested_by: r.requestedBy,
+      requested_status: r.requestedStatus, justification: r.justification,
+      last_engine_error: r.lastEngineError, attempts_attached: r.attemptsAttached,
+      status: r.status, resolved_by: r.resolvedBy, resolved_reason: r.resolvedReason,
+      created_at: r.createdAt, resolved_at: r.resolvedAt,
+      task_title: r.taskTitle, task_goal: r.taskGoal,
+    }));
     return c.json({ ok: true, data: rows });
   } catch (err) {
     logger.error('GET /override-requests failed', { error: err instanceof Error ? err.message : String(err) });

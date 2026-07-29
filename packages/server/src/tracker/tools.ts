@@ -18,6 +18,10 @@ import {
 } from '../work/tracker-view.js';
 import type { TransitionResult } from '../work/store.js';
 import {
+  fileOverrideRequest, pendingOverrideForAgent, pendingOverrideForTask,
+  findOverrideRequest, resolveOverrideRequest,
+} from '../work/override-requests.js';
+import {
   patchWork, setTrackerStatus, upholdClaim, throwBackClaim, resetRevertCount,
   requestUserVerdict, clearUserVerdict, deliveryForTaskClose, deliveryForCompletedChildren,
 } from '../work/tracker-store.js';
@@ -3533,19 +3537,16 @@ function noteHardGateRejection(taskId: string, agentId: string, reason: string):
         `Engine hard-gate circuit-breaker auto-fired after ${next.count} consecutive same-task hard-gate rejections by ${agentId}. ` +
         `Last reasons (most recent first): ${next.reasons.slice().reverse().join(' | ')}. ` +
         `Either the agent is misinterpreting the schema or the engine is wrong; PM should decide.`;
-      const db = getDb();
-      const existing = db.prepare(`
-        SELECT id FROM task_override_requests
-        WHERE task_id = ? AND requested_by = ? AND status = 'pending'
-        LIMIT 1
-      `).get(taskId, agentId) as { id: string } | undefined;
-      if (!existing) {
-        const id = uuidv4();
-        db.prepare(`
-          INSERT INTO task_override_requests
-            (id, task_id, requested_by, requested_status, justification, last_engine_error, attempts_attached, status, created_at)
-          VALUES (?, ?, ?, 'complete', ?, ?, ?, 'pending', datetime('now'))
-        `).run(id, taskId, agentId, justification, reason, next.count);
+      // PHASE-2 T8T RESUMED-2 (RULING 4): the ask is a `work_events` row now. The
+      // one-pending-per-(task, agent) rate limit is the same predicate it always was.
+      if (!pendingOverrideForAgent(taskId, agentId)) {
+        fileOverrideRequest(taskId, {
+          requestedBy: agentId,
+          requestedStatus: 'complete',
+          justification,
+          lastEngineError: reason,
+          attemptsAttached: next.count,
+        });
         writeTaskLog({
           taskId,
           fromEntity: 'engine',
@@ -3694,11 +3695,7 @@ export async function trackerValidateComplete(
   // underlying close without resolving the override leaves the override
   // queue stale and bypasses the structured ask. Refuse and direct PM to
   // work_validate(action="override", override_request_id=..., approve=true|false).
-  const pendingOverride = db.prepare(`
-    SELECT id FROM task_override_requests
-    WHERE task_id = ? AND status = 'pending'
-    ORDER BY created_at DESC LIMIT 1
-  `).get(taskId) as { id: string } | undefined;
+  const pendingOverride = pendingOverrideForTask(taskId);
   if (pendingOverride) {
     return (
       `Error: task "${task.title}" (${taskId.slice(0, 8)}) has a pending OVERRIDE_REQUEST (id=${pendingOverride.id.slice(0, 8)}). ` +
@@ -4068,22 +4065,17 @@ export function trackerRequestOverride(
     return 'Error: justification must be at least 30 characters. Explain in one sentence why the engine was wrong or why PM should reconsider (e.g. "tool_call id from 3 days ago, audit log rotated, artifact at /tmp/foo.sh still exists and was created by the call").';
   }
 
-  const db = getDb();
-  const existing = db.prepare(`
-    SELECT id FROM task_override_requests
-    WHERE task_id = ? AND requested_by = ? AND status = 'pending'
-    LIMIT 1
-  `).get(taskId, agentId) as { id: string } | undefined;
+  // PHASE-2 T8T RESUMED-2 (RULING 4): the queue is `work_events` + `adjudications` now.
+  // requirement preserved: at most ONE pending ask per (task, agent), refused with a
+  // sentence the model can act on rather than dropped.
+  const existing = pendingOverrideForAgent(taskId, agentId);
   if (existing) {
     return `Error: you already have a pending override request on this task (id=${existing.id.slice(0, 8)}). Wait for PM to resolve it before requesting again.`;
   }
 
-  const id = uuidv4();
-  db.prepare(`
-    INSERT INTO task_override_requests
-      (id, task_id, requested_by, requested_status, justification, status, created_at)
-    VALUES (?, ?, ?, ?, ?, 'pending', datetime('now'))
-  `).run(id, taskId, agentId, requestedStatus, justification);
+  const id = fileOverrideRequest(taskId, {
+    requestedBy: agentId, requestedStatus, justification,
+  });
 
   writeTaskLog({
     taskId,
@@ -4118,15 +4110,7 @@ export async function trackerOverride(
   const reason = (args.reason ?? '').trim();
   if (!reason) return 'Error: reason is required (one sentence on why you approved or denied).';
 
-  const db = getDb();
-  const req = db.prepare(`
-    SELECT id, task_id, requested_by, requested_status, justification, status
-    FROM task_override_requests WHERE id = ? OR id LIKE ?
-    LIMIT 1
-  `).get(requestId, `${requestId}%`) as {
-    id: string; task_id: string; requested_by: string;
-    requested_status: string; justification: string; status: string;
-  } | undefined;
+  const req = findOverrideRequest(requestId);
 
   if (!req) return `Error: override request ${requestId} not found.`;
   if (req.status !== 'pending') {
@@ -4138,58 +4122,53 @@ export async function trackerOverride(
     // Override approval is AUTHORITATIVE, and that word is now the argument: `transition()`
     // files the upheld adjudication in the same transaction as the move, which is what the
     // three CASE-WHEN flag assignments were imitating by hand.
-    const updated = setTaskStatus(req.task_id, req.requested_status as TrackerStatus, {
+    const updated = setTaskStatus(req.taskId, req.requestedStatus as TrackerStatus, {
       by: 'pm', actorId: pmAgentId, claim: 'authoritative',
       reason: `PM approved override request ${req.id}: ${reason}`,
-      resultDeliveryId: req.requested_status === 'complete' ? deliveryForTaskClose(req.task_id) : null,
+      resultDeliveryId: req.requestedStatus === 'complete' ? deliveryForTaskClose(req.taskId) : null,
     });
-    if (!updated) return `Error: task ${req.task_id} was deleted before override approval could land.`;
-    resetRevertCount(req.task_id, pmAgentId, `override ${req.id} approved`);
-    clearUserVerdict(req.task_id, pmAgentId, `override ${req.id} approved`);
+    if (!updated) return `Error: task ${req.taskId} was deleted before override approval could land.`;
+    resetRevertCount(req.taskId, pmAgentId, `override ${req.id} approved`);
+    clearUserVerdict(req.taskId, pmAgentId, `override ${req.id} approved`);
     // updateTask broadcast above with only the status flip, re-broadcast
     // so revert_count=0 and the matching *_validated flag reach the dashboard.
-    const freshOverride = getTask(req.task_id);
+    const freshOverride = getTask(req.taskId);
     if (freshOverride) broadcast({ type: 'tracker:task_updated', data: freshOverride });
-    db.prepare(`
-      UPDATE task_override_requests
-      SET status = 'approved', resolved_by = ?, resolved_reason = ?, resolved_at = datetime('now')
-      WHERE id = ?
-    `).run(pmAgentId, reason, req.id);
+    // The VERDICT is already in `adjudications`: `setTaskStatus` above carries
+    // `claim: 'authoritative'`, so `transition()` filed the upheld row in the same
+    // transaction as the move. This records the ASK's answer, which is a different fact.
+    resolveOverrideRequest(req.id, { outcome: 'approved', resolvedBy: pmAgentId, reason });
 
     writeTaskLog({
-      taskId: req.task_id,
+      taskId: req.taskId,
       fromEntity: 'pm',
       entryKind: 'override',
-      toStatus: req.requested_status,
+      toStatus: req.requestedStatus,
       actionTaken: 'work_validate(action="override", approve=true)',
       reason,
     });
 
     // D-K: an approved override to 'fallen' can be the transition that empties
     // the project of open tasks; run the fail-open check (idempotent).
-    if (req.requested_status === 'fallen') {
+    if (req.requestedStatus === 'fallen') {
       // RC-17.5: also STOP a live schedule so it cannot keep firing after the
       // override lands it in 'fallen' (mirror of the tool + dashboard paths).
       try {
-        terminateLiveScheduleOnFallen(req.task_id, 'a PM override marked the task fallen (given up on)');
+        terminateLiveScheduleOnFallen(req.taskId, 'a PM override marked the task fallen (given up on)');
       } catch { /* best-effort */ }
       try {
         checkProjectCompletion(freshOverride?.projectId ?? null, pmAgentId);
       } catch { /* best-effort */ }
     }
 
-    logger.info('Override approved by PM', { taskId: req.task_id, pmAgentId, requestId: req.id }, pmAgentId);
-    return `[OK] override approved. Task ${req.task_id.slice(0, 8)} forced to "${req.requested_status}". Reason: ${reason}.`;
+    logger.info('Override approved by PM', { taskId: req.taskId, pmAgentId, requestId: req.id }, pmAgentId);
+    return `[OK] override approved. Task ${req.taskId.slice(0, 8)} forced to "${req.requestedStatus}". Reason: ${reason}.`;
   }
 
   // Deny path: leave the task where it is, notify the agent.
-  db.prepare(`
-    UPDATE task_override_requests
-    SET status = 'denied', resolved_by = ?, resolved_reason = ?, resolved_at = datetime('now')
-    WHERE id = ?
-  `).run(pmAgentId, reason, req.id);
+  resolveOverrideRequest(req.id, { outcome: 'denied', resolvedBy: pmAgentId, reason });
   writeTaskLog({
-    taskId: req.task_id,
+    taskId: req.taskId,
     fromEntity: 'pm',
     entryKind: 'override',
     actionTaken: 'work_validate(action="override", approve=false)',
@@ -4201,15 +4180,15 @@ export async function trackerOverride(
       intent: 'QUESTION',
       threadId: '',
       requiresResponse: true,
-      payload: `Your override request on task ${req.task_id.slice(0, 8)} was denied by the PM. Reason: ${reason}. The engine's original objection stands; address it and resubmit cleanly.`,
-      toAgent: req.requested_by,
+      payload: `Your override request on task ${req.taskId.slice(0, 8)} was denied by the PM. Reason: ${reason}. The engine's original objection stands; address it and resubmit cleanly.`,
+      toAgent: req.requestedBy,
       fromAgent: pmAgentId,
     });
   } catch (err) {
-    logger.warn('Override deny notification failed (non-fatal)', { taskId: req.task_id, error: err instanceof Error ? err.message : String(err) });
+    logger.warn('Override deny notification failed (non-fatal)', { taskId: req.taskId, error: err instanceof Error ? err.message : String(err) });
   }
 
-  logger.info('Override denied by PM', { taskId: req.task_id, pmAgentId, requestId: req.id }, pmAgentId);
+  logger.info('Override denied by PM', { taskId: req.taskId, pmAgentId, requestId: req.id }, pmAgentId);
   return `[OK] override denied. Task left as-is. Agent notified.`;
 }
 

@@ -18,6 +18,7 @@ import {
   taskScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
   validatedExpr, awaitingUserVerdictExpr, pendingCloseRequestExpr, statusToState, type TrackerStatus,
 } from '../work/tracker-view.js';
+import { staleOverrideRequests, resolveOverrideRequest } from '../work/override-requests.js';
 import {
   patchWork, setTrackerStatus, bumpWorkAttempts, upholdClaim, clearUserVerdict,
   recordValidationEscalation, deleteTrackerRow, deliveryForTaskClose,
@@ -198,33 +199,24 @@ export function pickAvailableAgentFromGroup(groupId: string): string | null {
 const STALE_REQUEST_HOURS = 12;
 
 async function sweepStaleOverrideRequests(): Promise<void> {
-  const db = getDb();
   try {
-    const stale = db.prepare(`
-      SELECT id, task_id, requested_by, requested_status, justification
-      FROM task_override_requests
-      WHERE status = 'pending'
-        AND datetime(created_at) < datetime('now', '-${STALE_REQUEST_HOURS} hours')
-      LIMIT 50
-    `).all() as Array<{
-      id: string; task_id: string; requested_by: string;
-      requested_status: string; justification: string;
-    }>;
+    // PHASE-2 T8T RESUMED-2 (RULING 4): the queue moved to `work_events`; the 12-hour bound
+    // is unchanged and still this file's own constant (5a, carried verbatim).
+    const stale = staleOverrideRequests(STALE_REQUEST_HOURS, 50);
     if (stale.length === 0) return;
 
-    const denyStmt = db.prepare(`
-      UPDATE task_override_requests
-      SET status = 'auto_denied', resolved_by = 'engine',
-          resolved_reason = 'timed out after ${STALE_REQUEST_HOURS}h with no PM resolution',
-          resolved_at = datetime('now')
-      WHERE id = ?
-    `);
     const { writeTaskLog } = await import('../tracker/task-log.js');
     let swept = 0;
     for (const r of stale) {
-      denyStmt.run(r.id);
+      // A TIMEOUT IS NOT A VERDICT, which is why the old schema had `auto_denied` as a value
+      // distinct from `denied` and why nothing is written to `adjudications` here: nobody
+      // ruled. The ask is answered and the requester is told.
+      resolveOverrideRequest(r.id, {
+        outcome: 'auto_denied', resolvedBy: 'engine',
+        reason: `timed out after ${STALE_REQUEST_HOURS}h with no PM resolution`,
+      });
       writeTaskLog({
-        taskId: r.task_id,
+        taskId: r.taskId,
         fromEntity: 'engine',
         entryKind: 'auto_sweep',
         actionTaken: `override request auto-denied (id=${r.id.slice(0, 8)})`,
@@ -239,10 +231,10 @@ async function sweepStaleOverrideRequests(): Promise<void> {
           threadId: '',
           requiresResponse: true,
           payload:
-            `Your override request on task ${r.task_id.slice(0, 8)} (status="${r.requested_status}") ` +
+            `Your override request on task ${r.taskId.slice(0, 8)} (status="${r.requestedStatus}") ` +
             `timed out after ${STALE_REQUEST_HOURS}h with no PM resolution. The request is auto-denied. ` +
             `Address the engine's original concern and resubmit cleanly, or file a fresh work_close_request(action="override").`,
-          toAgent: r.requested_by,
+          toAgent: r.requestedBy,
           fromAgent: getPMAgentId(),
         });
       } catch { /* best-effort */ }
@@ -1240,7 +1232,7 @@ function cleanupOrphanedRuns(): void {
   const db = getDb();
 
   const orphans = db.prepare(`
-    SELECT tr.id as run_id, tr.task_id, tr.assigned_to
+    SELECT tr.id as run_id, tr.taskId, tr.assigned_to
     FROM task_runs tr
     LEFT JOIN agents a ON a.id = tr.assigned_to
     WHERE tr.status = 'running'
@@ -1305,9 +1297,9 @@ function cleanupStaleRuns(): void {
   // live reminder the owner needs told about. A short age guard avoids racing an
   // in-flight advance.
   const orphanRuns = db.prepare(`
-    SELECT tr.id AS run_id, tr.task_id, tr.run_number
+    SELECT tr.id AS run_id, tr.taskId, tr.run_number
     FROM task_runs tr
-    LEFT JOIN work t ON t.id = tr.task_id
+    LEFT JOIN work t ON t.id = tr.taskId
     WHERE tr.status IN ('pending', 'running')
       AND (t.id IS NULL OR t.schedule_status != 'running')
       AND COALESCE(tr.started_at, tr.created_at) < datetime('now', '-5 minutes')
