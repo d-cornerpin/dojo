@@ -333,13 +333,7 @@
       "table": "work",
       "column": "hop_count",
       "definedIn": "packages/server/src/db/migrations/135_work_spine.sql",
-      "why": "The per-thread hop count, on the row instead of in the transport's own constant. INTEGER NOT NULL DEFAULT 0, so it is honest from creation rather than nullable-until-someone-remembers.",
-      "zeroReader": {
-        "kind": "owed",
-        "owner": "PHASE-2 T4",
-        "date": "2026-07-28",
-        "reason": "T0's D2 assigns it by name: the hop cap has TWO LIVE VALUES today (8 at a2a-transport.ts:523, 5 at classifiers/a2a.ts:171) and 'MAX_HOPS_PER_THREAD (transport) DISSOLVES IN THIS PHASE ... the transport's per-thread hop count becomes a column on work. T4 Step 3 gains it by name.' The classifier's cap and the triplicated intent sets go to SWEEP A."
-      }
+      "why": "The per-thread hop count, on the row instead of in the transport's own constant. INTEGER NOT NULL DEFAULT 0, so it is honest from creation rather than nullable-until-someone-remembers. PAID PHASE-2 T4 2026-07-28: read and written by work/store.ts (threadHopCount/bumpThreadHopCount), enforced by the transport's gate against THREAD_HOP_CAP, which is now the tree's only declared value for the concept. MEASURED CORRECTION TO D2, recorded here because the debt was written from it: D2 says both caps fire; `git grep -n a2aIntentValidator HEAD` returns the definition and its own test file and NOTHING else, so the classifier's A2A_HOP_LIMIT=5 has no production caller and never rejected anything. SWEEP A still owns picking one value, and it now knows only one of them was ever live."
     },
     {
       "id": "work.provenance",
