@@ -39,55 +39,11 @@ vi.mock('../../config/platform.js', () => ({
 }));
 
 import { terminateLiveScheduleOnFallen, onTaskRunComplete } from '../runner.js';
+import { createWorkTable, seedTrackerTask, ms } from '../../work/__tests__/work-fixture.js';
 
 function applySchema(db: Database.Database): void {
+  createWorkTable(db);
   db.exec(`
-    CREATE TABLE legacy_tasks (
-      id TEXT PRIMARY KEY,
-      project_id TEXT,
-      title TEXT NOT NULL,
-      description TEXT,
-      status TEXT DEFAULT 'on_deck',
-      assigned_to TEXT,
-      created_by TEXT NOT NULL DEFAULT 'primary',
-      priority TEXT DEFAULT 'normal',
-      notes TEXT,
-      original_description TEXT,
-      completion_summary TEXT,
-      step_number INTEGER,
-      total_steps INTEGER,
-      phase INTEGER DEFAULT 1,
-      depends_on TEXT DEFAULT '[]',
-      scheduled_start TEXT,
-      repeat_interval INTEGER,
-      repeat_unit TEXT,
-      repeat_end_type TEXT,
-      repeat_end_value TEXT,
-      repeat_days_of_week TEXT,
-      anchor_time TEXT,
-      next_run_at TEXT,
-      run_count INTEGER DEFAULT 0,
-      is_paused INTEGER DEFAULT 0,
-      paused_until TEXT,
-      status_before_pause TEXT,
-      schedule_status TEXT DEFAULT 'unscheduled',
-      pause_validated INTEGER NOT NULL DEFAULT 0,
-      complete_validated INTEGER NOT NULL DEFAULT 0,
-      blocked_validated INTEGER NOT NULL DEFAULT 0,
-      revert_count INTEGER NOT NULL DEFAULT 0,
-      last_smell_flag TEXT,
-      awaiting_user_verdict INTEGER NOT NULL DEFAULT 0,
-      user_verdict_requested_at TEXT,
-      goal TEXT,
-      result TEXT,
-      evidence_json TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-      completed_at TEXT,
-      last_run_at TEXT,
-      a2a_thread_id TEXT,
-      kind TEXT
-    );
     CREATE TABLE task_runs (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL,
@@ -160,14 +116,6 @@ function applySchema(db: Database.Database): void {
       sent_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000),
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-    CREATE TABLE legacy_projects (
-      id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT,
-      level INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'active',
-      created_by TEXT NOT NULL, phase_count INTEGER NOT NULL DEFAULT 1,
-      current_phase INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at TEXT NOT NULL DEFAULT (datetime('now')), completed_at TEXT
-    );
   `);
 }
 
@@ -188,8 +136,14 @@ function seedLiveRecurring(db: Database.Database, overrides: Record<string, unkn
     kind: null,
     ...overrides,
   };
-  const keys = Object.keys(cols);
-  db.prepare(`INSERT INTO legacy_tasks (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`).run(...Object.values(cols));
+  const { status, created_by: createdBy, next_run_at: nextRunAt, run_count: runCount,
+    kind, assigned_to: assignedTo, project_id: projectId, ...rest } = cols as Record<string, any>;
+  seedTrackerTask(db, {
+    id, status: status as string, createdBy: createdBy as string,
+    agentId: (assignedTo as string) ?? 'primary', projectId: (projectId as string) ?? null,
+    next_run_at: ms(nextRunAt as string | null), attempts: runCount, task_kind: kind,
+    ...rest,
+  });
   return id;
 }
 
@@ -218,7 +172,7 @@ describe('terminateLiveScheduleOnFallen (RC-17.5)', () => {
     expect(out.terminated).toBe(true);
     expect(out.runsSkipped).toBe(1);
 
-    const task = db.prepare('SELECT schedule_status, is_paused, next_run_at FROM legacy_tasks WHERE id = ?').get(taskId) as { schedule_status: string; is_paused: number; next_run_at: string | null };
+    const task = db.prepare('SELECT schedule_status, is_paused, next_run_at FROM work WHERE id = ?').get(taskId) as { schedule_status: string; is_paused: number; next_run_at: string | null };
     expect(task.schedule_status).toBe('completed');
     expect(task.is_paused).toBe(1);
     expect(task.next_run_at).toBeNull();
@@ -263,13 +217,13 @@ describe('onTaskRunComplete (RC-17.2)', () => {
 
     const first = await onTaskRunComplete(taskId, 'complete', 'run 4 done');
     expect(first).toBe(true);
-    const afterFirst = db.prepare('SELECT run_count FROM legacy_tasks WHERE id = ?').get(taskId) as { run_count: number };
+    const afterFirst = db.prepare('SELECT attempts AS run_count FROM work WHERE id = ?').get(taskId) as { run_count: number };
     expect(afterFirst.run_count).toBe(4); // seeded 3, advanced once
 
     // No running run remains: a stale re-close must be a no-op, not another advance.
     const second = await onTaskRunComplete(taskId, 'complete', 'stale re-close');
     expect(second).toBe(false);
-    const afterSecond = db.prepare('SELECT run_count FROM legacy_tasks WHERE id = ?').get(taskId) as { run_count: number };
+    const afterSecond = db.prepare('SELECT attempts AS run_count FROM work WHERE id = ?').get(taskId) as { run_count: number };
     expect(afterSecond.run_count).toBe(4); // unchanged, no inflation
   });
 });

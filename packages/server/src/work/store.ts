@@ -22,7 +22,7 @@
 // WHAT IS DELIBERATELY NOT HERE YET, AND WHO OWES IT. `transition()`'s effect set is
 // complete for everything that exists in `work` TODAY. Three effects named in the lift
 // (research 19 s1c / MAP:4694) have nothing to act on until their own task moves their data
-// into the spine, and writing them now would mean writing them against `legacy_tasks` —
+// into the spine, and writing them now would mean writing them against the legacy tables —
 // which is the two-mechanism disease this phase deletes:
 //   * assignment-notice retirement  -> PHASE-2 T8 (the notices are tracker rows today)
 //   * live-schedule termination     -> PHASE-2 T9 (schedules are legacy columns today)
@@ -149,13 +149,19 @@ function deliveryExists(id: string): boolean {
 }
 
 /** Append a row to the work event log. The ONE place events are written, so "did anyone
- *  record this?" is not a question a reader has to ask per call site. */
+ *  record this?" is not a question a reader has to ask per call site.
+ *
+ *  PHASE-2 T8b: exported as `appendWorkEvent` for the rest of the `work/` directory. The
+ *  directory is the single-writer boundary now (T6 acceptance §3), and `work_events` keeps
+ *  ONE writing FUNCTION rather than spreading the INSERT across the modules that need it. */
 function appendEvent(workId: string, kind: string, actor: string, payload: unknown): number {
   const info = getDb().prepare(
     'INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, ?, ?, ?, ?)',
   ).run(workId, kind, payload === undefined ? null : JSON.stringify(payload), actor, now());
   return Number(info.lastInsertRowid);
 }
+
+export { appendEvent as appendWorkEvent };
 
 /**
  * The ONE writer of `work.state`.

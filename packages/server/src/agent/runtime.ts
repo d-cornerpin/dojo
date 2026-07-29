@@ -332,6 +332,7 @@ import {
 
 import { turnBoundary, forceA2ATurn, a2aTurnRetries, MAX_A2A_TURN_RETRIES, lastTurnWasA2A, drainHead, MAX_DRAIN_STUCK, currentTurnKind } from './turn-state.js';
 import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, quarantineWaitingConversation } from './v2/counterparty.js';
+import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';
 
 // Recovery-streak Map and cap moved to shared-state.ts (Phase 6 2026-05-04)
@@ -843,9 +844,9 @@ class AgentRuntime {
       // the ones that just stalled.
       interface StalledTaskRow { id: string; title: string; status: string }
       const stalledTasks = db.prepare(`
-        SELECT id, title, status FROM legacy_tasks
-        WHERE assigned_to = ? AND status IN ('in_progress', 'on_deck')
-        ORDER BY updated_at DESC
+        SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status FROM work w
+        WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state IN ('claimed', 'on_deck')
+        ORDER BY w.updated_at DESC
         LIMIT 5
       `).all(injuredAgentId) as StalledTaskRow[];
 

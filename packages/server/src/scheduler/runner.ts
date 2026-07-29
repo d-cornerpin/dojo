@@ -14,6 +14,15 @@
 import { v4 as uuidv4 } from 'uuid';
 import { retireEngineEventsForRun, retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { getDb } from '../db/connection.js';
+import {
+  taskScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
+  validatedExpr, awaitingUserVerdictExpr, statusToState, type TrackerStatus,
+} from '../work/tracker-view.js';
+import {
+  patchWork, setTrackerStatus, bumpWorkAttempts, upholdClaim, clearUserVerdict,
+  recordValidationEscalation, deleteTrackerRow, deliveryForTaskClose,
+  claimOccurrence, stopLiveSchedule,
+} from '../work/tracker-store.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getTask } from '../tracker/schema.js';
@@ -105,13 +114,18 @@ function alertMissedRuns(taskRow: Record<string, unknown>, missedSlots: number):
   // is never asked to validate an engine missed-runs pause; the PM is the one
   // that sees and adjudicates it. The PM sweep's stableId dedup keeps this from
   // pathological re-poking.
-  const paused = db.prepare(`
-    UPDATE legacy_tasks
-    SET is_paused = 1, schedule_status = 'paused', status = 'paused',
-        missed_runs_paused_at = datetime('now'),
-        updated_at = datetime('now')
-    WHERE id = ? AND is_paused = 0
-  `).run(taskId);
+  const alreadyPaused = db.prepare('SELECT is_paused FROM work WHERE id = ?')
+    .get(taskId) as { is_paused: number } | undefined;
+  const pausedRes = alreadyPaused && alreadyPaused.is_paused === 0
+    ? setTrackerStatus(taskId, 'paused', {
+        by: 'scheduler', actorId: 'scheduler',
+        reason: 'runs were missed while the platform was down or the task was stuck',
+      })
+    : null;
+  const paused = { changes: pausedRes && pausedRes.kind === 'applied' ? 1 : 0 };
+  if (paused.changes === 1) {
+    patchWork(taskId, { is_paused: 1, schedule_status: 'paused', missed_runs_paused_at: Date.now() });
+  }
   if (paused.changes === 0) {
     logger.info('Scheduler: missed-runs pause already set elsewhere, skipping duplicate alert', { taskId });
     return;
@@ -164,7 +178,7 @@ export function pickAvailableAgentFromGroup(groupId: string): string | null {
     WHERE group_id = ? AND status IN ('idle', 'working') AND classification != 'sensei'
     ORDER BY
       CASE status WHEN 'idle' THEN 0 ELSE 1 END,
-      (SELECT COUNT(*) FROM legacy_tasks WHERE assigned_to = agents.id AND status = 'in_progress') ASC
+      (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.agent_id = agents.id AND w.state = 'claimed') ASC
   `).all(groupId) as Array<{ id: string }>;
 
   return agents.length > 0 ? agents[0].id : null;
@@ -245,27 +259,33 @@ async function sweepStaleUserVerdictRequests(): Promise<void> {
   const db = getDb();
   try {
     const stale = db.prepare(`
-      SELECT id, title, assigned_to, status as current_status, user_verdict_requested_at
-      FROM legacy_tasks
-      WHERE awaiting_user_verdict = 1
-        AND user_verdict_requested_at IS NOT NULL
-        AND datetime(user_verdict_requested_at) < datetime('now', '-${STALE_REQUEST_HOURS} hours')
+      SELECT w.id AS id, w.title AS title, w.agent_id AS assigned_to,
+             ${STATE_TO_STATUS_SQL('w.state')} as current_status,
+             ${msToText(`(SELECT MAX(e.created_at) FROM work_events e WHERE e.work_id = w.id AND e.kind = 'user_verdict_requested')`)} AS user_verdict_requested_at
+      FROM work w
+      WHERE ${taskScope('w')} AND ${awaitingUserVerdictExpr('w')} = 1
+        AND (SELECT MAX(e.created_at) FROM work_events e WHERE e.work_id = w.id AND e.kind = 'user_verdict_requested') < ?
       LIMIT 50
-    `).all() as Array<{
+    `).all(Date.now() - STALE_REQUEST_HOURS * 3600_000) as Array<{
       id: string; title: string; assigned_to: string | null;
       current_status: string; user_verdict_requested_at: string;
     }>;
     if (stale.length === 0) return;
 
-    const dropStmt = db.prepare(`
-      UPDATE legacy_tasks
-      SET status = 'blocked',
-          awaiting_user_verdict = 0,
-          user_verdict_requested_at = NULL,
-          blocked_validated = 1,
-          updated_at = datetime('now')
-      WHERE id = ?
-    `);
+    const dropStmt = {
+      run: (id: string) => {
+        const r = setTrackerStatus(id, 'blocked', {
+          by: 'scheduler', actorId: 'scheduler',
+          reason: `the owner's verdict was never given within ${STALE_REQUEST_HOURS}h`,
+        });
+        if (r.kind === 'applied' || r.kind === 'noop') {
+          clearUserVerdict(id, 'scheduler', 'verdict request timed out');
+          // The scheduler's own timeout IS the validation of this block — the same
+          // reasoning the `blocked_validated = 1` assignment carried.
+          upholdClaim(id, 'blocked', 'pm', 'scheduler', 'verdict request timed out; block recorded');
+        }
+      },
+    };
     const { writeTaskLog } = await import('../tracker/task-log.js');
     const { broadcast: bcast } = await import('../gateway/ws.js');
     let swept = 0;
@@ -330,14 +350,16 @@ async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
     const serviceParams = serviceIds.length > 0 ? serviceIds : ['__none__'];
     const servicePlaceholders = serviceParams.map(() => '?').join(',');
     const stale = db.prepare(`
-      SELECT id, title, status, assigned_to, datetime(updated_at) as updated
-      FROM legacy_tasks
-      WHERE validation_escalated_at IS NULL
-        AND awaiting_user_verdict = 0
-        AND COALESCE(assigned_to, '') NOT IN (${servicePlaceholders})
-        AND COALESCE(created_by, '') NOT IN (${servicePlaceholders})
+      SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
+             w.agent_id AS assigned_to, ${msToText('w.updated_at')} as updated
+      FROM work w
+      WHERE ${taskScope('w')}
+        AND NOT EXISTS (SELECT 1 FROM work_events e WHERE e.work_id = w.id AND e.kind = 'validation_escalated')
+        AND ${awaitingUserVerdictExpr('w')} = 0
+        AND COALESCE(w.agent_id, '') NOT IN (${servicePlaceholders})
+        AND COALESCE(w.requester_id, '') NOT IN (${servicePlaceholders})
         AND (
-          (status = 'complete' AND complete_validated = 0)
+          (w.state = 'done' AND ${validatedExpr('w', 'done')} = 0)
           -- An active missed_runs_paused_at means the ENGINE paused this task for
           -- missed runs (alertMissedRuns), not the agent. Demolition Phase 1
           -- stopped alertMissedRuns pre-blessing it (it now lands
@@ -349,20 +371,17 @@ async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
           -- resolution via D12 (autoResolveStaleMissedRunPauses, keyed on
           -- missed_runs_paused_at) within 10 minutes. Genuine agent pauses carry
           -- no missed_runs_paused_at, so they still escalate to the owner here.
-          OR (status = 'paused' AND pause_validated = 0 AND missed_runs_paused_at IS NULL)
-          OR (status = 'blocked' AND blocked_validated = 0)
+          OR (w.state = 'paused' AND ${validatedExpr('w', 'paused')} = 0 AND w.missed_runs_paused_at IS NULL)
+          OR (w.state = 'blocked' AND ${validatedExpr('w', 'blocked')} = 0)
         )
-        AND datetime(updated_at) < datetime('now', '-${VALIDATION_ESCALATION_MIN} minutes')
+        AND w.updated_at < ?
       LIMIT 20
-    `).all(...serviceParams, ...serviceParams) as Array<{ id: string; title: string; status: string; assigned_to: string | null; updated: string }>;
+    `).all(...serviceParams, ...serviceParams, Date.now() - VALIDATION_ESCALATION_MIN * 60_000) as Array<{ id: string; title: string; status: string; assigned_to: string | null; updated: string }>;
     if (stale.length === 0) return;
 
     const { writeTaskLog } = await import('../tracker/task-log.js');
     const { broadcast } = await import('../gateway/ws.js');
-    const stamp = db.prepare(`
-      UPDATE legacy_tasks SET validation_escalated_at = datetime('now'), validation_thread_id = ?, updated_at = datetime('now')
-      WHERE id = ?
-    `);
+    const stamp = { run: (threadId: string, id: string) => recordValidationEscalation(id, 'scheduler', threadId) };
     const primaryId = getPrimaryAgentId();
     const { v4: uuidv4 } = await import('uuid');
 
@@ -465,12 +484,12 @@ async function autoResolveStaleMissedRunPauses(): Promise<void> {
   const db = getDb();
   try {
     const stale = db.prepare(`
-      SELECT * FROM legacy_tasks
-      WHERE is_paused = 1
-        AND missed_runs_paused_at IS NOT NULL
-        AND datetime(missed_runs_paused_at) <= datetime('now', '-${MISSED_RUNS_AUTO_RESOLVE_MINUTES} minutes')
+      SELECT ${scheduleRowColumns('w')} FROM work w
+      WHERE ${taskScope('w')} AND w.is_paused = 1
+        AND w.missed_runs_paused_at IS NOT NULL
+        AND w.missed_runs_paused_at <= ?
       LIMIT 25
-    `).all() as Array<Record<string, unknown>>;
+    `).all(Date.now() - MISSED_RUNS_AUTO_RESOLVE_MINUTES * 60_000) as Array<Record<string, unknown>>;
     if (stale.length === 0) return;
 
     const { writeTaskLog } = await import('../tracker/task-log.js');
@@ -506,13 +525,18 @@ async function autoResolveStaleMissedRunPauses(): Promise<void> {
         // Guarded release: the model tool clears missed_runs_paused_at when
         // it resolves first, so .changes === 0 means the model (or another
         // process) won the race and this fallback must not touch the task.
-        const released = db.prepare(`
-          UPDATE legacy_tasks
-          SET is_paused = 0, schedule_status = 'waiting', status = 'on_deck',
-              next_run_at = ?, missed_runs_paused_at = NULL, updated_at = datetime('now')
-          WHERE id = ? AND is_paused = 1 AND missed_runs_paused_at IS NOT NULL
-        `).run(nextRun, taskId);
-        if (released.changes !== 1) continue;
+        const guard = db.prepare('SELECT is_paused, missed_runs_paused_at FROM work WHERE id = ?')
+          .get(taskId) as { is_paused: number; missed_runs_paused_at: number | null } | undefined;
+        if (!guard || guard.is_paused !== 1 || guard.missed_runs_paused_at == null) continue;
+        const releasedRes = setTrackerStatus(taskId, 'on_deck', {
+          by: 'scheduler', actorId: 'scheduler', expectedState: 'paused',
+          reason: `missed-runs pause unresolved for ${MISSED_RUNS_AUTO_RESOLVE_MINUTES} minutes; skipped to the next anchor`,
+        });
+        if (releasedRes.kind !== 'applied') continue;
+        patchWork(taskId, {
+          is_paused: 0, schedule_status: 'waiting',
+          next_run_at: tsToMs(nextRun), missed_runs_paused_at: null,
+        });
         writeTaskLog({
           taskId,
           fromEntity: 'engine',
@@ -535,12 +559,10 @@ async function autoResolveStaleMissedRunPauses(): Promise<void> {
         // uncomputable). Never complete or delete a task from this path:
         // disarm the fallback and leave the task paused for a human or
         // agent decision.
-        const disarmed = db.prepare(`
-          UPDATE legacy_tasks
-          SET missed_runs_paused_at = NULL, updated_at = datetime('now')
-          WHERE id = ? AND is_paused = 1 AND missed_runs_paused_at IS NOT NULL
-        `).run(taskId);
-        if (disarmed.changes !== 1) continue;
+        const dGuard = db.prepare('SELECT is_paused, missed_runs_paused_at FROM work WHERE id = ?')
+          .get(taskId) as { is_paused: number; missed_runs_paused_at: number | null } | undefined;
+        if (!dGuard || dGuard.is_paused !== 1 || dGuard.missed_runs_paused_at == null) continue;
+        patchWork(taskId, { missed_runs_paused_at: null });
         writeTaskLog({
           taskId,
           fromEntity: 'engine',
@@ -565,6 +587,9 @@ async function autoResolveStaleMissedRunPauses(): Promise<void> {
 export async function checkScheduledTasks(): Promise<void> {
   const db = getDb();
   const now = new Date().toISOString();
+  // The spine stores instants as epoch-ms; the recurrence maths still speaks ISO. Both forms
+  // of the SAME instant, taken once, so a tick cannot compare two different "nows".
+  const nowMs = Date.parse(now);
 
   // ── Cleanup ──
   cleanupOrphanedRuns();
@@ -581,12 +606,12 @@ export async function checkScheduledTasks(): Promise<void> {
   await sweepUnvalidatedTasksForUserEscalation();
 
   const dueTasks = db.prepare(`
-    SELECT * FROM legacy_tasks
-    WHERE next_run_at <= ?
-      AND schedule_status = 'waiting'
-      AND is_paused = 0
-    ORDER BY next_run_at ASC
-  `).all(now) as Array<Record<string, unknown>>;
+    SELECT ${scheduleRowColumns('w')} FROM work w
+    WHERE ${taskScope('w')} AND w.next_run_at <= ?
+      AND w.schedule_status = 'waiting'
+      AND w.is_paused = 0
+    ORDER BY w.next_run_at ASC
+  `).all(nowMs) as Array<Record<string, unknown>>;
 
   if (dueTasks.length === 0) return;
 
@@ -631,7 +656,7 @@ export async function checkScheduledTasks(): Promise<void> {
         const deps = JSON.parse(dependsOnRaw) as string[];
         if (deps.length > 0) {
           const incomplete = deps.filter(depId => {
-            const dep = db.prepare('SELECT status FROM legacy_tasks WHERE id = ?').get(depId) as { status: string } | undefined;
+            const dep = db.prepare(`SELECT ${STATE_TO_STATUS_SQL('state')} AS status FROM work WHERE id = ?`).get(depId) as { status: string } | undefined;
             return !dep || dep.status !== 'complete';
           });
           if (incomplete.length > 0) {
@@ -642,8 +667,7 @@ export async function checkScheduledTasks(): Promise<void> {
             // in the ISO `now` this scheduler string-compares against, so a
             // same-date space value reads as already due and the defer would
             // collapse to "due again next tick". ISO keeps the defer honest.
-            db.prepare('UPDATE legacy_tasks SET next_run_at = ? WHERE id = ?')
-              .run(new Date(Date.now() + 30_000).toISOString(), taskId);
+            patchWork(taskId, { next_run_at: Date.now() + 30_000 }, { touch: false });
             continue;
           }
         }
@@ -676,13 +700,17 @@ export async function checkScheduledTasks(): Promise<void> {
       repeat_days_of_week: taskRow.repeat_days_of_week as string | null,
       anchor_time: taskRow.anchor_time as string | null,
     });
-    const claim = db.prepare(`
-      UPDATE legacy_tasks
-      SET schedule_status = 'running', status = 'in_progress',
-          last_run_at = ?, next_run_at = ?, updated_at = datetime('now')
-      WHERE id = ? AND schedule_status = 'waiting' AND is_paused = 0
-        AND next_run_at = ? AND next_run_at <= ?
-    `).run(now, nextAtFire, taskId, claimedOccurrence, now);
+    // D21's atomic occurrence claim, preserved exactly: the CAS is still one UPDATE keyed
+    // on the exact occurrence this tick read, and `.changes === 1` is still the claim token.
+    // Only the state assignment moved out of it — that is `transition()`'s — and it runs
+    // AFTER the claim is won, so two processes still cannot both fire an occurrence.
+    const claim = { changes: claimOccurrence(taskId, tsToMs(claimedOccurrence), nowMs, tsToMs(nextAtFire)) ? 1 : 0 };
+    if (claim.changes === 1) {
+      setTrackerStatus(taskId, 'in_progress', {
+        by: 'scheduler', actorId: 'scheduler',
+        reason: `scheduled occurrence ${claimedOccurrence} fired`,
+      });
+    }
     if (claim.changes !== 1) {
       logger.info('Scheduler: occurrence already claimed elsewhere, skipping', { taskId, occurrence: claimedOccurrence });
       continue;
@@ -715,12 +743,19 @@ export async function checkScheduledTasks(): Promise<void> {
         // D21: release the claim taken above and restore the occurrence and
         // prior last_run_at, so the task retries on the next tick exactly as
         // it did before the claim existed.
-        db.prepare(`
-          UPDATE legacy_tasks
-          SET schedule_status = 'waiting', status = 'on_deck',
-              next_run_at = ?, last_run_at = ?, updated_at = datetime('now')
-          WHERE id = ? AND schedule_status = 'running'
-        `).run(claimedOccurrence, taskRow.last_run_at as string | null, taskId);
+        const stillRunning = db.prepare('SELECT schedule_status FROM work WHERE id = ?')
+          .get(taskId) as { schedule_status: string } | undefined;
+        if (stillRunning?.schedule_status === 'running') {
+          setTrackerStatus(taskId, 'on_deck', {
+            by: 'scheduler', actorId: 'scheduler',
+            reason: 'no agent was available for this occurrence; the claim is released',
+          });
+          patchWork(taskId, {
+            schedule_status: 'waiting',
+            next_run_at: tsToMs(claimedOccurrence),
+            last_run_at: tsToMs(taskRow.last_run_at as string | null),
+          });
+        }
         continue;
       }
     }
@@ -859,10 +894,10 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   retireEngineEventsForRun(runId);
 
   // Update task run count
-  db.prepare('UPDATE legacy_tasks SET run_count = run_count + 1, updated_at = datetime(\'now\') WHERE id = ?').run(taskId);
+  bumpWorkAttempts(taskId);
 
   // Get updated task
-  const task = db.prepare('SELECT * FROM legacy_tasks WHERE id = ?').get(taskId) as Record<string, unknown>;
+  const task = db.prepare(`SELECT ${scheduleRowColumns('w')} FROM work w WHERE w.id = ?`).get(taskId) as Record<string, unknown>;
   const scheduledTask: ScheduledTask = {
     id: task.id as string,
     scheduled_start: task.scheduled_start as string | null,
@@ -942,14 +977,16 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
 
   if (nextRun) {
     // Recurring: set next run, go back to waiting, reset task status to on_deck
-    db.prepare(`
-      UPDATE legacy_tasks SET next_run_at = ?, schedule_status = 'waiting', status = 'on_deck', last_run_at = ?, updated_at = datetime('now') WHERE id = ?
-    `).run(nextRun, now, taskId);
+    setTrackerStatus(taskId, 'on_deck', {
+      by: 'scheduler', actorId: 'scheduler', reason: 'run finished; waiting for the next occurrence',
+    });
+    patchWork(taskId, { next_run_at: tsToMs(nextRun), schedule_status: 'waiting', last_run_at: tsToMs(now) });
   } else if (failedFinalRun) {
     // D8: final run failed, keep the failure VISIBLE (see block comment above).
-    db.prepare(`
-      UPDATE legacy_tasks SET schedule_status = 'completed', status = 'fallen', completed_at = datetime('now'), last_run_at = ?, updated_at = datetime('now') WHERE id = ?
-    `).run(now, taskId);
+    setTrackerStatus(taskId, 'fallen', {
+      by: 'scheduler', actorId: 'scheduler', reason: 'the final scheduled run failed',
+    });
+    patchWork(taskId, { schedule_status: 'completed', last_run_at: tsToMs(now) });
       retireEngineEventsForTask(taskId, 'task_fallen');
     try {
       const title = String(task.title ?? 'untitled task');
@@ -1014,9 +1051,16 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
     logger.warn('Scheduler: final run failed; task marked fallen (not complete) and owner notified', { taskId, runId, status });
   } else {
     // No more runs: mark everything as completed
-    db.prepare(`
-      UPDATE legacy_tasks SET schedule_status = 'completed', status = 'complete', last_run_at = ?, updated_at = datetime('now') WHERE id = ?
-    `).run(now, taskId);
+    const finalDelivery = deliveryForTaskClose(taskId);
+    const finalRes = setTrackerStatus(taskId, 'complete', {
+      by: finalDelivery ? 'scheduler' : 'agent', actorId: 'scheduler',
+      resultDeliveryId: finalDelivery,
+      reason: 'the schedule ran out of occurrences and the last run succeeded',
+    });
+    if (finalRes.kind !== 'applied' && finalRes.kind !== 'noop') {
+      logger.warn('Scheduler: final-run close refused by the work gate', { taskId, result: finalRes });
+    }
+    patchWork(taskId, { schedule_status: 'completed', last_run_at: tsToMs(now) });
   }
 
   // Broadcast the run completion event
@@ -1055,7 +1099,7 @@ export function postSkippedReminderHeadsUp(taskId: string, reason: string): void
   try {
     const db = getDb();
     const row = db.prepare(
-      'SELECT title, kind, description, scheduled_start, anchor_time FROM legacy_tasks WHERE id = ?',
+      `SELECT title, task_kind AS kind, description, ${msToText('scheduled_start')} AS scheduled_start, anchor_local AS anchor_time FROM work WHERE id = ?`,
     ).get(taskId) as {
       title: string; kind: string | null; description: string | null;
       scheduled_start: string | null; anchor_time: string | null;
@@ -1103,7 +1147,7 @@ export function terminateLiveScheduleOnFallen(
 ): { terminated: boolean; runsSkipped: number; isReminder: boolean } {
   const db = getDb();
   const row = db.prepare(
-    'SELECT title, kind, schedule_status FROM legacy_tasks WHERE id = ?',
+    'SELECT title, task_kind AS kind, schedule_status FROM work WHERE id = ?',
   ).get(taskId) as { title: string; kind: string | null; schedule_status: string } | undefined;
   if (!row) return { terminated: false, runsSkipped: 0, isReminder: false };
   const isReminder = row.kind === 'reminder';
@@ -1113,11 +1157,7 @@ export function terminateLiveScheduleOnFallen(
   const scheduleIsLive = row.schedule_status === 'waiting' || row.schedule_status === 'running';
   if (!scheduleIsLive) return { terminated: false, runsSkipped: 0, isReminder };
 
-  const stopped = db.prepare(`
-    UPDATE legacy_tasks
-    SET schedule_status = 'completed', is_paused = 1, next_run_at = NULL, updated_at = datetime('now')
-    WHERE id = ? AND schedule_status IN ('waiting', 'running')
-  `).run(taskId);
+  const stopped = { changes: stopLiveSchedule(taskId) ? 1 : 0 };
   if (stopped.changes !== 1) {
     // Raced with another terminator; leave the winner's outcome intact.
     return { terminated: false, runsSkipped: 0, isReminder };
@@ -1231,7 +1271,7 @@ function cleanupStaleRuns(): void {
   const orphanRuns = db.prepare(`
     SELECT tr.id AS run_id, tr.task_id, tr.run_number
     FROM task_runs tr
-    LEFT JOIN legacy_tasks t ON t.id = tr.task_id
+    LEFT JOIN work t ON t.id = tr.task_id
     WHERE tr.status IN ('pending', 'running')
       AND (t.id IS NULL OR t.schedule_status != 'running')
       AND COALESCE(tr.started_at, tr.created_at) < datetime('now', '-5 minutes')
@@ -1270,29 +1310,29 @@ function cleanupStaleRuns(): void {
   // one type and reproduces the pre-migration answer exactly (44 = 44 in the same rehearsal).
   // If `tasks.updated_at` ever converts too, this wrap comes off and both sides go numeric.
   const staleTasks = db.prepare(`
-    SELECT t.id, t.title, t.assigned_to
-    FROM legacy_tasks t
-    WHERE t.schedule_status = 'running'
-      AND t.status != 'paused'
-      AND t.assigned_to IS NOT NULL
+    SELECT t.id AS id, t.title AS title, t.agent_id AS assigned_to
+    FROM work t
+    WHERE ${taskScope('t')} AND t.schedule_status = 'running'
+      AND t.state != 'paused'
+      AND t.agent_id IS NOT NULL
       AND MIN(
         COALESCE(
-          (SELECT datetime(MAX(m.created_at)/1000, 'unixepoch') FROM messages m WHERE m.agent_id = t.assigned_to),
+          (SELECT MAX(m.created_at) FROM messages m WHERE m.agent_id = t.agent_id),
           t.updated_at
         ),
         t.updated_at
-      ) < datetime('now', '-' || ? || ' minutes')
-  `).all(AGENT_IDLE_THRESHOLD_MINUTES) as Array<{ id: string; title: string; assigned_to: string }>;
+      ) < ?
+  `).all(Date.now() - AGENT_IDLE_THRESHOLD_MINUTES * 60_000) as Array<{ id: string; title: string; assigned_to: string }>;
 
   // 2. Also catch running tasks with no assigned agent at all
   const unassigned = db.prepare(`
-    SELECT t.id, t.title
-    FROM legacy_tasks t
-    WHERE t.schedule_status = 'running'
-      AND t.status != 'paused'
-      AND t.assigned_to IS NULL
-      AND t.last_run_at < datetime('now', '-5 minutes')
-  `).all() as Array<{ id: string; title: string }>;
+    SELECT t.id AS id, t.title AS title
+    FROM work t
+    WHERE ${taskScope('t')} AND t.schedule_status = 'running'
+      AND t.state != 'paused'
+      AND t.agent_id IS NULL
+      AND t.last_run_at < ?
+  `).all(Date.now() - 5 * 60_000) as Array<{ id: string; title: string }>;
 
   // 3. Force-recovery for recurring tasks that are status='in_progress'
   // but schedule_status is NOT 'running' (out-of-sync state from a previous
@@ -1302,14 +1342,14 @@ function cleanupStaleRuns(): void {
   // they sit stuck forever. v2.3.8: catch them here and force-reset
   // directly via the helper below, bypassing onTaskRunComplete.
   const stuckOutOfSync = db.prepare(`
-    SELECT t.id, t.title
-    FROM legacy_tasks t
-    WHERE t.status = 'in_progress'
+    SELECT t.id AS id, t.title AS title
+    FROM work t
+    WHERE ${taskScope('t')} AND t.state = 'claimed'
       AND t.repeat_interval IS NOT NULL
       AND (t.schedule_status IS NULL OR t.schedule_status != 'running')
       AND t.is_paused = 0
-      AND t.updated_at < datetime('now', '-' || ? || ' minutes')
-  `).all(HARD_STUCK_THRESHOLD_MINUTES) as Array<{ id: string; title: string }>;
+      AND t.updated_at < ?
+  `).all(Date.now() - HARD_STUCK_THRESHOLD_MINUTES * 60_000) as Array<{ id: string; title: string }>;
 
   // 4. Recurring task with full repeat config but next_run_at not
   //    populated. Pre-2.9.x the create/edit paths could write a partial
@@ -1321,13 +1361,13 @@ function cleanupStaleRuns(): void {
   //    Find them and recompute, then either restore the schedule or
   //    mark the task complete if there are no more runs.
   const missingNextRun = db.prepare(`
-    SELECT t.id, t.title
-    FROM legacy_tasks t
-    WHERE t.repeat_interval IS NOT NULL
+    SELECT t.id AS id, t.title AS title
+    FROM work t
+    WHERE ${taskScope('t')} AND t.repeat_interval IS NOT NULL
       AND t.repeat_unit IS NOT NULL
       AND t.next_run_at IS NULL
       AND t.is_paused = 0
-      AND t.status NOT IN ('complete', 'fallen', 'paused')
+      AND t.state NOT IN ('done', 'failed', 'paused')
       AND t.schedule_status != 'completed'
   `).all() as Array<{ id: string; title: string }>;
 
@@ -1409,7 +1449,7 @@ function cleanupStaleRuns(): void {
  */
 function recoverMissingNextRun(taskId: string): void {
   const db = getDb();
-  const task = db.prepare('SELECT * FROM legacy_tasks WHERE id = ?').get(taskId) as Record<string, unknown> | undefined;
+  const task = db.prepare(`SELECT ${scheduleRowColumns('w')} FROM work w WHERE w.id = ?`).get(taskId) as Record<string, unknown> | undefined;
   if (!task) return;
   if (task.next_run_at) return; // raced with another recovery path
   if (task.is_paused) return;
@@ -1432,25 +1472,27 @@ function recoverMissingNextRun(taskId: string): void {
 
   const nextRun = calculateNextRun(scheduledTask);
   if (nextRun) {
-    db.prepare(`
-      UPDATE legacy_tasks
-      SET next_run_at = ?,
-          schedule_status = 'waiting',
-          status = CASE WHEN status IN ('on_deck', 'in_progress') THEN status ELSE 'on_deck' END,
-          updated_at = datetime('now')
-      WHERE id = ?
-    `).run(nextRun, taskId);
+    patchWork(taskId, { next_run_at: tsToMs(nextRun), schedule_status: 'waiting' });
+    if (task.status !== 'on_deck' && task.status !== 'in_progress') {
+      setTrackerStatus(taskId, 'on_deck', {
+        by: 'scheduler', actorId: 'scheduler',
+        reason: 'recovered a recurring task whose next run was missing',
+      });
+    }
     logger.warn('Scheduler: recovered recurring task with missing next_run_at', {
       taskId, title: task.title, nextRun,
     });
   } else {
-    db.prepare(`
-      UPDATE legacy_tasks
-      SET schedule_status = 'completed',
-          status = 'complete',
-          updated_at = datetime('now')
-      WHERE id = ?
-    `).run(taskId);
+    const recDelivery = deliveryForTaskClose(taskId);
+    const recRes = setTrackerStatus(taskId, 'complete', {
+      by: recDelivery ? 'scheduler' : 'agent', actorId: 'scheduler',
+      resultDeliveryId: recDelivery,
+      reason: 'a recurring task with no recoverable next run is finished',
+    });
+    if (recRes.kind !== 'applied' && recRes.kind !== 'noop') {
+      logger.warn('Scheduler: recovery close refused by the work gate', { taskId, result: recRes });
+    }
+    patchWork(taskId, { schedule_status: 'completed' });
     logger.warn('Scheduler: recurring task had no recoverable next run, marked complete', {
       taskId, title: task.title,
     });
@@ -1480,7 +1522,7 @@ function recoverMissingNextRun(taskId: string): void {
 
 export function forceResetStuckRecurringTask(taskId: string): void {
   const db = getDb();
-  const task = db.prepare('SELECT * FROM legacy_tasks WHERE id = ?').get(taskId) as Record<string, unknown> | undefined;
+  const task = db.prepare(`SELECT ${scheduleRowColumns('w')} FROM work w WHERE w.id = ?`).get(taskId) as Record<string, unknown> | undefined;
   if (!task) return;
   if (task.status !== 'in_progress') return;
   if (!task.repeat_interval) return;
@@ -1503,23 +1545,23 @@ export function forceResetStuckRecurringTask(taskId: string): void {
 
   const nextRun = calculateNextRun(scheduledTask);
   if (nextRun) {
-    db.prepare(`
-      UPDATE legacy_tasks
-      SET status = 'on_deck',
-          schedule_status = 'waiting',
-          next_run_at = ?,
-          updated_at = datetime('now')
-      WHERE id = ?
-    `).run(nextRun, taskId);
+    setTrackerStatus(taskId, 'on_deck', {
+      by: 'scheduler', actorId: 'scheduler',
+      reason: 'this run is failed; the schedule rejoins at its next occurrence',
+    });
+    patchWork(taskId, { schedule_status: 'waiting', next_run_at: tsToMs(nextRun) });
     logger.warn('Scheduler: force-reset stuck recurring task to on_deck/waiting', { taskId, title: task.title, nextRun });
   } else {
-    db.prepare(`
-      UPDATE legacy_tasks
-      SET status = 'complete',
-          schedule_status = 'completed',
-          updated_at = datetime('now')
-      WHERE id = ?
-    `).run(taskId);
+    const frDelivery = deliveryForTaskClose(taskId);
+    const frRes = setTrackerStatus(taskId, 'complete', {
+      by: frDelivery ? 'scheduler' : 'agent', actorId: 'scheduler',
+      resultDeliveryId: frDelivery,
+      reason: 'stuck recurring task has no future runs left',
+    });
+    if (frRes.kind !== 'applied' && frRes.kind !== 'noop') {
+      logger.warn('Scheduler: force-reset close refused by the work gate', { taskId, result: frRes });
+    }
+    patchWork(taskId, { schedule_status: 'completed' });
     logger.warn('Scheduler: force-reset stuck recurring task — no future runs, marked complete', { taskId, title: task.title });
   }
 
@@ -1547,20 +1589,20 @@ function resumeExpiredPauses(): void {
   const now = new Date().toISOString();
 
   const expired = db.prepare(`
-    SELECT id, title, status_before_pause, paused_until
-    FROM legacy_tasks
-    WHERE status = 'paused'
-      AND paused_until IS NOT NULL
-      AND paused_until <= ?
-  `).all(now) as Array<{ id: string; title: string; status_before_pause: string | null; paused_until: string }>;
+    SELECT w.id AS id, w.title AS title, w.status_before_pause AS status_before_pause,
+           ${msToText('w.paused_until')} AS paused_until
+    FROM work w
+    WHERE ${taskScope('w')} AND w.state = 'paused'
+      AND w.paused_until IS NOT NULL
+      AND w.paused_until <= ?
+  `).all(Date.now()) as Array<{ id: string; title: string; status_before_pause: string | null; paused_until: string }>;
 
   for (const task of expired) {
-    const restoreStatus = task.status_before_pause ?? 'on_deck';
-    db.prepare(`
-      UPDATE legacy_tasks
-      SET status = ?, is_paused = 0, paused_until = NULL, status_before_pause = NULL, updated_at = datetime('now')
-      WHERE id = ?
-    `).run(restoreStatus, task.id);
+    const restoreStatus = (task.status_before_pause ?? 'on_deck') as TrackerStatus;
+    setTrackerStatus(task.id, restoreStatus, {
+      by: 'scheduler', actorId: 'scheduler',
+      reason: `the pause expired at ${task.paused_until}`,
+    });
 
     logger.info('Auto-resumed paused task (pause expired)', {
       taskId: task.id,
@@ -1589,11 +1631,11 @@ function pruneTerminalTasks(): void {
 
   for (const status of ['complete', 'blocked', 'fallen']) {
     const overflow = db.prepare(`
-      SELECT id FROM legacy_tasks
-      WHERE status = ?
-      ORDER BY updated_at DESC
+      SELECT w.id AS id FROM work w
+      WHERE ${taskScope('w')} AND w.state = ?
+      ORDER BY w.updated_at DESC
       LIMIT -1 OFFSET ?
-    `).all(status, TERMINAL_TASK_CAP) as Array<{ id: string }>;
+    `).all(statusToState(status), TERMINAL_TASK_CAP) as Array<{ id: string }>;
 
     if (overflow.length === 0) continue;
 
@@ -1605,8 +1647,8 @@ function pruneTerminalTasks(): void {
     // Delete related records
     db.prepare(`DELETE FROM poke_log WHERE task_id IN (${placeholders})`).run(...ids);
     db.prepare(`DELETE FROM task_runs WHERE task_id IN (${placeholders})`).run(...ids);
-    // Delete the tasks
-    db.prepare(`DELETE FROM legacy_tasks WHERE id IN (${placeholders})`).run(...ids);
+    // Delete the tasks (children, events and adjudications go with them)
+    for (const id of ids) deleteTrackerRow(id);
 
     logger.info(`Scheduler: pruned ${ids.length} old ${status} task(s)`, { status, pruned: ids.length });
   }

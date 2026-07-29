@@ -67,6 +67,7 @@ import { getWaitingHumanConversations } from '../counterparty.js';
 import { getActiveUserDirective } from '../../../memory/directive.js';
 import { abandonUnservableAsks, openAsk, transition } from '../../../work/store.js';
 import { insertMessage } from '../../../memory/message-store.js';
+import { seedTrackerTask } from '../../../work/__tests__/work-fixture.js';
 
 const AGENT = 'kevin';
 const CONV = 'conv-1';
@@ -118,17 +119,17 @@ function seedDelivery(id: string, over: Record<string, unknown> = {}): string {
 /** A legacy tracker task in the drive state — where a task's live state STILL lives until
  *  PHASE-2 T8 moves the tracker onto the spine. */
 function seedLegacyTask(id: string, over: Record<string, unknown> = {}): void {
-  const row = {
-    id, project_id: null, title: 'summarise the project', description: null,
-    status: 'in_progress', assigned_to: AGENT, created_by: 'owner', priority: 'normal',
+  const { status, assigned_to: assignedTo, created_by: createdBy, project_id: projectId,
+    ...rest } = over as Record<string, any>;
+  seedTrackerTask(db(), {
+    id, title: 'summarise the project', priority: 'normal',
+    status: (status as string) ?? 'in_progress',
+    agentId: (assignedTo as string) ?? AGENT, createdBy: (createdBy as string) ?? 'owner',
+    projectId: (projectId as string) ?? null,
     is_paused: 0, repeat_interval: null, source_message_id: null, origin_turn: null,
-    ...over,
-  };
-  const cols = Object.keys(row);
-  db().prepare(
-    `INSERT INTO legacy_tasks (${cols.join(', ')}, created_at, updated_at)
-     VALUES (${cols.map((c) => '@' + c).join(', ')}, datetime('now'), datetime('now'))`,
-  ).run(row);
+    opened_at: Date.now(), updated_at: Date.now(),
+    ...rest,
+  });
 }
 
 function seedInbound(id: string, over: Record<string, unknown> = {}): void {
@@ -428,7 +429,7 @@ describe('a turn that SPOKE to the owner and closed nothing hands the ball over 
 
     const r = pauseDriveWorkWaitingOnOwner(AGENT, 6);
     expect(r.paused).toBe(1);
-    const row = db().prepare('SELECT status, status_before_pause FROM legacy_tasks WHERE id = ?').get('t-1') as
+    const row = db().prepare("SELECT CASE state WHEN 'claimed' THEN 'in_progress' WHEN 'done' THEN 'complete' WHEN 'failed' THEN 'fallen' ELSE state END AS status, status_before_pause FROM work WHERE id = ?").get('t-1') as
       { status: string; status_before_pause: string | null };
     expect(row.status).toBe('paused');
     expect(row.status_before_pause).toBe('in_progress');
@@ -442,7 +443,7 @@ describe('a turn that SPOKE to the owner and closed nothing hands the ball over 
     seedDelivery('d1', { turn_number: 6 });
     seedLegacyTask('t-1');
     expect(pauseDriveWorkWaitingOnOwner(AGENT, 6).paused).toBe(0);
-    expect((db().prepare('SELECT status FROM legacy_tasks WHERE id = ?').get('t-1') as { status: string }).status)
+    expect((db().prepare("SELECT CASE state WHEN 'claimed' THEN 'in_progress' WHEN 'done' THEN 'complete' WHEN 'failed' THEN 'fallen' ELSE state END AS status FROM work WHERE id = ?").get('t-1') as { status: string }).status)
       .toBe('in_progress');
   });
 
@@ -491,11 +492,11 @@ describe('a turn that SPOKE to the owner and closed nothing hands the ball over 
     seedDelivery('d1', { turn_number: 6 });
     seedLegacyTask('t-fresh');
     seedLegacyTask('t-stale');
-    db().prepare("UPDATE legacy_tasks SET updated_at = datetime('now', '-2 hours') WHERE id = 't-stale'").run();
+    db().prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(Date.now() - 2 * 3600_000, 't-stale');
     const since = new Date(Date.now() - 60_000).toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
     const r = pauseDriveWorkWaitingOnOwner(AGENT, 6, { touchedSince: since });
     expect(r.ids).toEqual(['t-fresh']);
-    expect((db().prepare('SELECT status FROM legacy_tasks WHERE id = ?').get('t-stale') as { status: string }).status)
+    expect((db().prepare("SELECT CASE state WHEN 'claimed' THEN 'in_progress' WHEN 'done' THEN 'complete' WHEN 'failed' THEN 'fallen' ELSE state END AS status FROM work WHERE id = ?").get('t-stale') as { status: string }).status)
       .toBe('in_progress');
   });
 
@@ -526,7 +527,7 @@ describe('THE REOPEN EDGE — the owner\'s answer resumes the work', () => {
 
     const r = resumeWorkOnOwnerAsk(AGENT);
     expect(r.resumed).toBe(1);
-    const row = db().prepare('SELECT status, status_before_pause FROM legacy_tasks WHERE id = ?').get('t-1') as
+    const row = db().prepare("SELECT CASE state WHEN 'claimed' THEN 'in_progress' WHEN 'done' THEN 'complete' WHEN 'failed' THEN 'fallen' ELSE state END AS status, status_before_pause FROM work WHERE id = ?").get('t-1') as
       { status: string; status_before_pause: string | null };
     expect(row.status).toBe('in_progress');
     expect(row.status_before_pause).toBeNull();
@@ -538,7 +539,7 @@ describe('THE REOPEN EDGE — the owner\'s answer resumes the work', () => {
     // next message untouched, which is why the column is written rather than assumed.
     seedLegacyTask('t-1', { status: 'paused' });
     expect(resumeWorkOnOwnerAsk(AGENT).resumed).toBe(0);
-    expect((db().prepare('SELECT status FROM legacy_tasks WHERE id = ?').get('t-1') as { status: string }).status)
+    expect((db().prepare("SELECT CASE state WHEN 'claimed' THEN 'in_progress' WHEN 'done' THEN 'complete' WHEN 'failed' THEN 'fallen' ELSE state END AS status FROM work WHERE id = ?").get('t-1') as { status: string }).status)
       .toBe('paused');
     // ...and a SCHEDULE pause (is_paused) is a different axis again, also untouched.
     seedLegacyTask('t-2', { status: 'paused', is_paused: 1, status_before_pause: 'in_progress' });
@@ -562,7 +563,7 @@ describe('THE REOPEN EDGE — the owner\'s answer resumes the work', () => {
     seedLegacyTask('t-1');
     pauseDriveWorkWaitingOnOwner(AGENT, 6);
     const row = db().prepare(
-      `SELECT status, updated_at FROM legacy_tasks WHERE id = ? AND status = 'paused'`,
+      `SELECT state AS status, updated_at FROM work WHERE id = ? AND state = 'paused'`,
     ).get('t-1') as { status: string; updated_at: string } | undefined;
     expect(row?.updated_at).toBeTruthy();
   });

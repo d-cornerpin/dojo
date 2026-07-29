@@ -31,6 +31,7 @@
 // ════════════════════════════════════════
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+import { taskScope, msToText } from '../work/tracker-view.js';
 
 const logger = createLogger('delivery-evidence');
 
@@ -48,7 +49,9 @@ export function findDeliveryEvidenceForTask(taskId: string): TaskDeliveryEvidenc
   try {
     const db = getDb();
     const task = db.prepare(
-      `SELECT assigned_to, source_message_id, origin_conv_key, created_at FROM legacy_tasks WHERE id = ?`,
+      `SELECT w.agent_id AS assigned_to, w.source_message_id AS source_message_id,
+              w.origin_conv_key AS origin_conv_key, ${msToText('w.opened_at')} AS created_at
+         FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
     ).get(taskId) as { assigned_to: string | null; source_message_id: string | null; origin_conv_key: string | null; created_at: string } | undefined;
     if (!task?.assigned_to) return null;
     if (!task.source_message_id && !task.origin_conv_key) return null;
@@ -162,7 +165,9 @@ export function findTaskOriginChain(taskId: string): TaskOriginChain | null {
   try {
     const db = getDb();
     const task = db.prepare(
-      `SELECT source_message_id, origin_conv_key, origin_kind, created_at FROM legacy_tasks WHERE id = ?`,
+      `SELECT w.source_message_id AS source_message_id, w.origin_conv_key AS origin_conv_key,
+              w.origin_kind AS origin_kind, ${msToText('w.opened_at')} AS created_at
+         FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
     ).get(taskId) as { source_message_id: string | null; origin_conv_key: string | null; origin_kind: string | null; created_at: string } | undefined;
     if (!task) return null;
     if (!task.source_message_id && !task.origin_conv_key) return null;

@@ -42,28 +42,22 @@ vi.mock('../../db/connection.js', () => ({
 
 import { stampTasksAtTurnFinalize } from '../task-stamps.js';
 
+import { createWorkTable, seedTrackerTask, ms } from '../../work/__tests__/work-fixture.js';
+
 const AGENT = 'agent-alpha';
 const TURN = 4242;
 
 beforeEach(() => {
   const db = new Database(':memory:');
   db.exec(`
-    CREATE TABLE legacy_tasks (
-      id TEXT PRIMARY KEY, assigned_to TEXT, status TEXT, title TEXT,
-      project_id TEXT, step_number INTEGER, total_steps INTEGER,
-      source_message_id TEXT, origin_conv_key TEXT, origin_turn INTEGER,
-      updated_at TEXT DEFAULT '2026-07-28 07:00:00',
-      last_activity_turn INTEGER, last_activity_at TEXT, last_activity_outcome TEXT,
-      last_answered_turn INTEGER, last_answered_at TEXT, last_answer_message_id TEXT,
-      last_delivery_at TEXT, last_delivery_summary TEXT
-    );
     CREATE TABLE turn_artifacts (agent_id TEXT, turn_number INTEGER, kind TEXT, path TEXT, payload_json TEXT, delivered_at TEXT);
     CREATE TABLE deliveries (agent_id TEXT, turn_number INTEGER, channel TEXT, outcome TEXT);
   `);
-  db.prepare(
-    `INSERT INTO legacy_tasks (id, assigned_to, status, title, origin_turn)
-     VALUES ('t-braked', ?, 'in_progress', 'The work the user is waiting for', ?)`,
-  ).run(AGENT, TURN);
+  createWorkTable(db);
+  seedTrackerTask(db, {
+    id: 't-braked', agentId: AGENT, title: 'The work the user is waiting for',
+    origin_turn: TURN, updated_at: ms('2026-07-28 07:00:00'),
+  });
   // The turn genuinely produced a channel delivery AND an artifact. This is the
   // hard case: the engine has real receipts for the turn, and the ONLY thing
   // that makes them not-a-delivery-of-this-ticket is that the reply was coerced.
@@ -75,8 +69,14 @@ beforeEach(() => {
 });
 
 const ticket = () =>
-  mockDb.current!.prepare("SELECT * FROM legacy_tasks WHERE id = 't-braked'").get() as Record<string, unknown>;
+  mockDb.current!.prepare("SELECT * FROM work WHERE id = 't-braked'").get() as Record<string, unknown>;
 
+// PHASE-2 T8b: `last_answer_message_id` and `last_delivery_at` are GONE — enumerated at T8a
+// as having exactly one production occurrence each (the COALESCE onto themselves in this
+// file's writer), so migration `137` did not carry them and this task stopped writing them.
+// The property under test is unchanged and is asserted on the columns that DO have readers:
+// a braked turn records ACTIVITY (`last_activity_*`) and never an ANSWER (`last_answered_*`,
+// `last_delivery_summary`).
 describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () => {
   it("outcome 'brake' records ACTIVITY but never an ANSWER stamp", () => {
     stampTasksAtTurnFinalize({
@@ -92,7 +92,6 @@ describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () 
     // real reply id was passed in for this exact turn.
     expect(t.last_answered_turn).toBeNull();
     expect(t.last_answered_at).toBeNull();
-    expect(t.last_answer_message_id).toBeNull();
   });
 
   // ── PREMISE CORRECTION, recorded rather than quietly assumed (PHASE-2 T1) ──
@@ -138,7 +137,6 @@ describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () 
     });
     const t = ticket();
     expect(t.last_answered_turn).toBe(TURN);
-    expect(t.last_answer_message_id).toBe('msg-a-real-answer');
     expect(String(t.last_delivery_summary)).toContain('imessage');
   });
 
@@ -157,7 +155,6 @@ describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () 
     });
     const t = ticket();
     expect(t.last_answered_turn).toBe(TURN);
-    expect(t.last_answer_message_id).toBe('msg-a-real-answer');
     expect(t.last_activity_outcome).toBe('brake'); // activity moves on, the answer does not
   });
 });

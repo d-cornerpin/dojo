@@ -23,6 +23,8 @@ import { memorySearch } from '../../memory/retrieval.js';
 import { getEmbeddingStatus, setEmbeddingConfig } from '../../memory/embeddings.js';
 import { runBackfill, isBackfillRunning, getBackfillProgress } from '../../memory/backfill.js';
 import { vectorSearch } from '../../memory/vector-search.js';
+import { taskScope, projectScope, msToText } from '../../work/tracker-view.js';
+import { deleteTrackerRow, detachChildren } from '../../work/tracker-store.js';
 
 const logger = createLogger('memory-routes');
 export const memoryRouter = new Hono();
@@ -495,8 +497,11 @@ memoryRouter.get('/forensic-search', (c) => {
   }
 
   const projectRows = db.prepare(
-    `SELECT id, title, description, created_by, created_at FROM legacy_projects
-     WHERE title LIKE ? OR description LIKE ? ORDER BY created_at DESC LIMIT ?`,
+    `SELECT p.id AS id, p.title AS title, p.description AS description,
+            p.requester_id AS created_by, ${msToText('p.opened_at')} AS created_at
+       FROM work p
+      WHERE ${projectScope('p')} AND (p.title LIKE ? OR p.description LIKE ?)
+      ORDER BY p.opened_at DESC LIMIT ?`,
   ).all(like, like, limit) as Array<{ id: string; title: string; description: string | null; created_by: string; created_at: string }>;
   for (const r of projectRows) {
     const haystack = `${r.title}\n${r.description ?? ''}`;
@@ -511,8 +516,11 @@ memoryRouter.get('/forensic-search', (c) => {
   }
 
   const taskRows = db.prepare(
-    `SELECT id, title, description, assigned_to, created_at FROM legacy_tasks
-     WHERE title LIKE ? OR description LIKE ? OR notes LIKE ? ORDER BY created_at DESC LIMIT ?`,
+    `SELECT w.id AS id, w.title AS title, w.description AS description,
+            w.agent_id AS assigned_to, ${msToText('w.opened_at')} AS created_at
+       FROM work w
+      WHERE ${taskScope('w')} AND (w.title LIKE ? OR w.description LIKE ? OR w.notes LIKE ?)
+      ORDER BY w.opened_at DESC LIMIT ?`,
   ).all(like, like, like, limit) as Array<{ id: string; title: string; description: string | null; assigned_to: string | null; created_at: string }>;
   for (const r of taskRows) {
     const haystack = `${r.title}\n${r.description ?? ''}`;
@@ -578,11 +586,11 @@ memoryRouter.post('/forensic-purge', async (c) => {
           // Tasks reference projects via FK; null out the task linkage rather
           // than cascade-delete tasks, so individual tasks remain visible
           // even after their parent project is purged.
-          db.prepare('UPDATE legacy_tasks SET project_id = NULL WHERE project_id = ?').run(item.id);
-          db.prepare('DELETE FROM legacy_projects WHERE id = ?').run(item.id);
+          detachChildren(item.id);
+          deleteTrackerRow(item.id);
           break;
         case 'task':
-          db.prepare('DELETE FROM legacy_tasks WHERE id = ?').run(item.id);
+          deleteTrackerRow(item.id);
           break;
         case 'scratchpad': {
           // Scratchpad purge means "clear $.scratchpad", not "delete agent".

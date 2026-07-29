@@ -1,10 +1,32 @@
+// The tracker's data access layer.
+//
+// PHASE-2 T8b: every statement in this file now reads and writes `work`. The row SHAPES
+// below are unchanged on purpose — `TaskRow` / `ProjectRow` are what `mapTaskRow` /
+// `mapProjectRow` turn into the shared `Task` / `Project` types the dashboard board renders,
+// so the storage moved and the contract did not. The translation (vocabulary, time form,
+// column names, which `work` rows are the tracker's) lives in ONE place,
+// `work/tracker-view.ts`, and the writes in `work/tracker-store.ts`; this file composes them.
+//
+// What was deleted here rather than moved: `updateTask()`'s status branch. It was PINNED
+// §13's "route R2" — a generic column patcher that applied NO gate to a state change, with
+// eleven call sites. Status now goes through `transition()` like every other state change on
+// the spine, and the attribute half stays a patch.
+
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { writeTaskLog } from './task-log.js';
 import { isDashboardHiddenAgent, isPMAgent } from '../config/platform.js';
-import { createdByKindOfAgent } from '../agent/created-by-kind.js';
+import {
+  taskRowColumns, projectRowColumns, taskScope, projectScope,
+  statusToState, type TrackerStatus,
+} from '../work/tracker-view.js';
+import {
+  openTrackerProject, openTrackerTask, patchWork, appendWorkNotes,
+  setTrackerStatus, type WorkPatch, type SetStatusInput,
+} from '../work/tracker-store.js';
+import type { Actor } from '../work/store.js';
 import type { Project, ProjectDetail, Task, PokeEntry } from '@dojo/shared';
 
 const logger = createLogger('tracker-schema');
@@ -76,6 +98,13 @@ interface PokeRow {
   sent_at: string;
   response_received: number;
 }
+
+/** The two projections, built once. Interpolating a constant fragment rather than re-typing
+ *  the column list at each call site is what keeps "the row shape" one fact. */
+const TASK_COLS = taskRowColumns('w');
+const PROJECT_COLS = projectRowColumns('w');
+const TASK_WHERE = taskScope('w');
+const PROJECT_WHERE = projectScope('w');
 
 // ── Row Mappers ──
 
@@ -211,20 +240,11 @@ export function createProject(params: {
   // exactly that; the PM had no row to poke and the model "reused" an empty
   // shell). Broadcasts fire after commit so a rollback never announces
   // phantom rows.
-  // T11 Step 1b: authorship travels with the row. `created_by` on a project or a task is
-  // an AGENT id (measured on this box: every one of 51 tasks and 102 of 104 projects), so
-  // the kind is the creating agent's own — which makes a harness fixture's auto-scaffolded
-  // debris structurally identifiable without the harness ever touching these rows. One
-  // lookup, read once here and passed to the task inserts below.
-  const creatorKind = createdByKindOfAgent(createdBy);
-
   db.transaction(() => {
-    db.prepare(`
-      INSERT INTO legacy_projects (id, title, description, level, status, created_by, created_by_kind, phase_count, current_phase,
-                            source_message_id, origin_turn, origin_conv_key, origin_kind, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'active', ?, ?, 1, 1, ?, ?, ?, ?, datetime('now'), datetime('now'))
-    `).run(projectId, title, description ?? null, level, createdBy, creatorKind,
-      params.origin.sourceMessageId, params.origin.turn, params.origin.convKey, params.origin.kind);
+    openTrackerProject({
+      id: projectId, title, description: description ?? null, level, createdBy,
+      origin: params.origin,
+    });
 
     if (tasks && tasks.length > 0) {
       const totalSteps = tasks.length;
@@ -233,8 +253,6 @@ export function createProject(params: {
         const taskId = uuidv4();
         taskIds.push(taskId);
 
-        const assignee = task.assignedTo ?? createdBy;
-        const stepNum = task.stepNumber ?? null;
         // Status default: all subtasks land in 'in_progress'. The previous
         // model (only the first-step task assigned to the creator started
         // in_progress, everything else 'on_deck') routinely produced the
@@ -243,41 +261,27 @@ export function createProject(params: {
         // forever. New rule: 'on_deck' is reserved for "scheduled for
         // later". A task with no future scheduled_start belongs in
         // 'in_progress' so the assigned agent (and the PM) keep seeing it
-        // as work to do. Project subtasks created here have no per-task
-        // scheduled_start under the current API, so all of them are
-        // in_progress. Sequencing is still expressed via step_number for
-        // the agent to read, but the engine does not gate visibility.
-        const status = 'in_progress';
-
+        // as work to do.
+        //
         // Phase 7: original_description is an immutable copy of the user's
-        // original ask. Mirrors the standalone createTask path. tracker_create_project
-        // creates tasks via this code path; without this column being set the
+        // original ask. Mirrors the standalone createTask path. Without it the
         // onTaskComplete hook surfaces "(none recorded)" to the parent.
-        db.prepare(`
-          INSERT INTO legacy_tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, created_by_kind, priority,
-                             step_number, total_steps, phase, depends_on,
-                             source_message_id, origin_turn, origin_conv_key, origin_kind, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-        `).run(
-          taskId,
+        openTrackerTask({
+          id: taskId,
           projectId,
-          task.title,
-          task.description ?? null,
-          task.description ?? null,
-          status,
-          assignee,
+          title: task.title,
+          description: task.description ?? null,
+          originalDescription: task.description ?? null,
+          status: 'in_progress',
+          assignedTo: task.assignedTo ?? createdBy,
           createdBy,
-          creatorKind,
-          task.priority ?? 'normal',
-          stepNum,
+          priority: task.priority ?? 'normal',
+          stepNumber: task.stepNumber ?? null,
           totalSteps,
-          task.phase ?? 1,
-          JSON.stringify(task.dependsOn ?? []),
-          params.origin.sourceMessageId,
-          params.origin.turn,
-          params.origin.convKey,
-          params.origin.kind,
-        );
+          phase: task.phase ?? 1,
+          dependsOn: task.dependsOn ?? [],
+          origin: params.origin,
+        });
       }
     }
   })();
@@ -309,12 +313,17 @@ export function createProject(params: {
 export function getProject(id: string): ProjectDetail | null {
   const db = getDb();
 
-  const row = db.prepare('SELECT * FROM legacy_projects WHERE id = ?').get(id) as ProjectRow | undefined;
+  const row = db.prepare(
+    `SELECT ${PROJECT_COLS} FROM work w WHERE ${PROJECT_WHERE} AND w.id = ?`,
+  ).get(id) as ProjectRow | undefined;
   if (!row) return null;
 
   const project = mapProjectRow(row);
 
-  const taskRows = db.prepare('SELECT * FROM legacy_tasks WHERE project_id = ? ORDER BY step_number ASC, created_at ASC').all(id) as TaskRow[];
+  const taskRows = db.prepare(
+    `SELECT ${TASK_COLS} FROM work w WHERE ${TASK_WHERE} AND w.parent_id = ?
+      ORDER BY w.step_number ASC, w.opened_at ASC`,
+  ).all(id) as TaskRow[];
   const tasks = taskRows.map(mapTaskRow);
 
   const taskCounts = {
@@ -343,15 +352,15 @@ export function getProject(id: string): ProjectDetail | null {
 export function listProjects(filter?: { status?: string }): Project[] {
   const db = getDb();
 
-  let sql = 'SELECT * FROM legacy_projects';
+  let sql = `SELECT ${PROJECT_COLS} FROM work w WHERE ${PROJECT_WHERE}`;
   const params: unknown[] = [];
 
   if (filter?.status) {
-    sql += ' WHERE status = ?';
-    params.push(filter.status);
+    sql += ' AND w.state = ?';
+    params.push(statusToState(filter.status));
   }
 
-  sql += ' ORDER BY updated_at DESC';
+  sql += ' ORDER BY w.updated_at DESC';
 
   const rows = db.prepare(sql).all(...params) as ProjectRow[];
   return rows.map(mapProjectRow);
@@ -372,7 +381,10 @@ export function closeProjectAndOpenTasks(params: {
   taskStatus: 'complete' | 'cancelled';
   projectStatus: 'complete' | 'cancelled';
   reason: string;
-}): { projectId: string; tasksClosed: number; alreadyClosed: number } {
+  /** The delivery that makes a `complete` close true. `transition()`'s G7 refuses `done`
+   *  without one — see the note on `refused` below. */
+  resultDeliveryId?: string | null;
+}): { projectId: string; tasksClosed: number; alreadyClosed: number; refused: number } {
   const db = getDb();
   const { projectId, closingAgentId, taskStatus, projectStatus, reason } = params;
 
@@ -382,47 +394,49 @@ export function closeProjectAndOpenTasks(params: {
   // So a user-facing "cancelled" task is stored as "fallen" (the existing
   // "didn't make it" terminal column) with a clear note. The project row
   // itself stores the literal user-facing status, it isn't column-rendered.
-  const dbTaskStatus = taskStatus === 'cancelled' ? 'fallen' : 'complete';
+  const dbTaskStatus: TrackerStatus = taskStatus === 'cancelled' ? 'fallen' : 'complete';
   const noteMarker = taskStatus === 'cancelled' ? '[CANCELLED]' : '[Completed via bulk close]';
 
   const tasks = db
-    .prepare('SELECT id, status FROM legacy_tasks WHERE project_id = ?')
-    .all(projectId) as Array<{ id: string; status: string }>;
+    .prepare(`SELECT w.id AS id, w.state AS state FROM work w WHERE ${TASK_WHERE} AND w.parent_id = ?`)
+    .all(projectId) as Array<{ id: string; state: string }>;
 
   let tasksClosed = 0;
   let alreadyClosed = 0;
-  const TERMINAL = new Set(['complete', 'fallen', 'cancelled']);
-
-  // Phase B.0: tasks.notes is read-only legacy. Bulk-close transitions
-  // land in task_log instead. We capture the per-task prior status inside
-  // the loop so each transition entry has the right from→to pair.
-  const closeStmt = db.prepare(`
-    UPDATE legacy_tasks
-    SET status = ?,
-        is_paused = 0,
-        completed_at = datetime('now'),
-        updated_at = datetime('now')
-    WHERE id = ?
-  `);
+  let refused = 0;
+  const TERMINAL = new Set(['done', 'failed', 'abandoned']);
 
   const closedTransitions: Array<{ taskId: string; from: string; to: string }> = [];
   const txn = db.transaction(() => {
     for (const t of tasks) {
-      if (TERMINAL.has(t.status)) {
+      if (TERMINAL.has(t.state)) {
         alreadyClosed++;
         continue;
       }
-      closeStmt.run(dbTaskStatus, t.id);
-      closedTransitions.push({ taskId: t.id, from: t.status, to: dbTaskStatus });
+      const r = setTrackerStatus(t.id, dbTaskStatus, {
+        by: 'agent', actorId: closingAgentId,
+        reason: `bulk-closed with its project: ${reason}`,
+        resultDeliveryId: params.resultDeliveryId ?? null,
+      });
+      if (r.kind !== 'applied') {
+        // The gate refused (almost always G7: a `complete` close with no delivery to point
+        // at). Counted and surfaced rather than swallowed — a silent skip here is how the
+        // board and the truth drift apart.
+        refused++;
+        logger.warn('bulk close refused for task', { taskId: t.id, result: r });
+        continue;
+      }
+      closedTransitions.push({ taskId: t.id, from: r.from, to: r.to });
       tasksClosed++;
     }
-    db.prepare(`
-      UPDATE legacy_projects
-      SET status = ?,
-          completed_at = datetime('now'),
-          updated_at = datetime('now')
-      WHERE id = ?
-    `).run(projectStatus, projectId);
+    const pr = setTrackerStatus(projectId, projectStatus as TrackerStatus, {
+      by: 'agent', actorId: closingAgentId, reason,
+      resultDeliveryId: params.resultDeliveryId ?? null,
+    });
+    if (pr.kind !== 'applied') {
+      refused++;
+      logger.warn('bulk close refused for project', { projectId, result: pr });
+    }
   });
   txn();
 
@@ -441,7 +455,7 @@ export function closeProjectAndOpenTasks(params: {
     });
   }
 
-  logger.info('Project bulk-closed', { projectId, tasksClosed, alreadyClosed, taskStatus, projectStatus, closingAgentId });
+  logger.info('Project bulk-closed', { projectId, tasksClosed, alreadyClosed, refused, taskStatus, projectStatus, closingAgentId });
 
   // Broadcast updated tasks + project so the dashboard repaints.
   for (const t of tasks) {
@@ -455,44 +469,31 @@ export function closeProjectAndOpenTasks(params: {
     broadcast({ type: 'tracker:project_updated', data: project });
   }
 
-  return { projectId, tasksClosed, alreadyClosed };
+  return { projectId, tasksClosed, alreadyClosed, refused };
 }
 
 export function updateProject(
   id: string,
   updates: Partial<{ status: string; currentPhase: number; title: string; description: string | null }>,
+  actor?: { by: Actor; actorId?: string; reason?: string; resultDeliveryId?: string | null },
 ): void {
-  const db = getDb();
-
-  const setClauses: string[] = ["updated_at = datetime('now')"];
-  const params: unknown[] = [];
+  const patch: WorkPatch = {};
+  if (updates.currentPhase !== undefined) patch.current_phase = updates.currentPhase;
+  if (updates.title !== undefined) patch.title = updates.title;
+  if (updates.description !== undefined) patch.description = updates.description;
 
   if (updates.status !== undefined) {
-    setClauses.push('status = ?');
-    params.push(updates.status);
-    if (updates.status === 'complete') {
-      setClauses.push("completed_at = datetime('now')");
+    const r = setTrackerStatus(id, updates.status as TrackerStatus, {
+      by: actor?.by ?? 'agent',
+      actorId: actor?.actorId ?? null,
+      reason: actor?.reason ?? `project status -> ${updates.status}`,
+      resultDeliveryId: actor?.resultDeliveryId ?? null,
+    });
+    if (r.kind !== 'applied' && r.kind !== 'noop') {
+      logger.warn('project status change refused', { projectId: id, result: r });
     }
   }
-
-  if (updates.currentPhase !== undefined) {
-    setClauses.push('current_phase = ?');
-    params.push(updates.currentPhase);
-  }
-
-  if (updates.title !== undefined) {
-    setClauses.push('title = ?');
-    params.push(updates.title);
-  }
-
-  if (updates.description !== undefined) {
-    setClauses.push('description = ?');
-    params.push(updates.description);
-  }
-
-  params.push(id);
-
-  db.prepare(`UPDATE legacy_projects SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
+  if (Object.keys(patch).length > 0) patchWork(id, patch);
 
   logger.info('Project updated', { projectId: id, updates });
 
@@ -524,9 +525,6 @@ export function createTask(params: {
   // compile instead of silently minting origin-less work.
   origin: { kind: string | null; sourceMessageId: string | null; turn: number | null; convKey: string | null };
 }): string {
-  const db = getDb();
-  const taskId = uuidv4();
-
   const { projectId, title, description, assignedTo, createdBy, priority, stepNumber, dependsOn, phase, kind } = params;
 
   // v2.8.x rule: 'on_deck' is reserved for tasks with a future
@@ -534,41 +532,25 @@ export function createTask(params: {
   // at fire time). Tasks with no schedule belong in 'in_progress' so
   // they stay visible to the assigned agent and the PM. createTask
   // doesn't take scheduled_start directly; the trackerCreateTask
-  // wrapper applies the schedule override after this insert by calling
-  // updateTask(taskId, { status: 'on_deck' }) when hasSchedule is true.
-  // Default here is in_progress for both self-assigned and other-
-  // assigned tasks.
-  const initialStatus = 'in_progress';
-
-  // original_description is an immutable copy of the user's original ask.
-  // Phase 7 onTaskComplete uses it to surface the original intent to the
-  // parent agent at completion time even if the description was edited.
-  db.prepare(`
-    INSERT INTO legacy_tasks (id, project_id, title, description, original_description, status, assigned_to, created_by, created_by_kind, priority,
-                       step_number, total_steps, phase, depends_on, kind,
-                       source_message_id, origin_turn, origin_conv_key, origin_kind, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-  `).run(
-    taskId,
-    projectId ?? null,
+  // wrapper applies the schedule override after this insert.
+  const taskId = openTrackerTask({
+    projectId: projectId ?? null,
     title,
-    description ?? null,
-    description ?? null,
-    initialStatus,
-    assignedTo ?? null,
+    description: description ?? null,
+    // original_description is an immutable copy of the user's original ask.
+    // Phase 7 onTaskComplete uses it to surface the original intent to the
+    // parent agent at completion time even if the description was edited.
+    originalDescription: description ?? null,
+    status: 'in_progress',
+    assignedTo: assignedTo ?? null,
     createdBy,
-    createdByKindOfAgent(createdBy), // T11 Step 1b: the creating agent's own kind
-    priority ?? 'normal',
-    stepNumber ?? null,
-    phase ?? 1,
-    JSON.stringify(dependsOn ?? []),
-    kind ?? null,
-  
-    params.origin.sourceMessageId,
-    params.origin.turn,
-    params.origin.convKey,
-    params.origin.kind,
-  );
+    priority: priority ?? 'normal',
+    stepNumber: stepNumber ?? null,
+    phase: phase ?? 1,
+    dependsOn: dependsOn ?? [],
+    taskKind: kind ?? null,
+    origin: params.origin,
+  });
 
   logger.info('Task created', { taskId, title, projectId, assignedTo }, createdBy);
 
@@ -629,7 +611,7 @@ export function autoCreateAssignTask(params: {
     // existing task via tracker_retask (or close it via tracker_override
     // / tracker_validate), NOT fork a new task. Pre-fix, PM
     // sending send_to_agent(intent='ASSIGN') to remediate a close-out
-    // miss spawned a duplicate task and left the original abandoned, 
+    // miss spawned a duplicate task and left the original abandoned,
     // producing two tasks for one unit of work and, for non-idempotent
     // tools (gmail_send, sms_send, voice_call, exec hitting live APIs),
     // a duplicate side effect. Production incident 2026-06-08: Email
@@ -645,7 +627,7 @@ export function autoCreateAssignTask(params: {
 
     // Reuse if a task already exists for this thread.
     const existing = db
-      .prepare('SELECT id FROM legacy_tasks WHERE a2a_thread_id = ? LIMIT 1')
+      .prepare(`SELECT w.id AS id FROM work w WHERE ${TASK_WHERE} AND w.a2a_thread_id = ? LIMIT 1`)
       .get(params.threadId) as { id: string } | undefined;
     if (existing?.id) {
       return { taskId: existing.id, isNew: false };
@@ -659,35 +641,30 @@ export function autoCreateAssignTask(params: {
       : cleaned.slice(0, 80).trim();
     const title = rawTitle.length > 0 ? rawTitle : 'Assigned task (untitled)';
 
-    const taskId = uuidv4();
     // Phase B.1: goal is required on every task. For engine-auto-created
     // ASSIGN tasks we use the payload itself as the goal, it IS the
     // sender's stated definition of done for the receiver.
-    const autoGoal = params.payload.trim().slice(0, 2000) || title;
     // v2.8.x rule: auto-created ASSIGN tasks land in 'in_progress' so the
-    // receiver and the PM keep seeing them as work to do. 'on_deck' is now
-    // reserved for future-scheduled tasks (the scheduler owns the
-    // transition); auto-ASSIGN has no schedule.
-    db.prepare(`
-      INSERT INTO legacy_tasks (id, project_id, title, description, original_description, goal, status, assigned_to, created_by, created_by_kind, priority,
-                         step_number, total_steps, phase, depends_on, a2a_thread_id,
-                         source_message_id, origin_conv_key, origin_kind, created_at, updated_at)
-      VALUES (?, NULL, ?, ?, ?, ?, 'in_progress', ?, ?, ?, 'normal', NULL, NULL, 1, '[]', ?, ?, ?, 'a2a_assign', datetime('now'), datetime('now'))
-    `).run(
-      taskId,
+    // receiver and the PM keep seeing them as work to do.
+    const taskId = openTrackerTask({
       title,
-      params.payload,
-      params.payload,
-      autoGoal,
-      params.receiverId,
-      params.senderId,
-      // T11 Step 1b: an A2A ASSIGN task belongs to the SENDING agent's kind — a harness
-      // peer assigning work to the bot produces a harness-owned task.
-      createdByKindOfAgent(params.senderId),
-      params.threadId,
-      params.assignMessageId ?? null,
-      'a2a:' + params.threadId,
-    );
+      description: params.payload,
+      originalDescription: params.payload,
+      goal: params.payload.trim().slice(0, 2000) || title,
+      status: 'in_progress',
+      assignedTo: params.receiverId,
+      createdBy: params.senderId,
+      priority: 'normal',
+      phase: 1,
+      dependsOn: [],
+      a2aThreadId: params.threadId,
+      origin: {
+        kind: 'a2a_assign',
+        sourceMessageId: params.assignMessageId ?? null,
+        turn: null,
+        convKey: 'a2a:' + params.threadId,
+      },
+    });
 
     logger.info('Auto-created task for A2A ASSIGN', {
       taskId, threadId: params.threadId, senderId: params.senderId, receiverId: params.receiverId, title,
@@ -709,7 +686,9 @@ export function autoCreateAssignTask(params: {
 
 export function getTask(id: string): Task | null {
   const db = getDb();
-  const row = db.prepare('SELECT * FROM legacy_tasks WHERE id = ?').get(id) as TaskRow | undefined;
+  const row = db.prepare(
+    `SELECT ${TASK_COLS} FROM work w WHERE ${TASK_WHERE} AND w.id = ?`,
+  ).get(id) as TaskRow | undefined;
   if (!row) return null;
   return mapTaskRow(row);
 }
@@ -733,7 +712,7 @@ export type IdResolution =
   | { ok: true; id: string }
   | { ok: false; reason: 'empty' | 'too_short' | 'not_found' | 'ambiguous'; matches?: string[] };
 
-function resolveIdIn(table: 'legacy_tasks' | 'legacy_projects', idOrPrefix: string, agentId?: string): IdResolution {
+function resolveIdIn(kind: 'task' | 'project', idOrPrefix: string, agentId?: string): IdResolution {
   if (!idOrPrefix || typeof idOrPrefix !== 'string') {
     return { ok: false, reason: 'empty' };
   }
@@ -742,16 +721,18 @@ function resolveIdIn(table: 'legacy_tasks' | 'legacy_projects', idOrPrefix: stri
   if (input.length < 4) return { ok: false, reason: 'too_short' };
 
   const db = getDb();
+  const scope = kind === 'task' ? TASK_WHERE : PROJECT_WHERE;
 
   // Full UUID form (with or without dashes), try direct lookup first.
   if (input.length >= 32) {
-    const row = db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(input) as { id: string } | undefined;
+    const row = db.prepare(`SELECT w.id AS id FROM work w WHERE ${scope} AND w.id = ?`)
+      .get(input) as { id: string } | undefined;
     if (row) return { ok: true, id: row.id };
     // Fall through to prefix match, the "full" id may be malformed
   }
 
   // Prefix match. Limit to 5 so we can detect ambiguity cheaply.
-  const matches = db.prepare(`SELECT id FROM ${table} WHERE id LIKE ? LIMIT 5`)
+  const matches = db.prepare(`SELECT w.id AS id FROM work w WHERE ${scope} AND w.id LIKE ? LIMIT 5`)
     .all(`${input}%`) as Array<{ id: string }>;
 
   if (matches.length === 1) return { ok: true, id: matches[0].id };
@@ -766,7 +747,7 @@ function resolveIdIn(table: 'legacy_tasks' | 'legacy_projects', idOrPrefix: stri
   // arg do the right thing. Requires an agentId to scope; unscoped callers
   // (no agentId) keep the original id-only behavior.
   if (agentId) {
-    const byTitle = resolveByTitleScoped(table, input, agentId);
+    const byTitle = resolveByTitleScoped(kind, input, agentId);
     if (byTitle) return byTitle;
   }
   return { ok: false, reason: 'not_found' };
@@ -779,14 +760,15 @@ function resolveIdIn(table: 'legacy_tasks' | 'legacy_projects', idOrPrefix: stri
  * light wording drift. Returns ok on a single hit, ambiguous on several, or
  * null when nothing matched (caller then emits the normal not_found).
  */
-function resolveByTitleScoped(table: 'legacy_tasks' | 'legacy_projects', title: string, agentId: string): IdResolution | null {
+function resolveByTitleScoped(kind: 'task' | 'project', title: string, agentId: string): IdResolution | null {
   const db = getDb();
-  const scopeSql = table === 'legacy_tasks' ? '(assigned_to = ? OR created_by = ?)' : 'created_by = ?';
-  const scopeParams = table === 'legacy_tasks' ? [agentId, agentId] : [agentId];
+  const scope = kind === 'task' ? TASK_WHERE : PROJECT_WHERE;
+  const scopeSql = kind === 'task' ? '(w.agent_id = ? OR w.requester_id = ?)' : 'w.requester_id = ?';
+  const scopeParams = kind === 'task' ? [agentId, agentId] : [agentId];
 
   // Exact, case-insensitive.
   let rows = db.prepare(
-    `SELECT id FROM ${table} WHERE lower(title) = lower(?) AND ${scopeSql} LIMIT 5`,
+    `SELECT w.id AS id FROM work w WHERE ${scope} AND lower(w.title) = lower(?) AND ${scopeSql} LIMIT 5`,
   ).all(title, ...scopeParams) as Array<{ id: string }>;
 
   // Prefix, for trailing wording drift, only if exact found nothing. Escape
@@ -794,7 +776,7 @@ function resolveByTitleScoped(table: 'legacy_tasks' | 'legacy_projects', title: 
   if (rows.length === 0) {
     const escaped = title.replace(/[\\%_]/g, '\\$&');
     rows = db.prepare(
-      `SELECT id FROM ${table} WHERE title LIKE ? ESCAPE '\\' AND ${scopeSql} LIMIT 5`,
+      `SELECT w.id AS id FROM work w WHERE ${scope} AND w.title LIKE ? ESCAPE '\\' AND ${scopeSql} LIMIT 5`,
     ).all(`${escaped}%`, ...scopeParams) as Array<{ id: string }>;
   }
 
@@ -805,12 +787,12 @@ function resolveByTitleScoped(table: 'legacy_tasks' | 'legacy_projects', title: 
 
 /** Resolve a task id from a full UUID, ≥4-char prefix, or (with agentId) a title. */
 export function resolveTaskId(idOrPrefix: string, agentId?: string): IdResolution {
-  return resolveIdIn('legacy_tasks', idOrPrefix, agentId);
+  return resolveIdIn('task', idOrPrefix, agentId);
 }
 
 /** Resolve a project id from a full UUID, ≥4-char prefix, or (with agentId) a title. */
 export function resolveProjectId(idOrPrefix: string, agentId?: string): IdResolution {
-  return resolveIdIn('legacy_projects', idOrPrefix, agentId);
+  return resolveIdIn('project', idOrPrefix, agentId);
 }
 
 /**
@@ -828,7 +810,7 @@ export function formatResolveError(
     case 'empty':
       return `Error: ${kind} id is required.`;
     case 'too_short':
-      return `Error: ${kind} id '${input}' is too short. Provide at least 4 characters of the id (8-char prefixes from tracker_list_active work fine).`;
+      return `Error: ${kind} id '${input}' is too short. Provide at least 4 characters of the id (8-char prefixes from work_open/work_update listings work fine).`;
     case 'not_found': {
       // 2026-07-17 (the PM 189-call spin): a title-shaped input deserves an
       // explicit title-vs-id correction, or the floor model retries the same
@@ -836,9 +818,9 @@ export function formatResolveError(
       // tasks, so a cross-agent title can list-match yet not resolve here.
       const titleShaped = /\s/.test(input.trim());
       const titleHint = titleShaped
-        ? ` That looks like a TITLE, not an id: pass the id (or its first 8 characters) shown in [brackets] by tracker_list_active.`
+        ? ` That looks like a TITLE, not an id: pass the id (or its first 8 characters) shown in [brackets] by the listing.`
         : '';
-      return `Error: ${Kind} not found: '${input}'.${titleHint} It may have been deleted or completed. Use tracker_list_active to see current ${kind}s.`;
+      return `Error: ${Kind} not found: '${input}'.${titleHint} It may have been deleted or completed. Use work_update(action='list') to see current ${kind}s.`;
     }
     case 'ambiguous': {
       const shown = (resolution.matches ?? []).map(m => m.slice(0, 12)).join(', ');
@@ -855,39 +837,43 @@ export function listTasks(filter?: {
 }): Task[] {
   const db = getDb();
 
-  const conditions: string[] = [];
+  const conditions: string[] = [TASK_WHERE];
   const params: unknown[] = [];
 
   if (filter?.status) {
-    conditions.push('status = ?');
-    params.push(filter.status);
+    conditions.push('w.state = ?');
+    params.push(statusToState(filter.status));
   }
   if (filter?.assignedTo) {
-    conditions.push('assigned_to = ?');
+    conditions.push('w.agent_id = ?');
     params.push(filter.assignedTo);
   }
   if (filter?.priority) {
-    conditions.push('priority = ?');
+    conditions.push('w.priority = ?');
     params.push(filter.priority);
   }
   if (filter?.projectId) {
-    conditions.push('project_id = ?');
+    conditions.push('w.parent_id = ?');
     params.push(filter.projectId);
   }
 
-  let sql = 'SELECT * FROM legacy_tasks';
-  if (conditions.length > 0) {
-    sql += ' WHERE ' + conditions.join(' AND ');
-  }
-  sql += ' ORDER BY priority DESC, step_number ASC, created_at ASC';
+  const sql = `SELECT ${TASK_COLS} FROM work w WHERE ${conditions.join(' AND ')}`
+    + ' ORDER BY w.priority DESC, w.step_number ASC, w.opened_at ASC';
 
   const rows = db.prepare(sql).all(...params) as TaskRow[];
   return rows.map(mapTaskRow);
 }
 
+/**
+ * Patch a task's editable columns.
+ *
+ * PHASE-2 T8b: the `status` argument is GONE. It was PINNED §13's route R2 — a state change
+ * with no gate, no reason, no event and no actor, sitting beside `transition()`. Callers that
+ * want a status change call `setTaskStatus` below, which is `transition()` and says who and
+ * why. This function now does exactly what its name says: it patches columns.
+ */
 export function updateTask(id: string, updates: Partial<{
-  status: string;
-  assignedTo: string;
+  assignedTo: string | null;
   priority: string;
   notes: string;
   title: string;
@@ -908,134 +894,26 @@ export function updateTask(id: string, updates: Partial<{
   repeatDaysOfWeek: string | null;
   anchorTime: string | null;
 }>): Task | null {
-  const db = getDb();
+  const patch: WorkPatch = {};
+  if (updates.assignedTo !== undefined) patch.agent_id = updates.assignedTo;
+  if (updates.priority !== undefined) patch.priority = updates.priority;
+  if (updates.notes !== undefined) patch.notes = updates.notes;
+  if (updates.title !== undefined) patch.title = updates.title;
+  if (updates.description !== undefined) patch.description = updates.description;
+  if (updates.pausedUntil !== undefined) patch.paused_until = tsToMsOrNull(updates.pausedUntil);
+  if (updates.dependsOn !== undefined) patch.depends_on = JSON.stringify(updates.dependsOn);
+  if (updates.stepNumber !== undefined) patch.step_number = updates.stepNumber;
+  if (updates.phase !== undefined) patch.phase = updates.phase;
+  if (updates.scheduledStart !== undefined) patch.scheduled_start = tsToMsOrNull(updates.scheduledStart);
+  if (updates.repeatInterval !== undefined) patch.repeat_interval = updates.repeatInterval;
+  if (updates.repeatUnit !== undefined) patch.repeat_unit = updates.repeatUnit;
+  if (updates.repeatEndType !== undefined) patch.repeat_end_type = updates.repeatEndType;
+  if (updates.repeatEndValue !== undefined) patch.repeat_end_value = updates.repeatEndValue;
+  if (updates.repeatDaysOfWeek !== undefined) patch.repeat_days_of_week = updates.repeatDaysOfWeek;
+  if (updates.anchorTime !== undefined) patch.anchor_local = updates.anchorTime;
 
-  const setClauses: string[] = ["updated_at = datetime('now')"];
-  const params: unknown[] = [];
-
-  if (updates.status !== undefined) {
-    setClauses.push('status = ?');
-    params.push(updates.status);
-    if (updates.status === 'complete') {
-      setClauses.push("completed_at = datetime('now')");
-    }
-    // Keep is_paused in sync with status so the scheduler respects paused
-    // state regardless of whether the pause came from tracker_update_status
-    // or tracker_pause_schedule.
-    if (updates.status === 'paused') {
-      setClauses.push('is_paused = 1');
-      // v2.7.18 - reset pause validation flag every time we transition into
-      // paused so PM re-evaluates from scratch (catches repeated game
-      // attempts where the agent unpauses + re-pauses with the same notes).
-      setClauses.push('pause_validated = 0');
-      // Save the current status so we can restore it on auto-resume.
-      // Look up the task's current status BEFORE we overwrite it.
-      const currentTask = db.prepare('SELECT status FROM legacy_tasks WHERE id = ?').get(id) as { status: string } | undefined;
-      if (currentTask && currentTask.status !== 'paused') {
-        setClauses.push('status_before_pause = ?');
-        params.push(currentTask.status);
-      }
-      // Set paused_until if provided
-      if (updates.pausedUntil !== undefined) {
-        setClauses.push('paused_until = ?');
-        params.push(updates.pausedUntil);
-      }
-    } else {
-      // Moving OUT of paused, clear pause fields
-      if (updates.status !== 'complete') {
-        setClauses.push('is_paused = 0');
-      }
-      setClauses.push('paused_until = NULL');
-      setClauses.push('status_before_pause = NULL');
-    }
-  }
-
-  // Allow setting paused_until without changing status (e.g., updating the resume time)
-  if (updates.pausedUntil !== undefined && updates.status === undefined) {
-    setClauses.push('paused_until = ?');
-    params.push(updates.pausedUntil);
-  }
-
-  if (updates.assignedTo !== undefined) {
-    setClauses.push('assigned_to = ?');
-    params.push(updates.assignedTo);
-  }
-
-  if (updates.priority !== undefined) {
-    setClauses.push('priority = ?');
-    params.push(updates.priority);
-  }
-
-  if (updates.notes !== undefined) {
-    setClauses.push('notes = ?');
-    params.push(updates.notes);
-  }
-
-  if (updates.title !== undefined) {
-    setClauses.push('title = ?');
-    params.push(updates.title);
-  }
-
-  if (updates.description !== undefined) {
-    setClauses.push('description = ?');
-    params.push(updates.description);
-  }
-
-  if (updates.dependsOn !== undefined) {
-    setClauses.push('depends_on = ?');
-    params.push(JSON.stringify(updates.dependsOn));
-  }
-
-  if (updates.stepNumber !== undefined) {
-    setClauses.push('step_number = ?');
-    params.push(updates.stepNumber);
-  }
-
-  if (updates.phase !== undefined) {
-    setClauses.push('phase = ?');
-    params.push(updates.phase);
-  }
-
-  if (updates.scheduledStart !== undefined) {
-    setClauses.push('scheduled_start = ?');
-    params.push(updates.scheduledStart);
-  }
-
-  if (updates.repeatInterval !== undefined) {
-    setClauses.push('repeat_interval = ?');
-    params.push(updates.repeatInterval);
-  }
-
-  if (updates.repeatUnit !== undefined) {
-    setClauses.push('repeat_unit = ?');
-    params.push(updates.repeatUnit);
-  }
-
-  if (updates.repeatEndType !== undefined) {
-    setClauses.push('repeat_end_type = ?');
-    params.push(updates.repeatEndType);
-  }
-
-  if (updates.repeatEndValue !== undefined) {
-    setClauses.push('repeat_end_value = ?');
-    params.push(updates.repeatEndValue);
-  }
-
-  if (updates.repeatDaysOfWeek !== undefined) {
-    setClauses.push('repeat_days_of_week = ?');
-    params.push(updates.repeatDaysOfWeek);
-  }
-
-  if (updates.anchorTime !== undefined) {
-    setClauses.push('anchor_time = ?');
-    params.push(updates.anchorTime);
-  }
-
-  params.push(id);
-
-  const result = db.prepare(`UPDATE legacy_tasks SET ${setClauses.join(', ')} WHERE id = ?`).run(...params);
-
-  if (result.changes === 0) {
+  const changes = patchWork(id, patch);
+  if (changes === 0) {
     // UPDATE matched zero rows, the id doesn't exist. Callers that pass
     // the result through tracker tools should have already resolved the
     // id via resolveTaskId() before calling updateTask(), so hitting this
@@ -1049,9 +927,6 @@ export function updateTask(id: string, updates: Partial<{
 
   const task = getTask(id);
   if (!task) {
-    // Rare race: row was present during UPDATE (.changes >= 1) but deleted
-    // before the SELECT. Honest diagnostic now that the zero-rows case
-    // is handled separately above.
     logger.warn('updateTask: task deleted between UPDATE and SELECT (race)', { taskId: id });
     return null;
   }
@@ -1064,18 +939,45 @@ export function updateTask(id: string, updates: Partial<{
   return task;
 }
 
+/**
+ * Change a task's status. THE tracker's status door: `transition()` with the tracker's
+ * vocabulary on the outside and the spine's on the inside.
+ *
+ * Returns the refreshed `Task` on success and `null` when the gate refused — and the refusal
+ * is logged with its gate name, because "the status did not change and nobody said why" is
+ * the exact silence this phase is removing. Callers that need to tell the model WHY use
+ * `setTaskStatusResult`.
+ */
+export function setTaskStatus(id: string, status: TrackerStatus, input: SetStatusInput): Task | null {
+  const r = setTrackerStatus(id, status, input);
+  if (r.kind !== 'applied' && r.kind !== 'noop') {
+    logger.warn('task status change refused', { taskId: id, status, result: r });
+    return null;
+  }
+  const task = getTask(id);
+  if (task) broadcast({ type: 'tracker:task_updated', data: task });
+  return task;
+}
+
+/** The same call, handing the caller the gate's own verdict so it can be steered on. */
+export function setTaskStatusResult(id: string, status: TrackerStatus, input: SetStatusInput) {
+  const r = setTrackerStatus(id, status, input);
+  const task = getTask(id);
+  if (task) broadcast({ type: 'tracker:task_updated', data: task });
+  return { result: r, task };
+}
+
+/** SQLite-form TEXT -> epoch ms, for the two legacy TEXT instants `updateTask` still takes
+ *  from its callers (the tool arguments are ISO strings the model wrote). */
+function tsToMsOrNull(text: string | null): number | null {
+  if (text == null || text === '') return null;
+  const ms = Date.parse(/[TZ]|[+-]\d\d:?\d\d$/.test(text) ? text : `${text}Z`);
+  return Number.isNaN(ms) ? null : ms;
+}
+
 export function addTaskNotes(id: string, notes: string): void {
-  const db = getDb();
   const timestamp = new Date().toISOString();
-  const entry = `[${timestamp}] ${notes}`;
-
-  db.prepare(`
-    UPDATE legacy_tasks SET
-      notes = CASE WHEN notes IS NULL THEN ? ELSE notes || char(10) || ? END,
-      updated_at = datetime('now')
-    WHERE id = ?
-  `).run(entry, entry, id);
-
+  appendWorkNotes(id, `[${timestamp}] ${notes}`);
   logger.info('Task notes added', { taskId: id, notesLength: notes.length });
 }
 
@@ -1086,10 +988,7 @@ export function addTaskNotes(id: string, notes: string): void {
  * addTaskNotes instead.
  */
 export function setTaskNotes(id: string, notes: string): void {
-  const db = getDb();
-  db.prepare(`
-    UPDATE legacy_tasks SET notes = ?, updated_at = datetime('now') WHERE id = ?
-  `).run(notes, id);
+  patchWork(id, { notes });
   logger.info('Task notes replaced', { taskId: id, notesLength: notes.length });
 }
 
@@ -1098,10 +997,7 @@ export function setTaskNotes(id: string, notes: string): void {
  * notes are obsolete and no replacement content is appropriate.
  */
 export function clearTaskNotes(id: string): void {
-  const db = getDb();
-  db.prepare(`
-    UPDATE legacy_tasks SET notes = NULL, updated_at = datetime('now') WHERE id = ?
-  `).run(id);
+  patchWork(id, { notes: null });
   logger.info('Task notes cleared', { taskId: id });
 }
 

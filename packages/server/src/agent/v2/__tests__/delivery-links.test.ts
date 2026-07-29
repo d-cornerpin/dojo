@@ -47,10 +47,6 @@ beforeEach(() => {
       id TEXT PRIMARY KEY, agent_id TEXT, tool TEXT, turn_number INTEGER,
       sent_text TEXT, conv_key TEXT, verified INTEGER, created_at TEXT
     );
-    CREATE TABLE legacy_tasks (
-      id TEXT PRIMARY KEY, assigned_to TEXT, source_message_id TEXT,
-      origin_conv_key TEXT, created_at TEXT
-    );
     CREATE TABLE turns (
       agent_id TEXT, turn_number INTEGER, exit_reason TEXT, answered INTEGER NOT NULL,
       started_at TEXT, ended_at TEXT, answer_message_id TEXT, source_message_id TEXT, conv_key TEXT
@@ -126,13 +122,18 @@ describe('deliveries.receipt_id is READ, not merely written', () => {
 // 2. turn_artifacts.delivery_id — the reader is the task-close evidence consult
 // ════════════════════════════════════════════════════════════════════════
 
+import { createWorkTable, seedTrackerTask, ms } from '../../../work/__tests__/work-fixture.js';
+
 const TASK = 'task-1';
 const ASK = 'msg-ask-1';
 
 function seedTaskAndAnsweredTurn(): void {
-  mockDb.current!.prepare(
-    `INSERT INTO legacy_tasks VALUES (?, ?, ?, 'owner', '2026-07-28 07:15:34')`,
-  ).run(TASK, AGENT, ASK);
+  createWorkTable(mockDb.current!);
+  seedTrackerTask(mockDb.current!, {
+    id: TASK, agentId: AGENT, status: 'in_progress',
+    source_message_id: ASK, origin_conv_key: 'owner',
+    opened_at: ms('2026-07-28 07:15:34'),
+  });
   mockDb.current!.prepare(
     `INSERT INTO turns VALUES (?, 100, 'answered', 1, '2026-07-28 07:16:00', '2026-07-28 07:16:30', 'msg-answer', ?, NULL)`,
   ).run(AGENT, ASK);

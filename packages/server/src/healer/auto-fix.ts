@@ -11,6 +11,8 @@ import { broadcast } from '../gateway/ws.js';
 import { v4 as uuidv4 } from 'uuid';
 import { sanitizeMessagesOnModelChange } from '../agent/model-switch.js';
 import type { DiagnosticItem } from './diagnostic.js';
+import { taskScope, projectScope } from '../work/tracker-view.js';
+import { setTrackerStatus, patchWork, deliveryForCompletedChildren } from '../work/tracker-store.js';
 
 const logger = createLogger('healer-autofix');
 
@@ -221,18 +223,31 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
   // Unassign tasks from terminated agents. Paused tasks stay paused
   // (the user explicitly paused them — don't silently unpause).
   // Non-paused tasks move to on_deck so they can be reassigned.
+  // PHASE-2 T8b: on `work`, and the state half now goes through `transition()` per row.
+  // The old statement did both jobs in one ungated UPDATE — it moved state with no reason,
+  // no actor and no event. Unassigning is a column patch; moving to `on_deck` is a
+  // transition and says who did it and why.
   const db = getDb();
-  const unpaused = db.prepare(`
-    UPDATE legacy_tasks SET assigned_to = NULL, status = 'on_deck', updated_at = datetime('now')
-    WHERE assigned_to IN (SELECT id FROM agents WHERE status = 'terminated')
-      AND status IN ('in_progress', 'on_deck')
-  `).run();
-  const pausedOrphans = db.prepare(`
-    UPDATE legacy_tasks SET assigned_to = NULL, updated_at = datetime('now')
-    WHERE assigned_to IN (SELECT id FROM agents WHERE status = 'terminated')
-      AND status = 'paused'
-  `).run();
-  const orphaned = { changes: unpaused.changes + pausedOrphans.changes };
+  const orphans = db.prepare(`
+    SELECT w.id AS id, w.state AS state FROM work w
+     WHERE ${taskScope('w')}
+       AND w.agent_id IN (SELECT id FROM agents WHERE status = 'terminated')
+       AND w.state IN ('claimed', 'on_deck', 'paused')
+  `).all() as Array<{ id: string; state: string }>;
+  let changed = 0;
+  for (const o of orphans) {
+    // Paused tasks stay paused (the user explicitly paused them — don't silently unpause).
+    if (o.state !== 'paused') {
+      const r = setTrackerStatus(o.id, 'on_deck', {
+        by: 'healer', actorId: 'healer',
+        reason: 'assigned agent no longer exists; returned to the deck for reassignment',
+      });
+      if (r.kind !== 'applied' && r.kind !== 'noop') continue;
+    }
+    patchWork(o.id, { agent_id: null, assignee_agent: null });
+    changed++;
+  }
+  const orphaned = { changes: changed };
 
   if (orphaned.changes > 0) {
     return {
@@ -255,15 +270,27 @@ function fixOrphanedProject(item: DiagnosticItem): AutoFixResult {
   // therefore `status != 'complete'` (not `NOT IN ('complete','fallen')`): a
   // fallen task now blocks the close, which is also what keeps the paired
   // ORPHANED_PROJECT detector from re-offering this project every cycle.
-  const updated = db.prepare(`
-    UPDATE legacy_projects SET status = 'complete', completed_at = datetime('now'), updated_at = datetime('now')
-    WHERE status = 'active'
-      AND NOT EXISTS (
-        SELECT 1 FROM legacy_tasks t
-        WHERE t.project_id = legacy_projects.id AND t.status != 'complete'
-      )
-      AND EXISTS (SELECT 1 FROM legacy_tasks t2 WHERE t2.project_id = legacy_projects.id)
-  `).run();
+  const finished = db.prepare(`
+    SELECT p.id AS id FROM work p
+     WHERE ${projectScope('p')} AND p.state = 'open'
+       AND NOT EXISTS (
+         SELECT 1 FROM work t WHERE t.parent_id = p.id AND t.kind = 'task' AND t.state <> 'done'
+       )
+       AND EXISTS (SELECT 1 FROM work t2 WHERE t2.parent_id = p.id AND t2.kind = 'task')
+  `).all() as Array<{ id: string }>;
+  let closed = 0;
+  for (const p of finished) {
+    // G7: `done` points at a delivery. A project has none of its own, so it points at the
+    // real delivery its last completed child was closed against (`deliveryForCompletedChildren`).
+    const r = setTrackerStatus(p.id, 'complete', {
+      by: 'healer', actorId: 'healer',
+      reason: 'every task on this project is complete; closing the project to match',
+      resultDeliveryId: deliveryForCompletedChildren(p.id),
+    });
+    if (r.kind === 'applied') closed++;
+    else logger.warn('project auto-close refused', { projectId: p.id, result: r });
+  }
+  const updated = { changes: closed };
 
   if (updated.changes > 0) {
     return {

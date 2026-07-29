@@ -38,7 +38,9 @@ import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import type { TurnExitReason } from './turn-record.js';
 import { writeTaskLog } from '../../tracker/task-log.js';
-import { askIdForMessage } from '../../work/store.js';
+import { askIdForMessage, type WorkState } from '../../work/store.js';
+import { taskScope, tsToMs, type TrackerStatus } from '../../work/tracker-view.js';
+import { setTrackerStatus } from '../../work/tracker-store.js';
 
 const logger = createLogger('answered-edge');
 
@@ -353,16 +355,14 @@ export function turnOutcome(agentId: string, turnNumber: number | null | undefin
 // research hour had exec and web calls in it and would not pause here), records itself in
 // `task_log`, and is undone by the owner's next word.
 //
-// ⚠ WHERE THESE TWO WRITE, AND WHO CONVERTS THEM. A tracker task's live state is still
-// `legacy_tasks.status` — PHASE-2 T2 moved the SCHEMA and PHASE-2 T8 moves the WRITERS, and
-// until T8 lands there is no `work` row for a task created today. Writing the disposition
-// to the spine would write it where nothing reads. So these two are declared on the T8
-// burn-down in `work/__tests__/single-writer-conformance.test.ts` (PART B) like every other
-// outstanding legacy state writer, and T8 routes them through `transition()` with the rest.
+// WHERE THESE TWO WRITE (PHASE-2 T8b, the conversion T6 declared and dated): both go
+// through `transition()` on the `work` spine now. The pause carries the delivery receipt it
+// already held as its evidence_ref, which is what lets it be `by: 'engine'` at all (G6: the
+// engine may only assert what it can point at); the reopen is the OWNER's word and says so.
 // ════════════════════════════════════════════════════════════════════════════════
 
-/** Statuses this disposition may move FROM. The drive states, and only those. */
-const DRIVE_STATES = ["'in_progress'"];
+/** States this disposition may move FROM. The drive states, and only those. */
+const DRIVE_STATES = ["'claimed'"];
 
 export interface PauseResult { paused: number; ids: string[] }
 
@@ -404,23 +404,30 @@ export function pauseDriveWorkWaitingOnOwner(
 
   const db = getDb();
   const since = opts?.touchedSince ?? null;
+  const sinceMs = since == null ? null : tsToMs(since);
   const rows = db.prepare(
-    `SELECT id, status FROM legacy_tasks
-      WHERE assigned_to = ? AND status IN (${DRIVE_STATES.join(', ')})
-        AND is_paused = 0 AND repeat_interval IS NULL
-        ${since ? 'AND updated_at >= ?' : ''}
-      ORDER BY updated_at DESC LIMIT 10`,
-  ).all(...(since ? [agentId, since] : [agentId])) as Array<{ id: string; status: string }>;
+    `SELECT w.id AS id, w.state AS state FROM work w
+      WHERE ${taskScope('w')}
+        AND w.agent_id = ? AND w.state IN (${DRIVE_STATES.join(', ')})
+        AND w.is_paused = 0 AND w.repeat_interval IS NULL
+        ${sinceMs != null ? 'AND w.updated_at >= ?' : ''}
+      ORDER BY w.updated_at DESC LIMIT 10`,
+  ).all(...(sinceMs != null ? [agentId, sinceMs] : [agentId])) as Array<{ id: string; state: string }>;
   if (rows.length === 0) return none;
 
+  // The receipt this whole disposition is keyed on, resolved once: it is both the reason the
+  // pause is allowed and the evidence G6 requires of an engine assertion.
+  const receipt = terminalDeliveryForTurn(agentId, turnNumber, opts?.conversationId ?? null);
   const ids: string[] = [];
   for (const t of rows) {
-    const changed = db.prepare(
-      `UPDATE legacy_tasks
-          SET status = 'paused', status_before_pause = ?, updated_at = datetime('now')
-        WHERE id = ? AND status = ?`,
-    ).run(t.status, t.id, t.status).changes;
-    if (changed === 1) ids.push(t.id);
+    const r = setTrackerStatus(t.id, 'paused', {
+      by: receipt ? 'engine' : 'agent', actorId: agentId,
+      evidenceRef: receipt,
+      expectedState: t.state as WorkState,
+      reason: `turn ${turnNumber} delivered a reply to the person and executed no effectful call; `
+        + 'the work is waiting on them, so it stops being driven and is surfaced by aging instead',
+    });
+    if (r.kind === 'applied') ids.push(t.id);
   }
   if (ids.length > 0) {
     // Written SYNCHRONOUSLY, in the same tick as the disposition. An audit entry that
@@ -456,19 +463,21 @@ export interface ResumeResult { resumed: number; ids: string[] }
 export function resumeWorkOnOwnerAsk(agentId: string): ResumeResult {
   const db = getDb();
   const rows = db.prepare(
-    `SELECT id, status_before_pause AS prev FROM legacy_tasks
-      WHERE assigned_to = ? AND status = 'paused' AND status_before_pause IS NOT NULL
-        AND is_paused = 0
-      ORDER BY updated_at DESC LIMIT 10`,
+    `SELECT w.id AS id, w.status_before_pause AS prev FROM work w
+      WHERE ${taskScope('w')}
+        AND w.agent_id = ? AND w.state = 'paused' AND w.status_before_pause IS NOT NULL
+        AND w.is_paused = 0
+      ORDER BY w.updated_at DESC LIMIT 10`,
   ).all(agentId) as Array<{ id: string; prev: string }>;
   const ids: string[] = [];
   for (const t of rows) {
-    const changed = db.prepare(
-      `UPDATE legacy_tasks
-          SET status = ?, status_before_pause = NULL, updated_at = datetime('now')
-        WHERE id = ? AND status = 'paused' AND status_before_pause IS NOT NULL`,
-    ).run(t.prev, t.id).changes;
-    if (changed === 1) ids.push(t.id);
+    // `by: 'owner'` is the literal truth of this edge and it is what makes it legal without
+    // evidence: the owner spoke, and their word is the authority G8 recognises.
+    const r = setTrackerStatus(t.id, t.prev as TrackerStatus, {
+      by: 'owner', actorId: 'owner', expectedState: 'paused',
+      reason: 'the engine paused this because the work was waiting on the owner; they have now spoken',
+    });
+    if (r.kind === 'applied') ids.push(t.id);
   }
   if (ids.length > 0) {
     for (const id of ids) {

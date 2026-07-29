@@ -68,7 +68,8 @@ describe('serve boundary (P2)', () => {
     const fn = cp.slice(cp.indexOf('export function retireSpentEngineEvents'));
     const body = fn.slice(0, 3000);
     expect(body).toMatch(/SELECT status FROM task_runs WHERE id = \?/);
-    expect(body).toMatch(/SELECT status, is_paused FROM legacy_tasks WHERE id = \?/);
+    // PHASE-2 T8b: the live referent is a `work` row, read through the tracker's own scope.
+    expect(body).toMatch(/AS status, w\.is_paused AS is_paused FROM work w/);
   });
 });
 

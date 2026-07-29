@@ -23,6 +23,7 @@ import {
   sweepByRowid,
 } from '../../memory/message-store.js';
 import { transition } from '../../work/store.js';
+import { taskScope, STATE_TO_STATUS_SQL } from '../../work/tracker-view.js';
 import { postAgentNotice } from '../agent-notice.js';
 
 const logger = createLogger('counterparty');
@@ -414,7 +415,7 @@ export function retireSpentEngineEvents(agentId: string): number {
         else if (run.status !== 'running') { reason = 'run_closed'; referentState = `run ${run.status}`; }
       }
       if (!reason && ev.task_id) {
-        const task = db.prepare('SELECT status, is_paused FROM legacy_tasks WHERE id = ?').get(ev.task_id) as { status: string; is_paused: number } | undefined;
+        const task = db.prepare(`SELECT ${STATE_TO_STATUS_SQL('w.state')} AS status, w.is_paused AS is_paused FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(ev.task_id) as { status: string; is_paused: number } | undefined;
         if (!task) { reason = 'task_missing'; referentState = 'task row gone'; }
         else if (task.status === 'complete' || task.status === 'fallen') { reason = 'task_terminal'; referentState = `task ${task.status}`; }
         else if (task.status === 'paused' && task.is_paused === 1) { reason = 'task_paused'; referentState = 'task paused'; }

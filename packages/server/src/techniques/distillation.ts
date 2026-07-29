@@ -26,6 +26,7 @@ import { createLogger } from '../logger.js';
 import { getPrimaryAgentId } from '../config/platform.js';
 import { getTrainerAgentId, isTrainerEnabled } from '../config/platform.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
+import { taskScope } from '../work/tracker-view.js';
 
 const logger = createLogger('technique-distillation');
 
@@ -61,11 +62,11 @@ function normalizeTitle(title: string): string {
 function findRepeatedSuccessGroups(): CompletionGroup[] {
   const db = getDb();
   const rows = db.prepare(`
-    SELECT id, title, goal FROM legacy_tasks
-    WHERE status = 'complete'
-      AND updated_at >= datetime('now', '-${PATTERN_LOOKBACK_DAYS} days')
-      AND title IS NOT NULL
-  `).all() as Array<{ id: string; title: string; goal: string | null }>;
+    SELECT w.id AS id, w.title AS title, w.goal AS goal FROM work w
+    WHERE ${taskScope('w')} AND w.state = 'done'
+      AND w.updated_at >= ?
+      AND w.title IS NOT NULL
+  `).all(Date.now() - PATTERN_LOOKBACK_DAYS * 86400000) as Array<{ id: string; title: string; goal: string | null }>;
 
   const groups = new Map<string, CompletionGroup>();
   for (const row of rows) {
