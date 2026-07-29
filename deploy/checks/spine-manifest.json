@@ -263,11 +263,10 @@
       "definedIn": "packages/server/src/db/migrations/134_created_by_kind.sql",
       "why": "Harness ownership as a FACT rather than a name pattern (migration 134, PHASE-1 T11). 'user' | 'agent' | 'harness', NULLABLE by design so no existing row is backfilled and nothing is inferred from NULL (#15). Stamped at creation by the tracker's writers so a test run's rows are structurally its own. Declared here rather than left undeclared (T13-items #23 argued for leaving it out) because an undeclared spine column is invisible to this gate forever, whereas a declared one with its reader named stays true and gets re-checked on every run.",
       "zeroReader": {
-        "kind": "external-reader",
-        "reader": "dojo-test-kit/behavioral/runner.mjs (clean-slate sweep and per-run teardown)",
-        "verifiedBy": "git -C ../dojo-test-kit grep -nP \"created_by_kind\" HEAD",
-        "date": "2026-07-28",
-        "reason": "The consumer is the behavioral kit, a separate repository, by design \u2014 the sweep must decide what it may delete from a fact the PLATFORM stamped, not from a name it guessed. Measured 2026-07-28 at kit 6482eb7: 15 hits, including runner.mjs:581/:605 (the two sweep prongs), runner.mjs:563 (the one-time adoption), and behavioral/__selftest__/kit-schema-conformance.mjs:162, which PREPARES the sweep's own SQL against the migrated schema so the kit's reader cannot silently rot. This gate's scope is packages/*/src; that is a statement about the gate, not a defect in it, so it is not a waiver."
+        "kind": "owed",
+        "owner": "PHASE-2 T10 (the demolition), which DROPS the column with its table",
+        "date": "2026-07-29",
+        "reason": "CORRECTED BY PHASE-2 T8a, 2026-07-29. The previous disposition claimed kind='external-reader' with dojo-test-kit/behavioral/runner.mjs as the reader. That claim is FALSE about the tree, and it was re-run rather than believed: `git -C ../dojo-test-kit grep -nP \"created_by_kind\"` returns 15 hits and `... | grep -cP \"legacy_tasks|legacy_projects\"` returns 0. Every cited line reads agents.created_by_kind - runner.mjs:61 (a predicate on agents.name), :563 (the one-time adoption), :581 and :605 (both sweep prongs), bot.mjs:241/:306/:310, and kit-schema-conformance.mjs:162, which prepares \"SELECT created_by_kind FROM agents\". The sweep then deletes tracker rows by JOINING on created_by/assigned_to IN <harness agent ids> (runner.mjs:608 for tasks, :613 for projects) - it never consults the tracker's own copy. So this column has NO reader in production, in the kit, or in any test, which is why T8a's migration 137 deliberately did NOT carry it onto `work` (the Fork-A ruling's criterion is readers). The debt is settled by REMOVAL, not by wiring: T10 drops legacy_tasks/legacy_projects and this column goes with them. Recorded as a dated debt with an owner rather than a comfortable sentence - a false external-reader claim is worse than a declared orphan, because it stops the gate from asking the question at all."
       }
     },
     {
@@ -278,11 +277,10 @@
       "definedIn": "packages/server/src/db/migrations/134_created_by_kind.sql",
       "why": "Harness ownership as a FACT rather than a name pattern (migration 134, PHASE-1 T11). 'user' | 'agent' | 'harness', NULLABLE by design so no existing row is backfilled and nothing is inferred from NULL (#15). Same stamp on the projects table; same kit consumer.",
       "zeroReader": {
-        "kind": "external-reader",
-        "reader": "dojo-test-kit/behavioral/runner.mjs (clean-slate sweep and per-run teardown)",
-        "verifiedBy": "git -C ../dojo-test-kit grep -nP \"created_by_kind\" HEAD",
-        "date": "2026-07-28",
-        "reason": "As tasks.created_by_kind \u2014 the sweep deletes leftover harness projects by this column (runner.mjs:605 collects harness ids; the teardown scopes on them), and kit-schema-conformance.mjs prepares the statement against the real schema."
+        "kind": "owed",
+        "owner": "PHASE-2 T10 (the demolition), which DROPS the column with its table",
+        "date": "2026-07-29",
+        "reason": "CORRECTED BY PHASE-2 T8a, 2026-07-29. The previous disposition claimed kind='external-reader' with dojo-test-kit/behavioral/runner.mjs as the reader. That claim is FALSE about the tree, and it was re-run rather than believed: `git -C ../dojo-test-kit grep -nP \"created_by_kind\"` returns 15 hits and `... | grep -cP \"legacy_tasks|legacy_projects\"` returns 0. Every cited line reads agents.created_by_kind - runner.mjs:61 (a predicate on agents.name), :563 (the one-time adoption), :581 and :605 (both sweep prongs), bot.mjs:241/:306/:310, and kit-schema-conformance.mjs:162, which prepares \"SELECT created_by_kind FROM agents\". The sweep then deletes tracker rows by JOINING on created_by/assigned_to IN <harness agent ids> (runner.mjs:608 for tasks, :613 for projects) - it never consults the tracker's own copy. So this column has NO reader in production, in the kit, or in any test, which is why T8a's migration 137 deliberately did NOT carry it onto `work` (the Fork-A ruling's criterion is readers). The debt is settled by REMOVAL, not by wiring: T10 drops legacy_tasks/legacy_projects and this column goes with them. Recorded as a dated debt with an owner rather than a comfortable sentence - a false external-reader claim is worse than a declared orphan, because it stops the gate from asking the question at all."
       }
     },
     {
