@@ -254,6 +254,20 @@
       "why": "A NEW file above the 400-line new-file cap, added to `files` deliberately so the addition is seen and argued with. It is the tracker's WRITE side on the spine: creation, the typed attribute patcher, and `setTrackerStatus` (= `transition()` with the tracker's vocabulary outside). It cannot live anywhere else: clause (a) of the single-writer property says every `work` write is under `work/`, and it is deliberately NOT in `store.ts`, because clause (b) says `work.state` UPDATEs live only there \u2014 putting the attribute patcher beside the state writer is exactly the two-mechanism shape the split exists to prevent. Its sibling `tracker-view.ts` (350) is under the cap and stays unlisted. Both shrink at T8c (the schedule and stamp families collapse) and again at T10."
     },
     {
+      "path": "packages/server/src/work/store.ts",
+      "from": 1573,
+      "to": 1612,
+      "by": "PHASE-2 T10 (2026-07-29), RULING 7 rider (b)",
+      "why": "THIRTY-NINE lines, and thirty of them are the incident written down. `loudOnPieceAbort` wraps the two piece-settling transitions so a RAISE(ABORT) during piece landing logs at `error` with the child work id, its kind, root_kind, root_id, parent and agent — the facts the six-hour phantom-trigger window had none of. It belongs in this file for the reason the empty-piece refusal already states in its own comment: inside the settle function, no caller can forget it, and the two catch sites in `a2a-transport.ts` are the callers that DID forget. This number comes back down in this same task when the drops land."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 1805,
+      "to": 1814,
+      "by": "PHASE-2 T10 (2026-07-29), RULING 7 rider (b)",
+      "why": "NINE lines at the catch site the MAP-TRIAGE bisect named. The `warn` carried the error string and nothing else; the join owns this thread, so the ordinary \"surface this deliverable\" hint is deliberately suppressed (C21) — when the landing fails here NOBODY tells the owner, which is a consequence `warn` does not describe. Now `error`, carrying the agent, the thread, the sender and the intent. Comes back down in this task when `a2a_threads` drops."
+    },
+    {
       "path": "packages/server/src/gateway/routes/tracker.ts",
       "from": 877,
       "to": 886,
@@ -525,7 +539,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1381,
-    "packages/server/src/agent/a2a-transport.ts": 1805,
+    "packages/server/src/agent/a2a-transport.ts": 1814,
     "packages/server/src/agent/browser.ts": 412,
     "packages/server/src/agent/destructive-gate.ts": 552,
     "packages/server/src/agent/model.ts": 2655,
@@ -605,7 +619,7 @@
     "packages/server/src/voice/model-manager.ts": 583,
     "packages/server/src/voice/stt-service.ts": 538,
     "packages/server/src/voice/voice-ws.ts": 2299,
-    "packages/server/src/work/store.ts": 1573,
+    "packages/server/src/work/store.ts": 1612,
     "packages/shared/src/types.ts": 500,
     "packages/shared/src/visibility.ts": 865,
     "packages/shared/src/ws.ts": 1082,
