@@ -647,8 +647,14 @@
       "table": "work",
       "column": "last_activity_turn",
       "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
-      "why": "THE ACTIVITY STAMPS \u2014 a BRIDGE. Research 19 s1c makes them a view over `work_events` + `deliveries`. T8a booked that collapse to T8b; T8b moved their STORAGE (they are read from `work` now), which is not the collapse, so the ORCHESTRATOR RE-ASSIGNED it to T8c (RULING 3 s3). Named successor, named owner. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/task-stamps.ts, tracker/tools.ts.",
-      "verifiedBy": "git grep -l 'last_activity_turn' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+      "why": "THE ACTIVITY STAMPS \u2014 COLLAPSED AT PHASE-2 T8c item 2, exactly as this entry's own successor line promised. Research 19 s1c makes them a view over `work_events` + `deliveries`; that view is now `work/tracker-view.ts:stampColumns`, reading one `work_events` row of kind `activity` per ticket per turn-finalize written by `work/tracker-store.ts:stampTicket`. The four duplicated projections that used to name these columns (tracker/tools.ts, tracker/pm-agent.ts, memory/assembler.ts, agent/v2/loop.ts) all read the shared fragment now. So the column genuinely has NO production reader any more \u2014 that is the collapse landing, not a regression.",
+      "verifiedBy": "git grep -l 'last_activity_turn' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "PHASE-2 T10",
+        "date": "2026-07-29",
+        "reason": "The successor shipped and the column is now dead storage. T10's demolition drops it; declaring it read would be a lie and removing the declaration would hide a live column from the gate. Re-measure with the verifiedBy command below: the only hits left are the migration that created it and this file."
+      }
     },
     {
       "id": "work.last_activity_at",
@@ -656,8 +662,14 @@
       "table": "work",
       "column": "last_activity_at",
       "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
-      "why": "THE ACTIVITY STAMPS \u2014 a BRIDGE. Research 19 s1c makes them a view over `work_events` + `deliveries`. T8a booked that collapse to T8b; T8b moved their STORAGE (they are read from `work` now), which is not the collapse, so the ORCHESTRATOR RE-ASSIGNED it to T8c (RULING 3 s3). Named successor, named owner. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/task-stamps.ts, tracker/tools.ts.",
-      "verifiedBy": "git grep -l 'last_activity_at' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+      "why": "THE ACTIVITY STAMPS \u2014 COLLAPSED AT PHASE-2 T8c item 2, exactly as this entry's own successor line promised. Research 19 s1c makes them a view over `work_events` + `deliveries`; that view is now `work/tracker-view.ts:stampColumns`, reading one `work_events` row of kind `activity` per ticket per turn-finalize written by `work/tracker-store.ts:stampTicket`. The four duplicated projections that used to name these columns (tracker/tools.ts, tracker/pm-agent.ts, memory/assembler.ts, agent/v2/loop.ts) all read the shared fragment now. So the column genuinely has NO production reader any more \u2014 that is the collapse landing, not a regression.",
+      "verifiedBy": "git grep -l 'last_activity_at' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "PHASE-2 T10",
+        "date": "2026-07-29",
+        "reason": "The successor shipped and the column is now dead storage. T10's demolition drops it; declaring it read would be a lie and removing the declaration would hide a live column from the gate. Re-measure with the verifiedBy command below: the only hits left are the migration that created it and this file."
+      }
     },
     {
       "id": "work.last_activity_outcome",
@@ -665,8 +677,14 @@
       "table": "work",
       "column": "last_activity_outcome",
       "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
-      "why": "THE ACTIVITY STAMPS \u2014 a BRIDGE. Research 19 s1c makes them a view over `work_events` + `deliveries`. T8a booked that collapse to T8b; T8b moved their STORAGE (they are read from `work` now), which is not the collapse, so the ORCHESTRATOR RE-ASSIGNED it to T8c (RULING 3 s3). Named successor, named owner. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/task-stamps.ts, tracker/tools.ts.",
-      "verifiedBy": "git grep -l 'last_activity_outcome' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+      "why": "THE ACTIVITY STAMPS \u2014 COLLAPSED AT PHASE-2 T8c item 2, exactly as this entry's own successor line promised. Research 19 s1c makes them a view over `work_events` + `deliveries`; that view is now `work/tracker-view.ts:stampColumns`, reading one `work_events` row of kind `activity` per ticket per turn-finalize written by `work/tracker-store.ts:stampTicket`. The four duplicated projections that used to name these columns (tracker/tools.ts, tracker/pm-agent.ts, memory/assembler.ts, agent/v2/loop.ts) all read the shared fragment now. So the column genuinely has NO production reader any more \u2014 that is the collapse landing, not a regression.",
+      "verifiedBy": "git grep -l 'last_activity_outcome' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "PHASE-2 T10",
+        "date": "2026-07-29",
+        "reason": "The successor shipped and the column is now dead storage. T10's demolition drops it; declaring it read would be a lie and removing the declaration would hide a live column from the gate. Re-measure with the verifiedBy command below: the only hits left are the migration that created it and this file."
+      }
     },
     {
       "id": "work.last_answered_turn",
@@ -674,8 +692,14 @@
       "table": "work",
       "column": "last_answered_turn",
       "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
-      "why": "THE ACTIVITY STAMPS \u2014 a BRIDGE. Research 19 s1c makes them a view over `work_events` + `deliveries`. T8a booked that collapse to T8b; T8b moved their STORAGE (they are read from `work` now), which is not the collapse, so the ORCHESTRATOR RE-ASSIGNED it to T8c (RULING 3 s3). Named successor, named owner. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/task-stamps.ts, tracker/tools.ts.",
-      "verifiedBy": "git grep -l 'last_answered_turn' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+      "why": "THE ACTIVITY STAMPS \u2014 COLLAPSED AT PHASE-2 T8c item 2, exactly as this entry's own successor line promised. Research 19 s1c makes them a view over `work_events` + `deliveries`; that view is now `work/tracker-view.ts:stampColumns`, reading one `work_events` row of kind `activity` per ticket per turn-finalize written by `work/tracker-store.ts:stampTicket`. The four duplicated projections that used to name these columns (tracker/tools.ts, tracker/pm-agent.ts, memory/assembler.ts, agent/v2/loop.ts) all read the shared fragment now. So the column genuinely has NO production reader any more \u2014 that is the collapse landing, not a regression.",
+      "verifiedBy": "git grep -l 'last_answered_turn' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "PHASE-2 T10",
+        "date": "2026-07-29",
+        "reason": "The successor shipped and the column is now dead storage. T10's demolition drops it; declaring it read would be a lie and removing the declaration would hide a live column from the gate. Re-measure with the verifiedBy command below: the only hits left are the migration that created it and this file."
+      }
     },
     {
       "id": "work.last_answered_at",
@@ -683,8 +707,14 @@
       "table": "work",
       "column": "last_answered_at",
       "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
-      "why": "THE ACTIVITY STAMPS \u2014 a BRIDGE. Research 19 s1c makes them a view over `work_events` + `deliveries`. T8a booked that collapse to T8b; T8b moved their STORAGE (they are read from `work` now), which is not the collapse, so the ORCHESTRATOR RE-ASSIGNED it to T8c (RULING 3 s3). Named successor, named owner. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/task-stamps.ts, tracker/tools.ts.",
-      "verifiedBy": "git grep -l 'last_answered_at' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+      "why": "THE ACTIVITY STAMPS \u2014 COLLAPSED AT PHASE-2 T8c item 2, exactly as this entry's own successor line promised. Research 19 s1c makes them a view over `work_events` + `deliveries`; that view is now `work/tracker-view.ts:stampColumns`, reading one `work_events` row of kind `activity` per ticket per turn-finalize written by `work/tracker-store.ts:stampTicket`. The four duplicated projections that used to name these columns (tracker/tools.ts, tracker/pm-agent.ts, memory/assembler.ts, agent/v2/loop.ts) all read the shared fragment now. So the column genuinely has NO production reader any more \u2014 that is the collapse landing, not a regression.",
+      "verifiedBy": "git grep -l 'last_answered_at' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "PHASE-2 T10",
+        "date": "2026-07-29",
+        "reason": "The successor shipped and the column is now dead storage. T10's demolition drops it; declaring it read would be a lie and removing the declaration would hide a live column from the gate. Re-measure with the verifiedBy command below: the only hits left are the migration that created it and this file."
+      }
     },
     {
       "id": "work.last_delivery_summary",
@@ -692,8 +722,14 @@
       "table": "work",
       "column": "last_delivery_summary",
       "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
-      "why": "THE ACTIVITY STAMPS \u2014 a BRIDGE. Research 19 s1c makes them a view over `work_events` + `deliveries`. T8a booked that collapse to T8b; T8b moved their STORAGE (they are read from `work` now), which is not the collapse, so the ORCHESTRATOR RE-ASSIGNED it to T8c (RULING 3 s3). Named successor, named owner. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/task-stamps.ts, tracker/tools.ts.",
-      "verifiedBy": "git grep -l 'last_delivery_summary' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+      "why": "THE ACTIVITY STAMPS \u2014 COLLAPSED AT PHASE-2 T8c item 2, exactly as this entry's own successor line promised. Research 19 s1c makes them a view over `work_events` + `deliveries`; that view is now `work/tracker-view.ts:stampColumns`, reading one `work_events` row of kind `activity` per ticket per turn-finalize written by `work/tracker-store.ts:stampTicket`. The four duplicated projections that used to name these columns (tracker/tools.ts, tracker/pm-agent.ts, memory/assembler.ts, agent/v2/loop.ts) all read the shared fragment now. So the column genuinely has NO production reader any more \u2014 that is the collapse landing, not a regression.",
+      "verifiedBy": "git grep -l 'last_delivery_summary' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "PHASE-2 T10",
+        "date": "2026-07-29",
+        "reason": "The successor shipped and the column is now dead storage. T10's demolition drops it; declaring it read would be a lie and removing the declaration would hide a live column from the gate. Re-measure with the verifiedBy command below: the only hits left are the migration that created it and this file."
+      }
     }
   ],
   "tables": [

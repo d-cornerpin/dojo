@@ -336,6 +336,41 @@
       "to": 10475,
       "by": "PHASE-2 T8c item 1 (2026-07-29)",
       "why": "`clearPokeLog` becomes `recordRemediation` in the reassign case \u2014 a one-line import split plus the same one-line call."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 4342,
+      "to": 4394,
+      "by": "PHASE-2 T8c item 2 (2026-07-29)",
+      "why": "The delivered-work backstop becomes a TESTED PREDICATE. PINNED s12 carries a STOP: grep-zero on `deliverable_shown` is FORBIDDEN until the retask backstop's requirement is a test, and it had none because the guard was inline in an async handler that also delivers over A2A, broadcasts, writes a task-log entry and may trigger a stalemate. `retaskWouldOverwriteDeliveredWork` / `retaskIsRefused` are pure functions of four facts with `retask-delivered-work-backstop.test.ts` covering BOTH branches and the `allow_regenerate` escape hatch, which is precisely the condition T10 needs to drop the column. The cost is the reasoning, at the line where the incident happened."
+    },
+    {
+      "path": "packages/server/src/work/tracker-store.ts",
+      "from": 492,
+      "to": 502,
+      "by": "PHASE-2 T8c item 2 (2026-07-29)",
+      "why": "`stampTicket`'s six-column UPDATE with three COALESCEs becomes one `appendWorkEvent` (T8a's booked stamp collapse). The statement shrank; the note explaining why an event log makes the never-touch-updated_at rule true BY CONSTRUCTION rather than by remembering is what grew."
+    },
+    {
+      "path": "packages/server/src/tracker/pm-agent.ts",
+      "from": 2060,
+      "to": 2068,
+      "by": "PHASE-2 T8c item 2 (2026-07-29)",
+      "why": "The `deliverable_shown` reads in the closeout brief are STRIPPED (measured: 245/245 rows on this box and 53/53 on the owner's real backup carry 0, so the brief printed a constant as if it were a fact) and the stamp projection collapses into the shared fragment. Net mechanism: less. Net lines: +8, all the measurement."
+    },
+    {
+      "path": "packages/server/src/work/tracker-view.ts",
+      "from": "(unlisted, new-file cap)",
+      "to": 410,
+      "by": "PHASE-2 T8c item 2 (2026-07-29)",
+      "why": "NEW ENTRY (the file crossed the 400-line new-file cap). It gains section 6, the stamp collapse: six correlated-subquery expressions replacing six denormalized columns AND the four near-identical projections that named them across tracker/tools.ts, tracker/pm-agent.ts, memory/assembler.ts and agent/v2/loop.ts. Three of those four copies are deleted, which is the actual disease being removed; this file is where the one surviving definition lives, and that is the whole point of the module."
+    },
+    {
+      "path": "packages/server/src/agent/v2/answered-edge.ts",
+      "from": 496,
+      "to": 520,
+      "by": "PHASE-2 T8c item 2 (2026-07-29)",
+      "why": "T6 concern 5 booked the mig-113 answer stamp to go PURE-LEGACY here once tasks lived on the spine. Re-derived at this HEAD the measurement REFUSED it: 586 stamped messages have no ask ticket (genuinely legacy) but 19 have a ticket, and all 19 are state='abandoned' \u2014 asks a person WAS answered on that T6's reaper later abandoned. Ranking the ticket above the stamp would flip those nineteen to 'not answered' and re-tell somebody something they already have, which is the direction T6 chose against on purpose. The union stands, and what these lines buy is that it now stands on a measurement plus a RETIREMENT CONDITION WRITTEN AS A COMMAND that T10 can run, instead of on the next worker re-deriving the same thing or, worse, doing the booked change without measuring."
     }
   ],
   "maxNewFileLines": 400,
@@ -430,9 +465,9 @@
     "packages/server/src/techniques/store.ts": 609,
     "packages/server/src/techniques/tools.ts": 890,
     "packages/server/src/tools/unified-read.ts": 753,
-    "packages/server/src/tracker/pm-agent.ts": 2060,
+    "packages/server/src/tracker/pm-agent.ts": 2068,
     "packages/server/src/tracker/schema.ts": 1155,
-    "packages/server/src/tracker/tools.ts": 4342,
+    "packages/server/src/tracker/tools.ts": 4394,
     "packages/server/src/twilio/call-session.ts": 884,
     "packages/server/src/twilio/sms-inbound.ts": 406,
     "packages/server/src/vault/archive.ts": 304,
@@ -449,8 +484,9 @@
     "packages/shared/src/visibility.ts": 865,
     "packages/shared/src/ws.ts": 1082,
     "watchdog/src/index.ts": 1198,
-    "packages/server/src/agent/v2/answered-edge.ts": 496,
-    "packages/server/src/work/tracker-store.ts": 492,
-    "packages/server/src/tools/work-verbs.ts": 357
+    "packages/server/src/agent/v2/answered-edge.ts": 520,
+    "packages/server/src/work/tracker-store.ts": 502,
+    "packages/server/src/tools/work-verbs.ts": 357,
+    "packages/server/src/work/tracker-view.ts": 410
   }
 }
