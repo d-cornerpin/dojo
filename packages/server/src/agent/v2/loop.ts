@@ -1003,13 +1003,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // decide whether to re-trigger and drain the rest. Engine events / A2A are not
   // human conversations here.
   const waitingConvs = getWaitingHumanConversations(agentId);
-  // PHASE-2 T6 (C8, requirement 1e): "is any work open for a human counterparty right
-  // now?" is ONE QUERY on the spine, and it is taken HERE, at the same instant as the
-  // waiting set and BEFORE the pickup claim below. The instant is load-bearing: the claim
-  // moves this turn's own trigger to `claimed`, so a read taken afterwards answers a
-  // different question ("is anybody ELSE waiting") and would turn every ordinary user turn
-  // into a settled-context wake. The consumers — the proactive-send budget and the
-  // settled-context channel hold — mean "was a person waiting when this turn started".
+  // PHASE-2 T6 (C8, requirement 1e): ONE QUERY on the spine, taken HERE — at the same
+  // instant as the waiting set and BEFORE the pickup claim below. The instant is
+  // load-bearing: the claim moves this turn's own trigger to `claimed`, so a read taken
+  // afterwards answers "is anybody ELSE waiting" and turns every ordinary user turn into a
+  // settled-context wake.
   const openHumanWorkAtTurnStart = hasOpenHumanWork(agentId);
   // C3: restore a human-task continuation. When a long human task hit MAX_TOOL_LOOPS /
   // the time budget / emergency compaction, the engine auto-continued with an empty
@@ -1082,12 +1080,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
       if (!claimed && res.kind !== 'conflict') {
         logger.warn('v2: pickup claim refused by the work spine', { agentId, workId: triggerWorkId, res }, agentId);
       }
-      // ── PHASE-2 T6 (C3) — THE REOPEN EDGE ──
-      // The owner has spoken, so work the engine parked BECAUSE it was waiting on them is
-      // waiting no longer: it returns to exactly the state it was paused from. This is the
-      // second half of the disposition at turn end and is not optional — a pause with no
-      // reopen is how a ticket rots quietly, which is precisely what the P2 drive boundary
-      // was protecting against (T1 adjudication #2, rider b).
+      // PHASE-2 T6 (C3) — THE REOPEN EDGE. The owner has spoken, so work the engine parked
+      // because it was waiting on them returns to the state it was paused from. Not
+      // optional: a pause with no reopen is how a ticket rots quietly, which is what the P2
+      // drive boundary was protecting against (T1 adjudication #2, rider b).
       if (claimed) {
         try { resumeWorkOnOwnerAsk(agentId); }
         catch (err) {
@@ -1929,13 +1925,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
   /**
    * PHASE-2 T6 (C4, requirement 1g) — the truthful-answer key has ONE setter.
    *
-   * It had four bare assignments, each with its own comment explaining that this
-   * particular persist was "genuine". Four writers of one fact is how the fact drifts:
-   * research 07 records the previous shape, where any non-JSON assistant text counted and
-   * silent-ending turns were stamped answered. The four call sites remain (they are four
-   * genuinely different user-facing surfaces), but what they DO is one function, so the
-   * rule "set only on a genuine user-facing delivery" is stated once and is greppable.
-   *
+   * Four bare assignments were four writers of one fact, which is how the fact drifts
+   * (research 07: any non-JSON assistant text once counted, and silent-ending turns were
+   * stamped answered). The four SURFACES stay; the rule is stated once and is greppable.
    * requirement preserved: this key and nothing else decides `turns.answered`, the outcome
    * ladder's `answered` rung, and the ticket stamps' answer/delivery columns.
    */
@@ -1956,24 +1948,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // of model iterations the loop concludes. The model's TEXT is never touched.
   let toolPhaseEndedBySpinBrake = false;
   let spinBrakeGraceCalls = 2;
-  // `loopBlockFiredThisTurn` — DELETED, PHASE-2 T6 (C9; T1 adjudication #3).
-  //
-  // verdict: STRIP. It was written for ONE consumer — the going-idle reconciliation's
-  // `deliverable_shown` stamp — and its docblock still described that consumer in the
-  // present tense long after the P2 drive boundary deleted the stamp (2026-07-21). What
-  // remained was a boolean set in one place, read in none, and a comment that told a
-  // reader the opposite of the truth. Re-derived at this HEAD before removal: one
-  // assignment (`loop.ts:6571`, the loop detector's block arm), zero reads across
-  // `packages/server`, `packages/dashboard`, `watchdog` and the test tree.
-  //
-  // requirement preserved: "a reply the engine itself FORCED with a STOP order is a status
-  // update, not a delivery." That is now the TURN OUTCOME's job and it is stronger there —
-  // `exit_reason` is computed `toolPhaseEndedBySpinBrake ? 'brake' : answerRow ? 'answered'
-  // : ...`, so a coerced turn can never be labelled answered, and `tracker/task-stamps.ts`
-  // gates every answer/delivery stamp on `outcome === 'answered'`. The behaviour is locked
-  // by `tracker/__tests__/coerced-reply-not-a-delivery.test.ts` (PHASE-2 T1), including a
-  // conformance lock on the ternary's order — which is what makes this deletion safe to do
-  // rather than merely tidy.
+  // `loopBlockFiredThisTurn` — DELETED, PHASE-2 T6 (C9; T1 adjudication #3). verdict: STRIP.
+  // One assignment, zero reads (re-derived at this HEAD across packages/server,
+  // packages/dashboard, watchdog and the tests), plus a docblock still describing its
+  // deleted consumer — the going-idle `deliverable_shown` stamp — in the present tense.
+  // requirement preserved: "a reply the engine FORCED with a STOP order is a status update,
+  // not a delivery" is the TURN OUTCOME's job now (`exit_reason` computes `brake` ahead of
+  // `answered`; task-stamps gates on `outcome === 'answered'`), locked by
+  // `tracker/__tests__/coerced-reply-not-a-delivery.test.ts` including its ternary-order
+  // conformance. That test is what makes this deletion safe rather than merely tidy.
   // Reminder-delivery lane refuse-once memory (turn-local): first non-owner
   // send on a reminder turn is refused with guidance; an identical repeat is
   // a deliberate confirmation and proceeds.
@@ -5514,17 +5497,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
           !Object.values(state.explicitSendThisTurn).some(Boolean)
         ) {
           try {
-            // PHASE-2 T6 (C2, requirement 1b): "did work close WITHOUT a delivery" is a
-            // JOIN now, not a scan plus a per-row lookup.
-            //
-            // Two halves, one question. The SPINE half asks it directly —
-            // `closedWithoutDelivery()` is `work` rows that reached a terminal state inside
-            // this turn with `result_delivery_id IS NULL`, and the DDL's own CHECK makes
-            // that set exact (a row cannot be `done` without pointing at a delivery). The
-            // LEGACY half covers tracker tasks, whose live state is still `legacy_tasks`
-            // until PHASE-2 T8 moves the writers; its owe-filter is the same one reader,
-            // `owesAnswer()`, instead of the hand-rolled `SELECT answer_message_id` that
-            // used to sit inside this loop.
+            // PHASE-2 T6 (C2, requirement 1b): "did work close WITHOUT a delivery" is a JOIN
+            // now. The SPINE half asks it directly (`closedWithoutDelivery()`; the DDL's own
+            // CHECK makes that set exact, since a row cannot be `done` without pointing at a
+            // delivery); the LEGACY half — tracker tasks, whose state stays in `legacy_tasks`
+            // until T8 — filters through the same ONE reader, `owesAnswer()`.
             const turnStartedAtMs = Date.parse(`${turnStartedAt.replace(' ', 'T')}Z`);
             const closedWorkThisTurn = closedWithoutDelivery(agentId, Number.isFinite(turnStartedAtMs) ? turnStartedAtMs : Date.now() - 60_000);
             const closedThisTurn = db.prepare(`
@@ -9382,24 +9359,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
         state.nonIdempotentCallsThisTurn,
       );
       // ── PHASE-2 T6 (C3) — THE TURN RECORD'S FIRST READER, AND THE DISPOSITION ──
-      //
-      // R-0, the one-line proof of this whole rebuild: `finalizeTurn` has always written
-      // the true turn outcome and NO turn-end gate ever read it (research 21). It is read
-      // here, one statement after it is written, and what it decides is what the plan
-      // clause and the P2 drive boundary were argued over (PHASE-2 progress.md, T1
-      // adjudication #2, ruled 2026-07-28).
-      //
-      // 1c — ENUMERATE what is still claimed, with the identity to escalate. A claim that
-      // survives the turn is a person whose question this turn did not close; before the
-      // spine this had to be reconstructed from `legacy_tasks.status='in_progress'` and the
-      // identity was not in the row at all.
-      //
-      // THE DISPOSITION — a turn that ANSWERED, performed nothing and closed nothing has
-      // handed the ball to the owner, so its drive-state work stops being driven and starts
-      // waiting, VISIBLY. Every input is a record: `turns.exit_reason` / `turns.answered` /
-      // `turns.effectful_calls` and a `deliveries` row. No prose is read (research 21,
-      // caution 2). The P2 boundary is preserved by the effectful-call clause: a turn that
-      // ACTED is still working and nothing is paused.
+      // R-0's finding paid: `finalizeTurn` has always written the true outcome and nothing
+      // read it. Read here, one statement after it is written. 1c enumerates what is still
+      // claimed (with the identity to escalate); the disposition hands the ball back to the
+      // owner when this turn TALKED and did not ACT. Every input is a record and no prose is
+      // read — the argument, the four keys and the P2 reconciliation are in answered-edge.ts.
       try {
         const claimedAtTurnEnd = stillClaimedWork(agentId, { turnNumber });
         if (claimedAtTurnEnd.length > 0 && !answerRow) {
