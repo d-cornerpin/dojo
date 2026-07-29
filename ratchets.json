@@ -483,6 +483,13 @@
       "to": 1382,
       "by": "PHASE-2 T8T (2026-07-29)",
       "why": "A dangler that INHERITS the primary task's close is the engine drawing an inference, not the agent asserting one; it now says so and points at the delivery (G6)."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 1685,
+      "to": 1691,
+      "by": "PHASE-2 T8T (2026-07-29)",
+      "why": "The 5-minute unvalidated-transition escalation reads BOTH shapes of an unblessed close. Migration 139 means a worker's own close leaves the row claimed with a Key-1 request instead of moving it to done, so the done-only arm would have let exactly the rows this sweep exists for age out of its sight - silently, with every test still green."
     }
   ],
   "maxNewFileLines": 400,
@@ -562,7 +569,7 @@
     "packages/server/src/prompt/assembler.ts": 1404,
     "packages/server/src/prompt/registry/entries.ts": 493,
     "packages/server/src/router/scorer.ts": 505,
-    "packages/server/src/scheduler/runner.ts": 1685,
+    "packages/server/src/scheduler/runner.ts": 1691,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/gmail-watcher.ts": 592,
     "packages/server/src/services/image-generation.ts": 483,
