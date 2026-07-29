@@ -23,6 +23,7 @@ import {
   patchWork, deleteTrackerRow, deliveryForTaskClose, deliveryForCompletedChildren,
 } from '../../work/tracker-store.js';
 import { statusToState, tsToMs } from '../../work/tracker-view.js';
+import { recordOwnerCloseReceipt } from '../../agent/v2/deliveries.js';
 import { createLogger } from '../../logger.js';
 import { getPrimaryAgentId, getPMAgentId, getDashboardHiddenAgentIds } from '../../config/platform.js';
 
@@ -677,10 +678,18 @@ trackerRouter.put('/tasks/:id', async (c) => {
         // task with no resolvable delivery -> HTTP 200, `work.state` still 'claimed', and a
         // `to_status='complete'` audit row. A false receipt in the history the owner reads
         // is worse than the refusal it hid.
+        // PHASE-2 T8c2 item 5 — THE OWNER'S OWN CLOSE REACHES `done`.
+        // A real delivery is preferred and looked for first; only when none can be resolved
+        // does his own act become the receipt. The whole argument, the enumeration of every
+        // `deliveries` reader, and why this is the owner's exemption and not the PM's, are
+        // in `agent/v2/deliveries.ts:recordOwnerCloseReceipt`. It is NOT a fake delivery:
+        // `channel='none'`, `outcome='owner_closed'`, no message, no conversation, no root.
         const { result } = setTaskStatusResult(id, statusUpdate as TrackerStatus, {
           by: 'owner', actorId: 'user', claim: 'authoritative',
           reason: 'dashboard PUT /tracker/tasks/:id',
-          resultDeliveryId: statusUpdate === 'complete' ? deliveryForTaskClose(id) : null,
+          resultDeliveryId: statusUpdate === 'complete'
+            ? (deliveryForTaskClose(id) ?? recordOwnerCloseReceipt(id, 'the dashboard task board'))
+            : null,
         });
         if (result.kind !== 'applied' && result.kind !== 'noop') {
           const detail = result.kind === 'conflict'
@@ -827,7 +836,11 @@ trackerRouter.post('/projects/:id/close', async (c) => {
       taskStatus: status as 'complete' | 'cancelled',
       projectStatus: status as 'complete' | 'cancelled',
       reason,
-      resultDeliveryId: status === 'complete' ? deliveryForCompletedChildren(id) : null,
+      // Same policy as the task close above, and for the same reason: a project the owner
+      // closes by hand whose children delivered nothing is still HIS to close.
+      resultDeliveryId: status === 'complete'
+        ? (deliveryForCompletedChildren(id) ?? recordOwnerCloseReceipt(id, 'the dashboard project board'))
+        : null,
     });
     return c.json({ ok: true, data: result });
   } catch (err) {

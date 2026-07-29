@@ -29,7 +29,7 @@ export interface DeliveryInput {
   /** `a2a` is the peer lane: an agent-to-agent hand-back IS something the platform
    *  delivered, and PHASE-2 T4's delegated pieces point at those rows (`work.done` requires a
    *  delivery). It has no human conversation, which is why the resolver below skips it. */
-  channel: 'imessage' | 'sms' | 'email' | 'teams' | 'phone' | 'dashboard' | 'voice' | 'a2a';
+  channel: 'imessage' | 'sms' | 'email' | 'teams' | 'phone' | 'dashboard' | 'voice' | 'a2a' | 'none';
   recipientId?: string | null;
   recipientDisplay?: string | null;
   /** Pass a provider/thread identity when the channel has one (email thread,
@@ -40,7 +40,9 @@ export interface DeliveryInput {
   /** The delivered assistant message row, when one exists. */
   messageId?: string | null;
   receiptId?: string | null;
-  outcome: 'delivered' | 'suppressed' | 'failed' | 'held';
+  /** `owner_closed` is NOT a send and never claims to be one — see
+   *  `recordOwnerCloseReceipt` below for the whole argument. */
+  outcome: 'delivered' | 'suppressed' | 'failed' | 'held' | 'owner_closed';
   detail?: string | null;
   /** Explicit conversation identity. Auto-route/ack replies go to the TURN's
    *  own conversation (the turn root carries it exactly); pass it and no
@@ -65,10 +67,12 @@ export function recordDelivery(input: DeliveryInput): string | null {
       conversationId = resolveOrCreateConversation(input.agentId, {
         channel: input.channel, provider: null, counterpartyId: 'owner', threadRoot: null,
       });
-    } else if (input.channel === 'a2a') {
+    } else if (input.channel === 'none' || input.channel === 'a2a') {
       // The peer lane has no `conversations` row and must not mint one: conversation identity
       // is a HUMAN counterparty fact (party labels, recall scoping, the waiting set all read
       // it), and inventing an a2a conversation would put coordination traffic inside it.
+      // `none` is here for the same reason from the other direction: nothing crossed a door,
+      // so there is no counterparty to resolve and minting a conversation would invent one.
       conversationId = null;
     } else if (input.recipientId) {
       conversationId = resolveOrCreateConversation(input.agentId, {
@@ -124,4 +128,57 @@ export function recordDelivery(input: DeliveryInput): string | null {
     }, input.agentId);
     return null;
   }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// THE OWNER'S OWN CLOSE (PHASE-2 T8c2 item 5 — the policy question T8b2 left open)
+// ════════════════════════════════════════════════════════════════════════════════
+//
+// SHOULD THE OWNER'S EXPLICIT DASHBOARD CLOSE REACH `done` WHEN NO DELIVERY RESOLVES? YES.
+// G7 exists to stop the ENGINE and the AGENT asserting completion on their own say-so; the
+// owner is neither. He is the person the work was FOR, so the thing G7 is trying to establish
+// — that the work reached him — is established by the witness himself. Refusing him is the
+// rule misapplied, not enforced.
+//
+// THE EXEMPTION IS THE OWNER'S ALONE, NOT "ANY AUTHORITY". RULING 1's enum makes `pm` an
+// authority too and the PM's close still needs a delivery: the justification is RECIPIENCY,
+// not authority. True by construction — the tool path passes `by: callerIsPM ? 'pm' : 'agent'`
+// and never `'owner'`, so it cannot reach here.
+//
+// A ROW, NOT A CHECK AMENDMENT. The alternative (an authority arm on G7 admitting a NULL
+// delivery, with the `adjudications` row as the receipt) is coherent and needs
+// `CHECK (state <> 'done' OR result_delivery_id IS NOT NULL)` amended — a migration against
+// the phase's central constraint, to buy a NULL where an honest row will do.
+//
+// AND IT IS NOT A FAKE DELIVERY, which is what the ledger's guidance forbids: `channel='none'`,
+// `outcome='owner_closed'`, no message, no receipt, no conversation, and NO `root_id` —
+// deliberately, per migration `135`'s own reasoning (:230-232) that a sentinel carrying
+// `root_id=<task id>` "would have manufactured per-task delivery evidence for the PM's own
+// consult path". Safety is ENUMERATED rather than asserted, and the enumeration is a test
+// clause that re-derives itself: `__tests__/owner-close-receipt.test.ts`.
+
+/**
+ * Record the receipt for an owner's explicit close, and return its id.
+ *
+ * ONE ROW PER CLOSE rather than one shared sentinel per agent (migration `135`'s legacy
+ * shape): a close is a distinct event with its own instant, and pointing every
+ * owner-closed row at one shared receipt would lose the only fact the receipt carries.
+ *
+ * Returns null if the work row is unknown — the caller then has no delivery to point at and
+ * G7 refuses, which is the correct answer for an id that does not resolve.
+ */
+export function recordOwnerCloseReceipt(workId: string, surface: string): string | null {
+  const w = getDb().prepare('SELECT agent_id FROM work WHERE id = ?')
+    .get(workId) as { agent_id: string } | undefined;
+  if (!w) return null;
+  return recordDelivery({
+    agentId: w.agent_id,
+    tool: 'owner-close',
+    channel: 'none',
+    outcome: 'owner_closed',
+    conversationId: null,
+    detail: `The owner closed this work himself, from ${surface}. Nothing was delivered by `
+      + `this row: it is the receipt for his own act, which is what satisfies work.done's `
+      + `delivery requirement here. Every reader of this table filters outcome='delivered'.`,
+  });
 }
