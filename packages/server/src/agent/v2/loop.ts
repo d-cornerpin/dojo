@@ -712,7 +712,13 @@ async function dispatchPMRenameHandoff(params: {
       `back to anyone, this is a silent rename. Do not contact ${primaryName}.`
     );
     const renameMsgId = uuidv4();
-    insertMessageIfAbsent({ id: renameMsgId, agentId: pmId, role: 'user', content: renameRequest });
+    // T8c item 1 (the PM voice half): an ENGINE rename request is the engine writing to the
+    // PM, not the owner talking. Same reasoning and same door as the situation report — see
+    // `tracker/pm-agent.ts`'s note at the `insertEngineEventIfAbsent` call there.
+    insertEngineEventIfAbsent({
+      id: renameMsgId, agentId: pmId, content: renameRequest,
+      sourceAgentId: null, originIntent: 'pm_rename', convKey: null, work: null,
+    });
     broadcast({
       type: 'chat:message',
       agentId: pmId,

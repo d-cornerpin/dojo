@@ -1643,8 +1643,9 @@ function pruneTerminalTasks(): void {
 
     // Clear agent references first
     db.prepare(`UPDATE agents SET task_id = NULL WHERE task_id IN (${placeholders})`).run(...ids);
-    // Delete related records
-    db.prepare(`DELETE FROM poke_log WHERE task_id IN (${placeholders})`).run(...ids);
+    // Delete related records. The poke rows are `work_events` now (T8c item 1) and
+    // `deleteTrackerRow` already deletes those in the same transaction as the row itself, so
+    // there is no separate poke cleanup to do.
     db.prepare(`DELETE FROM task_runs WHERE task_id IN (${placeholders})`).run(...ids);
     // Delete the tasks (children, events and adjudications go with them)
     for (const id of ids) deleteTrackerRow(id);

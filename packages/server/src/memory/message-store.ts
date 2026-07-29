@@ -639,10 +639,37 @@ export function claimRowByRowid(
   ).run({ ...p, servedByTurn: p.servedByTurn ?? null }).changes;
 }
 
-/** Claim the assignment notice(s) for a task that has gone terminal. The content LIKE is
- *  the documented legacy fallback for pre-112 rows whose task_id is NULL; it is carried
- *  verbatim, not improved, because narrowing it here would silently change which rows
- *  retire. */
+/**
+ * Claim the assignment notice(s) for a task that has gone terminal — the LEGACY arm.
+ *
+ * ── PHASE-2 T8c item 1: DISPOSED, AND IT STAYS. This is the "assignment-notice retirement"
+ * the conv-key inventory map named as T8's, and the honest verdict is KEEP-AND-SCOPE, not
+ * remove. Evidence, measured this turn on two bodies rather than reasoned about:
+ *
+ *   this dev box   `SELECT count(*) FROM messages WHERE lane='events'
+ *                    AND origin_intent='tracker' AND task_id IS NULL`      ->  0
+ *   the owner's real backup (`~/.dojo-backup-20260726-135808/dojo.db`)
+ *                  notices matching the assignment banner                  -> 185
+ *                  ...of those with task_id IS NULL                        -> 185
+ *                  ...of those STILL UNCLAIMED (conv_key IS NULL)          ->  14
+ *
+ * The dev box's zero is exactly the absence roadmap #15 forbids reading as death: on a
+ * lived-in body every one of these rows predates migration 112, carries NO task_id, and
+ * FOURTEEN are still pending. Deleting this arm would leave those fourteen un-retirable, and
+ * an un-retired assignment notice is re-delivered as a fresh "begin working on this task"
+ * prompt — the exact incident `claimAssignmentNoticeForTerminalTask` exists to prevent.
+ *
+ * What DID change: the arm is now scoped to `task_id IS NULL`, i.e. to the only rows the
+ * KEYED retirement (`retireEngineEventsForTask` -> `sweepByReferent{referent:'task_id'}`)
+ * structurally cannot reach. For a post-112 row the two arms were both claiming the same row
+ * by different columns, which is one job with two owners; now the boundary is stated. The
+ * effect on post-112 rows is nil — they are already excluded from
+ * `DELIVERABLE_ENGINE_EVENT_WHERE` by the `swept_at` the keyed arm stamps.
+ *
+ * requirement preserved: a task that has gone terminal never re-delivers its assignment
+ * notice, on either vintage of row. This arm retires when the Bridge's lived-in pre-112 rows
+ * are gone — a T12/Bridge fact, not a Phase-2 one.
+ */
 export function claimTrackerNoticeForTask(
   p: { agentId: string; contentLike: string },
 ): number {
@@ -650,6 +677,7 @@ export function claimTrackerNoticeForTask(
   return db.prepare(
     `UPDATE messages SET conv_key = 'engine'
        WHERE agent_id = @agentId AND lane = 'events' AND origin_intent = 'tracker'
+         AND task_id IS NULL
          AND conv_key IS NULL AND content LIKE @contentLike`,
   ).run(p).changes;
 }

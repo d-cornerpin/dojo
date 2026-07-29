@@ -854,8 +854,9 @@ trackerRouter.delete('/projects/:id', (c) => {
   // Delete child rows for these tasks
   if (ids.length > 0) {
     const ph = ids.map(() => '?').join(',');
+    // Pokes live in `work_events` (T8c item 1) and `deleteTrackerRow` removes those with
+    // the row, so only `task_runs` still needs its own cascade here.
     db.prepare(`DELETE FROM task_runs WHERE task_id IN (${ph})`).run(...ids);
-    db.prepare(`DELETE FROM poke_log WHERE task_id IN (${ph})`).run(...ids);
   }
 
   // Delete the project and its tasks (children first, inside one transaction).
@@ -876,7 +877,6 @@ trackerRouter.delete('/tasks/:id', (c) => {
   }
 
   db.prepare('DELETE FROM task_runs WHERE task_id = ?').run(id);
-  db.prepare('DELETE FROM poke_log WHERE task_id = ?').run(id);
   deleteTrackerRow(id);
 
   logger.info('Task deleted', { taskId: id });

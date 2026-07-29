@@ -27,7 +27,7 @@ import {
   setTrackerStatus, type WorkPatch, type SetStatusInput,
 } from '../work/tracker-store.js';
 import type { Actor } from '../work/store.js';
-import type { Project, ProjectDetail, Task, PokeEntry } from '@dojo/shared';
+import type { Project, ProjectDetail, Task } from '@dojo/shared';
 
 const logger = createLogger('tracker-schema');
 
@@ -87,16 +87,6 @@ interface TaskRow {
   goal: string | null;
   result: string | null;
   evidence_json: string | null;
-}
-
-interface PokeRow {
-  id: string;
-  task_id: string;
-  agent_id: string;
-  poke_number: number;
-  poke_type: string;
-  sent_at: string;
-  response_received: number;
 }
 
 /** The two projections, built once. Interpolating a constant fragment rather than re-typing
@@ -194,18 +184,6 @@ function parseEvidence(raw: string | null): Task['evidence'] {
   } catch {
     return [];
   }
-}
-
-function mapPokeRow(row: PokeRow): PokeEntry {
-  return {
-    id: row.id,
-    taskId: row.task_id,
-    agentId: row.agent_id,
-    pokeNumber: row.poke_number,
-    pokeType: row.poke_type as PokeEntry['pokeType'],
-    sentAt: row.sent_at,
-    responseReceived: row.response_received === 1,
-  };
 }
 
 // ── Project CRUD ──
@@ -1001,51 +979,13 @@ export function clearTaskNotes(id: string): void {
   logger.info('Task notes cleared', { taskId: id });
 }
 
-// ── Poke Log ──
-
-export function logPoke(taskId: string, agentId: string, pokeNumber: number, pokeType: string): string {
-  const db = getDb();
-  const id = uuidv4();
-
-  db.prepare(`
-    INSERT INTO poke_log (id, task_id, agent_id, poke_number, poke_type, sent_at, response_received)
-    VALUES (?, ?, ?, ?, ?, datetime('now'), 0)
-  `).run(id, taskId, agentId, pokeNumber, pokeType);
-
-  logger.info('Poke logged', { pokeId: id, taskId, agentId, pokeNumber, pokeType });
-
-  broadcast({
-    type: 'tracker:poke',
-    data: { taskId, agentId, pokeType },
-  });
-
-  return id;
-}
-
-export function getPokeLog(taskId: string): PokeEntry[] {
-  const db = getDb();
-  const rows = db.prepare('SELECT * FROM poke_log WHERE task_id = ? ORDER BY poke_number ASC').all(taskId) as PokeRow[];
-  return rows.map(mapPokeRow);
-}
-
-export function getLastPoke(taskId: string): PokeEntry | null {
-  const db = getDb();
-  const row = db.prepare('SELECT * FROM poke_log WHERE task_id = ? ORDER BY poke_number DESC LIMIT 1').get(taskId) as PokeRow | undefined;
-  if (!row) return null;
-  return mapPokeRow(row);
-}
-
-/**
- * Clear the poke log for a task. INVARIANT: this is the DELETE that re-arms
- * the escalation ladder. Call it ONLY at a remediation event (reassign,
- * retask, auto-reset), never mid-cycle. Each remediation starts a genuinely
- * new escalation cycle, so wiping the rows here is what lets the deterministic
- * ladder start fresh from nudge(1) the next time the task stalls. Because
- * nothing else clears these rows, the cross-restart poke dedup (never re-send
- * the same poke within a cycle) stays intact.
- */
-export function clearPokeLog(taskId: string): void {
-  const db = getDb();
-  db.prepare('DELETE FROM poke_log WHERE task_id = ?').run(taskId);
-  logger.info('Poke log cleared (remediation, new escalation cycle)', { taskId });
-}
+// ── Poke Log ── REMOVED (PHASE-2 T8c item 1)
+//
+// `logPoke` / `getPokeLog` / `getLastPoke` / `clearPokeLog` and the `poke_log` table they
+// wrote are gone. The escalation ladder's rung is now `MAX(rung)` over `work_events` rows of
+// kind `poke`, bounded by the last `poke_remediation` marker — `work/poke-ladder.ts`.
+// requirement preserved: the cross-restart poke dedup (a rung already sent in this cycle is
+// never re-sent) and the re-arm-only-at-a-remediation invariant, both asserted in
+// `work/__tests__/poke-ladder.test.ts`. `getPokeLog` had ZERO production readers (measured:
+// `grep -rn getPokeLog packages/ watchdog/` returned only this declaration and the compiled
+// `dist/` copy), so nothing replaced it.

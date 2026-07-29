@@ -16,7 +16,8 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
-import { listTasks, getTask, getLastPoke, logPoke, clearPokeLog } from './schema.js';
+import { listTasks, getTask } from './schema.js';
+import { currentRung, lastPoke as lastPokeOf, recordPoke, recordRemediation } from '../work/poke-ladder.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { getRecentObservations, getRecentTransitions, formatEntryLine } from './task-log.js';
 import {
@@ -24,6 +25,7 @@ import {
   deleteNonSystemForAgent,
   insertMessage,
   insertMessageIfAbsent,
+  insertEngineEventIfAbsent,
 } from '../memory/message-store.js';
 import { getPrimaryAgentId, getPrimaryAgentName, getPMAgentId, getPMAgentName, isPMEnabled, isSetupCompleted, getOwnerName, isSystemServiceAgent, isDreamerAgent } from '../config/platform.js';
 import type { Message } from '@dojo/shared';
@@ -88,7 +90,7 @@ You are ${pmName}, the project manager for this agent platform. Your only job is
 - Check the project tracker on your poke schedule.
 - When poking an agent, include full task context so they can resume immediately.
 - Escalation chain: poke once -> poke with urgency -> escalate to ${primaryName} -> escalate to ${ownerName} via iMessage.
-- After a restart, check the poke_log to resume where you left off. Never re-send a poke.
+- After a restart, the escalation ladder resumes itself from the work record — never re-send a poke you have already sent.
 - Keep messages short. You're a PM, not a novelist.`;
 }
 
@@ -647,13 +649,9 @@ function renderSmellFlag(raw: string): string {
 function runSmellDetector(taskId: string, toStatus: string): void {
   const db = getDb();
   if (toStatus === 'complete') {
-    const lastPoke = db.prepare(`
-      SELECT sent_at FROM poke_log WHERE task_id = ?
-      ORDER BY sent_at DESC LIMIT 1
-    `).get(taskId) as { sent_at: string } | undefined;
+    const lastPoke = lastPokeOf(taskId);
     if (lastPoke) {
-      const pokeTs = new Date(lastPoke.sent_at.includes('Z') ? lastPoke.sent_at : lastPoke.sent_at + 'Z').getTime();
-      const elapsedSec = Math.floor((Date.now() - pokeTs) / 1000);
+      const elapsedSec = Math.floor((Date.now() - lastPoke.sentAtMs) / 1000);
       if (elapsedSec <= SMELL_POKE_WINDOW_SEC) {
         const taskAgent = db.prepare(`SELECT agent_id AS assigned_to FROM work WHERE id = ?`).get(taskId) as { assigned_to: string | null } | undefined;
         // P6b REKEY: "did any real work ride this close" reads the CLOSING
@@ -1471,7 +1469,28 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
   lastSituationReportHash = reportHash;
 
   const msgId = uuidv4();
-  insertMessageIfAbsent({ id: msgId, agentId: pmId, role: 'user', content: situationReport });
+  // ── PHASE-2 T8c item 1 — THE PM'S OWN REPORT IS NOT THE OWNER TALKING (T6 §11.4) ──
+  //
+  // This row used to be `role='user'` with no channel on the OWNER lane. T6 closed the half
+  // that mattered structurally (it opened an ask ticket nobody could ever serve or close) but
+  // deliberately left the ATTRIBUTION, naming it as T8's PM rekey. The attribution is the
+  // half the PM's own turn reads: an owner-lane user row makes `isEngineTurn` false, so
+  // `renderCounterpartyHeader` prints "You are responding to <owner> ... your reply goes back
+  // to them on dashboard" for a report the ENGINE wrote to itself. The PM's whole job is that
+  // it must NOT reply to the owner — it must call send_to_agent — and the header was telling
+  // it the opposite every review.
+  //
+  // The fix is the mechanism this tree already has for exactly this, not a new one:
+  // `insertEngineEvent` (lane='events'), the same door `tracker/notify.ts` uses for a task
+  // assignment notice. `isEngineTurn` then renders the ENGINE variant, which says in so many
+  // words "NOT a person messaging you ... do NOT address the user".
+  // requirement preserved: the report still wakes the PM (the wake is `handleMessage`, which
+  // ignores its content argument and reads the persisted rows), still lands in the PM's
+  // context, and still shows in the dashboard through the same broadcast below.
+  insertEngineEventIfAbsent({
+    id: msgId, agentId: pmId, content: situationReport,
+    sourceAgentId: null, originIntent: 'pm_review', convKey: null, work: null,
+  });
 
   broadcast({
     type: 'chat:message',
@@ -1696,9 +1715,11 @@ export async function runPokeCheck(): Promise<void> {
       .get(task.assignedTo) as { status: string } | undefined)?.status;
     if (assigneeStatus === 'working') continue;
 
-    // Get the last poke for this task
-    const lastPoke = getLastPoke(task.id);
-    const lastPokeNumber = lastPoke?.pokeNumber ?? 0;
+    // The rung this ticket has already reached in the CURRENT escalation cycle, read from the
+    // work event log (T8c item 1). Was `poke_log`'s newest row; the query and its meaning are
+    // the same, the store is the spine, and the previous cycle's pokes survive a remediation.
+    const lastPoke = lastPokeOf(task.id);
+    const lastPokeNumber = currentRung(task.id);
 
     // Determine what poke to send based on idle time and previous pokes
     let pokeType: string | null = null;
@@ -1772,15 +1793,18 @@ export async function runPokeCheck(): Promise<void> {
 
       // Auto-reset is the terminal remediation: the full escalation chain
       // failed and the task is going back to on_deck for a fresh attempt.
-      // Clear the poke_log so the on_deck move starts a clean escalation
+      // Re-arm the ladder so the on_deck move starts a clean escalation
       // cycle -- if the task is re-pulled and stalls again it re-arms from
-      // nudge(1) instead of being stuck above rung 4 forever. This clear
-      // happens at a remediation event, never mid-cycle, so the cross-restart
-      // poke dedup stays intact. We deliberately do NOT logPoke rung 4 here:
-      // persisting it would leave lastPokeNumber=4 and defeat the reset. The
+      // nudge(1) instead of being stuck above rung 4 forever. This marker is
+      // written at a remediation event, never mid-cycle, so the cross-restart
+      // poke dedup stays intact. We deliberately do NOT record rung 4 here:
+      // persisting it would leave the rung at 4 and defeat the reset. The
       // auto-reset is still recorded via logger.warn + the tracker:poke
       // broadcast below.
-      clearPokeLog(task.id);
+      //
+      // T8c item 1: a MARKER, not a DELETE — the pokes of the cycle that just
+      // failed stay on the record, so "this has stalled twice" is answerable.
+      recordRemediation(task.id, getPMAgentId(), `auto-reset after ${idleMinutes} minutes idle`);
       logger.warn('PM auto-reset: task moved to on_deck', { taskId: task.id, title: task.title, idleMinutes, assignedTo: task.assignedTo });
 
       broadcast({ type: 'tracker:poke', data: { taskId: task.id, agentId: task.assignedTo!, pokeType } });
@@ -1804,10 +1828,19 @@ export async function runPokeCheck(): Promise<void> {
     // task on evidence it can point at. Text-only deliveries keep getting
     // the close steer every rung instead (the model closes; the engine
     // never guesses).
+    // `deliveredVia` is a DISTINCT read of `deliveries` inside `findDeliveryEvidenceForTask`
+    // (delivery-evidence.ts), so strike 2's tangible-handover test reads the delivery ledger
+    // directly — T8c item 1's requirement, verified rather than rebuilt.
     const tangibleHandover = !!deliveryEvidence && (deliveryEvidence.artifacts.length > 0 || deliveryEvidence.deliveredVia.length > 0);
-    if (deliveryEvidence && tangibleHandover && lastPoke && lastPoke.sentAt >= deliveryEvidence.answeredAt) {
+    // The poke's instant is epoch ms now (`work_events.created_at`); the evidence's is the
+    // `turns` table's TEXT instant. Compare as numbers, never as strings of different shapes.
+    const evidenceAtMs = deliveryEvidence
+      ? Date.parse(/[TZ]/.test(deliveryEvidence.answeredAt) ? deliveryEvidence.answeredAt : `${deliveryEvidence.answeredAt}Z`)
+      : NaN;
+    if (deliveryEvidence && tangibleHandover && lastPoke && !Number.isNaN(evidenceAtMs)
+        && lastPoke.sentAtMs >= evidenceAtMs) {
       const db = getDb();
-      const basis = `engine close on delivery receipt: ${renderDeliveryEvidence(deliveryEvidence)}; a close steer was already sent (${lastPoke.sentAt} UTC) and the status still said in_progress`;
+      const basis = `engine close on delivery receipt: ${renderDeliveryEvidence(deliveryEvidence)}; a close steer was already sent (${new Date(lastPoke.sentAtMs).toISOString().replace('T', ' ').slice(0, 19)} UTC) and the status still said in_progress`;
       // Strike 2 closes on a delivery RECEIPT, so the receipt is what G7 is handed.
       const strike2Delivery = deliveryForTaskClose(task.id);
       const s2 = setTrackerStatus(task.id, 'complete', {
@@ -1830,7 +1863,7 @@ export async function runPokeCheck(): Promise<void> {
         actionTaken: 'delivery-receipt close (strike 2)',
         reason: basis,
       }));
-      clearPokeLog(task.id);
+      recordRemediation(task.id, 'engine', 'strike-2 engine close on delivery receipt');
       logger.warn('PM drive: delivered-but-unclosed task engine-closed on receipt basis (strike 2)', {
         taskId: task.id, title: task.title, turnNumber: deliveryEvidence.turnNumber,
       });
@@ -1880,8 +1913,12 @@ export async function runPokeCheck(): Promise<void> {
       });
     }); // close .then()
 
-    // Log the poke
-    logPoke(task.id, task.assignedTo, pokeNumber, pokeType);
+    // Record the poke on the work's own event log, then tell the dashboard. The broadcast
+    // used to ride inside `logPoke`; it stays a UI concern at the call site because `work/`
+    // does not import the websocket gateway.
+    // requirement preserved: the dashboard still receives `tracker:poke` on every poke.
+    recordPoke(task.id, pmId, pokeNumber, pokeType, recipient ?? task.assignedTo);
+    broadcast({ type: 'tracker:poke', data: { taskId: task.id, agentId: task.assignedTo, pokeType } });
 
     logger.info('PM poke sent via A2A transport', {
       taskId: task.id,

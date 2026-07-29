@@ -7536,7 +7536,8 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         // Resolve task id prefix to the full UUID so this tool accepts
         // the 8-char ids emitted by work_update(action="list"), same pattern as
         // every other work operation.
-        const { resolveTaskId, formatResolveError, clearPokeLog } = await import('../tracker/schema.js');
+        const { resolveTaskId, formatResolveError } = await import('../tracker/schema.js');
+        const { recordRemediation } = await import('../work/poke-ladder.js');
         const reassignResolved = resolveTaskId(rawReassignTaskId);
         if (!reassignResolved.ok) {
           content = formatResolveError('task', rawReassignTaskId, reassignResolved);
@@ -7582,12 +7583,12 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         }
         // Reassign is a remediation: the task is moving to a new assignee (or
         // back to a group for the PM to pick), which starts a fresh escalation
-        // cycle. Clear the poke_log so the deterministic ladder re-arms from
-        // nudge(1) against the new owner instead of staying stuck at the old
-        // assignee's rung. Clearing at a remediation event (never mid-cycle)
-        // keeps the cross-restart poke dedup intact. Skip on the error path so
-        // a rejected reassign doesn't wipe a live escalation cycle.
-        if (!isError) clearPokeLog(reassignTaskId);
+        // cycle. Re-arm the ladder so it climbs from nudge(1) against the new
+        // owner instead of staying stuck at the old assignee's rung. Marking at
+        // a remediation event (never mid-cycle) keeps the cross-restart poke
+        // dedup intact. Skip on the error path so a rejected reassign doesn't
+        // re-arm a live escalation cycle.
+        if (!isError) recordRemediation(reassignTaskId, agentId, 'reassigned to a new owner');
         break;
       }
 

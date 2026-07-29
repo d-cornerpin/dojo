@@ -103,8 +103,15 @@ const RESOLVED: Record<string, number> = {
   //        (value 'engine', owner T6/T9). The owner-ask caller went at T3 and the terminal
   //        A2A wake caller went at T4; this one remains, with one owner instead of two.
   //   :593 tagTurnOutputConvKey — "do not re-tag an already-tagged output row". IDENTITY.
-  //   :629 claimTrackerNoticeForTask — retires an assignment notice; assignment-notice
-  //        retirement is named in work/store.ts's own header as PHASE-2 T8's.
+  //   :629 claimTrackerNoticeForTask — retires an assignment notice. PHASE-2 T8c DISPOSED of
+  //        this one and the verdict is KEEP-AND-SCOPE, with the measurement in the
+  //        function's own docblock: on the owner's real backup body 185 assignment notices
+  //        carry NO task_id and 14 are STILL UNCLAIMED, so the keyed retirement
+  //        (`sweepByReferent{referent:'task_id'}`) cannot reach them and deleting this arm
+  //        would leave them to be re-delivered as fresh "begin working on this task"
+  //        prompts. The dev box's count of 0 is the absence #15 forbids reading as death.
+  //        Scoped to `task_id IS NULL` so the two arms no longer both claim one row; it
+  //        retires when the Bridge's pre-112 rows are gone (T12/Bridge, not Phase 2).
   //   :674 sweepByRowid(requireUnclaimed) and :689 sweepByReferent — the ENGINE-EVENT serve
   //        boundary ("a row already claimed by a turn is not ours to sweep"). T6/T9.
   'packages/server/src/memory/message-store.ts': 5,

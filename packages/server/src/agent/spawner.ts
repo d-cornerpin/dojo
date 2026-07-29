@@ -13,7 +13,7 @@ import {
   setTrackerStatus, patchWork, appendWorkNotes, deliveryForTaskClose,
 } from '../work/tracker-store.js';
 import { memoryGrep } from '../memory/retrieval.js';
-import { insertMessageIfAbsent } from '../memory/message-store.js';
+import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
 import { archiveAgentConversation } from '../vault/archive.js';
 import type { PermissionManifest, Agent, Message } from '@dojo/shared';
@@ -380,9 +380,25 @@ IMPORTANT INSTRUCTIONS:
     return { agentId, name, status: 'idle', persist };
   }
 
-  // Insert initial user message to kick off the agent loop
+  // ── PHASE-2 T8c item 1 — THE KICKOFF IS THE ENGINE, NOT THE OWNER (T6 §11.4) ──
+  //
+  // This row was `role='user'` on the owner lane with no channel. Read it: "Your task: …
+  // Begin working immediately … you MUST call complete_task". That is the ENGINE composing an
+  // instruction, and it is never a person talking — even when a parent agent supplied
+  // `initialMessage`, the sender is that agent and the engine appends its own instructions
+  // around it. Left as an owner-lane user row it made the spawned agent's very first turn
+  // render "You are responding to <owner> … your reply goes back to them on dashboard",
+  // which is how a worker ends up chatting at the owner instead of reporting through
+  // `complete_task` / `send_to_agent`.
+  // requirement preserved: the kickoff still wakes the agent (`handleMessage` ignores its
+  // content argument and reads the persisted rows), still carries the identical text, and
+  // still broadcasts to the dashboard below.
   const initMsgId = uuidv4();
-  insertMessageIfAbsent({ id: initMsgId, agentId, role: 'user', content: taskMessage });
+  insertEngineEventIfAbsent({
+    id: initMsgId, agentId, content: taskMessage,
+    sourceAgentId: null, originIntent: 'spawn_kickoff', convKey: null,
+    work: taskId ? { taskId, runId: null, rootKind: 'task', rootId: taskId } : null,
+  });
   broadcastMessage(agentId, { id: initMsgId, role: 'user', content: taskMessage });
 
   // Start the agent loop asynchronously

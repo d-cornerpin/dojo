@@ -35,11 +35,11 @@ import {
   resolveProjectId,
   formatResolveError,
   closeProjectAndOpenTasks,
-  clearPokeLog,
   setTaskStatus,
   setTaskStatusResult,
 } from './schema.js';
 import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
+import { recordRemediation } from '../work/poke-ladder.js';
 import { injectTaskAssignmentNotification, claimAssignmentNoticeForTerminalTask } from './notify.js';
 import { writeTaskLog } from './task-log.js';
 import { calculateNextRun, normalizeDbTimestamp, parseDaysOfWeek, wallToInstant, getBoxTimeZone, type ScheduledTask, type WallClock } from '../scheduler/engine.js';
@@ -3106,11 +3106,10 @@ export async function trackerRetask(
   throwBackClaim(taskId, statusToState(task.status), 'pm', pmAgentId, directive);
 
   // Retask is a remediation: the PM is sending the agent back to redo the
-  // work, which starts a fresh escalation cycle. Clear the poke_log so the
-  // deterministic ladder re-arms from nudge(1) if this task stalls again.
-  // Clearing at a remediation event (never mid-cycle) keeps the cross-restart
-  // poke dedup intact.
-  clearPokeLog(taskId);
+  // work, which starts a fresh escalation cycle. Re-arm the ladder so it climbs
+  // from nudge(1) if this task stalls again. Marking at a remediation event
+  // (never mid-cycle) keeps the cross-restart poke dedup intact.
+  recordRemediation(taskId, pmAgentId, `PM retask: ${directive.slice(0, 120)}`);
 
   const fresh = getTask(taskId);
   if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
