@@ -314,7 +314,7 @@
     "packages/server/src/router/trainer.ts": 187,
     "packages/server/src/router/types.ts": 53,
     "packages/server/src/scheduler/engine.ts": 390,
-    "packages/server/src/scheduler/runner.ts": 1613,
+    "packages/server/src/scheduler/runner.ts": 1655,
     "packages/server/src/screen-share/bridge.ts": 146,
     "packages/server/src/screen-share/manager.ts": 215,
     "packages/server/src/services/agent-controls.ts": 289,
@@ -384,11 +384,11 @@
     "packages/server/src/tools/unified-read.ts": 753,
     "packages/server/src/tracker/delivery-evidence.ts": 210,
     "packages/server/src/tracker/notify.ts": 212,
-    "packages/server/src/tracker/pm-agent.ts": 1929,
-    "packages/server/src/tracker/schema.ts": 1155,
+    "packages/server/src/tracker/pm-agent.ts": 1957,
+    "packages/server/src/tracker/schema.ts": 1063,
     "packages/server/src/tracker/task-log.ts": 208,
     "packages/server/src/tracker/task-stamps.ts": 204,
-    "packages/server/src/tracker/tools.ts": 4229,
+    "packages/server/src/tracker/tools.ts": 4342,
     "packages/server/src/twilio/audio-codec.ts": 196,
     "packages/server/src/twilio/auth.ts": 301,
     "packages/server/src/twilio/call-session.ts": 884,
@@ -432,6 +432,9 @@
     "packages/shared/src/visibility.ts": 815,
     "packages/shared/src/ws.ts": 1082,
     "watchdog/src/auto-rollback.ts": 197,
-    "watchdog/src/index.ts": 1198
-  }
+    "watchdog/src/index.ts": 1198,
+    "packages/server/src/work/tracker-view.ts": 356,
+    "packages/server/src/work/tracker-store.ts": 492
+  },
+  "_notes": []
 }

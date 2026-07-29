@@ -154,6 +154,104 @@
       "to": 9530,
       "by": "PHASE-2 T7 (2026-07-29)",
       "why": "+6 lines at ONE site: the per-turn OPEN LOOPS injection becomes the OPEN WORK injection, and the added lines are the comment recording why the block is keyed on `conversation_id` rather than on `conv_key` (the deleted block compared conv_key strings \u2014 the column that also carried the claim token and the park sigils, so a parked row changed which party its items belonged to). The call itself is one line for one line."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 4229,
+      "to": 4342,
+      "by": "PHASE-2 T8b (2026-07-29)",
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 1613,
+      "to": 1655,
+      "by": "PHASE-2 T8b (2026-07-29)",
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+    },
+    {
+      "path": "packages/server/src/tracker/pm-agent.ts",
+      "from": 1929,
+      "to": 1957,
+      "by": "PHASE-2 T8b (2026-07-29)",
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9530,
+      "to": 9556,
+      "by": "PHASE-2 T8b (2026-07-29)",
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+    },
+    {
+      "path": "packages/server/src/agent/spawner.ts",
+      "from": 1335,
+      "to": 1359,
+      "by": "PHASE-2 T8b (2026-07-29)",
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+    },
+    {
+      "path": "packages/server/src/agent/v2/answered-edge.ts",
+      "from": 487,
+      "to": 496,
+      "by": "PHASE-2 T8b (2026-07-29)",
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/memory.ts",
+      "from": 627,
+      "to": 635,
+      "by": "PHASE-2 T8b (2026-07-29)",
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+    },
+    {
+      "path": "packages/server/src/agent/tools.ts",
+      "from": 10735,
+      "to": 10742,
+      "by": "PHASE-2 T8b (2026-07-29)",
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2564,
+      "to": 2570,
+      "by": "PHASE-2 T8b (2026-07-29)",
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1339,
+      "to": 1340,
+      "by": "PHASE-2 T8b (2026-07-29)",
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+    },
+    {
+      "path": "packages/server/src/agent/v2/counterparty.ts",
+      "from": 890,
+      "to": 891,
+      "by": "PHASE-2 T8b (2026-07-29)",
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+    },
+    {
+      "path": "packages/server/src/healer/diagnostic.ts",
+      "from": 1035,
+      "to": 1036,
+      "by": "PHASE-2 T8b (2026-07-29)",
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+    },
+    {
+      "path": "packages/server/src/healer/injury-recovery.ts",
+      "from": 809,
+      "to": 810,
+      "by": "PHASE-2 T8b (2026-07-29)",
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+    },
+    {
+      "path": "packages/server/src/work/tracker-store.ts",
+      "from": 0,
+      "to": 492,
+      "by": "PHASE-2 T8b (2026-07-29)",
+      "why": "A NEW file above the 400-line new-file cap, added to `files` deliberately so the addition is seen and argued with. It is the tracker's WRITE side on the spine: creation, the typed attribute patcher, and `setTrackerStatus` (= `transition()` with the tracker's vocabulary outside). It cannot live anywhere else: clause (a) of the single-writer property says every `work` write is under `work/`, and it is deliberately NOT in `store.ts`, because clause (b) says `work.state` UPDATEs live only there \u2014 putting the attribute patcher beside the state writer is exactly the two-mechanism shape the split exists to prevent. Its sibling `tracker-view.ts` (350) is under the cap and stays unlisted. Both shrink at T8c (the schedule and stamp families collapse) and again at T10."
     }
   ],
   "maxNewFileLines": 400,
@@ -189,12 +287,12 @@
     "packages/server/src/agent/pdf-tools.ts": 1007,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 687,
-    "packages/server/src/agent/runtime.ts": 1339,
-    "packages/server/src/agent/spawner.ts": 1335,
-    "packages/server/src/agent/tools.ts": 10735,
+    "packages/server/src/agent/runtime.ts": 1340,
+    "packages/server/src/agent/spawner.ts": 1359,
+    "packages/server/src/agent/tools.ts": 10742,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 468,
-    "packages/server/src/agent/v2/counterparty.ts": 890,
-    "packages/server/src/agent/v2/loop.ts": 9530,
+    "packages/server/src/agent/v2/counterparty.ts": 891,
+    "packages/server/src/agent/v2/loop.ts": 9556,
     "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/state.ts": 686,
@@ -202,7 +300,7 @@
     "packages/server/src/gateway/routes/agents.ts": 820,
     "packages/server/src/gateway/routes/chat.ts": 484,
     "packages/server/src/gateway/routes/config.ts": 2531,
-    "packages/server/src/gateway/routes/memory.ts": 627,
+    "packages/server/src/gateway/routes/memory.ts": 635,
     "packages/server/src/gateway/routes/setup-deps.ts": 512,
     "packages/server/src/gateway/routes/tracker.ts": 877,
     "packages/server/src/gateway/routes/twilio.ts": 501,
@@ -214,11 +312,11 @@
     "packages/server/src/google/tools-slides.ts": 2964,
     "packages/server/src/google/tools-write.ts": 1831,
     "packages/server/src/healer/approval-routing.ts": 496,
-    "packages/server/src/healer/diagnostic.ts": 1035,
+    "packages/server/src/healer/diagnostic.ts": 1036,
     "packages/server/src/healer/healer-agent.ts": 1170,
-    "packages/server/src/healer/injury-recovery.ts": 809,
+    "packages/server/src/healer/injury-recovery.ts": 810,
     "packages/server/src/index.ts": 1279,
-    "packages/server/src/memory/assembler.ts": 2564,
+    "packages/server/src/memory/assembler.ts": 2570,
     "packages/server/src/memory/compaction.ts": 1267,
     "packages/server/src/memory/message-store.ts": 868,
     "packages/server/src/memory/recall.ts": 502,
@@ -233,7 +331,7 @@
     "packages/server/src/prompt/assembler.ts": 1400,
     "packages/server/src/prompt/registry/entries.ts": 493,
     "packages/server/src/router/scorer.ts": 505,
-    "packages/server/src/scheduler/runner.ts": 1613,
+    "packages/server/src/scheduler/runner.ts": 1655,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/gmail-watcher.ts": 592,
     "packages/server/src/services/image-generation.ts": 483,
@@ -248,9 +346,9 @@
     "packages/server/src/techniques/store.ts": 609,
     "packages/server/src/techniques/tools.ts": 890,
     "packages/server/src/tools/unified-read.ts": 753,
-    "packages/server/src/tracker/pm-agent.ts": 1929,
+    "packages/server/src/tracker/pm-agent.ts": 1957,
     "packages/server/src/tracker/schema.ts": 1155,
-    "packages/server/src/tracker/tools.ts": 4229,
+    "packages/server/src/tracker/tools.ts": 4342,
     "packages/server/src/twilio/call-session.ts": 884,
     "packages/server/src/twilio/sms-inbound.ts": 406,
     "packages/server/src/vault/archive.ts": 304,
@@ -267,6 +365,7 @@
     "packages/shared/src/visibility.ts": 815,
     "packages/shared/src/ws.ts": 1082,
     "watchdog/src/index.ts": 1198,
-    "packages/server/src/agent/v2/answered-edge.ts": 487
+    "packages/server/src/agent/v2/answered-edge.ts": 496,
+    "packages/server/src/work/tracker-store.ts": 492
   }
 }

@@ -334,6 +334,366 @@
         "date": "2026-07-28",
         "reason": "The reader that matters is the one that treats a migrated row differently from a live one \u2014 a migrated `done` row points at a legacy-closure delivery (outcome='migrated'), not at a real send, and any surface that reports delivery history must be able to say so. T12 owns Bridge Entry 12 and is where that distinction becomes load-bearing. Recorded rather than closed early: a reader written now would have nothing to protect anyone from."
       }
+    },
+    {
+      "id": "work.description",
+      "kind": "column",
+      "table": "work",
+      "column": "description",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Tracker CONTENT, moved onto the spine by migration 137 and read from it since PHASE-2 T8b. Readers at PHASE-2 T8b: tracker/notify.ts, tracker/pm-agent.ts, tracker/schema.ts.",
+      "verifiedBy": "git grep -l 'description' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.original_description",
+      "kind": "column",
+      "table": "work",
+      "column": "original_description",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Tracker CONTENT, moved onto the spine by migration 137 and read from it since PHASE-2 T8b. Readers at PHASE-2 T8b: tracker/schema.ts, tracker/tools.ts, work/tracker-store.ts.",
+      "verifiedBy": "git grep -l 'original_description' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.completion_summary",
+      "kind": "column",
+      "table": "work",
+      "column": "completion_summary",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Tracker CONTENT, moved onto the spine by migration 137 and read from it since PHASE-2 T8b. Readers at PHASE-2 T8b: work/tracker-store.ts, agent/v2/hooks/task-complete.ts, agent/spawner.ts.",
+      "verifiedBy": "git grep -l 'completion_summary' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.result",
+      "kind": "column",
+      "table": "work",
+      "column": "result",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Tracker CONTENT, moved onto the spine by migration 137 and read from it since PHASE-2 T8b. Readers at PHASE-2 T8b: tracker/delivery-evidence.ts, tracker/pm-agent.ts, tracker/schema.ts.",
+      "verifiedBy": "git grep -l 'result' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.evidence_json",
+      "kind": "column",
+      "table": "work",
+      "column": "evidence_json",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Tracker CONTENT, moved onto the spine by migration 137 and read from it since PHASE-2 T8b. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/schema.ts, tracker/task-log.ts.",
+      "verifiedBy": "git grep -l 'evidence_json' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.step_number",
+      "kind": "column",
+      "table": "work",
+      "column": "step_number",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Tracker task SHAPE: step sequence, dependency list, group assignment, and the reminder discriminator (`task_kind` is deliberately NOT `work.kind`, which is the spine's five-value noun enum \u2014 two facts, two columns). Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/schema.ts, tracker/task-stamps.ts.",
+      "verifiedBy": "git grep -l 'step_number' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.total_steps",
+      "kind": "column",
+      "table": "work",
+      "column": "total_steps",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Tracker task SHAPE: step sequence, dependency list, group assignment, and the reminder discriminator (`task_kind` is deliberately NOT `work.kind`, which is the spine's five-value noun enum \u2014 two facts, two columns). Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/schema.ts, tracker/task-stamps.ts.",
+      "verifiedBy": "git grep -l 'total_steps' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.phase",
+      "kind": "column",
+      "table": "work",
+      "column": "phase",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Tracker task SHAPE: step sequence, dependency list, group assignment, and the reminder discriminator (`task_kind` is deliberately NOT `work.kind`, which is the spine's five-value noun enum \u2014 two facts, two columns). Readers at PHASE-2 T8b: tracker/schema.ts, tracker/task-stamps.ts, tracker/tools.ts.",
+      "verifiedBy": "git grep -l 'phase' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.depends_on",
+      "kind": "column",
+      "table": "work",
+      "column": "depends_on",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Tracker task SHAPE: step sequence, dependency list, group assignment, and the reminder discriminator (`task_kind` is deliberately NOT `work.kind`, which is the spine's five-value noun enum \u2014 two facts, two columns). Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/schema.ts, tracker/tools.ts.",
+      "verifiedBy": "git grep -l 'depends_on' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.assigned_to_group",
+      "kind": "column",
+      "table": "work",
+      "column": "assigned_to_group",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Tracker task SHAPE: step sequence, dependency list, group assignment, and the reminder discriminator (`task_kind` is deliberately NOT `work.kind`, which is the spine's five-value noun enum \u2014 two facts, two columns). Readers at PHASE-2 T8b: tracker/schema.ts, tracker/tools.ts, scheduler/runner.ts.",
+      "verifiedBy": "git grep -l 'assigned_to_group' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.task_kind",
+      "kind": "column",
+      "table": "work",
+      "column": "task_kind",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Tracker task SHAPE: step sequence, dependency list, group assignment, and the reminder discriminator (`task_kind` is deliberately NOT `work.kind`, which is the spine's five-value noun enum \u2014 two facts, two columns). Readers at PHASE-2 T8b: scheduler/runner.ts, work/tracker-store.ts, work/tracker-view.ts.",
+      "verifiedBy": "git grep -l 'task_kind' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.level",
+      "kind": "column",
+      "table": "work",
+      "column": "level",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Project-side shape, rendered by the dashboard board through `mapProjectRow`. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/schema.ts, tracker/tools.ts.",
+      "verifiedBy": "git grep -l 'level' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.phase_count",
+      "kind": "column",
+      "table": "work",
+      "column": "phase_count",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Project-side shape, rendered by the dashboard board through `mapProjectRow`. Readers at PHASE-2 T8b: tracker/schema.ts, work/tracker-store.ts, work/tracker-view.ts.",
+      "verifiedBy": "git grep -l 'phase_count' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.current_phase",
+      "kind": "column",
+      "table": "work",
+      "column": "current_phase",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Project-side shape, rendered by the dashboard board through `mapProjectRow`. Readers at PHASE-2 T8b: tracker/schema.ts, work/tracker-store.ts, work/tracker-view.ts.",
+      "verifiedBy": "git grep -l 'current_phase' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.group_id",
+      "kind": "column",
+      "table": "work",
+      "column": "group_id",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Project-side shape, rendered by the dashboard board through `mapProjectRow`. Readers at PHASE-2 T8b: scheduler/runner.ts, gateway/routes/agents.ts, gateway/routes/groups.ts.",
+      "verifiedBy": "git grep -l 'group_id' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.source_message_id",
+      "kind": "column",
+      "table": "work",
+      "column": "source_message_id",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Tracker LINEAGE. `work.root_kind`/`root_id` carry origin for rows OPENED on the spine; 135's backfill set them to ('legacy', <id>) for migrated rows, so these four are not expressed by them for the tracker's population. Readers at PHASE-2 T8b: tracker/delivery-evidence.ts, tracker/task-stamps.ts, tracker/tools.ts.",
+      "verifiedBy": "git grep -l 'source_message_id' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.origin_turn",
+      "kind": "column",
+      "table": "work",
+      "column": "origin_turn",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Tracker LINEAGE. `work.root_kind`/`root_id` carry origin for rows OPENED on the spine; 135's backfill set them to ('legacy', <id>) for migrated rows, so these four are not expressed by them for the tracker's population. Readers at PHASE-2 T8b: tracker/task-stamps.ts, tracker/tools.ts, work/tracker-store.ts.",
+      "verifiedBy": "git grep -l 'origin_turn' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.origin_conv_key",
+      "kind": "column",
+      "table": "work",
+      "column": "origin_conv_key",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Tracker LINEAGE. `work.root_kind`/`root_id` carry origin for rows OPENED on the spine; 135's backfill set them to ('legacy', <id>) for migrated rows, so these four are not expressed by them for the tracker's population. Readers at PHASE-2 T8b: tracker/delivery-evidence.ts, tracker/task-stamps.ts, work/tracker-store.ts.",
+      "verifiedBy": "git grep -l 'origin_conv_key' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.origin_kind",
+      "kind": "column",
+      "table": "work",
+      "column": "origin_kind",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "Tracker LINEAGE. `work.root_kind`/`root_id` carry origin for rows OPENED on the spine; 135's backfill set them to ('legacy', <id>) for migrated rows, so these four are not expressed by them for the tracker's population. Readers at PHASE-2 T8b: tracker/delivery-evidence.ts, tracker/notify.ts, tracker/tools.ts.",
+      "verifiedBy": "git grep -l 'origin_kind' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.deliverable_shown",
+      "kind": "column",
+      "table": "work",
+      "column": "deliverable_shown",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "`deliverable_shown` is the RETASK BACKSTOP with an incident behind it; `a2a_thread_id` ties an auto-created ASSIGN task to its thread; `last_smell_flag` is rendered on the dashboard. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/tools.ts, work/tracker-store.ts.",
+      "verifiedBy": "git grep -l 'deliverable_shown' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.a2a_thread_id",
+      "kind": "column",
+      "table": "work",
+      "column": "a2a_thread_id",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "`deliverable_shown` is the RETASK BACKSTOP with an incident behind it; `a2a_thread_id` ties an auto-created ASSIGN task to its thread; `last_smell_flag` is rendered on the dashboard. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/schema.ts, tracker/tools.ts.",
+      "verifiedBy": "git grep -l 'a2a_thread_id' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.last_smell_flag",
+      "kind": "column",
+      "table": "work",
+      "column": "last_smell_flag",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "`deliverable_shown` is the RETASK BACKSTOP with an incident behind it; `a2a_thread_id` ties an auto-created ASSIGN task to its thread; `last_smell_flag` is rendered on the dashboard. Readers at PHASE-2 T8b: tracker/pm-agent.ts, gateway/routes/tracker.ts, dashboard/lib/api.ts.",
+      "verifiedBy": "git grep -l 'last_smell_flag' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.scheduled_start",
+      "kind": "column",
+      "table": "work",
+      "column": "scheduled_start",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/schema.ts, tracker/tools.ts.",
+      "verifiedBy": "git grep -l 'scheduled_start' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.repeat_interval",
+      "kind": "column",
+      "table": "work",
+      "column": "repeat_interval",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/schema.ts, tracker/tools.ts.",
+      "verifiedBy": "git grep -l 'repeat_interval' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.repeat_unit",
+      "kind": "column",
+      "table": "work",
+      "column": "repeat_unit",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/schema.ts, tracker/tools.ts, scheduler/engine.ts.",
+      "verifiedBy": "git grep -l 'repeat_unit' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.repeat_end_type",
+      "kind": "column",
+      "table": "work",
+      "column": "repeat_end_type",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/schema.ts, tracker/tools.ts, scheduler/engine.ts.",
+      "verifiedBy": "git grep -l 'repeat_end_type' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.repeat_end_value",
+      "kind": "column",
+      "table": "work",
+      "column": "repeat_end_value",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/schema.ts, tracker/tools.ts, scheduler/engine.ts.",
+      "verifiedBy": "git grep -l 'repeat_end_value' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.repeat_days_of_week",
+      "kind": "column",
+      "table": "work",
+      "column": "repeat_days_of_week",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/schema.ts, tracker/tools.ts, scheduler/engine.ts.",
+      "verifiedBy": "git grep -l 'repeat_days_of_week' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.schedule_status",
+      "kind": "column",
+      "table": "work",
+      "column": "schedule_status",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/schema.ts, tracker/tools.ts.",
+      "verifiedBy": "git grep -l 'schedule_status' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.is_paused",
+      "kind": "column",
+      "table": "work",
+      "column": "is_paused",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/schema.ts, tracker/tools.ts.",
+      "verifiedBy": "git grep -l 'is_paused' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.paused_until",
+      "kind": "column",
+      "table": "work",
+      "column": "paused_until",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/schema.ts, scheduler/runner.ts, work/tracker-store.ts.",
+      "verifiedBy": "git grep -l 'paused_until' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.status_before_pause",
+      "kind": "column",
+      "table": "work",
+      "column": "status_before_pause",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/schema.ts, scheduler/runner.ts, work/tracker-store.ts.",
+      "verifiedBy": "git grep -l 'status_before_pause' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.last_run_at",
+      "kind": "column",
+      "table": "work",
+      "column": "last_run_at",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/schema.ts, tracker/tools.ts, scheduler/engine.ts.",
+      "verifiedBy": "git grep -l 'last_run_at' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.missed_runs_paused_at",
+      "kind": "column",
+      "table": "work",
+      "column": "missed_runs_paused_at",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE SCHEDULE AXIS \u2014 a BRIDGE with a named successor: these re-express as `schedule_json`/`tz`/`anchor_local`/`sequence` + occurrence rows at T8c. `is_paused` is a SEPARATE axis from `state='paused'` and T6's reopen edge negative-controls the two against each other. Readers at PHASE-2 T8b: tracker/tools.ts, scheduler/runner.ts, work/tracker-store.ts.",
+      "verifiedBy": "git grep -l 'missed_runs_paused_at' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.last_activity_turn",
+      "kind": "column",
+      "table": "work",
+      "column": "last_activity_turn",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE ACTIVITY STAMPS \u2014 a BRIDGE. Research 19 s1c makes them a view over `work_events` + `deliveries`. T8a booked that collapse to T8b; T8b moved their STORAGE (they are read from `work` now), which is not the collapse, so the ORCHESTRATOR RE-ASSIGNED it to T8c (RULING 3 s3). Named successor, named owner. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/task-stamps.ts, tracker/tools.ts.",
+      "verifiedBy": "git grep -l 'last_activity_turn' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.last_activity_at",
+      "kind": "column",
+      "table": "work",
+      "column": "last_activity_at",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE ACTIVITY STAMPS \u2014 a BRIDGE. Research 19 s1c makes them a view over `work_events` + `deliveries`. T8a booked that collapse to T8b; T8b moved their STORAGE (they are read from `work` now), which is not the collapse, so the ORCHESTRATOR RE-ASSIGNED it to T8c (RULING 3 s3). Named successor, named owner. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/task-stamps.ts, tracker/tools.ts.",
+      "verifiedBy": "git grep -l 'last_activity_at' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.last_activity_outcome",
+      "kind": "column",
+      "table": "work",
+      "column": "last_activity_outcome",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE ACTIVITY STAMPS \u2014 a BRIDGE. Research 19 s1c makes them a view over `work_events` + `deliveries`. T8a booked that collapse to T8b; T8b moved their STORAGE (they are read from `work` now), which is not the collapse, so the ORCHESTRATOR RE-ASSIGNED it to T8c (RULING 3 s3). Named successor, named owner. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/task-stamps.ts, tracker/tools.ts.",
+      "verifiedBy": "git grep -l 'last_activity_outcome' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.last_answered_turn",
+      "kind": "column",
+      "table": "work",
+      "column": "last_answered_turn",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE ACTIVITY STAMPS \u2014 a BRIDGE. Research 19 s1c makes them a view over `work_events` + `deliveries`. T8a booked that collapse to T8b; T8b moved their STORAGE (they are read from `work` now), which is not the collapse, so the ORCHESTRATOR RE-ASSIGNED it to T8c (RULING 3 s3). Named successor, named owner. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/task-stamps.ts, tracker/tools.ts.",
+      "verifiedBy": "git grep -l 'last_answered_turn' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.last_answered_at",
+      "kind": "column",
+      "table": "work",
+      "column": "last_answered_at",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE ACTIVITY STAMPS \u2014 a BRIDGE. Research 19 s1c makes them a view over `work_events` + `deliveries`. T8a booked that collapse to T8b; T8b moved their STORAGE (they are read from `work` now), which is not the collapse, so the ORCHESTRATOR RE-ASSIGNED it to T8c (RULING 3 s3). Named successor, named owner. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/task-stamps.ts, tracker/tools.ts.",
+      "verifiedBy": "git grep -l 'last_answered_at' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
+    },
+    {
+      "id": "work.last_delivery_summary",
+      "kind": "column",
+      "table": "work",
+      "column": "last_delivery_summary",
+      "definedIn": "packages/server/src/db/migrations/137_work_attributes.sql",
+      "why": "THE ACTIVITY STAMPS \u2014 a BRIDGE. Research 19 s1c makes them a view over `work_events` + `deliveries`. T8a booked that collapse to T8b; T8b moved their STORAGE (they are read from `work` now), which is not the collapse, so the ORCHESTRATOR RE-ASSIGNED it to T8c (RULING 3 s3). Named successor, named owner. Readers at PHASE-2 T8b: tracker/pm-agent.ts, tracker/task-stamps.ts, tracker/tools.ts.",
+      "verifiedBy": "git grep -l 'last_delivery_summary' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
     }
   ],
   "tables": [
