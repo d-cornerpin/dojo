@@ -6,7 +6,7 @@
     "maxNewFileLines and is now above it fails. Re-record roughly every 30 days."
   ],
   "recordedAt": "2026-07-29",
-  "recordedAtCommit": "2a38d3c",
+  "recordedAtCommit": "25d83d4",
   "windowDays": 30,
   "growthLimit": 0.25,
   "capFraction": 0.6,
@@ -177,7 +177,7 @@
     "packages/server/src/agent/v2/hooks/task-complete.ts": 61,
     "packages/server/src/agent/v2/identical-call-brake.ts": 108,
     "packages/server/src/agent/v2/inbound-channel.ts": 290,
-    "packages/server/src/agent/v2/loop.ts": 9389,
+    "packages/server/src/agent/v2/loop.ts": 9404,
     "packages/server/src/agent/v2/outbound-ledger.ts": 340,
     "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/owner-affinity.ts": 173,

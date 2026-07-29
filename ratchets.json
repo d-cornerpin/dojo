@@ -84,6 +84,13 @@
       "to": 455,
       "by": "PHASE-2 T5 (2026-07-28)",
       "why": "A NEW file above the 400-line cap, pinned deliberately rather than split. What it holds is ONE mechanism with no seam in it: a send declares an identity, the transport it passes through records the outcome, and the receipt writer links itself to that same row \u2014 three parties to one scope, and splitting them puts an import cycle between the scope and its own doors. Roughly half the count is the reasoning: which clause of the dashboard predicate exists for which observed defect, why `held` needs a named entry point instead of a door, why a failure downgrades and a success never upgrades. That text is the reason the next reader can tell an honest ledger from a convenient one, and stripping it to reach 400 would be the arithmetic-over-functionality move the owner ruled out on 2026-07-26. Pinned decrease-only from here; the honest shrink is PHASE-4's, when OR2 removes the engine-ack lane this file currently has to describe."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9389,
+      "to": 9404,
+      "by": "PHASE-2 T5 fix (2026-07-28)",
+      "why": "+15 for the receipt-ordering fix in `25d83d4`. The iMessage and SMS auto-routes wrote their C26 receipt ONE STATEMENT below the outbound scope that had just recorded the send, so `deliveries.receipt_id` read 0 of 119 on the live ledger and would have shipped as the written-only column the Phase-1 exit named as the failure mode to avoid. Both receipts moved inside their scope callback, which costs a closure and the paragraph explaining why the placement is load-bearing. Caught by counting rows on the box, not by reading the diff \u2014 the comment says so, because the next person to move one of these lines needs to know what it breaks."
     }
   ],
   "maxNewFileLines": 400,
@@ -124,7 +131,7 @@
     "packages/server/src/agent/tools.ts": 10640,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 468,
     "packages/server/src/agent/v2/counterparty.ts": 890,
-    "packages/server/src/agent/v2/loop.ts": 9389,
+    "packages/server/src/agent/v2/loop.ts": 9404,
     "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/state.ts": 686,
