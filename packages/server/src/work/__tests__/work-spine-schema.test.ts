@@ -83,24 +83,33 @@ describe('migration 135: the work table exists with its declared shape', () => {
   // halves of that rename. `141` then DROPPED `legacy_tasks`, which is the rename's whole
   // purpose arriving — so asserting the retirement name still exists would pin the interim.
   // Both requirements are asserted, at the end state each has reached.
-  it('the pre-rename names are gone, and legacy_tasks has now gone with them', () => {
+  // Re-expressed twice, and the history is the point. `135` renamed `tasks`/`projects` to
+  // `legacy_*` so an un-re-pointed reader would fail loud instead of reading a stale twin;
+  // `141` dropped `legacy_tasks`; `142` rebuilt `techniques` onto the spine and dropped
+  // `legacy_projects` — the survivor that the previous version of this clause deliberately
+  // pinned as a decision rather than a leftover. All four names are gone now, which is the
+  // rename's whole purpose arriving.
+  it('every legacy tracker table name is gone, and techniques points at the spine', () => {
     const db = mockDb.current!;
     const gone = db.prepare(
-      "SELECT count(*) c FROM sqlite_master WHERE type='table' AND name IN ('tasks','projects','legacy_tasks')",
+      "SELECT count(*) c FROM sqlite_master WHERE type='table' AND name IN ('tasks','projects','legacy_tasks','legacy_projects')",
     ).get() as { c: number };
     expect(gone.c).toBe(0);
-    // `legacy_projects` is deliberately STILL HERE: `techniques.build_project_id` references
-    // it, and dropping the parent breaks ALL technique creation (measured on a copy — even a
-    // NULL build_project_id insert fails with "no such table"). It needs `techniques` rebuilt,
-    // which is its own migration. Asserted so the survivor is a decision, not a leftover.
-    const stillHere = db.prepare(
-      "SELECT count(*) c FROM sqlite_master WHERE type='table' AND name='legacy_projects'",
-    ).get() as { c: number };
-    expect(stillHere.c).toBe(1);
-    expect(
-      (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='techniques'")
-        .get() as { sql: string }).sql,
-    ).toMatch(/REFERENCES "?legacy_projects"?/);
+
+    // The reason `legacy_projects` could not go with `legacy_tasks`, now discharged: this FK
+    // was its last dependent. Asserted rather than assumed, because a rebuild that quietly
+    // kept the old parent would still pass every row-count check.
+    const techniques = (db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type='table' AND name='techniques'",
+    ).get() as { sql: string }).sql;
+    expect(techniques).not.toMatch(/legacy_projects/);
+    expect(techniques).toMatch(/build_project_id\s+TEXT\s+REFERENCES\s+work\(id\)/);
+    // NEGATIVE CONTROL: the rebuild must not have dropped the OTHER foreign key on its way.
+    expect(techniques).toMatch(/build_squad_id\s+TEXT\s+REFERENCES\s+agent_groups\(id\)/);
+    // and the scratch table used by the rebuild is not left standing
+    expect((db.prepare(
+      "SELECT count(*) c FROM sqlite_master WHERE type='table' AND name='techniques_new'",
+    ).get() as { c: number }).c).toBe(0);
   });
 
   it('gives work.agent_id NO foreign key — a terminated agent must not take its work with it (T0 D1)', () => {
