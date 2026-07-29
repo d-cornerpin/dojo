@@ -252,6 +252,13 @@
       "to": 492,
       "by": "PHASE-2 T8b (2026-07-29)",
       "why": "A NEW file above the 400-line new-file cap, added to `files` deliberately so the addition is seen and argued with. It is the tracker's WRITE side on the spine: creation, the typed attribute patcher, and `setTrackerStatus` (= `transition()` with the tracker's vocabulary outside). It cannot live anywhere else: clause (a) of the single-writer property says every `work` write is under `work/`, and it is deliberately NOT in `store.ts`, because clause (b) says `work.state` UPDATEs live only there \u2014 putting the attribute patcher beside the state writer is exactly the two-mechanism shape the split exists to prevent. Its sibling `tracker-view.ts` (350) is under the cap and stays unlisted. Both shrink at T8c (the schedule and stamp families collapse) and again at T10."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/tracker.ts",
+      "from": 877,
+      "to": 886,
+      "by": "PHASE-2 T8b2 (2026-07-29)",
+      "why": "NINE lines, and eight of them are the argument. T8b routed the dashboard's task PUT through `transition()`, which brought G7 (`done` means DELIVERED) onto that path for the first time; `setTaskStatus` returns null on a refusal and this handler ignored the null. Measured on the box before the fix: PUT {status:'complete'} on a task with no resolvable delivery answered HTTP 200 {ok:true} with the UNCHANGED task, and then wrote a `task_log` transition entry saying it moved to complete. A false receipt in the one history the owner reads is worse than the refusal it hid. The refusal now returns 409 carrying the gate's own name and detail, and the audit entry is not written for a move that did not happen. The lines cannot live elsewhere: the verdict has to be read where the response is composed. They come back down at T10 with the route's remaining legacy shims."
     }
   ],
   "maxNewFileLines": 400,
@@ -302,7 +309,7 @@
     "packages/server/src/gateway/routes/config.ts": 2531,
     "packages/server/src/gateway/routes/memory.ts": 635,
     "packages/server/src/gateway/routes/setup-deps.ts": 512,
-    "packages/server/src/gateway/routes/tracker.ts": 877,
+    "packages/server/src/gateway/routes/tracker.ts": 886,
     "packages/server/src/gateway/routes/twilio.ts": 501,
     "packages/server/src/gateway/routes/update.ts": 1022,
     "packages/server/src/gateway/routes/upload.ts": 607,
