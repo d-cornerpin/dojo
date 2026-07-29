@@ -139,9 +139,9 @@ import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngine
 // every gate in this file that used to answer it for itself (research 07 rows 1a/1b/1c/1e/
 // 1g/2d). Nothing below reads the model's prose to decide it any more.
 import {
-  answerReceiptForAsk, closedWithoutDelivery, owesAnswer, pauseDriveWorkWaitingOnOwner,
-  recordedAnswerInConversation, resumeWorkOnOwnerAsk, stillClaimedWork, terminalDeliveryForTurn,
-  turnDeliveredToPerson,
+  answerReceiptForAsk, closedWithoutDelivery, hasOpenHumanWork, owesAnswer,
+  pauseDriveWorkWaitingOnOwner, recordedAnswerInConversation, resumeWorkOnOwnerAsk,
+  stillClaimedWork, terminalDeliveryForTurn, turnDeliveredToPerson,
 } from './answered-edge.js';
 import { resolveOwnerAffinityChannel, affinityPromotionAllowed, recordAffinityPromotion, affinityPromotionRefusedNoBasis } from './owner-affinity.js';
 import { getProactiveSendStreak, bumpProactiveSendStreak, resetProactiveSendStreak, PROACTIVE_SEND_DEMOTE_THRESHOLD } from './proactive-budget.js';
@@ -1003,6 +1003,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // decide whether to re-trigger and drain the rest. Engine events / A2A are not
   // human conversations here.
   const waitingConvs = getWaitingHumanConversations(agentId);
+  // PHASE-2 T6 (C8, requirement 1e): "is any work open for a human counterparty right
+  // now?" is ONE QUERY on the spine, and it is taken HERE, at the same instant as the
+  // waiting set and BEFORE the pickup claim below. The instant is load-bearing: the claim
+  // moves this turn's own trigger to `claimed`, so a read taken afterwards answers a
+  // different question ("is anybody ELSE waiting") and would turn every ordinary user turn
+  // into a settled-context wake. The consumers — the proactive-send budget and the
+  // settled-context channel hold — mean "was a person waiting when this turn started".
+  const openHumanWorkAtTurnStart = hasOpenHumanWork(agentId);
   // C3: restore a human-task continuation. When a long human task hit MAX_TOOL_LOOPS /
   // the time budget / emergency compaction, the engine auto-continued with an empty
   // trigger and stashed the conversation here. This continuation turn has no waiting
@@ -1413,7 +1421,23 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // re-answers the last visible question as if it were new. On these turns an
   // [Engine hint] is injected at the context tail (see the assembly site) and a
   // turn-end tripwire logs any user-facing outbound for calibration.
-  const settledContextWakeTurn = !hasUnansweredUser;
+  // PHASE-2 T6 (C8, requirement 1e): ONE QUERY on the spine, taken at turn start (see
+  // `openHumanWorkAtTurnStart` above), not the length of an array the loop had to build.
+  // `hasUnansweredUser` still routes the TURN — it needs the conversations themselves —
+  // but the settled consumers only ever needed the boolean, and building fifty rows with a
+  // per-row origin re-derivation to learn it is the shape requirement 1e exists to remove.
+  const settledContextWakeTurn = !openHumanWorkAtTurnStart;
+  // Two readings of ONE fact, so a disagreement is a finding rather than a mystery. The
+  // ticket gate and the waiting set apply the same `deriveOrigin` verdict to the same rows,
+  // so they can only diverge on a ticket whose root message is gone, or on a producer that
+  // opened one for something that is not a person asking — both defects, and both worth a
+  // line in the log the day they appear. (They are the unauthorized-ticket family C7
+  // disposes of, and this line is how a new producer of them announces itself.)
+  if (openHumanWorkAtTurnStart !== hasUnansweredUser) {
+    logger.warn('v2: the settled read and the waiting set DISAGREE about whether a person is waiting', {
+      agentId, openHumanWorkAtTurnStart, waitingConversations: waitingConvs.length,
+    }, agentId);
+  }
   // RC-5.2: a NOTIFICATION turn, a wake with no trigger row, not A2A, not an engine
   // event, whose newest inbound row is an UNAUTHORIZED human notice (a mailbox event
   // about the owner's inbox, an unknown sender). resolveTurnCounterparty on a null
@@ -1932,13 +1956,24 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // of model iterations the loop concludes. The model's TEXT is never touched.
   let toolPhaseEndedBySpinBrake = false;
   let spinBrakeGraceCalls = 2;
-  // Set when the loop detector hard-blocks a call this turn (set-only-true, so
-  // concurrent runOne callbacks cannot clobber it). Consumed by the going-idle
-  // reconciliation: a reply the engine itself forced with a STOP order is a
-  // status update, not a delivery, and must never stamp deliverable_shown.
-  // Interim guard until the P2 status-truth invariant removes the stamp
-  // mechanism entirely (owner ruling 2026-07-21).
-  let loopBlockFiredThisTurn = false;
+  // `loopBlockFiredThisTurn` — DELETED, PHASE-2 T6 (C9; T1 adjudication #3).
+  //
+  // verdict: STRIP. It was written for ONE consumer — the going-idle reconciliation's
+  // `deliverable_shown` stamp — and its docblock still described that consumer in the
+  // present tense long after the P2 drive boundary deleted the stamp (2026-07-21). What
+  // remained was a boolean set in one place, read in none, and a comment that told a
+  // reader the opposite of the truth. Re-derived at this HEAD before removal: one
+  // assignment (`loop.ts:6571`, the loop detector's block arm), zero reads across
+  // `packages/server`, `packages/dashboard`, `watchdog` and the test tree.
+  //
+  // requirement preserved: "a reply the engine itself FORCED with a STOP order is a status
+  // update, not a delivery." That is now the TURN OUTCOME's job and it is stronger there —
+  // `exit_reason` is computed `toolPhaseEndedBySpinBrake ? 'brake' : answerRow ? 'answered'
+  // : ...`, so a coerced turn can never be labelled answered, and `tracker/task-stamps.ts`
+  // gates every answer/delivery stamp on `outcome === 'answered'`. The behaviour is locked
+  // by `tracker/__tests__/coerced-reply-not-a-delivery.test.ts` (PHASE-2 T1), including a
+  // conformance lock on the ternary's order — which is what makes this deletion safe to do
+  // rather than merely tidy.
   // Reminder-delivery lane refuse-once memory (turn-local): first non-owner
   // send on a reminder turn is refused with guidance; an identical repeat is
   // a deliberate confirmation and proceeds.
@@ -6568,7 +6603,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
           const loopCheck = loopDetector(tc, recentSigs);
           recentSigs = bumpLoopSignature(recentSigs, loopCheck.signature, RECENT_TOOL_WINDOW);
           if (loopCheck.decision === 'block' && !isA2AReplyTool) {
-            loopBlockFiredThisTurn = true;
             try {
               broadcast({ type: 'chat:tool_call', agentId, tool: tc.name, args: tc.arguments });
               broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: loopCheck.refusalMessage!.slice(0, 500) });

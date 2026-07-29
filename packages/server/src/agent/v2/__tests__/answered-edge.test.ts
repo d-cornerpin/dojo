@@ -63,6 +63,7 @@ import {
   ENGINE_EVENT_EXPIRY_HOURS,
   ENGINE_EVENT_MAX_ATTEMPTS,
 } from '../counterparty.js';
+import { getWaitingHumanConversations } from '../counterparty.js';
 import { getActiveUserDirective } from '../../../memory/directive.js';
 import { openAsk, transition } from '../../../work/store.js';
 
@@ -311,6 +312,31 @@ describe('1e — "settled" is ONE query: is anything open for a human counterpar
       agentId: 'other', messageId: 'm-1', conversationId: null, requesterId: 'owner',
       openedAt: Date.now(), title: 'roof quote',
     });
+    expect(hasOpenHumanWork(AGENT)).toBe(false);
+  });
+
+  it('AGREES WITH THE WAITING SET on the same rows — one fact, two shapes', () => {
+    // The one-query read and the array the loop builds must answer the same question at
+    // the same instant. They can only diverge on a ticket whose root message is gone or
+    // one opened for something that is not a person asking, and the loop logs exactly that
+    // disagreement. This pins the agreement half.
+    expect(hasOpenHumanWork(AGENT)).toBe(getWaitingHumanConversations(AGENT).length > 0);
+    seedInbound('m-1');
+    openAsk({
+      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
+      openedAt: Date.now(), title: 'roof quote',
+    });
+    expect(hasOpenHumanWork(AGENT)).toBe(getWaitingHumanConversations(AGENT).length > 0);
+    expect(hasOpenHumanWork(AGENT)).toBe(true);
+  });
+
+  it('NEGATIVE: a ticket whose root message is GONE can never be served, so it is not open work', () => {
+    seedInbound('m-1');
+    openAsk({
+      agentId: AGENT, messageId: 'm-1', conversationId: CONV, requesterId: 'owner',
+      openedAt: Date.now(), title: 'roof quote',
+    });
+    db().prepare("DELETE FROM messages WHERE id = 'm-1'").run();
     expect(hasOpenHumanWork(AGENT)).toBe(false);
   });
 

@@ -8,14 +8,14 @@
 // ladder down and what later closes work the user never received.
 //
 // WHERE THE REQUIREMENT LIVES TODAY — re-derived at HEAD 1ca2c91, not inherited:
-//   d54cd1f's own mechanism is GONE. `loopBlockFiredThisTurn` still exists but
-//   has exactly TWO occurrences in the whole tree (`git grep -n
-//   loopBlockFiredThisTurn -- packages/server/src` → agent/v2/loop.ts:1836 the
-//   declaration, agent/v2/loop.ts:6445 the only write). It has no reader: its
-//   consumer was the going-idle `deliverable_shown` stamp, deleted by the P2
-//   drive-boundary demolition (see the tombstone comment at loop.ts:5665-5685).
-//   Its docblock at loop.ts:1830-1836 still describes that deleted consumer, so
-//   the flag is dead code with a stale comment — reported as a T1 finding.
+//   d54cd1f's own mechanism is GONE. `loopBlockFiredThisTurn` had exactly TWO
+//   occurrences in the whole tree — a declaration and its only write — and no
+//   reader at all: its consumer was the going-idle `deliverable_shown` stamp,
+//   deleted by the P2 drive-boundary demolition. Its docblock still described
+//   that deleted consumer in the present tense, which is how a stale comment
+//   outlives the thing it documents. Reported as a T1 finding and DELETED by
+//   PHASE-2 T6 (C9, adjudication #3), with this file named as the guard that
+//   makes the deletion safe rather than merely tidy.
 //
 //   The requirement is now carried by the TURN OUTCOME instead, and that is a
 //   better home: loop.ts:9148 computes
