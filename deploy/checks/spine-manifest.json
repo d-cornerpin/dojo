@@ -256,20 +256,6 @@
       "why": "Harness ownership as a FACT rather than a name pattern (migration 134, PHASE-1 T11). 'user' | 'agent' | 'harness', NULLABLE by design so no existing row is backfilled and nothing is inferred from NULL (#15). DECLARED AT THE PHASE-1 EXIT, and T13-items #23's premise turned out to be wrong for THIS column: it was left out of the manifest on the belief that its only reader is the kit, but measured 2026-07-28 at 41fcabb it has production readers inside the scan scope \u2014 agent/created-by-kind.ts:61 and gateway/routes/agents.ts:348. No disposition needed."
     },
     {
-      "id": "legacy_tasks.created_by_kind",
-      "kind": "column",
-      "table": "legacy_tasks",
-      "column": "created_by_kind",
-      "definedIn": "packages/server/src/db/migrations/134_created_by_kind.sql",
-      "why": "Harness ownership as a FACT rather than a name pattern (migration 134, PHASE-1 T11). 'user' | 'agent' | 'harness', NULLABLE by design so no existing row is backfilled and nothing is inferred from NULL (#15). Stamped at creation by the tracker's writers so a test run's rows are structurally its own. Declared here rather than left undeclared (T13-items #23 argued for leaving it out) because an undeclared spine column is invisible to this gate forever, whereas a declared one with its reader named stays true and gets re-checked on every run.",
-      "zeroReader": {
-        "kind": "owed",
-        "owner": "PHASE-2 T10 (the demolition), which DROPS the column with its table",
-        "date": "2026-07-29",
-        "reason": "CORRECTED BY PHASE-2 T8a, 2026-07-29. The previous disposition claimed kind='external-reader' with dojo-test-kit/behavioral/runner.mjs as the reader. That claim is FALSE about the tree, and it was re-run rather than believed: `git -C ../dojo-test-kit grep -nP \"created_by_kind\"` returns 15 hits and `... | grep -cP \"legacy_tasks|legacy_projects\"` returns 0. Every cited line reads agents.created_by_kind - runner.mjs:61 (a predicate on agents.name), :563 (the one-time adoption), :581 and :605 (both sweep prongs), bot.mjs:241/:306/:310, and kit-schema-conformance.mjs:162, which prepares \"SELECT created_by_kind FROM agents\". The sweep then deletes tracker rows by JOINING on created_by/assigned_to IN <harness agent ids> (runner.mjs:608 for tasks, :613 for projects) - it never consults the tracker's own copy. So this column has NO reader in production, in the kit, or in any test, which is why T8a's migration 137 deliberately did NOT carry it onto `work` (the Fork-A ruling's criterion is readers). The debt is settled by REMOVAL, not by wiring: T10 drops legacy_tasks/legacy_projects and this column goes with them. Recorded as a dated debt with an owner rather than a comfortable sentence - a false external-reader claim is worse than a declared orphan, because it stops the gate from asking the question at all."
-      }
-    },
-    {
       "id": "legacy_projects.created_by_kind",
       "kind": "column",
       "table": "legacy_projects",
@@ -760,20 +746,6 @@
       "workShaped": true,
       "why": "THE spine (OR1, PHASE-2 T2). One table, one ID space: `tasks` and `projects` became two `kind`s of one row with their ids carried over, and `done` is unreachable without a delivery to point at (CHECK state <> 'done' OR result_delivery_id IS NOT NULL). This is the table the falsifier is about, so it is declared first: if a SECOND work-shaped table ever appears beside it without an explanation in this file, the build stops, which is the whole point of the rule. NOTE for anyone extending the detector: `agent_id` deliberately carries NO foreign key and NO cascade (T0 D1) \u2014 a terminated agent's work rows must outlive their agent \u2014 so the absence of an FK here is a decision, not an oversight.",
       "disposition": "LIVE, and the destination for everything else in this list. T3-T9 route their writers through work/store.ts's transition(); T10 drops the legacy tables it replaced."
-    },
-    {
-      "name": "legacy_tasks",
-      "definedIn": "packages/server/src/db/migrations/003_multi_agent.sql",
-      "agentLink": "assigned_to",
-      "stateColumn": "status",
-      "terminalStates": [
-        "complete",
-        "completed",
-        "failed"
-      ],
-      "workShaped": true,
-      "why": "THE tracker, now under its retirement name. PHASE-2 T2 copied every row into `work` with ids preserved and renamed the table in the same migration (135), so a reader nobody re-pointed fails loud instead of quietly reading a stale twin. It is still work-shaped and still declared, because it still holds rows and still has writers \u2014 47 state-writing sites across 9 files, which the single-writer walk in work/__tests__ carries as a burn-down list. Note for anyone extending the detector: it links agents through `assigned_to TEXT REFERENCES agents(id)`, NOT a column named agent_id.",
-      "disposition": "Phase 2 \u2014 SUPERSEDED by `work` (OR1); renamed at T2, writers move at T8, table DROPS at T10."
     },
     {
       "name": "task_runs",
