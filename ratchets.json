@@ -1,5 +1,5 @@
 {
-  "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
+  "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit \u2014 that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
       "path": "packages/server/src/work/store.ts",
@@ -13,7 +13,7 @@
       "from": 2230,
       "to": 2300,
       "by": "PHASE-2 T5 (2026-07-28)",
-      "why": "THE iMESSAGE DOOR, plus its two attachment siblings and the two platform sends that live in this file (sendAlert, the busy-ack). This is the largest single raise of the task and it is the one that buys the most: this file is the transport EVERY iMessage in the product passes through — the auto-route, the imessage_send tool, alerts, the busy-ack, the first-run welcome, the healer's approval prompt, the A2A owner hand-back — and before it, only the first two produced a ledger row and only when the caller had already decided the send worked. Recording here closes six of PINNED s8's unrecorded paths at one physical point instead of six. The two attachment siblings are wrapped for a named reason: sendIMessageWithAttachment calls sendIMessage for the caption, so without one scope over the pair every captioned file would have written TWO rows for one thing the person received."
+      "why": "THE iMESSAGE DOOR, plus its two attachment siblings and the two platform sends that live in this file (sendAlert, the busy-ack). This is the largest single raise of the task and it is the one that buys the most: this file is the transport EVERY iMessage in the product passes through \u2014 the auto-route, the imessage_send tool, alerts, the busy-ack, the first-run welcome, the healer's approval prompt, the A2A owner hand-back \u2014 and before it, only the first two produced a ledger row and only when the caller had already decided the send worked. Recording here closes six of PINNED s8's unrecorded paths at one physical point instead of six. The two attachment siblings are wrapped for a named reason: sendIMessageWithAttachment calls sendIMessage for the caption, so without one scope over the pair every captioned file would have written TWO rows for one thing the person received."
     },
     {
       "path": "packages/server/src/agent/v2/loop.ts",
@@ -34,7 +34,7 @@
       "from": 10611,
       "to": 10640,
       "by": "PHASE-2 T5 (2026-07-28)",
-      "why": "ONE outbound scope per send-tool call, opened at the single dispatch door every path already goes through — the same place and the same reasoning as the P6a tool-call identity that sits three lines above it. This is what closes the ten unrecorded send paths in ONE change instead of ten: `gmail_reply`, `gmail_forward`, `outlook_reply`, `outlook_forward`, `teams_send_message`, `teams_send_channel_message` and `voice_call` are now recorded without any of them being named anywhere. The alias-resolution tail was extracted to `dispatchResolved` so the scope can wrap it; that extraction is most of the count."
+      "why": "ONE outbound scope per send-tool call, opened at the single dispatch door every path already goes through \u2014 the same place and the same reasoning as the P6a tool-call identity that sits three lines above it. This is what closes the ten unrecorded send paths in ONE change instead of ten: `gmail_reply`, `gmail_forward`, `outlook_reply`, `outlook_forward`, `teams_send_message`, `teams_send_channel_message` and `voice_call` are now recorded without any of them being named anywhere. The alias-resolution tail was extracted to `dispatchResolved` so the scope can wrap it; that extraction is most of the count."
     },
     {
       "path": "packages/server/src/agent/a2a-transport.ts",
@@ -48,7 +48,7 @@
       "from": 2277,
       "to": 2299,
       "by": "PHASE-2 T5 (2026-07-28)",
-      "why": "THE BROWSER SPEECH-OUT DOOR, on both engine tiers (OR3 keeps both, so both are instrumented). Research 03 measured voice as recording NOTHING on either path. One row per BURST rather than per clause — the clause queue is how one reply is transported, not several replies — recorded where synthesis actually starts, so a turn whose text sanitizes to nothing speakable never claims a delivery, and corrected to `failed` if the stream dies mid-reply."
+      "why": "THE BROWSER SPEECH-OUT DOOR, on both engine tiers (OR3 keeps both, so both are instrumented). Research 03 measured voice as recording NOTHING on either path. One row per BURST rather than per clause \u2014 the clause queue is how one reply is transported, not several replies \u2014 recorded where synthesis actually starts, so a turn whose text sanitizes to nothing speakable never claims a delivery, and corrected to `failed` if the stream dies mid-reply."
     },
     {
       "path": "packages/server/src/twilio/call-session.ts",
@@ -76,182 +76,182 @@
       "from": 236,
       "to": 267,
       "by": "PHASE-2 T5 (2026-07-28)",
-      "why": "Not a raise — a first PIN, at the count the growth detector caught. `linkArtifactsToDelivery` lands here because this module is the sole owner of `turn_artifacts` writes, and the Phase-1 exit named `turn_artifacts.delivery_id` as a Phase-2 debt that must not be closed half-way. Putting the write anywhere else would give that table a second writer to pay for a column, which is the disease. Pinned decrease-only from here."
+      "why": "Not a raise \u2014 a first PIN, at the count the growth detector caught. `linkArtifactsToDelivery` lands here because this module is the sole owner of `turn_artifacts` writes, and the Phase-1 exit named `turn_artifacts.delivery_id` as a Phase-2 debt that must not be closed half-way. Putting the write anywhere else would give that table a second writer to pay for a column, which is the disease. Pinned decrease-only from here."
     },
     {
       "path": "packages/server/src/agent/v2/outbound.ts",
       "from": 0,
       "to": 455,
       "by": "PHASE-2 T5 (2026-07-28)",
-      "why": "A NEW file above the 400-line cap, pinned deliberately rather than split. What it holds is ONE mechanism with no seam in it: a send declares an identity, the transport it passes through records the outcome, and the receipt writer links itself to that same row — three parties to one scope, and splitting them puts an import cycle between the scope and its own doors. Roughly half the count is the reasoning: which clause of the dashboard predicate exists for which observed defect, why `held` needs a named entry point instead of a door, why a failure downgrades and a success never upgrades. That text is the reason the next reader can tell an honest ledger from a convenient one, and stripping it to reach 400 would be the arithmetic-over-functionality move the owner ruled out on 2026-07-26. Pinned decrease-only from here; the honest shrink is PHASE-4's, when OR2 removes the engine-ack lane this file currently has to describe."
+      "why": "A NEW file above the 400-line cap, pinned deliberately rather than split. What it holds is ONE mechanism with no seam in it: a send declares an identity, the transport it passes through records the outcome, and the receipt writer links itself to that same row \u2014 three parties to one scope, and splitting them puts an import cycle between the scope and its own doors. Roughly half the count is the reasoning: which clause of the dashboard predicate exists for which observed defect, why `held` needs a named entry point instead of a door, why a failure downgrades and a success never upgrades. That text is the reason the next reader can tell an honest ledger from a convenient one, and stripping it to reach 400 would be the arithmetic-over-functionality move the owner ruled out on 2026-07-26. Pinned decrease-only from here; the honest shrink is PHASE-4's, when OR2 removes the engine-ack lane this file currently has to describe."
     },
     {
       "path": "packages/server/src/agent/v2/loop.ts",
       "from": 9389,
       "to": 9404,
       "by": "PHASE-2 T5 fix (2026-07-28)",
-      "why": "+15 for the receipt-ordering fix in `25d83d4`. The iMessage and SMS auto-routes wrote their C26 receipt ONE STATEMENT below the outbound scope that had just recorded the send, so `deliveries.receipt_id` read 0 of 119 on the live ledger and would have shipped as the written-only column the Phase-1 exit named as the failure mode to avoid. Both receipts moved inside their scope callback, which costs a closure and the paragraph explaining why the placement is load-bearing. Caught by counting rows on the box, not by reading the diff — the comment says so, because the next person to move one of these lines needs to know what it breaks."
+      "why": "+15 for the receipt-ordering fix in `25d83d4`. The iMessage and SMS auto-routes wrote their C26 receipt ONE STATEMENT below the outbound scope that had just recorded the send, so `deliveries.receipt_id` read 0 of 119 on the live ledger and would have shipped as the written-only column the Phase-1 exit named as the failure mode to avoid. Both receipts moved inside their scope callback, which costs a closure and the paragraph explaining why the placement is load-bearing. Caught by counting rows on the box, not by reading the diff \u2014 the comment says so, because the next person to move one of these lines needs to know what it breaks."
     },
     {
       "path": "packages/server/src/agent/v2/loop.ts",
       "from": 9404,
       "to": 9521,
       "by": "PHASE-2 T6 (2026-07-28)",
-      "why": "PHASE-2 T6's five in-loop rekeys, net +117 after a trim pass that moved the reasoning to the module it belongs to. What LANDED here cannot live elsewhere: these are gates INSIDE the turn, and each one now reads a record where it used to compute an answer for itself — the redundant-closeout floor (the prose classifier is DELETED and the authority is the delivery ledger), the silent-closeout owe-filter, the turn-record's FIRST READER at finalize (R-0: `finalizeTurn` has always written the true outcome and NOTHING read it), the waiting-on-owner disposition and its reopen edge, and the settled read collapsing from an array-build to one query. What it BUYS, measured in the same task: `classifiers/output.ts` -24 (the twenty-phrase CLOSEOUT regex and its two consts, gone), `memory/directive.ts` -4 net on the selector with R-2 closed (a four-line JSON-shape probe becomes `answer_message_id IS NULL`), one dead flag stripped, and four hand-rolled copies of the answered-edge read replaced by calls. The line count is the wrong meter for this one and the plan says so (#7): what to read is the demolition ledger."
+      "why": "PHASE-2 T6's five in-loop rekeys, net +117 after a trim pass that moved the reasoning to the module it belongs to. What LANDED here cannot live elsewhere: these are gates INSIDE the turn, and each one now reads a record where it used to compute an answer for itself \u2014 the redundant-closeout floor (the prose classifier is DELETED and the authority is the delivery ledger), the silent-closeout owe-filter, the turn-record's FIRST READER at finalize (R-0: `finalizeTurn` has always written the true outcome and NOTHING read it), the waiting-on-owner disposition and its reopen edge, and the settled read collapsing from an array-build to one query. What it BUYS, measured in the same task: `classifiers/output.ts` -24 (the twenty-phrase CLOSEOUT regex and its two consts, gone), `memory/directive.ts` -4 net on the selector with R-2 closed (a four-line JSON-shape probe becomes `answer_message_id IS NULL`), one dead flag stripped, and four hand-rolled copies of the answered-edge read replaced by calls. The line count is the wrong meter for this one and the plan says so (#7): what to read is the demolition ledger."
     },
     {
       "path": "packages/server/src/work/store.ts",
       "from": 1175,
       "to": 1229,
       "by": "PHASE-2 T6 (2026-07-28)",
-      "why": "+54 for `abandonUnservableAsks()` — requirement 2b's THIRD cause of `abandoned`, and it must be in this module because `transition()` is the only writer of `work.state` and the single-writer walk's Part A allowlist is EMPTY. It disposes of tickets nobody can ever serve or close (no conversation identity, or a root message that no longer exists); 74 such rows on the dev box got their one-shot honest disposition at boot, 25 identity-less and 49 gone-root, each with its reason on its own `work_events` row. THIS IS THE FOURTH CONSECUTIVE TASK TO RAISE THIS FILE (T3 590->1145, T4, T5 1175, now 1229). The real fix is the question T3 asked and T4 and T5 repeated: should the single-module walk learn about a `work/` DIRECTORY? T9 owns that ruling and it is now four tasks overdue."
+      "why": "+54 for `abandonUnservableAsks()` \u2014 requirement 2b's THIRD cause of `abandoned`, and it must be in this module because `transition()` is the only writer of `work.state` and the single-writer walk's Part A allowlist is EMPTY. It disposes of tickets nobody can ever serve or close (no conversation identity, or a root message that no longer exists); 74 such rows on the dev box got their one-shot honest disposition at boot, 25 identity-less and 49 gone-root, each with its reason on its own `work_events` row. THIS IS THE FOURTH CONSECUTIVE TASK TO RAISE THIS FILE (T3 590->1145, T4, T5 1175, now 1229). The real fix is the question T3 asked and T4 and T5 repeated: should the single-module walk learn about a `work/` DIRECTORY? T9 owns that ruling and it is now four tasks overdue."
     },
     {
       "path": "packages/server/src/memory/message-store.ts",
       "from": 842,
       "to": 868,
       "by": "PHASE-2 T6 (2026-07-28)",
-      "why": "+26, all of it ONE structural clause and the measurement that justifies it. `isOwnerAsk` now requires the row to carry a CHANNEL, because OR4 says channel/sender/trust/lane are stamped at INGEST and a `role='user'` row without one did not come through a door — it is the platform writing to itself in the second person. Three producers were doing exactly that (the PM's own situation report, the [ENGINE RENAME REQUEST], a spawned agent's kickoff), each opening an owner ask ticket nobody could ever serve, and the PM was being told THE OWNER was talking to it. The comment carries the query and its result because the evidence is the whole argument: every genuine ask on this box carries channel+sender+meta+conversation, every stuck one carries none of the four."
+      "why": "+26, all of it ONE structural clause and the measurement that justifies it. `isOwnerAsk` now requires the row to carry a CHANNEL, because OR4 says channel/sender/trust/lane are stamped at INGEST and a `role='user'` row without one did not come through a door \u2014 it is the platform writing to itself in the second person. Three producers were doing exactly that (the PM's own situation report, the [ENGINE RENAME REQUEST], a spawned agent's kickoff), each opening an owner ask ticket nobody could ever serve, and the PM was being told THE OWNER was talking to it. The comment carries the query and its result because the evidence is the whole argument: every genuine ask on this box carries channel+sender+meta+conversation, every stuck one carries none of the four."
     },
     {
       "path": "packages/server/src/index.ts",
       "from": 1267,
       "to": 1279,
       "by": "PHASE-2 T6 (2026-07-28)",
-      "why": "+12: the boot sweep that gives unservable ask tickets an honest terminal state, placed beside the crash reconciliation it belongs with (both answer 'what did a restart inherit that nobody can finish'). Twelve lines and a `try` — there is no smaller honest form."
+      "why": "+12: the boot sweep that gives unservable ask tickets an honest terminal state, placed beside the crash reconciliation it belongs with (both answer 'what did a restart inherit that nobody can finish'). Twelve lines and a `try` \u2014 there is no smaller honest form."
     },
     {
       "path": "packages/server/src/agent/a2a-transport.ts",
       "from": 1799,
       "to": 1805,
       "by": "PHASE-2 T6 (2026-07-28)",
-      "why": "+6 in `resolveCompilePendingJoins`, which T4's report named as owed to T6 BY NAME. The site stops holding its own reading of the answered edge and calls the one reader, which also means it now sees the ticket's `result_delivery_id` before the mig-113 stamp — strictly more evidence for the same decision. The +6 is the receipt appearing in the settle's reason string plus the two-line explanation of why `done` still is not asserted here."
+      "why": "+6 in `resolveCompilePendingJoins`, which T4's report named as owed to T6 BY NAME. The site stops holding its own reading of the answered edge and calls the one reader, which also means it now sees the ticket's `result_delivery_id` before the mig-113 stamp \u2014 strictly more evidence for the same decision. The +6 is the receipt appearing in the settle's reason string plus the two-line explanation of why `done` still is not asserted here."
     },
     {
       "path": "packages/server/src/agent/v2/answered-edge.ts",
       "from": 0,
       "to": 487,
       "by": "PHASE-2 T6 (2026-07-28)",
-      "why": "NEW FILE, above the 400-line cap, and the addition is meant to be argued with. It is THE ANSWERED EDGE: the one place this tree answers 'has the person heard from us', replacing seven mechanisms that each answered it for themselves (a twenty-phrase prose classifier, two turn-local booleans, a legacy status scan joined by hand to a message column, an array the loop had to BUILD to learn a boolean, a loop-local variable set at four sites, `conv_key IS NULL`, `swept_at`) plus the turn record's own `exit_reason`, which finalizeTurn has always written and nothing read (R-0). Roughly two thirds of it is the argument, the measurements and the requirement-preserved lines — deliberately, because the danger with this particular collapse is not that it is wrong today but that somebody loosens a key later without knowing which incident bought it. Splitting it would put the answer-receipt read in one file and the closeout-owe read in another, which is the exact split requirement 2d exists to end."
+      "why": "NEW FILE, above the 400-line cap, and the addition is meant to be argued with. It is THE ANSWERED EDGE: the one place this tree answers 'has the person heard from us', replacing seven mechanisms that each answered it for themselves (a twenty-phrase prose classifier, two turn-local booleans, a legacy status scan joined by hand to a message column, an array the loop had to BUILD to learn a boolean, a loop-local variable set at four sites, `conv_key IS NULL`, `swept_at`) plus the turn record's own `exit_reason`, which finalizeTurn has always written and nothing read (R-0). Roughly two thirds of it is the argument, the measurements and the requirement-preserved lines \u2014 deliberately, because the danger with this particular collapse is not that it is wrong today but that somebody loosens a key later without knowing which incident bought it. Splitting it would put the answer-receipt read in one file and the closeout-owe read in another, which is the exact split requirement 2d exists to end."
     },
     {
       "path": "packages/server/src/work/store.ts",
       "from": 1229,
       "to": 1460,
       "by": "PHASE-2 T7 (2026-07-29)",
-      "why": "The commitment half of requirement 4a — `openCommitment` / `resolveCommitment` / `dismissCommitment` and the three obligation reads — and it cannot live anywhere else for the same structural reason T4's raise gives: `single-writer-conformance.test.ts` PART A holds an EMPTY allowlist for `work`, so a second module writing commitment rows fails the walk. What this raise BUYS, measured in the same commit: `memory/open-loops.ts` is DELETED ENTIRELY (623 lines — the fenced-section parser, the Jaccard/coverage matcher, the store-contradiction regex guard, the party-attribution map and both renderers), its unit test goes with it (321 lines), and the `open_loops` table is dropped by migration 136. The two renderers come back as `work/obligations.ts`, a READ-ONLY module of 118 lines. The T3/T4 question stands and is now overdue: the walk should learn about a `work/` DIRECTORY rather than a single file (T9)."
+      "why": "The commitment half of requirement 4a \u2014 `openCommitment` / `resolveCommitment` / `dismissCommitment` and the three obligation reads \u2014 and it cannot live anywhere else for the same structural reason T4's raise gives: `single-writer-conformance.test.ts` PART A holds an EMPTY allowlist for `work`, so a second module writing commitment rows fails the walk. What this raise BUYS, measured in the same commit: `memory/open-loops.ts` is DELETED ENTIRELY (623 lines \u2014 the fenced-section parser, the Jaccard/coverage matcher, the store-contradiction regex guard, the party-attribution map and both renderers), its unit test goes with it (321 lines), and the `open_loops` table is dropped by migration 136. The two renderers come back as `work/obligations.ts`, a READ-ONLY module of 118 lines. The T3/T4 question stands and is now overdue: the walk should learn about a `work/` DIRECTORY rather than a single file (T9)."
     },
     {
       "path": "packages/server/src/agent/tools.ts",
       "from": 10640,
       "to": 10735,
       "by": "PHASE-2 T7 (2026-07-29)",
-      "why": "`loop_resolve` (one verb, 18 lines of definition + 11 of dispatch) becomes `commitment_open` + `commitment_resolve` (two verbs, 37 + 68). The extra verb is the point of the task and not an accident: the deleted module had a RESOLUTION verb only, because a PARSER created the rows. Delete the parser without adding a creation door and the capability is deleted, not replaced — so the requirement-preserved line ('a promise the agent makes is tracked until it is delivered or dropped') would have been a lie. The dispatch is longer than the one it replaces because it refuses in three named ways the old one could not: outside a turn, on an id that does not resolve, and — the load-bearing one — on `kept` with no delivery recorded for the turn. PHASE-2 T8 absorbs both verbs into `work_open`/`work_close_request` with alias rows; `tools/aliases.ts:76-86` is the mechanism and it already exists."
+      "why": "`loop_resolve` (one verb, 18 lines of definition + 11 of dispatch) becomes `commitment_open` + `commitment_resolve` (two verbs, 37 + 68). The extra verb is the point of the task and not an accident: the deleted module had a RESOLUTION verb only, because a PARSER created the rows. Delete the parser without adding a creation door and the capability is deleted, not replaced \u2014 so the requirement-preserved line ('a promise the agent makes is tracked until it is delivered or dropped') would have been a lie. The dispatch is longer than the one it replaces because it refuses in three named ways the old one could not: outside a turn, on an id that does not resolve, and \u2014 the load-bearing one \u2014 on `kept` with no delivery recorded for the turn. PHASE-2 T8 absorbs both verbs into `work_open`/`work_close_request` with alias rows; `tools/aliases.ts:76-86` is the mechanism and it already exists."
     },
     {
       "path": "packages/server/src/agent/v2/loop.ts",
       "from": 9521,
       "to": 9530,
       "by": "PHASE-2 T7 (2026-07-29)",
-      "why": "+6 lines at ONE site: the per-turn OPEN LOOPS injection becomes the OPEN WORK injection, and the added lines are the comment recording why the block is keyed on `conversation_id` rather than on `conv_key` (the deleted block compared conv_key strings — the column that also carried the claim token and the park sigils, so a parked row changed which party its items belonged to). The call itself is one line for one line."
+      "why": "+6 lines at ONE site: the per-turn OPEN LOOPS injection becomes the OPEN WORK injection, and the added lines are the comment recording why the block is keyed on `conversation_id` rather than on `conv_key` (the deleted block compared conv_key strings \u2014 the column that also carried the claim token and the park sigils, so a parked row changed which party its items belonged to). The call itself is one line for one line."
     },
     {
       "path": "packages/server/src/tracker/tools.ts",
       "from": 4229,
       "to": 4342,
       "by": "PHASE-2 T8b (2026-07-29)",
-      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch — PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites — is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
     },
     {
       "path": "packages/server/src/scheduler/runner.ts",
       "from": 1613,
       "to": 1655,
       "by": "PHASE-2 T8b (2026-07-29)",
-      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch — PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites — is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
     },
     {
       "path": "packages/server/src/tracker/pm-agent.ts",
       "from": 1929,
       "to": 1957,
       "by": "PHASE-2 T8b (2026-07-29)",
-      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch — PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites — is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
     },
     {
       "path": "packages/server/src/agent/v2/loop.ts",
       "from": 9530,
       "to": 9556,
       "by": "PHASE-2 T8b (2026-07-29)",
-      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch — PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites — is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
     },
     {
       "path": "packages/server/src/agent/spawner.ts",
       "from": 1335,
       "to": 1359,
       "by": "PHASE-2 T8b (2026-07-29)",
-      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch — PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites — is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
     },
     {
       "path": "packages/server/src/agent/v2/answered-edge.ts",
       "from": 487,
       "to": 496,
       "by": "PHASE-2 T8b (2026-07-29)",
-      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch — PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites — is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
     },
     {
       "path": "packages/server/src/gateway/routes/memory.ts",
       "from": 627,
       "to": 635,
       "by": "PHASE-2 T8b (2026-07-29)",
-      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch — PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites — is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
     },
     {
       "path": "packages/server/src/agent/tools.ts",
       "from": 10735,
       "to": 10742,
       "by": "PHASE-2 T8b (2026-07-29)",
-      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch — PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites — is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
     },
     {
       "path": "packages/server/src/memory/assembler.ts",
       "from": 2564,
       "to": 2570,
       "by": "PHASE-2 T8b (2026-07-29)",
-      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch — PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites — is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
     },
     {
       "path": "packages/server/src/agent/runtime.ts",
       "from": 1339,
       "to": 1340,
       "by": "PHASE-2 T8b (2026-07-29)",
-      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch — PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites — is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
     },
     {
       "path": "packages/server/src/agent/v2/counterparty.ts",
       "from": 890,
       "to": 891,
       "by": "PHASE-2 T8b (2026-07-29)",
-      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch — PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites — is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
     },
     {
       "path": "packages/server/src/healer/diagnostic.ts",
       "from": 1035,
       "to": 1036,
       "by": "PHASE-2 T8b (2026-07-29)",
-      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch — PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites — is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
     },
     {
       "path": "packages/server/src/healer/injury-recovery.ts",
       "from": 809,
       "to": 810,
       "by": "PHASE-2 T8b (2026-07-29)",
-      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch — PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites — is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
+      "why": "PHASE-2 T8b: the tracker's storage moved onto `work`. An ungated one-line `UPDATE legacy_tasks SET status = ?` becomes a `setTrackerStatus(...)` call that states its actor, its reason and what it points at, and a bare `SELECT * FROM legacy_tasks` becomes an explicit projection off the spine. Those are the lines. What the whole set BUYS is stated once rather than per file: `updateTask`'s status branch \u2014 PINNED s13's route R2, a state change with no gate, no reason, no event and no actor, with eleven call sites \u2014 is DELETED, the 49-site legacy-writer burn-down is at ZERO, and `legacy_tasks`/`legacy_projects` have no production reader or writer left. The two tables and their four side tables all die at T10, which is where these counts come back down."
     },
     {
       "path": "packages/server/src/work/tracker-store.ts",
       "from": 0,
       "to": 492,
       "by": "PHASE-2 T8b (2026-07-29)",
-      "why": "A NEW file above the 400-line new-file cap, added to `files` deliberately so the addition is seen and argued with. It is the tracker's WRITE side on the spine: creation, the typed attribute patcher, and `setTrackerStatus` (= `transition()` with the tracker's vocabulary outside). It cannot live anywhere else: clause (a) of the single-writer property says every `work` write is under `work/`, and it is deliberately NOT in `store.ts`, because clause (b) says `work.state` UPDATEs live only there — putting the attribute patcher beside the state writer is exactly the two-mechanism shape the split exists to prevent. Its sibling `tracker-view.ts` (350) is under the cap and stays unlisted. Both shrink at T8c (the schedule and stamp families collapse) and again at T10."
+      "why": "A NEW file above the 400-line new-file cap, added to `files` deliberately so the addition is seen and argued with. It is the tracker's WRITE side on the spine: creation, the typed attribute patcher, and `setTrackerStatus` (= `transition()` with the tracker's vocabulary outside). It cannot live anywhere else: clause (a) of the single-writer property says every `work` write is under `work/`, and it is deliberately NOT in `store.ts`, because clause (b) says `work.state` UPDATEs live only there \u2014 putting the attribute patcher beside the state writer is exactly the two-mechanism shape the split exists to prevent. Its sibling `tracker-view.ts` (350) is under the cap and stays unlisted. Both shrink at T8c (the schedule and stamp families collapse) and again at T10."
     },
     {
       "path": "packages/server/src/gateway/routes/tracker.ts",
@@ -265,49 +265,49 @@
       "from": 9556,
       "to": 9569,
       "by": "PHASE-2 T8V (2026-07-29)",
-      "why": "PHASE-2 T8V: the verb collapse. 24 public tool names became six `work_*` verbs, and the 76-site measurement T8b2 stopped on is the reason these five files move: ~20 engine behaviours decided what a call MEANT by matching its NAME, and after the collapse a name no longer identifies an operation. Every one of those sites therefore rekeys to `toolOpKey(name, args)` — the operation id, derived in ONE new module (`tools/work-verbs.ts`) and nowhere else. The lines are the rekeys plus the reason each set is an OPERATION set and not a name set, which is the part a future reader needs and cannot re-derive. What the whole change BUYS, stated once: `agent/tools.ts` loses 270 lines (24 tool definitions -> 6, 24 dispatch case labels -> operation labels, one merged edit body), the retired 24 names exist only as alias rows that SWEEP-F T7 deletes, and the PM overseer gate — which a name-only match could no longer express, because `work_update` performs both the close the PM may do and the status flip it may not — states its rule as operations instead of relying on the old one-name-per-operation accident. Nineteen name-matching gates rekeyed (the close-out gate and its satisfaction, the thrash-gate clear, the multi-step floor's two counters and its disarm rule, the start-ack, the add-notes nudge, the bookkeeping nudge, the promise floor, countsAsTaskWork, transitionedThisTurn) plus three named operation sets and `argsForResult`. The helper is the load-bearing addition: a tool RESULT carries no arguments, so the four result-side gates would otherwise have no way to tell a `work_update` status flip from a `work_update` list. It cannot live in work-verbs.ts — it walks the loop's own turn state. AS-BUILT: 9569, not 9614 — the three op sets moved to tools/work-verbs.ts so they could be tested from a leaf, so the file grew by 13 lines rather than 58."
+      "why": "PHASE-2 T8V: the verb collapse. 24 public tool names became six `work_*` verbs, and the 76-site measurement T8b2 stopped on is the reason these five files move: ~20 engine behaviours decided what a call MEANT by matching its NAME, and after the collapse a name no longer identifies an operation. Every one of those sites therefore rekeys to `toolOpKey(name, args)` \u2014 the operation id, derived in ONE new module (`tools/work-verbs.ts`) and nowhere else. The lines are the rekeys plus the reason each set is an OPERATION set and not a name set, which is the part a future reader needs and cannot re-derive. What the whole change BUYS, stated once: `agent/tools.ts` loses 270 lines (24 tool definitions -> 6, 24 dispatch case labels -> operation labels, one merged edit body), the retired 24 names exist only as alias rows that SWEEP-F T7 deletes, and the PM overseer gate \u2014 which a name-only match could no longer express, because `work_update` performs both the close the PM may do and the status flip it may not \u2014 states its rule as operations instead of relying on the old one-name-per-operation accident. Nineteen name-matching gates rekeyed (the close-out gate and its satisfaction, the thrash-gate clear, the multi-step floor's two counters and its disarm rule, the start-ack, the add-notes nudge, the bookkeeping nudge, the promise floor, countsAsTaskWork, transitionedThisTurn) plus three named operation sets and `argsForResult`. The helper is the load-bearing addition: a tool RESULT carries no arguments, so the four result-side gates would otherwise have no way to tell a `work_update` status flip from a `work_update` list. It cannot live in work-verbs.ts \u2014 it walks the loop's own turn state. AS-BUILT: 9569, not 9614 \u2014 the three op sets moved to tools/work-verbs.ts so they could be tested from a leaf, so the file grew by 13 lines rather than 58."
     },
     {
       "path": "packages/server/src/tracker/pm-agent.ts",
       "from": 1957,
       "to": 2020,
       "by": "PHASE-2 T8V (2026-07-29)",
-      "why": "PHASE-2 T8V: the verb collapse. 24 public tool names became six `work_*` verbs, and the 76-site measurement T8b2 stopped on is the reason these five files move: ~20 engine behaviours decided what a call MEANT by matching its NAME, and after the collapse a name no longer identifies an operation. Every one of those sites therefore rekeys to `toolOpKey(name, args)` — the operation id, derived in ONE new module (`tools/work-verbs.ts`) and nowhere else. The lines are the rekeys plus the reason each set is an OPERATION set and not a name set, which is the part a future reader needs and cannot re-derive. What the whole change BUYS, stated once: `agent/tools.ts` loses 270 lines (24 tool definitions -> 6, 24 dispatch case labels -> operation labels, one merged edit body), the retired 24 names exist only as alias rows that SWEEP-F T7 deletes, and the PM overseer gate — which a name-only match could no longer express, because `work_update` performs both the close the PM may do and the status flip it may not — states its rule as operations instead of relying on the old one-name-per-operation accident. The PM overseer allow-list moved from NAMES to OPERATIONS, and gained `pmMayCall` + `PM_ONLY_WORK_OPS`. This is the site the collapse breaks hardest and the lines are the reason why: the list encodes 'the PM may close a project but may NOT flip a worker's status', and after the collapse both are `work_update`, so a name set can no longer say it. The NAME list the three tools_policy writers consume is now DERIVED from the op list, so the advertised surface and the executor gate cannot drift apart. AS-BUILT: 2020, not the 2011 first recorded — nine more lines for A NAME MATCH THE TYPESCRIPT SWEEP COULD NOT SEE. `audit_log.target` holds the tool NAME and the complete-dodges-poke smell asked `target NOT LIKE 'tracker_%'`; after the collapse no live tool carries that prefix, so the condition was TRUE for every work call and the smell would have found a 'non-tracker tool' in every closing turn and never fired again. It now matches the live prefix AND keeps the retired one, because audit_log is history."
+      "why": "PHASE-2 T8V: the verb collapse. 24 public tool names became six `work_*` verbs, and the 76-site measurement T8b2 stopped on is the reason these five files move: ~20 engine behaviours decided what a call MEANT by matching its NAME, and after the collapse a name no longer identifies an operation. Every one of those sites therefore rekeys to `toolOpKey(name, args)` \u2014 the operation id, derived in ONE new module (`tools/work-verbs.ts`) and nowhere else. The lines are the rekeys plus the reason each set is an OPERATION set and not a name set, which is the part a future reader needs and cannot re-derive. What the whole change BUYS, stated once: `agent/tools.ts` loses 270 lines (24 tool definitions -> 6, 24 dispatch case labels -> operation labels, one merged edit body), the retired 24 names exist only as alias rows that SWEEP-F T7 deletes, and the PM overseer gate \u2014 which a name-only match could no longer express, because `work_update` performs both the close the PM may do and the status flip it may not \u2014 states its rule as operations instead of relying on the old one-name-per-operation accident. The PM overseer allow-list moved from NAMES to OPERATIONS, and gained `pmMayCall` + `PM_ONLY_WORK_OPS`. This is the site the collapse breaks hardest and the lines are the reason why: the list encodes 'the PM may close a project but may NOT flip a worker's status', and after the collapse both are `work_update`, so a name set can no longer say it. The NAME list the three tools_policy writers consume is now DERIVED from the op list, so the advertised surface and the executor gate cannot drift apart. AS-BUILT: 2020, not the 2011 first recorded \u2014 nine more lines for A NAME MATCH THE TYPESCRIPT SWEEP COULD NOT SEE. `audit_log.target` holds the tool NAME and the complete-dodges-poke smell asked `target NOT LIKE 'tracker_%'`; after the collapse no live tool carries that prefix, so the condition was TRUE for every work call and the smell would have found a 'non-tracker tool' in every closing turn and never fired again. It now matches the live prefix AND keeps the retired one, because audit_log is history."
     },
     {
       "path": "packages/shared/src/visibility.ts",
       "from": 815,
       "to": 865,
       "by": "PHASE-2 T8V (2026-07-29)",
-      "why": "PHASE-2 T8V: the verb collapse. 24 public tool names became six `work_*` verbs, and the 76-site measurement T8b2 stopped on is the reason these five files move: ~20 engine behaviours decided what a call MEANT by matching its NAME, and after the collapse a name no longer identifies an operation. Every one of those sites therefore rekeys to `toolOpKey(name, args)` — the operation id, derived in ONE new module (`tools/work-verbs.ts`) and nowhere else. The lines are the rekeys plus the reason each set is an OPERATION set and not a name set, which is the part a future reader needs and cannot re-derive. What the whole change BUYS, stated once: `agent/tools.ts` loses 270 lines (24 tool definitions -> 6, 24 dispatch case labels -> operation labels, one merged edit body), the retired 24 names exist only as alias rows that SWEEP-F T7 deletes, and the PM overseer gate — which a name-only match could no longer express, because `work_update` performs both the close the PM may do and the status flip it may not — states its rule as operations instead of relying on the old one-name-per-operation accident. `classifyTool` gained an optional args parameter and a two-entry op map. Measured, not assumed: `reminder_create` had no override and no bookkeeping prefix, so the verb heuristic classified it EFFECTFUL on the token 'create' — the only one of the 24 that was not bookkeeping. Folded into `work_open` it would silently have become bookkeeping, dropping its user-visible badge and its vote in four loop gates. `@dojo/shared` cannot import the server's matcher (the dependency runs the other way), so the one discriminator that changes a class is read here, with the reason."
+      "why": "PHASE-2 T8V: the verb collapse. 24 public tool names became six `work_*` verbs, and the 76-site measurement T8b2 stopped on is the reason these five files move: ~20 engine behaviours decided what a call MEANT by matching its NAME, and after the collapse a name no longer identifies an operation. Every one of those sites therefore rekeys to `toolOpKey(name, args)` \u2014 the operation id, derived in ONE new module (`tools/work-verbs.ts`) and nowhere else. The lines are the rekeys plus the reason each set is an OPERATION set and not a name set, which is the part a future reader needs and cannot re-derive. What the whole change BUYS, stated once: `agent/tools.ts` loses 270 lines (24 tool definitions -> 6, 24 dispatch case labels -> operation labels, one merged edit body), the retired 24 names exist only as alias rows that SWEEP-F T7 deletes, and the PM overseer gate \u2014 which a name-only match could no longer express, because `work_update` performs both the close the PM may do and the status flip it may not \u2014 states its rule as operations instead of relying on the old one-name-per-operation accident. `classifyTool` gained an optional args parameter and a two-entry op map. Measured, not assumed: `reminder_create` had no override and no bookkeeping prefix, so the verb heuristic classified it EFFECTFUL on the token 'create' \u2014 the only one of the 24 that was not bookkeeping. Folded into `work_open` it would silently have become bookkeeping, dropping its user-visible badge and its vote in four loop gates. `@dojo/shared` cannot import the server's matcher (the dependency runs the other way), so the one discriminator that changes a class is read here, with the reason."
     },
     {
       "path": "packages/server/src/prompt/assembler.ts",
       "from": 1400,
       "to": 1404,
       "by": "PHASE-2 T8V (2026-07-29)",
-      "why": "PHASE-2 T8V: the verb collapse. 24 public tool names became six `work_*` verbs, and the 76-site measurement T8b2 stopped on is the reason these five files move: ~20 engine behaviours decided what a call MEANT by matching its NAME, and after the collapse a name no longer identifies an operation. Every one of those sites therefore rekeys to `toolOpKey(name, args)` — the operation id, derived in ONE new module (`tools/work-verbs.ts`) and nowhere else. The lines are the rekeys plus the reason each set is an OPERATION set and not a name set, which is the part a future reader needs and cannot re-derive. What the whole change BUYS, stated once: `agent/tools.ts` loses 270 lines (24 tool definitions -> 6, 24 dispatch case labels -> operation labels, one merged edit body), the retired 24 names exist only as alias rows that SWEEP-F T7 deletes, and the PM overseer gate — which a name-only match could no longer express, because `work_update` performs both the close the PM may do and the status flip it may not — states its rule as operations instead of relying on the old one-name-per-operation accident. `startsWith('tracker_')` -> `isWorkVerb`, plus the three-line note that this is the same question asked of the collapsed surface."
+      "why": "PHASE-2 T8V: the verb collapse. 24 public tool names became six `work_*` verbs, and the 76-site measurement T8b2 stopped on is the reason these five files move: ~20 engine behaviours decided what a call MEANT by matching its NAME, and after the collapse a name no longer identifies an operation. Every one of those sites therefore rekeys to `toolOpKey(name, args)` \u2014 the operation id, derived in ONE new module (`tools/work-verbs.ts`) and nowhere else. The lines are the rekeys plus the reason each set is an OPERATION set and not a name set, which is the part a future reader needs and cannot re-derive. What the whole change BUYS, stated once: `agent/tools.ts` loses 270 lines (24 tool definitions -> 6, 24 dispatch case labels -> operation labels, one merged edit body), the retired 24 names exist only as alias rows that SWEEP-F T7 deletes, and the PM overseer gate \u2014 which a name-only match could no longer express, because `work_update` performs both the close the PM may do and the status flip it may not \u2014 states its rule as operations instead of relying on the old one-name-per-operation accident. `startsWith('tracker_')` -> `isWorkVerb`, plus the three-line note that this is the same question asked of the collapsed surface."
     },
     {
       "path": "packages/server/src/agent/v2/state.ts",
       "from": 686,
       "to": 687,
       "by": "PHASE-2 T8V (2026-07-29)",
-      "why": "PHASE-2 T8V: the verb collapse. 24 public tool names became six `work_*` verbs, and the 76-site measurement T8b2 stopped on is the reason these five files move: ~20 engine behaviours decided what a call MEANT by matching its NAME, and after the collapse a name no longer identifies an operation. Every one of those sites therefore rekeys to `toolOpKey(name, args)` — the operation id, derived in ONE new module (`tools/work-verbs.ts`) and nowhere else. The lines are the rekeys plus the reason each set is an OPERATION set and not a name set, which is the part a future reader needs and cannot re-derive. What the whole change BUYS, stated once: `agent/tools.ts` loses 270 lines (24 tool definitions -> 6, 24 dispatch case labels -> operation labels, one merged edit body), the retired 24 names exist only as alias rows that SWEEP-F T7 deletes, and the PM overseer gate — which a name-only match could no longer express, because `work_update` performs both the close the PM may do and the status flip it may not — states its rule as operations instead of relying on the old one-name-per-operation accident. One doc comment re-wrapped: the flag's docstring enumerated the disarming tools by their retired names."
+      "why": "PHASE-2 T8V: the verb collapse. 24 public tool names became six `work_*` verbs, and the 76-site measurement T8b2 stopped on is the reason these five files move: ~20 engine behaviours decided what a call MEANT by matching its NAME, and after the collapse a name no longer identifies an operation. Every one of those sites therefore rekeys to `toolOpKey(name, args)` \u2014 the operation id, derived in ONE new module (`tools/work-verbs.ts`) and nowhere else. The lines are the rekeys plus the reason each set is an OPERATION set and not a name set, which is the part a future reader needs and cannot re-derive. What the whole change BUYS, stated once: `agent/tools.ts` loses 270 lines (24 tool definitions -> 6, 24 dispatch case labels -> operation labels, one merged edit body), the retired 24 names exist only as alias rows that SWEEP-F T7 deletes, and the PM overseer gate \u2014 which a name-only match could no longer express, because `work_update` performs both the close the PM may do and the status flip it may not \u2014 states its rule as operations instead of relying on the old one-name-per-operation accident. One doc comment re-wrapped: the flag's docstring enumerated the disarming tools by their retired names."
     },
     {
       "path": "packages/server/src/tools/work-verbs.ts",
       "from": 0,
       "to": 357,
       "by": "PHASE-2 T8V (2026-07-29)",
-      "why": "A NEW file past the 240-line visibility threshold, pinned deliberately so the addition is argued rather than noticed later. It is the ONE place a (tool name, arguments) pair becomes the operation it performs. It has to exist and it has to be single: the verb collapse took 24 tool names — each of which identified exactly one operation, which is why ~20 engine behaviours could decide things by matching a name — down to six verbs where the name no longer identifies anything. Every one of those behaviours now asks THIS module, so 'one matcher per marker' still holds; the alternative is the same discriminator ladder re-derived at nineteen call sites, which is the two-mechanism disease with nineteen copies. Roughly half the file is the 23-operation table with the retired verb each absorbed named on its own line, which is what makes the collapse auditable without leaving the file, and the absorb-don't-refuse ladders (#77) that carry the weak-model forgiveness the retired verbs' own handlers held. It SHRINKS at SWEEP-F T7, when the alias rows go and the shape-inference fallbacks stop having to cover old call shapes. AS-BUILT: pinned at 357, not the 256 first recorded — the six behavioural OPERATION SETS moved here from agent/v2/loop.ts so that the liveness test can hold each one against the retired names it replaced without importing loop.ts, which has a module-init circular import and hangs when imported standalone. loop.ts is 9569 for the same reason (below its raised pin, not at it)."
+      "why": "A NEW file past the 240-line visibility threshold, pinned deliberately so the addition is argued rather than noticed later. It is the ONE place a (tool name, arguments) pair becomes the operation it performs. It has to exist and it has to be single: the verb collapse took 24 tool names \u2014 each of which identified exactly one operation, which is why ~20 engine behaviours could decide things by matching a name \u2014 down to six verbs where the name no longer identifies anything. Every one of those behaviours now asks THIS module, so 'one matcher per marker' still holds; the alternative is the same discriminator ladder re-derived at nineteen call sites, which is the two-mechanism disease with nineteen copies. Roughly half the file is the 23-operation table with the retired verb each absorbed named on its own line, which is what makes the collapse auditable without leaving the file, and the absorb-don't-refuse ladders (#77) that carry the weak-model forgiveness the retired verbs' own handlers held. It SHRINKS at SWEEP-F T7, when the alias rows go and the shape-inference fallbacks stop having to cover old call shapes. AS-BUILT: pinned at 357, not the 256 first recorded \u2014 the six behavioural OPERATION SETS moved here from agent/v2/loop.ts so that the liveness test can hold each one against the retired names it replaced without importing loop.ts, which has a module-init circular import and hangs when imported standalone. loop.ts is 9569 for the same reason (below its raised pin, not at it)."
     },
     {
       "path": "packages/server/src/tracker/pm-agent.ts",
       "from": 2020,
       "to": 2060,
       "by": "PHASE-2 T8c item 1 (2026-07-29)",
-      "why": "The ladder rekey's own docblocks. `poke_log` reads/writes are GONE from this file (getLastPoke/logPoke/clearPokeLog imports deleted; the smell detector's raw `SELECT sent_at FROM poke_log` deleted) and the rung is now a query into `work_events` via `work/poke-ladder.ts` — the mechanism SHRANK and moved out. What grew is prose: the measured evidence for the PM-voice change (why the situation report is an ENGINE event and not the owner talking) and the re-arm-is-a-marker invariant, both of which have to be readable at the site or the next editor re-introduces the DELETE. `tracker/schema.ts` fell 1051 -> 1000 in the same change."
+      "why": "The ladder rekey's own docblocks. `poke_log` reads/writes are GONE from this file (getLastPoke/logPoke/clearPokeLog imports deleted; the smell detector's raw `SELECT sent_at FROM poke_log` deleted) and the rung is now a query into `work_events` via `work/poke-ladder.ts` \u2014 the mechanism SHRANK and moved out. What grew is prose: the measured evidence for the PM-voice change (why the situation report is an ENGINE event and not the owner talking) and the re-arm-is-a-marker invariant, both of which have to be readable at the site or the next editor re-introduces the DELETE. `tracker/schema.ts` fell 1051 -> 1000 in the same change."
     },
     {
       "path": "packages/server/src/memory/message-store.ts",
@@ -321,7 +321,7 @@
       "from": 1359,
       "to": 1378,
       "by": "PHASE-2 T8c item 1 (2026-07-29)",
-      "why": "The spawn kickoff moves from an owner-lane `role='user'` row to `insertEngineEventIfAbsent` — one call swapped for another, plus the reasoning for why a kickoff that says \"Your task: ... Begin working immediately\" is the ENGINE writing and never a person, which is the whole point of the change and is invisible from the call itself."
+      "why": "The spawn kickoff moves from an owner-lane `role='user'` row to `insertEngineEventIfAbsent` \u2014 one call swapped for another, plus the reasoning for why a kickoff that says \"Your task: ... Begin working immediately\" is the ENGINE writing and never a person, which is the whole point of the change and is invisible from the call itself."
     },
     {
       "path": "packages/server/src/agent/v2/loop.ts",
@@ -335,7 +335,7 @@
       "from": 10472,
       "to": 10475,
       "by": "PHASE-2 T8c item 1 (2026-07-29)",
-      "why": "`clearPokeLog` becomes `recordRemediation` in the reassign case — a one-line import split plus the same one-line call."
+      "why": "`clearPokeLog` becomes `recordRemediation` in the reassign case \u2014 a one-line import split plus the same one-line call."
     },
     {
       "path": "packages/server/src/tracker/tools.ts",
@@ -370,21 +370,21 @@
       "from": 496,
       "to": 520,
       "by": "PHASE-2 T8c item 2 (2026-07-29)",
-      "why": "T6 concern 5 booked the mig-113 answer stamp to go PURE-LEGACY here once tasks lived on the spine. Re-derived at this HEAD the measurement REFUSED it: 586 stamped messages have no ask ticket (genuinely legacy) but 19 have a ticket, and all 19 are state='abandoned' — asks a person WAS answered on that T6's reaper later abandoned. Ranking the ticket above the stamp would flip those nineteen to 'not answered' and re-tell somebody something they already have, which is the direction T6 chose against on purpose. The union stands, and what these lines buy is that it now stands on a measurement plus a RETIREMENT CONDITION WRITTEN AS A COMMAND that T10 can run, instead of on the next worker re-deriving the same thing or, worse, doing the booked change without measuring."
+      "why": "T6 concern 5 booked the mig-113 answer stamp to go PURE-LEGACY here once tasks lived on the spine. Re-derived at this HEAD the measurement REFUSED it: 586 stamped messages have no ask ticket (genuinely legacy) but 19 have a ticket, and all 19 are state='abandoned' \u2014 asks a person WAS answered on that T6's reaper later abandoned. Ranking the ticket above the stamp would flip those nineteen to 'not answered' and re-tell somebody something they already have, which is the direction T6 chose against on purpose. The union stands, and what these lines buy is that it now stands on a measurement plus a RETIREMENT CONDITION WRITTEN AS A COMMAND that T10 can run, instead of on the next worker re-deriving the same thing or, worse, doing the booked change without measuring."
     },
     {
       "path": "packages/server/src/work/tracker-view.ts",
       "from": 410,
       "to": 432,
       "by": "PHASE-2 T8c item 3 (2026-07-29)",
-      "why": "`engine_scaffold` becomes the third tracker root kind — the ENGINE_AUTO_MARKER rekey. What it BUYS is measured elsewhere in the same change: `agent/v2/loop.ts` -190 and `tracker/tools.ts` -110, because the prose marker had THREE declarations (two of them hand-kept mirrors apologising for the duplication in their own comments), five LIKE/startsWith readers, and an edit-guard that silently re-prefixed the string on every description rewrite. One declaration replaces all of it."
+      "why": "`engine_scaffold` becomes the third tracker root kind \u2014 the ENGINE_AUTO_MARKER rekey. What it BUYS is measured elsewhere in the same change: `agent/v2/loop.ts` -190 and `tracker/tools.ts` -110, because the prose marker had THREE declarations (two of them hand-kept mirrors apologising for the duplication in their own comments), five LIKE/startsWith readers, and an edit-guard that silently re-prefixed the string on every description rewrite. One declaration replaces all of it."
     },
     {
       "path": "packages/server/src/tools/work-verbs.ts",
       "from": 357,
       "to": 375,
       "by": "PHASE-2 T8c item 3 (2026-07-29)",
-      "why": "`OPENING_WORK_OPS` — the narrow question DECIDED D4 needs (did a work ROW come into existence) as opposed to the wide DISARMING set (did the agent tend its work). D4's contradiction was precisely that the >=6 floor borrowed the wide question and was therefore disarmed by the >3 nudge's own success. Two names and their reasoning; the alternative was the floor asking its question inline, which is how a set of tool names becomes eleven scattered predicates again."
+      "why": "`OPENING_WORK_OPS` \u2014 the narrow question DECIDED D4 needs (did a work ROW come into existence) as opposed to the wide DISARMING set (did the agent tend its work). D4's contradiction was precisely that the >=6 floor borrowed the wide question and was therefore disarmed by the >3 nudge's own success. Two names and their reasoning; the alternative was the floor asking its question inline, which is how a set of tool names becomes eleven scattered predicates again."
     },
     {
       "path": "packages/server/src/agent/v2/classifiers/multistep.ts",
@@ -412,21 +412,21 @@
       "from": 1655,
       "to": 1685,
       "by": "PHASE-2 T8c item 4 (2026-07-29)",
-      "why": "The occurrence claim stops being a timestamp CAS and becomes a durable `work(kind='occurrence')` row, so the fire path states which sequence it is claiming, releases that sequence by name when a group has nobody free, and settles it with the run that closed it. +30 here is mostly the block comment recording WHY the shape changed: keying exactly-once on a clock is what made the defect unfindable — the caller could only obtain that clock through `msToText`, which drops milliseconds, so every schedule started from a real clock reading was permanently unclaimable and the logs read like a benign race. What it BUYS is in `work/tracker-store.ts` (−16, the old CAS deleted) and in the constraint: `ux_work_occurrence` has bitten on nothing since T2 wrote it, and now it is the mechanism."
+      "why": "The occurrence claim stops being a timestamp CAS and becomes a durable `work(kind='occurrence')` row, so the fire path states which sequence it is claiming, releases that sequence by name when a group has nobody free, and settles it with the run that closed it. +30 here is mostly the block comment recording WHY the shape changed: keying exactly-once on a clock is what made the defect unfindable \u2014 the caller could only obtain that clock through `msToText`, which drops milliseconds, so every schedule started from a real clock reading was permanently unclaimable and the logs read like a benign race. What it BUYS is in `work/tracker-store.ts` (\u221216, the old CAS deleted) and in the constraint: `ux_work_occurrence` has bitten on nothing since T2 wrote it, and now it is the mechanism."
     },
     {
       "path": "packages/server/src/work/tracker-view.ts",
       "from": 432,
       "to": 443,
       "by": "PHASE-2 T8c item 4 (2026-07-29)",
-      "why": "`scheduleRowColumns` gains the RAW `next_run_at_ms` / `last_run_at_ms` beside the display copies, and a docblock naming the rule they exist for: `msToText` is right for rendering and lossy for comparing, so every comparison takes the raw column. Two lines of SQL and nine of the reasoning that stops the next reader from 'tidying up' the duplicate projection — which is exactly how this defect would come back. Enforced by `work/__tests__/single-writer-conformance.test.ts` PART C, with a planted-fault proof against the real file."
+      "why": "`scheduleRowColumns` gains the RAW `next_run_at_ms` / `last_run_at_ms` beside the display copies, and a docblock naming the rule they exist for: `msToText` is right for rendering and lossy for comparing, so every comparison takes the raw column. Two lines of SQL and nine of the reasoning that stops the next reader from 'tidying up' the duplicate projection \u2014 which is exactly how this defect would come back. Enforced by `work/__tests__/single-writer-conformance.test.ts` PART C, with a planted-fault proof against the real file."
     },
     {
       "path": "packages/server/src/work/occurrences.ts",
       "from": "(unlisted, new-file cap)",
       "to": 252,
       "by": "PHASE-2 T8c item 4 (2026-07-29)",
-      "why": "NEW ENTRY (the file crossed 60% of the 400-line new-file cap, so the decision is made here rather than argued at 400). It is one job — the occurrence claim — split from `tracker-store.ts`, which lost the old timestamp CAS in the same change. Five exported functions and roughly 110 lines of the 252 are the block comment recording WHY the shape changed, because the defect it fixes was invisible for two weeks precisely because nobody had written down that `msToText` truncates. Pinned decrease-only from here; T9's reaper and T10's `task_runs` absorption are the two tasks that should shrink it."
+      "why": "NEW ENTRY (the file crossed 60% of the 400-line new-file cap, so the decision is made here rather than argued at 400). It is one job \u2014 the occurrence claim \u2014 split from `tracker-store.ts`, which lost the old timestamp CAS in the same change. Five exported functions and roughly 110 lines of the 252 are the block comment recording WHY the shape changed, because the defect it fixes was invisible for two weeks precisely because nobody had written down that `msToText` truncates. Pinned decrease-only from here; T9's reaper and T10's `task_runs` absorption are the two tasks that should shrink it."
     },
     {
       "path": "packages/server/src/gateway/routes/tracker.ts",
@@ -440,7 +440,7 @@
       "from": 1460,
       "to": 1477,
       "by": "PHASE-2 T8c2 item 7 (2026-07-29)",
-      "why": "SIXTH consecutive raise on this file, and this one is +1 line of code and +16 of the measurement that justifies it. `on_deck` was UNREACHABLE: eleven production callers ask to put work back in the queue (the scheduler's recurring cadence reset, its unfired release, the PM ladder's rung-4 auto-reset, scheduling for later, resuming a paused schedule, resolving missed runs, the healer, the owner's own drag) and every one moves from `claimed` or `paused`, neither of which carried `on_deck` in the legal table. Measured on this box: 536 recorded transitions across 8 distinct moves, ZERO into `on_deck` from any state, zero rows in it. A regression with a date — before T8b these were an ungated `updateTask({status})` and simply worked. The comment is the measurement plus the RULE (`on_deck` is a non-terminal queue state; every non-terminal state may return to it; terminal states keep their single reopen edge), because a table row with no reasoning beside it is how the omission happened the first time. The directory split T6 authorized is still unexecuted and is T9's."
+      "why": "SIXTH consecutive raise on this file, and this one is +1 line of code and +16 of the measurement that justifies it. `on_deck` was UNREACHABLE: eleven production callers ask to put work back in the queue (the scheduler's recurring cadence reset, its unfired release, the PM ladder's rung-4 auto-reset, scheduling for later, resuming a paused schedule, resolving missed runs, the healer, the owner's own drag) and every one moves from `claimed` or `paused`, neither of which carried `on_deck` in the legal table. Measured on this box: 536 recorded transitions across 8 distinct moves, ZERO into `on_deck` from any state, zero rows in it. A regression with a date \u2014 before T8b these were an ungated `updateTask({status})` and simply worked. The comment is the measurement plus the RULE (`on_deck` is a non-terminal queue state; every non-terminal state may return to it; terminal states keep their single reopen edge), because a table row with no reasoning beside it is how the omission happened the first time. The directory split T6 authorized is still unexecuted and is T9's."
     },
     {
       "path": "packages/server/src/work/store.ts",
@@ -454,7 +454,7 @@
       "from": 443,
       "to": 508,
       "by": "PHASE-2 T8T (2026-07-29)",
-      "why": "Key 1 became a QUERY. `pendingCloseRequestExpr` + `closeRequestDeliveryExpr` are the successors to the state `complete + complete_validated=0`, which migration 139 makes unrepresentable for a worker's own close, plus the done-only scoping clause on `validatedExpr` that keeps the PM's verdict distinct from the trigger's key. The prose is the reason the two questions are different — reading one as the other restores migration 108's demolished forgery."
+      "why": "Key 1 became a QUERY. `pendingCloseRequestExpr` + `closeRequestDeliveryExpr` are the successors to the state `complete + complete_validated=0`, which migration 139 makes unrepresentable for a worker's own close, plus the done-only scoping clause on `validatedExpr` that keeps the PM's verdict distinct from the trigger's key. The prose is the reason the two questions are different \u2014 reading one as the other restores migration 108's demolished forgery."
     },
     {
       "path": "packages/server/src/tracker/pm-agent.ts",
@@ -475,7 +475,7 @@
       "from": 899,
       "to": 904,
       "by": "PHASE-2 T8T (2026-07-29)",
-      "why": "The dashboard's bulk project close declares the OWNER as its authority. Without it the owner's own close would file a Key-1 request per row and the board would not move — the same defect T8b2 found on the single-task PUT, one route over."
+      "why": "The dashboard's bulk project close declares the OWNER as its authority. Without it the owner's own close would file a Key-1 request per row and the board would not move \u2014 the same defect T8b2 found on the single-task PUT, one route over."
     },
     {
       "path": "packages/server/src/agent/spawner.ts",
@@ -532,11 +532,11 @@
     "packages/server/src/agent/pdf-tools.ts": 1007,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 687,
-    "packages/server/src/agent/runtime.ts": 1340,
+    "packages/server/src/agent/runtime.ts": 1375,
     "packages/server/src/agent/spawner.ts": 1382,
     "packages/server/src/agent/tools.ts": 10481,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
-    "packages/server/src/agent/v2/counterparty.ts": 891,
+    "packages/server/src/agent/v2/counterparty.ts": 900,
     "packages/server/src/agent/v2/loop.ts": 9578,
     "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/recovery.ts": 596,
@@ -560,10 +560,10 @@
     "packages/server/src/healer/diagnostic.ts": 1036,
     "packages/server/src/healer/healer-agent.ts": 1170,
     "packages/server/src/healer/injury-recovery.ts": 810,
-    "packages/server/src/index.ts": 1279,
+    "packages/server/src/index.ts": 1172,
     "packages/server/src/memory/assembler.ts": 2570,
     "packages/server/src/memory/compaction.ts": 1267,
-    "packages/server/src/memory/message-store.ts": 900,
+    "packages/server/src/memory/message-store.ts": 961,
     "packages/server/src/memory/recall.ts": 502,
     "packages/server/src/memory/retrieval.ts": 591,
     "packages/server/src/memory/summary-rebuild.ts": 428,
@@ -576,7 +576,7 @@
     "packages/server/src/prompt/assembler.ts": 1404,
     "packages/server/src/prompt/registry/entries.ts": 493,
     "packages/server/src/router/scorer.ts": 505,
-    "packages/server/src/scheduler/runner.ts": 1691,
+    "packages/server/src/scheduler/runner.ts": 1699,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/gmail-watcher.ts": 592,
     "packages/server/src/services/image-generation.ts": 483,
@@ -615,6 +615,7 @@
     "packages/server/src/tools/work-verbs.ts": 375,
     "packages/server/src/work/tracker-view.ts": 508,
     "packages/server/src/work/occurrences.ts": 254,
-    "packages/server/src/work/override-requests.ts": 246
+    "packages/server/src/work/override-requests.ts": 246,
+    "packages/server/src/work/work-reaper.ts": 521
   }
 }
