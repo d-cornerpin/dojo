@@ -548,9 +548,9 @@
     "packages/server/src/agent/permissions.ts": 687,
     "packages/server/src/agent/runtime.ts": 1375,
     "packages/server/src/agent/spawner.ts": 1382,
-    "packages/server/src/agent/tools.ts": 10481,
+    "packages/server/src/agent/tools.ts": 10482,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
-    "packages/server/src/agent/v2/counterparty.ts": 900,
+    "packages/server/src/agent/v2/counterparty.ts": 901,
     "packages/server/src/agent/v2/loop.ts": 9578,
     "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/recovery.ts": 596,
@@ -628,7 +628,7 @@
     "packages/server/src/work/tracker-store.ts": 505,
     "packages/server/src/tools/work-verbs.ts": 375,
     "packages/server/src/work/tracker-view.ts": 508,
-    "packages/server/src/work/occurrences.ts": 254,
+    "packages/server/src/work/occurrences.ts": 417,
     "packages/server/src/work/override-requests.ts": 246,
     "packages/server/src/work/work-reaper.ts": 528
   }
