@@ -434,6 +434,13 @@
       "to": 899,
       "by": "PHASE-2 T8c2 item 5 (2026-07-29)",
       "why": "The owner's own close reaches `done`. Two call sites gain `?? recordOwnerCloseReceipt(...)` (the task board and the project board), and the +13 is the block comment saying WHY the phase's central constraint is deliberately satisfied here by something that is not a send: G7 stops the ENGINE and the AGENT asserting completion on their own say-so, and the owner is the person the work was FOR. The argument itself, the enumeration of all ten `deliveries` readers, and why this is the owner's exemption and NOT the PM's, live in `agent/v2/deliveries.ts` beside the function; this file carries the pointer so a reader of the route is not left guessing."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 1460,
+      "to": 1477,
+      "by": "PHASE-2 T8c2 item 7 (2026-07-29)",
+      "why": "SIXTH consecutive raise on this file, and this one is +1 line of code and +16 of the measurement that justifies it. `on_deck` was UNREACHABLE: eleven production callers ask to put work back in the queue (the scheduler's recurring cadence reset, its unfired release, the PM ladder's rung-4 auto-reset, scheduling for later, resuming a paused schedule, resolving missed runs, the healer, the owner's own drag) and every one moves from `claimed` or `paused`, neither of which carried `on_deck` in the legal table. Measured on this box: 536 recorded transitions across 8 distinct moves, ZERO into `on_deck` from any state, zero rows in it. A regression with a date — before T8b these were an ungated `updateTask({status})` and simply worked. The comment is the measurement plus the RULE (`on_deck` is a non-terminal queue state; every non-terminal state may return to it; terminal states keep their single reopen edge), because a table row with no reasoning beside it is how the omission happened the first time. The directory split T6 authorized is still unexecuted and is T9's."
     }
   ],
   "maxNewFileLines": 400,
@@ -542,7 +549,7 @@
     "packages/server/src/voice/model-manager.ts": 583,
     "packages/server/src/voice/stt-service.ts": 538,
     "packages/server/src/voice/voice-ws.ts": 2299,
-    "packages/server/src/work/store.ts": 1460,
+    "packages/server/src/work/store.ts": 1477,
     "packages/shared/src/types.ts": 500,
     "packages/shared/src/visibility.ts": 865,
     "packages/shared/src/ws.ts": 1082,
