@@ -28,5 +28,37 @@ if [ -n "$staged" ]; then
   fi
 fi
 
+# Dev-instrument reject (PHASE-2 T8 Step G; incident 2026-07-28, PHASE-2 T6).
+# The kit's server instruments are patched INTO product source to run the behavioural
+# battery, and every one of them carries the literal marker [DEV-INSTRUMENTS]. Until now
+# the only scan for them ran at RELEASE (deploy/release.sh, over the packaged dist), so a
+# commit made while they were installed was caught by luck: T6's `db7a13c` shipped
+# gateway/routes/dev.ts and nine patched files, and what noticed was an unrelated
+# single-writer conformance test complaining about a new writer.
+#
+# Scanned from the INDEX (`git show :<file>`), not the working tree: an instrumented file
+# that is not staged is the normal mid-battery state and must not block an unrelated
+# commit. Product paths only, for the same reason the gate/product split above uses them —
+# this document and the issues log talk about the marker in prose and always will.
+if [ -n "$staged" ]; then
+  hits=$(printf '%s\n' "$staged" | grep -E '^(packages/|watchdog/)' | while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    git cat-file -e ":$f" 2>/dev/null || continue   # staged deletion: nothing to scan
+    if git show ":$f" 2>/dev/null | grep -aqF '[DEV-INSTRUMENTS]'; then printf '%s\n' "$f"; fi
+  done)
+  if [ -n "$hits" ]; then
+    echo "pre-commit: REFUSED - dev instruments are staged in product code." >&2
+    echo "" >&2
+    echo "  files carrying the [DEV-INSTRUMENTS] marker in the index:" >&2
+    printf '%s\n' "$hits" | sed 's/^/    /' >&2
+    echo "" >&2
+    echo "  These are the test kit's server instruments. They must never be committed." >&2
+    echo "  Run the kit's uninstall, verify clean, then commit:" >&2
+    echo "    node ../dojo-test-kit/server-instruments/uninstall.mjs" >&2
+    echo "    git grep -l DEV-INSTRUMENTS -- packages/ watchdog/    # expect no output" >&2
+    exit 1
+  fi
+fi
+
 # --- new checks go ABOVE this line ---
 exit 0
