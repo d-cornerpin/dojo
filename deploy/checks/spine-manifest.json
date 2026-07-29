@@ -734,18 +734,6 @@
       "disposition": "LIVE, and the destination for everything else in this list. T3-T9 route their writers through work/store.ts's transition(); T10 drops the legacy tables it replaced."
     },
     {
-      "name": "task_runs",
-      "definedIn": "packages/server/src/db/migrations/009_phase6.sql",
-      "agentLink": "assigned_to",
-      "stateColumn": "status",
-      "terminalStates": [
-        "failed"
-      ],
-      "workShaped": true,
-      "why": "One row per execution of a task; part of the tasks family the plan names as partial work-tracking system #1. (It has never held a row in the live DB, and that is NOT evidence of deadness \u2014 rows are deleted with their tasks, and it has a live route, live UI and a conformance test: roadmap non-negotiable #15.)",
-      "disposition": "Phase 2 \u2014 absorbed as work events."
-    },
-    {
       "name": "generation_jobs",
       "definedIn": "packages/server/src/db/migrations/063_generation_jobs.sql",
       "agentLink": "agent_id",
