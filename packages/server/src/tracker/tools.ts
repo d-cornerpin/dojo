@@ -13,6 +13,7 @@ import {
   validatedExpr, revertCountExpr, awaitingUserVerdictExpr, validationThreadIdExpr,
   statusToState, stateToStatus, type TrackerStatus,
   stampColumns,
+  engineScaffoldScope,
 } from '../work/tracker-view.js';
 import type { TransitionResult } from '../work/store.js';
 import {
@@ -230,134 +231,27 @@ export function retaskIsRefused(f: RetaskProtectionFacts, allowRegenerate: unkno
   return retaskWouldOverwriteDeliveredWork(f) && allowRegenerate !== true;
 }
 
-// ── Close an engine-owned same-turn scaffold (demolition Phase 1.7 #2) ──
+// ── THE SAME-TURN SCAFFOLD CLOSE IS GONE (PHASE-2 T8c item 3) ──
 //
-// Narrow carve-out from the two-key contract, and the ONLY engine path that may
-// write status='complete' on a task. The turn-start / mid-turn multistep
-// classifier opens a tracker project+task FOR the model (an ENGINE_AUTO_MARKER
-// scaffold) when a user request looks project-worthy but the model has not
-// opened the tracker itself. On a read-only conversation turn the going-idle
-// machinery never fires, so the engine's OWN scaffold would dangle in_progress
-// and later trip the PM poke chain into re-delivering the answer as a "ghost
-// done". The engine owns the lifecycle of the tasks IT opens, so it may close
-// THIS one, but only under three guards and WITHOUT forging the PM's key:
+// `closeEngineScaffoldSameTurn` existed for one reason: the turn-start classifier opened a
+// project+task FOR the model before the model had done anything, so on a read-only
+// conversation turn that scaffold dangled `in_progress` and the PM poke chain later
+// re-delivered the answer as a "ghost done". It was the carve-out that cleaned up after the
+// empty-project machine — the ONLY engine path allowed to write status='complete' on a task.
 //
-//   1. the task's PROJECT carries the ENGINE_AUTO_MARKER (the marker rides the
-//      project description, not the task): it is an engine scaffold, not agent-
-//      or user-authored work, AND
-//   2. the task was created within THIS turn. There is no turn_number column on
-//      tasks, so we bound "this turn" by created_at recency using the same
-//      "-5 minutes" window findRecentNearDuplicateProject uses to define the
-//      same-turn case; an older scaffold belongs to a prior turn and is the PM
-//      sweep's to adjudicate, AND
-//   3. the close lands complete_validated=0 (UNVALIDATED). The PM sweep still
-//      validates it against the goal exactly like an agent-requested close. The
-//      engine RECORDS the delivery; it does not adjudicate success. This is the
-//      difference from the demolished forgery (which stamped complete_validated=1
-//      so the PM's key could never turn).
+// The plan's instruction is exactly this: it "dies with the scaffold". The classifier no
+// longer opens anything, so there is no pre-emptive row to dangle. The >=6 ENGINE FLOOR still
+// opens one row, but it fires on OBSERVED WORK — six real tool calls already made — so that
+// row describes work that genuinely happened and closing it silently on the strength of a
+// reply would be the engine adjudicating success, which is what the two-key contract exists
+// to prevent.
 //
-// One-shot, non-recurring only. Runs the same terminal cascade an agent-requested
-// close runs (dependency release + project rollup + assignment-notice neutralize,
-// so the still-pending notice can't re-fire as a fresh "begin working" prompt and
-// re-drive a redo). Returns true when it closed the task.
-export async function closeEngineScaffoldSameTurn(
-  agentId: string,
-  taskId: string,
-  deliveredReply: string,
-): Promise<boolean> {
-  const db = getDb();
-  const task = db.prepare(`
-    SELECT t.id AS id, ${STATE_TO_STATUS_SQL('t.state')} AS status, t.parent_id AS project_id,
-           t.repeat_interval AS repeat_interval, t.agent_id AS assigned_to,
-           ${msToText('t.opened_at')} AS created_at, t.origin_turn AS origin_turn,
-           p.description AS project_description
-    FROM work t
-    LEFT JOIN work p ON p.id = t.parent_id
-    WHERE ${taskScope('t')} AND t.id = ?
-  `).get(taskId) as {
-    id: string; status: string; project_id: string | null; repeat_interval: number | null;
-    assigned_to: string | null; created_at: string; origin_turn: number | null; project_description: string | null;
-  } | undefined;
-  if (!task) return false;
-  // Genuinely open, one-shot only (a recurring schedule is advanced by the
-  // scheduler, never terminally closed here).
-  if (task.status !== 'in_progress') return false;
-  if (task.repeat_interval !== null) return false;
-  // Guard 1: must be an engine scaffold (marker rides the PROJECT description).
-  if (!task.project_description || !task.project_description.startsWith(ENGINE_AUTO_MARKER)) return false;
-  // Guard 2, P4 rekey: "created within this turn" is now IDENTITY, not a
-  // clock: the task's origin_turn (P1 spine) equals the live turn number.
-  // The 5-minute created_at window survives only as the pre-spine fallback
-  // for origin_turn NULL rows, and slow turns no longer silently fail this
-  // guard (the old window's confessed defect).
-  const liveTurn = currentTurnNumber.get(agentId) ?? null;
-  if (task.origin_turn != null && liveTurn != null) {
-    if (task.origin_turn !== liveTurn) return false;
-  } else {
-    const createdMs = new Date(task.created_at.includes('Z') ? task.created_at : task.created_at + 'Z').getTime();
-    if (Number.isNaN(createdMs) || Date.now() - createdMs > 5 * 60 * 1000) return false;
-  }
+// requirement preserved: an engine-opened row must not dangle `in_progress` and become a
+// ghost-done re-delivery. It cannot, by three mechanisms that all survive — the going-idle
+// close-out gate, the PM drive ladder's delivery-evidence consult (strike 1 steers the close,
+// strike 2 closes on the receipt), and the reaper. What is gone is the ONE path that let the
+// engine close a task without any of them.
 
-  const resultText = (deliveredReply.replace(/\s+/g, ' ').trim().slice(0, 2000))
-    || 'Delivered to the user in chat this turn (engine same-turn scaffold close).';
-  const evidenceJson = JSON.stringify([
-    {
-      kind: 'user_visible_reply',
-      claim: 'engine-scaffolded task; the model delivered the result to the user in chat this turn; the engine closed its own scaffold against that delivered reply, UNVALIDATED (the PM sweep validates it against the goal)',
-    },
-  ]);
-
-  // Guard 3: land complete_validated=0. The two-key contract holds, the PM's key
-  // still turns. Single writer line (door-lock allow-listed in
-  // two-key-conformance.test.ts as the sole engine status='complete' writer).
-  // PHASE-2 T8b: through `transition()`. The engine may only assert what it can point at
-  // (G6) and `done` means delivered (G7) — both are satisfied by the SAME row: the delivery
-  // this turn made to the person, which is the whole reason this close is sanctioned. No
-  // delivery, no close; the PM ladder then owns the row, which is the old fallback anyway.
-  const scaffoldDelivery = deliveryForTaskClose(taskId);
-  if (!scaffoldDelivery) {
-    logger.info('engine scaffold close skipped: no delivery on the ledger for this work', { agentId, taskId }, agentId);
-    return false;
-  }
-  patchWork(taskId, { result: resultText, evidence_json: evidenceJson });
-  const res = setTrackerStatus(taskId, 'complete', {
-    by: 'engine', actorId: 'engine', expectedState: 'claimed',
-    evidenceRef: scaffoldDelivery, resultDeliveryId: scaffoldDelivery,
-    reason: 'engine closed its own same-turn scaffold against the delivered reply (unvalidated; the PM sweep validates)',
-  });
-  if (res.kind !== 'applied') return false;
-
-  try {
-    writeTaskLog({
-      taskId,
-      fromEntity: 'engine',
-      entryKind: 'auto_sweep',
-      fromStatus: 'in_progress',
-      toStatus: 'complete',
-      actionTaken: 'engine closed its own same-turn scaffold',
-      reason: 'engine closed its own same-turn scaffold; unvalidated; PM sweep validates',
-      note: resultText,
-      evidenceJson,
-    });
-  } catch { /* best effort */ }
-
-  // Same terminal cascade an agent-requested close runs.
-  try {
-    const { checkDependencies } = await import('./pm-agent.js');
-    checkDependencies(taskId);
-  } catch { /* best effort */ }
-  try {
-    checkProjectCompletion(task.project_id, agentId);
-  } catch { /* best effort */ }
-  claimAssignmentNoticeForTerminalTask(task.assigned_to ?? agentId, taskId);
-
-  const fresh = getTask(taskId);
-  if (fresh) broadcast({ type: 'tracker:task_updated', data: fresh });
-  logger.info('Engine closed its own same-turn scaffold against the delivered reply (unvalidated; PM sweep validates)', {
-    agentId, taskId,
-  }, agentId);
-  return true;
-}
 
 /**
  * Owner ruling (2026-07-19): file the assignee's KEY-1 close request from the
@@ -634,11 +528,6 @@ function normalizeTitle(t: string): string[] {
     .filter(w => w.length > 2 && !STOPWORDS.has(w));
 }
 
-// Mirror of ENGINE_AUTO_MARKER in classifiers/multistep.ts. Duplicated
-// here rather than imported to avoid a cross-package import path through
-// the v2 classifier dir for a one-string constant.
-const ENGINE_AUTO_MARKER = '[engine:multistep] ';
-
 interface DuplicateMatch {
   id: string;
   title: string;
@@ -656,8 +545,9 @@ interface DuplicateMatch {
  * Near-duplicate guard with two prongs:
  *
  *   (a) Engine-auto-created override: if the creator has ANY active
- *       project with the ENGINE_AUTO_MARKER in its description created
- *       in the last 5 minutes, treat that as a duplicate of whatever
+ *       engine-opened row (`root_kind='engine_scaffold'` — T8c item 3's
+ *       rekey of the prose marker) created in the last 5 minutes,
+ *       treat that as a duplicate of whatever
  *       the agent is now trying to create, regardless of title
  *       similarity. The engine just opened a project for this turn;
  *       the agent should edit it, not parallel it. (Without this, the
@@ -688,15 +578,18 @@ function findRecentNearDuplicateProject(
     ORDER BY w.opened_at DESC
     LIMIT 1
   `).get(creatorId, turnRoot.sourceMessageId) as { id: string; title: string; created_at: string } | undefined : undefined;
+  // T8c item 3: the fallback arm matched a PROSE PREFIX on the description; it reads the
+  // row's own `root_kind` now. It also stops being project-only — the engine floor opens a
+  // parentless TASK, and a `work_open(kind='project')` moments after that task is exactly the
+  // parallel-work case this prong exists to steer away from.
   const engineAuto = rootMatch ?? db.prepare(`
     SELECT w.id AS id, w.title AS title, ${msToText('w.opened_at')} AS created_at FROM work w
-    WHERE ${projectScope('w')} AND w.requester_id = ?
-      AND w.state = 'open'
-      AND w.description LIKE ? || '%'
+    WHERE ${engineScaffoldScope('w')} AND w.requester_id = ?
+      AND w.state IN ('open', 'claimed')
       AND w.opened_at >= ?
     ORDER BY w.opened_at DESC
     LIMIT 1
-  `).get(creatorId, ENGINE_AUTO_MARKER, Date.now() - 5 * 60_000) as { id: string; title: string; created_at: string } | undefined;
+  `).get(creatorId, Date.now() - 5 * 60_000) as { id: string; title: string; created_at: string } | undefined;
 
   if (engineAuto) {
     const createdMs = new Date(engineAuto.created_at.includes('Z') ? engineAuto.created_at : engineAuto.created_at + 'Z').getTime();
@@ -2862,15 +2755,15 @@ export function trackerEditProject(agentId: string, args: Record<string, unknown
     updates.title = trimmed.slice(0, 200);
   }
   if (description !== undefined) {
-    let next = description === null || description === '' ? null : String(description);
-    // ENGINE_AUTO_MARKER is engine metadata, not model-editable: mechanisms key
-    // on it structurally (same-turn scaffold close guard, the near-dup steer,
-    // the unanswered-scaffold probe). If the CURRENT description carries the
-    // marker, any rewrite keeps it as the prefix (2026-07-17: a PM description
-    // rewrite stripped it and the scaffold stopped reading as engine-created).
-    if (project.description?.startsWith(ENGINE_AUTO_MARKER) && (next === null || !next.startsWith(ENGINE_AUTO_MARKER))) {
-      next = ENGINE_AUTO_MARKER + (next ?? '');
-    }
+    const next = description === null || description === '' ? null : String(description);
+    // T8c item 3: the marker-preservation guard is GONE, and it is gone because the thing it
+    // defended no longer lives in editable prose. It existed because on 2026-07-17 a PM
+    // description rewrite stripped the `ENGINE_AUTO_MARKER` prefix and the scaffold stopped
+    // reading as engine-created; the fix was to silently re-prefix every rewrite. The fact is
+    // `root_kind` now — stamped at creation, not on any tool surface, so no edit can reach it.
+    // requirement preserved: an engine-opened row keeps reading as engine-opened however its
+    // description is rewritten. That is now true by construction rather than by a guard that
+    // had to remember to fire.
     updates.description = next;
   }
 

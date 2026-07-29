@@ -79,6 +79,9 @@ export interface OpenTrackerTaskInput {
   dependsOn?: string[];
   taskKind?: string | null;
   a2aThreadId?: string | null;
+  /** Which tracker vintage this row is. Defaults to `TRACKER_ROOT_KIND`; the engine's own
+   *  >=6 floor passes `engine_scaffold`, which is the T8c rekey of `ENGINE_AUTO_MARKER`. */
+  rootKind?: string;
   origin: TrackerOrigin;
 }
 
@@ -128,7 +131,7 @@ export function openTrackerTask(p: OpenTrackerTaskInput): string {
               ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'live')
   `).run(
     id, p.projectId ?? null, p.assignedTo ?? p.createdBy, p.assignedTo ?? null,
-    requesterOf(p.createdBy), p.createdBy, TRACKER_ROOT_KIND, id,
+    requesterOf(p.createdBy), p.createdBy, p.rootKind ?? TRACKER_ROOT_KIND, id,
     statusToState(p.status ?? 'in_progress'),
     p.title, p.description ?? null, p.originalDescription ?? null, p.goal ?? null,
     p.priority ?? 'normal', p.stepNumber ?? null, p.totalSteps ?? null, p.phase ?? 1,

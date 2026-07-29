@@ -334,7 +334,21 @@ export async function multistepLLMClassify(
 //    using its local model (gemma4:31b). Naming runs async on the PM's
 //    turn rather than on the user-facing agent's turn — keeps the chat
 //    reply latency clean.
-export const ENGINE_AUTO_MARKER = '[engine:multistep] ';
+// ── ENGINE_AUTO_MARKER IS GONE (PHASE-2 T8c item 3) ──
+//
+// This constant was the prose prefix `'[engine:multistep] '` written onto an auto-created
+// PROJECT's description. It had THREE declarations (here, plus hand-kept mirrors in
+// `agent/v2/loop.ts` and `tracker/tools.ts`, each with a comment apologising for the
+// duplication), five `LIKE`/`startsWith` readers, and an edit-guard in `work_update:edit`
+// that silently re-prefixed the string on every rewrite because a PM description rewrite had
+// once stripped it and the scaffold stopped reading as engine-created.
+//
+// It is `root_kind='engine_scaffold'` now — a column, stamped at creation, declared once in
+// `work/tracker-view.ts`, and unreachable from every tool surface, so the guard that defended
+// it is unnecessary rather than merely moved.
+// requirement preserved: "this row was opened by the engine, not by an agent", which is what
+// the near-duplicate steer, the unanswered-scaffold probe, the auto-block's user-origin test
+// and the completed-scaffold summary each need.
 
 // ── User explicitly requesting project creation ──
 //

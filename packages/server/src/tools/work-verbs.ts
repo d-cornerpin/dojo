@@ -347,6 +347,22 @@ export const DISARMING_WORK_OPS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * THE OPENING OPERATIONS — "a work row came into existence on this turn".
+ *
+ * PHASE-2 T8c item 3 (DECIDED D4). The >=6 engine floor used to be gated on
+ * `trackerWriteThisTurn`, i.e. on the DISARMING set above, which is a broader question:
+ * noting, editing and advancing a step all count as tending. D4's requirement is narrower and
+ * is about existence — *a model that ignores the nudge still ends the turn with a work row* —
+ * so the floor asks the narrow question with its own set rather than borrowing the wide one.
+ * This is a strict subset of DISARMING_WORK_OPS by construction, asserted in
+ * `tools/__tests__/work-verbs.test.ts`.
+ */
+export const OPENING_WORK_OPS: ReadonlySet<string> = new Set([
+  'work_open:project',
+  'work_open:task',
+]);
+
+/**
  * The two close operations that carry a task_id, so the engine can tell a
  * USER-REQUESTED close from incidental bookkeeping.
  * Was `{tracker_update_status, tracker_complete_step}`.

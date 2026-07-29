@@ -161,9 +161,28 @@ describe('turn record (P4)', () => {
     expect(store).toMatch(/conv_key = @convKey,[\s\S]{0,80}served_by_turn = COALESCE/);
   });
 
-  it('the scaffold same-turn close keys on origin_turn identity (clock window = pre-spine fallback only)', () => {
+  // ── RETIRED DELIBERATELY (PHASE-2 T8c item 3), and replaced by the demolition it now
+  // guards. This clause pinned `closeEngineScaffoldSameTurn`'s P4 rekey: "created within
+  // this turn" must be turn IDENTITY (`origin_turn === liveTurn`), not a five-minute clock
+  // window, because a slow turn silently failed the clock version. The FUNCTION is gone —
+  // it died with the empty-project machine that created the danglers it cleaned up
+  // (PHASE-2.md Task T8 Step 4: "`closeEngineScaffoldSameTurn` dies with the scaffold").
+  //
+  // Retiring the clause without a replacement would leave nothing saying the path is
+  // supposed to be absent, and #15 is explicit that an absence is a question, not an
+  // answer. So the clause is INVERTED into a tombstone: the engine's one privileged
+  // close must stay gone, and if it ever comes back it comes back with its identity gate.
+  it('TOMBSTONE: the engine has no privileged same-turn close any more', () => {
     const tools = read('tracker/tools.ts');
-    expect(tools).toMatch(/task\.origin_turn !== liveTurn\) return false/);
+    expect(tools).not.toMatch(/export async function closeEngineScaffoldSameTurn/);
+    const loop = read('agent/v2/loop.ts');
+    expect(loop).not.toMatch(/closeEngineScaffoldSameTurn\(/);
+    // NEGATIVE CONTROL of the same shape: the OTHER engine close — the PM ladder's
+    // strike-2 receipt close — must still be here, or this clause would pass by the
+    // engine losing every close rather than just the ungated one.
+    const pm = read('tracker/pm-agent.ts');
+    expect(pm).toMatch(/strike2Delivery/);
+    expect(pm).toMatch(/delivery-receipt close \(strike 2\)/);
   });
 });
 

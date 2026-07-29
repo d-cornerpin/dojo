@@ -111,7 +111,30 @@ export const STATE_TO_STATUS_SQL = (col: string): string =>
  *   * `store.ts:openDelegationJoin`   -> root_kind 'a2a_thread'  (join pieces, NOT the board)
  * Command: `git grep -n "INTO work" -- packages/server/src | grep -v __tests__`.
  */
-const TRACKER_ROOT_KINDS = "('legacy','tracker')";
+/**
+ * PHASE-2 T8c item 3 — `engine_scaffold` is the THIRD tracker root kind, and it is the
+ * `ENGINE_AUTO_MARKER` rekey.
+ *
+ * The marker used to be the prose prefix `'[engine:multistep] '` on a PROJECT's description,
+ * declared in `classifiers/multistep.ts` and MIRRORED by hand in two other files, matched by
+ * `LIKE '[engine:multistep] %'` and `startsWith(...)` in five places, and defended by an
+ * edit-guard in `work_update:edit` that re-prefixed the string whenever the model tried to
+ * rewrite the description. A fact about who opened a row, carried in editable prose, with
+ * three declarations and a guard to stop it being edited away.
+ *
+ * It is a COLUMN now: the row's own `root_kind`, stamped at creation, unreachable from every
+ * tool surface. Scaffold rows stay inside `taskScope` — the PM must still see and drive them,
+ * and dropping them out of the board would be a far bigger change than the marker.
+ */
+const ENGINE_SCAFFOLD_ROOT_KIND = 'engine_scaffold';
+const TRACKER_ROOT_KINDS = "('legacy','tracker','engine_scaffold')";
+
+export { ENGINE_SCAFFOLD_ROOT_KIND };
+
+/** "this row was opened by the engine's own floor, not by an agent" — the successor to the
+ *  `ENGINE_AUTO_MARKER` prose prefix. */
+export const engineScaffoldScope = (a = 'w'): string =>
+  `${a}.root_kind = '${ENGINE_SCAFFOLD_ROOT_KIND}'`;
 
 /** The tracker's task rows. `a` is the table alias the caller used for `work`. */
 export const taskScope = (a = 'w'): string =>

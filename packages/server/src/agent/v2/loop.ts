@@ -91,8 +91,9 @@ import {
   SATISFYING_WORK_OPS,
   CLOSE_OUT_WORK_OPS,
   DISARMING_WORK_OPS,
+  OPENING_WORK_OPS,
 } from '../../tools/work-verbs.js';
-import { taskScope, msToText, tsToMs, STATE_TO_STATUS_SQL, stampColumns } from '../../work/tracker-view.js';
+import { taskScope, msToText, tsToMs, STATE_TO_STATUS_SQL, stampColumns, engineScaffoldScope, ENGINE_SCAFFOLD_ROOT_KIND } from '../../work/tracker-view.js';
 import { setTrackerStatus, patchWork, upholdClaim } from '../../work/tracker-store.js';
 
 import {
@@ -309,9 +310,8 @@ const BOOKKEEPING_NUDGE_TOOLS = new Set([
 
 const BOOKKEEPING_NUDGE = `\n\n[Engine note: this was internal bookkeeping. If the user just asked you to do exactly this (e.g. "save my key", "remember that", "delete X"), reply with ONE short line confirming it is done (e.g. "Saved.", "Got it, stored your OpenWeather key.") so they get acknowledgment. If instead this was incidental to other work, something you did on your own initiative, or the user already has what they needed, end the turn with literal \`[no-reply]\` rather than a generic "Done." / "All set." / "Got it." closeout.]`;
 
-// Marker-aware variant. When the task being closed belongs to a USER-REQUESTED
-// project (its project description carries ENGINE_AUTO_MARKER, set by the
-// turn-start multistep classifier when the user asked for the work), the
+// Marker-aware variant. When the task being closed is an ENGINE-OPENED row
+// (`root_kind='engine_scaffold'` — T8c item 3's rekey of the old prose marker), the
 // [no-reply] branch is WRONG: a live failure had the floor model close a
 // user-requested itinerary task and then go silent because the generic note
 // offered exactly that escape. So for user-requested closes the note drops the
@@ -320,16 +320,10 @@ const BOOKKEEPING_NUDGE = `\n\n[Engine note: this was internal bookkeeping. If t
 // bookkeeping, where silence is still the right call.
 const BOOKKEEPING_NUDGE_USER_REQUESTED = `\n\n[Engine note: the user asked you to do this, so it is not incidental bookkeeping. Reply to them now with the outcome in one short line, and if your tool results above produced a link or file for them (a "Link:", "Open:", or "Share link:" line), include that link in your reply so they can open it. Do NOT end this turn with [no-reply].]`;
 
-// Mirror of ENGINE_AUTO_MARKER in classifiers/multistep.ts (same duplication
-// tracker/tools.ts keeps, to avoid a static import of the classifier from this
-// hot path). The turn-start classifier prefixes it onto the PROJECT description
-// of any user-requested multi-step work.
 /** The redundant-closeout floor's only narrowing, carried VERBATIM from the deleted
  *  `isGenericCloseout` (PHASE-2 T6, C1). A LENGTH, not a reading of the text: anything
  *  longer is substantive and is never dropped, whatever the delivery ledger says. */
 const REDUNDANT_CLOSEOUT_MAX_CHARS = 30;
-
-const ENGINE_AUTO_MARKER_MIRROR = '[engine:multistep] ';
 
 /**
  * A tool RESULT carries no arguments, but the operation a work verb performed is
@@ -352,7 +346,7 @@ function argsForResult(
 
 /**
  * True when this close targets a USER-REQUESTED task (project description
- * carries the ENGINE_AUTO_MARKER) that the user has NOT yet been answered for,
+ * is an engine scaffold — `root_kind='engine_scaffold'`) that the user has NOT yet been answered for,
  * i.e. the case where the "reply now with the outcome" note belongs instead of
  * the [no-reply] one. Reads the task by its task_id argument (full UUID or
  * 8-char prefix). Returns false, so the generic note (which keeps the [no-reply]
@@ -374,12 +368,12 @@ function userRequestedCloseWantsReply(
     const db = getDb();
     const task = db.prepare(`
       SELECT ${msToText('t.opened_at')} AS created_at, t.source_message_id AS source_message_id FROM work t
-      JOIN work p ON p.id = t.parent_id
+      LEFT JOIN work p ON p.id = t.parent_id
       WHERE ${taskScope('t')} AND t.agent_id = ?
         AND (t.id = ? OR t.id LIKE ?)
-        AND (p.origin_kind = 'engine_scaffold' OR p.description LIKE ?)
+        AND (${engineScaffoldScope('t')} OR t.origin_kind = 'engine_scaffold' OR p.origin_kind = 'engine_scaffold')
       LIMIT 1
-    `).get(agentId, id, `${id}%`, `${ENGINE_AUTO_MARKER_MIRROR}%`) as { created_at: string; source_message_id: string | null } | undefined;
+    `).get(agentId, id, `${id}%`) as { created_at: string; source_message_id: string | null } | undefined;
     if (!task) return false;
     // Already answered, P4 rekey: the ask row that BIRTHED this task records
     // the reply that answered it (answer_message_id, migration 113). A keyed
@@ -684,9 +678,7 @@ const DELEGATION_HINT_BODY =
 // agent never waits; a failed PM call just leaves the interim names in place.
 async function dispatchPMRenameHandoff(params: {
   callingAgentId: string;
-  projectId: string;
   taskId: string;
-  projectTitle: string;
   taskTitle: string;
   originalPrompt: string;
 }): Promise<void> {
@@ -696,19 +688,17 @@ async function dispatchPMRenameHandoff(params: {
     const pmName = getPMAgentName();
     const primaryName = getPrimaryAgentName();
     if (!pmId || !pmName) return;
+    // T8c item 3: the engine floor opens ONE task, so there is one name to fix, not a
+    // project name and a first-step name that had to be made distinct from each other.
     const renameRequest = (
-      `[ENGINE RENAME REQUEST] An auto-created project needs better names. ` +
-      `The multi-step classifier just opened this from a user prompt and named both the project ` +
-      `and the first task with a slice of that prompt, looks bad on the kanban.\n\n` +
-      `Project id: ${params.projectId}\n` +
-      `Current project title: ${params.projectTitle}\n` +
-      `First task id: ${params.taskId}\n` +
-      `Current first-task title: ${params.taskTitle}\n\n` +
+      `[ENGINE RENAME REQUEST] An engine-opened task needs a better name. ` +
+      `The multi-step floor just opened this because the agent did 6+ work calls with nothing ` +
+      `tracked, and named it with a slice of the user's prompt, which looks bad on the kanban.\n\n` +
+      `Task id: ${params.taskId}\n` +
+      `Current title: ${params.taskTitle}\n\n` +
       `Original user prompt:\n${params.originalPrompt.slice(0, 1500)}\n\n` +
-      `Please call work_update(action="edit", project_id="${params.projectId}", title="<short 3-6 word umbrella name>") ` +
-      `and work_update(action="edit", task_id="${params.taskId}", title="<short 3-6 word first-step name>"). ` +
-      `The project name describes the WHOLE effort; the first-task name is the first concrete thing to do. ` +
-      `Make them distinct, don't reuse the same string for both. After both edits land, send NO message ` +
+      `Please call work_update(action="edit", task_id="${params.taskId}", title="<short 3-6 word name>"). ` +
+      `The name describes the WHOLE effort the user asked for. After the edit lands, send NO message ` +
       `back to anyone, this is a silent rename. Do not contact ${primaryName}.`
     );
     const renameMsgId = uuidv4();
@@ -736,7 +726,7 @@ async function dispatchPMRenameHandoff(params: {
       }, params.callingAgentId);
     });
     logger.info('v2 multistep: dispatched PM rename request', {
-      agentId: params.callingAgentId, pmId, projectId: params.projectId, taskId: params.taskId,
+      agentId: params.callingAgentId, pmId, taskId: params.taskId,
     }, params.callingAgentId);
   } catch (renameErr) {
     logger.warn('v2 multistep: PM rename dispatch failed (non-fatal)', {
@@ -2551,16 +2541,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
         let blockedWorkIsUserOrigin = counterparty.kind === 'user';
         try {
           const db2 = getDb();
-          const { ENGINE_AUTO_MARKER } = await import('./classifiers/multistep.js');
           const task = db2.prepare(`
-            SELECT w.id AS id, w.title AS title, w.parent_id AS project_id FROM work w
+            SELECT w.id AS id, w.title AS title, w.parent_id AS project_id,
+                   w.root_kind AS root_kind FROM work w
             WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed'
             ORDER BY w.updated_at DESC LIMIT 1
-          `).get(agentId) as { id: string; title: string; project_id: string | null } | undefined;
+          `).get(agentId) as { id: string; title: string; project_id: string | null; root_kind: string } | undefined;
           if (task) {
-            if (!blockedWorkIsUserOrigin && task.project_id) {
-              const proj = db2.prepare(`SELECT description FROM work WHERE id = ?`).get(task.project_id) as { description: string | null } | undefined;
-              if (proj?.description && proj.description.startsWith(ENGINE_AUTO_MARKER)) blockedWorkIsUserOrigin = true;
+            // T8c item 3: the marker is the row's own `root_kind`, so this no longer needs a
+            // second query against the parent project's description text.
+            if (!blockedWorkIsUserOrigin && task.root_kind === ENGINE_SCAFFOLD_ROOT_KIND) {
+              blockedWorkIsUserOrigin = true;
             }
             const noteLine = `Engine auto-blocked: ${breakerReason}. Likely needs human review or a re-stated goal.`;
             // PHASE-2 T8b: through `transition()`, and `blocked_validated = 1` is now the
@@ -3391,132 +3382,46 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 signals: decision.heuristic.signals,
               }, agentId);
 
+              // ══════════════════════════════════════════════════════════════════════
+              // THE EMPTY-PROJECT MACHINE IS GONE (PHASE-2 T8c item 3)
+              // ══════════════════════════════════════════════════════════════════════
+              //
+              // This block used to call `createProject` the moment the classifier judged an
+              // inbound "multi-step": a project, a first task, an assignment notice, a
+              // start-ack and a PM rename handoff, all before the model had done anything at
+              // all. Research 03 measured what that produced on a real body — 1,135 of 1,183
+              // projects EMPTY, auto-created and instantly closed — and PHASE-2's exit gates
+              // name the classifier for deletion.
+              //
+              // WHAT IS KEPT, and it is the whole point of keeping the classifier at all:
+              //   * `inboundClassifiedAsWork` — the SIGNAL. It gates the bare-[no-reply]
+              //     refusal below, and the plan says keep it by name.
+              //   * the START ACK. The requirement is "the person who asked hears that this
+              //     is being worked on, once, before the model does anything", and it never
+              //     depended on a project row existing — it only lived here because this was
+              //     where the judgement was made. It now rides the judgement directly.
+              // WHAT IS GONE: the project, its task, the assignment notice for a task the
+              // model never asked for, and the PM rename handoff whose entire job was to give
+              // that auto-named project a better name.
+              //
+              // requirement preserved (the weakest-model guarantee): a model that does real
+              // multi-step work still ends the turn with a work row — that is the >=6 ENGINE
+              // FLOOR below, which opens ONE `work(kind='task')` when nothing else did. The
+              // difference is that the floor fires on OBSERVED WORK rather than on a
+              // prediction made from the first sentence, which is exactly why the classifier's
+              // rows were empty.
               if (decision.multistep) {
-                const { createProject } = await import('../../tracker/schema.js');
-                const { ENGINE_AUTO_MARKER } = await import('./classifiers/multistep.js');
-
-                // Engine names projects/tasks from a cleaned slice of the user's
-                // prompt (F12.5: strip politeness/filler, truncate at a word
-                // boundary, capitalize, so the interim kanban name is readable
-                // instead of a mangled raw slice). The PM agent gets dispatched
-                // immediately after creation to rename both via its local model
-                // (see the rename handoff below). Async naming keeps latency clean.
-                const fallbackName = deriveScaffoldTitle(lastUserMessageContent);
-                const projectTitle = decision.name ?? (fallbackName || 'Multi-step task');
-                const taskTitle = decision.name ?? (fallbackName || 'Initial task');
-
-                try {
-                  // createdBy == agentId so createProject's auto-start
-                  // condition fires (assignee === createdBy on the first
-                  // step → status='in_progress'). Otherwise the task lands
-                  // in on_deck and waits for someone to pull it forward.
-                  // Matches the pattern when an agent calls
-                  // work_open(kind="project") on itself.
-                  //
-                  // Description carries the ENGINE_AUTO_MARKER prefix so
-                  // work_open(kind="project")'s dup guard can detect this
-                  // project as engine-auto-created and steer the agent
-                  // toward work_update(action="edit") instead of refusing them into
-                  // a parallel project.
-                  const created = createProject({
-                    origin: { kind: 'engine_scaffold', sourceMessageId: state.lastUserMessageId, turn: turnNumber, convKey: chosenConvKey },
-                    title: projectTitle,
-                    description: ENGINE_AUTO_MARKER + lastUserMessageContent.slice(0, 2000),
-                    level: 1,
-                    createdBy: agentId,
-                    tasks: [{
-                      title: taskTitle,
-                      description: lastUserMessageContent.slice(0, 2000),
-                      assignedTo: agentId,
-                      priority: 'normal',
-                    }],
-                  });
-                  logger.info('v2 multistep: auto-created tracker project', {
-                    agentId,
-                    projectId: created.projectId,
-                    taskIds: created.taskIds,
-                    title: projectTitle,
-                    source: decision.source,
-                  }, agentId);
-
-                  // F2.1 coverage: the engine owns the lifecycle of every task it
-                  // opens. This turn-start classifier scaffold feeds the SAME
-                  // same-turn close and PM poke-chain sweep as the mid-turn 6-call
-                  // scaffold site (~:6030), so a read-only turn's classifier-created
-                  // task cannot dangle in_progress after its brief is delivered
-                  // (previously it waited on the 30-minute PM sweep backstop).
-                  state = advance(state, { autoScaffoldedTaskIdThisTurn: created.taskIds[0] });
-
-                  // Inject the standard task-assignment notification, 
-                  // same payload work_open(kind="task") uses, including the
-                  // explicit "When finished, call work_update(action="status")"
-                  // instruction. Persists to DB (survives compaction)
-                  // and broadcasts WS for the dashboard. skipWake=true
-                  // because we ARE the running turn, handleMessage
-                  // would just queue a redundant follow-up.
-                  const { injectTaskAssignmentNotification } = await import('../../tracker/notify.js');
-                  const taskId = created.taskIds[0];
-                  const notif = injectTaskAssignmentNotification({
-                    assignedAgentId: agentId,
-                    creatorAgentId: 'dojo-system',
-                    taskId,
-                    title: taskTitle,
-                    description: lastUserMessageContent.slice(0, 2000),
-                    projectId: created.projectId,
-                    priority: 'normal',
-                    skipWake: true,
-                  });
-
-                  // Push the same content into the in-flight messages
-                  // array so the agent sees it THIS turn (not just on
-                  // the next assemble). Goes after the user's prompt
-                  // chronologically, agent reads "user said X" then
-                  // "the engine assigned you a task for it."
-                  if (notif.ok && notif.content) {
-                    mctx.trackerNotif = notif.content;
-                    injectRegistryMessage('msg.tracker-notif', messages, mctx);
-                  }
-
-                  // START ACK (NEXT-WAVE item 1): the engine just decided this
-                  // user request is project-worthy, so the person who asked hears
-                  // "on it" right now, before the model does anything. Guaranteed
-                  // here (not left to the model) so it survives the exact
-                  // production failure where the floor model ended the turn on an
-                  // A2A send and the owner heard nothing. One per turn.
-                  // RC-4.2: never start-ack an agent-flagged counterparty (ack ping-pong).
-                  if (counterparty.kind === 'user' && !counterpartyIsAgentSender && !engineStartAckDeliveredThisTurn && !startAckSteerArmedThisTurn) {
-                    // Owner ruling 2026-07-22 (engine detects, agent speaks):
-                    // the steer rides THIS first model call (the messages array
-                    // is mid-assembly here), so the model's very first response
-                    // opens with its own start line; the capture-site delivery
-                    // surfaces it the moment it lands. Armed synchronously so a
-                    // second site can never double-steer.
-                    startAckSteerArmedThisTurn = true;
-                    startAckSteersInjected = 1;
-                    startAckSteerInjectedAtLoop = state.loopCount;
-                    pushEngineMessage(messages, START_ACK_STEER_TEXT); // registry-exempt(2026-07-22): start-ack steer rides the in-flight messages array at the classifier site; migrate with the volatile-injection registry refactor
-                  }
-
-                  // ── PM rename handoff (async, fire-and-forget) ──
-                  // The project + first task carry cleaned-but-interim names; hand
-                  // both to the PM agent to rewrite into a proper umbrella + first-
-                  // step name via its local model. The user-facing agent does not
-                  // wait; a failed PM call just leaves the interim names in place.
-                  // Factored into dispatchPMRenameHandoff so the mid-turn scaffold
-                  // site (below) uses the identical dispatch (F12.5).
-                  void dispatchPMRenameHandoff({
-                    callingAgentId: agentId,
-                    projectId: created.projectId,
-                    taskId,
-                    projectTitle,
-                    taskTitle,
-                    originalPrompt: lastUserMessageContent,
-                  });
-                } catch (createErr) {
-                  logger.warn('v2 multistep: createProject failed (non-fatal)', {
-                    agentId,
-                    error: createErr instanceof Error ? createErr.message : String(createErr),
-                  }, agentId);
+                // START ACK (NEXT-WAVE item 1), unchanged in requirement and in wording.
+                // RC-4.2: never start-ack an agent-flagged counterparty (ack ping-pong).
+                if (counterparty.kind === 'user' && !counterpartyIsAgentSender && !engineStartAckDeliveredThisTurn && !startAckSteerArmedThisTurn) {
+                  // Owner ruling 2026-07-22 (engine detects, agent speaks): the steer rides
+                  // THIS first model call (the messages array is mid-assembly here), so the
+                  // model's very first response opens with its own start line. Armed
+                  // synchronously so a second site can never double-steer.
+                  startAckSteerArmedThisTurn = true;
+                  startAckSteersInjected = 1;
+                  startAckSteerInjectedAtLoop = state.loopCount;
+                  pushEngineMessage(messages, START_ACK_STEER_TEXT); // registry-exempt(2026-07-22): start-ack steer rides the in-flight messages array at the classifier site; migrate with the volatile-injection registry refactor
                 }
               }
             }
@@ -5889,45 +5794,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }
         }
 
-        // F2.1 (demolition Phase 1.7 #2): same-turn engine close of an
-        // engine-auto-scaffolded task on a read-only conversation turn. The
-        // mid-turn floor opens a task after 6 work calls of ANY kind, including
-        // pure reads. On a read-only turn (e.g. an inbox sweep) the going-idle
-        // machinery above never fires (it requires a scheduler / A2A /
-        // side-effecting turn), so the task the ENGINE itself opened would dangle
-        // and later trip the PM poke chain into re-delivering the old answer as a
-        // "ghost done". Requirement satisfied: the engine owns the lifecycle of
-        // the tasks it opens. Scope is deliberately narrow, and the demolition
-        // narrows it further: closeEngineScaffoldSameTurn verifies the task
-        // carries the ENGINE_AUTO_MARKER and was created THIS turn, and closes it
-        // complete_validated=0 (UNVALIDATED) so the PM sweep still validates it,
-        // instead of the forged complete_validated=1 the old engineCloseDeliveredTask
-        // wrote. Unrelated danglers keep their existing handling; a read-only turn
-        // must NOT bulk-close unrelated work against an unrelated reply. The
-        // !nudgedForGoingIdle guard means the worked-task path above already
-        // reconciled it, so this only runs when nothing else did. Natural turn end
-        // only (inside result.toolCalls.length === 0), never the turn-budget path.
-        if (
-          state.autoScaffoldedTaskIdThisTurn &&
-          !state.nudgedForGoingIdleWithInProgressThisTurn &&
-          persistedContent && persistedContent.trim().length > 0
-        ) {
-          const scaffoldId = state.autoScaffoldedTaskIdThisTurn;
-          const stillOpen = db.prepare(
-            `SELECT 1 FROM work WHERE id = ? AND state = 'claimed' AND is_paused = 0`,
-          ).get(scaffoldId);
-          if (stillOpen) {
-            try {
-              const { closeEngineScaffoldSameTurn } = await import('../../tracker/tools.js');
-              const closed = await closeEngineScaffoldSameTurn(agentId, scaffoldId, persistedContent);
-              if (closed) {
-                logger.info('v2 same-turn scaffold close: engine closed its own auto-scaffolded task against the delivered reply, unvalidated (read-only turn)', {
-                  agentId, taskId: scaffoldId,
-                }, agentId);
-              }
-            } catch { /* best effort */ }
-          }
-        }
+        // ── THE SAME-TURN SCAFFOLD CLOSE IS GONE (PHASE-2 T8c item 3) ──
+        // `closeEngineScaffoldSameTurn` and this call site both die with the empty-project
+        // machine, exactly as the plan's Step 4 says. The turn-start classifier no longer
+        // opens a project+task before the model has done anything, so there is no pre-emptive
+        // scaffold to dangle `in_progress` on a read-only turn and become a ghost-done
+        // re-delivery. The >=6 floor's row describes work that DEMONSTRABLY happened (six
+        // real tool calls), so closing it on the strength of a reply would be the engine
+        // adjudicating success — the thing the two-key contract exists to refuse.
+        // requirement preserved: an engine-opened row cannot dangle. Three surviving
+        // mechanisms see it — the going-idle close-out gate, the PM ladder's
+        // delivery-evidence consult (strike 1 steers the close, strike 2 closes on the
+        // receipt), and the reaper. What is gone is the one path that bypassed all three.
 
         // ── F3: owed mid-turn interrupt re-prompt ──
         // A quick question that lands WHILE a turn is running is NOT an interrupt:
@@ -7707,11 +7585,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
             (op === 'work_update:status' && isAdvancingStatusArg(tc.arguments?.status));
         },
       );
+      // T8c item 3 (D4): the narrow question the ENGINE FLOOR asks — did a work ROW come
+      // into existence — as opposed to the wide "did the agent tend its work" above.
+      const workOpenedInThisIter = result.toolCalls.some(
+        (tc) => OPENING_WORK_OPS.has(toolOpKey(tc.name, tc.arguments)),
+      );
       if (nonTrackerInThisIter > 0 || trackerInThisIter > 0) {
         state = advance(state, {
           nonTrackerToolCalls: state.nonTrackerToolCalls + nonTrackerInThisIter,
           trackerToolCalledThisTurn: state.trackerToolCalledThisTurn || trackerInThisIter > 0,
           trackerWriteThisTurn: state.trackerWriteThisTurn || trackerWriteInThisIter,
+          workRowOpenedThisTurn: state.workRowOpenedThisTurn || workOpenedInThisIter,
           trackerStatusUpdatedThisTurn: state.trackerStatusUpdatedThisTurn || trackerStatusInThisIter,
         });
         // RC-19 item 3: mirror this iteration's untracked-work delta into the
@@ -7754,7 +7638,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // task, drifted, and the PM had nothing to monitor). Re-homed as two tiers:
       //   nudge at >3 real work calls (model-choice assist, one-shot, non-blocking),
       //   ENGINE FLOOR at >=6: the engine auto-creates the task itself via the same
-      //   ENGINE_AUTO_MARKER machinery the turn-start classifier uses, so on the
+      //   ENGINE FLOOR at >=6: the engine opens ONE work(kind='task') itself, so on the
       //   weakest model the work is tracked regardless of what the model chooses.
       const TRACKER_NUDGE_THRESHOLD = 3;
       const TRACKER_AUTO_SCAFFOLD_AT = 6;
@@ -7775,9 +7659,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // which would go stale and trip the PM poke ladder, the exact trap a held
         // destructive consent must not spring against the waiting Healer.
         !isHealerAgent(agentId) &&
-        !state.trackerWriteThisTurn &&
-        ((!state.nudgedForTrackerThisTurn && state.nonTrackerToolCalls > TRACKER_NUDGE_THRESHOLD) ||
-          effectiveUntracked >= TRACKER_AUTO_SCAFFOLD_AT)
+        // ── DECIDED D4, EXECUTED (PHASE-2 T8c item 3) ──
+        // This condition used to be a single `!state.trackerWriteThisTurn` gating BOTH
+        // tiers, and that is the contradiction D4 root-caused: the >3 nudge's own SUCCESS
+        // (the agent opens a row) set `trackerWriteThisTurn`, which disarmed the >=6 floor
+        // in the same turn. The scenario asked for both tiers; the code forbade both. No
+        // threshold was touched to resolve it (#14 — no invented thresholds); the two tiers
+        // now ask the two DIFFERENT questions they were always meant to ask:
+        //   NUDGE  — "has the agent tended its work this turn?"  (any disarming write)
+        //   FLOOR  — "does a work row exist for this turn's work?" (an OPENING op)
+        // The floor's requirement is the weakest-model guarantee, which is about existence,
+        // so keyed on existence it is satisfied by whichever tier produced the row — and
+        // "a work row exists at turn end" is true either way, which is what the scenario
+        // now asserts.
+        ((!state.trackerWriteThisTurn && !state.nudgedForTrackerThisTurn && state.nonTrackerToolCalls > TRACKER_NUDGE_THRESHOLD) ||
+          (!state.workRowOpenedThisTurn && effectiveUntracked >= TRACKER_AUTO_SCAFFOLD_AT))
       ) {
         // Secondary check: the agent may have a RECENTLY-TENDED task from a
         // previous turn that they're just continuing. Don't nudge them either.
@@ -7851,27 +7747,35 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // ENGINE FLOOR: the model has done 6+ real work calls with no tracker
           // engagement (the exact point where the old anti-hoarding gate used to
           // force scaffolding). Stop asking; create the task ourselves via the
-          // same ENGINE_AUTO_MARKER path the turn-start classifier uses, so the
+          // engine's own row, stamped `root_kind='engine_scaffold'`, so the
           // work is tracked on the weakest model regardless of what it chooses.
           try {
-            const { createProject } = await import('../../tracker/schema.js');
-            const { ENGINE_AUTO_MARKER } = await import('./classifiers/multistep.js');
+            const { openTrackerTask } = await import('../../work/tracker-store.js');
             // F12.5: cleaned interim name (strip filler, word-boundary truncate,
-            // capitalize) instead of a mangled raw slice; PM rename handoff below
-            // gives it a proper umbrella name. Capture the prompt now (narrowed to
-            // string by the enclosing guard) so the rename dispatch below still has
-            // it after the state reassignments that follow.
+            // capitalize) instead of a mangled raw slice. Capture the prompt now (narrowed to
+            // string by the enclosing guard) so the rename dispatch below still has it after
+            // the state reassignments that follow.
             const scaffoldPrompt: string = state.lastUserMessageContent;
             const scaffoldName = deriveScaffoldTitle(scaffoldPrompt) || 'Multi-step task';
-            const created = createProject({
-                    origin: { kind: 'engine_scaffold', sourceMessageId: state.lastUserMessageId, turn: turnNumber, convKey: chosenConvKey },
+            // ── ONE TASK, NOT A PROJECT-AND-A-TASK (PHASE-2 T8c item 3, DECIDED D4) ──
+            // The floor used to call `createProject`, which opened a project row, a first
+            // task under it, and — because the project's description carried a prose
+            // ENGINE_AUTO_MARKER — a string the dup guard and three other readers matched on.
+            // D4's requirement names exactly one row: "the >=6 floor opens ONE
+            // `work(kind='task')`". The project was never the requirement; it was how the
+            // marker and the same-turn close were plumbed.
+            // THE MARKER IS A COLUMN NOW: `root_kind='engine_scaffold'` on the row itself,
+            // which is a fact stamped at creation instead of a prefix on prose that any edit
+            // could truncate away.
+            const scaffoldTaskId = openTrackerTask({
               title: scaffoldName,
-              description: ENGINE_AUTO_MARKER + scaffoldPrompt.slice(0, 2000),
-              level: 1,
-              tasks: [{ title: scaffoldName, assignedTo: agentId }],
+              description: scaffoldPrompt.slice(0, 2000),
+              assignedTo: agentId,
               createdBy: agentId,
+              status: 'in_progress',
+              rootKind: ENGINE_SCAFFOLD_ROOT_KIND,
+              origin: { kind: 'engine_scaffold', sourceMessageId: state.lastUserMessageId, turn: turnNumber, convKey: chosenConvKey },
             });
-            const scaffoldTaskId = created.taskIds?.[0] ?? null;
             // F2.2: scaffold note on the model-visible steer channel. The old
             // role='system' row was stripped by the assembler, so a continuing
             // agent never learned the engine had opened the task (it then drifted
@@ -7881,7 +7785,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // Label form ([System] body) so the events-lane leading-bracket strip
             // keeps the body. conv_key sentinel keeps it un-selectable as an event.
             const autoNoteText = (
-              `[System] The engine opened tracker task "${scaffoldName}" (task_id: ${scaffoldTaskId ?? created.projectId}) for this work ` +
+              `[System] The engine opened tracker task "${scaffoldName}" (task_id: ${scaffoldTaskId}) for this work ` +
               `(you made ${state.nonTrackerToolCalls} work calls with no tracker entry; untracked multi-step work drifts and the PM cannot monitor it). ` +
               `Keep working; update it with work_note as you go and close it with work_update(action="status", complete) plus result/evidence when done.`
             );
@@ -7898,30 +7802,33 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 turnNumber,
               });
             } catch { /* best effort */ }
-            // The floor just performed a tracker mutation (createProject), so
-            // set trackerWriteThisTurn to fully disarm the gate above and stop
-            // it re-entering on later iterations. trackerToolCalledThisTurn is
-            // kept for parity with the agent-engaged-tracker signal. pendingNudge
+            // The floor just OPENED a work row, so set both flags to disarm the gate
+            // above and stop it re-entering on later iterations —
+            // `workRowOpenedThisTurn` is the one the floor tier itself reads now (D4).
+            // trackerToolCalledThisTurn is kept for parity with the agent-engaged-tracker
+            // signal. pendingNudge
             // delivers the scaffold note to a continuing agent this turn (F2.2);
             // autoScaffoldedTaskIdThisTurn lets natural turn-end close JUST this
             // task if the turn was read-only and nothing else closed it (F2.1).
             state = advance(state, {
               trackerToolCalledThisTurn: true,
               trackerWriteThisTurn: true,
+              workRowOpenedThisTurn: true,
               nudgedForTrackerThisTurn: true,
               pendingNudge: autoNoteText,
               autoScaffoldedTaskIdThisTurn: scaffoldTaskId,
             });
-            // RC-19 item 3: the floor just tracked the work (createProject), so reset
+            // RC-19 item 3: the floor just tracked the work, so reset
             // the cross-turn untracked-work total. This is an engine-side tracker
             // write that never flows through the per-iteration accumulate/clear above,
             // so clear it explicitly or the count would re-trip the floor next turn.
             clearUntrackedWorkAcrossTurns(agentId);
             logger.info('v2: tracker auto-scaffold fired (engine floor)', {
-              agentId, nonTrackerToolCalls: state.nonTrackerToolCalls, projectId: created.projectId,
+              agentId, nonTrackerToolCalls: state.nonTrackerToolCalls, taskId: scaffoldTaskId,
             }, agentId);
-            // START ACK (NEXT-WAVE item 1): second project-auto-creation site.
-            // The engine just decided this in-flight work is project-worthy, so
+            // START ACK (NEXT-WAVE item 1): the engine floor is now the ONLY
+            // engine-side work-opening site, so this is where the requirement lives.
+            // The engine just decided this in-flight work is trackable, so
             // the person who asked hears it is being tracked, once per turn.
             // RC-4.2: never start-ack an agent-flagged counterparty (ack ping-pong).
             if (counterparty.kind === 'user' && !counterpartyIsAgentSender && !engineStartAckDeliveredThisTurn && !startAckSteerArmedThisTurn && !startAckSteerRequested) {
@@ -7930,18 +7837,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
               // says it is on it mid-work, in its own words.
               startAckSteerRequested = true;
             }
-            // F12.5: same PM rename handoff the turn-start site uses, so this
-            // interim name also gets a proper umbrella name. Fire-and-forget.
-            if (scaffoldTaskId) {
-              void dispatchPMRenameHandoff({
-                callingAgentId: agentId,
-                projectId: created.projectId,
-                taskId: scaffoldTaskId,
-                projectTitle: scaffoldName,
-                taskTitle: scaffoldName,
-                originalPrompt: scaffoldPrompt,
-              });
-            }
+            // F12.5: the interim name is a cleaned slice of the prompt, so the PM gives it
+            // a proper one. ONE row to rename now, not a project and a task, so the handoff
+            // asks for one title instead of two distinct ones.
+            void dispatchPMRenameHandoff({
+              callingAgentId: agentId,
+              taskId: scaffoldTaskId,
+              taskTitle: scaffoldName,
+              originalPrompt: scaffoldPrompt,
+            });
           } catch (err) {
             logger.warn('Tracker auto-scaffold failed (non-fatal, falling back to nudge)', {
               agentId, err: err instanceof Error ? err.message : String(err),
@@ -8398,7 +8302,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // produced a user-facing reply this turn (lastAssistantTextForIM set, or a
     // reply surfaced). Scope: user counterparty only (A2A-turn completions are
     // owned by the close-the-loop report below), and ONLY engine-scaffolded
-    // (ENGINE_AUTO_MARKER) tasks that completed THIS turn, so a plain reply, a
+    // (root_kind='engine_scaffold') tasks that completed THIS turn, so a plain reply, a
     // trivial task, or a model-authored completion never triggers a canned line.
     // [no-reply] is not a valid resolution here: if the model went silent on a
     // completed user-requested task, the engine speaks for it.
@@ -8423,22 +8327,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
       !Object.values(state.explicitSendThisTurn).some(Boolean)
     ) {
       try {
-        const { ENGINE_AUTO_MARKER } = await import('./classifiers/multistep.js');
-        // The ENGINE_AUTO_MARKER lives on the PROJECT description (both scaffold
-        // sites set it there; the task carries the user content), so match it via
-        // the task's project, not the task's own description.
+        // T8c item 3: the marker is the row's own `root_kind`. The old form matched a
+        // prose prefix on the task's PARENT PROJECT and therefore needed an inner join —
+        // which also meant a scaffold row with no parent could never be found. The floor
+        // opens a parentless task now, so the join goes with the prefix.
         const justCompletedScaffold = db.prepare(`
           SELECT t.title AS title, t.result AS result, ${msToText('t.opened_at')} AS created_at,
                  t.source_message_id AS source_message_id FROM work t
-          JOIN work p ON p.id = t.parent_id
-          WHERE ${taskScope('t')} AND t.agent_id = ?
+          WHERE ${engineScaffoldScope('t')} AND t.kind = 'task' AND t.agent_id = ?
             AND t.state = 'done'
             AND t.closed_at >= ?
             AND t.repeat_interval IS NULL
-            AND p.description LIKE ?
           ORDER BY t.closed_at ASC
           LIMIT 3
-        `).all(agentId, turnStartedAt, `${ENGINE_AUTO_MARKER}%`) as Array<{ title: string; result: string | null; created_at: string }>;
+        `).all(agentId, turnStartedAt) as Array<{ title: string; result: string | null; created_at: string }>;
         // CROSS-TURN DEDUP: the per-turn dedup on the outer gate
         // (lastAssistantTextForIM / surfacedReplyThisTurn) misses the common case
         // where the model DELIVERED the real answer on an earlier turn and the

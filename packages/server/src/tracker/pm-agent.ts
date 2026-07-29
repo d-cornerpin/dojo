@@ -161,7 +161,8 @@ export const PM_ALLOWED_WORK_OPS: readonly WorkOp[] = [
   // (loop.ts dispatchPMRenameHandoff explicitly instructs the PM to call it).
   // Omitting them (2026-07-17 battery, untracked-multistep-floor red) made the
   // executor gate refuse the rename; the PM's local model then compensated by
-  // rewriting the PROJECT description (stripping the ENGINE_AUTO_MARKER) and
+  // rewriting the PROJECT description (which used to strip the engine marker, before T8c
+  // made that fact a `root_kind` column no edit can reach) and
   // FYI-ing the primary to do the task rename for it.
   'work_update:edit',
   'work_update:close_project',

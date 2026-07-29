@@ -237,6 +237,19 @@ export interface AgentTurnState {
    */
   trackerWriteThisTurn: boolean;
   /**
+   * A work ROW came into existence this turn, by any path — the agent's own `work_open`, the
+   * engine floor's, or anything else that opens one.
+   *
+   * PHASE-2 T8c item 3 (DECIDED D4). Distinct from `trackerWriteThisTurn`, which is the wider
+   * "did the agent tend its work" question and is true for notes, edits and step advances too.
+   * D4's requirement is about EXISTENCE, and the difference is the whole of the contradiction
+   * D4 identified: the >=6 floor was disarmed by the >3 nudge's own success, so the two tiers
+   * could never both be satisfied in one turn and the scenario asking for both could never
+   * pass. Keyed on existence, the honest question — "does a work row exist at turn end" — has
+   * one answer whichever tier produced it.
+   */
+  workRowOpenedThisTurn: boolean;
+  /**
    * FA-T3: count of NON-TRACKER, NON-TRIVIAL (real work) tool calls this turn.
    * Trivial read-only reconnaissance / utility / bookkeeping (see TRIVIAL_TOOLS
    * in loop.ts) does NOT count, so a pure lookup turn can't trip the multi-step
@@ -562,6 +575,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     repliedToCounterpartyThisTurn: {},
     trackerToolCalledThisTurn: false,
     trackerWriteThisTurn: false,
+    workRowOpenedThisTurn: false,
     nonTrackerToolCalls: 0,
     nudgedForMissedReplyOnAssignId: null,
     nudgedForTrackerThisTurn: false,
