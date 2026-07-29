@@ -44,6 +44,7 @@ import { getTwilioVoiceSafeCallers } from '../services/channel-safe-senders.js';
 import { addressesMatch } from '../services/imessage-bridge.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
+import { recordAtDoor } from '../agent/v2/outbound.js';
 
 const logger = createLogger('twilio-call-session');
 
@@ -569,6 +570,16 @@ export class CallSession {
     const trimmed = text.trim();
     if (!trimmed) return;
     this.transcript.push({ at: new Date().toISOString(), speaker: 'agent', text: trimmed });
+    // PHASE-2 T5: THE PHONE SPEECH-OUT DOOR. Research 03: "every spoken utterance in
+    // call-session.ts" recorded nothing. Inside an outbound scope (the auto-route reply, the
+    // voice_call tool) the sentences of one reply FOLD INTO ONE ROW — a reply streamed as
+    // four sentences is one thing the caller heard, not four deliveries. Outside a scope (the
+    // call's own opener) it stands as its own row.
+    recordAtDoor({
+      outcome: 'delivered', channel: 'phone', tool: 'speech-out',
+      agentId: this.agentId ?? undefined, recipientId: this.fromNumber,
+      detail: `call ${this.callSid}`,
+    });
     logger.info('Agent says', { callSid: this.callSid, text: trimmed.slice(0, 200) });
     // v2.10.1 — enqueue text + current generation, then kick the
     // single-flight drain worker. The worker pulls items in FIFO

@@ -589,13 +589,15 @@ async function main(): Promise<void> {
   //   * the turn never ended but already acted -> HOLD it (no duplicate effects).
   // Still scoped to a recent window (a fresh crash, never weeks of backlog) and still
   // biased to re-serve over drop wherever nothing happened.
-  // PHASE-2 T5 owns the remaining half of this rekey: pointing "answered" at the delivery
-  // edge (`result_delivery_id`) once deliveries are universal.
+  // PHASE-2 T5 CLOSED THE REMAINING HALF. Deliveries are universal now, so "answered" is a
+  // recorded edge rather than an inference, and it is a THIRD outcome: a kill between the send
+  // and the close leaves an ask that WAS answered at `claimed`, and it is closed pointing at
+  // the delivery that answered it instead of being re-answered or stranded.
   {
     try {
-      const { reArmed, held } = reconcileOrphanedClaims();
-      if (reArmed > 0 || held > 0) {
-        logger.warn(`Boot crash-reconciliation: re-armed ${reArmed} orphaned ask claim(s) for the re-drain; HELD ${held} whose turn had already performed effectful calls (P6b: a duplicate send is worse than a stranded ask; tracker untouched)`);
+      const { reArmed, held, closed } = reconcileOrphanedClaims();
+      if (reArmed > 0 || held > 0 || closed > 0) {
+        logger.warn(`Boot crash-reconciliation: closed ${closed} ask(s) whose claiming turn had already DELIVERED (the answered-by edge, never string inference); re-armed ${reArmed} orphaned ask claim(s) for the re-drain; HELD ${held} whose turn had already performed effectful calls (P6b: a duplicate send is worse than a stranded ask; tracker untouched)`);
       }
     } catch (err) {
       logger.warn('Boot crash-reconciliation failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });

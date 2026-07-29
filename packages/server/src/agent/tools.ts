@@ -11,6 +11,9 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { writeToolReceipt } from '../receipts/store.js';
 import { resolveToolAlias } from '../tools/aliases.js';
+import {
+  withOutboundAsyncIfAbsent, outboundChannelForTool, outboundRecipientForTool,
+} from './v2/outbound.js';
 import { broadcast } from '../gateway/ws.js';
 import { setCurrentCanvas, getCurrentCanvas, viewCanvas } from './canvas-view.js';
 import { isEmbeddable, captureSiteScreenshot } from './site-snapshot.js';
@@ -4559,6 +4562,32 @@ async function executeToolInCallContext(agentId: string, toolCall: ToolCall): Pr
   if (resolved.tombstone) {
     return { toolCallId: toolCall.id, name: toolCall.name, content: resolved.tombstone, isError: true };
   }
+  // PHASE-2 T5: ONE SCOPE PER SEND TOOL CALL, opened at the single door every dispatch path
+  // goes through — the same place and the same reasoning as the P6a tool-call identity above.
+  // This is what closes the ten unrecorded send paths in one change instead of ten: the tool
+  // declares WHO is sending and on which channel, the transport door underneath it records
+  // what actually happened, and `writeToolReceipt` links its receipt to that row from inside
+  // the same scope. Nothing here decides an outcome, so a tool that refuses before reaching a
+  // transport writes no row at all.
+  const sendChannel = outboundChannelForTool(resolved.name);
+  if (sendChannel !== null) {
+    return withOutboundAsyncIfAbsent(
+      {
+        agentId, tool: resolved.name, channel: sendChannel,
+        recipientId: outboundRecipientForTool(resolved.name, resolved.args as Record<string, unknown>),
+        conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+      },
+      () => dispatchResolved(agentId, toolCall, resolved),
+    );
+  }
+  return dispatchResolved(agentId, toolCall, resolved);
+}
+
+async function dispatchResolved(
+  agentId: string,
+  toolCall: ToolCall,
+  resolved: { name: string; args: Record<string, unknown>; note?: string | null },
+): Promise<ToolResult> {
   if (resolved.name === toolCall.name) {
     return executeToolInner(agentId, toolCall);
   }

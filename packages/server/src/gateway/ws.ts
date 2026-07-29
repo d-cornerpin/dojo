@@ -5,6 +5,7 @@ import { createLogger } from '../logger.js';
 import type { WsEvent } from '@dojo/shared';
 import { deriveOrigin, BATCHABLE_EVENTS } from '@dojo/shared';
 import { readPersistedRow } from '../memory/message-store.js';
+import { recordDashboardDelivery } from '../agent/v2/outbound.js';
 
 const logger = createLogger('websocket');
 
@@ -226,6 +227,18 @@ export function stampPersistedRow(event: WsEvent): 'stamped' | 'orphan' | 'not-c
 export function broadcast(event: WsEvent): void {
   // The persisted row + attribution ride on every chat:message uniformly (see the seam).
   stampPersistedRow(event);
+
+  // PHASE-2 T5: THE DASHBOARD DOOR. The assistant bubble is the most common delivery in the
+  // product and recorded nothing at all — research 03 measured `deliveries` at 44 rows of one
+  // tool because of it, and `work.done` requires a delivery, so an answered ask rested at
+  // `claimed` forever on this path. This runs AFTER the T9 seam and reads only what the seam
+  // already attached (`event.row`): it adds no lookup of its own and changes nothing the seam
+  // does, so BROADCAST_EQUALS_ROW rides exactly as before. The narrow predicate and its
+  // negative controls live in agent/v2/outbound.ts.
+  //
+  // Deliberately NOT gated on connected clients: a bubble with nobody watching is still the
+  // reply the owner reads on reload, and the ledger must not depend on a socket being open.
+  recordDashboardDelivery(event);
 
   // In-process listeners fire even with zero connected clients (e.g. voice sessions
   // that piggyback on chat:chunk events to drive TTS).

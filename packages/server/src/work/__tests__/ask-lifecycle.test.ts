@@ -95,9 +95,15 @@ beforeEach(() => {
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)
      VALUES ('conv-1', ?, 'dashboard', 'owner'), ('conv-2', ?, 'imessage', '+15550000')`,
   ).run(AGENT, AGENT);
+  // A stand-in delivery id for the close tests, which pass agent/turn/conversation as
+  // ARGUMENTS and never read this row's own columns.
+  // PHASE-2 T5: its turn_number moved 4 -> 1. It used to say "turn 4 delivered into conv-1",
+  // and T5's boot reconciliation reads exactly that edge — so the fixture was silently
+  // asserting that the crash tests' turn 4 had already answered the owner, which is the
+  // opposite of what those tests set up. Nothing else in this file reads the column.
   db.prepare(
     `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome)
-     VALUES ('d-1', ?, 4, 'auto-route', 'dashboard', 'conv-1', 'delivered')`,
+     VALUES ('d-1', ?, 1, 'auto-route', 'dashboard', 'conv-1', 'delivered')`,
   ).run(AGENT);
 });
 
@@ -333,6 +339,48 @@ describe('orphaned claims after a kill (crash test B)', () => {
     expect(r.reArmed).toBe(0);
     expect(r.held).toBe(1);
     expect(workFor('m-1')!.state).toBe('claimed');
+  });
+
+  it('PHASE-2 T5: a claim whose turn DELIVERED and was then killed is CLOSED, not re-served', () => {
+    // The third outcome the delivery edge makes readable. Before T5 the dashboard path
+    // recorded nothing, so this ask could only be re-armed (re-answering a question the
+    // person already had answered) or held (stranded forever).
+    insertMessage(ownerInbound({ id: 'm-1' }) as never);
+    claimAsk(askIdForMessage('m-1'), AGENT);
+    stampClaimingTurn(askIdForMessage('m-1'), 4);
+    seedTurn(4);
+    mockDb.current!.prepare(
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome)
+       VALUES ('d-answer', ?, 4, 'dashboard', 'dashboard', 'conv-1', 'delivered')`,
+    ).run(AGENT);
+    const r = reconcileOrphanedClaims();
+    expect(r.closed).toBe(1);
+    expect(r.reArmed).toBe(0);
+    expect(workFor('m-1')!.state).toBe('done');
+    expect(workFor('m-1')!.result_delivery_id).toBe('d-answer');
+  });
+
+  it('NEGATIVE CONTROLS: a FAILED send, an engine-ack, and another conversation never close it', () => {
+    // Three asks, three claiming turns, three near-miss deliveries. Each fails the close for
+    // its own reason: the send did not land, a start-ack is not an answer, and an outbound to
+    // somebody else while working on this question is not this question's answer.
+    const cases = [
+      { msg: 'm-f', turn: 41, id: 'd-failed', tool: 'dashboard', conv: 'conv-1', outcome: 'failed' },
+      { msg: 'm-a', turn: 42, id: 'd-ack', tool: 'engine-ack', conv: 'conv-1', outcome: 'delivered' },
+      { msg: 'm-o', turn: 43, id: 'd-other', tool: 'dashboard', conv: 'conv-2', outcome: 'delivered' },
+    ] as const;
+    for (const c of cases) {
+      insertMessage(ownerInbound({ id: c.msg }) as never);
+      claimAsk(askIdForMessage(c.msg), AGENT);
+      stampClaimingTurn(askIdForMessage(c.msg), c.turn);
+      seedTurn(c.turn, { effectful_calls: 1 });
+      mockDb.current!.prepare(
+        `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome)
+         VALUES (?, ?, ?, ?, 'dashboard', ?, ?)`,
+      ).run(c.id, AGENT, c.turn, c.tool, c.conv, c.outcome);
+    }
+    expect(reconcileOrphanedClaims().closed).toBe(0);
+    for (const c of cases) expect(workFor(c.msg)!.state, `${c.id} must not close the ask`).toBe('claimed');
   });
 
   it('a claim whose turn ENDED normally is left alone (it was answered, not orphaned)', () => {

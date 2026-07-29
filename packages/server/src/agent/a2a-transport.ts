@@ -20,7 +20,8 @@ import { getAgentRuntime } from './runtime.js';
 import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
-import { recordDelivery, type DeliveryInput } from './v2/deliveries.js';
+import { type DeliveryInput } from './v2/deliveries.js';
+import { recordAtDoor, withOutboundAsync } from './v2/outbound.js';
 // PHASE-2 T4: the join lives in `work`. Everything below is transport — it lands pieces and
 // relays answers; it computes no join state and it writes no state of its own.
 import {
@@ -1218,6 +1219,28 @@ function askRowForJoin(join: JoinState): { content: string; inbound_meta: string
 async function deliverJoinResultToOwner(
   join: JoinState, deliveryText: string, opts?: { tool?: string },
 ): Promise<string | null> {
+  // PHASE-2 T5 — THE T4 COLLISION, RESOLVED BY ROUTING RATHER THAN DUPLICATING.
+  // T4 recorded this relay with its own `recordDelivery` call. T5 puts a recorder on the
+  // dashboard, iMessage, SMS and provider doors this function pushes through, so leaving both
+  // in place would have produced TWO rows for one relay. The relay now DECLARES the identity
+  // and every door it crosses folds into that one row — including the dashboard fallback's
+  // own bubble, which is the same physical delivery, not a second one.
+  return withOutboundAsync(
+    {
+      agentId: join.agentId,
+      tool: opts?.tool ?? 'a2a-join-relay',
+      // Declared as dashboard because that is the guaranteed floor; the channel branch below
+      // reports what it actually used through the door observation.
+      channel: 'dashboard',
+      conversationId: join.replyConversationId,
+    },
+    () => deliverJoinResultToOwnerInner(join, deliveryText, opts),
+  );
+}
+
+async function deliverJoinResultToOwnerInner(
+  join: JoinState, deliveryText: string, opts?: { tool?: string },
+): Promise<string | null> {
   const ask = askRowForJoin(join);
   let meta: {
     channel?: string; sender?: string; chatId?: string; chatType?: string; emailMessageId?: string;
@@ -1295,11 +1318,10 @@ async function deliverJoinResultToOwner(
   // is the row `work.done` points at. PINNED §8 lists the park relay among the paths that
   // record nothing; T5 owns the doors and must route this through the same single writer
   // rather than adding a second row beside it.
-  const deliveryId = recordDelivery({
-    agentId: join.agentId, tool, channel,
-    recipientId, recipientDisplay: null,
-    conversationId: join.replyConversationId,
-    messageId, outcome: 'delivered',
+  const deliveryId = recordAtDoor({
+    outcome: 'delivered', channel,
+    agentId: join.agentId, tool,
+    recipientId, messageId,
     detail: `join ${join.id}`,
   });
   logger.info('join relay: engine delivered to owner', {
@@ -1363,10 +1385,14 @@ function findUnlandedInboundReply(
 function recordPieceDelivery(p: {
   fromAgent: string; toAgent: string; messageId: string | null; intent: string;
 }): string | null {
-  return recordDelivery({
-    agentId: p.fromAgent, tool: 'send_to_agent', channel: 'a2a',
+  // PHASE-2 T5: routed through the door recorder, NOT duplicated. Inside a `send_to_agent`
+  // scope this folds into that scope's single row (and picks up its receipt link); outside
+  // one it stands alone exactly as T4 wrote it.
+  return recordAtDoor({
+    outcome: 'delivered', channel: 'a2a',
+    agentId: p.fromAgent, tool: 'send_to_agent',
     recipientId: p.toAgent, recipientDisplay: resolveAgentDisplayName(p.toAgent),
-    messageId: p.messageId, outcome: 'delivered', detail: `A2A ${p.intent}`,
+    messageId: p.messageId, detail: `A2A ${p.intent}`,
   });
 }
 

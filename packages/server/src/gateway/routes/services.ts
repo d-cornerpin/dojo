@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { getIMBridgeStatus, sendIMessage, startIMBridge } from '../../services/imessage-bridge.js';
+import { withOutboundIfAbsent, PLATFORM_SENDER } from '../../agent/v2/outbound.js';
 import { getResourceInfo } from '../../services/resource-monitor.js';
 import { checkOllamaHealth, getOllamaStatus, listOllamaModels } from '../../services/ollama.js';
 import { getOllamaLock, getActiveOllamaModelsByProvider, getOllamaMaxConcurrent } from '../../services/ollama-lock.js';
@@ -115,7 +116,12 @@ servicesRouter.post('/imessage/test', async (c) => {
   }
 
   try {
-    sendIMessage(body.recipient, body.message);
+    // PHASE-2 T5: PINNED §8 named both of this file's sends among the paths that record
+    // nothing — an outbound to a real person, from a route. Both are the platform's.
+    withOutboundIfAbsent(
+      { agentId: PLATFORM_SENDER, tool: 'imessage-test', channel: 'imessage', recipientId: body.recipient as string },
+      () => sendIMessage(body.recipient, body.message),
+    );
     return c.json({ ok: true, data: { sent: true } });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -138,7 +144,10 @@ servicesRouter.post('/imessage/welcome', async (c) => {
     startIMBridge(recipient);
 
     // Send welcome message
-    sendIMessage(recipient, '🥋 Welcome to the D.O.J.O! Your agent platform is set up and ready. You can talk to your agents through iMessage when you\'re away from the dashboard.');
+    withOutboundIfAbsent(
+      { agentId: PLATFORM_SENDER, tool: 'oobe-welcome', channel: 'imessage', recipientId: recipient },
+      () => sendIMessage(recipient, '🥋 Welcome to the D.O.J.O! Your agent platform is set up and ready. You can talk to your agents through iMessage when you\'re away from the dashboard.'),
+    );
 
     return c.json({ ok: true, data: { sent: true, bridgeStarted: true } });
   } catch (err) {

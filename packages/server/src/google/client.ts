@@ -9,6 +9,7 @@ import { getValidAccessTokenForAccount } from './auth.js';
 import { getGoogleAccount } from './accounts.js';
 import { logGoogleActivity } from './activity-log.js';
 import { broadcast } from '../gateway/ws.js';
+import { recordAtDoor, inOutboundScope } from '../agent/v2/outbound.js';
 
 const logger = createLogger('google-client');
 
@@ -169,6 +170,21 @@ export function googleWrite(
       type: 'google:activity',
       data: { agentId, agentName, action, actionType: 'write', details: { ...details, account: accountId } },
     });
+
+    // PHASE-2 T5: THE DOOR RECORDS — but only for a send. This one function carries both
+    // `gmail_send/reply/forward` (a person receives something) and calendar/drive/docs/sheets
+    // writes (nobody does), so the discriminator is the OUTBOUND SCOPE the send tool opened.
+    // A data write is outside any scope and correctly produces no delivery row; inventing a
+    // per-action allow-list here would be a second registry drifting against the first.
+    if (inOutboundScope()) {
+      recordAtDoor({
+        outcome: result.ok ? 'delivered' : 'failed',
+        channel: 'email',
+        tool: 'google-door',
+        provider: 'gmail',
+        detail: result.ok ? action : (result.error ?? 'google write failed'),
+      });
+    }
 
     return result;
   });

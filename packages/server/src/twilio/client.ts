@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import { createLogger } from '../logger.js';
 import { getTwilioCreds } from './auth.js';
 import { formatForPlainTextChannel } from '../services/plain-text-format.js';
+import { recordAtDoor } from '../agent/v2/outbound.js';
 
 const logger = createLogger('twilio-client');
 
@@ -85,6 +86,16 @@ export async function sendSms(
     From: from,
     Body: formatForPlainTextChannel(body),
   });
+  // PHASE-2 T5: THE DOOR RECORDS. All three SMS paths (auto-reply, the sms_send tool, the
+  // A2A relay) pass through here, and a FAILED send now produces `outcome='failed'` — the
+  // caller-written record was gated on success and could not express one.
+  recordAtDoor({
+    outcome: res.ok ? 'delivered' : 'failed',
+    channel: 'sms',
+    tool: 'sms-door',
+    recipientId: to,
+    detail: res.ok ? null : res.error,
+  });
   if (!res.ok) {
     logger.warn('Twilio SMS send failed', { to, from, error: res.error, status: res.status });
     return { ok: false, error: res.error };
@@ -128,6 +139,15 @@ export async function placeCall(
     params.StatusCallbackEvent = 'initiated ringing answered completed';
   }
   const res = await twilioPost<TwilioCallResponse>('/Calls.json', params);
+  // PHASE-2 T5: placing a call reaches a person. `voice_call` was one of the ten send paths
+  // that recorded nothing.
+  recordAtDoor({
+    outcome: res.ok ? 'delivered' : 'failed',
+    channel: 'phone',
+    tool: 'phone-door',
+    recipientId: to,
+    detail: res.ok ? 'call placed' : res.error,
+  });
   if (!res.ok) {
     logger.warn('Twilio call failed to place', { to, from, error: res.error, status: res.status });
     return { ok: false, error: res.error };

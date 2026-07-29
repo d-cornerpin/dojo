@@ -603,9 +603,43 @@ export const ORPHAN_CLAIM_WINDOW_MINUTES = 30;
  * `turns.effectful_calls` is what makes this decidable after the process is gone, which is
  * why T3 writes it as the effects happen instead of only at turn end.
  */
-export function reconcileOrphanedClaims(): { reArmed: number; held: number } {
+export function reconcileOrphanedClaims(): { reArmed: number; held: number; closed: number } {
   const db = getDb();
   const since = now() - ORPHAN_CLAIM_WINDOW_MINUTES * 60 * 1000;
+  // PHASE-2 T5 — THE OTHER HALF OF THE REKEY, which `index.ts` named as owed here.
+  //
+  // T3 removed the string inference (a later row happening to carry the same conv_key) and
+  // put this on the two recorded turn facts. What it could not read yet was the DELIVERY
+  // EDGE, because before T5 the dashboard path recorded no delivery at all — so this query
+  // deliberately did not ask "was it answered", only "did the turn finish and had it acted".
+  //
+  // Deliveries are universal now, so the answered edge is readable and it is a THIRD outcome,
+  // not a tweak to the other two: a process killed between the send and the close leaves an
+  // ask that was genuinely ANSWERED sitting at `claimed`. Handing it back re-answers a
+  // question the person already had answered; holding it strands it forever. It is closed,
+  // pointing at the delivery that answered it — the same evidence `closeAsksForDelivery`
+  // would have used had the process lived one more statement.
+  const answered = db.prepare(`
+    SELECT w.id AS id, d.id AS delivery_id, d.tool AS tool
+      FROM work w
+      JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = w.claimed_by_turn
+      JOIN deliveries d ON d.agent_id = w.agent_id AND d.turn_number = w.claimed_by_turn
+                       AND d.conversation_id = w.conversation_id AND d.outcome = 'delivered'
+     WHERE w.kind = 'ask' AND w.state = 'claimed' AND w.updated_at >= ?
+       AND t.ended_at IS NULL
+       AND d.tool NOT IN (${[...NON_ANSWERING_DELIVERY_TOOLS].map(() => '?').join(', ')})
+     GROUP BY w.id
+  `).all(since, ...NON_ANSWERING_DELIVERY_TOOLS) as Array<{ id: string; delivery_id: string; tool: string }>;
+  let closed = 0;
+  for (const a of answered) {
+    const res = transition(a.id, {
+      to: 'done', by: 'agent', actorId: 'boot-reconciliation', resultDeliveryId: a.delivery_id,
+      expectedState: 'claimed',
+      reason: `boot reconciliation: the claiming turn delivered via ${a.tool} and was killed before it could close`,
+    });
+    if (res.kind === 'applied') closed++;
+  }
+
   const rows = db.prepare(`
     SELECT w.id AS id, COALESCE(t.effectful_calls, 0) AS effectful_calls
       FROM work w
@@ -622,10 +656,10 @@ export function reconcileOrphanedClaims(): { reArmed: number; held: number } {
     if (res === null) held++;
     else if (res.kind === 'applied') reArmed++;
   }
-  if (reArmed > 0 || held > 0) {
-    logger.warn('boot reconciliation of orphaned ask claims', { reArmed, held });
+  if (reArmed > 0 || held > 0 || closed > 0) {
+    logger.warn('boot reconciliation of orphaned ask claims', { reArmed, held, closed });
   }
-  return { reArmed, held };
+  return { reArmed, held, closed };
 }
 
 // ════════════════════════════════════════════════════════════════════════════════

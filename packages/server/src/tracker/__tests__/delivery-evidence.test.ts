@@ -31,8 +31,8 @@ beforeEach(() => {
       conv_key TEXT
     );
     CREATE TABLE audit_log (agent_id TEXT, turn_number INTEGER);
-    CREATE TABLE turn_artifacts (agent_id TEXT, turn_number INTEGER, path TEXT, payload_json TEXT, delivered_at TEXT);
-    CREATE TABLE deliveries (agent_id TEXT, turn_number INTEGER, channel TEXT, outcome TEXT);
+    CREATE TABLE turn_artifacts (agent_id TEXT, turn_number INTEGER, path TEXT, payload_json TEXT, delivered_at TEXT, delivery_id TEXT);
+    CREATE TABLE deliveries (id TEXT, agent_id TEXT, turn_number INTEGER, channel TEXT, outcome TEXT);
   `);
   db.prepare(`INSERT INTO legacy_tasks VALUES (?, ?, ?, ?, '2026-07-22 07:15:34')`)
     .run(TASK, AGENT, ASK, 'owner');
@@ -85,8 +85,10 @@ describe('findDeliveryEvidenceForTask (delivered-but-unclosed consult)', () => {
 
   it('carries the tangible handover: delivered artifacts and channel deliveries from the answering turn', () => {
     insertAnsweredTurn(100);
-    mockDb.current!.prepare(`INSERT INTO turn_artifacts VALUES (?, 100, '/tmp/report.md', '{"filename":"report.md"}', '2026-07-22 07:16:20')`).run(AGENT);
-    mockDb.current!.prepare(`INSERT INTO deliveries VALUES (?, 100, 'imessage', 'delivered')`).run(AGENT);
+    // PHASE-2 T5: an artifact with no `delivery_id` is a pre-T5 row and is read as it always
+    // was; the linked/failed cases are asserted in agent/v2/__tests__/delivery-links.test.ts.
+    mockDb.current!.prepare(`INSERT INTO turn_artifacts VALUES (?, 100, '/tmp/report.md', '{"filename":"report.md"}', '2026-07-22 07:16:20', NULL)`).run(AGENT);
+    mockDb.current!.prepare(`INSERT INTO deliveries VALUES ('d-x', ?, 100, 'imessage', 'delivered')`).run(AGENT);
     const ev = findDeliveryEvidenceForTask(TASK)!;
     expect(ev.artifacts).toEqual(['report.md']);
     expect(ev.deliveredVia).toEqual(['imessage']);

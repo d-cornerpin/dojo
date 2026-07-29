@@ -22,6 +22,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { getCurrentToolCallId, currentTurnRoot, noteTurnReceipt, currentTurnConvKey, currentTurnNumber } from '../agent/turn-state.js';
+import { noteReceiptForOutbound } from '../agent/v2/outbound.js';
 
 // RC-12: bound the sent_text copy. The full body already lives in the messages
 // tool_use args; the receipt only needs enough to quote the agent's own recent
@@ -57,6 +58,15 @@ export const RECEIPT_TOOLS: Record<string, ReceiptTier> = {
   teams_send_message: 1, teams_send_channel_message: 1,
   outlook_send: 2, outlook_reply: 2, outlook_forward: 2,
   imessage_send: 3,
+  // PHASE-2 T5 (research 03's registry drift, re-derived on this box): the live
+  // `tool_receipts` table shows 8 distinct tools, two of which — `send_to_agent` (993 rows)
+  // and `broadcast_to_group` — have been WRITING receipts for months while absent from the
+  // map that documents how each send is verified. The map was never the gate (executors pass
+  // an explicit tier), so the drift cost nothing at runtime and everything in truthfulness:
+  // the one place that answers "how do we know this send happened" did not mention the
+  // busiest send in the product. Tier 1 — the A2A transport hands back the persisted peer
+  // message id, which is a provider-issued identifier in exactly the sense the tier means.
+  send_to_agent: 1, broadcast_to_group: 1,
 };
 
 /**
@@ -188,6 +198,12 @@ export function writeToolReceipt(params: WriteReceiptParams): string {
     );
 
     noteTurnReceipt(agentId, receiptId);
+    // PHASE-2 T5 (Phase-1 §7 debt): the delivery this receipt proves. `deliveries.receipt_id`
+    // was in the INSERT column list and never given a value — 44 rows, 0 populated — and the
+    // join it replaces guessed at the link from agent + turn + tool. The two SOLE WRITERS
+    // establish it between themselves, inside the outbound scope the send opened, so there is
+    // nothing left to reconstruct. A no-op outside a scope.
+    noteReceiptForOutbound(receiptId);
 
     logger.info('tool receipt written', {
       tool, tier, verified, basis,

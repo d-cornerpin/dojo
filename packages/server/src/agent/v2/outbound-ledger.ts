@@ -185,16 +185,43 @@ interface DeliveryJoinRow {
   recipient_id: string | null;
   recipient_display: string | null;
   turn_number: number | null;
+  receipt_id: string | null;
   created_at: string;
 }
 
+interface ReceiptFacts { sent_text: string | null; conv_key: string | null; verified: number }
+
+/**
+ * The receipt behind a delivery — THE READER for `deliveries.receipt_id` (PHASE-2 T5, the
+ * Phase-1 §7 debt).
+ *
+ * This is load-bearing, not decorative: `sentText` is what the pending-question header quotes
+ * back to the model as its own last message, and `verified` is what the delivery-claim guard
+ * consults in BOTH directions before it fires. Reading the wrong receipt makes the engine
+ * quote the wrong message at the owner.
+ *
+ * The link is now recorded when it is KNOWN — `writeToolReceipt` stamps it inside the send's
+ * own outbound scope. What it replaces is a three-column guess: agent + turn + tool, newest
+ * first. A turn that sent two emails to two people wrote two receipts under one tool name, and
+ * the guess handed BOTH deliveries the later one's text.
+ *
+ * The guess survives ONLY as a fallback for rows written before T5 (44 of them on this box).
+ * A row that HAS a link never falls back: if the receipt it names is gone, the honest answer
+ * is "no text", not the next-best receipt.
+ */
 function joinSentText(db: ReturnType<typeof getDb>, agentId: string, d: DeliveryJoinRow): { sentText: string | null; convKey: string | null; verified: boolean } {
+  if (d.receipt_id !== null) {
+    const r = db.prepare(
+      `SELECT sent_text, conv_key, verified FROM tool_receipts WHERE id = ?`,
+    ).get(d.receipt_id) as ReceiptFacts | undefined;
+    return { sentText: r?.sent_text ?? null, convKey: r?.conv_key ?? null, verified: r?.verified === 1 };
+  }
   if (d.turn_number === null) return { sentText: null, convKey: null, verified: false };
   const r = db.prepare(
     `SELECT sent_text, conv_key, verified FROM tool_receipts
       WHERE agent_id = ? AND turn_number = ? AND tool = ?
       ORDER BY created_at DESC LIMIT 1`,
-  ).get(agentId, d.turn_number, d.tool) as { sent_text: string | null; conv_key: string | null; verified: number } | undefined;
+  ).get(agentId, d.turn_number, d.tool) as ReceiptFacts | undefined;
   return { sentText: r?.sent_text ?? null, convKey: r?.conv_key ?? null, verified: r?.verified === 1 };
 }
 
@@ -231,7 +258,7 @@ export function mostRecentDeliveryToConversation(
     const db = getDb();
     const hours = Math.max(1, Math.floor(windowHours));
     const d = db.prepare(
-      `SELECT tool, channel, recipient_id, recipient_display, turn_number, created_at
+      `SELECT tool, channel, recipient_id, recipient_display, turn_number, receipt_id, created_at
          FROM deliveries
         WHERE agent_id = ? AND conversation_id = ? AND outcome = 'delivered'
           AND channel NOT IN ('dashboard', 'voice')
@@ -264,7 +291,7 @@ export function findRecentDeliveriesKeyed(
     const db = getDb();
     const hours = Math.max(1, Math.floor(windowHours));
     const rows = db.prepare(
-      `SELECT tool, channel, recipient_id, recipient_display, turn_number, created_at
+      `SELECT tool, channel, recipient_id, recipient_display, turn_number, receipt_id, created_at
          FROM deliveries
         WHERE agent_id = ? AND outcome = 'delivered'
           AND channel NOT IN ('dashboard', 'voice')

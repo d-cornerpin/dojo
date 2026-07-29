@@ -22,6 +22,7 @@ import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { insertMessageIfAbsent, sweepById } from '../memory/message-store.js';
 import { isContentFreeCourtesy } from '../agent/v2/classifiers/inbound-courtesy.js';
 import { appleMessageDateToUnixMs } from './imessage-date.js';
+import { recordAtDoor, withOutboundIfAbsent, PLATFORM_SENDER } from '../agent/v2/outbound.js';
 
 // ── iMessage attachment pipeline ────────────────────────────────────────────
 //
@@ -733,7 +734,13 @@ function maybeSendBusyAck(agentId: string, sender: string): void {
   const key = canonicalContactAddress(sender);
   if (st.ackedSenders.has(key)) return; // at most once per sender per running turn
   st.ackedSenders.add(key);
-  sendIMessage(sender, BUSY_ACK_TEXT);
+  // PHASE-2 T5: the busy-ack is an outbound to a real person and recorded nothing. It is
+  // the AGENT's lane (this agent is why the person is waiting), so it is attributed to the
+  // agent rather than to the platform.
+  withOutboundIfAbsent(
+    { agentId, tool: 'busy-ack', channel: 'imessage', recipientId: sender },
+    () => sendIMessage(sender, BUSY_ACK_TEXT),
+  );
   // STRIP (PHASE-0 T12): dropped an `agent:status` broadcast carrying 'queued' — not an agent status, zero subscribers branch on it; Agents/Tracker wrote it into agent.status, blanking the working indicator mid-turn.
   // requirement preserved: the person is told by the busy-ack above, and the 30s status heartbeat re-asserts 'working' on the dashboard.
   logger.info('Busy-ack sent: inbound iMessage queued behind a running turn', {
@@ -1935,6 +1942,23 @@ export function checkImsgHealth(): void {
 // imessage_send callers reporting "sent" to the agent (and thus to the
 // user) when nothing actually went through.
 export function sendIMessage(recipient: string, rawText: string): boolean {
+  const ok = sendIMessageInner(recipient, rawText);
+  // PHASE-2 T5: THE DOOR RECORDS. Every iMessage the platform sends physically passes
+  // through here — the auto-route, the imessage_send tool, alerts, the busy-ack, the
+  // first-run welcome, the healer's approval prompt, the A2A relay's owner hand-back — and
+  // before this, only the first two produced a ledger row and only when the caller had
+  // already decided it worked. The outcome comes from what the transport actually returned.
+  recordAtDoor({
+    outcome: ok ? 'delivered' : 'failed',
+    channel: 'imessage',
+    tool: 'imessage-door',
+    recipientId: recipient,
+    detail: ok ? null : 'every iMessage path failed (imsg CLI and AppleScript)',
+  });
+  return ok;
+}
+
+function sendIMessageInner(recipient: string, rawText: string): boolean {
   // Sanitize for iMessage, strip markdown, literal \n, excessive whitespace.
   // This runs on ALL iMessage paths so nothing gets through unsanitized.
   let text = rawText;
@@ -2006,6 +2030,32 @@ export function sendIMessageWithAttachment(
   filePath: string,
   caption?: string,
 ): boolean {
+  // PHASE-2 T5: the attachment siblings are doors too, and they are the reason the hole
+  // would have reopened on files. Each opens a scope when the caller declared none, so the
+  // file send and the caption's nested `sendIMessage` fold into ONE row — one thing the
+  // person received — instead of two, and a caption that fails after a delivered file makes
+  // that row honestly `failed`.
+  return withOutboundIfAbsent(
+    { agentId: PLATFORM_SENDER, tool: 'imessage-attachment-door', channel: 'imessage', recipientId: recipient },
+    () => {
+      const ok = sendIMessageWithAttachmentInner(recipient, filePath, caption);
+      recordAtDoor({
+        outcome: ok ? 'delivered' : 'failed',
+        channel: 'imessage',
+        tool: 'imessage-attachment-door',
+        recipientId: recipient,
+        detail: ok ? `attachment ${path.basename(filePath)}` : `attachment ${path.basename(filePath)} failed on every path`,
+      });
+      return ok;
+    },
+  );
+}
+
+function sendIMessageWithAttachmentInner(
+  recipient: string,
+  filePath: string,
+  caption?: string,
+): boolean {
   // C14: safe-sender revalidation, a sender removed from the allowlist mid-conversation
   // must not still receive FILES while their text reply is correctly suppressed (inv-5
   // asymmetry). Mirrors sendResponseViaIMessage's recipient check. (Capturing attachment
@@ -2073,6 +2123,20 @@ export function sendIMessageWithAttachment(
  * If `filePaths` is empty, this is equivalent to sendIMessage(recipient, text).
  */
 export function sendIMessageWithAttachments(
+  recipient: string,
+  text: string,
+  filePaths: readonly string[],
+): { ok: boolean; sentFiles: string[]; failedFiles: string[]; textSent: boolean } {
+  // PHASE-2 T5: one scope for the whole batch. A message with three files that partly failed
+  // is ONE delivery the person half-received, recorded once and honestly as `failed` — not
+  // three rows, and not a green row per file that happened to go through.
+  return withOutboundIfAbsent(
+    { agentId: PLATFORM_SENDER, tool: 'imessage-attachment-door', channel: 'imessage', recipientId: recipient },
+    () => sendIMessageWithAttachmentsInner(recipient, text, filePaths),
+  );
+}
+
+function sendIMessageWithAttachmentsInner(
   recipient: string,
   text: string,
   filePaths: readonly string[],
@@ -2195,7 +2259,13 @@ export function sendAlert(message: string, urgency: 'info' | 'warning' | 'critic
       logger.warn('Cannot send alert: no default sender configured');
       return;
     }
-    sendIMessage(recipient, fullMessage);
+    // PHASE-2 T5: an alert reaches a real person's phone and recorded nothing. It is a
+    // PLATFORM outbound, not an agent's — attributing it to whichever agent happened to
+    // trigger it would put watchdog-class traffic inside that agent's own ledger.
+    withOutboundIfAbsent(
+      { agentId: PLATFORM_SENDER, tool: 'alert', channel: 'imessage', recipientId: recipient },
+      () => sendIMessage(recipient, fullMessage),
+    );
   } catch (err) {
     logger.error('Failed to send alert', {
       error: err instanceof Error ? err.message : String(err),

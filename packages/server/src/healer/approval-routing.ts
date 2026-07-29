@@ -34,6 +34,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { resolveRealPathHardened, isProtectedIdentityPath } from '../agent/permissions.js';
+import { withOutboundIfAbsent, PLATFORM_SENDER } from '../agent/v2/outbound.js';
 
 const logger = createLogger('healer-approval-routing');
 
@@ -470,7 +471,12 @@ async function sendHealerApprovalRequestOverIMessage(proposalId: string): Promis
       });
       return;
     }
-    const sent = bridge.sendIMessage(owner, text);
+    // PHASE-2 T5: an approval prompt reaches the owner's phone and recorded nothing. A
+    // PLATFORM outbound, not an agent's — the healer speaks for the box, not for an agent.
+    const sent = withOutboundIfAbsent(
+      { agentId: PLATFORM_SENDER, tool: 'healer-approval', channel: 'imessage', recipientId: owner },
+      () => bridge.sendIMessage(owner, text),
+    );
     if (!sent) {
       logger.error('healer approval-routing: iMessage approval send failed; approval stays in Vitals', {
         proposalId,

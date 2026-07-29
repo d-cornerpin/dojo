@@ -8,6 +8,7 @@ import { getValidAccessTokenForAccount } from './auth.js';
 import { getMicrosoftAccount } from './accounts.js';
 import { logMicrosoftActivity } from './activity-log.js';
 import { broadcast } from '../gateway/ws.js';
+import { recordAtDoor, inOutboundScope } from '../agent/v2/outbound.js';
 
 const logger = createLogger('ms-client');
 
@@ -186,6 +187,21 @@ export function msGraphWrite(
       type: 'microsoft:activity',
       data: { agentId, agentName, action, actionType: 'write', details: { ...details, account: accountId } },
     });
+
+    // PHASE-2 T5: THE DOOR RECORDS — but only for a send. Same reasoning as the Google door:
+    // this one function carries `outlook_send/reply/forward` and `teams_send_*` (a person
+    // receives something) alongside calendar and file writes (nobody does), and the OUTBOUND
+    // SCOPE the send tool opened is what tells them apart. The scope also names the CHANNEL,
+    // so a Teams send is recorded as Teams and an Outlook send as email.
+    if (inOutboundScope()) {
+      recordAtDoor({
+        outcome: result.ok ? 'delivered' : 'failed',
+        channel: 'email',
+        tool: 'msgraph-door',
+        provider: 'outlook',
+        detail: result.ok ? action : (result.error ?? 'graph write failed'),
+      });
+    }
 
     return result;
   });

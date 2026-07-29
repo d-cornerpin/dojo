@@ -81,9 +81,22 @@ export function findDeliveryEvidenceForTask(taskId: string): TaskDeliveryEvidenc
 
     const artifacts: string[] = [];
     try {
+      // PHASE-2 T5 — THE READER for `turn_artifacts.delivery_id` (Phase-1 §7 debt).
+      //
+      // `delivered_at IS NOT NULL` says the ENGINE drained its queue. It does not say a
+      // person received anything, and this consult can CLOSE A TASK on its own strength
+      // (second-strike, engine-enforced, owner precedent). An artifact whose delivery FAILED
+      // is exactly the false evidence that must not close a task, so an artifact that names
+      // its delivery is only evidence when that delivery succeeded.
+      //
+      // The `delivery_id IS NULL` arm is the 325 pre-T5 rows, which carry no link and are
+      // read as they always were. It is a dated fallback, not a permanent second rule.
       const rows = db.prepare(
-        `SELECT path, payload_json FROM turn_artifacts
-          WHERE agent_id = ? AND turn_number = ? AND delivered_at IS NOT NULL`,
+        `SELECT ta.path AS path, ta.payload_json AS payload_json
+           FROM turn_artifacts ta
+           LEFT JOIN deliveries d ON d.id = ta.delivery_id
+          WHERE ta.agent_id = ? AND ta.turn_number = ? AND ta.delivered_at IS NOT NULL
+            AND (ta.delivery_id IS NULL OR d.outcome = 'delivered')`,
       ).all(task.assigned_to, turn.turn_number) as Array<{ path: string | null; payload_json: string | null }>;
       for (const r of rows) {
         let name = r.path ?? null;

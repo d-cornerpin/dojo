@@ -26,6 +26,7 @@ import { broadcast, onBroadcast } from '../gateway/ws.js';
 import { submitUserMessage } from '../gateway/routes/chat.js';
 import { transcribeBuffer, pcmFloatToWav, ensureSttReady, DEFAULT_STT_MODEL_KEY, parseSttModelKey, isWhisperBinaryAvailable } from './stt-service.js';
 import { synthesizeClauseStream, createClauseQueue, DEFAULT_VOICE, loadKokoro, isKokoroLoaded } from './tts-service.js';
+import { recordAtDoor } from '../agent/v2/outbound.js';
 import { checkCustomVoiceUsable } from './custom-voices.js';
 import { StreamingSpeechBuffer } from './text-sanitize.js';
 import { HumeStreamSession, isHumeConfigured } from './hume-engine.js';
@@ -1440,6 +1441,15 @@ function startTtsForAgent(
   const startStreaming = () => {
     if (started) return;
     started = true;
+    // PHASE-2 T5: THE BROWSER SPEECH-OUT DOOR. A spoken reply is a delivery the owner
+    // received, and research 03 found voice recording NOTHING on either path. One row per
+    // BURST, not per clause: the clause queue is how one reply is transported, not several
+    // replies. Recorded where synthesis actually starts, so a turn whose text sanitizes to
+    // nothing speakable never claims a delivery.
+    recordAtDoor({
+      outcome: 'delivered', channel: 'voice', tool: 'speech-out',
+      agentId: session.agentId, recipientId: 'owner', messageId, detail: 'local',
+    });
     logger.info('TTS streaming started', { agentId: session.agentId, messageId, voice: effectiveVoice });
     sendJson(session.ws, { type: 'voice:tts_start', agentId: session.agentId, messageId });
     sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'speaking' });
@@ -1482,6 +1492,13 @@ function startTtsForAgent(
         }
       } catch (err) {
         logger.error('TTS stream failed', { error: err instanceof Error ? err.message : String(err) }, session.agentId);
+        // The burst was announced as a delivery and then died mid-stream: correct the row
+        // rather than leave a `delivered` claim standing over silence.
+        recordAtDoor({
+          outcome: 'failed', channel: 'voice', tool: 'speech-out',
+          agentId: session.agentId, recipientId: 'owner', messageId,
+          detail: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200),
+        });
         sendJson(session.ws, { type: 'voice:state', agentId: session.agentId, state: 'error', detail: 'tts_failed' });
       } finally {
         cancelQuietTimer();
@@ -1850,6 +1867,11 @@ function startCloudTtsBurst(session: VoiceSession, initialContent?: string): voi
   const startStreaming = (): void => {
     if (started) return;
     started = true;
+    // PHASE-2 T5: the cloud engine is the same door on the other tier (OR3 keeps both).
+    recordAtDoor({
+      outcome: 'delivered', channel: 'voice', tool: 'speech-out',
+      agentId: session.agentId, recipientId: 'owner', messageId, detail: 'cloud',
+    });
     logger.info('Cloud TTS streaming started', {
       agentId: session.agentId, messageId, voice: session.cloudVoice,
     });

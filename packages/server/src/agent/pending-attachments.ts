@@ -126,6 +126,37 @@ export function queueScreenChip(agentId: string): void {
 
 interface ArtifactRow { id: string; caption: string | null; payload_json: string | null }
 
+/**
+ * Bind this turn's just-delivered artifacts to the delivery that carried them
+ * (PHASE-2 T5, the Phase-1 §7 debt: `turn_artifacts.delivery_id`, 325 rows / 0 populated and
+ * zero production references of ANY kind).
+ *
+ * Why the column matters: `delivered_at` means "the queue drained", which is a fact about the
+ * ENGINE. `delivery_id` means "this is what carried it to the person", which is a fact about
+ * the USER — and it can be `failed`. `tracker/delivery-evidence.ts` can close a task by itself
+ * on the strength of "files were handed over", so the difference is a task closed on a send
+ * that did not arrive.
+ *
+ * The association is exact, not fuzzy: the drain marks the rows delivered immediately before
+ * the message that carries them is broadcast, so the FIRST delivery recorded for that agent
+ * and turn afterwards is the one. `delivery_id IS NULL` means a second bubble in the same turn
+ * claims only what is still unclaimed, and a re-run claims nothing.
+ */
+export function linkArtifactsToDelivery(agentId: string, turnNumber: number | null, deliveryId: string): number {
+  if (turnNumber === null) return 0;
+  try {
+    return getDb().prepare(
+      `UPDATE turn_artifacts SET delivery_id = ?, updated_at = datetime('now')
+        WHERE agent_id = ? AND turn_number = ? AND delivered_at IS NOT NULL AND delivery_id IS NULL`,
+    ).run(deliveryId, agentId, turnNumber).changes;
+  } catch (err) {
+    logger.warn('linkArtifactsToDelivery failed (artifacts stay unlinked; evidence falls back)', {
+      agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+    return 0;
+  }
+}
+
 /** The undelivered set, oldest first, marked delivered atomically. */
 function drainRows(agentId: string): ArtifactRow[] {
   const db = getDb();
