@@ -860,7 +860,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     if (projectId) {
       const projectRow = getDb().prepare('SELECT 1 FROM legacy_projects WHERE id = ?').get(projectId);
       if (!projectRow) {
-        return `Error: project '${projectId}' does not exist (it may have been deleted or completed). Call tracker_list_projects to see current projects, or omit projectId to start a fresh one.`;
+        return `Error: project '${projectId}' does not exist (it may have been deleted or completed). Call tracker_list_active to see current projects, or omit projectId to start a fresh one.`;
       }
     }
     const priority = args.priority as 'high' | 'normal' | 'low' | undefined;

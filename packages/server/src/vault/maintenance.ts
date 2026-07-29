@@ -804,7 +804,7 @@ const DREAMER_TOOLS_POLICY = JSON.stringify({
     'file_read', 'file_write',
     'tracker_create_project', 'tracker_create_task',
     'tracker_update_status', 'tracker_add_notes', 'tracker_complete_step',
-    'tracker_list_projects',
+    'tracker_list_active',
     'get_current_time', 'load_tool_docs', 'complete_task',
   ],
 });
