@@ -8,7 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import {
   taskScope, msToText, STATE_TO_STATUS_SQL, validatedExpr, revertCountExpr,
-  awaitingUserVerdictExpr,
+  awaitingUserVerdictExpr, pendingCloseRequestExpr,
   stampColumns,
 } from '../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../work/tracker-store.js';
@@ -857,6 +857,10 @@ async function runPMReview(): Promise<void> {
       return (db.prepare(`
         SELECT
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'done' AND ${validatedExpr('w','done')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
+          -- PHASE-2 T8T: the SECOND shape of an unvalidated close. A worker's own close is a
+          -- Key-1 REQUEST now (RULING 1), so the row it is about is still claimed - counting
+          -- only the done ones would make the queue read empty while work waited in it.
+          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1 AND ${awaitingUserVerdictExpr('w')} = 0) +
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'blocked' AND ${validatedExpr('w','blocked')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'paused' AND ${validatedExpr('w','paused')} = 0) +
           (SELECT COUNT(*) FROM task_override_requests WHERE status = 'pending')
@@ -948,6 +952,10 @@ async function runPMReview(): Promise<void> {
     const pendingCount = db.prepare(`
       SELECT
         (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'done' AND ${validatedExpr('w','done')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
+          -- PHASE-2 T8T: the SECOND shape of an unvalidated close. A worker's own close is a
+          -- Key-1 REQUEST now (RULING 1), so the row it is about is still claimed - counting
+          -- only the done ones would make the queue read empty while work waited in it.
+          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1 AND ${awaitingUserVerdictExpr('w')} = 0) +
         (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'blocked' AND ${validatedExpr('w','blocked')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
         (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'paused' AND ${validatedExpr('w','paused')} = 0) +
         (SELECT COUNT(*) FROM task_override_requests WHERE status = 'pending')
@@ -1196,9 +1204,17 @@ async function runPMReview(): Promise<void> {
   }
 
   // ── Phase B.1: UNVALIDATED_COMPLETE ──
-  // Every task with status='complete' AND complete_validated=0 needs a PM
-  // judgment. Read the goal, result, evidence, and any smell_flag context;
-  // open files / pull audit log entries when evidence points there.
+  // Every task whose close is filed and unblessed needs a PM judgment. Read the goal,
+  // result, evidence, and any smell_flag context; open files / pull audit log entries when
+  // evidence points there.
+  //
+  // PHASE-2 T8T — THIS RUNG HAS TWO SHAPES NOW, AND THAT IS THE WHOLE POINT OF THE TRIGGER.
+  //   * `done` + no authority verdict — the engine's own delivery-receipt close (strike 0,
+  //     strike 2, the assignment-thread deliverable). Unchanged: the engine turns the
+  //     trigger's key, never the PM's, so the row lands here exactly as it always did.
+  //   * `claimed` + a pending close request — the worker said it was finished and RULING 1
+  //     says that is Key 1. The row does not move until this rung blesses it.
+  // Reading only the first shape is how the queue would go quiet while work waited in it.
   const unvalidatedCompleteRows = db.prepare(`
     SELECT w.id AS id, w.title AS title, w.agent_id AS assigned_to, w.goal AS goal,
            w.result AS result, w.evidence_json AS evidence_json, w.last_smell_flag AS last_smell_flag,
@@ -1207,8 +1223,11 @@ async function runPMReview(): Promise<void> {
            w.priority AS priority, ${msToText('w.updated_at')} AS updated_at,
            ${revertCountExpr('w')} AS revert_count
     FROM work w
-    WHERE ${taskScope('w')} AND w.state = 'done'
-      AND ${validatedExpr('w', 'done')} = 0
+    WHERE ${taskScope('w')}
+      AND (
+        (w.state = 'done' AND ${validatedExpr('w', 'done')} = 0)
+        OR (w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1)
+      )
       AND ${awaitingUserVerdictExpr('w')} = 0
       AND w.updated_at < ?
     ORDER BY w.updated_at ASC
@@ -1649,6 +1668,10 @@ export async function runPokeCheck(): Promise<void> {
       const row = getDb().prepare(`
         SELECT
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'done' AND ${validatedExpr('w','done')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
+          -- PHASE-2 T8T: the SECOND shape of an unvalidated close. A worker's own close is a
+          -- Key-1 REQUEST now (RULING 1), so the row it is about is still claimed - counting
+          -- only the done ones would make the queue read empty while work waited in it.
+          (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1 AND ${awaitingUserVerdictExpr('w')} = 0) +
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'blocked' AND ${validatedExpr('w','blocked')} = 0 AND ${awaitingUserVerdictExpr('w')} = 0) +
           (SELECT COUNT(*) FROM work w WHERE ${taskScope('w')} AND w.state = 'paused' AND ${validatedExpr('w','paused')} = 0) +
           (SELECT COUNT(*) FROM task_override_requests WHERE status = 'pending')

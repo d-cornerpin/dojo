@@ -833,6 +833,11 @@ trackerRouter.post('/projects/:id/close', async (c) => {
     const result = closeProjectAndOpenTasks({
       projectId: id,
       closingAgentId: 'dashboard',
+      // PHASE-2 T8T: the owner's bulk close is the OWNER's, and under RULING 1 that is what
+      // turns the second key. Without this the dashboard's close would file a Key-1 request
+      // per row and the board would not move — the same defect T8b2 found on the single-task
+      // PUT, one route over.
+      authority: { by: 'owner', actorId: 'user' },
       taskStatus: status as 'complete' | 'cancelled',
       projectStatus: status as 'complete' | 'cancelled',
       reason,

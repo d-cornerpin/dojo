@@ -94,6 +94,28 @@ const LEGAL: Record<WorkState, readonly WorkState[]> = {
  *  delivery (for `done`) or ask for validation. */
 const AUTHORITIES: readonly Actor[] = ['owner', 'pm'];
 
+/**
+ * PHASE-2 T8T — WHO TURNS THE SECOND KEY (progress.md RULING 1).
+ *
+ * The subsystems that close work on the platform's own receipts rather than on somebody's
+ * say-so. They are named here rather than derived from "not an agent" because the list is
+ * the ruling's own enum widened by a measurement: the MAP's `adjudication.authority` was
+ * `('pm','owner','engine')`, and this tree's `Actor` type has two more subsystem values that
+ * did not exist when the MAP was written. Enumerated by command at HEAD `214ba3a` —
+ * `git grep -n "setTrackerStatus(.*'complete'" -- packages/server/src` plus the `by:` line
+ * under each — the closers of a task/project `done` are: `owner`, `pm` (authorities),
+ * `engine` (three sanctioned receipt closes), `scheduler` (three schedule finals),
+ * `healer` (project auto-close), and `agent`.
+ *
+ * G7 has already refused every `done` that cannot point at a delivery row that EXISTS, so
+ * "with resolved delivery evidence" is not an extra condition on this list — it is a
+ * property of every close that reaches this far.
+ *
+ * The AGENT is deliberately absent. That is the whole ruling: a worker's own close is Key 1
+ * and only Key 1.
+ */
+const SYSTEM_CLOSERS: readonly Actor[] = ['engine', 'scheduler', 'healer'];
+
 export interface TransitionInput {
   to: WorkState;
   by: Actor;
@@ -144,6 +166,9 @@ export type TransitionGate =
 interface WorkRow {
   id: string;
   kind: WorkKind;
+  /** Which producer opened this row. G9 reads it: `kind='task'` alone does not mean "a
+   *  tracker row" — T4's join pieces are `kind='task'` too. */
+  root_kind: string;
   parent_id: string | null;
   state: WorkState;
   result_delivery_id: string | null;
@@ -176,10 +201,10 @@ function deliveryExists(id: string): boolean {
  *  PHASE-2 T8b: exported as `appendWorkEvent` for the rest of the `work/` directory. The
  *  directory is the single-writer boundary now (T6 acceptance §3), and `work_events` keeps
  *  ONE writing FUNCTION rather than spreading the INSERT across the modules that need it. */
-function appendEvent(workId: string, kind: string, actor: string, payload: unknown): number {
+function appendEvent(workId: string, kind: string, actor: string, payload: unknown, at?: number): number {
   const info = getDb().prepare(
     'INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).run(workId, kind, payload === undefined ? null : JSON.stringify(payload), actor, now());
+  ).run(workId, kind, payload === undefined ? null : JSON.stringify(payload), actor, at ?? now());
   return Number(info.lastInsertRowid);
 }
 
@@ -200,7 +225,7 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
   //        recorded baseline red; it must be REFUSED with something steerable, never
   //        silently create or silently succeed. ──
   const row = db.prepare(
-    'SELECT id, kind, parent_id, state, result_delivery_id, remaining_children FROM work WHERE id = ?',
+    'SELECT id, kind, root_kind, parent_id, state, result_delivery_id, remaining_children FROM work WHERE id = ?',
   ).get(workId) as WorkRow | undefined;
   if (!row) {
     return {
@@ -284,10 +309,54 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
       detail: `reopening ${row.state} work needs the owner or the PM`,
     };
   }
+  // ── G9: TWO-KEY COMPLETION IS STRUCTURAL (PHASE-2 T8T, progress.md RULING 1) ──
+  //
+  // Migration `139`'s trigger refuses a `task`/`project` row reaching `done` without an
+  // upheld `claim_state='done'` adjudication. This gate is the same rule stated one layer
+  // up, so a worker gets a steerable sentence instead of a SQLite ABORT — and so the Key-1
+  // filing is RECORDED rather than lost with the aborted statement.
+  //
+  // What changed from T2's G8, and why (the comment this replaces said the opposite):
+  //   "`done` is exempt because a delivery IS the receipt … requiring a second key on top of
+  //    a proven delivery would re-create the validated-flag columns this phase deletes."
+  // That reasoning holds for asks, commitments and occurrences, and it still governs them —
+  // they close by delivery and are untouched below. It does NOT hold for the two tracker
+  // nouns, where research 19 §1c's two-key contract is the requirement and the flag columns
+  // are being replaced by adjudication ROWS, not by an exemption. The delivery stays
+  // mandatory (G7 above); it is now the FIRST key rather than both.
+  //
+  // The worker is not being refused a capability it had — it is being told which door.
+  // `work_close_request` files Key 1 (this event); `work_validate` turns Key 2; and for the
+  // common case the engine's own delivery-receipt close turns it at the turn boundary
+  // without anyone waiting.
+  //
+  // SUBJECT: the TRACKER's two nouns, which is not the same set as `kind IN ('task','project')`.
+  // T4's fan-out opens its countdown children as `kind='task'` with `root_kind='a2a_thread'`
+  // and `landPiece` (below, in this file) settles each one `by: 'agent'` — 17 such rows on the
+  // box when this landed. They are pieces of an ask, not board rows (`tracker-view.ts:104-112`),
+  // and two-key completion is not about them. Same discriminator as migration `139`'s trigger,
+  // stated in both places on purpose: a gate and a constraint that disagree is worse than
+  // either alone.
+  const twoKeySubject = (row.kind === 'task' || row.kind === 'project')
+    && row.root_kind !== 'a2a_thread'
+    && input.to === 'done';
+  const turnsKeyTwo = input.claim === 'authoritative' || SYSTEM_CLOSERS.includes(input.by);
+  if (twoKeySubject && !turnsKeyTwo) {
+    const eventId = appendEvent(workId, 'validation_requested', actorId, {
+      requested_state: 'done', reason: input.reason, from: row.state,
+      result_delivery_id: deliveryId ?? null,
+    });
+    logger.info('work close requested (Key 1 filed)', { workId, kind: row.kind, from: row.state, eventId });
+    return {
+      kind: 'rejected', workId, gate: 'requires-validation',
+      detail: `close request recorded (event ${eventId}); a ${row.kind} is closed by an authority or by the engine's own delivery receipt, not by the worker that did it`,
+    };
+  }
+
   // A worker agent asking to settle work it cannot prove is a REQUEST, recorded as one. The
-  // event lands; the state does not move. `done` is exempt because a delivery IS the receipt
-  // — that is the whole design, and requiring a second key on top of a proven delivery would
-  // re-create the validated-flag columns this phase deletes.
+  // event lands; the state does not move. `done` is handled by G9 above for the two tracker
+  // nouns; for the kinds OR1 folded onto this table it stays exempt, because an ask closes
+  // when something was DELIVERED and there is no second party to adjudicate it.
   if (input.claim === 'requests-validation' && isTerminal(input.to) && input.to !== 'done') {
     const eventId = appendEvent(workId, 'validation_requested', actorId, {
       requested_state: input.to, reason: input.reason, from: row.state,
@@ -304,7 +373,38 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
   const terminal = isTerminal(input.to);
   let eventId = 0;
 
+  // ONE instant for the whole transaction. Two `Date.now()` readings a millisecond apart is
+  // the defect class this phase has now hit three times (the poke ladder's window, the
+  // scheduler's occurrence CAS): the adjudication below is filed BEFORE the UPDATE — it has
+  // to be, the trigger is BEFORE UPDATE and reads the row it is about to allow — and
+  // `validatedExpr` scopes the verdict to "at or after the row entered the state". A
+  // one-millisecond drift between the two writes reads back as an UNVALIDATED close.
+  const at = now();
+
   db.transaction(() => {
+    // EFFECT: an authority's verdict is a ROW, not a flag column, and RULING 1 makes the
+    // system closers' delivery receipt the same kind of row. Filed FIRST so migration
+    // `139`'s BEFORE-UPDATE trigger can see it in this transaction.
+    //
+    // `by_agent` is the ROLE for a system close and the ACTOR for an authority's, and that
+    // asymmetry is load-bearing rather than sloppy: `tracker-view.ts:validatedExpr` reads
+    // this column to answer the PM's question ("did an authority bless this?"), which is a
+    // DIFFERENT question from the trigger's ("is this close adjudicated at all?"). The
+    // strike-0 close runs with `actorId: <the agent's id>`, so writing the actor here would
+    // make an engine close indistinguishable from a person's — and stamping
+    // `complete_validated=1` on an engine close is migration `108`'s demolished forgery,
+    // re-created. Owner ruling 2026-07-19, `tracker/tools.ts:256-270`.
+    if (input.claim === 'authoritative' || (twoKeySubject && SYSTEM_CLOSERS.includes(input.by))) {
+      db.prepare(
+        `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, evidence_ref, note, created_at)
+         VALUES (?, ?, 'upheld', ?, ?, ?, ?)`,
+      ).run(
+        workId, input.to,
+        input.claim === 'authoritative' ? actorId : input.by,
+        input.evidenceRef ?? null, input.reason, at,
+      );
+    }
+
     db.prepare(
       `UPDATE work SET
          state = ?,
@@ -320,12 +420,12 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
     ).run(
       input.to,
       terminal ? 1 : 0,
-      now(),
+      at,
       input.to === 'done' ? deliveryId : (input.resultDeliveryId ?? row.result_delivery_id),
       input.to === 'claimed' ? (input.claimedByTurn ?? null) : null,
       input.note ?? null,
       terminal ? 1 : 0,
-      now(),
+      at,
       workId,
     );
 
@@ -335,7 +435,7 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
       result_delivery_id: input.to === 'done' ? deliveryId : null,
       claim: input.claim ?? null,
       note: input.note ?? null,
-    });
+    }, at);
 
     // EFFECT: the fan-out countdown. A child settling is the ONLY thing that decrements it,
     // and it decrements atomically in the same transaction as the child's own state change —
@@ -376,16 +476,12 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
       }
     }
 
-    // EFFECT: an authority's verdict is a ROW, not a flag column. `adjudications` carries no
-    // 'pending' verdict by design (its CHECK is upheld|rejected), so the REQUEST is the
-    // work_events row above and only the ANSWER lands here. Revert count is therefore
-    // COUNT(verdict='rejected'), a query, never a maintained counter.
-    if (input.claim === 'authoritative') {
-      db.prepare(
-        `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, evidence_ref, note, created_at)
-         VALUES (?, ?, 'upheld', ?, ?, ?, ?)`,
-      ).run(workId, input.to, actorId, input.evidenceRef ?? null, input.reason, now());
-    }
+    // (The adjudication INSERT used to live HERE, after the UPDATE. PHASE-2 T8T moved it to
+    // the top of this transaction: migration `139`'s trigger is BEFORE UPDATE, so a verdict
+    // written afterwards is a verdict the trigger cannot see. `adjudications` still carries
+    // no 'pending' verdict by design — its CHECK is upheld|rejected — so the REQUEST is the
+    // `validation_requested` work_events row and only the ANSWER lands in that table. Revert
+    // count is therefore COUNT(verdict='rejected'), a query, never a maintained counter.)
   })();
 
   logger.info('work transition applied', { workId, from, to: input.to, by: input.by, eventId });

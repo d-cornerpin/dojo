@@ -11,6 +11,7 @@ import { getDb } from '../db/connection.js';
 import {
   taskScope, projectScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
   validatedExpr, revertCountExpr, awaitingUserVerdictExpr, validationThreadIdExpr,
+  pendingCloseRequestExpr, closeRequestDeliveryExpr,
   statusToState, stateToStatus, type TrackerStatus,
   stampColumns,
   engineScaffoldScope,
@@ -418,10 +419,21 @@ export function checkProjectCompletion(projectId: string | null, callingAgentId:
       //    exists). completed_at is stamped here so every path that closes a
       //    project through this helper records the close time consistently.
       // G7: the umbrella closes against the delivery its last finished child was closed on.
+      //
+      // PHASE-2 T8T — THE CLOSER IS `engine`, NOT THE AGENT WHOSE CALL HAPPENED TO GET HERE.
+      // Nobody asserts this close: it is DERIVED, from a count of children that are already
+      // in a terminal state, and every one of those children reached it through this same
+      // gate. Under RULING 1 an agent's own close of a tracker row is a Key-1 request, so
+      // leaving `by: 'agent'` here would mean a project could never roll up — the rollup
+      // would file a request against a project nobody is going to validate. It is stamped
+      // for what it is instead, and G6 makes the engine point at the child delivery it is
+      // built from.
+      const rollupDelivery = deliveryForCompletedChildren(projectId);
       const rollupRes = setTrackerStatus(projectId, 'complete', {
-        by: 'agent', actorId: callingAgentId,
+        by: 'engine', actorId: callingAgentId,
         reason: 'every task on this project is complete',
-        resultDeliveryId: deliveryForCompletedChildren(projectId),
+        evidenceRef: rollupDelivery,
+        resultDeliveryId: rollupDelivery,
       });
       if (rollupRes.kind !== 'applied' && rollupRes.kind !== 'noop') {
         logger.warn('project rollup close refused by the work gate', { projectId, result: rollupRes });
@@ -3602,20 +3614,29 @@ export async function trackerValidateComplete(
            w.agent_id AS assigned_to, w.priority AS priority, w.parent_id AS project_id,
            w.repeat_interval AS repeat_interval, ${msToText('w.next_run_at')} AS next_run_at,
            ${validatedExpr('w', 'done')} AS complete_validated,
+           ${pendingCloseRequestExpr('w')} AS pending_close_request,
+           ${closeRequestDeliveryExpr('w')} AS close_request_delivery,
            w.result AS result, w.evidence_json AS evidence_json, w.goal AS goal
     FROM work w WHERE ${taskScope('w')} AND w.id = ?
   `).get(taskId) as {
     id: string; title: string; status: string; assigned_to: string | null;
     priority: string; project_id: string | null; repeat_interval: number | null;
     next_run_at: string | null; complete_validated: number;
+    pending_close_request: number; close_request_delivery: string | null;
     result: string | null; evidence_json: string | null; goal: string | null;
   } | undefined;
 
   if (!task) return `Error: task ${taskId} not found.`;
-  if (task.status !== 'complete') {
-    return `Error: task "${task.title}" (${taskId}) is currently status="${task.status}", not "complete". Nothing to validate.`;
+  // PHASE-2 T8T — THE TWO SHAPES OF AN UNBLESSED CLOSE (RULING 1).
+  // The engine's receipt close leaves the row `complete` and unvalidated, exactly as before.
+  // The WORKER's close no longer moves the row at all: it files Key 1 and the row stays
+  // `in_progress`. Both are the same rung — "somebody says this is finished and no authority
+  // has agreed" — so both arrive here, and `keyOneOnly` is which one this is.
+  const keyOneOnly = task.status === 'in_progress' && task.pending_close_request === 1;
+  if (task.status !== 'complete' && !keyOneOnly) {
+    return `Error: task "${task.title}" (${taskId}) is currently status="${task.status}", not "complete", and has no close request outstanding. Nothing to validate.`;
   }
-  if (task.complete_validated === 1) {
+  if (!keyOneOnly && task.complete_validated === 1) {
     return `Error: task "${task.title}" (${taskId}) is already complete_validated=1. No-op.`;
   }
 
@@ -3638,6 +3659,32 @@ export async function trackerValidateComplete(
   }
 
   if (args.valid) {
+    // ── PHASE-2 T8T: KEY 2 IS THE MOVE NOW, not a flag flipped beside one ──
+    // When the worker's close was a Key-1 request the row never left `in_progress`, so
+    // blessing it IS the transition — `claim: 'authoritative'` files the upheld adjudication
+    // in the same transaction, which is what migration `139`'s trigger requires and what the
+    // `complete_validated = 1` assignment used to imitate. It closes against the delivery the
+    // WORKER pointed at, not a freshly resolved one, so the receipt the PM blessed is the
+    // receipt on the row. Everything below this block then runs on exactly the state it
+    // always ran on, which is why this is an insert rather than a rewrite.
+    if (keyOneOnly) {
+      const closeDelivery = task.close_request_delivery ?? deliveryForTaskClose(taskId);
+      const keyTwo = setTrackerStatus(taskId, 'complete', {
+        by: 'pm', actorId: pmAgentId, claim: 'authoritative',
+        resultDeliveryId: closeDelivery,
+        reason: 'PM validated the close against the goal (Key 2 on the worker\'s close request)',
+      });
+      if (keyTwo.kind !== 'applied' && keyTwo.kind !== 'noop') {
+        return closeRefusalText(taskId, keyTwo, 'complete');
+      }
+      writeTaskLog({
+        taskId, fromEntity: 'pm', entryKind: 'transition',
+        fromStatus: 'in_progress', toStatus: 'complete',
+        actionTaken: 'work_validate(action="validate", kind=complete, valid=true) — Key 2',
+        reason: "PM turned the second key on the worker's close request",
+      });
+    }
+
     // Recurring-task branch: archive this run's result/evidence, then let
     // the scheduler's onTaskRunComplete decide whether to advance the
     // schedule (more runs) or close terminal. Previously this branch
@@ -3703,7 +3750,10 @@ export async function trackerValidateComplete(
       const wasTerminal = after.scheduleStatus === 'completed';
       if (wasTerminal) {
         // Terminal close: flip complete_validated=1, run dep cascade.
-        upholdClaim(taskId, 'done', 'pm', pmAgentId, 'PM validated the close against the goal');
+        // PHASE-2 T8T: skipped when Key 2 was the MOVE — `transition()` already filed that
+        // verdict in the same transaction as the close, and a second identical row would
+        // make `revert_count`'s sibling COUNT read a history that did not happen.
+        if (!keyOneOnly) upholdClaim(taskId, 'done', 'pm', pmAgentId, 'PM validated the close against the goal');
         const final = getTask(taskId);
         if (final) broadcast({ type: 'tracker:task_updated', data: final });
         try {
@@ -3726,7 +3776,10 @@ export async function trackerValidateComplete(
     }
 
     // Terminal close path: flip complete_validated=1, run dep cascade, notify parent.
-    upholdClaim(taskId, 'done', 'pm', pmAgentId, 'PM validated the close against the goal');
+    // PHASE-2 T8T: skipped when Key 2 was the MOVE — `transition()` already filed that
+        // verdict in the same transaction as the close, and a second identical row would
+        // make `revert_count`'s sibling COUNT read a history that did not happen.
+        if (!keyOneOnly) upholdClaim(taskId, 'done', 'pm', pmAgentId, 'PM validated the close against the goal');
     // Real-time sync: complete_validated=1 cleared via direct SQL, not updateTask.
     const freshTerminal = getTask(taskId);
     if (freshTerminal) broadcast({ type: 'tracker:task_updated', data: freshTerminal });

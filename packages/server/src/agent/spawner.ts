@@ -838,12 +838,19 @@ export async function completeAgent(
         (dt.source_message_id !== null && dt.source_message_id === primaryLineage.source_message_id)
       );
       const disposition = sameWork ? bulkStatus : 'blocked';
+      // PHASE-2 T8T: a `complete` disposition here is INHERITED, not claimed — this row
+      // shares the primary task's work order and the primary's close already went through
+      // the gate. The engine is the one drawing that inference, so it says so and points at
+      // the delivery (G6). A non-complete disposition is not a two-key subject and keeps the
+      // actor it always had.
+      const inheritedDelivery = disposition === 'complete' ? deliveryForTaskClose(dt.id) : null;
       const dRes = setTrackerStatus(dt.id, disposition, {
-        by: 'agent', actorId: agentId,
+        by: disposition === 'complete' ? 'engine' : 'agent', actorId: agentId,
         reason: sameWork
           ? 'shares the primary task\'s work order and inherits its close'
           : 'lineage does not tie it to the completed work; blocked for reassignment',
-        resultDeliveryId: disposition === 'complete' ? deliveryForTaskClose(dt.id) : null,
+        evidenceRef: inheritedDelivery,
+        resultDeliveryId: inheritedDelivery,
       });
       if (dRes.kind !== 'applied' && dRes.kind !== 'noop') {
         logger.warn('completeAgent: dangler disposition refused', { taskId: dt.id, result: dRes });

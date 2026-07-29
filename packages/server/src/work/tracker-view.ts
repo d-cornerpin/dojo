@@ -196,17 +196,82 @@ const lastEntryInto = (a: string, state: WorkState): string =>
   + `   AND json_extract(e.payload, '$.to') = '${state}')`;
 
 /**
+ * The system closers, mirrored from `store.ts:SYSTEM_CLOSERS` as SQL. Kept as a literal
+ * rather than imported-and-joined because this is a SQL fragment, and a drift between the
+ * two lists is caught by `__tests__/two-key-completion.test.ts`, which asserts the roles
+ * `transition()` actually stamps.
+ */
+const SYSTEM_CLOSER_ROLES = `('engine', 'scheduler', 'healer')`;
+
+/**
  * `<state>_validated`: 1 when an authority upheld the CURRENT claim.
  *
  * Scoped to "at or after the row last entered that state" so the flag resets exactly where
  * the column did — a retask that sends the row back to `in_progress` and then a fresh close
  * gets a fresh, unvalidated claim, which is what `tracker/tools.ts`'s retask block
  * (`pause_validated = 0, complete_validated = 0, blocked_validated = 0`) was doing by hand.
+ *
+ * ── PHASE-2 T8T: `done` CARRIES ONE EXTRA CLAUSE, AND IT IS THE POINT OF THE WHOLE TASK ──
+ *
+ * RULING 1 makes `transition()` file an upheld `claim_state='done'` adjudication for a
+ * SYSTEM closer, because migration `139`'s trigger refuses a task/project `done` without
+ * one. That row is a CLOSE RECEIPT — "the engine pointed at a delivery" — and it is not a
+ * verdict. `complete_validated` is the verdict: "an authority read this against the goal and
+ * blessed it." Two different questions, and reading the receipt as the verdict would stamp
+ * `complete_validated = 1` on every engine close, which is migration `108`'s demolished
+ * forgery restored (*"engineCloseDeliveredTask wrote status='complete' AND
+ * complete_validated=1"*) and a direct contradiction of the owner ruling of 2026-07-19
+ * carried verbatim at `tracker/tools.ts:256-270` (*"The engine files ONLY Key 1 … the PM
+ * independently validates (Key 2 untouched) and rejects/reopens garbage"*).
+ *
+ * The clause is `done`-ONLY on purpose. `blocked` has a deliberate engine uphold
+ * (`agent/v2/loop.ts:2566`, *"blocked_validated=1 IS the engine's validation"*) and `paused`
+ * has the scheduler's timed-out verdict (`scheduler/runner.ts:288`); neither is touched by
+ * the trigger and neither may be scoped away. Asserted both ways in
+ * `work/__tests__/two-key-completion.test.ts` §5.
  */
 export const validatedExpr = (a: string, state: WorkState): string =>
   `(CASE WHEN EXISTS (SELECT 1 FROM adjudications adj`
   + ` WHERE adj.work_id = ${a}.id AND adj.claim_state = '${state}' AND adj.verdict = 'upheld'`
+  + (state === 'done' ? ` AND adj.by_agent NOT IN ${SYSTEM_CLOSER_ROLES}` : '')
   + `   AND adj.created_at >= COALESCE(${lastEntryInto(a, state)}, 0)) THEN 1 ELSE 0 END)`;
+
+/**
+ * KEY 1, AS A QUERY (PHASE-2 T8T).
+ *
+ * Before the two-key trigger, "Key 1 is filed and Key 2 is not" was a STATE:
+ * `status='complete' AND complete_validated=0`. Migration `139` makes that state
+ * unrepresentable for a tracker row closed by its own worker — the row does not move — so
+ * Key 1 moved from the state to an EVENT: `transition()`'s `validation_requested` row.
+ *
+ * "Pending" is the request being NEWER than the row's newest ANSWER, which is what makes it
+ * self-clearing: the engine's receipt close, a retask, a reopen — anything that moves the row
+ * — writes a `transition`, and a PM who throws the claim back writes a `claim_rejected`
+ * without moving anything. Either answers the request, so both end it, and nobody has to
+ * remember to clear a flag. Compared by `work_events.id`, never by `created_at`: this
+ * phase has now hit the same-millisecond defect three times (the poke ladder's window, the
+ * scheduler's occurrence CAS, the adjudication instant in `store.ts`), and a sequence exists
+ * here, so a clock is the wrong instrument.
+ *
+ * requirement preserved: work whose worker says it is finished is SEEN by the validator.
+ * That was the `complete_validated=0` queue; this is the same queue, keyed on the row that
+ * records the claim instead of on the state the claim used to be allowed to set.
+ */
+export const pendingCloseRequestExpr = (a: string): string =>
+  `(CASE WHEN COALESCE((SELECT MAX(e.id) FROM work_events e`
+  + `    WHERE e.work_id = ${a}.id AND e.kind = 'validation_requested'`
+  + `      AND json_extract(e.payload, '$.requested_state') = 'done'), -1)`
+  + `  > COALESCE((SELECT MAX(e2.id) FROM work_events e2`
+  + `    WHERE e2.work_id = ${a}.id AND e2.kind IN ('transition', 'claim_rejected')), -1)`
+  + ` THEN 1 ELSE 0 END)`;
+
+/** The delivery the Key-1 request pointed at, so the validator closes against the receipt the
+ *  worker actually had rather than resolving a fresh one. */
+export const closeRequestDeliveryExpr = (a: string): string =>
+  `(SELECT json_extract(e.payload, '$.result_delivery_id') FROM work_events e`
+  + ` WHERE e.work_id = ${a}.id AND e.kind = 'validation_requested'`
+  + `   AND json_extract(e.payload, '$.requested_state') = 'done'`
+  + ` ORDER BY e.id DESC LIMIT 1)`;
 
 /** Event kinds this file and `tracker-store.ts` agree on. Declared once so a typo cannot make
  *  a writer and a reader disagree silently — the failure mode research 03 catalogued. */

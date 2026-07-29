@@ -362,9 +362,21 @@ export function closeProjectAndOpenTasks(params: {
   /** The delivery that makes a `complete` close true. `transition()`'s G7 refuses `done`
    *  without one — see the note on `refused` below. */
   resultDeliveryId?: string | null;
+  /**
+   * WHO is closing (PHASE-2 T8T). The dashboard's bulk close is the OWNER's — he is an
+   * authority and his close turns both keys — while an agent calling
+   * `work_update(action="close_project")` is claiming its own work is finished, which under
+   * RULING 1 is Key 1 and files a close request per row. The parameter exists because the
+   * function could not previously tell those two apart: both arrived as
+   * `closingAgentId`, and a string is not an authority.
+   */
+  authority?: { by: Actor; actorId: string };
 }): { projectId: string; tasksClosed: number; alreadyClosed: number; refused: number } {
   const db = getDb();
-  const { projectId, closingAgentId, taskStatus, projectStatus, reason } = params;
+  const { projectId, closingAgentId, taskStatus, projectStatus, reason, authority } = params;
+  const actor = authority
+    ? { by: authority.by, actorId: authority.actorId, claim: 'authoritative' as const }
+    : { by: 'agent' as Actor, actorId: closingAgentId, claim: undefined };
 
   // Kanban DB-status mapping. The board only renders the six legacy task
   // statuses (on_deck/in_progress/paused/complete/blocked/fallen); storing
@@ -392,7 +404,7 @@ export function closeProjectAndOpenTasks(params: {
         continue;
       }
       const r = setTrackerStatus(t.id, dbTaskStatus, {
-        by: 'agent', actorId: closingAgentId,
+        ...actor,
         reason: `bulk-closed with its project: ${reason}`,
         resultDeliveryId: params.resultDeliveryId ?? null,
       });
@@ -408,7 +420,7 @@ export function closeProjectAndOpenTasks(params: {
       tasksClosed++;
     }
     const pr = setTrackerStatus(projectId, projectStatus as TrackerStatus, {
-      by: 'agent', actorId: closingAgentId, reason,
+      ...actor, reason,
       resultDeliveryId: params.resultDeliveryId ?? null,
     });
     if (pr.kind !== 'applied') {

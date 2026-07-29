@@ -7491,10 +7491,18 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
             // G7: closing this as `complete` points at the work the agent actually delivered
             // before its group was torn down. With nothing on the ledger the gate refuses and
             // the row stays visible rather than being silently marked finished.
+            // PHASE-2 T8T: `by: 'engine'`. This is teardown bookkeeping, not the caller
+            // claiming the work is finished — the agent that owned the task has just been
+            // terminated and cannot claim anything. Under RULING 1 an agent's own close of a
+            // tracker row is a Key-1 request, so keeping `by: 'agent'` would leave every
+            // orphaned task open with a request nobody will validate. G6 still makes the
+            // engine point at the delivery, and with nothing on the ledger G7 still refuses.
+            const orphanDelivery = deliveryForTaskClose(t.id);
             const r = setTrackerStatus(t.id, 'complete', {
-              by: 'agent', actorId: agentId,
+              by: 'engine', actorId: agentId,
               reason: 'the group this task belonged to was deleted and its members terminated',
-              resultDeliveryId: deliveryForTaskClose(t.id),
+              evidenceRef: orphanDelivery,
+              resultDeliveryId: orphanDelivery,
             });
             if (r.kind === 'applied') {
               patchWork(t.id, {

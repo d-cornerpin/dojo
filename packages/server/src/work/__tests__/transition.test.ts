@@ -95,9 +95,13 @@ describe('the discriminated result the caller must read', () => {
     expect(r.expected).toBe('open');
     expect(r.actual).toBe('claimed');
     expect(stateOf('w1')).toBe('claimed');      // nothing was overwritten
-    // POSITIVE CONTROL: the same call with the true expected state applies
+    // POSITIVE CONTROL: the same call with the true expected state applies.
+    // PHASE-2 T8T: the closer moves from `agent` to `engine` here because this row is a
+    // TRACKER task and an agent no longer closes one on its own say-so (G9). The gate under
+    // test is G3, and G3 still runs first — which is what the negative half above proves.
     const ok = transition('w1', {
-      to: 'done', by: 'agent', reason: 'x', expectedState: 'claimed', resultDeliveryId: 'd-1',
+      to: 'done', by: 'engine', reason: 'x', expectedState: 'claimed',
+      evidenceRef: 'd-1', resultDeliveryId: 'd-1',
     });
     expect(ok.kind).toBe('applied');
   });
@@ -229,7 +233,9 @@ describe('G7 — done means DELIVERED', () => {
 
   it('accepts done with a real delivery, and stamps closed_at with it', () => {
     seedWork('w1', { state: 'claimed' });
-    const r = transition('w1', { to: 'done', by: 'agent', reason: 'sent it', resultDeliveryId: 'd-1' });
+    const r = transition('w1', {
+      to: 'done', by: 'engine', reason: 'sent it', evidenceRef: 'd-1', resultDeliveryId: 'd-1',
+    });
     expect(r.kind).toBe('applied');
     const row = rowOf('w1');
     expect(row.state).toBe('done');
@@ -267,8 +273,23 @@ describe('G8 — two-key is a type, not a source scan', () => {
     expect(events('w1').map((e) => e.kind)).toEqual(['validation_requested']);
   });
 
-  it('DONE is exempt from the second key, because a delivery IS the receipt', () => {
-    seedWork('w1', { state: 'claimed' });
+  // ── TOMBSTONE (PHASE-2 T8T): "DONE is exempt from the second key" WAS this file's clause,
+  // and RULING 1 reversed it for the tracker's two nouns. The exemption was never wrong about
+  // asks — an ask closes because something was DELIVERED and there is no second party to
+  // adjudicate it — so the requirement survives, scoped. Both halves are asserted here so the
+  // reversal is a decision on the record rather than a test that quietly changed shape; the
+  // full clause set is `work/__tests__/two-key-completion.test.ts`.
+  it('DONE is NO LONGER exempt for a tracker task — the second key is structural now', () => {
+    seedWork('w1', { state: 'claimed' });                     // kind='task' by default
+    const r = transition('w1', {
+      to: 'done', by: 'agent', reason: 'sent it', claim: 'requests-validation', resultDeliveryId: 'd-1',
+    });
+    expect(r.kind).toBe('rejected');
+    if (r.kind === 'rejected') expect(r.gate).toBe('requires-validation');
+  });
+
+  it('and IS still exempt for an ask — a delivery IS the receipt, which is what OR1 widened', () => {
+    seedWork('w1', { kind: 'ask', state: 'claimed' });
     const r = transition('w1', {
       to: 'done', by: 'agent', reason: 'sent it', claim: 'requests-validation', resultDeliveryId: 'd-1',
     });
@@ -314,9 +335,12 @@ describe('effects run INSIDE, once, on every applied path', () => {
   });
 
   it('decrements the parent countdown atomically when a child settles, and records it', () => {
+    // The children are what T4 actually opens: `kind='task'` under `root_kind='a2a_thread'`,
+    // which is a PIECE of an ask and not a board row — so the two-key gate does not reach
+    // them and `landPiece`'s `by: 'agent'` settle still works (PHASE-2 T8T).
     seedWork('parent', { kind: 'project', remaining_children: 2 });
-    seedWork('child-a', { parent_id: 'parent', state: 'claimed' });
-    seedWork('child-b', { parent_id: 'parent', state: 'claimed' });
+    seedWork('child-a', { parent_id: 'parent', state: 'claimed', root_kind: 'a2a_thread' });
+    seedWork('child-b', { parent_id: 'parent', state: 'claimed', root_kind: 'a2a_thread' });
 
     transition('child-a', { to: 'done', by: 'agent', reason: 'sent', resultDeliveryId: 'd-1' });
     expect(rowOf('parent').remaining_children).toBe(1);
@@ -330,8 +354,8 @@ describe('effects run INSIDE, once, on every applied path', () => {
 
   it('never drives the countdown negative, however many children settle', () => {
     seedWork('parent', { kind: 'project', remaining_children: 1 });
-    seedWork('c1', { parent_id: 'parent', state: 'claimed' });
-    seedWork('c2', { parent_id: 'parent', state: 'claimed' });
+    seedWork('c1', { parent_id: 'parent', state: 'claimed', root_kind: 'a2a_thread' });
+    seedWork('c2', { parent_id: 'parent', state: 'claimed', root_kind: 'a2a_thread' });
     transition('c1', { to: 'done', by: 'agent', reason: 'x', resultDeliveryId: 'd-1' });
     transition('c2', { to: 'done', by: 'agent', reason: 'x', resultDeliveryId: 'd-1' });
     expect(rowOf('parent').remaining_children).toBe(0);

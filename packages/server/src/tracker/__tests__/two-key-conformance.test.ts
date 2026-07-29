@@ -117,6 +117,15 @@ const KEY1_ALLOW: Record<string, string[]> = {
     // The project umbrella, closed against its last finished child's real delivery.
     "reason: 'every task on this project is complete'",
     "reason: `bulk-closed with its project: ${reason}`",
+    // PHASE-2 T8T — KEY 2 IS THE MOVE NOW, and this is the door it comes through.
+    // Migration `139`'s trigger means a worker's close cannot set `complete` at all: it files
+    // a Key-1 request and the row stays `in_progress`. So the PM's validate no longer flips a
+    // flag beside an already-complete row — the bless IS the transition, carrying
+    // `claim: 'authoritative'` so `transition()` files the upheld adjudication in the same
+    // statement. This is the sanctioned Key-2 path this whole file exists to keep singular,
+    // arriving as a status writer for the first time. It is PM-only by the tool gate and
+    // authority-only by G8.
+    "reason: 'PM validated the close against the goal (Key 2 on the worker\\'s close request)'",
   ],
   // Scheduler recurring advance + recurring-terminal janitorial writers.
   'scheduler/runner.ts': [
