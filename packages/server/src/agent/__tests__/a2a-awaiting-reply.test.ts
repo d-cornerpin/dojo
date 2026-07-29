@@ -83,8 +83,8 @@ function seedThread(opts: { lastSender: string; lastIntent: string; ageMinutes?:
   const db = mockDb.current!;
   const when = opts.ageMinutes ? `datetime('now', '-${opts.ageMinutes} minutes')` : `datetime('now')`;
   db.prepare(
-    `INSERT INTO a2a_threads (thread_id, hop_count, last_sender, last_intent, is_terminal, created_at, updated_at)
-     VALUES (?, 1, ?, ?, 0, datetime('now'), ${when})`,
+    `INSERT INTO a2a_threads (thread_id, hop_count, last_sender, last_intent, created_at, updated_at)
+     VALUES (?, 1, ?, ?, datetime('now'), ${when})`,
   ).run(THREAD, opts.lastSender, opts.lastIntent);
 }
 
@@ -115,7 +115,6 @@ beforeEach(() => {
       hop_count INTEGER DEFAULT 0,
       last_sender TEXT,
       last_intent TEXT,
-      is_terminal INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
@@ -228,5 +227,42 @@ describe('RC-14 awaiting-reply latch', () => {
     const result = await deliver({ intent: 'QUESTION' });
     expect(result.reason).not.toBe('AWAITING_REPLY');
     expect(result.delivered).toBe(true);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// PHASE-2 T10 (RULING 8c) — THE SHRINK, AND WHY THE TABLE SURVIVED IT
+// ════════════════════════════════════════════════════════════════════════
+//
+// `a2a_threads` was on the phase's DROP list. It SHRANK instead, on measurements:
+//   * the hop cap fired on real traffic (one thread reached THREAD_HOP_CAP = 8 of 232), so
+//     uncapping would delete the only live loop protection for threads with no `work` row;
+//   * the latch cannot be derived from `messages` — 117 of 232 threads have NO message row on
+//     their own thread id, even matching by 8-char prefix;
+//   * `is_terminal` had NO requirement to preserve: its only reader's only action was to clear
+//     the flag it had just read.
+// These clauses exist so the shrink cannot silently un-shrink, and so a later worker reaching
+// for "just drop the table" finds the reason before spending the measurement again.
+describe('T10: a2a_threads carries exactly what is read, and nothing else', () => {
+  it('is_terminal is GONE from the schema', () => {
+    const cols = (mockDb.current!.prepare('PRAGMA table_info(a2a_threads)').all() as { name: string }[])
+      .map((c) => c.name);
+    expect(cols).not.toContain('is_terminal');
+    // NEGATIVE CONTROL: the two survivors are still there, so this cannot pass by the table
+    // having been dropped wholesale — which is what the plan's drop list originally asked for.
+    expect(cols).toEqual(expect.arrayContaining(['hop_count', 'last_sender', 'last_intent', 'updated_at']));
+  });
+
+  it('the flag has no reader left in the transport', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const src = readFileSync(fileURLToPath(new URL('../a2a-transport.ts', import.meta.url)), 'utf8')
+      .split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+    expect(src).not.toMatch(/isThreadTerminal/);
+    expect(src).not.toMatch(/is_terminal/);
+    // POSITIVE CONTROL: the comment stripper did not blank the file, and the two facts the
+    // table still exists FOR are still written and read.
+    expect(src).toMatch(/last_intent = \?/);
+    expect(src).toMatch(/hop_count/);
   });
 });

@@ -83,12 +83,6 @@ function ensureThread(threadId: string, senderId: string): void {
   `).run(threadId, senderId);
 }
 
-function isThreadTerminal(threadId: string): boolean {
-  const db = getDb();
-  const row = db.prepare('SELECT is_terminal FROM a2a_threads WHERE thread_id = ?').get(threadId) as { is_terminal: number } | undefined;
-  return row?.is_terminal === 1;
-}
-
 /**
  * The thread's hop count — DECIDED D2's rekey.
  *
@@ -108,17 +102,17 @@ function getThreadHopCount(threadId: string): number {
 
 function recordThreadDelivery(threadId: string, intent: A2AIntent, senderId: string): number {
   const db = getDb();
-  const terminal = isTerminalIntent(intent) ? 1 : 0;
-  // Thread STATE (terminal flag, last sender/intent) is the awaiting-reply latch's input and
-  // is untouched by D2 — only the COUNT moves.
+  // The awaiting-reply latch's durable record (RC-14), and after PHASE-2 T10 that is ALL this
+  // write is: who sent last, with what intent, when. The `is_terminal` flag that used to ride
+  // along was dropped by migration `143` — positive enumeration found its only reader was a
+  // branch whose only action was to clear the flag it had just read.
   db.prepare(`
     UPDATE a2a_threads
     SET last_intent = ?,
         last_sender = ?,
-        is_terminal = CASE WHEN ? = 1 THEN 1 ELSE is_terminal END,
         updated_at = datetime('now')
     WHERE thread_id = ?
-  `).run(intent, senderId, terminal, threadId);
+  `).run(intent, senderId, threadId);
 
   const onSpine = bumpThreadHopCount(threadId);
   if (onSpine !== null) return onSpine;
@@ -531,20 +525,20 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   const threadId = envelope.threadId || reusedAssignThreadId || uuidv4();
   ensureThread(threadId, envelope.fromAgent);
 
-  // v2.5.34, Removed the TERMINAL_THREAD_CLOSED rejection. Pre-fix, a
-  // thread that received any terminal intent (ANSWER/DELIVERABLE/COMPLETE/
-  // FAIL/FYI) was marked terminal, and any subsequent non-reopening intent
-  // (which was every intent EXCEPT QUESTION/BLOCK/ASSIGN) got silently
-  // dropped with reason TERMINAL_THREAD_CLOSED. That broke legitimate
-  // follow-ups: Maddy delivering work, finding an issue, and sending a
-  // corrected DELIVERABLE on the same thread had her second message
-  // silently dropped. Loop protection comes from semantic dedup + the
-  // hop limit, not from thread closure, both of those still run below.
-  // We still flip the terminal flag back off when a new message lands so
-  // the marker stays consistent for diagnostic queries.
-  if (isThreadTerminal(threadId)) {
-    db.prepare('UPDATE a2a_threads SET is_terminal = 0, updated_at = datetime(\'now\') WHERE thread_id = ?').run(threadId);
-  }
+  // v2.5.34 removed the TERMINAL_THREAD_CLOSED rejection. Pre-fix, a thread that received any
+  // terminal intent (ANSWER/DELIVERABLE/COMPLETE/FAIL/FYI) was marked terminal, and any
+  // subsequent non-reopening intent — which was every intent EXCEPT QUESTION/BLOCK/ASSIGN —
+  // got silently dropped. That broke legitimate follow-ups: an agent delivering work, spotting
+  // a problem, and sending a corrected DELIVERABLE on the same thread had the second message
+  // silently discarded. LOOP PROTECTION COMES FROM SEMANTIC DEDUP + THE HOP LIMIT, both of
+  // which still run below, and that is the sentence worth keeping.
+  //
+  // PHASE-2 T10 (RULING 8c): the flag itself is gone (migration `143`). What stood here was
+  // `if (isThreadTerminal(t)) { UPDATE ... SET is_terminal = 0 }` — kept in 2.5.34 only "so
+  // the marker stays consistent for diagnostic queries", and in the years since, no diagnostic
+  // query was ever written. Positive enumeration across both repos found the flag's entire
+  // lifecycle to be: set on a terminal intent, read here, immediately cleared here. Nothing
+  // ever branched on it.
 
   // ── 5. Hop counter ──
   const currentHops = getThreadHopCount(threadId);

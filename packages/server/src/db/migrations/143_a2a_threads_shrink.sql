@@ -1,0 +1,67 @@
+-- 143_a2a_threads_shrink.sql — PHASE-2 T10 (RULING 8c): `a2a_threads` SHRINKS.
+--
+-- ── WHY THIS TABLE IS NOT DROPPED, ON MEASUREMENTS AND NOT ON PREFERENCE ──
+--
+-- The phase plan lists `a2a_threads` for DROP. T7 deferred it here WITH a work order rather
+-- than as a hand-off, and the work order's own words were that the hop cap and the
+-- awaiting-reply latch "CANNOT" go because `messages` does not carry their inputs. Both halves
+-- were re-derived at this HEAD, READONLY, on a larger sample than T7 had:
+--
+--   THE HOP CAP FIRED ON REAL TRAFFIC, so uncapping is refused by the data:
+--     SELECT hop_count, COUNT(*) FROM a2a_threads GROUP BY 1
+--       -> 1:144  2:78  3:5  4:2  5:2  8:1        (232 threads)
+--   ONE thread reached 8, which IS `THREAD_HOP_CAP`. For the ~198 threads with no `work` row
+--   this counter is the tree's only live loop protection; deleting it would delete a guard,
+--   which is what non-negotiable #2 exists to prevent.
+--
+--   THE LATCH CANNOT BE DERIVED FROM `messages`:
+--     a2a_threads                                                    -> 232
+--     threads with ANY messages row on their thread id (exact)       -> 109
+--     threads with ANY messages row on their thread id (8-char prefix) -> 115
+--   117 of 232 threads (50%) have NO message row at all, even matching loosely. T7 measured
+--   91 of 164; the finding holds at a bigger sample. A related data defect found on the way,
+--   recorded because whoever finally retires this table inherits it: `messages.a2a_thread_id`
+--   is stored inconsistently — 40 rows carry an 8-char token and 76 a full uuid, and the SAME
+--   logical thread appears both ways.
+--
+--   AND THERE IS NO EXISTING HOME TO FOLD INTO. `work` was refused by T7 on its own
+--   measurements (no `agent_id` column; 36% of rows unattributable; 139 of 164 finished).
+--   `conversations` holds 387 a2a rows but is keyed (agent, counterparty): ZERO `a2a_threads`
+--   ids resolve to a conversation id.
+--
+-- So the verdict is SHRINK, and it is stated out loud rather than dressed up as a drop. What
+-- survives is the TRANSPORT's own per-thread record, and it now holds only what is read:
+--   * `hop_count`  — the loop cap for threads with no `work` row. Threads that WERE delegated
+--                    count on `work.hop_count` (T4/D2); the boundary is crisp because
+--                    `threadHopCount()` returns null off the spine, and the CAP itself is
+--                    declared exactly once, as `THREAD_HOP_CAP`.
+--   * `last_sender` / `last_intent` / `updated_at` — the awaiting-reply latch's durable
+--                    record (RC-14): a wake-intent re-ask, from the same sender, inside the
+--                    cooldown, while the receiver still owes a reply.
+--
+-- SURVIVING DEBT, NAMED WITH ITS OWNER: the hop count now has two homes. That is deliberate
+-- and bounded, D2 assigned the remaining A2A constants to SWEEP A, and this file is where the
+-- next reader should be told rather than left to rediscover it.
+--
+-- ── WHAT GOES: `is_terminal` ──
+--
+-- VERDICT: STRIP.
+-- requirement preserved: NONE — and that is the finding, not an omission. Positive enumeration
+--   across `packages/server`, `packages/dashboard`, `watchdog/` AND the test kit returns
+--   exactly four source sites: the reader `isThreadTerminal` (a2a-transport.ts:86-89), the
+--   write inside `recordThreadDelivery` (:118), and its ONE caller (:545-546) — whose entire
+--   body is `if (isThreadTerminal(t)) { UPDATE ... SET is_terminal = 0 }`. Nothing branches on
+--   the value. It is a flag that is set, read once, and immediately cleared by the only code
+--   that reads it: a guard whose only action is to disarm itself.
+-- history: it USED to gate `TERMINAL_THREAD_CLOSED`, which silently dropped legitimate
+--   follow-ups (a peer delivering work, spotting a problem, and sending a corrected
+--   DELIVERABLE on the same thread). That rejection was removed at v2.5.34 and the comment at
+--   :534-544 says the flag was kept only "so the marker stays consistent for diagnostic
+--   queries" — and no diagnostic query was ever written. This box: 192 of 232 rows carry 1.
+--
+-- Destructive: only of the dead column. `ALTER TABLE ... DROP COLUMN` (SQLite >= 3.35) is used
+-- rather than a table rebuild because the column carries no index, no constraint and no
+-- foreign key — the rehearsal proves the drop lands and that every other column and every row
+-- survives it on all three bodies.
+
+ALTER TABLE a2a_threads DROP COLUMN is_terminal;
