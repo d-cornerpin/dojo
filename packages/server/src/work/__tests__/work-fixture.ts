@@ -51,7 +51,7 @@ export function createWorkTable(db: DatabaseType.Database): void {
       depends_on TEXT DEFAULT '[]', assigned_to_group TEXT, task_kind TEXT,
       level INTEGER, phase_count INTEGER, current_phase INTEGER, group_id TEXT,
       source_message_id TEXT, origin_turn INTEGER, origin_conv_key TEXT, origin_kind TEXT,
-      deliverable_shown INTEGER NOT NULL DEFAULT 0, a2a_thread_id TEXT, last_smell_flag TEXT,
+      a2a_thread_id TEXT, last_smell_flag TEXT,   -- PHASE-2 T10F: deliverable_shown dropped (145)
       scheduled_start INTEGER, repeat_interval INTEGER, repeat_unit TEXT,
       repeat_end_type TEXT, repeat_end_value TEXT, repeat_days_of_week TEXT,
       schedule_status TEXT, is_paused INTEGER NOT NULL DEFAULT 0,

@@ -97,16 +97,31 @@ describe('drive boundary (P2)', () => {
     //
     // ── PHASE-2 T8c item 2 — DELIBERATE DISPOSITION, NAMED (T0 concern adjudication 1).
     // This is one of the two green conformance clauses PINNED §12 warns "die with the
-    // column". VERDICT: IT DOES NOT DIE HERE AND IT IS KEPT. T8c stripped the PM's two
-    // `deliverable_shown` READS (the closeout brief printed a column with no writer, so
-    // every line said `deliverable_shown=false` — measured 245/245 rows on this box and
-    // 53/53 on the owner's real backup body), which is a different thing from the
-    // REDIRECT this clause bans. Keeping it is a forward guard with a named incident:
-    // the P2 yacht-research silent hour happened because a hidden flag stood the ladder
-    // down, and nothing may re-acquire that predicate in this file. It becomes genuinely
-    // untestable only when T10 drops the column, and T10 retires it THEN, on purpose.
+    // column". T8c KEPT it as a forward guard with a named incident: the P2 yacht-research
+    // silent hour happened because a hidden flag stood the ladder down, and nothing may
+    // re-acquire that predicate in this file. T8c's note ended "It becomes genuinely
+    // untestable only when T10 drops the column, and T10 retires it THEN, on purpose."
+    //
+    // ── PHASE-2 T10F: THE COLUMN IS DROPPED (`145`) AND THE HALVES PART COMPANY.
+    // The `validate_deliverable` ban SURVIVES UNCHANGED — it is about a POKE KIND, not the
+    // column, and it is still both reachable and load-bearing. Only the column half is
+    // retired, and it is re-expressed against the schema rather than deleted: the predicate
+    // cannot be re-acquired if the column it read is not there.
+    //
+    // MEASURED, and worth recording: this clause did NOT go red when the column went, because
+    // it is a source scan and not a schema read. It would have kept passing forever against a
+    // column that no longer existed. That is why the schema assertion replaces it rather than
+    // sitting beside it as decoration.
     const code = pm.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
     expect(code).not.toMatch(/validate_deliverable/);
+    const migDir = path.join(SRC, 'db', 'migrations');
+    const migs = fs.readdirSync(migDir).filter((f) => f.endsWith('.sql')).sort();
+    const dropped = migs.some((f) =>
+      /ALTER\s+TABLE\s+work\s+DROP\s+COLUMN\s+deliverable_shown/i.test(
+        fs.readFileSync(path.join(migDir, f), 'utf8')));
+    expect(dropped, 'the stand-down flag must be gone from the schema, not merely unread').toBe(true);
+    // ...and the predicate itself is still banned in this file, which catches a re-add and a
+    // re-acquired reader landing in one commit.
     expect(code).not.toMatch(/deliverable_shown\s*===?\s*1/);
   });
 

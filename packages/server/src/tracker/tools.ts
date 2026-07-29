@@ -183,33 +183,40 @@ function scheduleEchoLines(scheduledStartIso: string | null, nextRunIso: string 
 // the engine enforces; delivered work is protected by the Key-1 state
 // (complete + complete_validated=0, filed through the sanctioned receipt paths
 // and PM-validated) plus the retask allow_regenerate gate below. The
-// deliverable_shown COLUMN (migration 108) remains as read-only legacy data
-// for rows stamped before this release; no writer exists.
+// deliverable_shown COLUMN (migration 108) is GONE as of PHASE-2 T10F, migration `145`. Its
+// writer went at the P2 drive boundary; its last reader was the first disjunct of the backstop
+// below, and the requirement that disjunct carried is carried by the other two.
 
 // ════════════════════════════════════════════════════════════════════════════════
 // THE DELIVERED-WORK BACKSTOP, AS A PREDICATE (PHASE-2 T8c item 2)
 // ════════════════════════════════════════════════════════════════════════════════
 //
 // This is the guard-conversion the plan's own STOP demanded before `deliverable_shown` may
-// be dropped (PINNED §12, T0 concern adjudication 1). It is the reader with an incident
-// behind it: retasking work the user was ALREADY SHOWN regenerates and overwrites it, so the
-// person ends up with two divergent versions and two "done"s.
+// be dropped (PINNED §12, T0 concern adjudication 1), and PHASE-2 T10F is where the column
+// went. It is the reader with an incident behind it: retasking work the user was ALREADY SHOWN
+// regenerates and overwrites it, so the person ends up with two divergent versions and two
+// "done"s.
 //
-// It is a pure function of four facts on purpose. Inline in `trackerRetask` it could only be
+// It is a pure function of three facts on purpose. Inline in `trackerRetask` it could only be
 // exercised through an async handler with A2A delivery, a broadcast, a task-log write and a
 // stalemate check hanging off it — which is why the guard had no test at all. Here both
-// branches AND the escape hatch are testable directly, and when T10 drops the column the ONLY
-// change is that `deliverableShown` is always false: the second disjunct, the escape hatch and
-// every clause about them keep their meaning. That is what "the test lands before the column
-// may go" is supposed to buy.
+// branches AND the escape hatch are testable directly, and T10F dropping the column changed
+// nothing here except deleting the first disjunct: the surviving disjuncts, the escape hatch and
+// every clause about them kept their exact meaning. That is what "the test lands before the
+// column may go" bought, and it is what it bought it for.
 //
 // requirement preserved: delivered work is never silently regenerated; the PM may still
 // override deliberately, once, by saying so.
 
 export interface RetaskProtectionFacts {
-  /** Migration 108's flag. READ-ONLY LEGACY DATA — no writer has existed since the P2 drive
-   *  boundary — and T10 drops the column, at which point this argument is always false. */
-  deliverableShown: boolean;
+  // PHASE-2 T10F: `deliverableShown` IS GONE, ARGUMENT AND ALL. Migration `145` dropped the
+  // column, so the old first disjunct could only ever be false — and a boolean parameter with
+  // one reachable value is exactly the residue this phase exists to remove, not a harmless
+  // stub. T8c's note said dropping the column would leave it "always false"; that described
+  // what would NOT break, and what does not break is the requirement, which disjuncts 2 and 3
+  // carry. Its clauses in `__tests__/retask-delivered-work-backstop.test.ts` are retired in
+  // the same change and replaced by one that asserts the COLUMN IS ABSENT — strictly stronger
+  // than asserting nobody writes a column that exists.
   /** The tracker status the row is in right now. */
   status: string;
   /** Whether an authority has upheld the CURRENT complete claim (`adjudications`, via
@@ -233,20 +240,25 @@ export interface RetaskProtectionFacts {
 /**
  * Is this row's work already in the user's hands?
  *
- * THREE independent ways for that to be true, and they are different vintages of the same
- * fact, not a belt-and-braces set:
- *   1. `deliverable_shown = 1` — a row stamped before the drive boundary deleted the writer.
- *   2. Key 1 is filed and Key 2 is not: the ENGINE closed it on a delivery receipt
+ * TWO independent ways for that to be true, and they are different vintages of the same fact,
+ * not a belt-and-braces set:
+ *   1. Key 1 is filed and Key 2 is not: the ENGINE closed it on a delivery receipt
  *      (`complete`) and no authority has validated yet. The close itself required a real
  *      delivery (G7), so "complete and unvalidated" IS "delivered, awaiting adjudication".
- *   3. PHASE-2 T8T: Key 1 is filed and the row has not MOVED — a worker's own close request
+ *   2. PHASE-2 T8T: Key 1 is filed and the row has not MOVED — a worker's own close request
  *      (`tracker-view.ts:pendingCloseRequestExpr`). Migration `139` is what turned the
- *      assignee's close from shape 2 into shape 3, so without this clause the guard would
+ *      assignee's close from shape 1 into shape 2, so without this clause the guard would
  *      have kept passing while protecting nobody.
+ *
+ * PHASE-2 T10F: there were THREE, and the retired one was migration 108's
+ * `deliverable_shown = 1` — a stamp for rows written before the P2 drive boundary deleted its
+ * writer. Its column is dropped by `145` (0 of 610 rows carried it on this box, and no
+ * production writer had existed since T8c). What is preserved is the REQUIREMENT — delivered
+ * work is never silently regenerated — and these two disjuncts are what carry it, which is the
+ * whole reason T8c converted this guard into a predicate before the column could go.
  */
 export function retaskWouldOverwriteDeliveredWork(f: RetaskProtectionFacts): boolean {
-  return f.deliverableShown
-    || (f.status === 'complete' && !f.completeValidated)
+  return (f.status === 'complete' && !f.completeValidated)
     || f.closeRequestPending;
 }
 
@@ -3071,18 +3083,17 @@ export async function trackerRetask(
     `SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
             w.agent_id AS assigned_to, w.goal AS goal,
             ${validatedExpr('w', 'done')} AS complete_validated,
-            ${pendingCloseRequestExpr('w')} AS close_request_pending,
-            w.deliverable_shown AS deliverable_shown
+            ${pendingCloseRequestExpr('w')} AS close_request_pending
        FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
-  ).get(taskId) as { id: string; title: string; status: string; assigned_to: string | null; goal: string | null; complete_validated: number; close_request_pending: number; deliverable_shown: number } | undefined;
+  ).get(taskId) as { id: string; title: string; status: string; assigned_to: string | null; goal: string | null; complete_validated: number; close_request_pending: number } | undefined;
 
   if (!task) return `Error: task ${taskId} not found.`;
   if (task.status === 'cancelled') {
     return `Error: task "${task.title}" (${taskId}) is cancelled. Cancelled tasks cannot be retasked. Create a new task instead.`;
   }
   // Delivered-work backstop (two-key restoration; replaces the old C2 block that
-  // keyed on the forged complete_validated=1 flag). deliverable_shown=1 means the
-  // assignee already delivered this task's result to the user in a reply.
+  // keyed on the forged complete_validated=1 flag). A filed Key 1 with no Key 2 means the
+  // assignee already delivered this task's result to the user.
   // Re-driving the assignee on it regenerates/overwrites work the user was already
   // shown, producing a divergent second version and a second "done". Refuse UNLESS
   // the PM explicitly opts in with allow_regenerate=true (the PM has judged the
@@ -3090,7 +3101,6 @@ export async function trackerRetask(
   // keys on the neutral fact marker, never on a completion flag, so it protects the
   // artifact without pretending the task closed.
   if (retaskIsRefused({
-    deliverableShown: task.deliverable_shown === 1,
     status: task.status,
     completeValidated: task.complete_validated === 1,
     closeRequestPending: task.close_request_pending === 1,

@@ -162,7 +162,7 @@ export type TrackerAttr =
   | 'step_number' | 'total_steps' | 'phase' | 'depends_on' | 'assigned_to_group' | 'task_kind'
   | 'level' | 'phase_count' | 'current_phase' | 'group_id'
   | 'source_message_id' | 'origin_turn' | 'origin_conv_key' | 'origin_kind'
-  | 'deliverable_shown' | 'a2a_thread_id' | 'last_smell_flag'
+  | 'a2a_thread_id' | 'last_smell_flag'   // PHASE-2 T10F: `deliverable_shown` dropped (`145`)
   | 'scheduled_start' | 'repeat_interval' | 'repeat_unit' | 'repeat_end_type'
   | 'repeat_end_value' | 'repeat_days_of_week' | 'schedule_status' | 'is_paused'
   | 'paused_until' | 'status_before_pause' | 'last_run_at' | 'missed_runs_paused_at'

@@ -11,10 +11,20 @@
 // assignee redoes it, produces a second, divergent version, and the person now holds two
 // answers and two "done"s. That is why this is a REFUSAL and not a warning.
 //
-// WHAT THIS BUYS T10: the first branch reads `deliverable_shown`, the column T10 drops. When
-// it goes, `deliverableShown` is simply always false and every clause below about the SECOND
-// branch and the escape hatch keeps its exact meaning — so T10 removes a column, not a
-// requirement. The clauses that are specifically about the legacy branch say so by name.
+// WHAT THIS BOUGHT T10, NOW SPENT (PHASE-2 T10F): the first branch read `deliverable_shown`,
+// and migration `145` dropped that column. The clauses that were specifically about the legacy
+// branch are RETIRED HERE — deliberately, in the same change as the drop, exactly as they said
+// they would be — and every clause about the surviving branches and the escape hatch keeps its
+// exact meaning, untouched. That is the whole point of having converted the guard first: T10F
+// removed a column, not a requirement.
+//
+// THE RETIREMENT IS NOT A DELETION OF COVERAGE. What branch 1's clauses proved was "a row
+// already shown to the user cannot be silently retasked". That is now proved by branches 2 and
+// 3, whose inputs are REACHABLE, plus one new clause asserting the column is GONE FROM THE
+// SCHEMA — strictly stronger than the old assertion that nobody wrote a column that existed,
+// because a reader arriving later cannot reintroduce a column that is not there. A clause whose
+// input can no longer occur is not coverage; it is a test of an unreachable state, and keeping
+// it would be the same kind of comfort as a guard nobody can trip.
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -24,34 +34,61 @@ import {
 } from '../tools.js';
 
 const facts = (over: Partial<RetaskProtectionFacts> = {}): RetaskProtectionFacts => ({
-  deliverableShown: false,
   status: 'in_progress',
   completeValidated: false,
   closeRequestPending: false,
   ...over,
 });
 
-describe('branch 1 — the legacy stamp (DIES WITH THE COLUMN AT T10)', () => {
-  it('a row stamped deliverable_shown=1 is protected whatever its status says', () => {
-    expect(retaskWouldOverwriteDeliveredWork(facts({ deliverableShown: true }))).toBe(true);
-    expect(retaskWouldOverwriteDeliveredWork(
-      facts({ deliverableShown: true, status: 'in_progress' }),
-    )).toBe(true);
-    expect(retaskWouldOverwriteDeliveredWork(
-      facts({ deliverableShown: true, status: 'on_deck' }),
-    )).toBe(true);
+describe('branch 1 — the legacy stamp — RETIRED AT PHASE-2 T10F WITH ITS COLUMN', () => {
+  it('the column is GONE FROM THE SCHEMA, which is why the branch could go', () => {
+    // The replacement for three clauses about a flag that can no longer be set. This asserts
+    // against the MIGRATION CHAIN rather than against a database, so it holds on a fresh box
+    // and a lived-in one alike: `145` drops the column, and nothing after it re-adds one.
+    const fs = require('node:fs') as typeof import('node:fs');
+    const path = require('node:path') as typeof import('node:path');
+    const dir = path.resolve(__dirname, '..', '..', 'db', 'migrations');
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
+    const dropIdx = files.findIndex((f) => {
+      const sql = fs.readFileSync(path.join(dir, f), 'utf8');
+      return /ALTER\s+TABLE\s+work\s+DROP\s+COLUMN\s+deliverable_shown/i.test(sql);
+    });
+    expect(dropIdx, 'some migration must drop work.deliverable_shown').toBeGreaterThan(-1);
+    // POSITIVE CONTROL that the scan is looking at real files and can see a real ADD: the
+    // column was added before it was dropped, so a scan that finds neither is broken, not clean.
+    const addIdx = files.findIndex((f) =>
+      /deliverable_shown/i.test(fs.readFileSync(path.join(dir, f), 'utf8')));
+    expect(addIdx, 'the scan must be able to see the column being introduced').toBeGreaterThan(-1);
+    expect(addIdx).toBeLessThan(dropIdx);
+    // ...and NOTHING AFTER THE DROP re-adds it. This is the clause a future reader trips.
+    //
+    // ⚠ THE REMAINDER OF THE DROP FILE COUNTS, and my first version of this scan started at
+    // `dropIdx + 1` — so a re-add on the line AFTER the drop, in the drop's own file, passed.
+    // A planted fault caught it, which is why the tail of the drop file is scanned here.
+    const dropSql = fs.readFileSync(path.join(dir, files[dropIdx]), 'utf8');
+    const afterDropInSameFile = dropSql.slice(
+      dropSql.search(/ALTER\s+TABLE\s+work\s+DROP\s+COLUMN\s+deliverable_shown/i));
+    for (const [label, sql] of [
+      [files[dropIdx], afterDropInSameFile],
+      ...files.slice(dropIdx + 1).map((f) => [f, fs.readFileSync(path.join(dir, f), 'utf8')] as const),
+    ] as Array<readonly [string, string]>) {
+      expect(/ADD\s+COLUMN\s+deliverable_shown/i.test(sql),
+        `${label} re-adds deliverable_shown after it was dropped`).toBe(false);
+    }
   });
 
-  it('POSITIVE CONTROL of the same shape: without the stamp, the same row is retaskable', () => {
-    // The clause above proves nothing on its own — a predicate that returns true for
-    // everything would satisfy it. This is the identical row with the one fact removed.
-    expect(retaskWouldOverwriteDeliveredWork(
-      facts({ deliverableShown: false, status: 'in_progress' }),
-    )).toBe(false);
+  it('and the predicate no longer takes the argument at all', () => {
+    // A boolean parameter with one reachable value is residue, not a stub. If somebody
+    // reintroduces it, this fails — which is the point.
+    const fs = require('node:fs') as typeof import('node:fs');
+    const path = require('node:path') as typeof import('node:path');
+    const src = fs.readFileSync(path.resolve(__dirname, '..', 'tools.ts'), 'utf8');
+    const iface = src.slice(src.indexOf('export interface RetaskProtectionFacts'));
+    expect(iface.slice(0, 1200)).not.toMatch(/^\s*deliverableShown\??:/m);
   });
 });
 
-describe('branch 2 — Key 1 filed, Key 2 not (SURVIVES T10)', () => {
+describe('branch 2 — Key 1 filed, Key 2 not (SURVIVED T10F, UNTOUCHED)', () => {
   it('complete + unvalidated is delivered-and-awaiting-adjudication, so it is protected', () => {
     expect(retaskWouldOverwriteDeliveredWork(
       facts({ status: 'complete', completeValidated: false }),
@@ -115,13 +152,16 @@ describe('branch 3 — Key 1 filed and the row has NOT moved (PHASE-2 T8T)', () 
 
 describe('the escape hatch — allow_regenerate', () => {
   it('a protected row is REFUSED by default', () => {
-    expect(retaskIsRefused(facts({ deliverableShown: true }), undefined)).toBe(true);
+    // PHASE-2 T10F: the first example was `deliverableShown: true`; with that branch retired
+    // the two REACHABLE protected shapes stand in its place, so the clause still exercises
+    // more than one route into the refusal.
     expect(retaskIsRefused(facts({ status: 'complete' }), undefined)).toBe(true);
+    expect(retaskIsRefused(facts({ closeRequestPending: true }), undefined)).toBe(true);
   });
 
   it('allow_regenerate === true opens BOTH branches, deliberately', () => {
-    expect(retaskIsRefused(facts({ deliverableShown: true }), true)).toBe(false);
     expect(retaskIsRefused(facts({ status: 'complete' }), true)).toBe(false);
+    expect(retaskIsRefused(facts({ closeRequestPending: true }), true)).toBe(false);
   });
 
   it('ONLY a real boolean true opens it — a weak model\'s truthy value does not', () => {
@@ -130,7 +170,7 @@ describe('the escape hatch — allow_regenerate', () => {
     // explicit choice somebody made, and "true"/1/"yes" arriving from a confused model is
     // not that choice.
     for (const v of ['true', 1, 'yes', 'TRUE', {}, [], 'allow']) {
-      expect(retaskIsRefused(facts({ deliverableShown: true }), v),
+      expect(retaskIsRefused(facts({ status: 'complete' }), v),
         `${JSON.stringify(v)} must not open the gate`).toBe(true);
     }
   });

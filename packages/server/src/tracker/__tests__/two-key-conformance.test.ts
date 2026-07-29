@@ -301,13 +301,42 @@ describe('two-key KEY 1: TASK status=complete writers limited to the reviewed se
   // change that drops the column, which is what the adjudication actually said; T8c's job
   // was to land the backstop's own test first, and that is
   // `retask-delivered-work-backstop.test.ts`.
-  it('the hidden-status stamp is fully demolished: no writer of deliverable_shown exists (P2 drive boundary)', () => {
+  it('the hidden-status stamp is fully demolished: the COLUMN is gone, so no writer is possible', () => {
     // Owner status-truth invariant (2026-07-21): a flag that contradicts the
     // visible status is banned. markDeliverableShown (the last writer) was
-    // deleted; the column remains as read-only legacy data. A NEW writer
-    // anywhere in the scanned surface is a contract breach.
-    const files = [...KEY1_FILES];
-    for (const rel of files) {
+    // deleted at the P2 drive boundary; PHASE-2 T10F's migration `145` dropped the column.
+    //
+    // ── RETIRED AND RE-EXPRESSED AT PHASE-2 T10F, deliberately and in the drop's own change,
+    // which is what the note above committed to. TWO measurements are worth recording:
+    //
+    // (1) THIS CLAUSE DID NOT BREAK when the column went, and PINNED §12 predicted it would.
+    //     It is a SOURCE SCAN, not a schema read, so "nobody writes this column" stayed green
+    //     against a column that no longer exists — a clause passing for a reason that had
+    //     stopped being the reason. That is the more dangerous of the two outcomes, because
+    //     nothing would have told anybody.
+    // (2) The re-expression is STRICTLY STRONGER: a writer cannot be added to a column that is
+    //     not there, and a schema assertion cannot go quietly stale the way a regex over
+    //     source can. The banned-writer regexes are KEPT as well — they still catch a writer
+    //     landing in the same commit as a re-added column, which the schema check alone would
+    //     let through until the migration was read.
+    const dir = path.resolve(__dirname, '..', '..', 'db', 'migrations');
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
+    const dropIdx = files.findIndex((f) =>
+      /ALTER\s+TABLE\s+work\s+DROP\s+COLUMN\s+deliverable_shown/i.test(
+        fs.readFileSync(path.join(dir, f), 'utf8')));
+    expect(dropIdx, 'the column must be dropped by some migration').toBeGreaterThan(-1);
+    // The REMAINDER OF THE DROP FILE is scanned too: a planted fault proved that starting at
+    // `dropIdx + 1` lets a re-add on the next line of the same file through.
+    const dropSql = fs.readFileSync(path.join(dir, files[dropIdx]), 'utf8');
+    const tail = dropSql.slice(dropSql.search(/ALTER\s+TABLE\s+work\s+DROP\s+COLUMN\s+deliverable_shown/i));
+    for (const [label, sql] of [
+      [files[dropIdx], tail],
+      ...files.slice(dropIdx + 1).map((f) => [f, fs.readFileSync(path.join(dir, f), 'utf8')] as const),
+    ] as Array<readonly [string, string]>) {
+      expect(/ADD\s+COLUMN\s+deliverable_shown/i.test(sql),
+        `${label} re-adds the banned hidden-status column`).toBe(false);
+    }
+    for (const rel of [...KEY1_FILES]) {
       const code = codeOnly(readRel(rel).join('\n'));
       expect(code, `${rel} writes deliverable_shown (banned hidden status)`).not.toMatch(/UPDATE[^;]{0,300}SET[^;]{0,200}deliverable_shown\s*=\s*1/i);
       expect(code, `${rel} writes deliverable_shown via object param`).not.toMatch(/deliverable_shown:\s*1/);
