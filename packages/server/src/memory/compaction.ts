@@ -873,11 +873,13 @@ export async function runLeafCompaction(
         abortSignal: opts?.abortSignal,
       });
 
-      // PHASE-2 T7: the fenced OPEN-LOOPS ingest is GONE. Compaction used to run the
-      // summarizer's output through a parser that upserted `open_loops` rows and then stripped
-      // the section back out of the text it had just been handed — a summariser writing the
-      // obligation ledger. Obligations are `work` rows created when the obligation is made
-      // (4a), so a summary is a summary again: it is stored exactly as it was generated.
+      // PHASE-2 T7: the fenced-section ingest is GONE. Compaction used to run the summarizer's
+      // output through a parser that upserted rows into the prose-parsed obligation store and
+      // then stripped the section back out of the text it had just been handed — a summariser
+      // writing the obligation ledger. Obligations are `work` rows created when the obligation
+      // is made (4a), so a summary is a summary again: stored exactly as it was generated.
+      // (The table name is deliberately not written here: T10's grep-zero list carries the
+      // token, and a comment is not worth a false hit on it.)
 
       createLeafSummary(
         agentId,
