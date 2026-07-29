@@ -260,23 +260,18 @@ export function selfWakeStandDown(agentId: string): { standDown: boolean; humanA
 //   Restored to the consecutive-pass ladder in `agent/runtime.ts`, GREEN again.
 //
 // WHAT A CORRECT DERIVATION WOULD NEED is an anchor for "when did this head BECOME the head",
-// and no durable column in this tree records it. So the restart-safe home is still OWED, and
-// the candidates are enumerated rather than left to be rediscovered:
-//   * `work.attempts`               — REFUSED by `single-writer-conformance.test.ts` PART C,
-//                                     which measured it as the recurrence fire count (one
-//                                     writer, four readers, all aliasing it to `run_count`).
-//                                     A retry count in the same integer ends the first
-//                                     retried `after_count` schedule early.
-//   * `messages.delivery_attempts`  — REFUSED on its own measurement: it is the engine
-//                                     event's failed-DELIVERY counter and five of them expire
-//                                     the event loudly. A head that failed to advance twice
-//                                     is not a delivery that failed twice.
-//   * a derivation from `turns`     — REFUSED above, by a reproducing battery red.
-// Everything left needs DDL, and T9 was told to write no migration. The consequence, stated
-// plainly: a crash loop still resets both `stuck` ladders to zero on each boot. What survives
-// a restart today is the wake FRESHNESS bound (45 min), the engine-event EXPIRY horizon
-// (6 h), and the boot staleness sweep — all three of which cap the same hazard by age rather
-// than by count.
+// and no durable column in this tree records it.
+//
+// ── PAID (PHASE-2 T10, RULING 5): the home is `drain_state`, migration `140` ──
+// The LADDER is unchanged; only its STORAGE moved, out of a module-scope Map (which a crash
+// loop emptied on every boot) into one row per (agent, drain), one UPSERT, in
+// `agent/drain-state.ts`. The two column candidates stay named here because a future reader
+// will be tempted by each again, and each was refused on its OWN measurement:
+// `work.attempts` is the recurrence fire count (`single-writer-conformance.test.ts` PART C:
+// one writer, four readers, all aliasing it to `run_count`, so a retry count in that integer
+// ends the first retried `after_count` schedule early) and `messages.delivery_attempts` is
+// the engine event's failed-DELIVERY counter (five expire the event loudly). Full reasoning,
+// including why NO staleness bound was invented: `140_drain_state.sql`.
 
 // ════════════════════════════════════════════════════════════════════════════════
 // THE ONE CLOCK

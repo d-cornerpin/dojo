@@ -2,6 +2,7 @@
 // Lives in its own module to avoid circular imports (runtime ↔ assembler).
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { clearAllDrainLadders } from './drain-state.js';
 
 // Timestamp of when each agent's current turn started, context assembly
 // uses this to exclude user messages that arrived mid-turn so they get
@@ -153,10 +154,10 @@ export const a2aTurnRetries = new Map<string, number>();
 // getWaitingHumanConversations (agent/v2/counterparty.ts).
 
 /** Reset the per-agent turn-continuity scratch state on a new session. The
- *  "served" signal itself is DB-derived (conv_key), so there's nothing to clear
- *  there; this just resets the in-memory drain spin-guard. */
+ *  "served" signal itself is DB-derived, so there's nothing to clear there; this resets the
+ *  drain spin-guards (durable since T10) and the cross-turn untracked-work counter. */
 export function clearServedConversations(agentId: string): void {
-  drainHead.delete(agentId);
+  clearAllDrainLadders(agentId);
   untrackedWorkAcrossTurns.delete(agentId);
 }
 
@@ -199,13 +200,17 @@ export function clearUntrackedWorkAcrossTurns(agentId: string): void {
   untrackedWorkAcrossTurns.delete(agentId);
 }
 
-// Drain progress: the head (oldest-waiting) rowid the runtime last re-triggered
-// on, and how many consecutive times it stayed stuck. Bounds the
-// "keep working through the queue" re-trigger so a conversation the agent cannot
-// serve (it never produces a terminal reply for it) doesn't spin the loop
-// forever, after the cap we stop self-re-triggering and idle; a new inbound
-// will wake it again.
-export const drainHead = new Map<string, { rowid: number; stuck: number }>();
+// Drain progress: how many consecutive times the head (oldest-waiting) conversation
+// stayed stuck. Bounds the "keep working through the queue" re-trigger so a conversation
+// the agent cannot serve (it never produces a terminal reply for it) doesn't spin the loop
+// forever, after the cap we stop self-re-triggering and idle; a new inbound will wake it
+// again.
+//
+// PHASE-2 T10 (RULING 5): the `Map` that held this is GONE. It died with the process, so a
+// crash loop reset the bound to zero on every boot — the storm hazard wearing a different
+// hat. The ladder itself is unchanged and lives in `drain_state` (migration 140), read and
+// written through `agent/drain-state.ts`. The BOUND stays here, beside the other turn
+// constants, because it is a policy number and not state.
 export const MAX_DRAIN_STUCK = 4;
 /** Set by the loop when the turn it just ran was classified as an A2A turn, read by the runtime re-trigger so only genuinely-failed A2A turns count against the retry cap. */
 export const lastTurnWasA2A = new Set<string>();

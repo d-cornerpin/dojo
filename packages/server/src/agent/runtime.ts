@@ -330,7 +330,8 @@ import {
   statusHeartbeats,
 } from './shared-state.js';
 
-import { turnBoundary, forceA2ATurn, a2aTurnRetries, MAX_A2A_TURN_RETRIES, lastTurnWasA2A, drainHead, MAX_DRAIN_STUCK, currentTurnKind } from './turn-state.js';
+import { turnBoundary, forceA2ATurn, a2aTurnRetries, MAX_A2A_TURN_RETRIES, lastTurnWasA2A, MAX_DRAIN_STUCK, currentTurnKind } from './turn-state.js';
+import { bumpDrainLadder, clearDrainLadder } from './drain-state.js';
 import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, quarantineWaitingConversation } from './v2/counterparty.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { findUnrepliedAssignForAgent, recordA2AReply } from './a2a-replies.js';
@@ -461,8 +462,6 @@ export function preemptAgentForUrgentMessage(agentId: string): boolean {
 // only blocks 'terminated') and an explicit dashboard resume/reset still wake the
 // agent, and transient recovery still flows through the injury-recovery auto-wake,
 // all of which enter via handleMessage rather than these gates.
-const wakeDrainHead = new Map<string, { head: string; stuck: number }>();
-
 function isSelfResumeBlockedStatus(status: string | undefined): boolean {
   return status === 'terminated' || status === 'paused' || status === 'error';
 }
@@ -668,7 +667,7 @@ class AgentRuntime {
           // clause bites on the fault instead of going quiet with it.
           const waitingHumans = getWaitingHumanConversations(agentId).length;
           if (waitingHumans > 0) {
-            wakeDrainHead.delete(agentId);
+            clearDrainLadder(agentId, 'unserved_wake');
             logger.info('unserved-wake drain: standing down, a human is waiting', {
               agentId, humanAsksOpen: waitingHumans,
             }, agentId);
@@ -692,17 +691,12 @@ class AgentRuntime {
             // Measured, not reasoned about: `multi-agent-project` went 0/3 with every other
             // clause of its target passing — assign created, peer delivered, deliverable
             // arrived during orchestration — and only "final owner answer integrates
-            // codeword" false. Restored here, GREEN again.
+            // codeword" false. The consecutive-pass ladder is what stands.
             //
-            // The anchor a correct derivation needs is "when did this head BECOME the head",
-            // and no durable column in this tree records it. The restart-safe home for this
-            // counter is therefore still owed, with its constraints written up in T9's
-            // report: it is NOT `work.attempts` (T8c2's conformance clause: that is the
-            // recurrence fire count) and NOT `messages.delivery_attempts` (five of those
-            // expire an engine event loudly), and every remaining candidate needs DDL.
-            const prev = wakeDrainHead.get(agentId);
-            const stuck = prev && prev.head === head ? prev.stuck + 1 : 0;
-            wakeDrainHead.set(agentId, { head, stuck });
+            // PHASE-2 T10 (RULING 5): the ladder is unchanged and its STORAGE moved. It was a
+            // module-scope Map, so a crash loop reset this bound to zero on every boot; it is
+            // now `drain_state` (migration 140), one UPSERT, same semantics, durable.
+            const stuck = bumpDrainLadder(agentId, 'unserved_wake', head);
             if (stuck < 2) {
               pendingWakeups.add(agentId);
               logger.info('unserved-wake drain: leftover wake/engine event after turn end; queuing immediate re-run', {
@@ -714,7 +708,7 @@ class AgentRuntime {
               }, agentId);
             }
           } else {
-            wakeDrainHead.delete(agentId);
+            clearDrainLadder(agentId, 'unserved_wake');
           }
         }
       } catch (err) {
@@ -743,13 +737,12 @@ class AgentRuntime {
           const waiting = getWaitingHumanConversations(agentId);
           if (waiting.length > 0) {
             const head = waiting[0].oldestWaitingRowid;
-            const prev = drainHead.get(agentId);
             // PHASE-2 T9: left as the consecutive-pass ladder for the same reason as the
             // unserved-wake drain above — see that block. A derived count anchored on the
             // head's ARRIVAL counts turns during which the drain was not looking at it.
-            const stuck = prev && prev.rowid === head ? prev.stuck + 1 : 0;
+            // PHASE-2 T10 (RULING 5): same ladder, durable storage (`drain_state`, 140).
+            const stuck = bumpDrainLadder(agentId, 'human_conversation', String(head));
             if (stuck < MAX_DRAIN_STUCK) {
-              drainHead.set(agentId, { rowid: head, stuck });
               // D2: cap self-re-triggers so a multi-row backlog can't spin into
               // hundreds of full-context turns. A real new inbound still wakes it.
               if (underWakeBudget(agentId)) pendingWakeups.add(agentId);
@@ -767,7 +760,7 @@ class AgentRuntime {
               try {
                 broadcast({ type: 'chat:error', agentId, error: `Couldn't process a message from ${poisoned.key} after several tries, set it aside so your other messages get through.`, code: 'STUCK_REPEATING', severity: 'warning', retryable: false });
               } catch { /* best effort */ }
-              drainHead.delete(agentId);
+              clearDrainLadder(agentId, 'human_conversation');
               const remaining = getWaitingHumanConversations(agentId);
               if (remaining.length > 0 && underWakeBudget(agentId)) pendingWakeups.add(agentId);
             }
@@ -777,10 +770,10 @@ class AgentRuntime {
             // human and would otherwise be silently starved. Give it its own turn.
             // It is stamped served at pickup, so this fires at most once per event
             // (no spin), and only when no human is owed.
-            drainHead.delete(agentId);
+            clearDrainLadder(agentId, 'human_conversation');
             if (underWakeBudget(agentId)) pendingWakeups.add(agentId);
           } else {
-            drainHead.delete(agentId);
+            clearDrainLadder(agentId, 'human_conversation');
             // D8: nothing is due NOW, but an engine event may be parked on a retry
             // backoff (its delivery aborted and the claim was reverted with
             // next_attempt_at in the future). On an otherwise-idle box nothing

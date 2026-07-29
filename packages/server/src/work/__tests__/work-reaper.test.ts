@@ -334,11 +334,49 @@ describe('T9 — the DERIVED drain bound is a refused design, and it stays refus
     expect(Object.keys(mod)).not.toContain('endedTurnsSince');
   });
 
-  it('the ladder in runtime.ts is the consecutive-pass counter, and says why in place', () => {
+  // ── RE-EXPRESSED AT PHASE-2 T10 (RULING 5), NOT WEAKENED ──
+  //
+  // The two clauses this replaces pinned the LITERAL Map expressions
+  // (`prev && prev.head === head ? prev.stuck + 1 : 0`). RULING 5 ordered that storage
+  // moved: the Map died with the process, so a crash loop reset this bound to zero on every
+  // boot. Pinning a Map read would now pin the defect.
+  //
+  // What the old clauses were protecting is unchanged and is what these assert: BOTH drains
+  // still bound themselves on a CONSECUTIVE-PASS ladder, both still name their own drain, and
+  // the refused derivation is still absent from the file. The ladder's arithmetic — first
+  // sighting 0, same head +1, new head back to 0 — moved to `agent/drain-state.ts` where it
+  // is asserted BEHAVIOURALLY by `agent/__tests__/drain-state.test.ts` (12 clauses, including
+  // the restart), which is a stronger check than the source-text match it replaces.
+  it('both drains in runtime.ts bound themselves on the consecutive-pass ladder, and say why in place', () => {
     const rt = read('agent/runtime.ts');
-    expect(rt).toMatch(/const stuck = prev && prev\.head === head \? prev\.stuck \+ 1 : 0;/);
-    expect(rt).toMatch(/const stuck = prev && prev\.rowid === head \? prev\.stuck \+ 1 : 0;/);
+    expect(rt).toMatch(/bumpDrainLadder\(agentId, 'unserved_wake', head\)/);
+    expect(rt).toMatch(/bumpDrainLadder\(agentId, 'human_conversation', String\(head\)\)/);
     expect(rt).toMatch(/THE BATTERY REFUSED IT/);
+  });
+
+  it('the refused derivation is not back in runtime.ts under any name', () => {
+    // The landmine itself: the clean-looking shape the battery refused.
+    //
+    // Comments are stripped first, deliberately. The landmine NOTE names the refused
+    // derivation — that is the point of a landmine note — so a raw text match would either
+    // fail on the warning itself or force the warning to be written without its own name.
+    // The question is whether the derivation is back in the CODE.
+    const code = read('agent/runtime.ts')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
+    expect(code).not.toMatch(/endedTurnsSince/);
+    expect(code).not.toMatch(/drainStuck\s*\(/);
+    // POSITIVE CONTROL: the stripper did not just blank the file.
+    expect(code).toMatch(/bumpDrainLadder/);
+  });
+
+  it('the ladder is DURABLE — no module-scope Map holds a drain bound any more', () => {
+    // The property RULING 5 bought. A Map here is the crash-loop amnesia coming back.
+    const rt = read('agent/runtime.ts');
+    const ts = read('agent/turn-state.ts');
+    expect(rt).not.toMatch(/new Map<string, \{ head: string; stuck: number \}>/);
+    expect(ts).not.toMatch(/new Map<string, \{ rowid: number; stuck: number \}>/);
+    expect(read('agent/drain-state.ts')).toMatch(/INSERT INTO drain_state/);
   });
 
   it('and the storm law it sits beside is still read from the spine', () => {
