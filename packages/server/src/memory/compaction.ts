@@ -15,7 +15,6 @@ import {
   replaceContextItems,
 } from './dag.js';
 import { generateSummary } from './summarize.js';
-import { ingestSummaryOpenLoops, stripOpenLoopsSection } from './open-loops.js';
 import { archiveMessagesBeforeCompaction, isDreamerIgnored, getArchiveHighWaterMark } from '../vault/archive.js';
 import { isSystemServiceAgent } from '../config/platform.js';
 import { lastCompactionDividerAt } from '../agent/shared-state.js';
@@ -874,19 +873,16 @@ export async function runLeafCompaction(
         abortSignal: opts?.abortSignal,
       });
 
-      // RC-2: parse the summary's fenced OPEN-LOOPS + RESOLVED/CLOSED sections,
-      // upsert/resolve structured open_loops rows (attributed to the chunk's
-      // conversations), and STRIP the OPEN-LOOPS section from the stored summary so
-      // open obligations live as retirable rows, not immortal prose. Defensive: a
-      // parse failure returns the summary unchanged. Recompute the token count on
-      // the stripped text so the stored count stays accurate.
-      const leafText = ingestSummaryOpenLoops({ agentId, summaryText: summary.text, chunk });
-      const leafTokens = leafText === summary.text ? summary.tokenCount : estimateTokens(leafText);
+      // PHASE-2 T7: the fenced OPEN-LOOPS ingest is GONE. Compaction used to run the
+      // summarizer's output through a parser that upserted `open_loops` rows and then stripped
+      // the section back out of the text it had just been handed — a summariser writing the
+      // obligation ledger. Obligations are `work` rows created when the obligation is made
+      // (4a), so a summary is a summary again: it is stored exactly as it was generated.
 
       createLeafSummary(
         agentId,
-        leafText,
-        leafTokens,
+        summary.text,
+        summary.tokenCount,
         messageIds,
         earliestAt,
         latestAt,
@@ -1140,11 +1136,9 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
       previousContext: CONTINUITY_BRIEF_PROMPT,
     });
 
-    // RC-2: the depth-0 contract can emit a fenced OPEN-LOOPS section; the
-    // continuity brief is a narrative for the agent, not the canonical leaf that
-    // upserts structured rows, so strip the section here (no upsert) to keep the
-    // brief clean. No-op when the section is absent.
-    const briefText = stripOpenLoopsSection(result.text);
+    // PHASE-2 T7: nothing to strip. The depth-0 contract no longer emits a fenced
+    // OPEN-LOOPS section, so the brief is the model's text as written.
+    const briefText = result.text;
 
     if (!briefText || briefText.length < 50) {
       logger.warn('Continuity brief generation produced empty/short result, skipping', { agentId });

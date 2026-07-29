@@ -65,10 +65,12 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   // into a tracker project. Same disease screen_broadcast's entry cures).
   'canvas_render',
   'recall_recent_thread',
-  // RC-2: the primary is the agent that gets OPEN LOOPS injected, so the tool that
-  // retires one must be callable in a single step (no load_tool_docs round-trip)
-  // the moment it delivers an answer.
-  'loop_resolve',
+  // PHASE-2 T7: the primary is the agent that gets the OPEN WORK block injected, so both
+  // commitment verbs must be callable in a single step, with no load_tool_docs round-trip.
+  // `commitment_open` in particular is worthless behind one: the promise is recorded at the
+  // MOMENT it is made, and a round-trip is exactly the friction that makes a model skip it.
+  'commitment_open',
+  'commitment_resolve',
   'scratchpad_set',
   'technique_read',
   // v2.9.16: DOJO contacts store. Primary uses these on nearly every

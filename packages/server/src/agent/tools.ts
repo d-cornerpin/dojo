@@ -20,7 +20,10 @@ import { isEmbeddable, captureSiteScreenshot } from './site-snapshot.js';
 import { queueCanvasDoc, queueScreenChip, queueLinkArtifact } from './pending-attachments.js';
 import { memoryGrep, memoryDescribe, memoryExpand } from '../memory/retrieval.js';
 import { insertMessageIfAbsent, rewriteSystemPromptRow } from '../memory/message-store.js';
-import { resolveOpenLoopByPrefix } from '../memory/open-loops.js';
+import {
+  openCommitment, resolveCommitment, dismissCommitment, findObligationByTypedId,
+} from '../work/store.js';
+import { terminalDeliveryForTurn } from './v2/answered-edge.js';
 import { checkRequired, friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer } from './tool-helpers.js';
 // Phase 3.5 (2026-05-04), `shouldIntercept` / `interceptLargeFile` removed
 // from the executeTool path. See agent/tools.ts:executeTool for the explanation.
@@ -2143,21 +2146,40 @@ export const toolDefinitions: ToolDefinition[] = [
     },
   },
   {
-    name: 'loop_resolve',
-    description: 'Close an OPEN LOOP once it has been answered or fulfilled. Open loops are the still-unresolved questions and unfulfilled requests the engine tracks for you and shows in the "OPEN LOOPS (unresolved; resolve when answered)" block. The moment you deliver the answer or complete the request for one, call this with its id prefix (the short code in [brackets], e.g. "a1b2c3d4") so it stops being re-surfaced to you. Resolving is silent bookkeeping, do NOT write a user-facing message about it. If you are unsure whether a loop is truly done, leave it open, an unanswered question is meant to survive until it is actually answered.',
+    name: 'commitment_open',
+    description: 'Record a promise you just made, at the moment you make it. When you tell someone "I\'ll do X", "I\'ll send that after Y", or "I\'ll get back to you on this", call this straight away with what you promised, in your own words. It becomes a tracked item you still owe, shown back to you in the "OPEN WORK" block until it is delivered or dropped. This is bookkeeping, do NOT write a user-facing message about it, and do NOT use it for work you have already finished this turn. Use tracker_create_task instead when the promise is a piece of project work that belongs on the board.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        description: {
+          type: 'string',
+          description: 'What you promised, in one line, in your own words (e.g. "email Bob the roof quote after the site visit").',
+        },
+      },
+      required: ['description'],
+    },
+  },
+  {
+    name: 'commitment_resolve',
+    description: 'Close an item from the OPEN WORK block once you have actually delivered it, or drop it when it is no longer owed. Call this with the id in [brackets] exactly as shown. Use disposition "kept" the moment you deliver the thing — that only works if the message or file really went out this turn, because a promise is kept by delivering it, not by saying so. Use disposition "dropped" when the person told you to forget it or it no longer applies. If you are unsure whether it is truly done, leave it open — an unfulfilled promise is meant to survive until it is actually fulfilled.',
     input_schema: {
       type: 'object',
       properties: {
         id: {
           type: 'string',
-          description: 'The open-loop id prefix shown in [brackets] in the OPEN LOOPS block (at least 4 characters).',
+          description: 'The id shown in [brackets] in the OPEN WORK block, e.g. "cmt:1a2b3c4d5e6f".',
+        },
+        disposition: {
+          type: 'string',
+          enum: ['kept', 'dropped'],
+          description: '"kept" = you delivered it this turn. "dropped" = it is no longer owed.',
         },
         note: {
           type: 'string',
-          description: 'Optional short note on how it was resolved (for the log; not shown to the user).',
+          description: 'Short note on how it was resolved or why it was dropped (for the log; not shown to the user).',
         },
       },
-      required: ['id'],
+      required: ['id', 'disposition'],
     },
   },
   {
@@ -6412,16 +6434,79 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         isError = content.startsWith('Error');
         break;
       }
-      case 'loop_resolve': {
-        const lrErr = checkRequired([{ name: 'id', value: args.id, type: 'string' }]);
-        if (lrErr) { content = lrErr; isError = true; break; }
-        const lr = resolveOpenLoopByPrefix(
+      // ── PHASE-2 T7: commitments. The promise half of requirement 4a. ──
+      // `loop_resolve` stood here and closed a row a PARSER had created out of summary prose.
+      // The parser is gone; the promise is recorded when it is MADE, by the agent that made it,
+      // and it is closed by a delivery or by an explicit drop. Both verbs route through
+      // `work/store.ts` — the spine's one writer — and neither can reach `done` without the
+      // delivery `transition()` demands.
+      case 'commitment_open': {
+        const coErr = checkRequired([{ name: 'description', value: args.description, type: 'string' }]);
+        if (coErr) { content = coErr; isError = true; break; }
+        const coTurn = currentTurnNumber.get(agentId) ?? null;
+        if (coTurn === null) {
+          // Origin is required on the spine, and a commitment's origin is the turn that made
+          // it. Refusing here is honest; minting a row with a fabricated turn is not.
+          content = 'Error: commitment_open can only be called inside a turn.';
+          isError = true;
+          break;
+        }
+        const coRoot = currentTurnRoot.get(agentId) ?? null;
+        const coId = openCommitment({
           agentId,
-          args.id as string,
-          (args.note as string | undefined) ?? undefined,
-        );
-        content = lr.message;
-        isError = !lr.ok;
+          description: args.description as string,
+          conversationId: coRoot?.conversationId ?? null,
+          turnNumber: coTurn,
+          sourceMessageId: coRoot?.id ?? null,
+        });
+        if (!coId) {
+          content = 'Error: pass the promise you made as `description`.';
+          isError = true;
+          break;
+        }
+        content = `[OK] Recorded: ${(args.description as string).trim()} — id ${coId}. It stays open until you deliver it or drop it.`;
+        break;
+      }
+      case 'commitment_resolve': {
+        const crErr = checkRequired([
+          { name: 'id', value: args.id, type: 'string' },
+          { name: 'disposition', value: args.disposition, type: 'string' },
+        ]);
+        if (crErr) { content = crErr; isError = true; break; }
+        const crRow = findObligationByTypedId(agentId, args.id as string);
+        if (!crRow) {
+          // The refusal is steerable, and it names the surface the id comes from — the
+          // recorded baseline red is a model writing to an id from a previous session.
+          content = `Error: no open work matches "${String(args.id)}". Use an id exactly as shown in [brackets] in the OPEN WORK block; it may already be closed.`;
+          isError = true;
+          break;
+        }
+        const crNote = (args.note as string | undefined)?.trim() || null;
+        if (String(args.disposition) === 'dropped') {
+          const dr = dismissCommitment(crRow.id, {
+            agentId, reason: crNote ?? 'no longer owed',
+          });
+          if (dr.kind === 'applied') content = `[OK] Dropped: ${crRow.title ?? crRow.id}.`;
+          else { content = `Error: could not drop ${crRow.id} (${dr.kind}).`; isError = true; }
+          break;
+        }
+        // 'kept' — and a promise is kept by DELIVERING it. The delivery is resolved from this
+        // turn's own transport receipts rather than taken from the model, so there is no
+        // argument it can pass that would make an undelivered promise look kept.
+        const crTurn = currentTurnNumber.get(agentId) ?? null;
+        const crDelivery = terminalDeliveryForTurn(agentId, crTurn, crRow.conversationId);
+        const rr = resolveCommitment(crRow.id, {
+          agentId, resultDeliveryId: crDelivery, note: crNote,
+        });
+        if (rr.kind === 'applied') {
+          content = `[OK] Closed: ${crRow.title ?? crRow.id}.`;
+        } else if (rr.kind === 'rejected' && rr.gate === 'done-requires-delivery') {
+          content = `Not closed: nothing was delivered for "${crRow.title ?? crRow.id}" on this turn, so it is still owed. Send it first, then call this again — or use disposition "dropped" if it is no longer owed.`;
+          isError = true;
+        } else {
+          content = `Error: could not close ${crRow.id} (${rr.kind}).`;
+          isError = true;
+        }
         break;
       }
       case 'tracker_complete_step': {

@@ -46,7 +46,6 @@ import {
   type Summary,
 } from './dag.js';
 import { generateSummary } from './summarize.js';
-import { stripOpenLoopsSection } from './open-loops.js';
 import { refreshEmbedding } from './embeddings.js';
 import { estimateTokens } from './store.js';
 import { summaryPartyTag } from './party-label.js';
@@ -334,12 +333,9 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
       summaryId: flag.id, removedLines: scrubbed.removedLines,
     }, flag.agentId);
   }
-  // RC-2: the depth-0 contract can emit a fenced OPEN-LOOPS section. A rebuild
-  // regenerates from originals but does NOT re-upsert structured rows (those are
-  // owned by live compaction), so strip the section here so it never leaks back
-  // into a rebuilt summary as immortal prose. No-op when absent.
-  const deLooped = stripOpenLoopsSection(scrubbed.text);
-  const finalText = deLooped.length > 0 ? deLooped : NO_CONVERSATION_PLACEHOLDER;
+  // PHASE-2 T7: nothing to strip. The depth-0 contract no longer emits a fenced OPEN-LOOPS
+  // section, so a rebuilt summary is the regenerated text.
+  const finalText = scrubbed.text.length > 0 ? scrubbed.text : NO_CONVERSATION_PLACEHOLDER;
 
   writeRebuiltContent(flag, finalText);
   return finalText === NO_CONVERSATION_PLACEHOLDER ? 'placeholder' : 'rebuilt';

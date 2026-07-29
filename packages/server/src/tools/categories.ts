@@ -55,7 +55,15 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'Conversation Recall',
-    tools: ['recall_recent_thread', 'history_search', 'history_get', 'history_expand', 'loop_resolve'],
+    tools: ['recall_recent_thread', 'history_search', 'history_get', 'history_expand'],
+  },
+  {
+    // PHASE-2 T7: commitments are OBLIGATIONS, not recall. `loop_resolve` sat in the recall
+    // group because the thing it closed was recovered from remembered prose; a promise the
+    // agent makes is not a memory operation, and grouping it as one is what made it feel
+    // optional.
+    label: 'Open Work (what you still owe)',
+    tools: ['commitment_open', 'commitment_resolve'],
   },
   {
     // Squad-shared memory for multi-agent coordination (Phase 7 / Part X).

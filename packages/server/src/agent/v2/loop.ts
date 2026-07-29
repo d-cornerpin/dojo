@@ -132,7 +132,7 @@ import {
   insertMessageIfAbsent, insertEngineEventIfAbsent, setConvKeyByRowid, tagTurnOutputConvKey,
   markServedByRowid, setAnswerMessageId,
 } from '../../memory/message-store.js';
-import { buildOpenLoopsInjection } from '../../memory/open-loops.js';
+import { buildOpenWorkInjection } from '../../work/obligations.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
 import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, claimAssembledSiblings, getOwedMidTurnArrivals, conversationKey, type TurnCounterparty } from './counterparty.js';
 // PHASE-2 T6 — THE ANSWERED EDGE. One module answers "has the person heard from us" for
@@ -3822,14 +3822,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
             }
           }
 
-          // OPEN LOOPS (RC-2): the CURRENT conversation's still-open loops (plus up
-          // to 3 cross-conversation loops labeled by party), as a compact numbered
-          // block. Structured, retirable rows replace the old immortal open-loop
-          // prose in summaries; only status='open' rows are injected (stale loops go
-          // to the daily brief, never per-turn). Same volatile lane as the outbound
-          // facts above, so it never breaks the prompt-cache prefix.
-          const loopsBlock = buildOpenLoopsInjection(agentId, chosenConvKey);
-          if (loopsBlock) pushEngineMessage(messages, loopsBlock); // registry-exempt(2026-07-16): RC-2 open-loops block reads conv-scoped rows mid-iteration; migrate with the volatile-injection registry refactor
+          // OPEN WORK (PHASE-2 T7): what this agent still OWES — the current
+          // conversation's open asks and commitments first, then up to 3 from other
+          // conversations labelled as such. Reads the work spine directly; the rows
+          // are created when the obligation is made (4a), so nothing here parses a
+          // summary or matches prose. Aged rows are excluded and go to the daily
+          // brief instead (4b: ageing demotes, it never closes). Same volatile lane
+          // as the outbound facts above, so it never breaks the prompt-cache prefix.
+          //
+          // Keyed on `conversation_id`, not on `conv_key`: the deleted block compared
+          // conv_key strings, which is the column that also carried the claim token
+          // and the park sigils, so a parked row changed which party its items
+          // belonged to.
+          const openWorkBlock = buildOpenWorkInjection(agentId, pendConvId);
+          if (openWorkBlock) pushEngineMessage(messages, openWorkBlock); // registry-exempt(2026-07-16): the open-work block reads conv-scoped rows mid-iteration; migrate with the volatile-injection registry refactor
 
           // RECENTLY ANSWERED (ticket-stamps plan A4, owner-approved): the
           // last few asks of THIS conversation that already have answers,

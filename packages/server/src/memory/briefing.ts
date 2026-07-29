@@ -6,7 +6,7 @@ import { callModel } from '../agent/model.js';
 import { broadcast } from '../gateway/ws.js';
 import { estimateTokens } from './store.js';
 import { getSummariesByAgent } from './dag.js';
-import { markStaleLoops, buildStaleLoopsBriefSection } from './open-loops.js';
+import { buildAgedWorkBriefSection } from '../work/obligations.js';
 
 const logger = createLogger('memory-briefing');
 
@@ -102,15 +102,17 @@ Do NOT include preamble like "Here is your briefing" — start directly with the
       tools: false,
     });
 
-    // RC-2: aging open loops are never silently dropped. First flip any past the
-    // staleness threshold to 'stale' (a marker, not a drop), then append a
-    // deterministic one-line-per-loop section to the brief so the owner sees them
-    // ("still open, no answer: X, ask again or drop?"). Appended AFTER the model
-    // pass so a weak model can't drop it. Only an explicit resolution/dismissal
-    // (loop_resolve) closes a surfaced loop.
-    markStaleLoops(agentId);
-    const staleSection = buildStaleLoopsBriefSection(agentId);
-    const content = staleSection ? `${result.content}\n\n${staleSection}` : result.content;
+    // PHASE-2 T7 (4b): aged obligations are never silently dropped. Anything still owed past
+    // the ageing threshold gets a deterministic one-line-per-item section appended AFTER the
+    // model pass, so a weak model cannot drop it ("still open, no answer: X, ask again or
+    // drop?"). Only an explicit resolution or dismissal closes one.
+    //
+    // THIS IS NOW A PURE READ. The mechanism it replaces (`markStaleLoops`) fired an UPDATE
+    // from inside this generator, flipping rows to `status='stale'` and then listing what it
+    // had just written — a report that decided its own data. Ageing is a comparison against
+    // `work.opened_at` now; the brief changes nothing.
+    const agedSection = buildAgedWorkBriefSection(agentId);
+    const content = agedSection ? `${result.content}\n\n${agedSection}` : result.content;
 
     const id = await saveBriefing(agentId, content);
     const tokenCount = estimateTokens(content);
@@ -126,7 +128,7 @@ Do NOT include preamble like "Here is your briefing" — start directly with the
       briefingId: id,
       tokenCount,
       summaryCount: recentSummaries.length,
-      staleLoops: staleSection ? true : false,
+      agedWork: agedSection ? true : false,
     }, agentId);
 
     return { id, content, tokenCount };

@@ -31,6 +31,7 @@
 // They are listed here rather than in a plan file so the next person to read this function
 // can see what it does not do yet without having to trust that a document is current.
 
+import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 
@@ -1226,4 +1227,223 @@ export function bumpThreadHopCount(threadId: string): number | null {
   ).run(now(), threadId).changes;
   if (changed === 0) return null;
   return threadHopCount(threadId);
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// PHASE-2 T7 — COMMITMENTS. Requirements 4a + 4b.
+//
+// The obligation that had no home. An ASK is created at ingest (T3, above): a person sent a
+// message, and the message row and its ticket are written in one transaction. A COMMITMENT is
+// the other direction — the agent said it would do something — and until this task the
+// platform had no structural record of one at all. It recovered them AFTERWARDS, from prose,
+// by parsing a fenced section out of a summary and matching entries with a Jaccard similarity
+// function (`memory/open-loops.ts`, 623 lines, deleted here).
+//
+// Why that had to go, in the ledger's own words: the parser could not tell an OBLIGATION from
+// a SELF-NARRATION. A transient "I couldn't read your last message" became a durable row and
+// was re-raised to the owner five times over 36 hours. The module's answer was a second regex
+// guarding the first. The answer here is that there is no parser — an obligation exists
+// because a caller declared one, and the declaration carries its own origin.
+//
+// AGEING IS A MARKER, NOT A STATE (4b). The deleted module wrote `status='stale'` from inside
+// the daily-brief generator — a read that mutated rows. Here "aged" is `opened_at` compared
+// against `COMMITMENT_AGING_DAYS`; nothing is written, no state exists for it, and the only
+// two ways a commitment closes are `resolveCommitment` (which needs the delivery that makes
+// `done` true) and `dismissCommitment` (`abandoned` — honest that nothing was delivered).
+// ════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * The ageing threshold, carried VERBATIM from the deleted `STALE_AFTER_DAYS = 7`
+ * (`memory/open-loops.ts:49`). #14: a threshold that is carried is not a threshold that is
+ * invented, and this one is not re-derived.
+ */
+export const COMMITMENT_AGING_DAYS = 7;
+
+/** The states an obligation is still owed in. A `claimed` ask is being served RIGHT NOW by the
+ *  turn holding it, so it is not something the model needs reminding about. */
+const OWED_STATES = "('open','paused','blocked','on_deck')";
+
+/** Kinds that are obligations to a person rather than board work. Both are hidden from the
+ *  project board by the same rule (T3: `kind='ask'` never appears there). */
+const OBLIGATION_KINDS = "('ask','commitment')";
+
+export interface OpenCommitmentInput {
+  agentId: string;
+  /** What was promised, in the agent's own words. Stored on `title`; never parsed. */
+  description: string;
+  conversationId: string | null;
+  /** The turn that made the promise. Half of the row's identity — see `commitmentId`. */
+  turnNumber: number;
+  /** The message the promise was made in, when there is one. Becomes `root_id`. */
+  sourceMessageId: string | null;
+}
+
+/**
+ * A commitment's id is derived from (agent, turn, normalized description).
+ *
+ * That derivation IS the dedup rule, and it draws a line the Jaccard matcher could not: a
+ * model repeating itself inside ONE turn owes ONE thing, and the same words on a LATER turn
+ * are a SECOND promise. The deleted matcher collapsed anything 60% similar across the whole
+ * agent for ever, so "send the invoice" promised on Monday and again on Friday was one loop,
+ * and closing it closed both.
+ *
+ * Short and whole-printable on purpose: the block shows the WHOLE id, so the tool matches
+ * exactly and the deleted module's ambiguous-prefix branch has nothing left to do.
+ */
+function commitmentId(agentId: string, turnNumber: number, description: string): string {
+  const norm = description.toLowerCase().replace(/\s+/g, ' ').trim();
+  const h = createHash('sha256').update(`${agentId} ${turnNumber} ${norm}`).digest('hex');
+  return `cmt:${h.slice(0, 12)}`;
+}
+
+/**
+ * Open a commitment. Returns its id, or null when there is nothing to record.
+ *
+ * The derived id is what makes it idempotent per turn: a model that says "I'll send it" twice
+ * in one turn gets one row, and the second call returns the same id rather than a second
+ * obligation or an error.
+ */
+export function openCommitment(p: OpenCommitmentInput): string | null {
+  const description = (p.description ?? '').trim();
+  if (!description) return null;
+  const db = getDb();
+  const id = commitmentId(p.agentId, p.turnNumber, description);
+  if (db.prepare('SELECT 1 FROM work WHERE id = ?').get(id)) return id;
+
+  // Same discipline as `openAsk` and `openDelegationJoin`: a dangling conversation id is
+  // recorded as ABSENT identity rather than allowed to take the promise down on an FK
+  // violation. Losing the obligation is worse than losing the attribution.
+  let conversationId = p.conversationId;
+  if (conversationId != null
+      && !db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(conversationId)) {
+    logger.warn('commitment opened without conversation identity: the id resolves to no conversation row', {
+      agentId: p.agentId, conversationId,
+    }, p.agentId);
+    conversationId = null;
+  }
+  const at = now();
+  const rootId = p.sourceMessageId ?? `turn:${p.turnNumber}`;
+  db.prepare(`
+    INSERT INTO work (
+      id, kind, agent_id, requester, requester_id, conversation_id,
+      root_kind, root_id, state, intent, wakes, closes_thread,
+      title, opened_at, updated_at, provenance
+    ) VALUES (?, 'commitment', ?, 'agent', ?, ?, 'commitment', ?, 'open', 'commitment', 0, 0, ?, ?, ?, 'live')
+  `).run(id, p.agentId, p.agentId, conversationId, rootId, description, at, at);
+  appendEvent(id, 'opened', p.agentId, {
+    turn_number: p.turnNumber, source_message_id: p.sourceMessageId, conversation_id: conversationId,
+  });
+  logger.info('commitment recorded', { agentId: p.agentId, id, turnNumber: p.turnNumber }, p.agentId);
+  return id;
+}
+
+/**
+ * Resolve a commitment: it was kept, and here is the delivery that proves it.
+ *
+ * There is no "the model says so" path, deliberately. `transition()`'s G7 refuses `done`
+ * without a delivery that RESOLVES, so a promise cannot be closed by announcing it — which is
+ * the single behaviour every honesty floor in this tree exists to prevent.
+ */
+export function resolveCommitment(
+  workId: string,
+  p: { agentId: string; resultDeliveryId: string | null; note?: string | null },
+): TransitionResult {
+  return transition(workId, {
+    to: 'done', by: 'agent', actorId: p.agentId,
+    reason: p.note && p.note.trim() ? `commitment kept: ${p.note.trim()}` : 'commitment kept',
+    resultDeliveryId: p.resultDeliveryId,
+  });
+}
+
+/**
+ * Dismiss a commitment: it is no longer owed, and nothing was delivered for it.
+ *
+ * `abandoned`, never `done` — 4b's "dismissal" is the owner (or the agent on their word)
+ * dropping the obligation, and calling that "done" would file a kept-promise record on a
+ * promise nobody kept. The same reading T12's status map gives `cancelled`.
+ */
+export function dismissCommitment(
+  workId: string,
+  p: { agentId: string; reason: string },
+): TransitionResult {
+  return transition(workId, {
+    to: 'abandoned', by: 'agent', actorId: p.agentId, reason: p.reason,
+  });
+}
+
+/** One obligation, as the surfaces that render it need it. */
+export interface Obligation {
+  id: string;
+  kind: 'ask' | 'commitment';
+  title: string | null;
+  conversationId: string | null;
+  /** The party label's inputs, read from the CONVERSATION's own identity columns.
+   *
+   *  The deleted module derived the label by string-parsing `conv_key` — the column that also
+   *  carried the claim token and the park sigils, so a parked row silently changed which party
+   *  its loops were attributed to. Phase 1 gave conversations real identity columns; this reads
+   *  those, and it is why nothing here depends on the column T10 deletes. */
+  channel: string | null;
+  counterpartyName: string | null;
+  counterpartyId: string | null;
+  openedAt: number;
+  state: WorkState;
+}
+
+const OBLIGATION_COLUMNS = `
+  w.id AS id, w.kind AS kind, w.title AS title, w.conversation_id AS conversationId,
+  c.channel AS channel, c.counterparty_name AS counterpartyName, c.counterparty_id AS counterpartyId,
+  w.opened_at AS openedAt, w.state AS state`;
+
+/** LEFT JOIN, never INNER: an obligation whose conversation identity is absent is still owed,
+ *  and an inner join would silently drop it from both surfaces. */
+const OBLIGATION_FROM = 'work w LEFT JOIN conversations c ON c.id = w.conversation_id';
+
+function agingCutoff(): number {
+  return Date.now() - COMMITMENT_AGING_DAYS * 24 * 60 * 60 * 1000;
+}
+
+/**
+ * Obligations still owed and NOT yet aged — what the per-turn block renders.
+ *
+ * The ageing split is the whole of 4b's "aging is a marker": an aged row is still `open` and
+ * still owed, it simply moves from the per-turn lane to the daily brief, exactly as the
+ * deleted `status='stale'` flip arranged — without a second state and without a write.
+ */
+export function openObligations(agentId: string): Obligation[] {
+  return getDb().prepare(`
+    SELECT ${OBLIGATION_COLUMNS}
+      FROM ${OBLIGATION_FROM}
+     WHERE w.agent_id = ? AND w.kind IN ${OBLIGATION_KINDS} AND w.state IN ${OWED_STATES}
+       AND w.opened_at >= ?
+     ORDER BY w.opened_at ASC`).all(agentId, agingCutoff()) as Obligation[];
+}
+
+/** Obligations still owed that have gone past the ageing threshold — the daily brief's set. */
+export function agedObligations(agentId: string): Obligation[] {
+  return getDb().prepare(`
+    SELECT ${OBLIGATION_COLUMNS}
+      FROM ${OBLIGATION_FROM}
+     WHERE w.agent_id = ? AND w.kind IN ${OBLIGATION_KINDS} AND w.state IN ${OWED_STATES}
+       AND w.opened_at < ?
+     ORDER BY w.opened_at ASC`).all(agentId, agingCutoff()) as Obligation[];
+}
+
+/**
+ * Resolve an obligation id the way a weak model typed it: brackets stripped, any case, with or
+ * without the `cmt:` prefix. Carried from the deleted `resolveOpenLoopByPrefix`'s forgiveness
+ * (#37/#77 — absorb, do not refuse), minus its ambiguous-prefix branch, which whole-id
+ * rendering makes unreachable.
+ */
+export function findObligationByTypedId(agentId: string, typed: string): Obligation | null {
+  const raw = (typed ?? '').trim().replace(/^\[+|\]+$/g, '').toLowerCase();
+  if (!raw) return null;
+  const withPrefix = raw.startsWith('cmt:') ? raw : `cmt:${raw}`;
+  const r = getDb().prepare(`
+    SELECT ${OBLIGATION_COLUMNS}
+      FROM ${OBLIGATION_FROM}
+     WHERE w.agent_id = ? AND w.kind IN ${OBLIGATION_KINDS} AND w.state IN ${OWED_STATES}
+       AND (lower(w.id) = ? OR lower(w.id) = ?)
+     LIMIT 1`).get(agentId, raw, withPrefix) as Obligation | undefined;
+  return r ?? null;
 }

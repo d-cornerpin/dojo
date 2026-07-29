@@ -119,10 +119,16 @@ const RESOLVED: Record<string, number> = {
   // B (:345 DELIVERABLE_ENGINE_EVENT_WHERE, T6). C (findUnservedTerminalWake) was the second
   // one and T4 removed it — the finder reads `served_by_turn IS NULL` now.
   'packages/server/src/agent/v2/counterparty.ts': 1,
-  // NOT `messages` AT ALL — this is `open_loops.conv_key`, the dedup key on a table T7
-  // deletes outright. PINNED §1 counted it among the "live SQL predicates in production";
-  // it is a predicate, on a different table, doing a different job.
-  'packages/server/src/memory/open-loops.ts': 1,
+  // ── REMOVED BY T7 (2026-07-29) ──
+  // `packages/server/src/memory/open-loops.ts` carried ONE occurrence and it was never on
+  // `messages` at all: it was `open_loops.conv_key`, the dedup key of the prose-parsed
+  // open-loops store. PINNED §1 counted it among the "live SQL predicates in production",
+  // which is why it had an entry here — a predicate, on a different table, doing a different
+  // job. T7 deleted the module (623 lines) and migration `136_drop_open_loops.sql` deleted the
+  // table, so the site is gone rather than re-pointed. The other site this file used to name
+  // in that module (`:123`, the store-contradiction probe) was already rekeyed onto the work
+  // lookup by T3 and is asserted below.
+  //
   // The conformance test that PINS the engine-event serve boundary's SQL. PHASE-2.md
   // predicted this assertion "fails by design when T3 lands"; it does not, and the reason
   // is the correction above: what it pins is sweepByReferent, which is bucket B.
@@ -148,9 +154,14 @@ describe('PHASE-2 T3 — the conv_key claim predicate, resolved site by site', (
     const claimRow = store.slice(store.indexOf('export function claimRowByRowid'));
     expect(claimRow.slice(0, 500)).not.toMatch(/conv_key IS NULL/);
 
-    // 3. the "is anything unserved" probe behind the store-contradiction guard
-    expect(src('packages/server/src/memory/open-loops.ts'))
-      .toMatch(/FROM work\s+WHERE agent_id = \? AND kind = 'ask' AND state = 'open'/);
+    // 3. the "is anything unserved" probe behind the store-contradiction guard.
+    //    T3 rekeyed it onto the work lookup; T7 deleted the module it lived in, guard and all,
+    //    because the parser it defended is gone. Asserted as an ABSENCE with its replacement
+    //    named, not as a bare "grep found nothing" (#15): the requirement is preserved by the
+    //    creation door, and `work/__tests__/commitment-lifecycle.test.ts` is where that is proven.
+    expect(fs.existsSync(path.join(REPO, 'packages/server/src/memory/open-loops.ts'))).toBe(false);
+    expect(src('packages/server/src/work/store.ts'))
+      .toMatch(/kind IN \$\{OBLIGATION_KINDS\}/);
 
     // 4. the watchdog's unanswered-human backlog — OUTSIDE `packages/`, named explicitly
     const wd = src('watchdog/src/index.ts');

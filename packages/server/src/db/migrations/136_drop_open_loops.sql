@@ -1,0 +1,24 @@
+-- 136 (PHASE-2 T7): the prose-parsed open-loops store is deleted.
+--
+-- WHAT THIS TABLE WAS. Migration 107 created it so that an unresolved question could
+-- survive compaction as a RETIRABLE row instead of as immortal prose inside an immutable
+-- summary. It was fed by a fenced-section parser reading the summarizer's output and
+-- matched by a Jaccard similarity function.
+--
+-- WHY IT GOES. Requirement 4a: an unresolved obligation is now created as a `work` row at
+-- creation time, not recovered from prose by regex. The ask half landed at PHASE-2 T3 (an
+-- inbound owner message opens `work(kind='ask')` in the same transaction as the message
+-- INSERT); the promise half lands here as `work(kind='commitment')`. Aging is a marker
+-- computed from `opened_at`, never a stored state (4b) — the old `status='stale'` flip is
+-- gone with the column.
+--
+-- ORDERING. This file sorts strictly AFTER the Stable Bridge's `135b_stable_work_spine.sql`
+-- ('_' 0x5F < 'b' 0x62), which is the migration that maps a lived-in box's `open_loops` rows
+-- onto `work` (STABLE-BRIDGE Entry 12). The Bridge therefore still reads this table on the
+-- upgrade path; only the local chain drops it. Proven with Node's own .sort(), which is what
+-- db/migrations.ts:123-125 uses.
+--
+-- SAFETY. No other table declares a foreign key into `open_loops` (checked on both the dev
+-- body and the lived-in reference body), so nothing dangles. SQLite drops the table's three
+-- indexes with it; that is asserted in the rehearsal rather than assumed.
+DROP TABLE IF EXISTS open_loops;
