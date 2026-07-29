@@ -39,16 +39,24 @@ describe('origin-spine conformance (P1)', () => {
     const createProjectSig = schema.slice(schema.indexOf('export function createProject'), schema.indexOf('export function createProject') + 1200);
     expect(createTaskSig).toMatch(/origin:\s*\{\s*kind:/);
     expect(createProjectSig).toMatch(/origin:\s*\{\s*kind:/);
-    // Every INSERT INTO legacy_tasks in schema.ts carries origin columns (the a2a
-    // auto-task INSERT stamps a literal origin_kind instead of the quad).
-    const taskInserts = schema.split('INSERT INTO legacy_tasks').slice(1);
-    expect(taskInserts.length).toBeGreaterThanOrEqual(3);
-    for (const ins of taskInserts) {
-      const head = ins.slice(0, 400);
-      expect(head, 'a task INSERT is missing origin columns').toMatch(/source_message_id/);
-      expect(head).toMatch(/origin_kind|'a2a_assign'/);
+    // PHASE-2 T8b: the INSERT moved to `work/tracker-store.ts` (one creation door per noun),
+    // so the scan follows it. The property is unchanged and is now stronger: the origin quad
+    // is a REQUIRED parameter of both openers, so a creation path that forgets lineage does
+    // not compile — and the INSERT still names all four columns.
+    const store = read('work/tracker-store.ts');
+    for (const opener of ['openTrackerProject', 'openTrackerTask']) {
+      const body = store.slice(store.indexOf(`export function ${opener}`));
+      const head = body.slice(0, 2000);
+      expect(head, `${opener} does not carry origin columns`).toMatch(/source_message_id, origin_turn, origin_conv_key, origin_kind/);
+      expect(head).toMatch(/p\.origin\.sourceMessageId/);
     }
-    expect(schema.split('INSERT INTO legacy_projects').slice(1)[0]).toMatch(/source_message_id, origin_turn, origin_conv_key, origin_kind/);
+    expect(store).toMatch(/export interface TrackerOrigin/);
+    // Every caller in schema.ts hands the quad through rather than defaulting it.
+    for (const opener of ['openTrackerProject(', 'openTrackerTask(']) {
+      const calls = schema.split(opener).slice(1);
+      expect(calls.length).toBeGreaterThanOrEqual(1);
+      for (const c of calls) expect(c.slice(0, 900)).toMatch(/origin:/);
+    }
   });
 
   it('the scheduler fire and the assignment notice pass REAL work referents', () => {

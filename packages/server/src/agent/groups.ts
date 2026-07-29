@@ -8,6 +8,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getPMAgentId, getTrainerAgentId, getImaginerAgentId, getHealerAgentId, getDreamerAgentId } from '../config/platform.js';
+import { patchWorkWhere } from '../work/tracker-store.js';
 
 const logger = createLogger('groups');
 
@@ -148,8 +149,9 @@ export function deleteGroup(id: string): boolean {
   const db = getDb();
   // Move agents to ungrouped
   db.prepare("UPDATE agents SET group_id = NULL, updated_at = datetime('now') WHERE group_id = ?").run(id);
-  // Remove group task assignments
-  db.prepare("UPDATE legacy_tasks SET assigned_to_group = NULL WHERE assigned_to_group = ?").run(id);
+  // Remove group task assignments. PHASE-2 T8b: the tracker's rows are `work` rows, and a
+  // write to `work` lives under `work/` — the single-writer walk's directory clause.
+  patchWorkWhere({ column: 'assigned_to_group', equals: id }, { assigned_to_group: null });
   const result = db.prepare('DELETE FROM agent_groups WHERE id = ?').run(id);
 
   if (result.changes > 0) {

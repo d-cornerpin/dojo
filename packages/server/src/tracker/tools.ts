@@ -8,6 +8,16 @@
 // this file for bare role='system' INSERTs carrying imperative model-directed text.
 // ════════════════════════════════════════════════════════════════════════
 import { getDb } from '../db/connection.js';
+import {
+  taskScope, projectScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
+  validatedExpr, revertCountExpr, awaitingUserVerdictExpr, validationThreadIdExpr,
+  statusToState, stateToStatus, type TrackerStatus,
+} from '../work/tracker-view.js';
+import type { TransitionResult } from '../work/store.js';
+import {
+  patchWork, setTrackerStatus, upholdClaim, throwBackClaim, resetRevertCount,
+  requestUserVerdict, clearUserVerdict, deliveryForTaskClose, deliveryForCompletedChildren,
+} from '../work/tracker-store.js';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence, findTaskOriginChain, renderTaskOriginChain } from './delivery-evidence.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
 import { retireEngineEventsForTask } from '../agent/v2/counterparty.js';
@@ -26,6 +36,8 @@ import {
   formatResolveError,
   closeProjectAndOpenTasks,
   clearPokeLog,
+  setTaskStatus,
+  setTaskStatusResult,
 } from './schema.js';
 import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
 import { injectTaskAssignmentNotification, claimAssignmentNoticeForTerminalTask } from './notify.js';
@@ -59,10 +71,11 @@ import { OWNER_ALERT_PROJECT_ATTENTION_PREFIX } from '@dojo/shared';
 function getTaskStampFields(taskId: string): TaskStampFields | null {
   try {
     return getDb().prepare(
-      `SELECT id, last_activity_turn, last_activity_at, last_activity_outcome,
-              last_answered_turn, last_answered_at, last_delivery_summary,
-              step_number, total_steps, project_id
-         FROM legacy_tasks WHERE id = ?`,
+      `SELECT id, last_activity_turn, ${msToText('last_activity_at')} AS last_activity_at,
+              last_activity_outcome, last_answered_turn,
+              ${msToText('last_answered_at')} AS last_answered_at, last_delivery_summary,
+              step_number, total_steps, parent_id AS project_id
+         FROM work WHERE id = ?`,
     ).get(taskId) as TaskStampFields | null;
   } catch {
     return null;
@@ -203,11 +216,13 @@ export async function closeEngineScaffoldSameTurn(
 ): Promise<boolean> {
   const db = getDb();
   const task = db.prepare(`
-    SELECT t.id, t.status, t.project_id, t.repeat_interval, t.assigned_to, t.created_at, t.origin_turn,
+    SELECT t.id AS id, ${STATE_TO_STATUS_SQL('t.state')} AS status, t.parent_id AS project_id,
+           t.repeat_interval AS repeat_interval, t.agent_id AS assigned_to,
+           ${msToText('t.opened_at')} AS created_at, t.origin_turn AS origin_turn,
            p.description AS project_description
-    FROM legacy_tasks t
-    LEFT JOIN legacy_projects p ON p.id = t.project_id
-    WHERE t.id = ?
+    FROM work t
+    LEFT JOIN work p ON p.id = t.parent_id
+    WHERE ${taskScope('t')} AND t.id = ?
   `).get(taskId) as {
     id: string; status: string; project_id: string | null; repeat_interval: number | null;
     assigned_to: string | null; created_at: string; origin_turn: number | null; project_description: string | null;
@@ -244,13 +259,22 @@ export async function closeEngineScaffoldSameTurn(
   // Guard 3: land complete_validated=0. The two-key contract holds, the PM's key
   // still turns. Single writer line (door-lock allow-listed in
   // two-key-conformance.test.ts as the sole engine status='complete' writer).
-  const res = db.prepare(`
-    UPDATE legacy_tasks
-    SET status = 'complete', complete_validated = 0, completed_at = datetime('now'),
-        result = ?, evidence_json = ?, updated_at = datetime('now')
-    WHERE id = ? AND status = 'in_progress' AND repeat_interval IS NULL
-  `).run(resultText, evidenceJson, taskId);
-  if (res.changes === 0) return false;
+  // PHASE-2 T8b: through `transition()`. The engine may only assert what it can point at
+  // (G6) and `done` means delivered (G7) — both are satisfied by the SAME row: the delivery
+  // this turn made to the person, which is the whole reason this close is sanctioned. No
+  // delivery, no close; the PM ladder then owns the row, which is the old fallback anyway.
+  const scaffoldDelivery = deliveryForTaskClose(taskId);
+  if (!scaffoldDelivery) {
+    logger.info('engine scaffold close skipped: no delivery on the ledger for this work', { agentId, taskId }, agentId);
+    return false;
+  }
+  patchWork(taskId, { result: resultText, evidence_json: evidenceJson });
+  const res = setTrackerStatus(taskId, 'complete', {
+    by: 'engine', actorId: 'engine', expectedState: 'claimed',
+    evidenceRef: scaffoldDelivery, resultDeliveryId: scaffoldDelivery,
+    reason: 'engine closed its own same-turn scaffold against the delivered reply (unvalidated; the PM sweep validates)',
+  });
+  if (res.kind !== 'applied') return false;
 
   try {
     writeTaskLog({
@@ -306,9 +330,9 @@ export async function fileAssignDeliverableCloseRequest(
 ): Promise<boolean> {
   const db = getDb();
   const task = db.prepare(`
-    SELECT id, title, assigned_to, project_id FROM legacy_tasks
-    WHERE a2a_thread_id = ? AND assigned_to = ? AND status = 'in_progress'
-      AND repeat_interval IS NULL AND is_paused = 0
+    SELECT w.id AS id, w.title AS title, w.agent_id AS assigned_to, w.parent_id AS project_id FROM work w
+    WHERE ${taskScope('w')} AND w.a2a_thread_id = ? AND w.agent_id = ? AND w.state = 'claimed'
+      AND w.repeat_interval IS NULL AND w.is_paused = 0
     LIMIT 1
   `).get(threadId, senderAgentId) as { id: string; title: string; assigned_to: string | null; project_id: string | null } | undefined;
   if (!task) return false;
@@ -323,14 +347,20 @@ export async function fileAssignDeliverableCloseRequest(
     },
   ]);
 
-  // Same sanctioned Key-1 landing as every agent-request close: unvalidated.
-  const res = db.prepare(`
-    UPDATE legacy_tasks
-    SET status = 'complete', complete_validated = 0, completed_at = datetime('now'),
-        result = ?, evidence_json = ?, updated_at = datetime('now')
-    WHERE id = ? AND status = 'in_progress' AND repeat_interval IS NULL
-  `).run(resultText, evidenceJson, task.id);
-  if (res.changes === 0) return false;
+  // Same sanctioned Key-1 landing as every agent-request close: unvalidated — which on the
+  // spine means "no upheld adjudication yet", the state the PM's key still turns.
+  const handoffDelivery = deliveryForTaskClose(task.id);
+  if (!handoffDelivery) {
+    logger.info('assign-deliverable close skipped: no delivery on the ledger for this work', { taskId: task.id }, senderAgentId);
+    return false;
+  }
+  patchWork(task.id, { result: resultText, evidence_json: evidenceJson });
+  const res = setTrackerStatus(task.id, 'complete', {
+    by: 'engine', actorId: 'engine', expectedState: 'claimed',
+    evidenceRef: handoffDelivery, resultDeliveryId: handoffDelivery,
+    reason: 'the assignee returned a terminal deliverable on its ASSIGN thread; Key 1 filed from that receipt',
+  });
+  if (res.kind !== 'applied') return false;
 
   try {
     writeTaskLog({
@@ -374,6 +404,29 @@ export async function fileAssignDeliverableCloseRequest(
 // idempotence guard: it lets the failure notice fire exactly once, when the
 // project first ENTERS the all-terminal-with-fallen state, mirroring the
 // flip-once discipline the success path gets from its status check.
+/**
+ * The steerable sentence a refused close produces.
+ *
+ * PHASE-2 T8b: `transition()` refuses rather than throws, and every refusal carries its gate
+ * name. The one the tracker meets most is G7 — `done` means DELIVERED — so the text names the
+ * missing thing rather than saying "error", which is what turns a refusal into a next action.
+ */
+function closeRefusalText(taskId: string, r: TransitionResult, wanted: string): string {
+  if (r.kind === 'applied') return '';
+  if (r.kind === 'noop') return `[NO-OP] task_id=${taskId} | already ${wanted}, no change made.`;
+  if (r.kind === 'conflict') {
+    return `Error: task ${taskId.slice(0, 8)} moved to "${stateToStatus(r.actual)}" while you were working on it. Re-read it before changing it again.`;
+  }
+  if (r.gate === 'done-requires-delivery' || r.gate === 'delivery-unresolved') {
+    return (
+      `Error: "${wanted}" needs a delivery to point at. Work is done because something reached the person, ` +
+      `not because the tracker says so. Send the result first (reply, message, file, or hand it back on the ` +
+      `thread that asked), then set status="complete" — the engine records the delivery for you.`
+    );
+  }
+  return `Error: that status change was refused (${r.gate}): ${r.detail}`;
+}
+
 const NEEDS_ATTENTION_MARKER = '[needs-attention]';
 
 // checkProjectCompletion is the SINGLE authority for the success-vs-fail-open
@@ -396,12 +449,12 @@ export function checkProjectCompletion(projectId: string | null, callingAgentId:
     // Any task still genuinely open (not in a terminal state)? If so the
     // project keeps running, there's nothing to decide yet.
     const open = db.prepare(`
-      SELECT COUNT(*) as count FROM legacy_tasks
-      WHERE project_id = ? AND status NOT IN ('complete', 'fallen')
+      SELECT COUNT(*) as count FROM work w
+      WHERE ${taskScope('w')} AND w.parent_id = ? AND w.state NOT IN ('done', 'failed')
     `).get(projectId) as { count: number };
     if (open.count > 0) return 'still_open';
 
-    const project = db.prepare('SELECT title, description, status FROM legacy_projects WHERE id = ?')
+    const project = db.prepare(`SELECT w.title AS title, w.description AS description, ${STATE_TO_STATUS_SQL('w.state')} AS status FROM work w WHERE ${projectScope('w')} AND w.id = ?`)
       .get(projectId) as { title: string; description: string | null; status: string } | undefined;
     if (!project) return 'noop';
     if (project.status === 'complete') return 'noop';
@@ -410,23 +463,32 @@ export function checkProjectCompletion(projectId: string | null, callingAgentId:
     // complete) from a project that ran out of work with at least one task
     // fallen. Only the former auto-closes.
     const fallen = db.prepare(`
-      SELECT title FROM legacy_tasks
-      WHERE project_id = ? AND status = 'fallen'
-      ORDER BY step_number ASC, created_at ASC
+      SELECT w.title AS title FROM work w
+      WHERE ${taskScope('w')} AND w.parent_id = ? AND w.state = 'failed'
+      ORDER BY w.step_number ASC, w.opened_at ASC
     `).all(projectId) as Array<{ title: string }>;
 
     if (fallen.length === 0) {
       // ── Genuine success: auto-close the umbrella (the reason auto-complete
       //    exists). completed_at is stamped here so every path that closes a
       //    project through this helper records the close time consistently.
-      db.prepare("UPDATE legacy_projects SET status = 'complete', completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(projectId);
+      // G7: the umbrella closes against the delivery its last finished child was closed on.
+      const rollupRes = setTrackerStatus(projectId, 'complete', {
+        by: 'agent', actorId: callingAgentId,
+        reason: 'every task on this project is complete',
+        resultDeliveryId: deliveryForCompletedChildren(projectId),
+      });
+      if (rollupRes.kind !== 'applied' && rollupRes.kind !== 'noop') {
+        logger.warn('project rollup close refused by the work gate', { projectId, result: rollupRes });
+        return 'noop';
+      }
 
       // Count the tasks for the brief completion line. comms-audit rank 5: the old
       // code enumerated EVERY task ("- title: status, last-notes-line") into the notice
       //, a firehose duplicating the kanban board. The board already shows the per-task
       // detail; the notice only needs the count.
       const tasks = db.prepare(`
-        SELECT COUNT(*) AS count FROM legacy_tasks WHERE project_id = ?
+        SELECT COUNT(*) AS count FROM work w WHERE ${taskScope('w')} AND w.parent_id = ?
       `).get(projectId) as { count: number };
 
       // v2.7.2, fixes the duplicate-final-answer failure shape:
@@ -567,30 +629,30 @@ function findRecentNearDuplicateProject(
   //     window survives only as the pre-spine fallback for rootless rows.
   const turnRoot = currentTurnRoot.get(creatorId) ?? null;
   const rootMatch = turnRoot?.sourceMessageId ? db.prepare(`
-    SELECT id, title, created_at FROM legacy_projects
-    WHERE created_by = ?
-      AND status = 'active'
-      AND origin_kind = 'engine_scaffold'
-      AND source_message_id = ?
-    ORDER BY created_at DESC
+    SELECT w.id AS id, w.title AS title, ${msToText('w.opened_at')} AS created_at FROM work w
+    WHERE ${projectScope('w')} AND w.requester_id = ?
+      AND w.state = 'open'
+      AND w.origin_kind = 'engine_scaffold'
+      AND w.source_message_id = ?
+    ORDER BY w.opened_at DESC
     LIMIT 1
   `).get(creatorId, turnRoot.sourceMessageId) as { id: string; title: string; created_at: string } | undefined : undefined;
   const engineAuto = rootMatch ?? db.prepare(`
-    SELECT id, title, created_at FROM legacy_projects
-    WHERE created_by = ?
-      AND status = 'active'
-      AND description LIKE ? || '%'
-      AND datetime(created_at) >= datetime('now', '-5 minutes')
-    ORDER BY created_at DESC
+    SELECT w.id AS id, w.title AS title, ${msToText('w.opened_at')} AS created_at FROM work w
+    WHERE ${projectScope('w')} AND w.requester_id = ?
+      AND w.state = 'open'
+      AND w.description LIKE ? || '%'
+      AND w.opened_at >= ?
+    ORDER BY w.opened_at DESC
     LIMIT 1
-  `).get(creatorId, ENGINE_AUTO_MARKER) as { id: string; title: string; created_at: string } | undefined;
+  `).get(creatorId, ENGINE_AUTO_MARKER, Date.now() - 5 * 60_000) as { id: string; title: string; created_at: string } | undefined;
 
   if (engineAuto) {
     const createdMs = new Date(engineAuto.created_at.includes('Z') ? engineAuto.created_at : engineAuto.created_at + 'Z').getTime();
     const firstOpen = db.prepare(`
-      SELECT id, title FROM legacy_tasks
-      WHERE project_id = ? AND status IN ('in_progress', 'on_deck')
-      ORDER BY step_number ASC NULLS LAST, created_at ASC
+      SELECT w.id AS id, w.title AS title FROM work w
+      WHERE ${taskScope('w')} AND w.parent_id = ? AND w.state IN ('claimed', 'on_deck')
+      ORDER BY w.step_number ASC NULLS LAST, w.opened_at ASC
       LIMIT 1
     `).get(engineAuto.id) as { id: string; title: string } | undefined;
     return {
@@ -604,13 +666,13 @@ function findRecentNearDuplicateProject(
 
   // (b) Jaccard fallback for agent-created near-dups.
   const recent = db.prepare(`
-    SELECT id, title, created_at FROM legacy_projects
-    WHERE created_by = ?
-      AND status = 'active'
-      AND datetime(created_at) >= datetime('now', '-60 minutes')
-    ORDER BY created_at DESC
+    SELECT w.id AS id, w.title AS title, ${msToText('w.opened_at')} AS created_at FROM work w
+    WHERE ${projectScope('w')} AND w.requester_id = ?
+      AND w.state = 'open'
+      AND w.opened_at >= ?
+    ORDER BY w.opened_at DESC
     LIMIT 20
-  `).all(creatorId) as Array<{ id: string; title: string; created_at: string }>;
+  `).all(creatorId, Date.now() - 60 * 60_000) as Array<{ id: string; title: string; created_at: string }>;
 
   if (recent.length === 0) return null;
 
@@ -631,9 +693,9 @@ function findRecentNearDuplicateProject(
     if (jaccard >= 0.6) {
       const createdMs = new Date(row.created_at.includes('Z') ? row.created_at : row.created_at + 'Z').getTime();
       const firstOpen = db.prepare(`
-        SELECT id, title FROM legacy_tasks
-        WHERE project_id = ? AND status IN ('in_progress', 'on_deck')
-        ORDER BY step_number ASC NULLS LAST, created_at ASC
+        SELECT w.id AS id, w.title AS title FROM work w
+        WHERE ${taskScope('w')} AND w.parent_id = ? AND w.state IN ('claimed', 'on_deck')
+        ORDER BY w.step_number ASC NULLS LAST, w.opened_at ASC
         LIMIT 1
       `).get(row.id) as { id: string; title: string } | undefined;
       return {
@@ -769,7 +831,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       const goal = provided || (t.description ? t.description.trim() : '') || (t.title ? t.title.trim() : '');
       if (!goal) continue;
       try {
-        getDb().prepare(`UPDATE legacy_tasks SET goal = ? WHERE id = ? AND (goal IS NULL OR goal = '')`).run(goal, id);
+        if (!t.goal) patchWork(id, { goal }, { touch: false });
       } catch (err) {
         logger.warn('Failed to default goal on inline project task (non-fatal)', { taskId: id, error: err instanceof Error ? err.message : String(err) }, agentId);
       }
@@ -858,7 +920,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       assignedTo = r.id;
     }
     if (projectId) {
-      const projectRow = getDb().prepare('SELECT 1 FROM legacy_projects WHERE id = ?').get(projectId);
+      const projectRow = getDb().prepare(`SELECT 1 FROM work w WHERE ${projectScope('w')} AND w.id = ?`).get(projectId);
       if (!projectRow) {
         return `Error: project '${projectId}' does not exist (it may have been deleted or completed). Call tracker_list_active to see current projects, or omit projectId to start a fresh one.`;
       }
@@ -937,15 +999,15 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     if (!allowDuplicate) {
       const db = getDb();
       const exact = db.prepare(`
-        SELECT id, substr(id, 1, 8) as id8 FROM legacy_tasks
-        WHERE created_by = ?
-          AND LOWER(title) = LOWER(?)
-          AND COALESCE(assigned_to, '') = COALESCE(?, '')
-          AND status IN ('on_deck', 'in_progress', 'paused', 'blocked')
-          AND datetime(created_at) >= datetime('now', '-5 minutes')
-        ORDER BY created_at DESC
+        SELECT w.id AS id, substr(w.id, 1, 8) as id8 FROM work w
+        WHERE ${taskScope('w')} AND w.requester_id = ?
+          AND LOWER(w.title) = LOWER(?)
+          AND COALESCE(w.assignee_agent, '') = COALESCE(?, '')
+          AND w.state IN ('on_deck', 'claimed', 'paused', 'blocked')
+          AND w.opened_at >= ?
+        ORDER BY w.opened_at DESC
         LIMIT 1
-      `).get(agentId, title, assignedTo ?? null) as { id: string; id8: string } | undefined;
+      `).get(agentId, title, assignedTo ?? null, Date.now() - 5 * 60_000) as { id: string; id8: string } | undefined;
       if (exact) {
         return (
           `Error: a task with this exact title was created by you in the last 5 minutes (id=${exact.id8}, assigned to the same agent). ` +
@@ -958,13 +1020,13 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       if (newTokens.length >= 2) {
         const newSet = new Set(newTokens);
         const recent = db.prepare(`
-          SELECT id, title, substr(id, 1, 8) as id8 FROM legacy_tasks
-          WHERE created_by = ?
-            AND status IN ('on_deck', 'in_progress', 'paused', 'blocked')
-            AND datetime(created_at) >= datetime('now', '-5 minutes')
-          ORDER BY created_at DESC
+          SELECT w.id AS id, w.title AS title, substr(w.id, 1, 8) as id8 FROM work w
+          WHERE ${taskScope('w')} AND w.requester_id = ?
+            AND w.state IN ('on_deck', 'claimed', 'paused', 'blocked')
+            AND w.opened_at >= ?
+          ORDER BY w.opened_at DESC
           LIMIT 20
-        `).all(agentId) as Array<{ id: string; title: string; id8: string }>;
+        `).all(agentId, Date.now() - 5 * 60_000) as Array<{ id: string; title: string; id8: string }>;
         for (const row of recent) {
           const oldTokens = normalizeTitle(row.title);
           if (oldTokens.length < 2) continue;
@@ -1002,7 +1064,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     // legacy columns; adding goal as an extra parameter would force every
     // call site to update. Cleaner to set it here.)
     try {
-      getDb().prepare(`UPDATE legacy_tasks SET goal = ? WHERE id = ?`).run(goal, taskId);
+      patchWork(taskId, { goal }, { touch: false });
     } catch (err) {
       logger.warn('Failed to persist goal on new task (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
     }
@@ -1034,7 +1096,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     const hasFutureSchedule = scheduledStartIsFuture || !!args.repeat_interval;
     if (hasFutureSchedule) {
       try {
-        updateTask(taskId, { status: 'on_deck' });
+        setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'scheduled for later; the scheduler owns the move to in_progress at fire time' });
       } catch { /* ignore */ }
     }
 
@@ -1087,15 +1149,13 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       };
       const nextRun = calculateNextRun(taskForCalc) ?? scheduledStart;
 
-      db.prepare(`
-        UPDATE legacy_tasks SET
-          scheduled_start = ?, repeat_interval = ?, repeat_unit = ?,
-          repeat_end_type = ?, repeat_end_value = ?,
-          repeat_days_of_week = ?, anchor_time = ?,
-          next_run_at = ?, schedule_status = 'waiting',
-          updated_at = datetime('now')
-        WHERE id = ?
-      `).run(scheduledStart, repeatInterval ?? null, repeatUnit ?? null, repeatEndType, repeatEndValue ?? null, repeatDaysOfWeek ?? null, anchorTime ?? null, nextRun, taskId);
+      patchWork(taskId, {
+        scheduled_start: tsToMs(scheduledStart), repeat_interval: repeatInterval ?? null,
+        repeat_unit: repeatUnit ?? null, repeat_end_type: repeatEndType,
+        repeat_end_value: repeatEndValue ?? null, repeat_days_of_week: repeatDaysOfWeek ?? null,
+        anchor_local: anchorTime ?? null, next_run_at: tsToMs(nextRun),
+        schedule_status: 'waiting',
+      });
     }
 
     // Handle group assignment (validated: an unknown group id would otherwise
@@ -1107,7 +1167,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       if (!groupRow) {
         return `Error: agent group '${assignedToGroup}' does not exist. The task was created assigned to you; use tracker_edit_task to reassign once you have a valid group id.`;
       }
-      db.prepare("UPDATE legacy_tasks SET assigned_to_group = ?, assigned_to = NULL, updated_at = datetime('now') WHERE id = ?").run(assignedToGroup, taskId);
+      patchWork(taskId, { assigned_to_group: assignedToGroup, assignee_agent: null });
     }
 
     const parts = [
@@ -1299,7 +1359,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // accurate from→to pair (we cannot read it AFTER updateTask, the row
     // already moved by then).
     const db = getDb();
-    const taskRow = db.prepare('SELECT title, schedule_status, repeat_interval, status as prior_status FROM legacy_tasks WHERE id = ?').get(taskId) as { title: string; schedule_status: string; repeat_interval: number | null; prior_status: string } | undefined;
+    const taskRow = db.prepare(`SELECT title, schedule_status, repeat_interval, ${STATE_TO_STATUS_SQL('state')} as prior_status FROM work WHERE id = ?`).get(taskId) as { title: string; schedule_status: string; repeat_interval: number | null; prior_status: string } | undefined;
     const isScheduledRecurring = taskRow && taskRow.schedule_status !== 'unscheduled' && taskRow.repeat_interval;
     const priorStatus = taskRow?.prior_status ?? null;
 
@@ -1346,7 +1406,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // working one, and forgetting the rest.
     if (status === 'on_deck' && !isPMAgent(agentId)) {
       const sched = db.prepare(
-        'SELECT scheduled_start, repeat_interval, next_run_at FROM legacy_tasks WHERE id = ?'
+        `SELECT ${msToText('scheduled_start')} AS scheduled_start, repeat_interval, ${msToText('next_run_at')} AS next_run_at FROM work WHERE id = ?`
       ).get(taskId) as { scheduled_start: string | null; repeat_interval: number | null; next_run_at: string | null } | undefined;
       const nowMs = Date.now();
       const futureScheduledStart = !!(
@@ -1514,8 +1574,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
 
       // Persist result + (augmented) evidence on the task row for PM to read.
       try {
-        db.prepare(`UPDATE legacy_tasks SET result = ?, evidence_json = ?, updated_at = datetime('now') WHERE id = ?`)
-          .run(result, JSON.stringify(evidenceOut), taskId);
+        patchWork(taskId, { result, evidence_json: JSON.stringify(evidenceOut) });
       } catch (err) {
         logger.warn('Failed to persist result/evidence on complete (non-fatal)', {
           taskId, error: err instanceof Error ? err.message : String(err),
@@ -1549,7 +1608,15 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
     // "I did them all internally, please close the loop" path.
     if (status === 'complete' && isScheduledRecurring && (args.complete_all_runs as boolean) === true) {
       const notes = args.notes as string | undefined;
-      db.prepare("UPDATE legacy_tasks SET status = 'complete', schedule_status = 'completed', is_paused = 1, completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(taskId);
+      const allRunsDelivery = deliveryForTaskClose(taskId);
+      const allRunsRes = setTrackerStatus(taskId, 'complete', {
+        by: 'agent', actorId: agentId, resultDeliveryId: allRunsDelivery,
+        reason: 'agent asserts every run is done; the schedule stops here',
+      });
+      if (allRunsRes.kind !== 'applied') {
+        return closeRefusalText(taskId, allRunsRes, 'complete');
+      }
+      patchWork(taskId, { schedule_status: 'completed', is_paused: 1 });
       db.prepare("UPDATE task_runs SET status = 'complete', completed_at = datetime('now'), result_summary = ? WHERE task_id = ? AND status = 'running'").run(notes ?? 'All runs completed by agent', taskId);
       const updatedTask = getTask(taskId)!;
       broadcast({ type: 'tracker:task_updated', data: updatedTask });
@@ -1590,7 +1657,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         `SELECT id FROM task_runs WHERE task_id = ? AND status = 'running' ORDER BY run_number DESC LIMIT 1`
       ).get(taskId) as { id: string } | undefined;
       const scheduleStatusNow = (
-        db.prepare('SELECT schedule_status FROM legacy_tasks WHERE id = ?').get(taskId) as { schedule_status: string } | undefined
+        db.prepare('SELECT schedule_status FROM work WHERE id = ?').get(taskId) as { schedule_status: string } | undefined
       )?.schedule_status;
       if (!openRun || scheduleStatusNow !== 'running') {
         return (
@@ -1601,10 +1668,12 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       }
 
       const detail = db.prepare(`
-        SELECT scheduled_start, repeat_interval, repeat_unit, repeat_end_type,
-               repeat_end_value, repeat_days_of_week, anchor_time, run_count,
-               is_paused, last_run_at, next_run_at, schedule_status
-        FROM legacy_tasks WHERE id = ?
+        SELECT ${msToText('scheduled_start')} AS scheduled_start, repeat_interval, repeat_unit,
+               repeat_end_type, repeat_end_value, repeat_days_of_week,
+               anchor_local AS anchor_time, attempts AS run_count,
+               is_paused, ${msToText('last_run_at')} AS last_run_at,
+               ${msToText('next_run_at')} AS next_run_at, schedule_status
+        FROM work WHERE id = ?
       `).get(taskId) as {
         scheduled_start: string | null; repeat_interval: number | null;
         repeat_unit: string | null; repeat_end_type: string | null;
@@ -1655,7 +1724,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         }
         // Clear result/evidence on the task row so the next fire starts
         // from scratch, the per-run record lives in task_log.
-        db.prepare(`UPDATE legacy_tasks SET result = NULL, evidence_json = NULL WHERE id = ?`).run(taskId);
+        patchWork(taskId, { result: null, evidence_json: null }, { touch: false });
         // Advance the schedule (fire-and-forget, same pattern the
         // generic complete handler uses below).
         const notes = args.notes as string | undefined;
@@ -1682,7 +1751,29 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       // and dep cascades fire when the PM validates.
     }
 
-    const task = updateTask(taskId, updates);
+    // PHASE-2 T8b: the column half and the STATE half are two calls now, because they are
+    // two different things. `updateTask` patches; `setTaskStatusResult` is `transition()`
+    // and hands back the gate's verdict so a refusal can be steered on instead of read as
+    // "the task vanished".
+    const { status: statusUpdate, ...columnUpdates } = updates as Record<string, unknown>;
+    let task = Object.keys(columnUpdates).length > 0
+      ? updateTask(taskId, columnUpdates)
+      : getTask(taskId);
+    if (statusUpdate) {
+      const sr = setTaskStatusResult(taskId, statusUpdate as TrackerStatus, {
+        by: callerIsPM ? 'pm' : 'agent', actorId: agentId,
+        reason: `tracker_update_status -> ${String(statusUpdate)}`,
+        resultDeliveryId: statusUpdate === 'complete' ? deliveryForTaskClose(taskId) : null,
+        pausedUntilMs: updates.pausedUntil !== undefined ? tsToMs(updates.pausedUntil as string | null) : undefined,
+        // The tool path is the one that stops the schedule with the status (updateTask's
+        // own rule); the engine's ball-is-with-the-owner pause deliberately does not.
+        syncSchedulePause: true,
+      });
+      if (sr.result.kind !== 'applied' && sr.result.kind !== 'noop') {
+        return closeRefusalText(taskId, sr.result, String(statusUpdate));
+      }
+      task = sr.task;
+    }
 
     if (!task) {
       // We already resolved taskId above, so the id existed at resolve time.
@@ -1830,7 +1921,8 @@ function relayAssignHandbackIfMissing(taskId: string): void {
   try {
     const db = getDb();
     const row = db.prepare(
-      'SELECT created_by, assigned_to, a2a_thread_id, created_at, title, result FROM legacy_tasks WHERE id = ?'
+      `SELECT requester_id AS created_by, agent_id AS assigned_to, a2a_thread_id,
+              ${msToText('opened_at')} AS created_at, title, result FROM work WHERE id = ?`
     ).get(taskId) as {
       created_by: string | null;
       assigned_to: string | null;
@@ -2007,7 +2099,8 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       repeatUnit !== undefined;
     if (isScheduleEdit) {
       const current = getDb().prepare(`
-        SELECT scheduled_start, repeat_interval, repeat_unit FROM legacy_tasks WHERE id = ?
+        SELECT ${msToText('scheduled_start')} AS scheduled_start, repeat_interval, repeat_unit
+          FROM work WHERE id = ?
       `).get(taskId) as { scheduled_start: string | null; repeat_interval: number | null; repeat_unit: string | null } | undefined;
       const VALID_REPEAT_UNITS = new Set([
         'minutes', 'hours', 'days', 'weeks', 'months', 'years', 'weekdays', 'specific_days',
@@ -2049,7 +2142,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     // changes. Mirrors the fail-loud creator check in trackerCreateTask.
     if (repeatUnit !== undefined || repeatDaysOfWeek !== undefined) {
       const cur = getDb().prepare(
-        'SELECT repeat_unit, repeat_days_of_week FROM legacy_tasks WHERE id = ?',
+        'SELECT repeat_unit, repeat_days_of_week FROM work WHERE id = ?',
       ).get(taskId) as { repeat_unit: string | null; repeat_days_of_week: string | null } | undefined;
       const effUnit = repeatUnit === undefined ? (cur?.repeat_unit ?? null) : (repeatUnit ?? null);
       const effDays = repeatDaysOfWeek === undefined ? (cur?.repeat_days_of_week ?? null) : (repeatDaysOfWeek ?? null);
@@ -2073,8 +2166,8 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
         return 'Error: goal cannot be empty. To edit other fields without changing goal, omit goal from the args.';
       }
       try {
-        const priorGoal = getDb().prepare(`SELECT goal FROM legacy_tasks WHERE id = ?`).get(taskId) as { goal: string | null } | undefined;
-        getDb().prepare(`UPDATE legacy_tasks SET goal = ?, updated_at = datetime('now') WHERE id = ?`).run(goalTrimmed, taskId);
+        const priorGoal = getDb().prepare(`SELECT goal FROM work WHERE id = ?`).get(taskId) as { goal: string | null } | undefined;
+        patchWork(taskId, { goal: goalTrimmed });
         writeTaskLog({
           taskId,
           fromEntity: isPMAgent(agentId) ? 'pm' : `agent:${agentId}`,
@@ -2095,7 +2188,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     // invisible: any agent could rewrite any task's description with no guard,
     // and description/title edits were NOT task_log-audited (only goal edits).
     const contentSnapshot = (title !== undefined || description !== undefined)
-      ? getDb().prepare('SELECT title, description, original_description FROM legacy_tasks WHERE id = ?')
+      ? getDb().prepare('SELECT title, description, original_description FROM work WHERE id = ?')
           .get(taskId) as { title: string | null; description: string | null; original_description: string | null } | undefined
       : undefined;
 
@@ -2220,11 +2313,12 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       try {
         const db = getDb();
         const row = db.prepare(`
-          SELECT id, scheduled_start, repeat_interval, repeat_unit,
+          SELECT id, ${msToText('scheduled_start')} AS scheduled_start, repeat_interval, repeat_unit,
                  repeat_end_type, repeat_end_value, repeat_days_of_week,
-                 anchor_time,
-                 run_count, is_paused, last_run_at, next_run_at, schedule_status
-          FROM legacy_tasks WHERE id = ?
+                 anchor_local AS anchor_time,
+                 attempts AS run_count, is_paused, ${msToText('last_run_at')} AS last_run_at,
+                 ${msToText('next_run_at')} AS next_run_at, schedule_status
+          FROM work WHERE id = ?
         `).get(taskId) as {
           id: string;
           scheduled_start: string | null;
@@ -2247,18 +2341,10 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
           // that have already fired, in that case leave whatever status was
           // there (typically 'completed' or 'idle').
           if (nextRun) {
-            db.prepare(`
-              UPDATE legacy_tasks
-              SET next_run_at = ?, schedule_status = 'waiting', updated_at = datetime('now')
-              WHERE id = ?
-            `).run(nextRun, taskId);
+            patchWork(taskId, { next_run_at: tsToMs(nextRun), schedule_status: 'waiting' });
           } else if (row.scheduled_start === null) {
             // Schedule was cleared entirely, drop next_run_at too.
-            db.prepare(`
-              UPDATE legacy_tasks
-              SET next_run_at = NULL, schedule_status = 'idle', updated_at = datetime('now')
-              WHERE id = ?
-            `).run(taskId);
+            patchWork(taskId, { next_run_at: null, schedule_status: 'idle' });
           }
         }
       } catch (recalcErr) {
@@ -2321,7 +2407,7 @@ export function trackerGetStatus(agentId: string, args: Record<string, unknown>)
         ];
         if (task.projectId) {
           const statusDb = getDb();
-          const proj = statusDb.prepare('SELECT title FROM legacy_projects WHERE id = ?').get(task.projectId) as { title: string } | undefined;
+          const proj = statusDb.prepare('SELECT title FROM work WHERE id = ?').get(task.projectId) as { title: string } | undefined;
           parts.push(`Project: ${proj?.title ?? task.projectId}`);
         }
         if (task.assignedTo) parts.push(`Assigned to: ${task.assignedToName ?? task.assignedTo}`);
@@ -2579,7 +2665,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
       // are multiple candidates (that would silently complete the wrong task).
       const db0 = getDb();
       const candidates = db0.prepare(
-        "SELECT id, title FROM legacy_tasks WHERE assigned_to = ? AND status = 'in_progress'",
+        `SELECT w.id AS id, w.title AS title FROM work w WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed'`,
       ).all(agentId) as Array<{ id: string; title: string }>;
       if (candidates.length === 1) {
         rawTaskId = candidates[0].id;
@@ -2626,21 +2712,32 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
     }
 
     // Mark current task as complete
-    updateTask(taskId, { status: 'complete', notes: notes ? `[Completed] ${notes}` : '[Completed]' });
+    const stepDelivery = deliveryForTaskClose(taskId);
+    const stepRes = setTrackerStatus(taskId, 'complete', {
+      by: 'agent', actorId: agentId, resultDeliveryId: stepDelivery,
+      reason: 'tracker_complete_step: the step is finished',
+      note: notes ? `[Completed] ${notes}` : '[Completed]',
+    });
+    if (stepRes.kind !== 'applied' && stepRes.kind !== 'noop') {
+      return closeRefusalText(taskId, stepRes, 'complete');
+    }
 
     let nextTaskInfo = '';
 
     // Find and start the next step in the same project
     if (task.projectId && task.stepNumber !== null) {
       const nextStep = db.prepare(`
-        SELECT id, title, step_number FROM legacy_tasks
-        WHERE project_id = ? AND step_number > ? AND status = 'on_deck'
-        ORDER BY step_number ASC
+        SELECT w.id AS id, w.title AS title, w.step_number AS step_number FROM work w
+        WHERE ${taskScope('w')} AND w.parent_id = ? AND w.step_number > ? AND w.state = 'on_deck'
+        ORDER BY w.step_number ASC
         LIMIT 1
       `).get(task.projectId, task.stepNumber) as { id: string; title: string; step_number: number } | undefined;
 
       if (nextStep) {
-        updateTask(nextStep.id, { status: 'in_progress' });
+        setTrackerStatus(nextStep.id, 'in_progress', {
+          by: 'agent', actorId: agentId,
+          reason: 'the previous step finished; this one is now the live step',
+        });
         nextTaskInfo = `\nNext step started: "${nextStep.title}" (${nextStep.id}), step ${nextStep.step_number}, now in_progress.`;
       }
     }
@@ -2660,8 +2757,8 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
         nextTaskInfo = '\nAll remaining steps are closed, but at least one task fell. The project is left open and flagged for attention.';
       } else if (projectOutcome === 'still_open') {
         const remaining = db.prepare(`
-          SELECT COUNT(*) as count FROM legacy_tasks
-          WHERE project_id = ? AND status NOT IN ('complete', 'fallen')
+          SELECT COUNT(*) as count FROM work w
+          WHERE ${taskScope('w')} AND w.parent_id = ? AND w.state NOT IN ('done', 'failed')
         `).get(task.projectId) as { count: number };
         nextTaskInfo = `\nNo next sequential step found. ${remaining.count} task(s) remaining in project.`;
       }
@@ -2823,7 +2920,10 @@ export async function trackerValidatePause(
 
   const db = getDb();
   const task = db.prepare(
-    "SELECT id, title, status, assigned_to, notes, pause_validated, goal FROM legacy_tasks WHERE id = ?",
+    `SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
+            w.agent_id AS assigned_to, w.notes AS notes,
+            ${validatedExpr('w', 'paused')} AS pause_validated, w.goal AS goal
+       FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
   ).get(taskId) as { id: string; title: string; status: string; assigned_to: string | null; notes: string | null; pause_validated: number; goal: string | null } | undefined;
 
   if (!task) return `Error: task ${taskId} not found.`;
@@ -2832,7 +2932,7 @@ export async function trackerValidatePause(
   }
 
   if (args.valid) {
-    db.prepare("UPDATE legacy_tasks SET pause_validated = 1, updated_at = datetime('now') WHERE id = ?").run(taskId);
+    upholdClaim(taskId, 'paused', 'pm', pmAgentId, 'PM confirmed the pause is a real wait condition');
     writeTaskLog({
       taskId,
       fromEntity: 'pm',
@@ -2863,11 +2963,14 @@ export async function trackerValidatePause(
     return `Error: target_status="${targetStatus}" is not allowed for a pause rejection. Use 'in_progress' (default), 'on_deck', or 'blocked'.`;
   }
 
-  // Use updateTask so is_paused gets cleared and pause fields reset.
-  const updated = updateTask(taskId, { status: targetStatus });
+  // Through `transition()` so the pause fields reset with the state they describe.
+  const updated = setTaskStatus(taskId, targetStatus as TrackerStatus, {
+    by: 'pm', actorId: pmAgentId, claim: 'authoritative',
+    reason: `PM rejected the pause: ${rejectReason}`,
+  });
   if (!updated) return `Error: task ${taskId} was deleted before pause-reject could land.`;
-  // Increment revert_count and log the reject + transition.
-  db.prepare(`UPDATE legacy_tasks SET revert_count = revert_count + 1, updated_at = datetime('now') WHERE id = ?`).run(taskId);
+  // The revert count is a COUNT of thrown-back claims now, so this IS the increment.
+  throwBackClaim(taskId, 'paused', 'pm', pmAgentId, rejectReason);
   // updateTask already broadcast with the status flip, but revert_count
   // moved after that broadcast, re-broadcast so the dashboard's copy
   // matches the row.
@@ -2954,7 +3057,11 @@ export async function trackerRetask(
 
   const db = getDb();
   const task = db.prepare(
-    "SELECT id, title, status, assigned_to, goal, complete_validated, deliverable_shown FROM legacy_tasks WHERE id = ?",
+    `SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
+            w.agent_id AS assigned_to, w.goal AS goal,
+            ${validatedExpr('w', 'done')} AS complete_validated,
+            w.deliverable_shown AS deliverable_shown
+       FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
   ).get(taskId) as { id: string; title: string; status: string; assigned_to: string | null; goal: string | null; complete_validated: number; deliverable_shown: number } | undefined;
 
   if (!task) return `Error: task ${taskId} not found.`;
@@ -2986,23 +3093,18 @@ export async function trackerRetask(
     return `Error: target_status="${targetStatus}" is not allowed for retask. Use 'in_progress' (default) or 'on_deck'.`;
   }
 
-  // Drive status through updateTask so is_paused / pause fields reset
-  // correctly when retasking out of paused.
-  const updated = updateTask(taskId, { status: targetStatus });
+  // Through `transition()` so is_paused / pause fields reset with the state.
+  const updated = setTaskStatus(taskId, targetStatus as TrackerStatus, {
+    by: 'pm', actorId: pmAgentId, claim: 'authoritative',
+    reason: `PM retask: ${directive.slice(0, 200)}`,
+  });
   if (!updated) return `Error: task ${taskId} was deleted before retask could land.`;
 
-  // Reset validation flags so engine and PM treat the next pass as
-  // fresh, and bump revert_count (a retask is a PM revert of the
-  // agent's outcome). Done in one statement.
-  db.prepare(`
-    UPDATE legacy_tasks
-    SET pause_validated = 0,
-        complete_validated = 0,
-        blocked_validated = 0,
-        revert_count = revert_count + 1,
-        updated_at = datetime('now')
-    WHERE id = ?
-  `).run(taskId);
+  // The three "reset the validation flags" assignments are GONE and nothing replaced them:
+  // a validation is scoped to the CURRENT claim now (`tracker-view.ts:validatedExpr`), so
+  // moving the row back to in_progress un-validates it by construction. What remains is the
+  // revert itself, which is a thrown-back claim on the record.
+  throwBackClaim(taskId, statusToState(task.status), 'pm', pmAgentId, directive);
 
   // Retask is a remediation: the PM is sending the agent back to redo the
   // work, which starts a fresh escalation cycle. Clear the poke_log so the
@@ -3072,7 +3174,7 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
   const markComplete = (args.mark_complete as boolean) ?? false;
 
   const db = getDb();
-  const task = db.prepare('SELECT id, title, schedule_status, project_id FROM legacy_tasks WHERE id = ?').get(taskId) as { id: string; title: string; schedule_status: string; project_id: string } | undefined;
+  const task = db.prepare(`SELECT w.id AS id, w.title AS title, w.schedule_status AS schedule_status, w.parent_id AS project_id FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(taskId) as { id: string; title: string; schedule_status: string; project_id: string } | undefined;
   if (!task) return `Error: Task ${taskId} was deleted before pause could be applied.`;
   if (task.schedule_status === 'unscheduled') {
     return (
@@ -3086,7 +3188,14 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
 
   if (markComplete) {
     // Stop the schedule AND mark the task as complete (terminal state)
-    db.prepare("UPDATE legacy_tasks SET is_paused = 1, schedule_status = 'completed', status = 'complete', completed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(taskId);
+    const schedDoneRes = setTrackerStatus(taskId, 'complete', {
+      by: 'agent', actorId: agentId, resultDeliveryId: deliveryForTaskClose(taskId),
+      reason: 'schedule stopped and the work marked complete',
+    });
+    if (schedDoneRes.kind !== 'applied' && schedDoneRes.kind !== 'noop') {
+      return closeRefusalText(taskId, schedDoneRes, 'complete');
+    }
+    patchWork(taskId, { is_paused: 1, schedule_status: 'completed' });
     db.prepare("UPDATE task_runs SET status = 'complete', completed_at = datetime('now'), result_summary = 'Schedule stopped and marked complete' WHERE task_id = ? AND status = 'running'").run(taskId);
     const freshSchedDone = getTask(taskId);
     if (freshSchedDone) broadcast({ type: 'tracker:task_updated', data: freshSchedDone });
@@ -3095,7 +3204,8 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
     return `Schedule stopped and task "${task.title}" marked complete.`;
   }
 
-  db.prepare("UPDATE legacy_tasks SET is_paused = 1, schedule_status = 'paused', status = 'paused', updated_at = datetime('now') WHERE id = ?").run(taskId);
+  setTrackerStatus(taskId, 'paused', { by: 'agent', actorId: agentId, reason: 'schedule paused by the assigned agent' });
+  patchWork(taskId, { is_paused: 1, schedule_status: 'paused' });
   const freshSchedPaused = getTask(taskId);
   if (freshSchedPaused) broadcast({ type: 'tracker:task_updated', data: freshSchedPaused });
   logger.info('Schedule paused', { taskId }, agentId);
@@ -3113,7 +3223,7 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
   const taskId = resolved.id;
 
   const db = getDb();
-  const task = db.prepare('SELECT * FROM legacy_tasks WHERE id = ?').get(taskId) as Record<string, unknown> | undefined;
+  const task = db.prepare(`SELECT ${scheduleRowColumns('w')} FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(taskId) as Record<string, unknown> | undefined;
   if (!task) return `Error: Task ${taskId} was deleted before resume could be applied.`;
 
   
@@ -3135,7 +3245,11 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
   const nextRun = calculateNextRun(scheduledTask);
   // missed_runs_paused_at = NULL: an explicit resume also disarms the D12
   // engine fallback for a pause the missed-runs detector set.
-  db.prepare("UPDATE legacy_tasks SET is_paused = 0, schedule_status = 'waiting', status = 'on_deck', next_run_at = ?, missed_runs_paused_at = NULL, updated_at = datetime('now') WHERE id = ?").run(nextRun, taskId);
+  setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'schedule resumed; waiting for the next run' });
+  patchWork(taskId, {
+    is_paused: 0, schedule_status: 'waiting',
+    next_run_at: tsToMs(nextRun), missed_runs_paused_at: null,
+  });
   const freshResumed = getTask(taskId);
   if (freshResumed) broadcast({ type: 'tracker:task_updated', data: freshResumed });
 
@@ -3161,7 +3275,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
   const taskId = resolved.id;
 
   const db = getDb();
-  const task = db.prepare('SELECT * FROM legacy_tasks WHERE id = ?').get(taskId) as Record<string, unknown> | undefined;
+  const task = db.prepare(`SELECT ${scheduleRowColumns('w')} FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(taskId) as Record<string, unknown> | undefined;
   if (!task) return `Error: Task ${taskId} no longer exists.`;
   const title = (task.title as string) ?? '(untitled)';
 
@@ -3170,10 +3284,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
     // missed_runs_paused_at so the engine's auto-skip fallback stands down.
     // The agent explicitly chose to keep the task paused, and the model
     // tool takes precedence over the fallback when called first.
-    db.prepare(`
-      UPDATE legacy_tasks SET missed_runs_paused_at = NULL, updated_at = datetime('now')
-      WHERE id = ? AND missed_runs_paused_at IS NOT NULL
-    `).run(taskId);
+    if (task.missed_runs_paused_at != null) patchWork(taskId, { missed_runs_paused_at: null });
     logger.info('Missed-runs resolved: pause', { taskId }, agentId);
     return `OK: task "${title}" stays paused. The user can resume it from the dashboard, or you can later call tracker_resume_schedule.`;
   }
@@ -3202,12 +3313,11 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
       // End conditions reached or anchor unset, leave paused.
       return `Could not compute a next-run for "${title}" (likely past repeat_end_value or anchor missing). Task stays paused; investigate manually.`;
     }
-    db.prepare(`
-      UPDATE legacy_tasks
-      SET is_paused = 0, schedule_status = 'waiting', status = 'on_deck',
-          next_run_at = ?, missed_runs_paused_at = NULL, updated_at = datetime('now')
-      WHERE id = ?
-    `).run(nextRun, taskId);
+    setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'missed runs skipped; back on the schedule' });
+    patchWork(taskId, {
+      is_paused: 0, schedule_status: 'waiting',
+      next_run_at: tsToMs(nextRun), missed_runs_paused_at: null,
+    });
     logger.info('Missed-runs resolved: skip', { taskId, nextRun }, agentId);
     return `OK: task "${title}" unpaused. All missed slots skipped. Next run: ${nextRun}.`;
   }
@@ -3217,12 +3327,11 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
   // that run completes, onTaskRunComplete will compute the natural
   // next anchor and the task resumes its normal cadence.
   const nowIso = new Date().toISOString();
-  db.prepare(`
-    UPDATE legacy_tasks
-    SET is_paused = 0, schedule_status = 'waiting', status = 'on_deck',
-        next_run_at = ?, missed_runs_paused_at = NULL, updated_at = datetime('now')
-    WHERE id = ?
-  `).run(nowIso, taskId);
+  setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'catch-up run requested; back on the schedule now' });
+  patchWork(taskId, {
+    is_paused: 0, schedule_status: 'waiting',
+    next_run_at: tsToMs(nowIso), missed_runs_paused_at: null,
+  });
   logger.info('Missed-runs resolved: run_now', { taskId }, agentId);
   return `OK: task "${title}" unpaused and scheduled to fire on the next scheduler tick (within ~1 minute). Schedule resumes on its normal anchor after this run completes.`;
 }
@@ -3263,8 +3372,13 @@ export async function trackerApplyUserValidation(
 
   const db = getDb();
   const task = db.prepare(`
-    SELECT id, title, status, assigned_to, complete_validated, pause_validated, blocked_validated, validation_thread_id
-    FROM legacy_tasks WHERE id = ?
+    SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
+           w.agent_id AS assigned_to,
+           ${validatedExpr('w', 'done')} AS complete_validated,
+           ${validatedExpr('w', 'paused')} AS pause_validated,
+           ${validatedExpr('w', 'blocked')} AS blocked_validated,
+           ${validationThreadIdExpr('w')} AS validation_thread_id
+    FROM work w WHERE ${taskScope('w')} AND w.id = ?
   `).get(taskId) as {
     id: string; title: string; status: string; assigned_to: string | null;
     complete_validated: number; pause_validated: number; blocked_validated: number;
@@ -3303,7 +3417,7 @@ export async function trackerApplyUserValidation(
   }
 
   if (args.validated) {
-    db.prepare(`UPDATE legacy_tasks SET ${flagColumn} = 1, updated_at = datetime('now') WHERE id = ?`).run(taskId);
+    upholdClaim(taskId, statusToState(task.status), 'owner', 'user', `owner confirmed in chat: ${userQuote.slice(0, 200)}`);
     // Real-time sync after direct SQL flag-set.
     const freshUserValid = getTask(taskId);
     if (freshUserValid) broadcast({ type: 'tracker:task_updated', data: freshUserValid });
@@ -3323,9 +3437,12 @@ export async function trackerApplyUserValidation(
 
   // Reject path: revert to in_progress, add feedback as observation, ping the assigned agent.
   const feedback = (args.feedback ?? '').trim();
-  const updated = updateTask(taskId, { status: 'in_progress' });
+  const updated = setTaskStatus(taskId, 'in_progress', {
+    by: 'owner', actorId: 'user', claim: 'authoritative',
+    reason: `the owner sent this back: ${feedback || userQuote}`,
+  });
   if (!updated) return `Error: task ${taskId} was deleted before user-revert could land.`;
-  db.prepare(`UPDATE legacy_tasks SET revert_count = revert_count + 1, updated_at = datetime('now') WHERE id = ?`).run(taskId);
+  throwBackClaim(taskId, statusToState(task.status), 'owner', 'user', feedback || userQuote);
   const freshUserReject = getTask(taskId);
   if (freshUserReject) broadcast({ type: 'tracker:task_updated', data: freshUserReject });
 
@@ -3460,8 +3577,11 @@ function clearHardGateBreaker(taskId: string, agentId: string): void {
 async function maybeTriggerStalemate(taskId: string, pmAgentId: string): Promise<void> {
   const db = getDb();
   const row = db.prepare(`
-    SELECT id, title, status, priority, assigned_to, revert_count, awaiting_user_verdict
-    FROM legacy_tasks WHERE id = ?
+    SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
+           w.priority AS priority, w.agent_id AS assigned_to,
+           ${revertCountExpr('w')} AS revert_count,
+           ${awaitingUserVerdictExpr('w')} AS awaiting_user_verdict
+    FROM work w WHERE ${taskScope('w')} AND w.id = ?
   `).get(taskId) as {
     id: string; title: string; status: string; priority: string;
     assigned_to: string | null; revert_count: number; awaiting_user_verdict: number;
@@ -3471,13 +3591,9 @@ async function maybeTriggerStalemate(taskId: string, pmAgentId: string): Promise
   const threshold = USER_VERDICT_THRESHOLDS[row.priority] ?? USER_VERDICT_THRESHOLDS.normal;
   if (row.revert_count < threshold) return;
 
-  db.prepare(`
-    UPDATE legacy_tasks
-    SET awaiting_user_verdict = 1,
-        user_verdict_requested_at = datetime('now'),
-        updated_at = datetime('now')
-    WHERE id = ?
-  `).run(taskId);
+  requestUserVerdict(taskId, 'engine', {
+    reverts: row.revert_count, priority: row.priority, threshold,
+  });
 
   writeTaskLog({
     taskId,
@@ -3539,9 +3655,12 @@ export async function trackerValidateComplete(
 
   const db = getDb();
   const task = db.prepare(`
-    SELECT id, title, status, assigned_to, priority, project_id, repeat_interval,
-           next_run_at, complete_validated, result, evidence_json, goal
-    FROM legacy_tasks WHERE id = ?
+    SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
+           w.agent_id AS assigned_to, w.priority AS priority, w.parent_id AS project_id,
+           w.repeat_interval AS repeat_interval, ${msToText('w.next_run_at')} AS next_run_at,
+           ${validatedExpr('w', 'done')} AS complete_validated,
+           w.result AS result, w.evidence_json AS evidence_json, w.goal AS goal
+    FROM work w WHERE ${taskScope('w')} AND w.id = ?
   `).get(taskId) as {
     id: string; title: string; status: string; assigned_to: string | null;
     priority: string; project_id: string | null; repeat_interval: number | null;
@@ -3601,7 +3720,7 @@ export async function trackerValidateComplete(
         evidenceJson: task.evidence_json,
       });
       // Clear result/evidence so the next run starts fresh.
-      db.prepare(`UPDATE legacy_tasks SET result = NULL, evidence_json = NULL, updated_at = datetime('now') WHERE id = ?`).run(taskId);
+      patchWork(taskId, { result: null, evidence_json: null });
       // Advance the schedule. onTaskRunComplete:
       //   - marks the running task_run row complete
       //   - increments run_count
@@ -3641,7 +3760,7 @@ export async function trackerValidateComplete(
       const wasTerminal = after.scheduleStatus === 'completed';
       if (wasTerminal) {
         // Terminal close: flip complete_validated=1, run dep cascade.
-        db.prepare(`UPDATE legacy_tasks SET complete_validated = 1, updated_at = datetime('now') WHERE id = ?`).run(taskId);
+        upholdClaim(taskId, 'done', 'pm', pmAgentId, 'PM validated the close against the goal');
         const final = getTask(taskId);
         if (final) broadcast({ type: 'tracker:task_updated', data: final });
         try {
@@ -3664,7 +3783,7 @@ export async function trackerValidateComplete(
     }
 
     // Terminal close path: flip complete_validated=1, run dep cascade, notify parent.
-    db.prepare(`UPDATE legacy_tasks SET complete_validated = 1, updated_at = datetime('now') WHERE id = ?`).run(taskId);
+    upholdClaim(taskId, 'done', 'pm', pmAgentId, 'PM validated the close against the goal');
     // Real-time sync: complete_validated=1 cleared via direct SQL, not updateTask.
     const freshTerminal = getTask(taskId);
     if (freshTerminal) broadcast({ type: 'tracker:task_updated', data: freshTerminal });
@@ -3702,17 +3821,14 @@ export async function trackerValidateComplete(
     return `Error: target_status="${targetStatus}" is not allowed. Use 'in_progress' (default), 'on_deck', or 'blocked'.`;
   }
 
-  const updated = updateTask(taskId, { status: targetStatus });
+  const updated = setTaskStatus(taskId, targetStatus as TrackerStatus, {
+    by: 'pm', actorId: pmAgentId, claim: 'authoritative',
+    reason: `PM rejected the close: ${rejectReason}`,
+  });
   if (!updated) return `Error: task ${taskId} was deleted before complete-reject could land.`;
   // Clear stale result/evidence on revert so the agent can resubmit cleanly.
-  db.prepare(`
-    UPDATE legacy_tasks
-    SET revert_count = revert_count + 1,
-        result = NULL,
-        evidence_json = NULL,
-        updated_at = datetime('now')
-    WHERE id = ?
-  `).run(taskId);
+  throwBackClaim(taskId, 'done', 'pm', pmAgentId, rejectReason);
+  patchWork(taskId, { result: null, evidence_json: null });
   // updateTask broadcast with stale result/evidence/revert_count above, 
   // re-broadcast so the dashboard's evidence panel reflects the cleared
   // state.
@@ -3773,8 +3889,10 @@ export async function trackerValidateBlocked(
 
   const db = getDb();
   const task = db.prepare(`
-    SELECT id, title, status, assigned_to, priority, blocked_validated, goal
-    FROM legacy_tasks WHERE id = ?
+    SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status,
+           w.agent_id AS assigned_to, w.priority AS priority,
+           ${validatedExpr('w', 'blocked')} AS blocked_validated, w.goal AS goal
+    FROM work w WHERE ${taskScope('w')} AND w.id = ?
   `).get(taskId) as {
     id: string; title: string; status: string; assigned_to: string | null;
     priority: string; blocked_validated: number; goal: string | null;
@@ -3789,7 +3907,7 @@ export async function trackerValidateBlocked(
   }
 
   if (args.valid) {
-    db.prepare(`UPDATE legacy_tasks SET blocked_validated = 1, updated_at = datetime('now') WHERE id = ?`).run(taskId);
+    upholdClaim(taskId, 'blocked', 'pm', pmAgentId, 'PM confirmed the block is real');
     // Real-time sync: blocked_validated flag set via direct SQL.
     const freshBlocked = getTask(taskId);
     if (freshBlocked) broadcast({ type: 'tracker:task_updated', data: freshBlocked });
@@ -3827,9 +3945,12 @@ export async function trackerValidateBlocked(
     return `Error: target_status="${targetStatus}" is not allowed. Use 'in_progress' (default), 'on_deck', or 'blocked'.`;
   }
 
-  const updated = updateTask(taskId, { status: targetStatus });
+  const updated = setTaskStatus(taskId, targetStatus as TrackerStatus, {
+    by: 'pm', actorId: pmAgentId, claim: 'authoritative',
+    reason: `PM rejected the block: ${rejectReason}`,
+  });
   if (!updated) return `Error: task ${taskId} was deleted before block-reject could land.`;
-  db.prepare(`UPDATE legacy_tasks SET revert_count = revert_count + 1, updated_at = datetime('now') WHERE id = ?`).run(taskId);
+  throwBackClaim(taskId, 'blocked', 'pm', pmAgentId, rejectReason);
   // Re-broadcast so revert_count reaches the dashboard.
   const freshBlockReject = getTask(taskId);
   if (freshBlockReject) broadcast({ type: 'tracker:task_updated', data: freshBlockReject });
@@ -3969,22 +4090,17 @@ export async function trackerOverride(
 
   if (args.approve) {
     // Force the status through (bypass engine hard gate).
-    const updated = updateTask(req.task_id, { status: req.requested_status });
+    // Override approval is AUTHORITATIVE, and that word is now the argument: `transition()`
+    // files the upheld adjudication in the same transaction as the move, which is what the
+    // three CASE-WHEN flag assignments were imitating by hand.
+    const updated = setTaskStatus(req.task_id, req.requested_status as TrackerStatus, {
+      by: 'pm', actorId: pmAgentId, claim: 'authoritative',
+      reason: `PM approved override request ${req.id}: ${reason}`,
+      resultDeliveryId: req.requested_status === 'complete' ? deliveryForTaskClose(req.task_id) : null,
+    });
     if (!updated) return `Error: task ${req.task_id} was deleted before override approval could land.`;
-    // Override approval is authoritative: set the matching *_validated
-    // flag so PM doesn't re-surface this row as unvalidated. Clear
-    // revert_count and awaiting_user_verdict too.
-    db.prepare(`
-      UPDATE legacy_tasks
-      SET revert_count = 0,
-          awaiting_user_verdict = 0,
-          user_verdict_requested_at = NULL,
-          complete_validated = CASE WHEN ? = 'complete' THEN 1 ELSE complete_validated END,
-          pause_validated = CASE WHEN ? = 'paused' THEN 1 ELSE pause_validated END,
-          blocked_validated = CASE WHEN ? = 'blocked' THEN 1 ELSE blocked_validated END,
-          updated_at = datetime('now')
-      WHERE id = ?
-    `).run(req.requested_status, req.requested_status, req.requested_status, req.task_id);
+    resetRevertCount(req.task_id, pmAgentId, `override ${req.id} approved`);
+    clearUserVerdict(req.task_id, pmAgentId, `override ${req.id} approved`);
     // updateTask broadcast above with only the status flip, re-broadcast
     // so revert_count=0 and the matching *_validated flag reach the dashboard.
     const freshOverride = getTask(req.task_id);
@@ -4076,8 +4192,9 @@ export async function trackerRequestUserVerdict(
 
   const db = getDb();
   const task = db.prepare(`
-    SELECT id, title, assigned_to, goal, awaiting_user_verdict
-    FROM legacy_tasks WHERE id = ?
+    SELECT w.id AS id, w.title AS title, w.agent_id AS assigned_to, w.goal AS goal,
+           ${awaitingUserVerdictExpr('w')} AS awaiting_user_verdict
+    FROM work w WHERE ${taskScope('w')} AND w.id = ?
   `).get(taskId) as { id: string; title: string; assigned_to: string | null; goal: string | null; awaiting_user_verdict: number } | undefined;
   if (!task) return `Error: task ${taskId} not found.`;
   if (task.awaiting_user_verdict !== 1) {
@@ -4160,8 +4277,9 @@ export async function trackerApplyUserVerdict(
 
   const db = getDb();
   const task = db.prepare(`
-    SELECT id, title, status as current_status, awaiting_user_verdict, project_id
-    FROM legacy_tasks WHERE id = ?
+    SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} as current_status,
+           ${awaitingUserVerdictExpr('w')} AS awaiting_user_verdict, w.parent_id AS project_id
+    FROM work w WHERE ${taskScope('w')} AND w.id = ?
   `).get(taskId) as { id: string; title: string; current_status: string; awaiting_user_verdict: number; project_id: string | null } | undefined;
   if (!task) return `Error: task ${taskId} not found.`;
   if (task.awaiting_user_verdict !== 1) {
@@ -4170,20 +4288,15 @@ export async function trackerApplyUserVerdict(
 
   // Force the status, clear the stalemate flag, validate immediately
   // (user is the ultimate authority). updateTask handles is_paused etc.
-  const updated = updateTask(taskId, { status });
+  const updated = setTaskStatus(taskId, status as TrackerStatus, {
+    by: 'owner', actorId: 'user', claim: 'authoritative',
+    reason: `owner's verdict: ${userQuote.slice(0, 200)}`,
+    resultDeliveryId: status === 'complete' ? deliveryForTaskClose(taskId) : null,
+  });
   if (!updated) return `Error: task ${taskId} was deleted before user verdict could land.`;
 
-  db.prepare(`
-    UPDATE legacy_tasks
-    SET awaiting_user_verdict = 0,
-        user_verdict_requested_at = NULL,
-        revert_count = 0,
-        complete_validated = CASE WHEN ? = 'complete' THEN 1 ELSE complete_validated END,
-        blocked_validated = CASE WHEN ? = 'blocked' THEN 1 ELSE blocked_validated END,
-        pause_validated = CASE WHEN ? = 'paused' THEN 1 ELSE pause_validated END,
-        updated_at = datetime('now')
-    WHERE id = ?
-  `).run(status, status, status, taskId);
+  clearUserVerdict(taskId, 'user', 'owner gave the verdict');
+  resetRevertCount(taskId, 'user', 'owner gave the verdict');
   // updateTask broadcast the status flip above, re-broadcast so the
   // dashboard sees the validated flag flip and the stalemate clear.
   const freshUserVerdict = getTask(taskId);

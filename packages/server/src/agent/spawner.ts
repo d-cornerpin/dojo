@@ -8,6 +8,10 @@ import { inheritedCreatorKind } from './created-by-kind.js';
 import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
 import { sendAgentMessage } from './agent-bus.js';
 import { postAgentNotice } from './agent-notice.js';
+import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
+import {
+  setTrackerStatus, patchWork, appendWorkNotes, deliveryForTaskClose,
+} from '../work/tracker-store.js';
 import { memoryGrep } from '../memory/retrieval.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
@@ -447,8 +451,8 @@ export function terminateAgent(agentId: string, reason?: string): void {
   // to reassign or close them.
   try {
     const danglers = db.prepare(`
-      SELECT id, title FROM legacy_tasks
-      WHERE assigned_to = ? AND status = 'in_progress' AND is_paused = 0
+      SELECT w.id AS id, w.title AS title FROM work w
+      WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed' AND w.is_paused = 0
     `).all(agentId) as Array<{ id: string; title: string }>;
     if (danglers.length > 0) {
       const note = `[${new Date().toISOString()}] Auto-paused: assigned agent "${agent.name}" was terminated (reason: ${reason ?? 'manual'}). Reassign or close from the dashboard.`;
@@ -462,13 +466,18 @@ export function terminateAgent(agentId: string, reason?: string): void {
       // (reassign / close / leave), not one the engine forges. The user can
       // also resolve these from the dashboard.
       for (const dt of danglers) {
-        db.prepare(`
-          UPDATE legacy_tasks
-          SET status = 'paused', is_paused = 1, status_before_pause = 'in_progress',
-              notes = COALESCE(notes, '') || ? || char(10),
-              updated_at = datetime('now')
-          WHERE id = ?
-        `).run(note, dt.id);
+        // PHASE-2 T8b: through `transition()`. `setTrackerStatus` carries the pause's own
+        // side-effects (is_paused, status_before_pause) so they cannot drift apart from the
+        // state they describe — the drift the two statements above could produce.
+        const r = setTrackerStatus(dt.id, 'paused', {
+          by: 'agent', actorId: agentId,
+          reason: `assigned agent "${agent.name}" was terminated (${reason ?? 'manual'}); work paused for reassignment`,
+        });
+        if (r.kind !== 'applied') {
+          logger.warn('terminateAgent: auto-pause refused', { taskId: dt.id, result: r });
+          continue;
+        }
+        appendWorkNotes(dt.id, note);
       }
       logger.info('terminateAgent: auto-paused in_progress tasks', {
         agentId, count: danglers.length,
@@ -672,11 +681,11 @@ export async function completeAgent(
   let resolvedTaskId: string | null = agent.task_id;
   if (!resolvedTaskId) {
     const candidates = db.prepare(`
-      SELECT id FROM legacy_tasks
-       WHERE assigned_to = ?
-         AND (status IN ('on_deck','in_progress')
-              OR (status = 'complete'
-                  AND (completion_summary IS NULL OR completion_summary = '')))
+      SELECT w.id AS id FROM work w
+       WHERE ${taskScope('w')} AND w.agent_id = ?
+         AND (w.state IN ('on_deck','claimed')
+              OR (w.state = 'done'
+                  AND (w.completion_summary IS NULL OR w.completion_summary = '')))
     `).all(agentId) as Array<{ id: string }>;
     if (candidates.length === 1) {
       resolvedTaskId = candidates[0].id;
@@ -702,7 +711,7 @@ export async function completeAgent(
     // touching the notes column. completion_summary stays as the
     // canonical "result" home for apprentice flows (also reused by
     // Phase B.1 evidence plumbing).
-    const priorRow = db.prepare('SELECT status, project_id FROM legacy_tasks WHERE id = ?').get(resolvedTaskId) as { status: string; project_id: string | null } | undefined;
+    const priorRow = db.prepare(`SELECT ${STATE_TO_STATUS_SQL('w.state')} AS status, w.parent_id AS project_id FROM work w WHERE w.id = ?`).get(resolvedTaskId) as { status: string; project_id: string | null } | undefined;
     if (taskStatus === 'fallen' && priorRow?.project_id) fallenProjectIds.add(priorRow.project_id);
 
     // Phase B.1: plumb result + evidence_json from the apprentice's summary
@@ -727,14 +736,23 @@ export async function completeAgent(
       } catch { /* leave null on failure */ }
     }
 
-    db.prepare(`
-      UPDATE legacy_tasks SET status = ?, updated_at = datetime('now'),
-        completed_at = CASE WHEN ? = 'complete' THEN datetime('now') ELSE completed_at END,
-        completion_summary = ?,
-        result = CASE WHEN ? = 'complete' THEN ? ELSE result END,
-        evidence_json = CASE WHEN ? = 'complete' THEN ? ELSE evidence_json END
-      WHERE id = ?
-    `).run(taskStatus, taskStatus, summary, taskStatus, summary, taskStatus, evidenceJson, resolvedTaskId);
+    // The apprentice's result columns are a patch; the status is a transition. A
+    // `complete` close points at the hand-off the apprentice actually made (G7) — for an
+    // apprentice that is normally the A2A delivery back to the agent that spawned it.
+    patchWork(resolvedTaskId, {
+      completion_summary: summary,
+      ...(taskStatus === 'complete' ? { result: summary, evidence_json: evidenceJson } : {}),
+    });
+    const closeRes = setTrackerStatus(resolvedTaskId, taskStatus, {
+      by: 'agent', actorId: agentId,
+      reason: `apprentice "${agent.name}" called complete_task(status="${status}")`,
+      resultDeliveryId: taskStatus === 'complete' ? deliveryForTaskClose(resolvedTaskId) : null,
+    });
+    if (closeRes.kind !== 'applied' && closeRes.kind !== 'noop') {
+      logger.warn('completeAgent: task close refused by the work gate', {
+        agentId, taskId: resolvedTaskId, taskStatus, result: closeRes,
+      }, agentId);
+    }
 
     void (await import('../tracker/task-log.js')).writeTaskLog({
       taskId: resolvedTaskId,
@@ -786,15 +804,16 @@ export async function completeAgent(
   try {
     const bulkStatus = status === 'complete' ? 'complete' : status === 'fallen' ? 'fallen' : 'blocked';
     const primaryLineage = resolvedTaskId
-      ? db.prepare('SELECT project_id, source_message_id FROM legacy_tasks WHERE id = ?')
+      ? db.prepare('SELECT parent_id AS project_id, source_message_id FROM work WHERE id = ?')
           .get(resolvedTaskId) as { project_id: string | null; source_message_id: string | null } | undefined
       : undefined;
     const otherDanglers = db.prepare(`
-      SELECT id, title, project_id, source_message_id FROM legacy_tasks
-      WHERE assigned_to = ?
-        AND status = 'in_progress'
-        AND is_paused = 0
-        AND id != COALESCE(?, '')
+      SELECT w.id AS id, w.title AS title, w.parent_id AS project_id,
+             w.source_message_id AS source_message_id FROM work w
+      WHERE ${taskScope('w')} AND w.agent_id = ?
+        AND w.state = 'claimed'
+        AND w.is_paused = 0
+        AND w.id != COALESCE(?, '')
     `).all(agentId, resolvedTaskId ?? null) as Array<{ id: string; title: string; project_id: string | null; source_message_id: string | null }>;
     const danglerLog = await import('../tracker/task-log.js');
     for (const dt of otherDanglers) {
@@ -803,11 +822,16 @@ export async function completeAgent(
         (dt.source_message_id !== null && dt.source_message_id === primaryLineage.source_message_id)
       );
       const disposition = sameWork ? bulkStatus : 'blocked';
-      db.prepare(`
-        UPDATE legacy_tasks SET status = ?, updated_at = datetime('now'),
-          completed_at = CASE WHEN ? = 'complete' THEN datetime('now') ELSE completed_at END
-        WHERE id = ?
-      `).run(disposition, disposition, dt.id);
+      const dRes = setTrackerStatus(dt.id, disposition, {
+        by: 'agent', actorId: agentId,
+        reason: sameWork
+          ? 'shares the primary task\'s work order and inherits its close'
+          : 'lineage does not tie it to the completed work; blocked for reassignment',
+        resultDeliveryId: disposition === 'complete' ? deliveryForTaskClose(dt.id) : null,
+      });
+      if (dRes.kind !== 'applied' && dRes.kind !== 'noop') {
+        logger.warn('completeAgent: dangler disposition refused', { taskId: dt.id, result: dRes });
+      }
       if (disposition === 'fallen' && dt.project_id) fallenProjectIds.add(dt.project_id);
 
       void danglerLog.writeTaskLog({
@@ -1061,7 +1085,7 @@ export function fireSpawnTimeoutDecision(agentId: string): void {
 
   let taskLine = 'no tracker task linked';
   if (agent.task_id) {
-    const t = db.prepare('SELECT title, status FROM legacy_tasks WHERE id = ?').get(agent.task_id) as { title: string; status: string } | undefined;
+    const t = db.prepare(`SELECT w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status FROM work w WHERE w.id = ?`).get(agent.task_id) as { title: string; status: string } | undefined;
     if (t) taskLine = `linked task "${t.title}" (status: ${t.status})`;
   }
 

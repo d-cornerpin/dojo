@@ -2,15 +2,22 @@
 //
 // Two guarantees, one walk, and they are deliberately different shapes:
 //
-//   PART A — `work` / `work_events` / `adjudications` have ONE writer, `work/store.ts`.
-//     Its allowlist is EMPTY and starts empty, because the spine is new: there has never
-//     been a second writer, so any appearance of one fails immediately instead of waiting
-//     for a later task to notice. This is the strongest form the walk has.
+//   PART A — THE TWO-CLAUSE PROPERTY (orchestrator ruling, PHASE-2 ledger 2026-07-29, T6
+//     acceptance §3; executed by T8b, which is the task that needed the split).
+//       (a) every write to `work` / `work_events` / `adjudications` lives under `work/`, and
+//       (b) `work.state` UPDATEs exist ONLY in `store.ts`, inside `transition()`.
+//     Clause (b) is the sharp half and it is what the original file-scoped rule was FOR:
+//     the thing being protected was never "one file touches the table", it was "one gate
+//     decides a state change". Widening (a) to the directory costs nothing as long as (b)
+//     holds, and (b) is now checked directly instead of implied.
+//     Both clauses have planted-fault proofs below; a rule with no proof it bites is a
+//     comment.
 //
-//   PART B — THE BURN-DOWN. `legacy_tasks` / `legacy_projects` state writes are the
-//     conversion that is still outstanding. The allowlist below IS the artefact: its total
-//     is the honest answer to "how much of the tracker still writes state without a gate",
-//     and PHASE-2 T8 drives it to zero, file by file. When it is empty, T8 is done.
+//   PART B — THE BURN-DOWN, NOW EMPTY. `legacy_tasks` / `legacy_projects` state writes were
+//     the conversion T8 owed. PHASE-2 T8b drove the allowlist to zero: the tracker's rows
+//     live on `work` and every state change goes through `transition()`. The list stays,
+//     empty, because an empty list that is CHECKED is the proof; deleting the check would
+//     make a regression invisible.
 //
 // The walk reads source with fs.readFileSync rather than grep: two of this tree's largest
 // files carry NUL bytes and grep skips them silently, and `grep` on this machine is ugrep.
@@ -42,7 +49,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const SRC = path.join(__dirname, '..', '..');
-const WRITER_MODULE = 'work/store.ts';
+/** Clause (b): the ONE module that may move `work.state`. */
+const STATE_WRITER_MODULE = 'work/store.ts';
+/** Clause (a): the directory the spine's writes live inside. */
+const WRITER_DIR = 'work/';
 
 /** Matched on the TABLE, never on the verb: `INSERT OR IGNORE INTO`, an interpolated verb
  *  (`${verb} INTO x`) and an interpolated table (`INTO ${t}`) are all writes, and a gate that
@@ -80,29 +90,14 @@ const stripComments = (s: string): string => s
 // ── PART B's burn-down allowlist. Each entry is {file: sites}. PHASE-2 T8 empties it. ──
 // TOTAL 47. When a T8 cluster lands, its line drops out and the total below drops with it.
 //
-// PHASE-2 T6 ADDS TWO, and says why rather than quietly bumping the number. The turn-end
-// disposition (the receipt-keyed pause and its reopen — `agent/v2/answered-edge.ts`) has to
-// write where a TASK'S LIVE STATE ACTUALLY IS, and that is still `legacy_tasks.status`: T2
-// moved the schema, T8 moves the writers, and a task created today has no `work` row at
-// all. Writing the disposition to the spine would have written it where nothing reads.
-// They are declared here, like every other outstanding conversion, and T8 routes them
-// through `transition()` with the rest. 47 -> 49.
-const LEGACY_STATE_WRITERS: Record<string, number> = {
-  'agent/v2/answered-edge.ts': 2,   // PHASE-2 T6: the pause + its reopen
-  'scheduler/runner.ts': 13,
-  'tracker/tools.ts': 19,        // 9 raw UPDATE + 10 updateTask({status})
-  'tracker/pm-agent.ts': 4,
-  'agent/spawner.ts': 3,
-  'agent/v2/loop.ts': 2,
-  'healer/auto-fix.ts': 2,
-  'tracker/schema.ts': 2,
-  'agent/tools.ts': 1,
-  'gateway/routes/tracker.ts': 1,
-};
+// PHASE-2 T8b EMPTIED IT. All 49 conversions landed: the tracker's rows are `work` rows,
+// `tracker/schema.ts:updateTask`'s status branch (PINNED §13's ungated "route R2") is
+// deleted, and every state change in the tree goes through `transition()`.
+const LEGACY_STATE_WRITERS: Record<string, number> = {};
 const BURN_DOWN_TOTAL = Object.values(LEGACY_STATE_WRITERS).reduce((a, b) => a + b, 0);
 
-/** R1: a raw UPDATE against a legacy table whose SET list assigns `status`.
- *  R2: a call to the generic column patcher carrying a status. */
+/** A raw UPDATE against a legacy table whose SET list assigns `status`, or a call to the
+ *  generic column patcher carrying a status. Both routes must stay at zero. */
 function countLegacyStateWrites(text: string): number {
   const src = stripComments(text);
   let n = 0;
@@ -114,19 +109,54 @@ function countLegacyStateWrites(text: string): number {
   return n;
 }
 
+/** Clause (b)'s matcher: an `UPDATE work` whose SET list assigns `state`. Deliberately NOT
+ *  "any UPDATE work" — the tracker's attribute patcher writes this table all day and must,
+ *  which is the whole point of splitting the rule in two. */
+const STATE_UPDATE_RE = /UPDATE\s+work\b([\s\S]{0,600}?)(?=`|;\s*$|WHERE\s)/gi;
+function writesWorkState(text: string): boolean {
+  const src = stripComments(text);
+  STATE_UPDATE_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = STATE_UPDATE_RE.exec(src))) if (/\bstate\s*=/.test(m[1])) return true;
+  return false;
+}
+
 describe('PART A — the work spine has exactly one writer', () => {
-  it('no module outside work/store.ts writes work, work_events or adjudications', () => {
+  it('CLAUSE (a): no module OUTSIDE work/ writes work, work_events or adjudications', () => {
     const offenders = sourceFiles()
-      .filter((f) => f !== WRITER_MODULE)
+      .filter((f) => !f.startsWith(WRITER_DIR))
       .filter((f) => SPINE_WRITE_RE.test(stripComments(read(f))));
     expect(offenders).toEqual([]);
   });
 
+  it('CLAUSE (b): work.state is UPDATEd in store.ts and NOWHERE else, inside or outside work/', () => {
+    const offenders = sourceFiles()
+      .filter((f) => f !== STATE_WRITER_MODULE)
+      .filter((f) => writesWorkState(read(f)));
+    expect(offenders).toEqual([]);
+  });
+
   it('the writer module DOES write all three tables — the rule above is not vacuous', () => {
-    const writer = read(WRITER_MODULE);
+    const writer = read(STATE_WRITER_MODULE);
     expect(writer).toMatch(/UPDATE work\b/);
     expect(writer).toMatch(/INSERT INTO work_events\b/);
     expect(writer).toMatch(/INSERT INTO adjudications\b/);
+    expect(writesWorkState(writer)).toBe(true);
+  });
+
+  it('PLANTED FAULT (a): a spine write outside work/ is caught', () => {
+    expect(SPINE_WRITE_RE.test(stripComments(
+      "db.prepare('INSERT INTO work (id) VALUES (?)').run(id);",
+    ))).toBe(true);
+  });
+
+  it('PLANTED FAULT (b): a state UPDATE inside work/ but outside store.ts is caught', () => {
+    // The exact shape the directory widening makes newly possible, and the reason clause
+    // (b) exists: a sibling module under work/ passes clause (a) and must still fail here.
+    expect(writesWorkState("db.prepare(`UPDATE work SET state = ?, updated_at = ? WHERE id = ?`).run(s, t, id);")).toBe(true);
+    // ...and the attribute patcher that legitimately lives beside it does NOT trip it.
+    expect(writesWorkState("db.prepare(`UPDATE work SET notes = ?, updated_at = ? WHERE id = ?`).run(n, t, id);")).toBe(false);
+    expect(writesWorkState("db.prepare(`UPDATE work SET schedule_status = 'waiting' WHERE id = ?`).run(id);")).toBe(false);
   });
 
   it('SELF-TEST: the matcher catches every write form, and the word boundary holds', () => {
@@ -169,7 +199,8 @@ describe('PART B — the burn-down: legacy state writes still outstanding (PHASE
   });
 
   it('records the outstanding total so the number is visible on every run', () => {
-    expect(BURN_DOWN_TOTAL).toBe(49);
+    // PHASE-2 T8b: ZERO. `legacy_tasks` / `legacy_projects` have no production state writer.
+    expect(BURN_DOWN_TOTAL).toBe(0);
   });
 
   it('SELF-TEST: the legacy counter sees both routes and ignores prose', () => {

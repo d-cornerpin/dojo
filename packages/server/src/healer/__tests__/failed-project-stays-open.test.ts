@@ -37,6 +37,8 @@ vi.mock('../../gateway/ws.js', () => ({ broadcast: () => {} }));
 import { runAutoFixes } from '../auto-fix.js';
 import type { DiagnosticItem } from '../diagnostic.js';
 
+import { createWorkTable, seedTrackerTask, seedTrackerProject } from '../../work/__tests__/work-fixture.js';
+
 const ORPHANED_PROJECT: DiagnosticItem = {
   code: 'ORPHANED_PROJECT',
   severity: 'warning',
@@ -46,21 +48,17 @@ const ORPHANED_PROJECT: DiagnosticItem = {
 beforeEach(() => {
   const db = new Database(':memory:');
   db.exec(`
-    CREATE TABLE legacy_projects (
-      id TEXT PRIMARY KEY, title TEXT, description TEXT, status TEXT NOT NULL,
-      completed_at TEXT, updated_at TEXT, created_by TEXT
-    );
-    CREATE TABLE legacy_tasks (
-      id TEXT PRIMARY KEY, project_id TEXT, title TEXT, status TEXT NOT NULL,
-      assigned_to TEXT, is_paused INTEGER DEFAULT 0, updated_at TEXT
-    );
+    CREATE TABLE deliveries (id TEXT PRIMARY KEY, agent_id TEXT, turn_number INTEGER, tool TEXT, channel TEXT, outcome TEXT, created_at TEXT);
+    CREATE TABLE work_events_unused (x INTEGER);
     CREATE TABLE healer_actions (
       id TEXT PRIMARY KEY, diagnostic_id TEXT, category TEXT, description TEXT,
       agent_id TEXT, action_taken TEXT, result TEXT, created_at TEXT
     );
   `);
-  const proj = db.prepare(`INSERT INTO legacy_projects (id, title, status) VALUES (?, ?, 'active')`);
-  const task = db.prepare(`INSERT INTO legacy_tasks (id, project_id, title, status) VALUES (?, ?, ?, ?)`);
+  createWorkTable(db);
+  const proj = { run: (id: string, title: string) => seedTrackerProject(db, { id, title, status: 'active' }) };
+  const task = { run: (id: string, projectId: string, title: string, status: string) =>
+    seedTrackerTask(db, { id, projectId, title, status }) };
 
   // 1. THE SUBJECT: work that FELL. One task shipped, one died. No open work
   //    remains, so every "is this finished?" sweep looks at it.
@@ -70,8 +68,15 @@ beforeEach(() => {
 
   // 2. THE CONTROL: a genuinely finished project. This one SHOULD close, and it
   //    is what stops the guard being satisfiable by simply never closing anything.
+  // PHASE-2 T8b: `done` means DELIVERED (`transition()`'s G7), so the finished project's
+  // finished child points at a real delivery row — which is exactly WHY the umbrella may
+  // close. Without it the close is refused, and that refusal is the gate working, not a
+  // fixture detail: `deliveryForCompletedChildren` reads this.
+  db.prepare(`INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, outcome, created_at)
+              VALUES ('d-done', 'a1', 1, 'imessage-door', 'imessage', 'delivered', '2026-07-29 10:00:00')`).run();
   proj.run('p-done', 'Tidy the desk');
   task.run('t-d1', 'p-done', 'Tidy the desk', 'complete');
+  db.prepare("UPDATE work SET result_delivery_id = 'd-done', closed_at = 1700000000000 WHERE id = 't-d1'").run();
 
   // 3. Still-running project: untouched by either arm.
   proj.run('p-open', 'Long job');
@@ -86,14 +91,14 @@ beforeEach(() => {
 });
 
 const status = (id: string) =>
-  (mockDb.current!.prepare('SELECT status FROM legacy_projects WHERE id = ?').get(id) as { status: string }).status;
+  (mockDb.current!.prepare("SELECT CASE state WHEN 'open' THEN 'active' WHEN 'done' THEN 'complete' ELSE state END AS status FROM work WHERE id = ?").get(id) as { status: string }).status;
 
 describe("healer ORPHANED_PROJECT auto-fix: a fallen task blocks the close (D-K fail-open)", () => {
   it('never closes a project that has a FALLEN task, however many others completed', () => {
     runAutoFixes('diag-1', [ORPHANED_PROJECT]);
     expect(status('p-failed')).toBe('active');
     expect(
-      mockDb.current!.prepare("SELECT completed_at FROM legacy_projects WHERE id = 'p-failed'").get(),
+      mockDb.current!.prepare("SELECT closed_at AS completed_at FROM work WHERE id = 'p-failed'").get(),
     ).toEqual({ completed_at: null });
   });
 

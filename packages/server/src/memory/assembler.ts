@@ -3,6 +3,7 @@ import { renderTaskStamps, renderStepFacts, type TaskStampFields } from '../trac
 import { getDb as getStampDb } from '../db/connection.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+import { taskScope, msToText, revertCountExpr } from '../work/tracker-view.js';
 import { type PromptTurnContext } from '../prompt/assembler.js';
 import { conversationKey, type TurnCounterparty } from '../agent/v2/counterparty.js';
 import { getContextWindow } from '../agent/model.js';
@@ -880,7 +881,7 @@ async function assembleMessageContext(
       if (entries.length === 0) continue;
       let revertNote = '';
       try {
-        const row = getDb().prepare('SELECT revert_count FROM legacy_tasks WHERE id = ?')
+        const row = getDb().prepare(`SELECT ${revertCountExpr('w')} AS revert_count FROM work w WHERE w.id = ?`)
           .get(task.id) as { revert_count: number | null } | undefined;
         if (row?.revert_count) revertNote = `, reverted ${row.revert_count}x already`;
       } catch { /* column may not exist on old DBs */ }
@@ -922,10 +923,15 @@ async function assembleMessageContext(
         // work. Each line now carries the engine's stamp (one compact line)
         // plus live step-sequence facts, so the model KNOWS state here.
         const stampStmt = getStampDb().prepare(
-          `SELECT id, last_activity_turn, last_activity_at, last_activity_outcome,
-                  last_answered_turn, last_answered_at, last_delivery_summary,
-                  step_number, total_steps, project_id
-             FROM legacy_tasks WHERE id = ?`,
+          `SELECT w.id AS id, w.last_activity_turn AS last_activity_turn,
+                  ${msToText('w.last_activity_at')} AS last_activity_at,
+                  w.last_activity_outcome AS last_activity_outcome,
+                  w.last_answered_turn AS last_answered_turn,
+                  ${msToText('w.last_answered_at')} AS last_answered_at,
+                  w.last_delivery_summary AS last_delivery_summary,
+                  w.step_number AS step_number, w.total_steps AS total_steps,
+                  w.parent_id AS project_id
+             FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
         );
         const taskLines = activeTasks.slice(0, 5).map(t => {
           let line = `• ${t.title} (ID: ${t.id.slice(0, 8)}, priority: ${t.priority})`;

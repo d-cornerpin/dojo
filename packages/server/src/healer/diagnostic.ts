@@ -18,6 +18,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getVaultStats, getPoisonedArchiveStats } from '../vault/store.js';
 import { getUpdateCheckHealth } from '../gateway/routes/update.js';
 import { readMarker } from '../update-state.js';
+import { taskScope, projectScope, msToText } from '../work/tracker-view.js';
 
 const logger = createLogger('healer-diagnostic');
 
@@ -351,13 +352,13 @@ function getTrackerHealth(): DiagnosticItem[] {
 
   // Tasks stuck in_progress for >24h
   const staleTasks = db.prepare(`
-    SELECT t.id, t.title, t.assigned_to, t.updated_at,
+    SELECT t.id, t.title, t.agent_id AS assigned_to, ${msToText('t.updated_at')} AS updated_at,
            a.name as agent_name, a.status as agent_status
-    FROM legacy_tasks t
-    LEFT JOIN agents a ON a.id = t.assigned_to
-    WHERE t.status = 'in_progress'
-      AND t.updated_at < datetime('now', '-24 hours')
-  `).all() as Array<{ id: string; title: string; assigned_to: string | null; updated_at: string; agent_name: string | null; agent_status: string | null }>;
+    FROM work t
+    LEFT JOIN agents a ON a.id = t.agent_id
+    WHERE ${taskScope('t')} AND t.state = 'claimed'
+      AND t.updated_at < ?
+  `).all(Date.now() - 24 * 3600 * 1000) as Array<{ id: string; title: string; assigned_to: string | null; updated_at: string; agent_name: string | null; agent_status: string | null }>;
 
   for (const task of staleTasks) {
     const updatedMs = new Date(task.updated_at.includes('Z') ? task.updated_at : task.updated_at + 'Z').getTime();
@@ -374,10 +375,10 @@ function getTrackerHealth(): DiagnosticItem[] {
 
   // Tasks assigned to terminated agents
   const orphanedTasks = db.prepare(`
-    SELECT t.id, t.title, t.assigned_to, a.name as agent_name
-    FROM legacy_tasks t
-    JOIN agents a ON a.id = t.assigned_to
-    WHERE t.status IN ('in_progress', 'on_deck', 'paused')
+    SELECT t.id, t.title, t.agent_id AS assigned_to, a.name as agent_name
+    FROM work t
+    JOIN agents a ON a.id = t.agent_id
+    WHERE ${taskScope('t')} AND t.state IN ('claimed', 'on_deck', 'paused')
       AND a.status = 'terminated'
   `).all() as Array<{ id: string; title: string; assigned_to: string; agent_name: string }>;
 
@@ -401,13 +402,13 @@ function getTrackerHealth(): DiagnosticItem[] {
   // fallen-containing project on every cycle (no infinite re-detect loop).
   const orphanedProjects = db.prepare(`
     SELECT p.id, p.title
-    FROM legacy_projects p
-    WHERE p.status = 'active'
+    FROM work p
+    WHERE ${projectScope('p')} AND p.state = 'open'
       AND NOT EXISTS (
-        SELECT 1 FROM legacy_tasks t
-        WHERE t.project_id = p.id AND t.status != 'complete'
+        SELECT 1 FROM work t
+        WHERE t.parent_id = p.id AND t.kind = 'task' AND t.state <> 'done'
       )
-      AND EXISTS (SELECT 1 FROM legacy_tasks t2 WHERE t2.project_id = p.id)
+      AND EXISTS (SELECT 1 FROM work t2 WHERE t2.parent_id = p.id AND t2.kind = 'task')
   `).all() as Array<{ id: string; title: string }>;
 
   for (const project of orphanedProjects) {
@@ -451,13 +452,13 @@ function getBulletproofToolHealth(): DiagnosticItem[] {
   const splitBrain = db.prepare(`
     SELECT a.id, a.name, t.id as task_id, t.title as task_title
     FROM agents a
-    JOIN legacy_tasks t ON t.assigned_to = a.id
+    JOIN work t ON t.agent_id = a.id AND ${taskScope('t')}
     WHERE a.status IN ('idle', 'working')
       AND a.classification = 'apprentice'
       AND COALESCE(a.agent_type, '') != 'persistent'
       AND COALESCE(json_extract(a.config, '$.persist'), 0) != 1
-      AND t.status = 'complete'
-      AND t.completed_at > datetime('now', '-7 days')
+      AND t.state = 'done'
+      AND t.closed_at > (CAST(strftime('%s', 'now', '-7 days') AS INTEGER) * 1000)
   `).all() as Array<{ id: string; name: string; task_id: string; task_title: string }>;
 
   for (const row of splitBrain) {
@@ -507,10 +508,10 @@ function getBulletproofToolHealth(): DiagnosticItem[] {
   const neverPoked = db.prepare(`
     SELECT a.id, a.name, t.title as task_title, t.id as task_id, a.created_at
     FROM agents a
-    JOIN legacy_tasks t ON t.assigned_to = a.id
+    JOIN work t ON t.agent_id = a.id AND ${taskScope('t')}
     WHERE a.status = 'idle'
       AND a.classification = 'apprentice'
-      AND t.status IN ('on_deck', 'in_progress')
+      AND t.state IN ('on_deck', 'claimed')
       AND a.created_at < datetime('now', '-30 minutes')
       AND NOT EXISTS (
         SELECT 1 FROM messages m

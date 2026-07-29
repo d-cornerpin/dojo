@@ -79,6 +79,8 @@ import { pushEngineMessage } from './engine-message.js';
 import { findRecentDeliveries, findRecentDeliveriesKeyed, getRecentOutbound, mostRecentDeliveryTo, mostRecentDeliveryToConversation, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
 import { writeToolReceipt } from '../../receipts/store.js';
 import { resolveToolAlias } from '../../tools/aliases.js';
+import { taskScope, msToText, tsToMs, STATE_TO_STATUS_SQL } from '../../work/tracker-view.js';
+import { setTrackerStatus, patchWork, upholdClaim } from '../../work/tracker-store.js';
 
 import {
   stoppedAgents,
@@ -344,9 +346,9 @@ function userRequestedCloseWantsReply(
   try {
     const db = getDb();
     const task = db.prepare(`
-      SELECT t.created_at AS created_at, t.source_message_id AS source_message_id FROM legacy_tasks t
-      JOIN legacy_projects p ON p.id = t.project_id
-      WHERE t.assigned_to = ?
+      SELECT ${msToText('t.opened_at')} AS created_at, t.source_message_id AS source_message_id FROM work t
+      JOIN work p ON p.id = t.parent_id
+      WHERE ${taskScope('t')} AND t.agent_id = ?
         AND (t.id = ? OR t.id LIKE ?)
         AND (p.origin_kind = 'engine_scaffold' OR p.description LIKE ?)
       LIMIT 1
@@ -1483,7 +1485,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         : { kind: 'engine', id: pendingEngineEvent.id, sourceMessageId: null });
       if (pendingEngineEvent.taskId) {
         try {
-          const servedTask = db.prepare('SELECT kind, origin_conv_key FROM legacy_tasks WHERE id = ?')
+          const servedTask = db.prepare('SELECT task_kind AS kind, origin_conv_key FROM work WHERE id = ?')
             .get(pendingEngineEvent.taskId) as { kind: string | null; origin_conv_key: string | null } | undefined;
           currentTurnServedWork.set(agentId, {
             taskId: pendingEngineEvent.taskId,
@@ -2166,14 +2168,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // worked task naturally stays inside the window.
     const CLOSE_OUT_IDLE_MINUTES = 10;
     const inProgressDanglers = db.prepare(`
-      SELECT id, title, 'in_progress' AS kind FROM legacy_tasks
-      WHERE assigned_to = ?
-        AND status = 'in_progress'
-        AND is_paused = 0
-        AND datetime(updated_at) < datetime('now', ?)
-      ORDER BY updated_at ASC
+      SELECT w.id AS id, w.title AS title, 'in_progress' AS kind FROM work w
+      WHERE ${taskScope('w')} AND w.agent_id = ?
+        AND w.state = 'claimed'
+        AND w.is_paused = 0
+        AND w.updated_at < ?
+      ORDER BY w.updated_at ASC
       LIMIT 10
-    `).all(agentId, `-${CLOSE_OUT_IDLE_MINUTES} minutes`) as Array<{ id: string; title: string; kind: string }>;
+    `).all(agentId, Date.now() - CLOSE_OUT_IDLE_MINUTES * 60_000) as Array<{ id: string; title: string; kind: string }>;
 
     // (2) Stranded on_deck tasks. Catches the Presenton-shaped failure:
     // agent created a project, did some of it, then abandoned it (often
@@ -2188,23 +2190,23 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // prevents this from firing inside the same conversation as the
     // creation, only catches genuinely abandoned work between sessions.
     const strandedRows = db.prepare(`
-      SELECT t.id, t.title, 'stranded' AS kind FROM legacy_tasks t
-      INNER JOIN legacy_projects p ON p.id = t.project_id
-      WHERE t.assigned_to = ?
-        AND t.status = 'on_deck'
+      SELECT t.id AS id, t.title AS title, 'stranded' AS kind FROM work t
+      INNER JOIN work p ON p.id = t.parent_id
+      WHERE ${taskScope('t')} AND t.agent_id = ?
+        AND t.state = 'on_deck'
         AND t.is_paused = 0
-        AND (t.scheduled_start IS NULL OR datetime(t.scheduled_start) <= datetime('now'))
+        AND (t.scheduled_start IS NULL OR t.scheduled_start <= ?)
         AND t.schedule_status != 'waiting'
-        AND p.created_by = ?
-        AND p.status = 'active'
-        AND datetime(t.updated_at) < datetime('now', '-30 minutes')
+        AND p.requester_id = ?
+        AND p.state = 'open'
+        AND t.updated_at < ?
         AND NOT EXISTS (
-          SELECT 1 FROM legacy_tasks sib
-          WHERE sib.project_id = p.id AND sib.status = 'in_progress'
+          SELECT 1 FROM work sib
+          WHERE sib.parent_id = p.id AND sib.kind = 'task' AND sib.state = 'claimed'
         )
       ORDER BY t.updated_at ASC
       LIMIT 10
-    `).all(agentId, agentId) as Array<{ id: string; title: string; kind: string }>;
+    `).all(agentId, Date.now(), agentId, Date.now() - 30 * 60_000) as Array<{ id: string; title: string; kind: string }>;
 
     // BUG-2 (comms-audit convergence pass): NEVER arm the close-out gate on a turn a
     // human is waiting on (`triggerRow` set ⇒ this turn serves a waiting human, by the
@@ -2248,9 +2250,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
         for (const r of inProgressDanglers) {
           // Stamps first (mig 124), live join as backfill for pre-stamp rows.
           const st = db.prepare(
-            `SELECT id, last_activity_turn, last_activity_at, last_activity_outcome,
-                    last_answered_turn, last_answered_at, last_delivery_summary
-               FROM legacy_tasks WHERE id = ?`,
+            `SELECT id, last_activity_turn, ${msToText('last_activity_at')} AS last_activity_at,
+                    last_activity_outcome, last_answered_turn,
+                    ${msToText('last_answered_at')} AS last_answered_at, last_delivery_summary
+               FROM work WHERE id = ?`,
           ).get(r.id) as import('../../tracker/task-stamps.js').TaskStampFields | undefined;
           // Tangibility rule (battery catch 2026-07-22): only a recorded
           // HANDOVER (file or channel delivery) earns the close-this text; a
@@ -2528,23 +2531,28 @@ export async function runV2Turn(agentId: string): Promise<void> {
           const db2 = getDb();
           const { ENGINE_AUTO_MARKER } = await import('./classifiers/multistep.js');
           const task = db2.prepare(`
-            SELECT id, title, project_id FROM legacy_tasks
-            WHERE assigned_to = ? AND status = 'in_progress'
-            ORDER BY updated_at DESC LIMIT 1
+            SELECT w.id AS id, w.title AS title, w.parent_id AS project_id FROM work w
+            WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'claimed'
+            ORDER BY w.updated_at DESC LIMIT 1
           `).get(agentId) as { id: string; title: string; project_id: string | null } | undefined;
           if (task) {
             if (!blockedWorkIsUserOrigin && task.project_id) {
-              const proj = db2.prepare(`SELECT description FROM legacy_projects WHERE id = ?`).get(task.project_id) as { description: string | null } | undefined;
+              const proj = db2.prepare(`SELECT description FROM work WHERE id = ?`).get(task.project_id) as { description: string | null } | undefined;
               if (proj?.description && proj.description.startsWith(ENGINE_AUTO_MARKER)) blockedWorkIsUserOrigin = true;
             }
             const noteLine = `Engine auto-blocked: ${breakerReason}. Likely needs human review or a re-stated goal.`;
-            db2.prepare(`
-              UPDATE legacy_tasks
-              SET status = 'blocked',
-                  blocked_validated = 1,
-                  updated_at = datetime('now')
-              WHERE id = ?
-            `).run(task.id);
+            // PHASE-2 T8b: through `transition()`, and `blocked_validated = 1` is now the
+            // upheld adjudication it always was in substance — the comment below already
+            // called it "the engine's validation"; it is a ROW saying so.
+            const blockRes = setTrackerStatus(task.id, 'blocked', {
+              by: 'agent', actorId: agentId,
+              reason: `engine auto-block: ${breakerReason}`,
+              note: noteLine,
+            });
+            if (blockRes.kind === 'applied') {
+              upholdClaim(task.id, 'blocked', 'engine', 'engine',
+                `deterministic engine block: ${breakerReason}`);
+            }
             // F1.4: no noteTransitionForReview call here. runPMReview surfaces any
             // blocked task after 30 minutes regardless of blocked_validated (the
             // pm-agent blocked-issue check), so the PM has its backstop. A fresh
@@ -3333,11 +3341,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // (one of the two disarm holes this fix closes).
             const db = getDb();
             const existingTask = db.prepare(`
-              SELECT id FROM legacy_tasks
-              WHERE assigned_to = ? AND status IN ('on_deck', 'in_progress', 'paused')
-                AND datetime(updated_at) >= datetime('now', ?)
+              SELECT w.id AS id FROM work w
+              WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state IN ('on_deck', 'claimed', 'paused')
+                AND w.updated_at >= ?
               LIMIT 1
-            `).get(agentId, `-${STALE_TASK_WINDOW_MINUTES} minutes`) as { id: string } | undefined;
+            `).get(agentId, Date.now() - STALE_TASK_WINDOW_MINUTES * 60_000) as { id: string } | undefined;
 
             // F12 (harness finding, wave 2): agent CREATION stores the new agent's
             // system prompt as both a role='system' row AND a role='user' bootstrap
@@ -5506,16 +5514,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // PHASE-2 T6 (C2, requirement 1b): "did work close WITHOUT a delivery" is a JOIN
             // now. The SPINE half asks it directly (`closedWithoutDelivery()`; the DDL's own
             // CHECK makes that set exact, since a row cannot be `done` without pointing at a
-            // delivery); the LEGACY half — tracker tasks, whose state stays in `legacy_tasks`
-            // until T8 — filters through the same ONE reader, `owesAnswer()`.
+            // delivery); the TRACKER half — task rows on the same spine, kept as a separate
+            // read because it carries the closed row's own prose — filters through the same
+            // ONE reader, `owesAnswer()`.
             const turnStartedAtMs = Date.parse(`${turnStartedAt.replace(' ', 'T')}Z`);
             const closedWorkThisTurn = closedWithoutDelivery(agentId, Number.isFinite(turnStartedAtMs) ? turnStartedAtMs : Date.now() - 60_000);
             const closedThisTurn = db.prepare(`
-              SELECT title, result, created_at, source_message_id FROM legacy_tasks
-               WHERE assigned_to = ? AND status = 'complete'
-                 AND repeat_interval IS NULL AND completed_at >= ?
-               ORDER BY completed_at ASC LIMIT 3
-            `).all(agentId, turnStartedAt) as Array<{ title: string; result: string | null; created_at: string; source_message_id: string | null }>;
+              SELECT w.title AS title, w.result AS result, ${msToText('w.opened_at')} AS created_at,
+                     w.source_message_id AS source_message_id FROM work w
+               WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state = 'done'
+                 AND w.repeat_interval IS NULL AND w.closed_at >= ?
+               ORDER BY w.closed_at ASC LIMIT 3
+            `).all(agentId, tsToMs(turnStartedAt) ?? 0) as Array<{ title: string; result: string | null; created_at: string; source_message_id: string | null }>;
             if (closedWorkThisTurn.length > 0) {
               logger.info('v2 silent-closeout: work settled this turn with NO delivery to point at', {
                 agentId, turnNumber,
@@ -5610,7 +5620,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               }
             }
             if (nudgedTaskId) {
-              const row = db.prepare('SELECT status, title FROM legacy_tasks WHERE id = ?').get(nudgedTaskId) as { status?: string; title?: string } | undefined;
+              const row = db.prepare(`SELECT ${STATE_TO_STATUS_SQL('state')} AS status, title FROM work WHERE id = ?`).get(nudgedTaskId) as { status?: string; title?: string } | undefined;
               if (row?.status === 'in_progress') {
                 const titleShort = (row.title ?? '').slice(0, 60);
                 const nudgeText = (
@@ -5659,11 +5669,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // turn) qualifies, because the issue isn't staleness - it's
           // that the agent went idle without resolving its state.
           const openTasks = db.prepare(`
-            SELECT id, title FROM legacy_tasks
-            WHERE assigned_to = ?
-              AND status = 'in_progress'
-              AND is_paused = 0
-            ORDER BY updated_at DESC
+            SELECT w.id AS id, w.title AS title FROM work w
+            WHERE ${taskScope('w')} AND w.agent_id = ?
+              AND w.state = 'claimed'
+              AND w.is_paused = 0
+            ORDER BY w.updated_at DESC
             LIMIT 5
           `).all(agentId) as Array<{ id: string; title: string }>;
 
@@ -5836,12 +5846,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
           persistedContent && persistedContent.trim().length > 0
         ) {
           const recurringDanglers = db.prepare(`
-            SELECT id FROM legacy_tasks
-            WHERE assigned_to = ?
-              AND status = 'in_progress'
-              AND is_paused = 0
-              AND repeat_interval IS NOT NULL
-            ORDER BY updated_at DESC
+            SELECT w.id AS id FROM work w
+            WHERE ${taskScope('w')} AND w.agent_id = ?
+              AND w.state = 'claimed'
+              AND w.is_paused = 0
+              AND w.repeat_interval IS NOT NULL
+            ORDER BY w.updated_at DESC
             LIMIT 10
           `).all(agentId) as Array<{ id: string }>;
           if (recurringDanglers.length > 0) {
@@ -5880,7 +5890,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         ) {
           const scaffoldId = state.autoScaffoldedTaskIdThisTurn;
           const stillOpen = db.prepare(
-            `SELECT 1 FROM legacy_tasks WHERE id = ? AND status = 'in_progress' AND is_paused = 0`,
+            `SELECT 1 FROM work WHERE id = ? AND state = 'claimed' AND is_paused = 0`,
           ).get(scaffoldId);
           if (stillOpen) {
             try {
@@ -6152,7 +6162,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           ) {
             try {
               const remRow = servedRem.taskId
-                ? (db.prepare('SELECT title, description FROM legacy_tasks WHERE id = ?')
+                ? (db.prepare('SELECT title, description FROM work WHERE id = ?')
                     .get(servedRem.taskId) as { title: string | null; description: string | null } | undefined)
                 : undefined;
               const remText = (remRow?.description || remRow?.title || '').replace(/^Reminder:?\s*/i, '').trim();
@@ -6342,7 +6352,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               // the project.
               const inProgressIds = db
                 .prepare(
-                  `SELECT id FROM legacy_tasks WHERE id IN (${state.danglingTaskIds.map(() => '?').join(',')}) AND status = 'in_progress'`,
+                  `SELECT id FROM work WHERE id IN (${state.danglingTaskIds.map(() => '?').join(',')}) AND state = 'claimed'`,
                 )
                 .all(...state.danglingTaskIds) as Array<{ id: string }>;
               const onDeckIds = state.danglingTaskIds.filter(
@@ -6361,7 +6371,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               const recurringResetIds: string[] = [];
               const oneShotDanglerIds: string[] = [];
               for (const tid of inProgressIds.map((r) => r.id)) {
-                const isRecurring = db.prepare(`SELECT repeat_interval FROM legacy_tasks WHERE id = ?`).get(tid) as { repeat_interval: number | null } | undefined;
+                const isRecurring = db.prepare(`SELECT repeat_interval FROM work WHERE id = ?`).get(tid) as { repeat_interval: number | null } | undefined;
                 if (isRecurring?.repeat_interval) {
                   try { forceResetStuckRecurringTask(tid); recurringResetIds.push(tid); } catch { /* best effort */ }
                   continue;
@@ -8402,14 +8412,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // sites set it there; the task carries the user content), so match it via
         // the task's project, not the task's own description.
         const justCompletedScaffold = db.prepare(`
-          SELECT t.title AS title, t.result AS result, t.created_at AS created_at, t.source_message_id AS source_message_id FROM legacy_tasks t
-          JOIN legacy_projects p ON p.id = t.project_id
-          WHERE t.assigned_to = ?
-            AND t.status = 'complete'
-            AND t.completed_at >= ?
+          SELECT t.title AS title, t.result AS result, ${msToText('t.opened_at')} AS created_at,
+                 t.source_message_id AS source_message_id FROM work t
+          JOIN work p ON p.id = t.parent_id
+          WHERE ${taskScope('t')} AND t.agent_id = ?
+            AND t.state = 'done'
+            AND t.closed_at >= ?
             AND t.repeat_interval IS NULL
             AND p.description LIKE ?
-          ORDER BY t.completed_at ASC
+          ORDER BY t.closed_at ASC
           LIMIT 3
         `).all(agentId, turnStartedAt, `${ENGINE_AUTO_MARKER}%`) as Array<{ title: string; result: string | null; created_at: string }>;
         // CROSS-TURN DEDUP: the per-turn dedup on the outer gate
@@ -9105,14 +9116,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
     if (isA2ATurn) {
       try {
         const justCompleted = db.prepare(`
-          SELECT id, title, result FROM legacy_tasks
-          WHERE assigned_to = ?
-            AND status = 'complete'
-            AND completed_at >= ?
-            AND repeat_interval IS NULL
-          ORDER BY completed_at ASC
+          SELECT w.id AS id, w.title AS title, w.result AS result FROM work w
+          WHERE ${taskScope('w')} AND w.agent_id = ?
+            AND w.state = 'done'
+            AND w.closed_at >= ?
+            AND w.repeat_interval IS NULL
+          ORDER BY w.closed_at ASC
           LIMIT 5
-        `).all(agentId, turnStartedAt) as Array<{ id: string; title: string; result: string | null }>;
+        `).all(agentId, tsToMs(turnStartedAt) ?? 0) as Array<{ id: string; title: string; result: string | null }>;
         if (justCompleted.length > 0) {
           const taskLines = justCompleted
             .map(t => `  - "${t.title}"${t.result ? `, ${t.result.replace(/\s+/g, ' ').slice(0, 160)}` : ''}`)
@@ -9422,15 +9433,33 @@ export async function runV2Turn(agentId: string): Promise<void> {
           const strike0Summary = composeTurnDeliverySummary(agentId, turnNumber);
           if (strike0Summary.length > 0) {
             const sameTurnOpen = db.prepare(
-              `SELECT id, title FROM legacy_tasks
-                WHERE assigned_to = ? AND origin_turn = ? AND status = 'in_progress' AND is_paused = 0`,
+              `SELECT w.id AS id, w.title AS title FROM work w
+                WHERE ${taskScope('w')} AND w.agent_id = ? AND w.origin_turn = ?
+                  AND w.state = 'claimed' AND w.is_paused = 0`,
             ).all(agentId, turnNumber) as Array<{ id: string; title: string }>;
+            // The receipt this close is made of — the same delivery `composeTurnDeliverySummary`
+            // just described — is what G7 requires, so the engine's strike-0 close points at
+            // the thing the person actually received.
+            const strike0Delivery = terminalDeliveryForTurn(agentId, turnNumber);
             for (const t of sameTurnOpen) {
-              db.prepare(`
-                UPDATE legacy_tasks SET status = 'complete', completed_at = datetime('now'),
-                  result = COALESCE(NULLIF(result, ''), ?), updated_at = datetime('now')
-                WHERE id = ? AND status = 'in_progress'
-              `).run(`Delivered (engine-recorded at the turn boundary): ${strike0Summary}`, t.id);
+              const r0 = setTrackerStatus(t.id, 'complete', {
+                by: strike0Delivery ? 'engine' : 'agent', actorId: agentId,
+                evidenceRef: strike0Delivery,
+                resultDeliveryId: strike0Delivery,
+                expectedState: 'claimed',
+                reason: 'delivery-receipt close (strike 0, same-turn boundary)',
+              });
+              if (r0.kind !== 'applied') {
+                logger.warn('strike-0 receipt close refused by the work gate', { taskId: t.id, result: r0 }, agentId);
+                continue;
+              }
+              // `result` only when the row does not already carry one — the old statement's
+              // COALESCE(NULLIF(result, ''), ?), kept as a read-then-patch because the patch
+              // API takes values, not expressions.
+              const cur = db.prepare('SELECT result FROM work WHERE id = ?').get(t.id) as { result: string | null } | undefined;
+              if (!cur?.result) {
+                patchWork(t.id, { result: `Delivered (engine-recorded at the turn boundary): ${strike0Summary}` });
+              }
               void import('../../tracker/task-log.js').then(({ writeTaskLog }) => writeTaskLog({
                 taskId: t.id,
                 fromEntity: 'engine',

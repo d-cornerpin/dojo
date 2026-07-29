@@ -19,6 +19,7 @@ import { sendAlert } from '../services/imessage-bridge.js';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 import { broadcast } from '../gateway/ws.js';
 import { TRANSIENT_PROVIDER_ERROR_SQL } from './diagnostic.js';
+import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 
 const logger = createLogger('injury-recovery');
 
@@ -616,9 +617,9 @@ async function notifyHealerOfInjury(agentId: string, errorMessage: string): Prom
     // Find tasks stalled on this agent
     interface StalledTask { id: string; title: string; status: string }
     const stalledTasks = db.prepare(`
-      SELECT id, title, status FROM legacy_tasks
-      WHERE assigned_to = ? AND status IN ('in_progress', 'on_deck')
-      ORDER BY updated_at DESC LIMIT 5
+      SELECT w.id AS id, w.title AS title, ${STATE_TO_STATUS_SQL('w.state')} AS status FROM work w
+      WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state IN ('claimed', 'on_deck')
+      ORDER BY w.updated_at DESC LIMIT 5
     `).all(agentId) as StalledTask[];
 
     const parts: string[] = [];

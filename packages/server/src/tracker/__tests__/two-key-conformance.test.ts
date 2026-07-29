@@ -81,61 +81,72 @@ function subsystemFiles(dir: string): string[] {
 
 // A literal SQL assignment `status = 'complete'` (single or multi-line UPDATE) or an
 // updateTask object-literal `{ status: 'complete'` / `, status: 'complete'`.
-const STATUS_COMPLETE_SQL = /status\s*=\s*'complete'/;
-const STATUS_COMPLETE_OBJ = /[,{]\s*status:\s*'complete'/;
+// PHASE-2 T8b: the mechanism moved and this scan moved with it. A KEY-1 close is no longer
+// a literal `status = 'complete'` UPDATE — `transition()` is the only writer of state, so a
+// close is a `setTrackerStatus(<id>, 'complete', …)` (or `setTaskStatus`) call. The scan
+// looks for THAT, plus the old SQL form, which must now find nothing anywhere: an UPDATE
+// that sets the state directly is the exact forgery this file exists to refuse, and the
+// single-writer walk refuses it a second time from the other side.
+const STATUS_COMPLETE_SQL = /state\s*=\s*'done'/;
+const STATUS_COMPLETE_OBJ = /set(?:Tracker|Task)Status(?:Result)?\([^)]*,\s*'complete'/;
 // A tasks-table UPDATE header (\b after `tasks` excludes `task_runs`; `projects` is a
 // different word entirely). Used to confirm a literal SQL match targets `tasks`.
-const UPDATE_TASKS = /\bUPDATE\s+legacy_tasks\b/;   // PHASE-2 T2 renamed the table
+const UPDATE_TASKS = /\bUPDATE\s+work\b/;   // PHASE-2 T2 renamed the table; T8b moved the rows onto it
 
 // The reviewed writer definition sites. A KEY-1 writer line is compliant iff, for its
 // file, one of these substrings is present in the line (or, for scheduler/runner.ts
 // multi-line writers, the bare `status = 'complete',` clause). Anything else is a
 // rogue close and fails.
 const KEY1_ALLOW: Record<string, string[]> = {
-  // Agent-request close-outs (all land complete_validated=0 -> PM still validates).
+  // Agent-request close-outs. Every one lands with NO upheld adjudication, which is what
+  // `complete_validated = 0` meant: the PM's key still turns.
   'tracker/tools.ts': [
-    "SET status = 'complete', schedule_status = 'completed', is_paused = 1", // complete_all_runs (trackerUpdateStatus)
-    "SET is_paused = 1, schedule_status = 'completed', status = 'complete'", // tracker_pause_schedule(mark_complete)
-    "{ status: 'complete', notes:",                                          // tracker_complete_step (updateTask object)
-    // Narrow carve-out (demolition Phase 1.7 #2): closeEngineScaffoldSameTurn.
-    // The ONLY engine status='complete' writer, and it lands complete_validated=0
-    // (UNVALIDATED, still gated by the PM sweep) ONLY on a task that carries the
-    // ENGINE_AUTO_MARKER and was created this turn. It closes the engine's OWN
-    // same-turn scaffold, never agent- or user-authored work, and never forges
-    // the PM's key (the demolished engineCloseDeliveredTask stamped =1). The =0
-    // on this same line keeps it out of the KEY-2 complete_validated=1 scan.
-    "SET status = 'complete', complete_validated = 0",
+    "reason: 'agent asserts every run is done; the schedule stops here'",   // complete_all_runs
+    "reason: 'schedule stopped and the work marked complete'",              // tracker_pause_schedule(mark_complete)
+    "reason: 'tracker_complete_step: the step is finished'",                // tracker_complete_step
+    "reason: `tracker_update_status -> ${String(statusUpdate)}`",           // tracker_update_status
+    // Narrow carve-out (demolition Phase 1.7 #2): closeEngineScaffoldSameTurn. The ONLY
+    // engine close of its OWN same-turn scaffold, and it now has to POINT AT the delivery
+    // (G6+G7) rather than assert it.
+    "reason: 'engine closed its own same-turn scaffold against the delivered reply (unvalidated; the PM sweep validates)'",
+    // Owner ruling 2026-07-19: Key-1 filed from the assignment-thread deliverable receipt.
+    "reason: 'the assignee returned a terminal deliverable on its ASSIGN thread; Key 1 filed from that receipt'",
+    // The project umbrella, closed against its last finished child's real delivery.
+    "reason: 'every task on this project is complete'",
+    "reason: `bulk-closed with its project: ${reason}`",
   ],
   // Scheduler recurring advance + recurring-terminal janitorial writers.
   'scheduler/runner.ts': [
-    "SET schedule_status = 'completed', status = 'complete', last_run_at",   // onTaskRunComplete terminal (occurrence-gated)
-    "status = 'complete',",                                                  // multi-line force-reset / recover-missing-run terminal
+    "reason: 'the schedule ran out of occurrences and the last run succeeded'",
+    "reason: 'a recurring task with no recoverable next run is finished'",
+    "reason: 'stuck recurring task has no future runs left'",
   ],
-  // Group-delete auto-complete (janitorial; lands complete_validated=0).
+  // Group-delete auto-complete (janitorial).
   'agent/tools.ts': [
-    "schedule_status = CASE WHEN schedule_status = 'unscheduled'",
+    "reason: 'the group this task belonged to was deleted and its members terminated'",
   ],
-  // Delivery-receipt close, strike 2 of the drive backup lane (2026-07-22
-  // production incident: a delivered task left in_progress was re-driven into
-  // full re-work; the close steer was tried first and the floor model paused
-  // the task instead). The engine closes ONLY when its own records show an
-  // answered turn on the task's origin + a TANGIBLE handover (artifact or
-  // channel delivery) + no assignee activity since + a prior close steer that
-  // was ignored. Lands complete_validated=0 (the PM's key still turns; the
-  // basis is recorded in result + task_log). The agent's own wrap-up steer at
-  // the turn boundary is the PRIMARY close-out; this is the backup's last rung.
+  // Delivery-receipt close, strike 2 of the drive backup lane (2026-07-22 production
+  // incident). The engine closes ONLY on records it can point at, and G6 now enforces that
+  // rather than a comment.
   'tracker/pm-agent.ts': [
-    "SET status = 'complete', completed_at = datetime('now')",
+    'evidenceRef: strike2Delivery, resultDeliveryId: strike2Delivery,',
   ],
-  // Strike-0 receipt close at the turn boundary (2026-07-22): the SAME-TURN
-  // form of the strike-2 close. A task created by the very turn that is
-  // ending answered with a TANGIBLE recorded delivery is finished work whose
-  // bookkeeping the model forgot; the no-re-prompt rule forbids steering, so
-  // the engine closes on its own receipts at the boundary. Lands
-  // complete_validated=0 (the validation key still turns); basis recorded in
-  // result + task_log. Multi-turn tasks never match (origin_turn scope).
+  // Strike-0 receipt close at the turn boundary: the SAME-TURN form of strike 2.
   'agent/v2/loop.ts': [
-    "SET status = 'complete', completed_at = datetime('now')",
+    'evidenceRef: strike0Delivery,',
+  ],
+  // The apprentice's own complete_task, and its lineage-scoped dangler sweep.
+  'agent/spawner.ts': [
+    'reason: `apprentice "${agent.name}" called complete_task(status="${status}")`',
+    "reason: sameWork",
+  ],
+  // The healer's all-children-complete project rollup.
+  'healer/auto-fix.ts': [
+    "reason: 'every task on this project is complete; closing the project to match'",
+  ],
+  // The dashboard: the owner IS the authority (Q5), and says so with claim: 'authoritative'.
+  'gateway/routes/tracker.ts': [
+    "claim: 'authoritative',",
   ],
 };
 
@@ -160,7 +171,10 @@ function scanKey1(rel: string, lines: string[]): string[] {
       }
     }
     if (!isSql && !isObj) return;
-    if (allow.some((s) => line.includes(s))) return;
+    // The reviewed reason rides the call's ARGUMENT OBJECT, so the window is the call, not
+    // the line: a close that states no reviewed reason is what this scan is for.
+    const block = lines.slice(i, i + 9).join('\n');
+    if (allow.some((s) => block.includes(s))) return;
     found.push(`${rel}:${i + 1} | unreviewed TASK status='complete' writer: ${line.trim().slice(0, 120)}`);
   });
   return found;
@@ -184,21 +198,35 @@ function isFlagWrite(line: string, flag: string): boolean {
   return false; // string literal ("already complete_validated=1"), comparison, etc.
 }
 
+// PHASE-2 T8b: KEY 2 is an ADJUDICATION ROW now, not a flag column (research 19 §1c). The
+// scan therefore locks the two ways an uphold can be written — the explicit `upholdClaim`
+// call, and `transition()`'s own `claim: 'authoritative'` — instead of a column assignment.
+// The refusal is the same one: nobody may turn the PM's key except a verdict path.
 const COMPLETE_VALIDATED_ALLOW: string[] = [
-  "complete_validated = 1, updated_at = datetime('now') WHERE id = ?",       // tracker_validate (terminal + recurring terminal)
-  "complete_validated = CASE WHEN ? = 'complete' THEN 1 ELSE complete_validated END", // tracker_override / apply_user_verdict
+  "upholdClaim(taskId, 'done', 'pm', pmAgentId,",        // tracker_validate (terminal + recurring terminal)
+  "upholdClaim(taskId, statusToState(task.status), 'owner', 'user',", // apply_user_validation
+  "upholdClaim(resolved.id, statusToState(task.status), 'owner', 'user',", // the dashboard's user-validate route
 ];
 
 const PAUSE_VALIDATED_ALLOW: string[] = [
-  "pause_validated = 1, updated_at = datetime('now') WHERE id = ?",          // tracker_validate(kind=pause)
-  "pause_validated = CASE WHEN ? = 'paused' THEN 1 ELSE pause_validated END", // tracker_override / apply_user_verdict
+  "upholdClaim(taskId, 'paused', 'pm', pmAgentId,",       // tracker_validate(kind=pause)
+  "upholdClaim(taskId, statusToState(task.status), 'owner', 'user',",
+  "upholdClaim(resolved.id, statusToState(task.status), 'owner', 'user',",
 ];
+
+/** An uphold of the claim `flag` names: `upholdClaim(<id>, '<state>' | statusToState(...), …)`.
+ *  Keyed on the STATE the flag was about, which is the same fact under its spine name. */
+function isUpholdWrite(line: string, flag: string): boolean {
+  if (!/upholdClaim\s*\(/.test(line)) return false;
+  const state = flag === 'complete_validated' ? 'done' : flag === 'pause_validated' ? 'paused' : 'blocked';
+  return line.includes(`'${state}'`) || line.includes('statusToState(');
+}
 
 function scanFlagWriters(rel: string, lines: string[], flag: string, allow: string[]): string[] {
   const found: string[] = [];
   lines.forEach((line, i) => {
     if (isCommentLine(line)) return;
-    if (!isFlagWrite(line, flag)) return;
+    if (!isUpholdWrite(line, flag)) return;
     if (allow.some((s) => line.includes(s))) return;
     found.push(`${rel}:${i + 1} | unreviewed validated-flag writer: ${line.trim().slice(0, 120)}`);
   });
@@ -270,7 +298,7 @@ describe('two-key KEY 1: TASK status=complete writers limited to the reviewed se
   it('positive control: a synthetic rogue engine close is caught', () => {
     const rogue = [
       'function rogueEngineClose(taskId: string) {',
-      "  db.prepare(\"UPDATE legacy_tasks SET status = 'complete', complete_validated = 1 WHERE id = ?\").run(taskId);",
+      "  db.prepare(\"UPDATE work SET state = 'done' WHERE id = ?\").run(taskId);",
       '}',
     ];
     const violations = scanKey1('tracker/rogue-synthetic.ts', rogue);
@@ -290,15 +318,15 @@ describe('two-key KEY 2: complete_validated writers limited to verdict paths', (
     const hits = KEY2_COMPLETE_FILES.flatMap((rel) =>
       readRel(rel)
         .map((line, i) => ({ line, i }))
-        .filter(({ line }) => !isCommentLine(line) && isFlagWrite(line, 'complete_validated'))
+        .filter(({ line }) => !isCommentLine(line) && isUpholdWrite(line, 'complete_validated'))
         .map(({ i }) => `${rel}:${i + 1}`),
     );
-    // 2 in tracker_validate + 1 override CASE + 1 verdict CASE = 4 lines.
-    expect(hits.length).toBeGreaterThanOrEqual(4);
+    // 2 in tracker_validate + the two owner-verdict paths.
+    expect(hits.length).toBeGreaterThanOrEqual(3);
   });
 
   it('positive control: a synthetic complete_validated=1 forgery is caught', () => {
-    const rogue = ["  db.prepare(\"UPDATE legacy_tasks SET complete_validated = 1 WHERE id = ?\").run(id);"];
+    const rogue = ["  upholdClaim(id, 'done', 'engine', 'engine', 'I say it is fine');"];
     const violations = scanFlagWriters('tracker/rogue-synthetic.ts', rogue, 'complete_validated', COMPLETE_VALIDATED_ALLOW);
     expect(violations.length).toBe(1);
   });
@@ -320,11 +348,13 @@ describe('two-key KEY 2: pause_validated writers limited to verdict paths (track
     const hits = KEY2_PAUSE_FILES.flatMap((rel) =>
       readRel(rel)
         .map((line, i) => ({ line, i }))
-        .filter(({ line }) => !isCommentLine(line) && isFlagWrite(line, 'pause_validated'))
+        .filter(({ line }) => !isCommentLine(line) && isUpholdWrite(line, 'pause_validated'))
         .map(({ i }) => `${rel}:${i + 1}`),
     );
-    // validate_pause + override CASE + verdict CASE = 3 lines.
-    expect(hits.length).toBeGreaterThanOrEqual(3);
+    // PHASE-2 T8b: validate_pause's uphold + apply_user_validation's = 2 in the scanned
+    // subsystems (the dashboard's owner-validate route is under gateway/, outside this file
+    // set, and is covered by the KEY-1 allowlist there).
+    expect(hits.length).toBeGreaterThanOrEqual(2);
   });
 
   it("scheduler alertMissedRuns no longer stamps pause_validated=1 (Phase 1.6)", () => {
@@ -335,12 +365,12 @@ describe('two-key KEY 2: pause_validated writers limited to verdict paths (track
     const fnStart = runner.indexOf('function alertMissedRuns');
     const fnEnd = runner.indexOf('function pickAvailableAgentFromGroup');
     const fnBody = codeOnly(runner.slice(fnStart, fnEnd > fnStart ? fnEnd : undefined));
-    expect(fnBody).toMatch(/missed_runs_paused_at = datetime\('now'\)/);
+    expect(fnBody).toMatch(/missed_runs_paused_at: Date\.now\(\)/);
     expect(fnBody).not.toMatch(/pause_validated\s*=\s*1/);
   });
 
   it('positive control: a synthetic pause pre-blessing is caught', () => {
-    const rogue = ["  db.prepare(\"UPDATE legacy_tasks SET status='paused', pause_validated = 1 WHERE id=?\").run(id);"];
+    const rogue = ["  upholdClaim(id, 'paused', 'engine', 'engine', 'pre-blessing my own pause');"];
     const violations = scanFlagWriters('scheduler/rogue-synthetic.ts', rogue, 'pause_validated', PAUSE_VALIDATED_ALLOW);
     expect(violations.length).toBe(1);
   });
@@ -361,7 +391,7 @@ describe('ticket stamps: stamp writers are updated_at-free and status-free', () 
 
   function stampUpdateBlocks(text: string): string[] {
     const blocks: string[] = [];
-    const re = /UPDATE\s+legacy_tasks\s+SET[\s\S]{0,600}?(?:WHERE[^\n]*)/g;
+    const re = /UPDATE\s+work\s+SET[\s\S]{0,600}?(?:WHERE[^\n]*)/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(text))) {
       if (STAMP_COLS.test(m[0])) blocks.push(m[0]);
@@ -398,7 +428,7 @@ describe('ticket stamps: stamp writers are updated_at-free and status-free', () 
   });
 
   it('positive control: a forged stamp UPDATE touching updated_at is caught', () => {
-    const forged = "UPDATE legacy_tasks SET last_activity_turn = ?, updated_at = datetime('now') WHERE id = ?";
+    const forged = "UPDATE work SET last_activity_turn = ?, updated_at = ? WHERE id = ?";
     const blocks = stampUpdateBlocks(forged);
     expect(blocks.length).toBe(1);
     expect(FORBIDDEN.some((bad) => bad.test(blocks[0]))).toBe(true);

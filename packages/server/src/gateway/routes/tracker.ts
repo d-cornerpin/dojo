@@ -11,8 +11,18 @@ import {
   closeProjectAndOpenTasks,
   resolveTaskId,
   formatResolveError,
+  setTaskStatus,
 } from '../../tracker/schema.js';
 import { getDb } from '../../db/connection.js';
+import {
+  taskScope, projectScope, awaitingUserVerdictExpr, revertCountExpr,
+  STATE_TO_STATUS_SQL, type TrackerStatus,
+} from '../../work/tracker-view.js';
+import {
+  upholdClaim, resetRevertCount, recordValidationEscalation, clearUserVerdict,
+  patchWork, deleteTrackerRow, deliveryForTaskClose, deliveryForCompletedChildren,
+} from '../../work/tracker-store.js';
+import { statusToState, tsToMs } from '../../work/tracker-view.js';
 import { createLogger } from '../../logger.js';
 import { getPrimaryAgentId, getPMAgentId, getDashboardHiddenAgentIds } from '../../config/platform.js';
 
@@ -158,11 +168,11 @@ trackerRouter.get('/tasks', (c) => {
       const hiddenArr = Array.from(hidden);
       const placeholders = hiddenArr.map(() => '?').join(',');
       const rows = getDb().prepare(
-        `SELECT id FROM legacy_tasks
-         WHERE assigned_to IN (${placeholders})
-           AND (revert_count > 0
-                OR awaiting_user_verdict = 1
-                OR title LIKE 'STALEMATE on %')`,
+        `SELECT w.id AS id FROM work w
+         WHERE ${taskScope('w')} AND w.agent_id IN (${placeholders})
+           AND (${revertCountExpr('w')} > 0
+                OR ${awaitingUserVerdictExpr('w')} = 1
+                OR w.title LIKE 'STALEMATE on %')`,
       ).all(...hiddenArr) as Array<{ id: string }>;
       for (const r of rows) disputedSystemTaskIds.add(r.id);
     } catch (err) {
@@ -240,22 +250,15 @@ trackerRouter.post('/tasks/:id/user-validate', async (c) => {
   if (!task) return c.json({ ok: false, error: 'Task not found' }, 404);
 
   const { writeTaskLog } = await import('../../tracker/task-log.js');
-  const db = getDb();
-  let flagColumn: 'complete_validated' | 'pause_validated' | 'blocked_validated' | null = null;
-  if (task.status === 'complete') flagColumn = 'complete_validated';
-  else if (task.status === 'paused') flagColumn = 'pause_validated';
-  else if (task.status === 'blocked') flagColumn = 'blocked_validated';
-  if (!flagColumn) {
+  if (!['complete', 'paused', 'blocked'].includes(task.status)) {
     return c.json({ ok: false, error: `task status="${task.status}" cannot be user-validated (only complete/paused/blocked).` }, 400);
   }
+  const flagColumn = `${task.status}_validated`;
 
-  db.prepare(`
-    UPDATE legacy_tasks
-    SET ${flagColumn} = 1,
-        validation_escalated_at = COALESCE(validation_escalated_at, datetime('now')),
-        updated_at = datetime('now')
-    WHERE id = ?
-  `).run(resolved.id);
+  // PHASE-2 T8b: the flag is an ADJUDICATION now — the owner is an authority (G8), so their
+  // verdict is a row with their name on it rather than a 1 in a column nobody signed.
+  upholdClaim(resolved.id, statusToState(task.status), 'owner', 'user', 'user marked validated');
+  recordValidationEscalation(resolved.id, 'user', null);
 
   writeTaskLog({
     taskId: resolved.id,
@@ -347,10 +350,15 @@ trackerRouter.get('/hygiene', async (c) => {
 
     // Tasks currently elevated: high revert_count or awaiting verdict.
     const elevated = db.prepare(`
-      SELECT substr(id, 1, 8) as id8, title, status, revert_count, awaiting_user_verdict, last_smell_flag
-      FROM legacy_tasks
-      WHERE revert_count >= 2 OR awaiting_user_verdict = 1 OR last_smell_flag IS NOT NULL
-      ORDER BY revert_count DESC, updated_at DESC
+      SELECT substr(w.id, 1, 8) as id8, w.title AS title,
+             ${STATE_TO_STATUS_SQL('w.state')} AS status,
+             ${revertCountExpr('w')} AS revert_count,
+             ${awaitingUserVerdictExpr('w')} AS awaiting_user_verdict,
+             w.last_smell_flag AS last_smell_flag
+      FROM work w
+      WHERE ${taskScope('w')}
+        AND (${revertCountExpr('w')} >= 2 OR ${awaitingUserVerdictExpr('w')} = 1 OR w.last_smell_flag IS NOT NULL)
+      ORDER BY revert_count DESC, w.updated_at DESC
       LIMIT 20
     `).all();
 
@@ -413,22 +421,18 @@ trackerRouter.post('/override-requests/:id/resolve', async (c) => {
 
     const { writeTaskLog } = await import('../../tracker/task-log.js');
     if (approve) {
-      const { updateTask } = await import('../../tracker/schema.js');
-      const updated = updateTask(req.task_id, { status: req.requested_status });
+      // Override approval is an AUTHORITATIVE decision by the owner, so it is one call:
+      // `transition()` files the upheld adjudication in the same transaction as the move
+      // (`claim: 'authoritative'`), which is what the three flag columns were imitating.
+      const { setTaskStatus } = await import('../../tracker/schema.js');
+      const updated = setTaskStatus(req.task_id, req.requested_status as TrackerStatus, {
+        by: 'owner', actorId: 'user', claim: 'authoritative',
+        reason: `owner approved override request ${id}: ${reason}`,
+        resultDeliveryId: req.requested_status === 'complete' ? deliveryForTaskClose(req.task_id) : null,
+      });
       if (!updated) return c.json({ ok: false, error: 'task vanished before override could be applied' }, 500);
-      // Override approval is an authoritative decision: also set the
-      // corresponding *_validated flag so PM doesn't re-surface the task.
-      db.prepare(`
-        UPDATE legacy_tasks
-        SET revert_count = 0,
-            awaiting_user_verdict = 0,
-            user_verdict_requested_at = NULL,
-            complete_validated = CASE WHEN ? = 'complete' THEN 1 ELSE complete_validated END,
-            pause_validated = CASE WHEN ? = 'paused' THEN 1 ELSE pause_validated END,
-            blocked_validated = CASE WHEN ? = 'blocked' THEN 1 ELSE blocked_validated END,
-            updated_at = datetime('now')
-        WHERE id = ?
-      `).run(req.requested_status, req.requested_status, req.requested_status, req.task_id);
+      resetRevertCount(req.task_id, 'user', `override ${id} approved`);
+      clearUserVerdict(req.task_id, 'user', `override ${id} approved`);
       db.prepare(`
         UPDATE task_override_requests
         SET status = 'approved', resolved_by = 'user', resolved_reason = ?, resolved_at = datetime('now')
@@ -501,7 +505,7 @@ trackerRouter.get('/override-requests', async (c) => {
              r.resolved_reason, r.created_at, r.resolved_at,
              t.title as task_title, t.goal as task_goal
       FROM task_override_requests r
-      LEFT JOIN legacy_tasks t ON t.id = r.task_id
+      LEFT JOIN work t ON t.id = r.task_id
       ${where}
       ORDER BY r.created_at DESC
       LIMIT 100
@@ -580,25 +584,17 @@ trackerRouter.post('/tasks', async (c) => {
       };
       const nextRun = calculateNextRun(taskForCalc) ?? body.scheduled_start;
 
-      db.prepare(`
-        UPDATE legacy_tasks SET
-          scheduled_start = ?, repeat_interval = ?, repeat_unit = ?,
-          repeat_end_type = ?, repeat_end_value = ?,
-          repeat_days_of_week = ?, anchor_time = ?,
-          next_run_at = ?, schedule_status = 'waiting',
-          updated_at = datetime('now')
-        WHERE id = ?
-      `).run(
-        body.scheduled_start,
-        body.repeat_interval ?? null,
-        body.repeat_unit ?? null,
-        body.repeat_end_type ?? 'never',
-        body.repeat_end_value ?? null,
-        repeatDaysOfWeek,
-        anchorTime,
-        nextRun,
-        taskId,
-      );
+      patchWork(taskId, {
+        scheduled_start: tsToMs(body.scheduled_start),
+        repeat_interval: body.repeat_interval ?? null,
+        repeat_unit: body.repeat_unit ?? null,
+        repeat_end_type: body.repeat_end_type ?? 'never',
+        repeat_end_value: body.repeat_end_value ?? null,
+        repeat_days_of_week: repeatDaysOfWeek,
+        anchor_local: anchorTime,
+        next_run_at: tsToMs(nextRun),
+        schedule_status: 'waiting',
+      });
     }
 
     const task = getTask(taskId);
@@ -667,7 +663,18 @@ trackerRouter.put('/tasks/:id', async (c) => {
       // status (user is the ultimate authority — Q5).
       const prior = getTask(id);
       const fromStatus = prior?.status ?? null;
-      updateTask(id, updates);
+      const { status: statusUpdate, ...columnUpdates } = updates;
+      if (Object.keys(columnUpdates).length > 0) updateTask(id, columnUpdates);
+      if (statusUpdate) {
+        // The owner dragging a card IS the authority (Q5), so the transition carries
+        // `claim: 'authoritative'` and files its own adjudication — the three
+        // `*_validated = 1` assignments below used to do that by hand.
+        setTaskStatus(id, statusUpdate as TrackerStatus, {
+          by: 'owner', actorId: 'user', claim: 'authoritative',
+          reason: 'dashboard PUT /tracker/tasks/:id',
+          resultDeliveryId: statusUpdate === 'complete' ? deliveryForTaskClose(id) : null,
+        });
+      }
       if (body.status && body.status !== fromStatus) {
         const { writeTaskLog } = await import('../../tracker/task-log.js');
         writeTaskLog({
@@ -678,17 +685,13 @@ trackerRouter.put('/tasks/:id', async (c) => {
           toStatus: body.status,
           actionTaken: 'dashboard PUT /tracker/tasks/:id',
         });
-        // User dashboard transitions auto-validate. Skip awaiting_user_verdict tasks
-        // because those have their own resolution path via tracker_apply_user_verdict.
-        const db = getDb();
-        db.prepare(`
-          UPDATE legacy_tasks
-          SET complete_validated = CASE WHEN ? = 'complete' THEN 1 ELSE complete_validated END,
-              pause_validated = CASE WHEN ? = 'paused' THEN 1 ELSE pause_validated END,
-              blocked_validated = CASE WHEN ? = 'blocked' THEN 1 ELSE blocked_validated END,
-              revert_count = 0
-          WHERE id = ? AND awaiting_user_verdict = 0
-        `).run(body.status, body.status, body.status, id);
+        // The uphold rode the transition above (claim: 'authoritative'); the revert count
+        // resets here, and only when the task is NOT awaiting the owner's verdict — those
+        // have their own resolution path via the user-verdict verb.
+        const awaiting = getDb().prepare(
+          `SELECT ${awaitingUserVerdictExpr('w')} AS a FROM work w WHERE w.id = ?`,
+        ).get(id) as { a: number } | undefined;
+        if (awaiting?.a !== 1) resetRevertCount(id, 'user', 'dashboard transition');
         // D-K: a dashboard drag to 'fallen' can be the transition that empties
         // the project of open tasks; run the fail-open check (idempotent).
         // All-complete projects left active still have the Healer's
@@ -715,14 +718,11 @@ trackerRouter.put('/tasks/:id', async (c) => {
       const db = getDb();
       if (body.scheduled_start === null) {
         // Remove schedule
-        db.prepare(`
-          UPDATE legacy_tasks SET scheduled_start = NULL, repeat_interval = NULL, repeat_unit = NULL,
-            repeat_end_type = NULL, repeat_end_value = NULL, repeat_days_of_week = NULL,
-            anchor_time = NULL,
-            next_run_at = NULL,
-            schedule_status = 'unscheduled', updated_at = datetime('now')
-          WHERE id = ?
-        `).run(id);
+        patchWork(id, {
+          scheduled_start: null, repeat_interval: null, repeat_unit: null,
+          repeat_end_type: null, repeat_end_value: null, repeat_days_of_week: null,
+          anchor_local: null, next_run_at: null, schedule_status: 'unscheduled',
+        });
       } else {
         const { calculateNextRun } = await import('../../scheduler/engine.js');
         const existingTask = getTask(id);
@@ -753,24 +753,18 @@ trackerRouter.put('/tasks/:id', async (c) => {
         };
         const nextRun = calculateNextRun(taskForCalc) ?? body.scheduled_start;
 
-        db.prepare(`
-          UPDATE legacy_tasks SET scheduled_start = ?, repeat_interval = ?, repeat_unit = ?,
-            repeat_end_type = ?, repeat_end_value = ?,
-            repeat_days_of_week = ?, anchor_time = ?,
-            next_run_at = ?, schedule_status = 'waiting', is_paused = 0,
-            updated_at = datetime('now')
-          WHERE id = ?
-        `).run(
-          body.scheduled_start,
-          body.repeat_interval ?? null,
-          body.repeat_unit ?? null,
-          body.repeat_end_type ?? 'never',
-          body.repeat_end_value ?? null,
-          repeatDaysOfWeek,
-          anchorTime,
-          nextRun,
-          id,
-        );
+        patchWork(id, {
+          scheduled_start: tsToMs(body.scheduled_start),
+          repeat_interval: body.repeat_interval ?? null,
+          repeat_unit: body.repeat_unit ?? null,
+          repeat_end_type: body.repeat_end_type ?? 'never',
+          repeat_end_value: body.repeat_end_value ?? null,
+          repeat_days_of_week: repeatDaysOfWeek,
+          anchor_local: anchorTime,
+          next_run_at: tsToMs(nextRun),
+          schedule_status: 'waiting',
+          is_paused: 0,
+        });
       }
     }
 
@@ -788,7 +782,7 @@ trackerRouter.post('/projects/:id/close', async (c) => {
   const id = c.req.param('id');
   const db = getDb();
 
-  const project = db.prepare('SELECT id FROM legacy_projects WHERE id = ?').get(id);
+  const project = db.prepare(`SELECT w.id AS id FROM work w WHERE ${projectScope('w')} AND w.id = ?`).get(id);
   if (!project) {
     return c.json({ ok: false, error: 'Project not found' }, 404);
   }
@@ -816,6 +810,7 @@ trackerRouter.post('/projects/:id/close', async (c) => {
       taskStatus: status as 'complete' | 'cancelled',
       projectStatus: status as 'complete' | 'cancelled',
       reason,
+      resultDeliveryId: status === 'complete' ? deliveryForCompletedChildren(id) : null,
     });
     return c.json({ ok: true, data: result });
   } catch (err) {
@@ -830,13 +825,13 @@ trackerRouter.delete('/projects/:id', (c) => {
   const id = c.req.param('id');
   const db = getDb();
 
-  const project = db.prepare('SELECT id FROM legacy_projects WHERE id = ?').get(id);
+  const project = db.prepare(`SELECT w.id AS id FROM work w WHERE ${projectScope('w')} AND w.id = ?`).get(id);
   if (!project) {
     return c.json({ ok: false, error: 'Project not found' }, 404);
   }
 
   // Get task IDs for cascade
-  const taskIds = db.prepare('SELECT id FROM legacy_tasks WHERE project_id = ?').all(id) as Array<{ id: string }>;
+  const taskIds = db.prepare(`SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.parent_id = ?`).all(id) as Array<{ id: string }>;
   const ids = taskIds.map(t => t.id);
 
   // Delete child rows for these tasks
@@ -846,11 +841,8 @@ trackerRouter.delete('/projects/:id', (c) => {
     db.prepare(`DELETE FROM poke_log WHERE task_id IN (${ph})`).run(...ids);
   }
 
-  // Delete tasks
-  db.prepare('DELETE FROM legacy_tasks WHERE project_id = ?').run(id);
-
-  // Delete project
-  db.prepare('DELETE FROM legacy_projects WHERE id = ?').run(id);
+  // Delete the project and its tasks (children first, inside one transaction).
+  deleteTrackerRow(id);
 
   logger.info('Project deleted', { projectId: id, tasksDeleted: ids.length });
   return c.json({ ok: true, data: { projectId: id, tasksDeleted: ids.length } });
@@ -861,14 +853,14 @@ trackerRouter.delete('/tasks/:id', (c) => {
   const id = c.req.param('id');
   const db = getDb();
 
-  const task = db.prepare('SELECT id FROM legacy_tasks WHERE id = ?').get(id);
+  const task = db.prepare(`SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(id);
   if (!task) {
     return c.json({ ok: false, error: 'Task not found' }, 404);
   }
 
   db.prepare('DELETE FROM task_runs WHERE task_id = ?').run(id);
   db.prepare('DELETE FROM poke_log WHERE task_id = ?').run(id);
-  db.prepare('DELETE FROM legacy_tasks WHERE id = ?').run(id);
+  deleteTrackerRow(id);
 
   logger.info('Task deleted', { taskId: id });
   return c.json({ ok: true, data: { taskId: id } });

@@ -18,13 +18,11 @@ const AGENT = 'agent-1';
 const TASK = 'task-1';
 const ASK = 'msg-ask-1';
 
+import { createWorkTable, seedTrackerTask, ms } from '../../work/__tests__/work-fixture.js';
+
 beforeEach(() => {
   const db = new Database(':memory:');
   db.exec(`
-    CREATE TABLE legacy_tasks (
-      id TEXT PRIMARY KEY, assigned_to TEXT, source_message_id TEXT,
-      origin_conv_key TEXT, created_at TEXT
-    );
     CREATE TABLE turns (
       agent_id TEXT, turn_number INTEGER, exit_reason TEXT, answered INTEGER NOT NULL,
       started_at TEXT, ended_at TEXT, answer_message_id TEXT, source_message_id TEXT,
@@ -34,8 +32,11 @@ beforeEach(() => {
     CREATE TABLE turn_artifacts (agent_id TEXT, turn_number INTEGER, path TEXT, payload_json TEXT, delivered_at TEXT, delivery_id TEXT);
     CREATE TABLE deliveries (id TEXT, agent_id TEXT, turn_number INTEGER, channel TEXT, outcome TEXT);
   `);
-  db.prepare(`INSERT INTO legacy_tasks VALUES (?, ?, ?, ?, '2026-07-22 07:15:34')`)
-    .run(TASK, AGENT, ASK, 'owner');
+  createWorkTable(db);
+  seedTrackerTask(db, {
+    id: TASK, agentId: AGENT, source_message_id: ASK, origin_conv_key: 'owner',
+    opened_at: ms('2026-07-22 07:15:34'),
+  });
   mockDb.current = db;
 });
 
@@ -78,7 +79,7 @@ describe('findDeliveryEvidenceForTask (delivered-but-unclosed consult)', () => {
   });
 
   it('NO evidence for a task with no origin identity at all', () => {
-    mockDb.current!.prepare(`UPDATE legacy_tasks SET source_message_id = NULL, origin_conv_key = NULL WHERE id = ?`).run(TASK);
+    mockDb.current!.prepare(`UPDATE work SET source_message_id = NULL, origin_conv_key = NULL WHERE id = ?`).run(TASK);
     insertAnsweredTurn(100);
     expect(findDeliveryEvidenceForTask(TASK)).toBeNull();
   });

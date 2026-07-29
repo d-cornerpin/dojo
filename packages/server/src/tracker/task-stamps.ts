@@ -18,6 +18,8 @@
 // ════════════════════════════════════════
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+import { taskScope, msToText } from '../work/tracker-view.js';
+import { stampTicket } from '../work/tracker-store.js';
 
 const logger = createLogger('task-stamps');
 
@@ -88,14 +90,15 @@ export function stampTasksAtTurnFinalize(input: {
   try {
     const db = getDb();
     const tied = db.prepare(
-      `SELECT id FROM legacy_tasks
-        WHERE assigned_to = ?
-          AND status IN ('in_progress', 'on_deck', 'blocked')
+      `SELECT w.id AS id FROM work w
+        WHERE ${taskScope('w')}
+          AND w.agent_id = ?
+          AND w.state IN ('claimed', 'on_deck', 'blocked')
           AND (
-            (source_message_id IS NOT NULL AND source_message_id = ?)
-            OR (origin_conv_key IS NOT NULL AND origin_conv_key = ?)
-            OR origin_turn = ?
-            OR id = ?
+            (w.source_message_id IS NOT NULL AND w.source_message_id = ?)
+            OR (w.origin_conv_key IS NOT NULL AND w.origin_conv_key = ?)
+            OR w.origin_turn = ?
+            OR w.id = ?
           )
         LIMIT 20`,
     ).all(
@@ -114,29 +117,28 @@ export function stampTasksAtTurnFinalize(input: {
     // One atomic UPDATE per ticket. COALESCE keeps prior answered/delivery
     // stamps when THIS turn did not answer/deliver. Deliberately no
     // updated_at, no status, no validation columns (conformance-locked).
-    const stamp = db.prepare(`
-      UPDATE legacy_tasks SET
-        last_activity_turn = ?,
-        last_activity_at = datetime('now'),
-        last_activity_outcome = ?,
-        last_answered_turn = COALESCE(?, last_answered_turn),
-        last_answered_at = COALESCE(?, last_answered_at),
-        last_answer_message_id = COALESCE(?, last_answer_message_id),
-        last_delivery_at = COALESCE(?, last_delivery_at),
-        last_delivery_summary = COALESCE(?, last_delivery_summary)
-      WHERE id = ?
-    `);
+    //
+    // PHASE-2 T8b: on `work`, and TWO columns are gone rather than moved.
+    // `last_answer_message_id` and `last_delivery_at` had exactly one occurrence each in
+    // production — this statement — and it was a COALESCE onto themselves, i.e. a write
+    // that read the column only to preserve it. Migration `137` therefore did not carry
+    // them (T8a report §2.3c enumerates every occurrence; #15: proven by enumeration, never
+    // by absence). Writing a column nobody reads is the accretion this phase removes, so
+    // the two assignments are deleted here with their column.
+    //   requirement preserved: "the ticket records which message answered it, and when it
+    //   was last delivered to" — `last_answered_turn` + `last_answered_at` +
+    //   `last_delivery_summary` carry both facts and DO have readers; the answer MESSAGE id
+    //   is `deliveries.message_id` on the row this turn's delivery already wrote (T5).
+    const stampMs = Date.now();
     for (const t of tied) {
-      stamp.run(
-        input.turnNumber,
-        input.outcome,
-        answered ? input.turnNumber : null,
-        answered ? new Date().toISOString().replace('T', ' ').slice(0, 19) : null,
-        answered ? input.answerMessageId : null,
-        hasDelivery ? new Date().toISOString().replace('T', ' ').slice(0, 19) : null,
-        hasDelivery ? deliverySummary : null,
-        t.id,
-      );
+      stampTicket(t.id, {
+        activityTurn: input.turnNumber,
+        activityAt: stampMs,
+        activityOutcome: input.outcome,
+        answeredTurn: answered ? input.turnNumber : null,
+        answeredAt: answered ? stampMs : null,
+        deliverySummary: hasDelivery ? deliverySummary : null,
+      });
     }
     logger.info('ticket stamps written at turn finalize', {
       agentId: input.agentId, turnNumber: input.turnNumber, outcome: input.outcome,
@@ -191,10 +193,11 @@ export function renderStepFacts(t: TaskStampFields): string {
   try {
     const db = getDb();
     const openEarlier = db.prepare(
-      `SELECT step_number, title FROM legacy_tasks
-        WHERE project_id = ? AND step_number IS NOT NULL AND step_number < ?
-          AND status NOT IN ('complete', 'fallen')
-        ORDER BY step_number ASC LIMIT 1`,
+      `SELECT w.step_number AS step_number, w.title AS title FROM work w
+        WHERE ${taskScope('w')}
+          AND w.parent_id = ? AND w.step_number IS NOT NULL AND w.step_number < ?
+          AND w.state NOT IN ('done', 'failed')
+        ORDER BY w.step_number ASC LIMIT 1`,
     ).get(t.project_id, t.step_number) as { step_number: number; title: string } | undefined;
     if (!openEarlier) return `step ${t.step_number} of ${t.total_steps}`;
     return `step ${t.step_number} of ${t.total_steps}; step ${openEarlier.step_number} '${openEarlier.title.slice(0, 40)}' still open`;
