@@ -71,10 +71,12 @@ export const PRIMARY_AGENT_ALWAYS_LOADED = [
   // commitment verbs must be callable in a single step, with no load_tool_docs round-trip.
   // Opening a promise in particular is worthless behind one: the promise is recorded at the
   // MOMENT it is made, and a round-trip is exactly the friction that makes a model skip it.
-  // T8V: `work_open` is already above; `work_close_request` closes it, `work_note` is the
-  // in-flight checkpoint.
+  // T8V: `work_open` is already above; `work_close_request` closes it. `work_note` is
+  // deliberately NOT here: `tracker_add_notes` was never in the primary's always-loaded
+  // set either, and the close-out gate allows `load_tool_docs` precisely so a close-out
+  // tool's schema can be fetched. Adding it would have widened the primary's cached
+  // prefix by 1,311 chars for a tool the primary never had one call away.
   'work_close_request',
-  'work_note',
   'scratchpad_set',
   'technique_read',
   // v2.9.16: DOJO contacts store. Primary uses these on nearly every
