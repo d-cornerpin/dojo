@@ -551,7 +551,7 @@ const CreateProjectModal = ({
 // ── Main Tracker Component ──
 
 // ── Override request queue (Phase B.1, Wordy Mode only) ──
-// Renders pending tracker_override requests with approve/deny buttons.
+// Renders pending override requests with approve/deny buttons.
 // Lives at the top of the Tracker page so it's impossible to miss when
 // the user is power-user-mode and an agent is asking for an override.
 const OverrideQueuePanel = ({

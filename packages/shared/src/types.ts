@@ -451,7 +451,7 @@ export interface Task {
   assignedToGroup: string | null;
   /**
    * Discriminator for task variants. NULL for ordinary tasks.
-   * 'reminder' = created via reminder_create; the scheduler fires it with a
+   * 'reminder' = created via work_open(kind="reminder"); the scheduler fires it with a
    * lighter "deliver this to the user as a single chat message" prompt
    * instead of the generic scheduled-task boilerplate.
    */

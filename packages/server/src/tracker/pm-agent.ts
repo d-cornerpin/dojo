@@ -116,10 +116,10 @@ const PM_PERMISSIONS_JSON = JSON.stringify({
 //
 // RC-16: the PM is an OVERSEER, not a worker. It validates, overrides, retasks,
 // and reassigns; it never edits task CONTENT or flips a worker's status directly.
-// The worker verbs (tracker_update_status, tracker_complete_step,
-// tracker_edit_task) are intentionally ABSENT so a stale copy sitting in the PM's
+// The worker verbs (work_update(action="status"), work_update(action="complete_step"),
+// work_update(action="edit")) are intentionally ABSENT so a stale copy sitting in the PM's
 // long-lived context can't silently rewrite a task's description or re-close
-// already-closed work (P-1 / F-15). tracker_retask + tracker_reassign_task are
+// already-closed work (P-1 / F-15). work_validate(action="retask") + work_update(action="reassign") are
 // the PM's corrective verbs; the read-only / utility tools below are what the PM
 // legitimately needs to do oversight (list, inspect, message, read artifacts for
 // close-out verification, search memory/history).
@@ -503,7 +503,7 @@ export async function escalateCloseoutMissToPM(ctx: {
         fromEntity: 'engine',
         entryKind: 'closeout_miss',
         actionTaken: `escalated to PM via ${sourceLabel}`,
-        reason: 'agent produced user-facing text without calling tracker_update_status; the reply was shown to the user and the task remains in_progress pending PM review',
+        reason: 'agent produced user-facing text without calling work_update(action="status"); the reply was shown to the user and the task remains in_progress pending PM review',
         note: ctx.agentText.slice(0, 4000),
       });
     }
@@ -586,7 +586,7 @@ export async function escalateCloseoutMissToPM(ctx: {
 
   const payload =
     `[Engine notice - CLOSEOUT MISS]\n\n` +
-    `Agent "${ctx.agentId}" finished a turn without calling tracker_update_status / tracker_complete_step. The engine ` +
+    `Agent "${ctx.agentId}" finished a turn without calling work_update(action="status") / work_update(action="complete_step"). The engine ` +
     `did NOT pause or close the dangling one-shot task(s) below; they remain in_progress with their true status. Your job: don't rubber-stamp. Decide per task.\n\n` +
     `Dangling task(s) (still in_progress):\n${taskLines}\n\n` +
     `What the agent said to the user (shown in chat this turn):\n` +
@@ -594,15 +594,15 @@ export async function escalateCloseoutMissToPM(ctx: {
     receiptsBlock +
     `Trigger: ${sourceLabel}\n\n` +
     `Your verbs:\n` +
-    `  (a) tracker_retask(task_id, directive), push the agent back at it with concrete corrective guidance ` +
+    `  (a) work_validate(action="retask", task_id, directive), push the agent back at it with concrete corrective guidance ` +
     `(e.g. "you wrote the brief in chat but the task spec is email; call send_email with this same content to <recipient>"). USE THIS WHEN the agent did the wrong thing and you can name what they should do instead.\n` +
-    `  (b) leave it in_progress or dispose of it, the engine did NOT pause it. If the assignee is legitimately still mid-flight, do nothing (it stays in_progress and continues). If the work genuinely can't proceed without user input you can name, or the task is no longer relevant, tracker_close_project on the parent project or tracker_reassign_task. USE THIS WHEN the task is stuck or dead, not done.\n` +
-    `  (c) tracker_override(...) or tracker_validate(kind="complete", ...), accept as complete. USE THIS WHEN you can verify (via the audit-log excerpts above + what the agent said + a quick tracker_get_status / file check / etc.) that the work actually got done and the agent just forgot to close the tracker.\n\n` +
+    `  (b) leave it in_progress or dispose of it, the engine did NOT pause it. If the assignee is legitimately still mid-flight, do nothing (it stays in_progress and continues). If the work genuinely can't proceed without user input you can name, or the task is no longer relevant, work_update(action="close_project") on the parent project or work_update(action="reassign"). USE THIS WHEN the task is stuck or dead, not done.\n` +
+    `  (c) work_validate(action="override", ...) or work_validate(action="validate", kind="complete", ...), accept as complete. USE THIS WHEN you can verify (via the audit-log excerpts above + what the agent said + a quick work_update(action="get") / file check / etc.) that the work actually got done and the agent just forgot to close the tracker.\n\n` +
     `**Non-idempotent tools demand option (c), not (a).** If the audit log shows a successful call to gmail_send, outlook_send, ` +
     `imessage_send, sms_send, teams_send_message, voice_call, calendar_create, drive_upload, docs_create, sheets_create, share_publicly, ` +
     `or an exec that hit a live external API, the action already happened. Re-running it would duplicate the side effect (double email, ` +
-    `double text, double charge). Accept as complete via tracker_override / tracker_validate, citing the audit row as evidence. ` +
-    `Do NOT use tracker_retask on these; that produces duplicates.\n\n` +
+    `double text, double charge). Accept as complete via work_validate(action="override") / work_validate(action="validate"), citing the audit row as evidence. ` +
+    `Do NOT use work_validate(action="retask") on these; that produces duplicates.\n\n` +
     `For everything else, inspect the goal against what the agent said. If they delivered the wrong artifact OR in the wrong channel, retask. ` +
     `Rubber-stamping means the recurring task / user-promised work dies silently. Be a PM, not a status forwarder.`;
 
@@ -665,12 +665,21 @@ function runSmellDetector(taskId: string, toStatus: string): void {
         // not a dodge, so no flag.
         const closingTurn = taskAgent?.assigned_to ? currentTurnNumber.get(taskAgent.assigned_to) : undefined;
         if (taskAgent?.assigned_to && closingTurn !== undefined) {
+          // PHASE-2 T8V — A NAME MATCH THE TYPESCRIPT SWEEP COULD NOT SEE, because it
+          // is a SQL LIKE against `audit_log.target`. `audit_log` records the tool NAME,
+          // and after the verb collapse no live tool starts with `tracker_`, so
+          // `NOT LIKE 'tracker_%'` would have been TRUE for every work call — the smell
+          // would have found a "non-tracker tool" in every closing turn and NEVER fired
+          // again. It matches the live prefix now. The retired prefix is kept alongside
+          // it because `audit_log` is HISTORY: a turn straddling the upgrade, or a
+          // re-read of an older turn, still holds rows written under the old names.
           const nonTrackerTool = db.prepare(`
             SELECT 1 FROM audit_log
             WHERE agent_id = ?
               AND turn_number = ?
               AND action_type = 'tool_call'
-              AND target NOT LIKE 'tracker_%'
+              AND target NOT LIKE 'work\_%' ESCAPE '\'
+              AND target NOT LIKE 'tracker\_%' ESCAPE '\'
             LIMIT 1
           `).get(taskAgent.assigned_to, closingTurn) as { 1: number } | undefined;
           if (!nonTrackerTool) {
@@ -1171,8 +1180,8 @@ async function runPMReview(): Promise<void> {
         `  Pause reason notes: "${pauseReason}"\n` +
         `  Agent's last user-facing message: "${lastAssistantSnippet}"\n` +
         `  Decide: valid pause (names a specific external trigger that matches a real request) or gaming (vague / no matching request / sounds like 'blocked' instead). ` +
-        `Call tracker_validate(kind="pause", task_id="${pTask.id}", valid=true) if real. ` +
-        `Call tracker_validate(kind="pause", task_id="${pTask.id}", valid=false, reject_reason="...one sentence...") if gaming. ` +
+        `Call work_validate(action="validate", kind="pause", task_id="${pTask.id}", valid=true) if real. ` +
+        `Call work_validate(action="validate", kind="pause", task_id="${pTask.id}", valid=false, reject_reason="...one sentence...") if gaming. ` +
         `Rejection auto-reverts the task to in_progress (or pass target_status to pick on_deck/blocked) and notifies the agent.`,
     });
   }
@@ -1303,8 +1312,8 @@ async function runPMReview(): Promise<void> {
         `  Evidence:\n${evidenceLines}\n` +
         `  Priority=${cTask.priority}, revert_count=${cTask.revert_count}.${tierHint}\n` +
         `  Read the file/audit log/output referenced in evidence BEFORE validating (skepticism rule). ` +
-        `Call tracker_validate(kind="complete", task_id="${cTask.id}", valid=true) when the work demonstrably matches the goal. ` +
-        `Call tracker_validate(kind="complete", task_id="${cTask.id}", valid=false, reject_reason="...", target_status="in_progress") when it does not.`,
+        `Call work_validate(action="validate", kind="complete", task_id="${cTask.id}", valid=true) when the work demonstrably matches the goal. ` +
+        `Call work_validate(action="validate", kind="complete", task_id="${cTask.id}", valid=false, reject_reason="...", target_status="in_progress") when it does not.`,
     });
   }
 
@@ -1338,8 +1347,8 @@ async function runPMReview(): Promise<void> {
         `  Goal: ${bTask.goal ?? '(no goal recorded)'}\n` +
         `  Block reason: ${blockReason}\n` +
         `  Priority=${bTask.priority}, revert_count=${bTask.revert_count}.\n` +
-        `  Real block (genuine external obstacle, no workaround) -> tracker_validate(kind="blocked", task_id="${bTask.id}", valid=true). ` +
-        `Not really blocked (agent hasn't asked the user, or has a workaround they haven't tried) -> tracker_validate(kind="blocked", task_id="${bTask.id}", valid=false, reject_reason="...").`,
+        `  Real block (genuine external obstacle, no workaround) -> work_validate(action="validate", kind="blocked", task_id="${bTask.id}", valid=true). ` +
+        `Not really blocked (agent hasn't asked the user, or has a workaround they haven't tried) -> work_validate(action="validate", kind="blocked", task_id="${bTask.id}", valid=false, reject_reason="...").`,
     });
   }
 
@@ -1371,8 +1380,8 @@ async function runPMReview(): Promise<void> {
         `  Justification: ${oRow.justification}\n` +
         (oRow.last_engine_error ? `  Last engine error: ${oRow.last_engine_error}\n` : '') +
         (oRow.attempts_attached > 1 ? `  Engine-auto-fired after ${oRow.attempts_attached} hard-gate rejections, the agent was thrashing on shape.\n` : '') +
-        `  Approve: tracker_override(override_request_id="${oRow.id}", approve=true, reason="..."). ` +
-        `Deny: tracker_override(override_request_id="${oRow.id}", approve=false, reason="...").`,
+        `  Approve: work_validate(action="override", override_request_id="${oRow.id}", approve=true, reason="..."). ` +
+        `Deny: work_validate(action="override", override_request_id="${oRow.id}", approve=false, reason="...").`,
     });
   }
 
@@ -1832,7 +1841,7 @@ export async function runPokeCheck(): Promise<void> {
     // ── Normal poke (nudge / urgent / escalate) ──
     const pokeMessage = deliveryEvidence && tangibleHandover
       ? `CLOSE-OUT NEEDED, NOT RE-WORK: task "${task.title}" (${task.id}) still says in_progress, but the engine's own records show ${renderDeliveryEvidence(deliveryEvidence)}. ` +
-        `If that delivery completed this task, call tracker_update_status(task_id="${task.id}", status="complete") with the result NOW. ` +
+        `If that delivery completed this task, call work_update(action="status", task_id="${task.id}", status="complete") with the result NOW. ` +
         `Do NOT redo the work, do NOT pause the task, and do NOT re-deliver what the user already has. ` +
         `Only if the delivery did NOT actually finish the task should you continue working it (and say what remains).`
       : buildPokeMessage(task, pokeType, pokeNumber, idleSeconds);
@@ -1924,16 +1933,16 @@ function buildPokeMessage(
 
   switch (pokeType) {
     case 'nudge':
-      return `Checking in, task "${task.title}" has been idle for ${idleMinutes} minutes.\n\n${taskInfo}\n\nIf you've finished this work, call tracker_update_status with task_id="${task.id}" and status="complete" with notes on what you did.\nIf still working, no action needed.\nIf blocked, call tracker_update_status with status="blocked" and explain why.`;
+      return `Checking in, task "${task.title}" has been idle for ${idleMinutes} minutes.\n\n${taskInfo}\n\nIf you've finished this work, call work_update(action="status") with task_id="${task.id}" and status="complete" with notes on what you did.\nIf still working, no action needed.\nIf blocked, call work_update(action="status") with status="blocked" and explain why.`;
 
     case 'urgent':
-      return `URGENT: Task "${task.title}" has been idle for ${idleMinutes} minutes. This is poke #${pokeNumber}.\n\n${taskInfo}\n\nYou MUST do one of:\n1. Call tracker_update_status(task_id="${task.id}", status="complete", notes="...") if the work is done\n2. Call tracker_update_status(task_id="${task.id}", status="blocked", notes="...") if you're stuck\n3. Continue working on the task`;
+      return `URGENT: Task "${task.title}" has been idle for ${idleMinutes} minutes. This is poke #${pokeNumber}.\n\n${taskInfo}\n\nYou MUST do one of:\n1. Call work_update(action="status", task_id="${task.id}", status="complete", notes="...") if the work is done\n2. Call work_update(action="status", task_id="${task.id}", status="blocked", notes="...") if you're stuck\n3. Continue working on the task`;
 
     case 'escalate_primary':
-      return `ESCALATION: Task "${task.title}" (${task.id}) assigned to ${task.assignedTo} has been idle for ${idleMinutes} minutes with no response after 2 pokes.\n\n${taskInfo}\n\nPlease intervene:\n- Call tracker_update_status(task_id="${task.id}", status="complete") if the work was already done\n- Reassign or unblock the task\n- Or cancel/fail it if it's no longer needed`;
+      return `ESCALATION: Task "${task.title}" (${task.id}) assigned to ${task.assignedTo} has been idle for ${idleMinutes} minutes with no response after 2 pokes.\n\n${taskInfo}\n\nPlease intervene:\n- Call work_update(action="status", task_id="${task.id}", status="complete") if the work was already done\n- Reassign or unblock the task\n- Or cancel/fail it if it's no longer needed`;
 
     default:
-      return `Poke #${pokeNumber} for task: ${task.title} (idle ${idleMinutes}m)\n\n${taskInfo}\n\nCall tracker_update_status(task_id="${task.id}", status="complete") if done.`;
+      return `Poke #${pokeNumber} for task: ${task.title} (idle ${idleMinutes}m)\n\n${taskInfo}\n\nCall work_update(action="status", task_id="${task.id}", status="complete") if done.`;
   }
 }
 
