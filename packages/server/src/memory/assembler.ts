@@ -3,7 +3,7 @@ import { renderTaskStamps, renderStepFacts, type TaskStampFields } from '../trac
 import { getDb as getStampDb } from '../db/connection.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { taskScope, msToText, revertCountExpr } from '../work/tracker-view.js';
+import { taskScope, msToText, revertCountExpr, stampColumns } from '../work/tracker-view.js';
 import { type PromptTurnContext } from '../prompt/assembler.js';
 import { conversationKey, type TurnCounterparty } from '../agent/v2/counterparty.js';
 import { getContextWindow } from '../agent/model.js';
@@ -923,12 +923,7 @@ async function assembleMessageContext(
         // work. Each line now carries the engine's stamp (one compact line)
         // plus live step-sequence facts, so the model KNOWS state here.
         const stampStmt = getStampDb().prepare(
-          `SELECT w.id AS id, w.last_activity_turn AS last_activity_turn,
-                  ${msToText('w.last_activity_at')} AS last_activity_at,
-                  w.last_activity_outcome AS last_activity_outcome,
-                  w.last_answered_turn AS last_answered_turn,
-                  ${msToText('w.last_answered_at')} AS last_answered_at,
-                  w.last_delivery_summary AS last_delivery_summary,
+          `SELECT w.id AS id, ${stampColumns('w')},
                   w.step_number AS step_number, w.total_steps AS total_steps,
                   w.parent_id AS project_id
              FROM work w WHERE ${taskScope('w')} AND w.id = ?`,

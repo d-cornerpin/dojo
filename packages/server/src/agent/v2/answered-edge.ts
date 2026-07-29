@@ -96,6 +96,29 @@ export function answerReceiptForAsk(messageId: string | null | undefined): Answe
         no_ticket: number; no_message: number }
     | undefined;
   if (!row || (row.no_ticket === 1 && row.no_message === 1)) return NO_RECEIPT;
+  // ── PHASE-2 T8c item 2 — THE STAMP ARM WAS BOOKED TO GO PURE-LEGACY HERE, AND THE
+  // MEASUREMENT REFUSED IT. T6 concern 5 predicted that once tasks lived on the spine the
+  // mig-113 stamp would be a pure legacy fallback and could be dated out. Re-derived at this
+  // HEAD, READONLY, on this box:
+  //
+  //   stamped messages with NO ask ticket at all (genuinely legacy, pre-T3)   -> 586
+  //   stamped messages WITH a ticket that is not done-with-delivery           ->  19
+  //   ...and every one of those 19 is state='abandoned', not 'open'
+  //
+  // So the 19 are not legacy rows and not a bug in the ticket: they are asks a person WAS
+  // answered on and that T6's unservable-ask reaper later abandoned. Ranking the ticket above
+  // the stamp would flip all nineteen from "answered" to "not answered", and the consequence
+  // of THAT error is re-telling somebody something they already have — the direction T6
+  // deliberately chose against. The union therefore stands, and it stands on a measurement
+  // rather than on inertia.
+  //
+  // RETIREMENT CONDITION, as a command rather than a feeling (T10 owns it): the stamp arm may
+  // be dropped when this returns 0 —
+  //   SELECT count(*) FROM messages m JOIN work w ON w.root_id = m.id AND w.kind='ask'
+  //    WHERE m.answer_message_id IS NOT NULL
+  //      AND NOT (w.state='done' AND w.result_delivery_id IS NOT NULL);
+  // What IS ranked, and always was: `deliveryId` comes from the ticket or not at all, so a
+  // caller that needs a receipt it can point at never gets one the stamp cannot back.
   const byTicket = row.state === 'done' && row.delivery_id !== null;
   const byStamp = row.answer_message_id !== null;
   return {

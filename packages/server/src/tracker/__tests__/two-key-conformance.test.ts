@@ -283,6 +283,15 @@ describe('two-key KEY 1: TASK status=complete writers limited to the reviewed se
     expect(hits.length).toBeGreaterThanOrEqual(6);
   });
 
+  // ── PHASE-2 T8c item 2 — DELIBERATE DISPOSITION, NAMED (T0 concern adjudication 1).
+  // The second of the two clauses PINNED §12 flags as dying with the column. VERDICT: IT
+  // DOES NOT DIE HERE EITHER, AND IT IS KEPT. It asserts a live, checkable property — no
+  // code anywhere writes the column — and that property is exactly what makes the column
+  // safe to drop. Retiring it in the same change that strips the PM's reads would remove
+  // the guarantee one step BEFORE the step that depends on it. T10 retires it in the same
+  // change that drops the column, which is what the adjudication actually said; T8c's job
+  // was to land the backstop's own test first, and that is
+  // `retask-delivered-work-backstop.test.ts`.
   it('the hidden-status stamp is fully demolished: no writer of deliverable_shown exists (P2 drive boundary)', () => {
     // Owner status-truth invariant (2026-07-21): a flag that contradicts the
     // visible status is banned. markDeliverableShown (the last writer) was
@@ -426,8 +435,37 @@ describe('ticket stamps: stamp writers are updated_at-free and status-free', () 
         }
       }
     }
-    expect(found, 'no stamp UPDATE found anywhere; the scan pattern or the writer is missing').toBeGreaterThanOrEqual(1);
+    // ── PHASE-2 T8c item 2 — THE SUBJECT OF THIS GUARD MOVED, SO THE GUARD MOVED WITH IT.
+    // The requirement is unchanged and is the P2 one: a ticket stamp must never touch the
+    // drive ladder's idle clock or any status/validation column. It used to be a promise
+    // about a SET list, which is why it needed policing. The six stamp columns are now
+    // `work_events` rows of kind `activity` (`work/tracker-store.ts:stampTicket` ->
+    // `appendWorkEvent`), so the property holds BY CONSTRUCTION: an append to an event log
+    // has no `updated_at` in reach.
+    //
+    // The old non-vacuity assertion was `found >= 1` — "there is at least one stamp UPDATE
+    // to police". Keeping it would demand the very statement this task deleted. It is
+    // replaced by the STRONGER assertion in the same breath: there must be NO stamp UPDATE
+    // anywhere, and the violation scan below still runs so a re-introduced one is caught by
+    // BOTH clauses. The positive control underneath is untouched and still proves the
+    // scanner sees a forged UPDATE.
+    expect(found, `a stamp UPDATE re-appeared in the tree; ticket stamps are work_events rows now (T8c item 2). Found: ${found}`).toBe(0);
     expect(violations, violations.join('\n')).toEqual([]);
+  });
+
+  it('the stamp writer is an EVENT APPEND, and it is the only one', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+    const store = fs.readFileSync(path.join(srcRoot, 'work/tracker-store.ts'), 'utf8');
+    const fn = store.slice(store.indexOf('export function stampTicket'));
+    const body = fn.slice(0, fn.indexOf('\n}\n') + 2);
+    // It appends the activity event...
+    expect(body).toMatch(/appendWorkEvent\(workId, WORK_EVENT\.activity/);
+    // ...and it does not reach for the drive clock or a state column on the way.
+    expect(body).not.toMatch(/updated_at/);
+    expect(body).not.toMatch(/UPDATE\s+work/);
   });
 
   it('positive control: a forged stamp UPDATE touching updated_at is caught', () => {

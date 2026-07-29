@@ -43,6 +43,7 @@ vi.mock('../../db/connection.js', () => ({
 import { stampTasksAtTurnFinalize } from '../task-stamps.js';
 
 import { createWorkTable, seedTrackerTask, ms } from '../../work/__tests__/work-fixture.js';
+import { stampColumns } from '../../work/tracker-view.js';
 
 const AGENT = 'agent-alpha';
 const TURN = 4242;
@@ -69,7 +70,10 @@ beforeEach(() => {
 });
 
 const ticket = () =>
-  mockDb.current!.prepare("SELECT * FROM work WHERE id = 't-braked'").get() as Record<string, unknown>;
+  mockDb.current!.prepare(
+    // T8c item 2: read through the shared stamp projection, the way production reads it.
+    `SELECT w.id AS id, ${stampColumns('w')} FROM work w WHERE w.id = 't-braked'`,
+  ).get() as Record<string, unknown>;
 
 // PHASE-2 T8b: `last_answer_message_id` and `last_delivery_at` are GONE — enumerated at T8a
 // as having exactly one production occurrence each (the COALESCE onto themselves in this

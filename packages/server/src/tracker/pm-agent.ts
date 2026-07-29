@@ -9,6 +9,7 @@ import { getDb } from '../db/connection.js';
 import {
   taskScope, msToText, STATE_TO_STATUS_SQL, validatedExpr, revertCountExpr,
   awaitingUserVerdictExpr,
+  stampColumns,
 } from '../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../work/tracker-store.js';
 import { activeRuns as pmActiveRuns } from '../agent/shared-state.js';
@@ -459,8 +460,17 @@ export function noteTransitionForReview(taskId: string, toStatus: string): void 
  * or pre-blesses a pause, and the reply stays visible to the user) BUT we:
  *   - write a `closeout_miss` entry into task_log per affected task
  *   - send a direct A2A message to the PM with what the agent said, the task
- *     goals + deliverable_shown state, and the explicit verb menu
- *     (accept-complete / retask / dispose)
+ *     goals, and the explicit verb menu (accept-complete / retask / dispose)
+ *
+ * PHASE-2 T8c item 2: the brief used to carry each task's `deliverable_shown` state. That
+ * column has had NO WRITER since the P2 drive boundary (2026-07-21) and is read-only legacy
+ * data, so on every row this platform has opened since then the line read
+ * `deliverable_shown=false` — a constant, printed as if it were a fact about the work, in
+ * the one message that is supposed to give the PM a real basis to decide. The live half of
+ * that requirement is the retask backstop in `tracker/tools.ts`, which is now a tested
+ * predicate (`retaskWouldOverwriteDeliveredWork`), and THAT is what protects delivered work.
+ * requirement preserved: the PM is still told what each dangling task was for (its goal)
+ * and still gets the receipts block below; nothing that varies per row was removed.
  *
  * Before this, the PM only learned about close-out misses indirectly via the
  * periodic situation report, which surfaced the pause as "UNVALIDATED_PAUSE"
@@ -491,8 +501,8 @@ export async function escalateCloseoutMissToPM(ctx: {
 
   const db = getDb();
   const rows = ctx.danglingTaskIds
-    .map((id) => db.prepare(`SELECT id, title, goal, deliverable_shown FROM work WHERE id = ?`).get(id) as { id: string; title: string; goal: string | null; deliverable_shown: number } | undefined)
-    .filter((r): r is { id: string; title: string; goal: string | null; deliverable_shown: number } => Boolean(r));
+    .map((id) => db.prepare(`SELECT id, title, goal FROM work WHERE id = ?`).get(id) as { id: string; title: string; goal: string | null } | undefined)
+    .filter((r): r is { id: string; title: string; goal: string | null } => Boolean(r));
   if (rows.length === 0) return;
 
   const sourceLabel = ctx.source === 'idle-hardcap' ? 'idle-with-in_progress hardcap' : 'pre-turn close-out gate';
@@ -516,7 +526,7 @@ export async function escalateCloseoutMissToPM(ctx: {
   }
 
   const taskLines = rows
-    .map((r) => `  - ${r.id.slice(0, 8)} "${r.title}" (goal: ${r.goal ?? '(none recorded)'}; deliverable_shown=${r.deliverable_shown ? 'true' : 'false'})`)
+    .map((r) => `  - ${r.id.slice(0, 8)} "${r.title}" (goal: ${r.goal ?? '(none recorded)'})`)
     .join('\n');
   const truncatedSaid = ctx.agentText.length > 1500
     ? ctx.agentText.slice(0, 1500) + '...'
@@ -1945,11 +1955,10 @@ function buildPokeMessage(
   let stampLine = '';
   try {
     const st = getDb().prepare(
-      `SELECT id, last_activity_turn, ${msToText('last_activity_at')} AS last_activity_at,
-              last_activity_outcome, last_answered_turn,
-              ${msToText('last_answered_at')} AS last_answered_at, last_delivery_summary,
-              step_number, total_steps, parent_id AS project_id
-         FROM work WHERE id = ?`,
+      `SELECT w.id AS id, ${stampColumns('w')},
+              w.step_number AS step_number, w.total_steps AS total_steps,
+              w.parent_id AS project_id
+         FROM work w WHERE w.id = ?`,
     ).get(task.id) as TaskStampFields | undefined;
     if (st) {
       const steps = renderStepFacts(st);

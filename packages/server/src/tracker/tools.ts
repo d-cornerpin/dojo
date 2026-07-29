@@ -12,6 +12,7 @@ import {
   taskScope, projectScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
   validatedExpr, revertCountExpr, awaitingUserVerdictExpr, validationThreadIdExpr,
   statusToState, stateToStatus, type TrackerStatus,
+  stampColumns,
 } from '../work/tracker-view.js';
 import type { TransitionResult } from '../work/store.js';
 import {
@@ -71,11 +72,10 @@ import { OWNER_ALERT_PROJECT_ATTENTION_PREFIX } from '@dojo/shared';
 function getTaskStampFields(taskId: string): TaskStampFields | null {
   try {
     return getDb().prepare(
-      `SELECT id, last_activity_turn, ${msToText('last_activity_at')} AS last_activity_at,
-              last_activity_outcome, last_answered_turn,
-              ${msToText('last_answered_at')} AS last_answered_at, last_delivery_summary,
-              step_number, total_steps, parent_id AS project_id
-         FROM work WHERE id = ?`,
+      `SELECT w.id AS id, ${stampColumns('w')},
+              w.step_number AS step_number, w.total_steps AS total_steps,
+              w.parent_id AS project_id
+         FROM work w WHERE w.id = ?`,
     ).get(taskId) as TaskStampFields | null;
   } catch {
     return null;
@@ -178,6 +178,57 @@ function scheduleEchoLines(scheduledStartIso: string | null, nextRunIso: string 
 // and PM-validated) plus the retask allow_regenerate gate below. The
 // deliverable_shown COLUMN (migration 108) remains as read-only legacy data
 // for rows stamped before this release; no writer exists.
+
+// ════════════════════════════════════════════════════════════════════════════════
+// THE DELIVERED-WORK BACKSTOP, AS A PREDICATE (PHASE-2 T8c item 2)
+// ════════════════════════════════════════════════════════════════════════════════
+//
+// This is the guard-conversion the plan's own STOP demanded before `deliverable_shown` may
+// be dropped (PINNED §12, T0 concern adjudication 1). It is the reader with an incident
+// behind it: retasking work the user was ALREADY SHOWN regenerates and overwrites it, so the
+// person ends up with two divergent versions and two "done"s.
+//
+// It is a pure function of four facts on purpose. Inline in `trackerRetask` it could only be
+// exercised through an async handler with A2A delivery, a broadcast, a task-log write and a
+// stalemate check hanging off it — which is why the guard had no test at all. Here both
+// branches AND the escape hatch are testable directly, and when T10 drops the column the ONLY
+// change is that `deliverableShown` is always false: the second disjunct, the escape hatch and
+// every clause about them keep their meaning. That is what "the test lands before the column
+// may go" is supposed to buy.
+//
+// requirement preserved: delivered work is never silently regenerated; the PM may still
+// override deliberately, once, by saying so.
+
+export interface RetaskProtectionFacts {
+  /** Migration 108's flag. READ-ONLY LEGACY DATA — no writer has existed since the P2 drive
+   *  boundary — and T10 drops the column, at which point this argument is always false. */
+  deliverableShown: boolean;
+  /** The tracker status the row is in right now. */
+  status: string;
+  /** Whether an authority has upheld the CURRENT complete claim (`adjudications`, via
+   *  `tracker-view.ts:validatedExpr`). */
+  completeValidated: boolean;
+}
+
+/**
+ * Is this row's work already in the user's hands?
+ *
+ * TWO independent ways for that to be true, and they are different vintages of the same
+ * fact, not a belt-and-braces pair:
+ *   1. `deliverable_shown = 1` — a row stamped before the drive boundary deleted the writer.
+ *   2. Key 1 is filed and Key 2 is not: the assignee closed it (`complete`) and no authority
+ *      has validated yet. The close itself required a real delivery (G7), so "complete and
+ *      unvalidated" IS "delivered, awaiting adjudication".
+ */
+export function retaskWouldOverwriteDeliveredWork(f: RetaskProtectionFacts): boolean {
+  return f.deliverableShown || (f.status === 'complete' && !f.completeValidated);
+}
+
+/** The whole gate: protected AND the caller did not deliberately opt in. `allowRegenerate` is
+ *  strictly `=== true` so a stray truthy value from a weak model cannot open it. */
+export function retaskIsRefused(f: RetaskProtectionFacts, allowRegenerate: unknown): boolean {
+  return retaskWouldOverwriteDeliveredWork(f) && allowRegenerate !== true;
+}
 
 // ── Close an engine-owned same-turn scaffold (demolition Phase 1.7 #2) ──
 //
@@ -3076,10 +3127,11 @@ export async function trackerRetask(
   // delivered work genuinely misses the goal and a fresh pass is warranted). This
   // keys on the neutral fact marker, never on a completion flag, so it protects the
   // artifact without pretending the task closed.
-  const deliveredProtection =
-    task.deliverable_shown === 1 /* legacy rows, pre drive-boundary */ ||
-    (task.status === 'complete' && task.complete_validated === 0) /* Key-1 filed, awaiting PM validation */;
-  if (deliveredProtection && args.allow_regenerate !== true) {
+  if (retaskIsRefused({
+    deliverableShown: task.deliverable_shown === 1,
+    status: task.status,
+    completeValidated: task.complete_validated === 1,
+  }, args.allow_regenerate)) {
     return `Error: task "${task.title}" (${taskId.slice(0, 8)}) already had its deliverable delivered to the user (deliverable_shown=1). Retasking it would regenerate and overwrite delivered work, producing a divergent second version. If the delivered work genuinely misses the goal and you want the assignee to redo it, re-call work_validate(action="retask") with allow_regenerate=true. Otherwise, if the delivery meets the goal, let the assignee close it out (work_update(action="status")) and validate that with work_validate(action="validate"); if entirely new work is needed, create a NEW task with work_open(kind="task").`;
   }
   if (!task.assigned_to) {

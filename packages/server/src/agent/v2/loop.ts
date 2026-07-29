@@ -92,7 +92,7 @@ import {
   CLOSE_OUT_WORK_OPS,
   DISARMING_WORK_OPS,
 } from '../../tools/work-verbs.js';
-import { taskScope, msToText, tsToMs, STATE_TO_STATUS_SQL } from '../../work/tracker-view.js';
+import { taskScope, msToText, tsToMs, STATE_TO_STATUS_SQL, stampColumns } from '../../work/tracker-view.js';
 import { setTrackerStatus, patchWork, upholdClaim } from '../../work/tracker-store.js';
 
 import {
@@ -2275,10 +2275,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         for (const r of inProgressDanglers) {
           // Stamps first (mig 124), live join as backfill for pre-stamp rows.
           const st = db.prepare(
-            `SELECT id, last_activity_turn, ${msToText('last_activity_at')} AS last_activity_at,
-                    last_activity_outcome, last_answered_turn,
-                    ${msToText('last_answered_at')} AS last_answered_at, last_delivery_summary
-               FROM work WHERE id = ?`,
+            `SELECT w.id AS id, ${stampColumns('w')} FROM work w WHERE w.id = ?`,
           ).get(r.id) as import('../../tracker/task-stamps.js').TaskStampFields | undefined;
           // Tangibility rule (battery catch 2026-07-22): only a recorded
           // HANDOVER (file or channel delivery) earns the close-this text; a

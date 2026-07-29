@@ -13,6 +13,7 @@ vi.mock('../../db/connection.js', () => ({
 
 import { stampTasksAtTurnFinalize, renderTaskStamps, renderStepFacts, composeTurnDeliverySummary } from '../task-stamps.js';
 import { createWorkTable, seedTrackerTask, ms } from '../../work/__tests__/work-fixture.js';
+import { stampColumns } from '../../work/tracker-view.js';
 
 const AGENT = 'a1';
 
@@ -30,6 +31,15 @@ beforeEach(() => {
   mockDb.current = db;
 });
 
+
+// PHASE-2 T8c item 2 — THE STAMPS ARE EVENTS NOW, so the test reads them the way production
+// does: through `stampColumns`, the one projection every reader shares. That is stronger than
+// the old `SELECT * FROM work`, which could pass while the projection itself was broken.
+const stampsOf = (id: string): Record<string, unknown> =>
+  mockDb.current!.prepare(
+    `SELECT w.id AS id, ${stampColumns('w')} FROM work w WHERE w.id = ?`,
+  ).get(id) as Record<string, unknown>;
+
 describe('stampTasksAtTurnFinalize', () => {
   it('stamps the origin-tied own ticket and ONLY it; never touches updated_at', () => {
     mockDb.current!.prepare(`INSERT INTO deliveries VALUES ('a1', 100, 'imessage', 'delivered')`).run();
@@ -37,7 +47,7 @@ describe('stampTasksAtTurnFinalize', () => {
       agentId: AGENT, turnNumber: 100, outcome: 'answered', answerMessageId: 'ans-1',
       rootSourceMessageId: 'ask-1', convKey: 'owner', servedTaskId: null,
     });
-    const t1 = mockDb.current!.prepare("SELECT * FROM work WHERE id='t1'").get() as Record<string, unknown>;
+    const t1 = stampsOf('t1');
     expect(t1.last_activity_turn).toBe(100);
     expect(t1.last_activity_outcome).toBe('answered');
     expect(t1.last_answered_turn).toBe(100);
@@ -47,10 +57,13 @@ describe('stampTasksAtTurnFinalize', () => {
     // is `last_answered_turn` above, and the answering MESSAGE is on the delivery row T5
     // writes. The assertion is retired here, in the change that drops the write.
     expect(String(t1.last_delivery_summary)).toContain('imessage');
-    expect(t1.updated_at).toBe(ms('2026-07-22 07:00:00')); // the drive clock is untouched
-    const t2 = mockDb.current!.prepare("SELECT last_activity_turn FROM work WHERE id='t2'").get() as Record<string, unknown>;
+    // The drive clock is untouched. This used to be a promise about a SET list; a stamp is
+    // an event-log append now, so there is no `updated_at` in reach at all.
+    const clock = mockDb.current!.prepare("SELECT updated_at FROM work WHERE id='t1'").get() as Record<string, unknown>;
+    expect(clock.updated_at).toBe(ms('2026-07-22 07:00:00'));
+    const t2 = stampsOf('t2');
     expect(t2.last_activity_turn).toBeNull(); // different origin, unstamped
-    const t3 = mockDb.current!.prepare("SELECT last_activity_turn FROM work WHERE id='t3'").get() as Record<string, unknown>;
+    const t3 = stampsOf('t3');
     expect(t3.last_activity_turn).toBeNull(); // same origin but NOT my ticket
   });
 
@@ -63,10 +76,11 @@ describe('stampTasksAtTurnFinalize', () => {
       agentId: AGENT, turnNumber: 101, outcome: 'no_reply', answerMessageId: null,
       rootSourceMessageId: 'ask-1', convKey: 'owner', servedTaskId: null,
     });
-    const t1 = mockDb.current!.prepare("SELECT * FROM work WHERE id='t1'").get() as Record<string, unknown>;
+    const t1 = stampsOf('t1');
     expect(t1.last_activity_turn).toBe(101);
     expect(t1.last_activity_outcome).toBe('no_reply');
-    expect(t1.last_answered_turn).toBe(100); // preserved
+    expect(t1.last_answered_turn).toBe(100); // preserved — now "the newest activity that
+    // answered", which is the same fact the COALESCE was maintaining by hand.
   });
 
   it('served-task tie works without origin match, and never throws without a DB', () => {
@@ -74,7 +88,7 @@ describe('stampTasksAtTurnFinalize', () => {
       agentId: AGENT, turnNumber: 200, outcome: 'answered', answerMessageId: null,
       rootSourceMessageId: null, convKey: null, servedTaskId: 't2',
     });
-    const t2 = mockDb.current!.prepare("SELECT last_activity_turn FROM work WHERE id='t2'").get() as Record<string, unknown>;
+    const t2 = stampsOf('t2');
     expect(t2.last_activity_turn).toBe(200);
     mockDb.current = null;
     expect(() => stampTasksAtTurnFinalize({

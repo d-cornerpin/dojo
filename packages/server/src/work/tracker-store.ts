@@ -163,9 +163,10 @@ export type TrackerAttr =
   | 'scheduled_start' | 'repeat_interval' | 'repeat_unit' | 'repeat_end_type'
   | 'repeat_end_value' | 'repeat_days_of_week' | 'schedule_status' | 'is_paused'
   | 'paused_until' | 'status_before_pause' | 'last_run_at' | 'missed_runs_paused_at'
-  | 'anchor_local' | 'next_run_at' | 'attempts'
-  | 'last_activity_turn' | 'last_activity_at' | 'last_activity_outcome'
-  | 'last_answered_turn' | 'last_answered_at' | 'last_delivery_summary';
+  | 'anchor_local' | 'next_run_at' | 'attempts';
+// PHASE-2 T8c item 2: the six ticket-stamp columns left this union with their storage. They
+// are `work_events` rows of kind `activity` now (see `stampTicket` below), so a patcher that
+// could still name them would be writing a column nothing reads.
 
 export type WorkPatch = Partial<Record<TrackerAttr, unknown>>;
 
@@ -421,23 +422,30 @@ export function stopLiveSchedule(workId: string): boolean {
   return r.changes === 1;
 }
 
-/** The turn-finalize ticket stamps. Deliberately does NOT touch `updated_at` — the drive
- *  ladder's idle clock — which is requirement #15 and is conformance-locked. */
+/**
+ * The turn-finalize ticket stamp — ONE EVENT, not six columns (PHASE-2 T8c item 2, executing
+ * T8a's booked collapse).
+ *
+ * Deliberately does NOT touch `updated_at` — the drive ladder's idle clock — which is
+ * requirement #15 and is conformance-locked. That is now true BY CONSTRUCTION rather than by
+ * remembering to leave a column out of a SET list: an event log has no `updated_at` to touch.
+ *
+ * The three COALESCEs are gone with the columns. They were maintaining "the last turn that
+ * ANSWERED" and "the last delivery summary" across turns that did neither, i.e. one statement
+ * keeping three facts in step. `work/tracker-view.ts:stampColumns` asks the log for each fact
+ * separately ("the newest activity", "the newest that answered", "the newest that
+ * delivered"), so there is nothing left to keep in step.
+ */
 export function stampTicket(workId: string, f: {
   activityTurn: number; activityAt: number; activityOutcome: string;
   answeredTurn: number | null; answeredAt: number | null; deliverySummary: string | null;
 }): void {
-  getDb().prepare(`
-    UPDATE work SET
-      last_activity_turn = ?,
-      last_activity_at = ?,
-      last_activity_outcome = ?,
-      last_answered_turn = COALESCE(?, last_answered_turn),
-      last_answered_at = COALESCE(?, last_answered_at),
-      last_delivery_summary = COALESCE(?, last_delivery_summary)
-    WHERE id = ?
-  `).run(f.activityTurn, f.activityAt, f.activityOutcome,
-    f.answeredTurn, f.answeredAt, f.deliverySummary, workId);
+  appendWorkEvent(workId, WORK_EVENT.activity, 'engine', {
+    turn: f.activityTurn,
+    outcome: f.activityOutcome,
+    answered: f.answeredTurn !== null ? 1 : 0,
+    delivery_summary: f.deliverySummary,
+  });
 }
 
 // ════════════════════════════════════════════════════════════════════════════════

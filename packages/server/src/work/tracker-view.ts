@@ -198,6 +198,10 @@ export const WORK_EVENT = {
   /** `revert_count = 0`. The count itself is `COUNT(adjudications rejected)`, so a RESET has
    *  to be a marker the count reads past rather than an assignment. */
   revertReset: 'revert_reset',
+  /** THE TICKET STAMP (PHASE-2 T8c item 2 — T8a's booked collapse). One event per ticket per
+   *  turn-finalize, replacing SIX denormalized columns. Payload:
+   *  `{ turn, outcome, answered, delivery_summary }`. */
+  activity: 'activity',
 } as const;
 
 const lastEvent = (a: string, kind: string, col = 'created_at'): string =>
@@ -343,3 +347,61 @@ export const projectRowColumns = (): string => `SELECT
   ${msToText('work.updated_at')} AS updated_at,
   ${msToText('work.closed_at')} AS completed_at
   FROM work`;
+
+// ════════════════════════════════════════════════════════════════════════════════
+// 6 — THE TICKET STAMPS, WHICH ARE NOW EVENTS (PHASE-2 T8c item 2)
+// ════════════════════════════════════════════════════════════════════════════════
+//
+// T8a booked this and named it: "the six stamp columns' collapse into a view over
+// `work_events` + `deliveries`". T8b moved their STORAGE onto `work` and said out loud that
+// moving storage is not the collapse. This is the collapse.
+//
+// `last_activity_turn`, `last_activity_at`, `last_activity_outcome`, `last_answered_turn`,
+// `last_answered_at` and `last_delivery_summary` were six columns carrying facts the spine
+// already records: a turn happened, it ended with an outcome, and something was delivered on
+// it. They existed because nothing tied a TICKET to a TURN — and the stamp write was itself
+// that tie. So the tie becomes a row: one `work_events` row of kind `activity` per ticket per
+// finalize, and the six facts are read back off it.
+//
+// WHY THIS IS A COLLAPSE AND NOT A RELOCATION: the columns were a write-time freeze with a
+// COALESCE ladder maintaining "the last time this ANSWERED" and "the last delivery summary"
+// across turns that did neither. Three separate facts had to be kept in step by one UPDATE
+// statement getting its COALESCEs right. Here they are three reads of one log, each saying
+// what it means — "the newest activity", "the newest activity that answered", "the newest
+// activity that delivered" — and they cannot drift from each other because there is nothing
+// to keep in step.
+//
+// The expressions follow the same pattern as the two-key facts above (a correlated subquery
+// per fact), and every reader of these is a single-row `WHERE id = ?` lookup — measured, all
+// four of them — so this is not on any board-render path.
+//
+// requirement preserved: `renderTaskStamps` receives byte-identical `TaskStampFields` and the
+// COALESCE semantics are reproduced exactly, including "keep the prior answered stamp when
+// this turn did not answer".
+
+/** The newest `activity` event for this row, by monotonic id (not by clock — two finalizes
+ *  inside one millisecond are ordinary, and `work_events.id` is the sequence that survives
+ *  it; same lesson as `work/poke-ladder.ts`). */
+const newestActivity = (a: string, field: string, where = ''): string =>
+  `(SELECT ${field} FROM work_events e`
+  + ` WHERE e.work_id = ${a}.id AND e.kind = '${WORK_EVENT.activity}'${where}`
+  + ` ORDER BY e.id DESC LIMIT 1)`;
+
+const ANSWERED = ` AND json_extract(e.payload, '$.answered') = 1`;
+const DELIVERED = ` AND json_extract(e.payload, '$.delivery_summary') IS NOT NULL`;
+
+/**
+ * The six stamp fields, as a projection fragment.
+ *
+ * Every reader used to spell these out itself — FOUR near-identical copies across
+ * `tracker/tools.ts`, `tracker/pm-agent.ts`, `memory/assembler.ts` and `agent/v2/loop.ts`,
+ * which is the duplicated-reader shape research 03 catalogued and exactly how a projection
+ * drifts from the type it fills. One fragment now, named once.
+ */
+export const stampColumns = (a: string): string => `
+  ${newestActivity(a, "CAST(json_extract(e.payload, '$.turn') AS INTEGER)")} AS last_activity_turn,
+  ${msToText(newestActivity(a, 'e.created_at'))} AS last_activity_at,
+  ${newestActivity(a, "json_extract(e.payload, '$.outcome')")} AS last_activity_outcome,
+  ${newestActivity(a, "CAST(json_extract(e.payload, '$.turn') AS INTEGER)", ANSWERED)} AS last_answered_turn,
+  ${msToText(newestActivity(a, 'e.created_at', ANSWERED))} AS last_answered_at,
+  ${newestActivity(a, "json_extract(e.payload, '$.delivery_summary')", DELIVERED)} AS last_delivery_summary`;
