@@ -322,6 +322,20 @@
       "why": "The per-thread hop count, on the row instead of in the transport's own constant. INTEGER NOT NULL DEFAULT 0, so it is honest from creation rather than nullable-until-someone-remembers. PAID PHASE-2 T4 2026-07-28: read and written by work/store.ts (threadHopCount/bumpThreadHopCount), enforced by the transport's gate against THREAD_HOP_CAP, which is now the tree's only declared value for the concept. MEASURED CORRECTION TO D2, recorded here because the debt was written from it: D2 says both caps fire; `git grep -n a2aIntentValidator HEAD` returns the definition and its own test file and NOTHING else, so the classifier's A2A_HOP_LIMIT=5 has no production caller and never rejected anything. SWEEP A still owns picking one value, and it now knows only one of them was ever live."
     },
     {
+      "id": "drain_state.updated_at",
+      "kind": "column",
+      "table": "drain_state",
+      "column": "updated_at",
+      "definedIn": "packages/server/src/db/migrations/140_drain_state.sql",
+      "why": "PHASE-2 T10, RULING 5. `drain_state` is the restart-safe home for the two drains' consecutive-pass ladders (the module-scope Maps that a crash loop emptied on every boot). Its other four columns all have live readers in agent/drain-state.ts and agent/runtime.ts. This one does NOT, and it is declared here rather than left to be discovered, because a written-but-unread column is exactly what this gate exists to catch and I wrote it.",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "PHASE-2 T10 wrote it; the reader is UNCLAIMED and deliberately so",
+        "date": "2026-07-29",
+        "reason": "It is written on every bump and read by nothing, ON PURPOSE: the migration states in terms that NO staleness bound exists and none was invented (#14), because carrying the count across a restart is exactly what the Map would have done had the process lived, and both ladders are already self-limiting from their own ends (the wake drain's head is 45-minute-bounded at findUnservedTerminalWake; the human drain's head is quarantined and replaced at MAX_DRAIN_STUCK). So this column is a DIAGNOSTIC timestamp, not an input to any decision. If a future phase ever wants a prune or an age-based expiry it has an honest instant to sort by; if it never does, the honest disposition is to drop the column rather than invent a bound for it. Either way the decision is written down here instead of arriving as a surprise."
+      }
+    },
+    {
       "id": "work.provenance",
       "kind": "column",
       "table": "work",
