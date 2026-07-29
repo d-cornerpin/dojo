@@ -8655,14 +8655,24 @@ export async function runV2Turn(agentId: string): Promise<void> {
               recipientId: imRecipient ?? null,
               conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
             },
-            async () => sendResponseViaIMessage(replyText, agentId, imRecipient, ownerBound),
+            async () => {
+              const d = sendResponseViaIMessage(replyText, agentId, imRecipient, ownerBound);
+              // C26 tier 3: the engine iMessage auto-route is honestly
+              // UNVERIFIABLE (AppleScript/imsg exit code only). Write an
+              // exit-code receipt so PM/the user story never pretend delivery
+              // was confirmed. Tier 3 imposes no new gate requirement.
+              //
+              // PHASE-2 T5: the receipt is written INSIDE the scope, deliberately. It was
+              // one statement below, outside it, and that one statement was the difference
+              // between `deliveries.receipt_id` being populated and being another
+              // written-only column — the exact half-closure the Phase-1 exit named. Caught
+              // by measuring the live ledger after the first targeted run (0 of 119 linked),
+              // not by reading the code.
+              if (d) writeToolReceipt({ agentId, tool: 'imessage_send', tier: 3, verified: false, basis: 'exit-code', recipient: d.address, sentText: replyText, detail: { route: 'auto', textLength: replyText.length } });
+              return d;
+            },
           );
           if (delivered) {
-            // C26 tier 3: the engine iMessage auto-route is honestly
-            // UNVERIFIABLE (AppleScript/imsg exit code only). Write an
-            // exit-code receipt so PM/the user story never pretend delivery
-            // was confirmed. Tier 3 imposes no new gate requirement.
-            writeToolReceipt({ agentId, tool: 'imessage_send', tier: 3, verified: false, basis: 'exit-code', recipient: delivered.address, sentText: state.lastAssistantTextForIM, detail: { route: 'auto', textLength: state.lastAssistantTextForIM.length } });
             persistRoutingMarker(`iMessage to ${delivered.name}`);
             logger.info('v2.7.23: routed reply via iMessage', {
               agentId,
@@ -8865,19 +8875,24 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   agentId, tool: 'auto-route', channel: 'sms', recipientId: smsTo,
                   conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
                 },
-                () => sendSms(smsTo, smsText, fromNumber),
+                async () => {
+                  const res = await sendSms(smsTo, smsText, fromNumber);
+                  // C26 (FA-C3): the SMS auto-route was the only durable-channel auto-send
+                  // without a receipt, so a PM/user story could not prove it happened. Write a
+                  // tier-1 receipt exactly like the sms_send TOOL and the iMessage auto-route:
+                  // verified on the Twilio SID (provider-id), else http-status. This cannot block a
+                  // completion, the gate only demands receipts for turns that ran a send TOOL.
+                  // PHASE-2 T5: inside the scope, so the receipt links to the delivery row.
+                  if (res.ok) {
+                    const sid = res.data.sid;
+                    writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: !!sid, basis: sid ? 'provider-id' : 'http-status', providerId: sid ?? null, recipient: smsTo, sentText: smsText, detail: { route: 'auto', textLength: smsText.length } });
+                  }
+                  return res;
+                },
               );
               if (!r.ok) {
                 logger.warn('v2.9.18: sms auto-reply failed', { agentId, error: r.error }, agentId);
               } else {
-                // C26 (FA-C3): the SMS auto-route was the only durable-channel auto-send
-                // without a receipt, so a PM/user story could not prove it happened. Write a
-                // tier-1 receipt exactly like the sms_send TOOL and the iMessage auto-route:
-                // verified on the Twilio SID (provider-id), else http-status. r.data.sid is
-                // the SID (sendSms returns { ok, data }, not a flat r.sid). This cannot block a
-                // completion, the gate only demands receipts for turns that ran a send TOOL.
-                const smsSid = r.data.sid;
-                writeToolReceipt({ agentId, tool: 'sms_send', tier: 1, verified: !!smsSid, basis: smsSid ? 'provider-id' : 'http-status', providerId: smsSid ?? null, recipient: state.inboundContext.smsFromNumber, sentText: state.lastAssistantTextForIM, detail: { route: 'auto', textLength: state.lastAssistantTextForIM.length } });
                 persistRoutingMarker(`SMS to ${resolveRecipientDisplay('sms', state.inboundContext.smsFromNumber)}`);
                 logger.info('v2.9.18: routed reply via SMS', {
                   agentId,

@@ -45,6 +45,7 @@ import {
 import { currentTurnNumber, currentTurnRoot } from '../../turn-state.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn } from '../../../work/store.js';
 import { insertMessage } from '../../../memory/message-store.js';
+import { writeToolReceipt } from '../../../receipts/store.js';
 import { stampPersistedRow } from '../../../gateway/ws.js';
 
 const AGENT = 'kevin';
@@ -356,6 +357,26 @@ describe('deliveries.receipt_id is populated when a receipt exists', () => {
       recordAtDoor({ outcome: 'delivered', channel: 'sms' });
     });
     expect(deliveries()[0].receipt_id).toBe('receipt-early');
+  });
+
+  it('END TO END: writeToolReceipt itself links the row — the two sole writers, no helper', () => {
+    // The measured defect this pins: the first live run recorded 119 deliveries and linked
+    // ZERO of them, because the auto-route wrote its receipt one statement BELOW the scope.
+    // Asserting through `writeToolReceipt` is what makes the ordering part of the contract.
+    const id = withOutbound({ agentId: AGENT, tool: 'imessage_send', channel: 'imessage', recipientId: '+1555' }, () => {
+      const d = recordAtDoor({ outcome: 'delivered', channel: 'imessage' });
+      writeToolReceipt({
+        agentId: AGENT, tool: 'imessage_send', tier: 3, verified: false,
+        basis: 'exit-code', recipient: '+1555', sentText: 'the roof quote is $4,200',
+      });
+      return d;
+    });
+    const row = deliveries()[0];
+    expect(row.id).toBe(id);
+    expect(row.receipt_id).not.toBeNull();
+    const receipt = mockDb.current!.prepare('SELECT sent_text FROM tool_receipts WHERE id = ?')
+      .get(row.receipt_id) as { sent_text: string } | undefined;
+    expect(receipt?.sent_text).toBe('the roof quote is $4,200');
   });
 
   it('NEGATIVE CONTROL: a receipt written OUTSIDE any scope stamps nothing', () => {
