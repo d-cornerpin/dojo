@@ -27,6 +27,9 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -51,6 +54,7 @@ import {
   pauseDriveWorkWaitingOnOwner,
   resumeWorkOnOwnerAsk,
   stillClaimedWork,
+  terminalDeliveryForTurn,
   turnDeliveredToPerson,
   turnOutcome,
 } from '../answered-edge.js';
@@ -591,6 +595,41 @@ describe('2b — `abandoned` is reachable from >= 3 causes with a single-transit
       to: 'open', by: 'owner', actorId: 'owner', claim: 'authoritative',
       reason: 'the owner asked again on the same conversation',
     }).kind).toBe('applied');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+describe('1g — the truthful-answer key names the DELIVERY that proves it', () => {
+  it('resolves the turn\'s own delivery, newest first', () => {
+    seedTurn(4);
+    seedDelivery('d-old', { turn_number: 4 });
+    seedDelivery('d-new', { turn_number: 4 });
+    expect(terminalDeliveryForTurn(AGENT, 4, CONV)).toBe('d-new');
+  });
+
+  it('NEGATIVE: a start-ack, a failed send and a peer hand-back are not the answer', () => {
+    seedTurn(4);
+    seedDelivery('d-ack', { turn_number: 4, tool: 'engine-ack' });
+    seedDelivery('d-fail', { turn_number: 4, outcome: 'failed' });
+    seedDelivery('d-a2a', { turn_number: 4, channel: 'a2a', conversation_id: null });
+    expect(terminalDeliveryForTurn(AGENT, 4, CONV)).toBeNull();
+  });
+
+  it('NEGATIVE: a turn with nothing on the ledger names no receipt', () => {
+    seedTurn(4);
+    expect(terminalDeliveryForTurn(AGENT, 4, CONV)).toBeNull();
+  });
+
+  it('CONFORMANCE: the key has exactly ONE setter in the loop', () => {
+    const src = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'loop.ts'), 'utf8',
+    );
+    // Four bare assignments were four writers of one fact, which is how the fact drifts.
+    // `noteTerminalAnswer` is the only line that may assign it. (The declaration's
+    // initialiser carries a type annotation, so the pattern below does not see it — which
+    // is why the expectation is one line and not two.)
+    const assignments = src.split('\n').filter((l) => /(?<![!=<>])\bterminalAnswerRowId\s*=[^=]/.test(l));
+    expect(assignments.map((l) => l.trim())).toEqual(['terminalAnswerRowId = rowId;']);
   });
 });
 

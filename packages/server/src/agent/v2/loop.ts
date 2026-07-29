@@ -140,7 +140,7 @@ import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngine
 // 1g/2d). Nothing below reads the model's prose to decide it any more.
 import {
   closedWithoutDelivery, owesAnswer, pauseDriveWorkWaitingOnOwner, resumeWorkOnOwnerAsk,
-  stillClaimedWork, turnDeliveredToPerson,
+  stillClaimedWork, terminalDeliveryForTurn, turnDeliveredToPerson,
 } from './answered-edge.js';
 import { resolveOwnerAffinityChannel, affinityPromotionAllowed, recordAffinityPromotion, affinityPromotionRefusedNoBasis } from './owner-affinity.js';
 import { getProactiveSendStreak, bumpProactiveSendStreak, resetProactiveSendStreak, PROACTIVE_SEND_DEMOTE_THRESHOLD } from './proactive-budget.js';
@@ -1898,6 +1898,23 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // counted mid-turn captions as answers (which stamped asks answered, muted
   // the completion ack, and inflated ticket stamps).
   let terminalAnswerRowId: string | null = null;
+  /**
+   * PHASE-2 T6 (C4, requirement 1g) — the truthful-answer key has ONE setter.
+   *
+   * It had four bare assignments, each with its own comment explaining that this
+   * particular persist was "genuine". Four writers of one fact is how the fact drifts:
+   * research 07 records the previous shape, where any non-JSON assistant text counted and
+   * silent-ending turns were stamped answered. The four call sites remain (they are four
+   * genuinely different user-facing surfaces), but what they DO is one function, so the
+   * rule "set only on a genuine user-facing delivery" is stated once and is greppable.
+   *
+   * requirement preserved: this key and nothing else decides `turns.answered`, the outcome
+   * ladder's `answered` rung, and the ticket stamps' answer/delivery columns.
+   */
+  const noteTerminalAnswer = (rowId: string, surface: string): void => {
+    terminalAnswerRowId = rowId;
+    logger.debug('v2: truthful-answer key set', { agentId, rowId, surface }, agentId);
+  };
   // True when the start-ack already delivered the deferred text as the turn's
   // user-visible answer; gates the terminal promotion and the redundant-closeout
   // floor so the answer can never double-send.
@@ -4965,7 +4982,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 id: messageId, agentId, role: 'assistant', content: noReplyCaption,
                 attachments: JSON.stringify(noReplyAttachments), turnNumber,
               });
-              terminalAnswerRowId = messageId; // truthful answer key: canvas chip surfaced as the reply
+              noteTerminalAnswer(messageId, 'canvas chip surfaced as the reply');
               broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
               broadcast({
                 type: 'chat:message',
@@ -5380,7 +5397,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }
         if (persistedContent.trim().length > 0) {
           state = advance(state, { lastAssistantTextForIM: stripMoodMarker(persistedContent) });
-          terminalAnswerRowId = messageId; // truthful answer key: a genuine terminal reply
+          noteTerminalAnswer(messageId, 'a genuine terminal reply');
         }
         // T9 — THE TEXT-ONLY REPLY NOW GETS ITS CORRECTING chat:message, AND THAT IS
         // THIS TASK'S SHARPEST SINGLE FIX (research 17 D3).
@@ -8317,7 +8334,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           },
         });
         state = advance(state, { lastAssistantTextForIM: stripMoodMarker(deferredUserReplyWithTools) });
-      terminalAnswerRowId = recoveredId; // truthful answer key: recovered reply delivered
+      noteTerminalAnswer(recoveredId, 'recovered reply delivered');
         logger.info('v2 G-SUP-2 recovery: delivered deferred text-with-tools reply (turn ended with no tool-less reply)', {
           agentId, turnNumber,
         }, agentId);
@@ -9046,7 +9063,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         }
         if (stranded.attachments.length > 0) {
           state = advance(state, { lastAssistantTextForIM: captionText });
-          terminalAnswerRowId = synthId; // truthful answer key: stranded files surfaced
+          noteTerminalAnswer(synthId, 'stranded files surfaced');
         }
       }
     } catch (err) {
@@ -9289,6 +9306,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // answered: asks got stamped, the completion ack stood down (the
       // silent-completion defect), and ticket stamps inflated.
       const answerRow = terminalAnswerRowId ? { id: terminalAnswerRowId } : undefined;
+      // 1g: the RECEIPT the key points at. `terminalAnswerRowId` names the message row;
+      // `terminalDeliveryForTurn` names the `deliveries` row that proves it left the
+      // building — `result_delivery_id`, the thing the key was an embryo of. Recorded on
+      // the finalize log so the two halves of the answered edge are readable together,
+      // and a missing receipt beside a set key is a visible fact rather than a silence.
+      const terminalDeliveryId = answerRow
+        ? terminalDeliveryForTurn(agentId, turnNumber, currentTurnRoot.get(agentId)?.conversationId ?? null)
+        : null;
       // PHASE-2 T4: "did this turn park?" was a LIKE over a conv_key namespace, which is why
       // it had to be time-bounded and could match another turn's park. The same fact is now a
       // row: the trigger's own ticket has a join under it. `exitReason` semantics unchanged.
@@ -9313,6 +9338,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
         : handoffRow ? 'handoff'
         : 'no_reply_intended';
       const outcome = exitReason;
+      if (answerRow && !terminalDeliveryId) {
+        logger.warn('v2: the turn recorded an ANSWER with no delivery receipt behind it — the answered edge has only one of its two halves for this turn', {
+          agentId, turnNumber, answerMessageId: answerRow.id, exitReason,
+        }, agentId);
+      }
       finalizeTurn(
         agentId, turnNumber, exitReason, answerRow !== undefined, answerRow?.id ?? null,
         // P3/P6b's counted input, persisted instead of inferred: the claim may be reverted

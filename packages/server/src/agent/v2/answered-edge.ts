@@ -141,6 +141,35 @@ export function turnDeliveredToPerson(
   return hit !== undefined;
 }
 
+/**
+ * Requirement 1g — the DELIVERY the truthful-answer key points at.
+ *
+ * `terminalAnswerRowId` is `result_delivery_id` in embryo (research 07 §1): a loop-local
+ * pointer to the message row that WAS the answer, set at four genuine user-facing persists
+ * and nowhere else. What it never had was the receipt — the row proving the message left
+ * the building. This resolves it from the same ledger every other reader here uses, so the
+ * outcome ladder, the ticket stamps and the owe-filter are all looking at one fact.
+ *
+ * Newest first: a turn that delivered twice (a reply plus a stranded-file surface) is
+ * proven by its latest send, which is the one the answer row belongs to.
+ */
+export function terminalDeliveryForTurn(
+  agentId: string, turnNumber: number | null | undefined, conversationId?: string | null,
+): string | null {
+  if (turnNumber == null) return null;
+  const scoped = conversationId != null;
+  const r = getDb().prepare(
+    `SELECT id FROM deliveries
+      WHERE agent_id = ? AND turn_number = ? AND outcome = 'delivered'
+        AND channel <> 'a2a'
+        AND tool NOT IN (${NON_ANSWERING_TOOLS.join(', ')})
+        ${scoped ? 'AND conversation_id = ?' : 'AND conversation_id IS NOT NULL'}
+      ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+  ).get(...(scoped ? [agentId, turnNumber, conversationId] : [agentId, turnNumber])) as
+    { id: string } | undefined;
+  return r?.id ?? null;
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // 1b — "did work close WITHOUT a delivery": a JOIN.
 // ════════════════════════════════════════════════════════════════════════════════
