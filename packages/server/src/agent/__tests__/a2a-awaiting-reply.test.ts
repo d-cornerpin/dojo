@@ -136,6 +136,29 @@ beforeEach(() => {
       a2a_intent TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
+    -- PHASE-2 T4: the transport reads the SPINE for a thread's hop count (DECIDED D2), so a
+    -- fixture without the work table would make the hop gate throw instead of testing the latch. Only
+    -- the columns the transport touches are declared; a hand-modelled schema that drifts from
+    -- the real one is a fixture that passes while asserting nothing (T3's own finding).
+    CREATE TABLE work (
+      id TEXT PRIMARY KEY,
+      kind TEXT,
+      parent_id TEXT,
+      agent_id TEXT,
+      assignee_agent TEXT,
+      root_kind TEXT,
+      root_id TEXT,
+      state TEXT,
+      hop_count INTEGER NOT NULL DEFAULT 0,
+      notes TEXT,
+      result_delivery_id TEXT,
+      remaining_children INTEGER,
+      compile_pending INTEGER NOT NULL DEFAULT 0,
+      reply_conversation_id TEXT,
+      ttl_at INTEGER,
+      opened_at INTEGER,
+      updated_at INTEGER
+    );
   `);
   db.prepare(`INSERT INTO agents (id, name, status) VALUES (?, ?, 'active')`).run(SENDER, 'Kevin');
   db.prepare(`INSERT INTO agents (id, name, status) VALUES (?, ?, 'active')`).run(RECEIVER, 'Maddy');

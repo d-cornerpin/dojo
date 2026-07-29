@@ -587,14 +587,14 @@ class AgentRuntime {
                   agentId, intent: owed.intent, thread: owed.threadShort, from: owed.fromName,
                 }, agentId);
                 recordA2AReply({ assignMessageId: owed.messageId, agentId, threadId: owed.threadShort, replyIntent: 'ABANDONED' });
-                // D13: the synthetic ABANDONED silences the missed-reply enforcer on
-                // THIS agent, but the asker may hold an owner question parked on this
-                // thread. Fail that park CLOSED now, the owner gets a deterministic
-                // "could not get an answer" notice on the park's own channel, instead
-                // of permanent silence. Fire-and-forget; the TTL sweep is the backstop.
+                // D13: the synthetic ABANDONED silences the missed-reply enforcer on THIS
+                // agent, but the asker may hold a delegated PIECE on this thread. Settle it
+                // ABANDONED now — the countdown moves like any other landing — so a join left
+                // with nothing to compile tells the owner immediately instead of leaving them
+                // in permanent silence. Fire-and-forget; the TTL reaper is the backstop.
                 // (Dynamic import: a2a-transport statically imports this module.)
                 import('./a2a-transport.js')
-                  .then((m) => m.failParksForAbandonedAsk(owed.messageId, owed.threadShort, agentId))
+                  .then((m) => m.failJoinPieceForAbandonedAsk(owed.messageId, owed.threadShort, agentId))
                   .catch(() => { /* best effort, TTL sweep backstops */ });
                 a2aTurnRetries.delete(agentId);
                 forceA2ATurn.delete(agentId);
@@ -634,11 +634,11 @@ class AgentRuntime {
       // message. Cleared here as a hard guarantee.
       preemptedAgents.delete(agentId);
 
-      // Compile-pending fan-out parks: close the loop no matter what the
-      // model did with the compile steer (see resolveCompilePendingParks).
+      // Compile-pending fan-out joins: close the loop no matter what the
+      // model did with the compile steer (see resolveCompilePendingJoins).
       try {
-        const { resolveCompilePendingParks } = await import('./a2a-transport.js');
-        await resolveCompilePendingParks(agentId);
+        const { resolveCompilePendingJoins } = await import('./a2a-transport.js');
+        await resolveCompilePendingJoins(agentId);
       } catch { /* best effort; the TTL sweep backstops */ }
 
       // ── Unserved-wake drain (2026-07-23) ── pendingWakeups is a SET, so N

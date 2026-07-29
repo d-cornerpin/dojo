@@ -21,10 +21,20 @@
 //   A. the OWNER-ASK queue          -> T3's, and it is GONE (5 sites)
 //   B. the ENGINE-EVENT claim/queue -> a different queue with its own retry lifecycle
 //                                      (T6 owns the policy, T9 the single reaper)
-//   C. the A2A terminal-wake claim  -> the peer lane (T4)
+//   C. the A2A terminal-wake claim  -> the peer lane (T4), and it is GONE TOO (see below)
 //   D. conversation IDENTITY        -> requirement 3l says this half STAYS first-class;
 //                                      it dies with the column at T10
 //   ...plus one that is not on `messages` at all.
+//
+// ── WHAT T4 REMOVED (2026-07-28) ──
+// Bucket C is empty. The terminal A2A wake was claimed by stamping `conv_key='a2a'` — a
+// sentinel that is not a conversation, written onto the column that carries conversation
+// IDENTITY, purely so `findUnservedTerminalWake`'s `conv_key IS NULL` predicate would stop
+// returning the row. Both halves are gone: the finder reads `served_by_turn IS NULL` (the real
+// serve edge, already stamped on that row by the same turn) and the sentinel write is deleted.
+// `counterparty.ts` therefore drops from 2 to 1 — the survivor is bucket B's
+// DELIVERABLE_ENGINE_EVENT_WHERE. `message-store.ts` stays at 5 because the `expect: null`
+// branch it shares is still the ENGINE-EVENT pickup's; T4 is no longer one of its owners.
 //
 // Deleting B, C or D here would not be a demolition; it would be a hole where a live
 // mechanism used to be, with no replacement built and no task claiming to have built one
@@ -88,10 +98,10 @@ function measure(): Record<string, number> {
 // ── THE SURVIVORS, each with the mechanism it belongs to and the task that owns it ──
 // Every entry below was opened and read at T3, not inherited from a list.
 const RESOLVED: Record<string, number> = {
-  // B + C + D, all in the message writer:
+  // B + D, all in the message writer:
   //   :570 setConvKeyByRowid's `expect: null` branch — the CAS for the ENGINE-EVENT pickup
-  //        (value 'engine', owner T6/T9) and the terminal A2A WAKE (value 'a2a', owner T4).
-  //        The owner-ask caller is gone; these two remain.
+  //        (value 'engine', owner T6/T9). The owner-ask caller went at T3 and the terminal
+  //        A2A wake caller went at T4; this one remains, with one owner instead of two.
   //   :593 tagTurnOutputConvKey — "do not re-tag an already-tagged output row". IDENTITY.
   //   :629 claimTrackerNoticeForTask — retires an assignment notice; assignment-notice
   //        retirement is named in work/store.ts's own header as PHASE-2 T8's.
@@ -106,8 +116,9 @@ const RESOLVED: Record<string, number> = {
   // B — the boot staleness sweep's ENGINE-EVENT arm. T3 split this block in two and took
   // the owner-ask arm onto the work spine; the engine arm keeps its own claim column.
   'packages/server/src/index.ts': 1,
-  // B (:345 DELIVERABLE_ENGINE_EVENT_WHERE, T6) and C (:638 findUnservedTerminalWake, T4).
-  'packages/server/src/agent/v2/counterparty.ts': 2,
+  // B (:345 DELIVERABLE_ENGINE_EVENT_WHERE, T6). C (findUnservedTerminalWake) was the second
+  // one and T4 removed it — the finder reads `served_by_turn IS NULL` now.
+  'packages/server/src/agent/v2/counterparty.ts': 1,
   // NOT `messages` AT ALL — this is `open_loops.conv_key`, the dedup key on a table T7
   // deletes outright. PINNED §1 counted it among the "live SQL predicates in production";
   // it is a predicate, on a different table, doing a different job.
@@ -151,6 +162,25 @@ describe('PHASE-2 T3 — the conv_key claim predicate, resolved site by site', (
     expect(idx).toMatch(/w\.kind = 'ask' AND w\.state = 'open'/);
     // ...and what is left of that block is explicitly the events lane, not "any user row".
     expect(idx).toMatch(/m\.role = 'user' AND m\.lane = 'events'\s+AND m\.conv_key IS NULL/);
+  });
+
+  it('T4: the terminal A2A wake is claimed by the SERVE edge, and the fake conversation key is gone', () => {
+    const src = (rel: string): string => stripComments(fs.readFileSync(path.join(REPO, rel), 'utf8'));
+    const cp = src('packages/server/src/agent/v2/counterparty.ts');
+    const finderStart = cp.indexOf('export function findUnservedTerminalWake');
+    const finder = cp.slice(finderStart, cp.indexOf('export function', finderStart + 10));
+    expect(finder).toMatch(/served_by_turn IS NULL AND swept_at IS NULL/);
+    expect(finder).not.toMatch(/conv_key/);
+    // ...and nothing in the tree writes the sentinel any more. NEGATIVE CONTROL: the OTHER
+    // sentinel writes ('engine') must still be here, or this clause would pass by deleting
+    // the wrong thing.
+    const loop = src('packages/server/src/agent/v2/loop.ts');
+    expect(loop).not.toMatch(/value: 'a2a'/);
+    expect(loop).toMatch(/value: 'engine', expect: null/);
+    // The serve stamp is GATED on the wake actually driving the turn. Ungated, it would mark a
+    // wake served that LOST the turn to a waiting human — swallowing it — because that stamp
+    // is now the finder's own predicate. This clause is what stops the gate being "tidied" away.
+    expect(loop).toMatch(/if \(terminalWakeA2A && terminalWakeDrivesTurn\) \{\s*\n\s*markServedByRowid/);
   });
 
   it('the pickup claim is a work-state CAS whose LOSER is the D-2 bail', () => {

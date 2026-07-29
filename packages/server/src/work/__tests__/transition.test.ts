@@ -277,7 +277,10 @@ describe('effects run INSIDE, once, on every applied path', () => {
     expect(rowOf('parent').remaining_children).toBe(1);
     transition('child-b', { to: 'failed', by: 'pm', reason: 'gave up', claim: 'authoritative' });
     expect(rowOf('parent').remaining_children).toBe(0);
-    expect(events('parent').map((e) => e.kind)).toEqual(['child_settled', 'child_settled']);
+    // PHASE-2 T4: at ZERO the same effect also records what the join can honestly do next —
+    // `join_complete` with its outcome. It is the same countdown, in the same transaction,
+    // not a second one; the parent must never reach zero without that fact being written.
+    expect(events('parent').map((e) => e.kind)).toEqual(['child_settled', 'child_settled', 'join_complete']);
   });
 
   it('never drives the countdown negative, however many children settle', () => {

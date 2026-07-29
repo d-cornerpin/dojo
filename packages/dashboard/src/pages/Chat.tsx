@@ -520,22 +520,22 @@ const isErroredToolResult = (info?: ToolResultInfo): boolean => !!info?.isError;
 // conversation key ('owner', 'imessage:…', 'email:…', 'teams:…', …); a
 // background / engine turn (scheduler sync, watcher, tracker-driven surface)
 // leaves them null because the turn had no waiting human (chosenConvKey null,
-// so the teardown stamp is a no-op). Verified against the live DB: the
-// 'engine' / 'park:' / 'relayed:' sentinels only ever land on the role='user'
-// TRIGGER row, never on the agent's own assistant/tool output, so on a chip row
-// `null` IS the background marker (the sentinels are excluded defensively too).
-// This hides only the CHIP; a background turn's surfaced TEXT is a separate
-// assistant row and still renders. Wordy mode shows every chip. Absent convKey
-// (undefined, e.g. a local optimistic bubble) defaults to user-visible so a live
-// user turn never loses its own chips. NOTE: legacy rows written before conv_key
-// stamping (migration 076) are null too, so their chips are hidden in regular
-// mode and only appear in wordy mode (an accepted, bounded history tradeoff).
+// so the teardown stamp is a no-op). Verified against the live DB: the 'engine'
+// sentinels only ever land on the role='user' TRIGGER row, never on the agent's
+// own assistant/tool output, so on a chip row `null` IS the background marker.
+// PHASE-2 T4: the 'park:'/'relayed:' sentinels are GONE (a delegated question is parent/child
+// rows in `work` and nothing rewrites conv_key to hold join state), so the clauses testing for
+// them are deleted rather than left reading a dead namespace.
+// This hides only the CHIP; a background turn's surfaced TEXT is a separate assistant row and
+// still renders. Wordy mode shows every chip. Absent convKey (undefined, e.g. a local
+// optimistic bubble) defaults to user-visible so a live user turn never loses its own chips.
+// NOTE: legacy rows written before conv_key stamping (migration 076) are null too, so their
+// chips are hidden in regular mode and only appear in wordy mode (bounded history tradeoff).
 const isBackgroundTurnRow = (m: ChatMessage): boolean => {
   const ck = m.convKey;
   if (ck === undefined) return false;      // no signal → show (safety for live user turns)
   if (ck === null || ck === '') return true;
   if (ck === 'engine' || ck === 'engine-steer' || ck === 'engine-notice') return true;
-  if (ck.startsWith('park:') || ck.startsWith('relayed:')) return true;
   return false;                            // a real human conversation key → show
 };
 

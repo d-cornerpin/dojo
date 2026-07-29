@@ -619,15 +619,15 @@ export function rehomeUnclaimedEngineEvents(agentId: string, newBoundary: string
  */
 export function findUnservedTerminalWake(agentId: string): { rowid: number } | null {
   const db = getDb();
-  // AGE-BOUNDED (2026-07-23 PRODUCTION STORM, owner box on .20): a lived-in
-  // box carries a deep backlog of never-served terminal rows from before
-  // served_by_turn stamping existed. Unbounded, this finder dredged them up
-  // one per turn, framed turns around messages too old to be in context, the
-  // model probed the senders about them, the probes created REAL new threads
-  // and replies, and the turn-end drain queued the next stale row: a
-  // self-sustaining cross-agent storm. A wake is a wake only while it is
-  // FRESH; older rows return to their pre-.20 state (inert, never served),
-  // which is exactly how the box behaved before this finder existed.
+  // AGE-BOUNDED (2026-07-23 PRODUCTION STORM, owner box on .20): a lived-in box carries a deep
+  // backlog of never-served terminal rows from before served_by_turn stamping existed.
+  // Unbounded, this finder dredged them up one per turn, framed turns around messages too old
+  // to be in context, the model probed the senders about them, the probes created REAL new
+  // threads and replies, and the turn-end drain queued the next stale row: a self-sustaining
+  // cross-agent storm. A wake is a wake only while it is FRESH; older rows return to their
+  // pre-.20 state (inert, never served), exactly how the box behaved before this finder.
+  // PHASE-2 T4: "unserved" is the real serve edge, `served_by_turn`; the claim it replaces was
+  // a fake conversation key ('a2a') written onto the identity column (3l).
   const row = db.prepare(`
     SELECT seq AS rowid FROM messages
      WHERE agent_id = @agentId AND role = 'user'
@@ -635,7 +635,7 @@ export function findUnservedTerminalWake(agentId: string): { rowid: number } | n
        AND a2a_thread_id IS NOT NULL
        AND a2a_intent IN ('DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL')
        AND a2a_requires_response = 1
-       AND conv_key IS NULL AND swept_at IS NULL
+       AND served_by_turn IS NULL AND swept_at IS NULL
        AND created_at >= (unixepoch('now', '-45 minutes') * 1000)
     ORDER BY created_at DESC, rowid DESC LIMIT 1
   `).get({ agentId }) as { rowid: number } | undefined;

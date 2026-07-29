@@ -81,6 +81,12 @@ export interface TransitionInput {
   /** The delivery that makes `done` true. `done` is unreachable without one. */
   resultDeliveryId?: string | null;
   claim?: Claim;
+  /** The result this transition carries, recorded on the ROW in the same transaction as the
+   *  state change. A delegated piece's delivered text lands here (PHASE-2 T4, requirement
+   *  3h): the mechanism it replaces wrote the piece into a `join-piece:<thread>` conv_key
+   *  namespace on a second message row, so a crash between "the countdown moved" and "the
+   *  content was recorded" lost the piece. One transaction, one row, no gap. */
+  note?: string | null;
   /** Optimistic concurrency: the state the caller believed it was acting on. Supplying it
    *  turns a lost race into a `conflict` the caller can see instead of a silent overwrite. */
   expectedState?: WorkState;
@@ -106,7 +112,11 @@ export type TransitionGate =
   | 'delivery-unresolved'
   | 'authoritative-claim-not-permitted'
   | 'requires-validation'
-  | 'reopen-requires-authority';
+  | 'reopen-requires-authority'
+  // PHASE-2 T4: the two refusals the fan-out join owes. Both were caller-side `if`s in the
+  // string machine and both are structural here, so no caller can forget them.
+  | 'not-a-join-child'
+  | 'empty-piece';
 
 interface WorkRow {
   id: string;
@@ -272,6 +282,10 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
          closed_at = CASE WHEN ? = 1 THEN COALESCE(closed_at, ?) ELSE NULL END,
          result_delivery_id = ?,
          claimed_by_turn = ?,
+         notes = COALESCE(?, notes),
+         -- a settled row is not waiting to be compiled. The flag is cleared HERE rather
+         -- than at the three call sites that settle a join, so it cannot survive its row.
+         compile_pending = CASE WHEN ? = 1 THEN 0 ELSE compile_pending END,
          updated_at = ?
        WHERE id = ?`,
     ).run(
@@ -280,6 +294,8 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
       now(),
       input.to === 'done' ? deliveryId : (input.resultDeliveryId ?? row.result_delivery_id),
       input.to === 'claimed' ? (input.claimedByTurn ?? null) : null,
+      input.note ?? null,
+      terminal ? 1 : 0,
       now(),
       workId,
     );
@@ -289,6 +305,7 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
       evidence_ref: input.evidenceRef ?? null,
       result_delivery_id: input.to === 'done' ? deliveryId : null,
       claim: input.claim ?? null,
+      note: input.note ?? null,
     });
 
     // EFFECT: the fan-out countdown. A child settling is the ONLY thing that decrements it,
@@ -305,6 +322,28 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
         appendEvent(row.parent_id, 'child_settled', actorId, {
           child_id: workId, child_state: input.to, remaining: parent?.remaining_children ?? null,
         });
+        // EFFECT: THE PARENT WAKES AT ZERO (PHASE-2 T4, requirement 3a), and what it wakes
+        // INTO is `compile_pending` — a fact distinct from "the owner got the answer" (3b).
+        // This is the same countdown, not a second one: it runs inside the same transaction
+        // as the decrement that reached zero, so there is no window in which the join is
+        // complete and nobody has recorded it.
+        //
+        // The outcome is computed from the children, not asserted by the caller: a join
+        // whose pieces ALL failed or were abandoned has nothing to compile, and telling the
+        // owner "here is your combined answer" from zero pieces is the dishonesty requirement
+        // 3e exists to refuse. Nothing landed -> the join is left for the fail-closed notice.
+        if ((parent?.remaining_children ?? -1) === 0) {
+          const landed = (db.prepare(
+            "SELECT count(*) AS c FROM work WHERE parent_id = ? AND state = 'done'",
+          ).get(row.parent_id) as { c: number }).c;
+          if (landed > 0) {
+            db.prepare('UPDATE work SET compile_pending = 1, updated_at = ? WHERE id = ?')
+              .run(now(), row.parent_id);
+          }
+          appendEvent(row.parent_id, 'join_complete', actorId, {
+            landed, outcome: landed > 0 ? 'compile' : 'fail-closed',
+          });
+        }
       }
     }
 
@@ -587,4 +626,516 @@ export function reconcileOrphanedClaims(): { reArmed: number; held: number } {
     logger.warn('boot reconciliation of orphaned ask claims', { reArmed, held });
   }
   return { reArmed, held };
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// PHASE-2 T4 — FAN-OUT IS PARENT/CHILD ROWS WITH AN ATOMIC COUNTDOWN.
+//
+// What this section replaces, named so the removal can be checked rather than trusted:
+// the PARK STRING MACHINE in `agent/a2a-transport.ts`. One owner ask delegated to N agents
+// was held by rewriting the owner message's `conv_key` into `park:~<t1>|<t2>#<remaining>`
+// and shrinking the text after the '#' as pieces came back. The join state WAS a string,
+// the countdown WAS string arithmetic, and the column it lived in was the same column that
+// carries the conversation's identity — so parking an ask DESTROYED the record of where it
+// came from (research 07 §3, "worst coupling").
+//
+// requirement preserved, one line each (research 07-FULL rows 3a–3l):
+//   3a  N-way join            -> N child rows with `parent_id`, `remaining_children` on the
+//                                parent, decremented INSIDE `transition()`;
+//   3b  compile-pending       -> `work.compile_pending`, a column, set by the countdown that
+//                                reached zero and cleared by the settle that answers;
+//   3c  transactional CAS     -> one guarded UPDATE in the child's own transaction. The old
+//                                one retried five times and then returned 'noop' in silence
+//                                (07 §3 defect i: "piece lost, join hangs to TTL");
+//   3d  TTL fail-closed once  -> `work.ttl_at` + a `transition()` with `expectedState`; the
+//                                loser of the race gets `conflict`, a value, not a silence;
+//   3e  abandonment           -> a child settling `abandoned` decrements like any other, and
+//                                a join with zero landed pieces can only fail closed;
+//   3f  late-answer re-open   -> `failed -> open -> done`, both moves recorded, and the
+//                                second late answer is refused by the same `expectedState`;
+//   3g  state vs identity     -> `state` and `reply_conversation_id` are different columns on
+//                                the same row. The owner's message keeps its conv_key;
+//   3h  piece result          -> the child's own `notes` + `result_delivery_id`, written in
+//                                the transition's transaction (07 §3 defect: the harvest read
+//                                a fake `join-piece:` namespace and "could come up empty");
+//   3i  answered-by edge      -> `result_delivery_id`, never a string match on the thread;
+//   3j  no short-token parks  -> `root_id` holds the FULL thread id and is matched EXACTLY;
+//                                `parent_id` is a real FK (07 §3 defect ii: an 8-char token
+//                                could not be matched back and `failParksForAbandonedAsk`
+//                                silently missed every fan-out park);
+//   3l  identity stays        -> nothing here writes `messages.conv_key`.
+// ════════════════════════════════════════════════════════════════════════════════
+
+/** How long a delegated join may wait before the engine fails it closed and tells the owner.
+ *  Carried verbatim from `PARK_TTL_MINUTES` (`a2a-transport.ts`), which this replaces. */
+export const JOIN_TTL_MINUTES = 60;
+
+/** Joins older than this are stale history: nothing re-fires them and telling the owner about
+ *  a week-old delegated question is noise. Carried verbatim from `PARK_MAX_AGE_DAYS`. */
+export const JOIN_MAX_AGE_DAYS = 7;
+
+/**
+ * The A2A per-thread hop cap, declared ONCE, beside the column it now keys on.
+ *
+ * DECIDED D2 (PHASE-2 T0): the transport's private `MAX_HOPS_PER_THREAD` dissolves into
+ * `work.hop_count`. The value is carried over unchanged — 8 — because #14 forbids inventing
+ * a threshold, and reconciling it with the classifier's `A2A_HOP_LIMIT = 5` is SWEEP A's job
+ * with its own written instruction ("pick one with a reason and delete the other").
+ *
+ * ⚠ MEASURED CORRECTION TO D2 (PHASE-2 T4, 2026-07-28). D2 records both caps as live —
+ * "TWO LIVE VALUES ON ONE CONCEPT ... Both fire." At this HEAD only ONE fires:
+ * `git grep -n "a2aIntentValidator" HEAD` returns the definition and its own test file and
+ * NOTHING ELSE, so the classifier's cap of 5 has no production caller and cannot reject
+ * anything. That makes this the tree's ONLY live hop cap, which is why the enforcement is
+ * carried across rather than dropped.
+ */
+export const THREAD_HOP_CAP = 8;
+
+/** One delegated thread, as the delegation exit knows it. */
+export interface DelegationThread {
+  /** The FULL A2A thread id. Never an 8-char token — 3j, and the collision that produced it. */
+  threadId: string;
+  /** Who was asked. The string machine had to re-derive this by scanning messages around the
+   *  park's timestamp (`findAskedAgentForPark`); the delegation knows it at the time. */
+  assigneeAgent?: string | null;
+  /** The A2A intent this thread was opened with (QUESTION / ASSIGN / BLOCK). */
+  intent?: string;
+  /** The thread's hop count at delegation time — D2's rekey (see THREAD_HOP_CAP). */
+  hopCount?: number;
+  title?: string | null;
+}
+
+export interface OpenJoinInput {
+  /** The owner's ask. It is the PARENT: OR1's one ID space, not a second record. */
+  parentWorkId: string;
+  agentId: string;
+  /**
+   * The conversation the answer must come back on, COPIED here at delegation time and never
+   * resolved later. This is the whole of the "worst coupling" fix: the old machine had to
+   * recover the channel from an `inbound_meta` JSON blob because parking had overwritten the
+   * identity column, and a park whose meta was missing fell back to the dashboard.
+   */
+  replyConversationId: string | null;
+  /** Absolute epoch-ms deadline. The reaper reads this column and nothing else. */
+  ttlAt: number;
+  threads: DelegationThread[];
+}
+
+/** A child of a join, as its readers need it. */
+export interface JoinChild {
+  id: string;
+  parentId: string;
+  agentId: string;
+  threadId: string;
+  state: WorkState;
+  assigneeAgent: string | null;
+  replyConversationId: string | null;
+}
+
+export interface JoinPiece {
+  childId: string;
+  threadId: string;
+  state: WorkState;
+  /** What the peer actually delivered, recorded on the child at land time. */
+  content: string | null;
+  resultDeliveryId: string | null;
+  assigneeAgent: string | null;
+}
+
+export interface JoinState {
+  id: string;
+  agentId: string;
+  parentState: WorkState;
+  total: number;
+  landed: number;
+  remaining: number;
+  complete: boolean;
+  compilePending: boolean;
+  replyConversationId: string | null;
+  ttlAt: number | null;
+  rootId: string;
+  /** What an at-zero join can honestly do: compile the pieces, or admit it got nothing. */
+  outcome: 'compile' | 'fail-closed';
+}
+
+const CHILD_OPEN_STATES = "('open','claimed','paused','blocked','on_deck')";
+
+/**
+ * Open the join for a delegation turn: N children under the owner's ask, the countdown on
+ * the parent, and the reply conversation copied onto every row — all in ONE transaction, so
+ * there is no instant in which some children exist and the countdown does not.
+ *
+ * Returns the child ids in hand-off order. An empty thread list is a no-op and says so by
+ * returning nothing: a delegation that opened no threads has no join, and writing
+ * `remaining_children = 0` would make the reaper believe a join completed.
+ */
+export function openDelegationJoin(p: OpenJoinInput): string[] {
+  const db = getDb();
+  if (p.threads.length === 0) return [];
+  const parent = db.prepare('SELECT id, kind, state FROM work WHERE id = ?').get(p.parentWorkId) as
+    | { id: string; kind: WorkKind; state: WorkState } | undefined;
+  if (!parent) {
+    logger.warn('delegation join not opened: no such parent work row', {
+      agentId: p.agentId, parentWorkId: p.parentWorkId,
+    }, p.agentId);
+    return [];
+  }
+  // Same discipline as `openAsk`: a dangling conversation id is recorded as ABSENT identity
+  // rather than allowed to take the whole delegation down on an FK violation.
+  let replyConversationId = p.replyConversationId;
+  if (replyConversationId != null
+      && !db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(replyConversationId)) {
+    logger.warn('delegation join: reply conversation id resolves to no conversation row', {
+      agentId: p.agentId, parentWorkId: p.parentWorkId, replyConversationId,
+    }, p.agentId);
+    replyConversationId = null;
+  }
+  const seen = new Set<string>();
+  const threads = p.threads.filter((t) => {
+    if (!t.threadId || seen.has(t.threadId)) return false;
+    seen.add(t.threadId);
+    return true;
+  });
+  if (threads.length === 0) return [];
+
+  const ids: string[] = [];
+  const at = now();
+  db.transaction(() => {
+    for (const t of threads) {
+      const childId = `piece:${p.parentWorkId}:${t.threadId}`;
+      db.prepare(`
+        INSERT OR IGNORE INTO work (
+          id, kind, parent_id, agent_id, assignee_agent, requester, requester_id,
+          conversation_id, root_kind, root_id, state, intent, wakes, closes_thread,
+          hop_count, title, reply_conversation_id, ttl_at, opened_at, updated_at, provenance
+        ) VALUES (?, 'task', ?, ?, ?, 'agent', ?, NULL, 'a2a_thread', ?, 'open', ?, 1, 0,
+                  ?, ?, ?, ?, ?, ?, 'live')
+      `).run(
+        childId, p.parentWorkId, p.agentId, t.assigneeAgent ?? null, p.agentId,
+        t.threadId, t.intent ?? 'ASSIGN', t.hopCount ?? 0, t.title ?? null,
+        replyConversationId, p.ttlAt, at, at,
+      );
+      appendEvent(childId, 'opened', p.agentId, {
+        thread_id: t.threadId, parent_id: p.parentWorkId, assignee: t.assigneeAgent ?? null,
+      });
+      ids.push(childId);
+    }
+    db.prepare(
+      `UPDATE work SET remaining_children = ?, ttl_at = ?, reply_conversation_id = ?,
+                       compile_pending = 0, updated_at = ?
+        WHERE id = ?`,
+    ).run(ids.length, p.ttlAt, replyConversationId, at, p.parentWorkId);
+    appendEvent(p.parentWorkId, 'join_opened', p.agentId, {
+      children: ids.length, threads: threads.map((t) => t.threadId), ttl_at: p.ttlAt,
+    });
+  })();
+  logger.info('delegation join opened', {
+    agentId: p.agentId, parentWorkId: p.parentWorkId, children: ids.length,
+  }, p.agentId);
+  return ids;
+}
+
+/**
+ * The OPEN child of a join for this thread, or null.
+ *
+ * EXACT match on the full thread id. The mechanism this replaces had to sniff the length of
+ * a thread reference and prefix-match anything ≤ 8 characters, because a regex fallback
+ * minted 8-char park tokens — and `makeThreadId`'s own comment records that an 8-char prefix
+ * of a `thread-<hash>-<seed>` id is ~36 buckets and "collides heavily".
+ */
+export function findJoinChildByThread(agentId: string, threadId: string): JoinChild | null {
+  const r = getDb().prepare(`
+    SELECT id, parent_id, agent_id, root_id, state, assignee_agent, reply_conversation_id
+      FROM work
+     WHERE agent_id = ? AND kind = 'task' AND root_kind = 'a2a_thread' AND root_id = ?
+       AND parent_id IS NOT NULL AND state IN ${CHILD_OPEN_STATES}
+     ORDER BY opened_at DESC LIMIT 1
+  `).get(agentId, threadId) as
+    | { id: string; parent_id: string; agent_id: string; root_id: string; state: WorkState;
+        assignee_agent: string | null; reply_conversation_id: string | null }
+    | undefined;
+  if (!r) return null;
+  return {
+    id: r.id, parentId: r.parent_id, agentId: r.agent_id, threadId: r.root_id,
+    state: r.state, assigneeAgent: r.assignee_agent, replyConversationId: r.reply_conversation_id,
+  };
+}
+
+/** Read a join's live counts. `total` and `landed` are COUNTED off the children, never
+ *  maintained as a second number that can drift from the one the countdown moves. */
+export function joinState(parentWorkId: string): JoinState | null {
+  const db = getDb();
+  const p = db.prepare(
+    `SELECT id, agent_id, state, remaining_children, compile_pending, reply_conversation_id,
+            ttl_at, root_id
+       FROM work WHERE id = ?`,
+  ).get(parentWorkId) as
+    | { id: string; agent_id: string; state: WorkState; remaining_children: number | null;
+        compile_pending: number; reply_conversation_id: string | null; ttl_at: number | null;
+        root_id: string }
+    | undefined;
+  if (!p || p.remaining_children === null) return null;
+  const counts = db.prepare(
+    `SELECT count(*) AS total, sum(state = 'done') AS landed FROM work WHERE parent_id = ?`,
+  ).get(parentWorkId) as { total: number; landed: number | null };
+  const landed = counts.landed ?? 0;
+  return {
+    id: p.id, agentId: p.agent_id, parentState: p.state,
+    total: counts.total, landed, remaining: p.remaining_children,
+    complete: p.remaining_children === 0, compilePending: p.compile_pending === 1,
+    replyConversationId: p.reply_conversation_id, ttlAt: p.ttl_at, rootId: p.root_id,
+    outcome: landed > 0 ? 'compile' : 'fail-closed',
+  };
+}
+
+/** Every piece of a join, with the content each peer actually delivered. This is the harvest
+ *  the compile steer quotes; it reads the CHILDREN, never a conv_key namespace. */
+export function joinPieces(parentWorkId: string): JoinPiece[] {
+  return (getDb().prepare(
+    `SELECT id, root_id, state, notes, result_delivery_id, assignee_agent
+       FROM work WHERE parent_id = ? ORDER BY opened_at ASC, id ASC`,
+  ).all(parentWorkId) as Array<{
+    id: string; root_id: string; state: WorkState; notes: string | null;
+    result_delivery_id: string | null; assignee_agent: string | null;
+  }>).map((r) => ({
+    childId: r.id, threadId: r.root_id, state: r.state, content: r.notes,
+    resultDeliveryId: r.result_delivery_id, assigneeAgent: r.assignee_agent,
+  }));
+}
+
+export interface PieceSettleResult {
+  result: TransitionResult;
+  join: JoinState & { complete: boolean };
+}
+
+function joinAfter(childId: string): JoinState & { complete: boolean } {
+  const parentId = (getDb().prepare('SELECT parent_id FROM work WHERE id = ?').get(childId) as
+    { parent_id: string | null } | undefined)?.parent_id ?? null;
+  const st = parentId ? joinState(parentId) : null;
+  return st ?? {
+    id: parentId ?? '', agentId: '', parentState: 'open', total: 0, landed: 0, remaining: 0,
+    complete: false, compilePending: false, replyConversationId: null, ttlAt: null,
+    rootId: '', outcome: 'fail-closed',
+  };
+}
+
+/**
+ * A piece came back. The child settles `done` against the delivery that proves it, its
+ * delivered text is recorded on the row in the SAME transaction, and the countdown moves.
+ *
+ * The empty-reply refusal is HERE rather than at the call site because it was a real
+ * incident (2026-07-23, run bmrwsrsi9gl): a worker blurted an instant empty DELIVERABLE, the
+ * join advanced on "(no delivered content found)", and the compile steer fired 18 seconds
+ * after the ASSIGNs went out. A nothing is not a deliverable; the piece stays outstanding so
+ * the real one can land, and if it never does the TTL fails the join closed.
+ */
+export function landPiece(
+  childId: string,
+  p: { deliveryId: string; content: string; messageId?: string | null; actorId?: string | null },
+): PieceSettleResult {
+  const body = (p.content ?? '').trim();
+  if (body.length === 0) {
+    return {
+      result: {
+        kind: 'rejected', workId: childId, gate: 'empty-piece',
+        detail: 'an empty terminal reply is not a deliverable; the piece stays outstanding',
+      },
+      join: joinAfter(childId),
+    };
+  }
+  const result = transition(childId, {
+    to: 'done', by: 'agent', actorId: p.actorId ?? 'a2a',
+    reason: 'the delegated piece came back',
+    resultDeliveryId: p.deliveryId,
+    note: body.slice(0, 4000),
+  });
+  return { result, join: joinAfter(childId) };
+}
+
+/**
+ * A piece settled WITHOUT a result: the peer replied FAIL, or the runtime gave up on it
+ * (synthetic ABANDONED). Both count as LANDED — the piece came back, and "it failed" is an
+ * answer the owner is entitled to — so both decrement the countdown exactly like a success.
+ */
+export function settlePieceWithoutResult(
+  childId: string,
+  p: { to: 'failed' | 'abandoned'; reason: string; content?: string | null; actorId?: string | null },
+): PieceSettleResult {
+  const result = transition(childId, {
+    to: p.to, by: 'agent', actorId: p.actorId ?? 'a2a', reason: p.reason,
+    note: p.content ? p.content.slice(0, 4000) : null,
+  });
+  return { result, join: joinAfter(childId) };
+}
+
+/** Joins whose deadline has passed and which have not settled. The reaper reads `ttl_at`
+ *  and nothing else — no string scan, no LIKE, no age arithmetic in SQL text. */
+export function dueJoins(nowMs: number, limit = 25): JoinState[] {
+  const floor = nowMs - JOIN_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+  const rows = getDb().prepare(`
+    SELECT id FROM work
+     WHERE remaining_children IS NOT NULL AND ttl_at IS NOT NULL
+       AND ttl_at <= ? AND opened_at >= ?
+       AND state NOT IN ('done','failed','abandoned')
+     ORDER BY opened_at ASC LIMIT ?
+  `).all(nowMs, floor, limit) as Array<{ id: string }>;
+  return rows.map((r) => joinState(r.id)).filter((s): s is JoinState => s !== null);
+}
+
+/** Every join of one agent that reached zero and is still waiting for the compiled answer.
+ *  Read at turn end, so the loop closes no matter what the model did with the steer. */
+export function compilePendingJoins(agentId: string, limit = 5): JoinState[] {
+  const rows = getDb().prepare(`
+    SELECT id FROM work
+     WHERE agent_id = ? AND compile_pending = 1 AND state NOT IN ('done','failed','abandoned')
+     ORDER BY opened_at ASC LIMIT ?
+  `).all(agentId, limit) as Array<{ id: string }>;
+  return rows.map((r) => joinState(r.id)).filter((s): s is JoinState => s !== null);
+}
+
+/**
+ * Fail a join CLOSED. The `expectedState` IS the exactly-once guard: two reapers, a boot
+ * re-drain and a live relay may all reach the same join, and exactly one gets `applied` —
+ * the others get `conflict`, which is a VALUE the caller reads, not a zero somebody has to
+ * remember to check. The owner notice is sent by the winner and only by the winner.
+ *
+ * `by: 'scheduler'` is the honest actor and it is deliberate: a deadline decided this, and
+ * the engine actor would have to point at an occurrence, delivery or artifact it does not
+ * have (G6). Writing `by: 'engine'` here would mean widening that gate to make a caller
+ * pass, which is the move this project bans.
+ */
+export function failJoinClosed(
+  parentWorkId: string, p: { reason: string; expectedState: WorkState },
+): TransitionResult {
+  return transition(parentWorkId, {
+    to: 'failed', by: 'scheduler', actorId: 'work-reaper',
+    reason: p.reason, expectedState: p.expectedState,
+  });
+}
+
+/** The join's answer reached the owner. `done` is unreachable without the delivery that
+ *  proves it — that gate is `transition()`'s, not this function's. */
+export function settleJoinDelivered(
+  parentWorkId: string, deliveryId: string, reason: string,
+): TransitionResult {
+  return transition(parentWorkId, {
+    to: 'done', by: 'engine', actorId: 'a2a-join', reason,
+    evidenceRef: deliveryId, resultDeliveryId: deliveryId,
+  });
+}
+
+/**
+ * Claim the right to tell the owner about a LATE answer — the first half of the re-open, and
+ * the exactly-once guard for it. `failed -> open` succeeds for exactly one caller; everyone
+ * else gets `conflict`, which is what stops the owner being told twice.
+ *
+ * It is a separate call from the settle because the DELIVERY happens between them: the guard
+ * has to be won BEFORE the send, and the send is what produces the id the settle points at.
+ */
+export function claimFailedJoinForLateAnswer(
+  parentWorkId: string, evidenceDeliveryId: string, reason: string,
+): TransitionResult {
+  return transition(parentWorkId, {
+    to: 'open', by: 'engine', actorId: 'a2a-join', reason: `late answer: ${reason}`,
+    evidenceRef: evidenceDeliveryId, expectedState: 'failed',
+  });
+}
+
+/**
+ * An answer arrived AFTER the join failed closed. It still reaches the owner, once.
+ *
+ * Two recorded moves rather than one silent overwrite: `failed -> open` (the join is live
+ * again) then `open -> done` against the delivery that carried the update. This is the whole
+ * composition, and the transport performs exactly these two calls with the send in between.
+ */
+export function reopenJoinForLateAnswer(
+  parentWorkId: string, deliveryId: string, reason: string,
+): TransitionResult {
+  const reopened = claimFailedJoinForLateAnswer(parentWorkId, deliveryId, reason);
+  if (reopened.kind !== 'applied') return reopened;
+  return settleJoinDelivered(parentWorkId, deliveryId, reason);
+}
+
+/** Every join of this agent that has not settled, newest first. The boot re-drain's input. */
+export function openJoins(limit = 50): JoinState[] {
+  const floor = now() - JOIN_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+  const rows = getDb().prepare(`
+    SELECT id FROM work
+     WHERE remaining_children IS NOT NULL AND opened_at >= ?
+       AND state NOT IN ('done','failed','abandoned')
+     ORDER BY opened_at DESC LIMIT ?
+  `).all(floor, limit) as Array<{ id: string }>;
+  return rows.map((r) => joinState(r.id)).filter((s): s is JoinState => s !== null);
+}
+
+/** The children on a thread, whatever their state. Used by the ABANDONED hook, which must be
+ *  able to see a piece it is about to settle. */
+export function childrenForThread(threadId: string): JoinChild[] {
+  return (getDb().prepare(`
+    SELECT id, parent_id, agent_id, root_id, state, assignee_agent, reply_conversation_id
+      FROM work
+     WHERE kind = 'task' AND root_kind = 'a2a_thread' AND root_id = ? AND parent_id IS NOT NULL
+     ORDER BY opened_at DESC LIMIT 5
+  `).all(threadId) as Array<{
+    id: string; parent_id: string; agent_id: string; root_id: string; state: WorkState;
+    assignee_agent: string | null; reply_conversation_id: string | null;
+  }>).map((r) => ({
+    id: r.id, parentId: r.parent_id, agentId: r.agent_id, threadId: r.root_id, state: r.state,
+    assigneeAgent: r.assignee_agent, replyConversationId: r.reply_conversation_id,
+  }));
+}
+
+/** The FAILED-CLOSED join this thread belongs to, if any — the late-answer lookup. */
+export function findFailedJoinForThread(
+  agentId: string, threadId: string,
+): { childId: string; parentId: string } | null {
+  const r = getDb().prepare(`
+    SELECT c.id AS child_id, c.parent_id AS parent_id
+      FROM work c JOIN work p ON p.id = c.parent_id
+     WHERE c.agent_id = ? AND c.kind = 'task' AND c.root_kind = 'a2a_thread' AND c.root_id = ?
+       AND p.state = 'failed'
+     ORDER BY c.opened_at DESC LIMIT 1
+  `).get(agentId, threadId) as { child_id: string; parent_id: string } | undefined;
+  return r ? { childId: r.child_id, parentId: r.parent_id } : null;
+}
+
+/**
+ * The compile answered the owner, but through a path that records no delivery yet (dashboard
+ * replies — T5 owns the doors). The join stops waiting to be compiled; it deliberately does
+ * NOT become `done`, because `done` requires a delivery to point at and inventing one to make
+ * a state reachable is the forgery this spine exists to refuse.
+ */
+export function clearJoinCompilePending(parentWorkId: string, reason: string): number {
+  const changed = getDb().prepare(
+    'UPDATE work SET compile_pending = 0, updated_at = ? WHERE id = ? AND compile_pending = 1',
+  ).run(now(), parentWorkId).changes;
+  if (changed === 1) appendEvent(parentWorkId, 'compile_resolved', 'engine', { reason });
+  return changed;
+}
+
+/**
+ * D2: the A2A thread's hop count, on the spine.
+ *
+ * `null` means "this thread has no work row", which is a different answer from `0` and the
+ * caller must be able to tell them apart — a thread nobody delegated on is not a thread that
+ * has taken zero hops on the spine.
+ */
+export function threadHopCount(threadId: string): number | null {
+  const r = getDb().prepare(
+    `SELECT hop_count FROM work WHERE root_kind = 'a2a_thread' AND root_id = ?
+      ORDER BY opened_at DESC LIMIT 1`,
+  ).get(threadId) as { hop_count: number } | undefined;
+  return r ? r.hop_count : null;
+}
+
+/** Count one delivered hop on the thread's work row. Returns the new count, or null when the
+ *  thread has no work row. */
+export function bumpThreadHopCount(threadId: string): number | null {
+  const db = getDb();
+  const changed = db.prepare(
+    `UPDATE work SET hop_count = hop_count + 1, updated_at = ?
+      WHERE root_kind = 'a2a_thread' AND root_id = ?`,
+  ).run(now(), threadId).changes;
+  if (changed === 0) return null;
+  return threadHopCount(threadId);
 }

@@ -26,7 +26,10 @@ export interface DeliveryInput {
   /** The tool or engine lane that performed the send (imessage_send,
    *  auto-route, engine-ack, ...). */
   tool: string;
-  channel: 'imessage' | 'sms' | 'email' | 'teams' | 'phone' | 'dashboard' | 'voice';
+  /** `a2a` is the peer lane: an agent-to-agent hand-back IS something the platform
+   *  delivered, and PHASE-2 T4's delegated pieces point at those rows (`work.done` requires a
+   *  delivery). It has no human conversation, which is why the resolver below skips it. */
+  channel: 'imessage' | 'sms' | 'email' | 'teams' | 'phone' | 'dashboard' | 'voice' | 'a2a';
   recipientId?: string | null;
   recipientDisplay?: string | null;
   /** Pass a provider/thread identity when the channel has one (email thread,
@@ -62,6 +65,11 @@ export function recordDelivery(input: DeliveryInput): string | null {
       conversationId = resolveOrCreateConversation(input.agentId, {
         channel: input.channel, provider: null, counterpartyId: 'owner', threadRoot: null,
       });
+    } else if (input.channel === 'a2a') {
+      // The peer lane has no `conversations` row and must not mint one: conversation identity
+      // is a HUMAN counterparty fact (party labels, recall scoping, the waiting set all read
+      // it), and inventing an a2a conversation would put coordination traffic inside it.
+      conversationId = null;
     } else if (input.recipientId) {
       conversationId = resolveOrCreateConversation(input.agentId, {
         channel: input.channel,

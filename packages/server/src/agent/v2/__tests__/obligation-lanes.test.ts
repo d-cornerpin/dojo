@@ -235,6 +235,30 @@ describe('the terminal-wake finder reads one lane and one keyspace', () => {
     expect(byRowid?.id).toBe(wake.id);
   });
 
+  // PHASE-2 T4: "unserved" is the SERVE edge now, not a fake conversation key. Both
+  // directions, because the rekey could be wrong either way: a served row must disappear from
+  // the finder, and the OLD claim (conv_key='a2a') must no longer hide an unserved one.
+  it('T4: a row SERVED by a turn is no longer a terminal wake', () => {
+    const wake = insertMessage({
+      agentId: AGENT, role: 'user', lane: 'a2a',
+      sourceAgentId: PEER, a2aThreadId: 'thr-served', a2aIntent: 'ANSWER', a2aRequiresResponse: true,
+      content: '[A2A:ANSWER thread:thr-served from:Obligation Peer] the code is 4417',
+    });
+    expect(findUnservedTerminalWake(AGENT)).not.toBeNull();
+    mockDb.current!.prepare('UPDATE messages SET served_by_turn = 12 WHERE id = ?').run(wake.id);
+    expect(findUnservedTerminalWake(AGENT)).toBeNull();
+  });
+
+  it('T4 NEGATIVE CONTROL: the retired conv_key sentinel does NOT hide an unserved wake', () => {
+    const wake = insertMessage({
+      agentId: AGENT, role: 'user', lane: 'a2a',
+      sourceAgentId: PEER, a2aThreadId: 'thr-sentinel', a2aIntent: 'COMPLETE', a2aRequiresResponse: true,
+      content: '[A2A:COMPLETE thread:thr-sentinel from:Obligation Peer] done',
+    });
+    mockDb.current!.prepare("UPDATE messages SET conv_key = 'a2a' WHERE id = ?").run(wake.id);
+    expect(findUnservedTerminalWake(AGENT)).not.toBeNull();
+  });
+
   it('an ENGINE row is never a terminal wake', () => {
     insertEngineEvent({ agentId: AGENT, content: '[SOURCE: scheduler] fired', originIntent: 'scheduler', work: null });
     expect(findUnservedTerminalWake(AGENT)).toBeNull();

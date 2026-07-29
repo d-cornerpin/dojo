@@ -146,7 +146,10 @@ import { startTurn, finalizeTurn, bumpEffectfulCalls, type TurnExitReason } from
 import { recordDelivery, type DeliveryInput } from './deliveries.js';
 // PHASE-2 T3: the ask's lifecycle. `transition()` is the only writer of `work.state`; these
 // are its named callers for the pickup / re-arm / turn-link steps of one owner ask.
-import { claimAsk, stampClaimingTurn, revertAskClaimOnAbort } from '../../work/store.js';
+import {
+  claimAsk, stampClaimingTurn, revertAskClaimOnAbort,
+  openDelegationJoin, threadHopCount, joinState, JOIN_TTL_MINUTES, type DelegationThread,
+} from '../../work/store.js';
 const SEND_TO_PEOPLE_SET: ReadonlySet<string> = new Set(SEND_TO_PEOPLE);
 import { detectUngroundedDeliveryClaim, detectDeliveryDenial } from './classifiers/grounding.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
@@ -1042,6 +1045,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // across processes (the CAS is `expectedState: 'open'` inside `transition()`), and
   // identity untouched (a claim can no longer overwrite a channel).
   const triggerWorkId: string | null = waitingConvs[0]?.workId ?? null;
+  // The conversation the trigger arrived on, read HERE at pickup and carried to the
+  // delegation exit. PHASE-2 T4 copies it onto the join rather than re-resolving the channel
+  // later from an `inbound_meta` blob, which is what the park machine had to do after it
+  // overwrote the identity column.
+  const triggerConversationId: string | null = waitingConvs[0]?.oldest?.conversation_id ?? null;
   if (chosenConvKey && triggerRow) {
     let claimed = true;
     if (triggerWorkId) {
@@ -1332,16 +1340,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // and its own thread is scoped instead). Only then is the terminal message the one
   // this turn scopes to and should claim.
   const terminalWakeDrivesTurn = isA2ATurn && terminalWakeA2A !== null && unrepliedAssign === null;
-  // Claim the driving terminal-wake message so it drives exactly ONE turn: without a
-  // stamp it stays most-recent + conv_key NULL and any later spurious wake would
-  // re-detect it and (worst case) re-relay the deliverable to the owner. conv_key='a2a'
-  // is a non-human sentinel; scopeToA2AThread keys agent rows on origin.kind+thread
-  // (not conv_key), and the human waiting-set already ignores A2A rows, so the stamp is
-  // inert to every other consumer. Mirrors the human/engine pickup-claim above.
+  // PHASE-2 T4: the terminal-wake claim is the SERVE edge, not a fake conversation.
+  //
+  // It used to stamp `conv_key='a2a'` — a sentinel that is not a conversation, on the column
+  // that carries conversation IDENTITY, purely so `findUnservedTerminalWake` (whose predicate
+  // was `conv_key IS NULL`) would stop returning the row. That is the same overloading the
+  // owner-ask queue was rekeyed off at T3, and it is the last one in the A2A lane (3l).
+  // `messages.served_by_turn` already means exactly "a turn took this", it is already stamped
+  // on this row a few lines below, and the finder now reads it.
+  // requirement preserved: the driving wake drives exactly ONE turn — without a stamp it stays
+  // most-recent and unserved, and a later spurious wake would re-detect it and (worst case)
+  // re-relay the deliverable to the owner.
   if (terminalWakeDrivesTurn && terminalWakeA2A) {
-    try {
-      setConvKeyByRowid({ rowid: terminalWakeA2A.rowid, agentId, value: 'a2a', expect: null });
-    } catch { /* best effort, exactly-once is a safety net, not a correctness gate */ }
     // P1 lineage spine: an A2A wake turn's root is its thread.
     const twThread = (terminalWakeA2A as unknown as { a2a_thread_id?: string | null }).a2a_thread_id;
     if (twThread) currentTurnRoot.set(agentId, { kind: 'a2a', id: String(twThread), sourceMessageId: null });
@@ -1606,7 +1616,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
     if (claimedEngineEvent) {
       markServedByRowid(claimedEngineEvent.rowid, turnNumber);
     }
-    if (terminalWakeA2A) {
+    // GATED on driving the turn, and that gate is load-bearing since T4. A terminal wake that
+    // exists but LOST the turn (an unreplied QUESTION/ASSIGN/BLOCK wins the counterparty, or a
+    // human is waiting) must stay UNSERVED so it gets its own turn later — that is the whole
+    // point of "the A2A re-defers to its own turn". Before T4 the wake's un-served-ness was
+    // tracked by a second column (`conv_key`), so stamping `served_by_turn` unconditionally
+    // here was inert; now it is the finder's own predicate, so an ungated stamp would
+    // SWALLOW the wake. The two stamps disagreed; they agree now.
+    if (terminalWakeA2A && terminalWakeDrivesTurn) {
       markServedByRowid(terminalWakeA2A.rowid, turnNumber);
     }
   } catch { /* best effort */ }
@@ -5813,9 +5830,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           state.loopCount < MAX_TOOL_LOOPS &&
           lastAssembledAtIso &&
           chosenConvKey &&
-          chosenConvKey !== 'engine' &&
-          !chosenConvKey.startsWith('park:') &&
-          !chosenConvKey.startsWith('relayed:')
+          chosenConvKey !== 'engine'
         ) {
           let owed = getOwedMidTurnArrivals(agentId, chosenConvKey, turnStartedAt, lastAssembledAtIso);
           if (owed.length > 0) {
@@ -5895,8 +5910,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
           state.loopCount < MAX_TOOL_LOOPS &&
           chosenConvKey &&
           chosenConvKey !== 'engine' &&
-          !chosenConvKey.startsWith('park:') &&
-          !chosenConvKey.startsWith('relayed:') &&
           isForwardPromiseReply(persistedContent)
         ) {
           const didEffectfulWorkThisTurn = state.toolResults.some(
@@ -5977,8 +5990,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
           (!persistedContent || persistedContent.trim().length === 0) &&
           chosenConvKey &&
           chosenConvKey !== 'engine' &&
-          !chosenConvKey.startsWith('park:') &&
-          !chosenConvKey.startsWith('relayed:') &&
           !Object.values(state.explicitSendThisTurn).some(Boolean) &&
           state.toolResults.some((tr) => !tr.isError && tr.name === 'send_to_agent')
         ) {
@@ -6067,9 +6078,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // loudly as the evidence for any harder future stage.
         if (
           persistedContent && persistedContent.trim().length >= 160 &&
-          chosenConvKey !== 'engine' &&
-          !(chosenConvKey ?? '').startsWith('park:') &&
-          !(chosenConvKey ?? '').startsWith('relayed:')
+          chosenConvKey !== 'engine'
         ) {
           const reAnswer = findCrossConvReAnswer(db, agentId, persistedContent, chosenConvKey ?? null);
           if (reAnswer) {
@@ -7902,82 +7911,76 @@ export async function runV2Turn(agentId: string): Promise<void> {
         return intent === 'QUESTION' || intent === 'ASSIGN' || intent === 'BLOCK';
       });
       if (counterparty.kind !== 'agent' && issuedWakeAsk) {
-        // PARK the owner's question on the thread we just asked. At pickup this
-        // turn's trigger was stamped "served" (anti-thrash); overwrite that with
-        // a park marker so the question (a) does NOT re-trigger, no re-asking, 
-        // and (b) is NOT falsely treated as answered. When the other agent's reply
-        // comes back on this thread, the ENGINE closes the loop directly: it delivers
-        // the answer to the owner on their own channel and marks the parked row
-        // `relayed:<thread>` (see a2a-transport.ts). It does NOT un-park to NULL / re-fire
-        // the model, that proved flaky (the weak model re-reads "ask X" and re-asks,
-        // an ask→park→answer→re-ask loop). Deterministic delivery, regardless of the model.
-        if (triggerRow && chosenConvKey) {
-          let parkKey: string | null = null;
-          const parkThreads: string[] = [];
-          // T-2 (comms-audit): derive the asked thread(s) STRUCTURALLY from the A2A rows
-          // the sends just created (source_agent_id = this agent, this turn), not by
-          // regex-scraping the tool-result prose. If the result wording ever changed, the
-          // regex would miss and the owner's question would be SILENTLY DROPPED (it keeps
-          // its served conv_key and never re-fires). Regex kept as a single-thread fallback.
-          //
-          // Fan-out delegation (2026-07-17): ONE owner ask can hand off to N>1 threads in a
-          // single response's tool batch, so we collect EVERY reply-warranting thread of the
-          // turn (dropping the old LIMIT 1) and park the owner's question on the WHOLE set.
-          // buildOwnerParkKey encodes one thread as today's single park:<thread>
-          // (deterministic engine relay preserved) and two+ as a multi park:~<full>#<remaining>
-          // that a2a-transport close-the-loop holds until the LAST piece lands, then steers the
-          // model to compile the combined reply, never relaying a partial. Ordering is ASC
-          // (oldest first) so the encoded set reads in hand-off order.
+        // DELEGATE the owner's question onto the thread(s) we just asked (PHASE-2 T4).
+        //
+        // What this replaces: the owner's message row used to have its `conv_key` overwritten
+        // with `park:<thread>` (or `park:~<t1>|<t2>#<remaining>` for a fan-out) so the question
+        // (a) did NOT re-trigger and (b) was NOT falsely treated as answered. That column also
+        // carries the conversation's IDENTITY, so parking destroyed the record of where the
+        // question came from — research 07 §3's "worst coupling", and the reason the relay had
+        // to recover the channel from an `inbound_meta` JSON blob.
+        //
+        // Both jobs now belong to rows that were built for them: the ask's TICKET is already
+        // `claimed` (T3), which is what stops the re-trigger and what says it is not answered;
+        // and the join is N CHILD rows under it with an atomic countdown. The message row is
+        // not touched at all — requirement 3g/3l, state and identity are separate fields.
+        //
+        // When a reply comes back the ENGINE closes the loop directly (a2a-transport): it
+        // relays a single piece to the owner on their own channel, or holds a fan-out until the
+        // LAST piece lands and then steers the model to compile. It does NOT re-fire the
+        // model's own question — that proved flaky (the weak model re-reads "ask X" and
+        // re-asks: an ask→delegate→answer→re-ask loop).
+        if (triggerRow && triggerWorkId) {
           try {
+            // T-2 (comms-audit): derive the asked thread(s) STRUCTURALLY from the A2A rows the
+            // sends just created (source_agent_id = this agent, this turn), never by
+            // regex-scraping the tool-result prose — if the wording ever changed, the regex
+            // would miss and the owner's question would be SILENTLY DROPPED.
             // C9: constrain to reply-warranting intents. The weak model routinely batches a
-            // real QUESTION/ASSIGN/BLOCK to a worker AND a STATUS/FYI to the PM in one
-            // response; the intent filter keeps only the delegations that actually await a reply.
-            // T6: this agent's own outbound wake-ask is persisted as the RECIPIENT's inbound
-            // row. That row used to land in a second table, so this read UNIONed both and
-            // deduped with an anti-join; one table means one arm, ordered by the insertion key
-            // so hand-off order is exact rather than reconstructed from a second-granular clock.
-            // requirement preserved: the structural derivation still finds the sends this turn
-            // just made, so the park encoding never falls back to the fragile prose regex.
+            // real QUESTION/ASSIGN/BLOCK to a worker AND a STATUS/FYI to the PM in one response.
+            // Ordering is ASC (oldest first) so the children read in hand-off order.
+            // BUG-4: the FULL thread id, never an 8-char prefix — two threads sharing a prefix
+            // collided in the relay, and `makeThreadId`'s own comment records that an 8-char
+            // prefix of a `thread-<hash>-<seed>` id is ~36 buckets. The short-token minter that
+            // forced the old length-sniffing SQL is GONE with this block (3j).
             const sentRows = db.prepare(
-              `SELECT a2a_thread_id FROM messages
+              `SELECT a2a_thread_id, agent_id, a2a_intent FROM messages
                  WHERE source_agent_id = @agentId AND a2a_thread_id IS NOT NULL
                    AND a2a_intent IN ('QUESTION','ASSIGN','BLOCK') AND created_at >= (unixepoch(@turnStartedAt) * 1000)
                ORDER BY created_at ASC, rowid ASC`,
-            ).all({ agentId, turnStartedAt }) as Array<{ a2a_thread_id: string }>;
-            // BUG-4 (comms-audit): park under FULL thread ids (never an 8-char prefix). Two
-            // threads sharing an 8-hex prefix would otherwise collide in the relay. Full ids
-            // make both the single and the multi encoding collision-free (the relay reads the
-            // full key; the 8-char key is only the rare regex-fallback below, single-thread).
+            ).all({ agentId, turnStartedAt }) as Array<{ a2a_thread_id: string; agent_id: string; a2a_intent: string | null }>;
+            const seen = new Set<string>();
+            const threads: DelegationThread[] = [];
             for (const r of sentRows) {
-              if (r.a2a_thread_id && !parkThreads.includes(r.a2a_thread_id)) parkThreads.push(r.a2a_thread_id);
+              if (!r.a2a_thread_id || seen.has(r.a2a_thread_id)) continue;
+              seen.add(r.a2a_thread_id);
+              threads.push({
+                threadId: r.a2a_thread_id,
+                // The ASKED agent, recorded HERE where it is known. The string machine had to
+                // reconstruct it later by scanning messages around the park's timestamp.
+                assigneeAgent: r.agent_id,
+                intent: r.a2a_intent ?? 'ASSIGN',
+                hopCount: threadHopCount(r.a2a_thread_id) ?? 0,
+              });
             }
-            if (parkThreads.length > 0) {
-              // Canonical encoder lives in a2a-transport (the reader), imported here so the
-              // park key format has a single source of truth. Dynamic import keeps this within
-              // the park block (module is already loaded; the call returns the cached export).
-              const { buildOwnerParkKey } = await import('../a2a-transport.js');
-              parkKey = buildOwnerParkKey(parkThreads);
-            }
-          } catch { /* best effort, fall back to the prose regex */ }
-          if (!parkKey) {
-            // Regex fallback: single thread only (the tool-result prose carries one 8-char
-            // thread token). Fan-out never reaches here (the structural read above finds the
-            // sends); this only covers the rare prose-only case.
-            for (let i = state.toolResults.length - 1; i >= 0; i--) {
-              const tr = state.toolResults[i];
-              if (tr.name === 'send_to_agent' && typeof tr.content === 'string') {
-                const m = tr.content.match(/on thread ([a-z0-9]{6,})/i);
-                if (m) { parkKey = `park:${m[1].slice(0, 8)}`; break; }
-              }
-            }
-          }
-          if (parkKey) {
-            try {
-              setConvKeyByRowid({ rowid: triggerRow.rowid, agentId, value: parkKey });
-              logger.info('v2: parked owner question awaiting agent reply', {
-                agentId, park: parkKey, threads: parkThreads.length, ownerRowid: triggerRow.rowid,
+            if (threads.length > 0) {
+              const opened = openDelegationJoin({
+                parentWorkId: triggerWorkId,
+                agentId,
+                // COPIED at delegation time, never resolved later: the reply comes back on the
+                // conversation the question arrived on, and that fact is written down now.
+                replyConversationId: triggerConversationId,
+                ttlAt: Date.now() + JOIN_TTL_MINUTES * 60_000,
+                threads,
+              });
+              logger.info('v2: delegated the owner question, join opened', {
+                agentId, work: triggerWorkId, children: opened.length, ownerRowid: triggerRow.rowid,
               }, agentId);
-            } catch { /* best effort */ }
+            }
+          } catch (err) {
+            logger.warn('v2: delegation join could not be opened', {
+              agentId, error: err instanceof Error ? err.message : String(err),
+            }, agentId);
           }
         }
         // Owner law (2026-07-09) applies at the ASYNC-EXIT path too (2026-07-23,
@@ -9140,12 +9143,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // F9: claim same-conversation sibling user rows that were inside this
       // turn's final assembled context (they got answered by this reply); a
       // burst's second message no longer earns a duplicate answer. Human
-      // conversations only, never engine/park sentinels.
+      // conversations only, never the engine sentinel. (PHASE-2 T4: the park/relayed sentinel
+      // tests that stood beside it are gone with the namespace — a chosen conv key could only
+      // ever be a real conversation or 'engine', and nothing writes a join into this column.)
       if (
         lastAssembledAtIso &&
-        chosenConvKey !== 'engine' &&
-        !chosenConvKey.startsWith('park:') &&
-        !chosenConvKey.startsWith('relayed:')
+        chosenConvKey !== 'engine'
       ) {
         try {
           // Abort-safety: only claim siblings when this turn actually persisted
@@ -9174,9 +9177,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // answered: asks got stamped, the completion ack stood down (the
       // silent-completion defect), and ticket stamps inflated.
       const answerRow = terminalAnswerRowId ? { id: terminalAnswerRowId } : undefined;
-      const parkedRow = !answerRow ? db.prepare(
-        `SELECT 1 FROM messages WHERE agent_id = ? AND conv_key LIKE 'park:%' AND created_at >= (unixepoch(?) * 1000) LIMIT 1`,
-      ).get(agentId, turnBoundary.get(agentId) ?? new Date().toISOString()) : undefined;
+      // PHASE-2 T4: "did this turn park?" was a LIKE over a conv_key namespace, which is why
+      // it had to be time-bounded and could match another turn's park. The same fact is now a
+      // row: the trigger's own ticket has a join under it. `exitReason` semantics unchanged.
+      const parkedRow = !answerRow && triggerWorkId && joinState(triggerWorkId) !== null
+        ? { parked: 1 } : undefined;
       // T6: "did this turn hand off to a peer instead of answering?" was a probe of the
       // second physical table — being IN that table WAS the handoff signal. The equivalent
       // fact on one table is the a2a lane, and it must exclude this agent's inbound peer

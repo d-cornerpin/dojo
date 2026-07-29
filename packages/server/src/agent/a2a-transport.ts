@@ -3,7 +3,8 @@
 //
 // Central delivery function for all inter-agent messages. Enforces:
 //   - Terminal-thread gating (closed threads reject non-reopening intents)
-//   - Hop counting (max 8 delivered messages per thread)
+//   - Hop counting (THREAD_HOP_CAP delivered messages per thread; the count lives on
+//     `work.hop_count` for delegated threads — DECIDED D2)
 //   - Semantic deduplication (cosine similarity > 0.85 against last 3)
 //   - requires_response routing (false = no receiver generation)
 //
@@ -16,9 +17,20 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
-import { insertMessageIfAbsent, insertEngineEventIfAbsent, setConvKeyByRowid } from '../memory/message-store.js';
+import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
+import { recordDelivery, type DeliveryInput } from './v2/deliveries.js';
+// PHASE-2 T4: the join lives in `work`. Everything below is transport — it lands pieces and
+// relays answers; it computes no join state and it writes no state of its own.
+import {
+  JOIN_TTL_MINUTES, THREAD_HOP_CAP, isTerminal,
+  findJoinChildByThread, findFailedJoinForThread, childrenForThread,
+  landPiece, settlePieceWithoutResult, joinState, joinPieces, dueJoins, openJoins,
+  compilePendingJoins, failJoinClosed, settleJoinDelivered, clearJoinCompilePending,
+  claimFailedJoinForLateAnswer, threadHopCount, bumpThreadHopCount,
+  type JoinState,
+} from '../work/store.js';
 // A2A protocol constants and helpers, inlined here to avoid runtime
 // imports from @dojo/shared (which points at .ts source and can't be
 // loaded by Node.js in production without a TS loader).
@@ -47,7 +59,6 @@ const REOPENING_INTENTS = new Set<A2AIntent>(['QUESTION', 'BLOCK', 'ASSIGN']);
 // certain the receiver has nothing to do.
 const NO_WAKE_INTENTS = new Set<A2AIntent>(['FYI', 'STATUS']);
 
-const MAX_HOPS_PER_THREAD = 8;
 const DEDUP_SIMILARITY_THRESHOLD = 0.85;
 const DEDUP_LOOKBACK = 3;
 
@@ -76,25 +87,40 @@ function isThreadTerminal(threadId: string): boolean {
   return row?.is_terminal === 1;
 }
 
+/**
+ * The thread's hop count — DECIDED D2's rekey.
+ *
+ * A thread the agent DELEGATED on has a `work` row, and the spine is where its count lives:
+ * `work.hop_count`, on the child, seeded from this same reader at delegation time so the
+ * count is continuous across the move. A thread nobody delegated on has no work row, and its
+ * count stays on `a2a_threads` until that table dies (PHASE-2 T10 owns the drop; T7 is what
+ * gives the remaining threads rows). The two are never both authoritative for one thread, and
+ * the CAP is declared exactly once, on the spine, as `THREAD_HOP_CAP`.
+ */
 function getThreadHopCount(threadId: string): number {
-  const db = getDb();
-  const row = db.prepare('SELECT hop_count FROM a2a_threads WHERE thread_id = ?').get(threadId) as { hop_count: number } | undefined;
+  const onSpine = threadHopCount(threadId);
+  if (onSpine !== null) return onSpine;
+  const row = getDb().prepare('SELECT hop_count FROM a2a_threads WHERE thread_id = ?').get(threadId) as { hop_count: number } | undefined;
   return row?.hop_count ?? 0;
 }
 
-function recordDelivery(threadId: string, intent: A2AIntent, senderId: string): number {
+function recordThreadDelivery(threadId: string, intent: A2AIntent, senderId: string): number {
   const db = getDb();
   const terminal = isTerminalIntent(intent) ? 1 : 0;
+  // Thread STATE (terminal flag, last sender/intent) is the awaiting-reply latch's input and
+  // is untouched by D2 — only the COUNT moves.
   db.prepare(`
     UPDATE a2a_threads
-    SET hop_count = hop_count + 1,
-        last_intent = ?,
+    SET last_intent = ?,
         last_sender = ?,
         is_terminal = CASE WHEN ? = 1 THEN 1 ELSE is_terminal END,
         updated_at = datetime('now')
     WHERE thread_id = ?
   `).run(intent, senderId, terminal, threadId);
 
+  const onSpine = bumpThreadHopCount(threadId);
+  if (onSpine !== null) return onSpine;
+  db.prepare('UPDATE a2a_threads SET hop_count = hop_count + 1 WHERE thread_id = ?').run(threadId);
   return getThreadHopCount(threadId);
 }
 
@@ -520,7 +546,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
 
   // ── 5. Hop counter ──
   const currentHops = getThreadHopCount(threadId);
-  if (currentHops >= MAX_HOPS_PER_THREAD) {
+  if (currentHops >= THREAD_HOP_CAP) {
     logDrop(envelope, 'HOP_LIMIT_EXCEEDED');
     return { delivered: false, reason: 'HOP_LIMIT_EXCEEDED', threadId };
   }
@@ -609,7 +635,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   }
 
   // ── 7. Record delivery in thread state ──
-  recordDelivery(threadId, effectiveIntent, envelope.fromAgent);
+  recordThreadDelivery(threadId, effectiveIntent, envelope.fromAgent);
 
   // ── 8. Resolve sender name ──
   const senderRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(envelope.fromAgent) as { name: string } | undefined;
@@ -701,6 +727,14 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   // auto-promoted. Does NOT fire for PM/Healer/system messages, those are
   // operational, not user-facing artefacts.
   let primaryDeliverableHint = '';
+  // C21: if this ANSWER/DELIVERABLE answers a DELEGATED question, the join below already
+  // delivers "Heard back from X" on the owner's channel (single piece) or steers the model
+  // to compile (fan-out). Appending the deliverable hint too would make the woken primary
+  // ALSO send the gist (explicit tool calls aren't suppressed on a background turn) → the
+  // owner gets it twice, seconds apart, or gets a PARTIAL piece surfaced as the answer.
+  // ONE lookup now covers both cases: the engine owns delivery on any joined thread. It is
+  // read HERE, before the piece lands, because landing it settles the child.
+  const joinHandlesDelivery = !!findJoinChildByThread(target.id, threadId);
   try {
     const { isPrimaryAgent, isPMAgent, isHealerAgent, getOwnerName } = await import('../config/platform.js');
     const targetIsPrimary = isPrimaryAgent(target.id);
@@ -708,20 +742,7 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
     const isDeliverableShape =
       autoPromotedFromFyi ||
       (effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'ANSWER');
-    // C21: if this ANSWER/DELIVERABLE matches a PARKED owner question, the close-the-loop
-    // relay below already delivers "Heard back from X" on the owner's channel. Appending
-    // the deliverable hint too would make the woken primary ALSO send the gist (explicit
-    // tool calls aren't suppressed on a background turn) → the owner gets it twice, seconds
-    // apart. Suppress the hint when a park row exists; the engine owns delivery on that thread.
-    const parkHandlesDelivery = !!db.prepare(
-      `SELECT 1 FROM messages WHERE agent_id = ? AND role = 'user' AND conv_key IN (?, ?) LIMIT 1`,
-    ).get(target.id, `park:${threadId}`, `park:${threadShort}`)
-      // Fan-out (multi) park (2026-07-17): suppress the "iMessage the gist" hint while
-      // the join is still open too, so the model is never nudged to surface a PARTIAL
-      // piece to the owner. When the LAST piece lands, close-the-loop posts its own
-      // compile steer (below) in place of this hint.
-      || !!findOpenMultiParkForThread(target.id, threadId, threadShort);
-    if (targetIsPrimary && !senderIsOps && isDeliverableShape && !parkHandlesDelivery) {
+    if (targetIsPrimary && !senderIsOps && isDeliverableShape && !joinHandlesDelivery) {
       const ownerName = getOwnerName();
       // v2.9.21, Engine hint, not Engine order. The previous wording
       // ("[Engine: Send ... unless they're already actively in this
@@ -760,161 +781,34 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
     contextMessage += await renderOwnTaskEvidenceForQuestion(target.id, envelope.payload);
   }
 
-  // ── Close-the-loop: ENGINE delivers the answer to the owner ──
-  // When the recipient earlier asked someone on the owner's behalf, the owner's
-  // question was PARKED on this thread (conv_key='park:<thread>', see loop.ts).
-  // This delivery is the reply. We do NOT re-fire the owner's question for the
-  // model to handle, that proved flaky (the weak model re-reads "ask X" and
-  // re-asks instead of answering, an ask→park→answer→re-ask LOOP). Instead the
-  // ENGINE delivers the answer straight to the owner on their own channel and
-  // marks the question relayed (served, never re-fires). Deterministic, the
-  // owner ALWAYS gets the answer, regardless of what the model does next.
-  // D13: close the loop on ANY inbound reply to a PARKED thread, not only the
-  // reply-intent whitelist. The weak model routinely mislabels a real answer as
-  // STATUS/FYI; gating on the intent label left those parks open forever, so the
-  // owner's delegated question went permanently silent. If a park exists on this
-  // thread, this delivery IS the answer regardless of the intent label. (A rare
-  // interim STATUS on a parked thread now closes it early; that is strictly
-  // better than never closing, and the payload is still relayed to the owner.)
+  // ── Close-the-loop: the ENGINE delivers the delegated answer to the owner ──
+  // When the recipient earlier asked someone on the owner's behalf, the owner's question was
+  // DELEGATED on this thread and a child `work` row was opened for it (loop.ts). This delivery
+  // is the reply. We do NOT re-fire the owner's question for the model to handle: that proved
+  // flaky (the weak model re-reads "ask X" and re-asks — an ask→delegate→answer→re-ask LOOP).
+  // The join lands the piece and, when the countdown reaches zero, either relays the answer
+  // itself (one piece) or steers the model to compile (fan-out). Deterministic: the owner
+  // always gets something, regardless of what the model does next.
+  //
+  // D13: the join takes ANY inbound reply on a delegated thread, not only the reply-intent
+  // whitelist. The weak model routinely mislabels a real answer as STATUS/FYI, and gating on
+  // the intent label left delegated questions open forever. (A rare interim STATUS on a
+  // delegated thread now closes it early; that is strictly better than never closing, and the
+  // payload is still relayed to the owner.)
   const isReplyIntent =
     effectiveIntent === 'ANSWER' || effectiveIntent === 'DELIVERABLE' || effectiveIntent === 'COMPLETE' || effectiveIntent === 'FAIL';
-
-  // ── Fan-out (multi-thread) park: join across ALL delegated threads (2026-07-17) ──
-  // When one owner ask fanned out to N>1 A2A threads in a turn, the owner's question is
-  // parked on the WHOLE set (park:~<full>#<remaining>, see buildOwnerParkKey). A single
-  // returning piece is NOT the answer, so we must NOT engine-relay it (relaying the
-  // first piece as THE answer, then dropping the rest, IS the fan-out bug). Only a
-  // TERMINAL reply advances the join: remove this thread from the remaining set. While
-  // others remain we HOLD (no relay, the question stays unanswered). When the LAST piece
-  // lands we consume the park and steer the model on the IMPERATIVE engine-steer channel
-  // (owner option B, 2026-07-18: the persisted directive idiom the loop's F2.2 auto-
-  // scaffold / thrash steers use, so the steer lands as the compile wake's PRIMARY input
-  // rather than an ambient awareness gist) to VERIFY each piece's real content and reply
-  // to the owner with the COMBINED result, never an engine digest (the final piece is
-  // partial by construction). The deliverable's own wake (unchanged, it is a wake intent)
-  // carries the steer to the model. Single parks stay UNTOUCHED.
-  let handledByMultiPark = false;
-  if (isReplyIntent) {
-    const multiPark = findOpenMultiParkForThread(target.id, threadId, threadShort);
-    if (multiPark) {
-      handledByMultiPark = true;
-      try {
-        // Join hygiene (2026-07-23, run bmrwsrsi9gl): an EMPTY terminal reply is
-        // not a deliverable. Advancing the join on one shipped "(no delivered
-        // content found)" into the compile steer 18 seconds after the ASSIGNs
-        // went out (a worker blurted an instant empty DELIVERABLE). The piece
-        // stays outstanding: the real deliverable advances it later, or the
-        // park TTL sweep fails it closed.
-        const piecePayload = (envelope.payload ?? '').trim();
-        if (piecePayload.length === 0) {
-          logger.warn('fan-out park: empty terminal reply on a joined thread; NOT advancing the join (a nothing is not a deliverable)', {
-            agentId: target.id, thread: threadShort, intent: effectiveIntent, from: envelope.fromAgent,
-          });
-          throw new MultiParkEmptyReply();
-        }
-        const step = advanceMultiParkOnReply(target.id, multiPark.rowid, threadId, threadShort);
-        // Piece receipt at land time (2026-07-23): the completed-join harvest
-        // used to re-derive piece content from the store and could come up
-        // empty (attribution/thread-id/ingest variance). The transport holds
-        // the piece RIGHT HERE, so it records its own receipt row, keyed by
-        // the park's FULL thread id (the inbound may have carried the short
-        // form). The non-null conv_key keeps it out of the pending-event pool
-        // (same idiom as 'engine-steer'); the store query below stays as the
-        // fallback for pieces landed before this shipped.
-        if (step.outcome === 'held' || step.outcome === 'completed') {
-          try {
-            insertEngineEventIfAbsent({
-              work: null,
-              id: uuidv4(),
-              agentId: target.id,
-              content: piecePayload.slice(0, 4000),
-              sourceAgentId: envelope.fromAgent ?? null,
-              originIntent: 'fanout_join_piece',
-              convKey: `join-piece:${step.matchedThread}`,
-            });
-          } catch { /* receipt is best effort */ }
-        }
-        if (step.outcome === 'held') {
-          logger.info('fan-out park: piece landed, holding for the rest', {
-            agentId: target.id, thread: threadShort, landed: step.landed, total: step.total,
-          });
-        } else if (step.outcome === 'completed') {
-          // Gather each piece's DELIVERED CONTENT to embed in the steer. The
-          // separate-lane architecture keeps A2A deliverables out of the
-          // recipient's chat context, and history_search reads the chat store,
-          // so a steer that says "read the messages above" points at content
-          // the model cannot reach (2026-07-18 run bmrpxzuhxvh: four empty
-          // history_search calls, then the compile never happened). The engine
-          // holds the join state, so the engine hands over the pieces verbatim:
-          // the compile turn is self-contained and the quotes ARE the receipts.
-          const PIECE_CAP = 1200;
-          const pieces: string[] = [];
-          for (const t of step.full) {
-            // Receipts first (recorded at each land, full-thread key); the raw
-            // store row only as the legacy fallback.
-            const piece = (db.prepare(`
-              SELECT content, source_agent_id FROM messages
-               WHERE agent_id = ? AND conv_key = ? AND origin_intent = 'fanout_join_piece'
-               ORDER BY rowid DESC LIMIT 1
-            `).get(target.id, `join-piece:${t}`) ?? db.prepare(`
-              SELECT content, source_agent_id FROM messages
-               WHERE agent_id = ? AND a2a_thread_id = ? AND source_agent_id IS NOT NULL
-               ORDER BY rowid DESC LIMIT 1
-            `).get(target.id, t)) as { content: string; source_agent_id: string | null } | undefined;
-            const senderName = piece?.source_agent_id
-              ? ((db.prepare('SELECT name FROM agents WHERE id = ?').get(piece.source_agent_id) as { name: string } | undefined)?.name ?? 'a delegated agent')
-              : 'a delegated agent';
-            const body = (piece?.content ?? '(no delivered content found for this thread)').replace(/\s+/g, ' ').trim();
-            const capped = body.length > PIECE_CAP ? body.slice(0, PIECE_CAP) + ' [truncated]' : body;
-            pieces.push(`Piece ${pieces.length + 1} (from ${senderName}, thread ${t.slice(0, 8)}): "${capped}"`);
-          }
-          // Receipts-verification wording, floor-model-proof revision (2026-07-18
-          // run bmrplgdg33l): the first wording said "verify each piece's ACTUAL
-          // content by reading the thread messages yourself", and the weak model
-          // read that as "go re-open the source files": it exec'd a blocked loop
-          // over the staged files, spun 45 tool calls, and never delivered the
-          // combined reply. The content it needs is ALREADY in its context (the
-          // deliverable messages), so the steer says exactly that and forbids
-          // tool use. The receipts principle is unchanged: quote what was
-          // DELIVERED, never trust a task row that says "complete".
-          const steer =
-            `All ${step.total} delegated pieces for the owner's request are now back. ` +
-            `The owner has NOT been answered yet. Here is each piece's delivered content, verbatim:\n\n` +
-            pieces.join('\n') +
-            `\n\nCompose ONE reply to the owner now that carries each piece's content exactly as delivered above ` +
-            `(quote the key results, e.g. any codes or figures, character for character; do not summarize them away, ` +
-            `and do not trust a tracker row that says "complete" over the delivered text itself). ` +
-            `Do NOT search, open files, run commands, or call any tools first; everything you need is quoted above. ` +
-            `If a piece reads as a failure, say so honestly in the same reply.`;
-          // Owner option B (2026-07-18): ride the IMPERATIVE engine-steer channel, not
-          // the ambient awareness NOTICE. Same shape the loop consumes (F2.2 auto-
-          // scaffold / thrash steers): an origin_kind='engine' row on the 'engine-steer'
-          // conv_key sentinel (kept out of the pending-event pool, so it never drives
-          // its OWN turn; the deliverable's own wake carries it to the model). The steer
-          // TEXT is unchanged, only the channel. INSERT OR IGNORE keeps the store idiom.
-          insertEngineEventIfAbsent({
-            work: null,
-            id: uuidv4(),
-            agentId: target.id,
-            content: steer,
-            sourceAgentId: null,
-            originIntent: 'fanout_join',
-            convKey: 'engine-steer',
-          });
-          logger.info('fan-out park: all pieces landed, steered model to compile the combined reply', {
-            agentId: target.id, thread: threadShort, total: step.total,
-          });
-        }
-        // 'noop' (duplicate piece / already consumed / question retired by other means): nothing to do.
-      } catch (err) {
-        if (!(err instanceof MultiParkEmptyReply)) {
-          logger.warn('fan-out park: advance failed', {
-            agentId: target.id, thread: threadShort, error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
+  let handledByJoin = false;
+  if (isReplyIntent || joinHandlesDelivery) {
+    try {
+      handledByJoin = await landReplyOnJoin({
+        agentId: target.id, threadId, threadShort, payload: envelope.payload ?? '',
+        fromAgent: envelope.fromAgent, intent: effectiveIntent, messageId: null, senderName,
+      });
+    } catch (err) {
+      logger.warn('A2A close-the-loop delivery failed', { error: err instanceof Error ? err.message : String(err) });
     }
   }
+  void handledByJoin;
 
   // Owner ruling (2026-07-19): a terminal SUCCESS reply from the assignee on
   // its assignment thread files the worker's Key-1 close request from the
@@ -932,60 +826,6 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
     }
   }
 
-  const parkExistsForThread = !!db.prepare(
-    `SELECT 1 FROM messages WHERE agent_id = ? AND role = 'user' AND (conv_key = ? OR conv_key = ?) LIMIT 1`,
-  ).get(target.id, `park:${threadId}`, `park:${threadShort}`);
-  if (!handledByMultiPark && (isReplyIntent || parkExistsForThread)) {
-    try {
-      // BUG-4 (comms-audit): read the FULL-id park key first (loop.ts now parks under the
-      // full thread id via the structural path, collision-free), then fall back to the
-      // 8-char key for the rare regex-fallback park (whose source prose carries only 8
-      // chars). Mark relayed under the SAME key space that matched so the idempotency guard
-      // still fires. This removes the prefix-collision wrong-answer/drop while staying
-      // compatible with any question parked under the short key.
-      const parkLookup = db.prepare(
-        `SELECT seq AS rowid, content, inbound_meta FROM messages WHERE agent_id = ? AND conv_key = ? AND role = 'user' ORDER BY rowid DESC LIMIT 1`,
-      );
-      let matchedParkKey = `park:${threadId}`;
-      let parked = parkLookup.get(target.id, matchedParkKey) as { rowid: number; content: string; inbound_meta: string | null } | undefined;
-      if (!parked) {
-        matchedParkKey = `park:${threadShort}`;
-        parked = parkLookup.get(target.id, matchedParkKey) as { rowid: number; content: string; inbound_meta: string | null } | undefined;
-      }
-      if (!parked) {
-        // AUDIT-FIX (late answers): the park may already have failed closed (TTL
-        // sweep / boot / ABANDONED sent the owner a "could not get an answer"
-        // notice and marked 'relayed:failed:'). An answer arriving AFTER that must
-        // still reach the owner, once, as an update, not be silently dropped.
-        matchedParkKey = `relayed:failed:${threadId}`;
-        parked = parkLookup.get(target.id, matchedParkKey) as { rowid: number; content: string; inbound_meta: string | null } | undefined;
-        if (!parked) {
-          matchedParkKey = `relayed:failed:${threadShort}`;
-          parked = parkLookup.get(target.id, matchedParkKey) as { rowid: number; content: string; inbound_meta: string | null } | undefined;
-        }
-        if (parked) {
-          const answer = String(envelope.payload).replace(/\s+/g, ' ').trim().slice(0, 1200);
-          await consumeParkAndDeliver(
-            { rowid: parked.rowid, agent_id: target.id, conv_key: matchedParkKey, inbound_meta: parked.inbound_meta },
-            `Update: ${senderName} answered after all. ${answer}`,
-          );
-          parked = undefined; // handled; skip the normal-park branch below
-        }
-      } else {
-        // D13: the consume + channel-aware delivery live in consumeParkAndDeliver,
-        // the SAME path the TTL sweep, the boot park re-drain, and the ABANDONED
-        // fail-closed notice use, so every park resolution reaches the owner
-        // identically (owner-visible message row / channel send, never a model turn).
-        const answer = String(envelope.payload).replace(/\s+/g, ' ').trim().slice(0, 1200);
-        await consumeParkAndDeliver(
-          { rowid: parked.rowid, agent_id: target.id, conv_key: matchedParkKey, inbound_meta: parked.inbound_meta },
-          `Heard back from ${senderName}: ${answer}`,
-        );
-      }
-    } catch (err) {
-      logger.warn('A2A close-the-loop delivery failed', { error: err instanceof Error ? err.message : String(err) });
-    }
-  }
 
   // ── 10. Process attachments BEFORE persist+broadcast ──
   // Pre-2026-04-30: attachments were processed AFTER the message was inserted
@@ -1301,374 +1141,38 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
 }
 
 // ════════════════════════════════════════
-// Fan-out (multi-thread) park encoding (2026-07-17)
+// The delegated JOIN: parent/child work rows with an atomic countdown (PHASE-2 T4)
 //
-// When ONE owner ask fans out to N>1 A2A threads in a single turn, the owner's
-// question must join on ALL of them, not just one. A single park:<thread> serves the
-// FIRST returning deliverable as THE answer and drops the rest (the fan-out bug). A
-// multi park keeps the whole set in the conv_key and holds until the LAST piece lands,
-// then wakes the model to COMPILE (never engine-relays a partial).
+// WHAT THIS REPLACES. One owner ask delegated to N agents used to be held by rewriting the
+// owner message's `conv_key` into `park:~<t1>|<t2>|<t3>#<remaining>` and shrinking the text
+// after the '#' as pieces came back: the join state was a string, the countdown was string
+// arithmetic, and the column it lived in was the same column that carries the conversation's
+// IDENTITY — so parking an ask destroyed the record of where it came from and the channel had
+// to be recovered from an `inbound_meta` JSON blob (research 07 §3, "worst coupling").
 //
-// Encoding deliberately keeps the 'park:' / 'relayed:' PREFIXES so every existing scan
-// (sweepExpiredParks / resolveParksAtBoot LIKE 'park:%', the boot crash-reconciliation
-// exclusion `conv_key NOT LIKE 'park:%'` / `NOT LIKE 'relayed:%'` in index.ts, and the
-// relayed:%-consumed guards) picks these rows up UNCHANGED, no cross-file edits needed:
+// The join now lives in `work`: the owner's ask is the PARENT (OR1's one ID space, not a
+// second record), each delegated thread is a CHILD keyed on the FULL thread id, and
+// `remaining_children` is decremented inside `transition()` — the ONE writer — in the same
+// transaction as the child's own state change. Everything below is transport: it lands
+// pieces, relays answers, and fails stuck joins closed. It computes no join state of its own.
 //
-//   OPEN:     park:~<t1>|<t2>|...|<tN>#<r1>|<r2>|...   (~ right after 'park:' marks a
-//             fan-out; the segment before '#' is the FULL immutable set, after '#' the
-//             REMAINING not-yet-landed threads; remaining shrinks as pieces land)
-//   CONSUMED: relayed:~<t1>|...|<tN>                   (all pieces landed, model steered)
-//             relayed:failed:~<...>                    (join stuck, failed closed by sweep)
-//
-// The separators ~ # | cannot appear in a UUID (fresh delegation threads) or a
-// makeThreadId ('thread-'+base36+seed) id; buildOwnerParkKey drops any thread that
-// carries one and falls back to a single park, so the encoding can never be corrupted.
-// Single parks (park:<thread>) are UNTOUCHED: the deterministic engine relay that
-// shipped for floor models (which failed to relay on their own) stays exactly as-is.
-//
-// No in-memory join state: the remaining set lives entirely in conv_key (DB), so a
-// restart mid-join resumes from the row when the next piece lands.
+// requirement preserved, one line each:
+//   * an owner question delegated to a peer is answered even if the model never speaks again
+//     -> the engine relays the single-piece answer itself, exactly as before (D13);
+//   * a fan-out never relays ONE piece as THE answer                -> the countdown holds
+//     until zero and only then steers the model to compile;
+//   * a join that never completes still reaches the owner            -> `work.ttl_at` + the
+//     reaper below, one honest notice, exactly once;
+//   * an answer arriving after that notice is never silently dropped -> the late-answer path;
+//   * a park could not be matched back from an 8-char token          -> gone: `root_id` is
+//     the full thread id and it is matched exactly (3j).
 // ════════════════════════════════════════
 
-const MULTI_PARK_MARK = '~';        // right after 'park:' / 'relayed:' -> this is a fan-out park
-const MP_FULL_REMAIN_SEP = '#';     // divides the full set from the remaining set
-const MP_THREAD_SEP = '|';          // between thread ids within a segment
-
-/** A thread id is safe to multi-encode only if it carries none of the separators. */
-export function isThreadSafeForMultiPark(threadId: string): boolean {
-  return !!threadId
-    && !threadId.includes(MULTI_PARK_MARK)
-    && !threadId.includes(MP_FULL_REMAIN_SEP)
-    && !threadId.includes(MP_THREAD_SEP);
-}
-
-/**
- * Build the owner-question park key for a delegation turn.
- *   0 threads  -> null (caller falls back to the single-thread prose regex).
- *   1 thread   -> today's single `park:<thread>` (deterministic engine relay preserved).
- *   2+ threads -> a fan-out `park:~<full>#<remaining>` (remaining starts equal to full).
- * Threads carrying an encoding separator are dropped from the multi set; if that leaves
- * fewer than two, we single-park the first surviving (or, last resort, the first) thread.
- */
-export function buildOwnerParkKey(threads: string[]): string | null {
-  const distinct: string[] = [];
-  for (const t of threads) if (t && !distinct.includes(t)) distinct.push(t);
-  if (distinct.length === 0) return null;
-  if (distinct.length === 1) return `park:${distinct[0]}`;
-  const safe = distinct.filter(isThreadSafeForMultiPark);
-  if (safe.length >= 2) {
-    const joined = safe.join(MP_THREAD_SEP);
-    return `park:${MULTI_PARK_MARK}${joined}${MP_FULL_REMAIN_SEP}${joined}`;
-  }
-  return `park:${safe[0] ?? distinct[0]}`;
-}
-
-interface ParsedMultiPark { full: string[]; remaining: string[] }
-
-/** Parse a fan-out park conv_key ('park:~<full>#<remaining>'); null if not a multi park. */
-export function parseMultiPark(convKey: string): ParsedMultiPark | null {
-  const prefix = `park:${MULTI_PARK_MARK}`;
-  if (!convKey.startsWith(prefix)) return null;
-  const body = convKey.slice(prefix.length);
-  const hashAt = body.indexOf(MP_FULL_REMAIN_SEP);
-  const fullStr = hashAt >= 0 ? body.slice(0, hashAt) : body;
-  const remStr = hashAt >= 0 ? body.slice(hashAt + 1) : '';
-  return {
-    full: fullStr.split(MP_THREAD_SEP).filter(Boolean),
-    remaining: remStr.split(MP_THREAD_SEP).filter(Boolean),
-  };
-}
-
-/** True when this conv_key is a fan-out (multi) park. */
-function isMultiParkKey(convKey: string | null | undefined): boolean {
-  return !!convKey && convKey.startsWith(`park:${MULTI_PARK_MARK}`);
-}
-
-/** Does a thread list contain this reply's thread (full id or its 8-char short form)? */
-function listHasThread(list: string[], threadId: string, threadShort: string): boolean {
-  return list.includes(threadId) || list.some((t) => t.slice(0, 8) === threadShort);
-}
-
-/** Short (8-char) thread ids for a steer / log line, from the full fan-out set. */
-function shortThreadList(full: string[]): string {
-  return full.map((t) => t.slice(0, 8)).join(', ');
-}
-
-interface OpenMultiParkMatch {
-  rowid: number;
-  conv_key: string;
-  content: string;
-  inbound_meta: string | null;
-  full: string[];
-  remaining: string[];
-}
-
-/**
- * Find the OPEN fan-out park (if any) on `agentId` whose set contains this reply's
- * thread. Bounded scan of the agent's open 'park:~%' rows (only ever a handful open at
- * once). Membership is checked against the FULL set so a duplicate reply for an
- * already-landed thread still resolves to the row (the caller decides hold vs. no-op
- * from the REMAINING set).
- */
-function findOpenMultiParkForThread(agentId: string, threadId: string, threadShort: string): OpenMultiParkMatch | null {
-  const db = getDb();
-  let rows: Array<{ rowid: number; conv_key: string; content: string; inbound_meta: string | null }> = [];
-  try {
-    rows = db.prepare(
-      `SELECT seq AS rowid, conv_key, content, inbound_meta FROM messages
-         WHERE agent_id = ? AND role = 'user' AND conv_key LIKE 'park:~%'
-         ORDER BY rowid DESC LIMIT 25`,
-    ).all(agentId) as typeof rows;
-  } catch { return null; }
-  for (const r of rows) {
-    const parsed = parseMultiPark(r.conv_key);
-    if (!parsed) continue;
-    if (listHasThread(parsed.full, threadId, threadShort)) {
-      return { rowid: r.rowid, conv_key: r.conv_key, content: r.content, inbound_meta: r.inbound_meta, full: parsed.full, remaining: parsed.remaining };
-    }
-  }
-  return null;
-}
-
-// Control-flow marker: an empty terminal reply on a joined thread exits the
-// multipark block without advancing (and without the error-path warn).
-class MultiParkEmptyReply extends Error {}
-
-type MultiParkStep =
-  | { outcome: 'held'; landed: number; total: number; matchedThread: string }
-  | { outcome: 'completed'; full: string[]; total: number; matchedThread: string }
-  | { outcome: 'noop' };
-
-/**
- * Advance a fan-out park by ONE landed piece, atomically. Removes `threadId` from the
- * remaining set via a CAS on conv_key (WHERE conv_key = the value we read), so two
- * pieces landing concurrently can neither lose an update nor double-complete: the loser
- * re-reads and retries. If others remain the park stays open (park:~<full>#<rest>); if
- * this was the LAST piece the park is consumed (park:~ -> relayed:~, out of every
- * open-park scan) and the caller steers the model. Returns 'noop' when the thread was
- * already removed (duplicate reply) or the row is no longer a multi park (retired /
- * answered / consumed by other means) - the park update no-ops gracefully.
- */
-function advanceMultiParkOnReply(agentId: string, rowid: number, threadId: string, threadShort: string): MultiParkStep {
-  const db = getDb();
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const row = db.prepare(`SELECT conv_key FROM messages WHERE agent_id = ? AND rowid = ? LIMIT 1`)
-      .get(agentId, rowid) as { conv_key: string | null } | undefined;
-    const oldKey = row?.conv_key ?? null;
-    const parsed = oldKey ? parseMultiPark(oldKey) : null;
-    if (!parsed || !oldKey) return { outcome: 'noop' };
-    const total = parsed.full.length;
-    const matchedThread = parsed.remaining.find((t) => t === threadId || t.slice(0, 8) === threadShort) ?? null;
-    const nextRemaining = parsed.remaining.filter((t) => t !== threadId && t.slice(0, 8) !== threadShort);
-    if (nextRemaining.length === parsed.remaining.length || !matchedThread) return { outcome: 'noop' }; // already landed
-    if (nextRemaining.length > 0) {
-      const newKey = `park:${MULTI_PARK_MARK}${parsed.full.join(MP_THREAD_SEP)}${MP_FULL_REMAIN_SEP}${nextRemaining.join(MP_THREAD_SEP)}`;
-      const res = setConvKeyByRowid({ rowid, agentId, value: newKey, expect: oldKey });
-      if (res === 0) continue; // concurrent land moved the key; re-read
-      return { outcome: 'held', landed: total - nextRemaining.length, total, matchedThread };
-    }
-    // Last piece: park:~ -> park:!~ COMPILE-PENDING (2026-07-23, runs
-    // bmrx65w40bu/bmrx6enavgu: consuming straight to relayed: here ASSUMED
-    // the steered compile would answer the owner; when the model ghosted the
-    // compile, the park was already spent, the TTL sweep saw nothing open,
-    // and the owner got NOTHING, permanently. The fail-closed invariant must
-    // not depend on the model. The '!' form stays inside the 'park:' open
-    // scans but no longer matches the multipark matcher (late pieces noop);
-    // resolveCompilePendingParks flips it to relayed: once the ask records an
-    // answer, or relays the recorded join pieces itself after a short grace.
-    const relayedKey = `park:!${MULTI_PARK_MARK}${parsed.full.join(MP_THREAD_SEP)}`;
-    const res = setConvKeyByRowid({ rowid, agentId, value: relayedKey, expect: oldKey });
-    if (res === 0) continue; // someone else advanced; re-read (likely 'noop' next)
-    return { outcome: 'completed', full: parsed.full, total, matchedThread };
-  }
-  return { outcome: 'noop' };
-}
-
-// ════════════════════════════════════════
-// Park lifecycle, engine-enforced fail-closed (D13)
-//
-// When an agent asks another agent something on the owner's behalf, the owner's
-// question row is stamped conv_key='park:<thread>' (loop.ts) and the close-the-loop
-// relay above consumes it when the reply arrives. If the reply NEVER arrives (the
-// asked agent dies, is terminated, or abandons the ask), nothing consumed the park
-// and the owner heard NOTHING, permanently, with everything looking healthy. These
-// helpers make every park fail CLOSED, deterministically, no model involvement:
-//
-//   - sweepExpiredParks(): periodic (index.ts, every 10 min). Any open park older
-//     than PARK_TTL_MINUTES is closed: a stranded reply is relayed if one exists,
-//     otherwise the owner gets a "could not get an answer" notice on the park's
-//     own channel. Exactly once per park (atomic park: -> relayed: transition).
-//   - resolveParksAtBoot(): startup scan of ALL open parks (bounded + age-capped,
-//     not just asks under 30 minutes). Relays stranded replies, fails closed when
-//     the asked agent is terminated or the park is past TTL, leaves fresh parks
-//     for the sweep. It only relays or marks message rows, it NEVER wakes an
-//     agent, so it cannot start a boot storm and needs no wake-budget accounting.
-//   - failParksForAbandonedAsk(): invoked when the runtime records a synthetic
-//     ABANDONED reply (asked agent gave up, runtime.ts), so the owner is told
-//     immediately instead of the enforcer being silenced in private.
-// ════════════════════════════════════════
-
-/** How long an unanswered park may stay open before the engine fails it closed. */
-const PARK_TTL_MINUTES = 60;
-/** Parks older than this are stale history and out of scope: nothing re-fires an
- *  open park, and notifying the owner about a week-old delegated question is noise
- *  (same staleness philosophy as the boot message sweep in index.ts). Also bounds
- *  the scan to the created_at index so boot/sweep stay fast. */
-const PARK_MAX_AGE_DAYS = 7;
-const PARK_SWEEP_BATCH = 25;
-const PARK_BOOT_BATCH = 50;
-
-/** One open `park:` row, an owner question parked awaiting another agent's reply. */
-interface OpenParkRow {
-  rowid: number;
-  agent_id: string;      // the asker (parker), whose messages table holds the row
-  conv_key: string;      // 'park:<full thread id>' or 'park:<short token>' (regex-fallback era)
-  content: string;       // the owner's original question (with its channel SOURCE marker)
-  inbound_meta: string | null;
-  created_at: string;
-}
-
-type ParkResolution = 'relayed-reply' | 'failed-closed' | 'left-open' | 'already-consumed';
-
-/**
- * Consume a park row (park: -> relayed:, atomic, exactly once) and deliver
- * `deliveryText` to the owner on the channel the parked question arrived on,
- * falling back to the dashboard so the owner ALWAYS sees it somewhere. Shared by
- * the live close-the-loop relay above, the TTL sweep, the boot park re-drain, and
- * the ABANDONED fail-closed notice, so every park resolution is owner-visible the
- * same way. Returns false when the park was already consumed (a concurrent relay
- * won the transition), in which case nothing is delivered.
- */
-async function consumeParkAndDeliver(
-  parked: Pick<OpenParkRow, 'rowid' | 'agent_id' | 'conv_key' | 'inbound_meta'>,
-  deliveryText: string,
-  opts?: { failedClosed?: boolean },
-): Promise<boolean> {
-  // Mark relayed FIRST (idempotent): the conv_key guard in the WHERE means exactly
-  // one caller wins the park: -> relayed: transition, so a duplicate ANSWER on the
-  // thread, a racing TTL sweep, or a boot re-drain can never double-deliver.
-  // C24 (documented, not fixed, low probability): marking BEFORE delivery trades a
-  // double-deliver risk (worse) for a lost-answer-on-crash risk (rarer). If the
-  // process dies in the window between this UPDATE and the send below, the park is
-  // consumed but the owner never got the answer. A durable fix would add a
-  // `delivered_at` column and mark-after-deliver with an idempotent send; deferred as
-  // the crash window is a few milliseconds and single-process.
-  //
-  // AUDIT-FIX (late answers): a fail-closed consume transitions to 'relayed:failed:'
-  // (still matches every 'relayed:%' guard, so sweeps/reconciliation treat it as
-  // consumed) instead of plain 'relayed:'. When a LATE answer arrives on the thread,
-  // the live relay finds that marker and delivers the real answer as an update via
-  // this same function ('relayed:failed:' -> 'relayed:', same CAS exactly-once),
-  // so an answer landing after the failure notice is never silently dropped.
-  const relayedKey = opts?.failedClosed
-    ? parked.conv_key.replace(/^park:/, 'relayed:failed:')
-    : parked.conv_key.startsWith('relayed:failed:')
-      ? parked.conv_key.replace(/^relayed:failed:/, 'relayed:')
-      : parked.conv_key.replace(/^park:/, 'relayed:');
-  const consumed = setConvKeyByRowid({
-    rowid: parked.rowid, agentId: parked.agent_id, value: relayedKey, expect: parked.conv_key,
-  });
-  if (consumed === 0) return false;
-
-  // Resolve the owner's reply channel from the parked question's STRUCTURED
-  // inbound_meta (not by regex-scraping the SOURCE marker, that text varies
-  // and the dev harness omits the address). Reply-to is meta.sender, the
-  // same value loop.ts uses as imRecipient (counterparty.senderId).
-  let meta: { channel?: string; sender?: string; chatId?: string; chatType?: string; emailMessageId?: string; emailService?: string; emailAccount?: string; smsFromNumber?: string; smsToNumber?: string } = {};
-  try { meta = parked.inbound_meta ? JSON.parse(parked.inbound_meta) : {}; } catch { meta = {}; }
-  // Channel-aware delivery (comms-audit O-1): the owner's parked question may
-  // have arrived on ANY channel, deliver back on THAT channel, mirroring
-  // loop.ts's direct reply router (iMessage / Teams / email / SMS), not a binary
-  // iMessage-or-dashboard split. Anything unhandled or failed falls back to the
-  // dashboard so the owner ALWAYS gets it somewhere. (phone: the call is over by
-  // relay time, so it uses the dashboard fallback.)
-  let delivered = false;
-  try {
-    if (meta.channel === 'imessage' && meta.sender) {
-      const { sendResponseViaIMessage } = await import('../services/imessage-bridge.js');
-      delivered = !!sendResponseViaIMessage(deliveryText, parked.agent_id, meta.sender);
-    } else if (
-      meta.channel === 'teams' && meta.chatId &&
-      // C18: never relay into a GROUP chat (the owner's private "Heard back from X"
-      // would go to the whole group), and re-validate the sender at relay time (they
-      // may have been removed from the safe list mid-conversation). Either condition
-      // fails → fall through to the guaranteed dashboard fallback below.
-      meta.chatType !== 'group' && isSenderAuthorized('teams', meta.sender ?? '', 'agent')
-    ) {
-      const { executeTool } = await import('./tools.js');
-      const tc: ToolCall = { id: uuidv4(), name: 'teams_send_message', arguments: { chat_id: meta.chatId, message: deliveryText } };
-      const r = await executeTool(parked.agent_id, tc);
-      delivered = !r.isError;
-    } else if (
-      meta.channel === 'email' && meta.emailMessageId &&
-      // C18: re-validate the email sender at relay time; a removed sender must not
-      // get the relayed answer (falls through to the dashboard fallback).
-      isSenderAuthorized('email', meta.sender ?? '', 'agent', { emailService: meta.emailService === 'outlook' ? 'outlook' : 'gmail' })
-    ) {
-      const { executeTool } = await import('./tools.js');
-      const toolName = meta.emailService === 'gmail' ? 'gmail_reply' : 'outlook_reply';
-      const tc: ToolCall = {
-        id: uuidv4(), name: toolName,
-        // B-2 (comms-audit): reply FROM the mailbox that received the owner's
-        // original question (multi-account), not an ambiguous default.
-        arguments: { message_id: meta.emailMessageId, body: deliveryText, ...(meta.emailAccount ? { account: meta.emailAccount } : {}) },
-      };
-      const r = await executeTool(parked.agent_id, tc);
-      delivered = !r.isError;
-    } else if (meta.channel === 'sms' && (meta.smsFromNumber || meta.sender)) {
-      // BUG-3 (comms-audit): the owner can ask via SMS, and the inbound SMS path
-      // stamps channel='sms' + smsFromNumber/smsToNumber into inbound_meta. Route
-      // via the sms_send tool (like the teams/email branches above), not a raw
-      // client call: same executor, its safe-sender revalidation, and harness-
-      // capturable, text the original from-number back so the thread stays
-      // continuous on the owner's phone.
-      const { executeTool } = await import('./tools.js');
-      const to = meta.smsFromNumber ?? meta.sender!;
-      const tc: ToolCall = { id: uuidv4(), name: 'sms_send', arguments: { to, body: deliveryText } };
-      const r = await executeTool(parked.agent_id, tc);
-      delivered = !r.isError;
-    }
-  } catch (err) {
-    logger.warn('A2A close-the-loop channel delivery failed, falling back to dashboard', {
-      agentId: parked.agent_id, park: parked.conv_key, channel: meta.channel, error: err instanceof Error ? err.message : String(err),
-    });
-  }
-  if (delivered) {
-    logger.info('A2A close-the-loop: engine delivered to owner on their channel', {
-      agentId: parked.agent_id, park: parked.conv_key, channel: meta.channel,
-    });
-  } else {
-    // Dashboard (or unhandled/failed channel) owner, surface it as the agent's
-    // own chat message so it renders in their dashboard conversation. Always
-    // reaches them, so the text is never lost even on an unsupported channel.
-    const msgId = uuidv4();
-    // Owner lane deliberately: this is the relay TO THE PERSON who asked, not
-    // coordination traffic — it must render in their dashboard conversation.
-    insertMessageIfAbsent({ id: msgId, agentId: parked.agent_id, role: 'assistant', content: deliveryText });
-    broadcast({
-      type: 'chat:message', agentId: parked.agent_id,
-      message: { id: msgId, agentId: parked.agent_id, role: 'assistant' as const, content: deliveryText, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
-    });
-    logger.info('A2A close-the-loop: engine delivered to owner (dashboard fallback)', {
-      agentId: parked.agent_id, park: parked.conv_key, channel: meta.channel ?? 'none',
-    });
-  }
-  return true;
-}
-
-/** SQL condition matching message rows to a park's thread reference. */
-function parkThreadCondition(ref: string): { sql: string; params: string[] } {
-  if (ref.length <= 8) {
-    // Regex-fallback park: only a short token was captured, prefix match is the
-    // only resolution available (rare path, accepted BUG-4 residual).
-    return { sql: `substr(a2a_thread_id, 1, ${ref.length}) = ?`, params: [ref] };
-  }
-  // Structural park: FULL thread id. Exact match only, two threads can share an
-  // 8-char prefix (BUG-4). Also accept the thread's OWN 8-char short form: the
-  // wire header carries only the short id, so a reply whose sender copied the
-  // header (instead of the footer's full id) stored the short id verbatim.
-  return { sql: `a2a_thread_id IN (?, ?)`, params: [ref, ref.slice(0, 8)] };
-}
+/** How long an unanswered join may stay open before the engine fails it closed. */
+const JOIN_TTL_MS = JOIN_TTL_MINUTES * 60_000;
+/** Give the steered compile a real chance before the engine relays the pieces itself. */
+const COMPILE_GRACE_SECONDS = 60;
+const JOIN_BOOT_BATCH = 50;
 
 /** Display name for an agent id; historical rows sometimes stored a display name
  *  in source_agent_id, so a non-UUID value is usable as-is. */
@@ -1681,87 +1185,6 @@ function resolveAgentDisplayName(idOrName: string | null | undefined): string | 
   return /^[0-9a-f-]{32,}$/i.test(idOrName) ? null : idOrName;
 }
 
-/**
- * A reply that ARRIVED but never relayed (crash between delivery and relay, or a
- * thread-key mismatch): the park is still open AND an inbound A2A row from the
- * asked agent exists on the parker's own messages. Prefer a real reply intent
- * over an interim STATUS/FYI, then the newest. Bounded by created_at so the
- * lookup rides idx_messages_agent_created (messages has no thread index).
- */
-function findUnrelayedInboundReply(parked: OpenParkRow): { payload: string; senderName: string } | null {
-  // Single-thread parks only: a fan-out (multi) park must never relay ONE stranded
-  // piece as the answer (that is the fan-out bug). resolveOpenPark branches multi parks
-  // away before reaching here, but guard so a garbage ~<full>#<remaining> ref is never
-  // sliced into parkThreadCondition.
-  if (isMultiParkKey(parked.conv_key)) return null;
-  const db = getDb();
-  const ref = parked.conv_key.slice('park:'.length);
-  const cond = parkThreadCondition(ref);
-  // T6: one arm. Ordering intent is unchanged — prefer a real reply intent, then the
-  // most recent — and `_reply_pri` no longer has to be projected as an output column
-  // just because a compound SELECT cannot ORDER BY an expression.
-  const row = db.prepare(
-    `SELECT content, source_agent_id FROM messages
-      WHERE agent_id = ? AND role = 'user' AND source_agent_id IS NOT NULL
-        AND source_agent_id != ? AND created_at >= (unixepoch(?, '-15 minutes') * 1000)
-        AND ${cond.sql}
-     ORDER BY (a2a_intent IN ('ANSWER','DELIVERABLE','COMPLETE','FAIL')) DESC, rowid DESC
-     LIMIT 1`,
-  ).get(
-    parked.agent_id, parked.agent_id, parked.created_at, ...cond.params,
-  ) as { content: string; source_agent_id: string | null } | undefined;
-  if (!row) return null;
-  // The stored row is the full context message: [A2A:...] envelope + payload +
-  // [Thread ...] footer (+ optional engine hint). Relay just the payload.
-  const payload = row.content.replace(/^\[A2A:[^\]]*\]\s*/, '').split('\n\n[Thread ')[0];
-  const fromTag = row.content.match(/^\[A2A:[A-Z]+\s+thread:\S+\s+from:([^\]]+)\]/);
-  const senderName = resolveAgentDisplayName(row.source_agent_id) ?? fromTag?.[1]?.trim() ?? 'the other agent';
-  return { payload, senderName };
-}
-
-/**
- * Who was asked on this park's thread? Structural source: the outbound ask row
- * (deliverA2AMessage persisted it into the ASKED agent's messages with
- * source_agent_id = the asker, moments before the park was stamped). Fallback:
- * any inbound row on the parker from this thread names the sender. Both lookups
- * are created_at-bounded so they ride the created_at indexes.
- */
-function findAskedAgentForPark(parked: OpenParkRow): { name: string; status: string } | null {
-  // Single-thread parks only. A fan-out (multi) park has N asked agents, not one; its
-  // ~<full>#<remaining> body is not a single thread ref, so return null (the boot
-  // re-drain reads this to short-circuit a terminated asked agent; for a fan-out it
-  // simply falls through to the normal TTL path).
-  if (isMultiParkKey(parked.conv_key)) return null;
-  const db = getDb();
-  const ref = parked.conv_key.slice('park:'.length);
-  const cond = parkThreadCondition(ref);
-  const ask = db.prepare(
-    `SELECT agent_id FROM messages
-      WHERE created_at >= (unixepoch(?, '-2 hours') * 1000) AND created_at <= (unixepoch(?, '+15 minutes') * 1000)
-        AND source_agent_id = ? AND agent_id != ? AND ${cond.sql}
-     ORDER BY rowid DESC LIMIT 1`,
-  ).get(
-    parked.created_at, parked.created_at, parked.agent_id, parked.agent_id, ...cond.params,
-  ) as { agent_id: string } | undefined;
-  let askedId: string | null = ask?.agent_id ?? null;
-  if (!askedId) {
-    const inbound = db.prepare(
-      `SELECT source_agent_id FROM messages
-        WHERE agent_id = ? AND source_agent_id IS NOT NULL AND source_agent_id != ?
-          AND created_at >= (unixepoch(?, '-15 minutes') * 1000) AND ${cond.sql}
-       ORDER BY rowid DESC LIMIT 1`,
-    ).get(
-      parked.agent_id, parked.agent_id, parked.created_at, ...cond.params,
-    ) as { source_agent_id: string } | undefined;
-    askedId = inbound?.source_agent_id ?? null;
-  }
-  if (!askedId) return null;
-  const agentRow = db.prepare('SELECT name, status FROM agents WHERE id = ? OR name = ? ORDER BY (id = ?) DESC LIMIT 1')
-    .get(askedId, askedId, askedId) as { name: string; status: string } | undefined;
-  if (agentRow) return agentRow;
-  return /^[0-9a-f-]{32,}$/i.test(askedId) ? null : { name: askedId, status: 'unknown' };
-}
-
 /** Short quote of the owner's original question for the fail-closed notice
  *  (leading channel/SOURCE markers stripped, whitespace squashed). */
 function questionSnippet(content: string): string {
@@ -1770,163 +1193,478 @@ function questionSnippet(content: string): string {
   return stripped.length > 160 ? `${stripped.slice(0, 160).trimEnd()}...` : stripped;
 }
 
+/** The owner's original inbound row behind a join. The parent ask's `root_id` IS that message
+ *  id (recorded at creation — origin is required on the spine), so this is a lookup rather
+ *  than the timestamp-bounded scan the string machine needed. */
+function askRowForJoin(join: JoinState): { content: string; inbound_meta: string | null; created_at: number } | null {
+  const r = getDb().prepare(
+    'SELECT content, inbound_meta, created_at FROM messages WHERE id = ?',
+  ).get(join.rootId) as { content: string; inbound_meta: string | null; created_at: number } | undefined;
+  return r ?? null;
+}
+
 /**
- * Resolve one open park deterministically:
- *   1. If a reply already arrived but never relayed, relay the REAL answer,
- *      never a false failure notice.
- *   2. Otherwise, when the caller says the wait is over (past TTL, asked agent
- *      terminated, or ask ABANDONED), fail CLOSED: the owner gets an explicit
- *      "could not get an answer" notice on the park's own channel, and the park
- *      is consumed (relayed:) so it can never fire again.
- *   3. Otherwise leave it open for the TTL sweep.
+ * Deliver a join's result to the owner on the channel their question arrived on, falling
+ * back to the dashboard so they ALWAYS see it somewhere, and RECORD the delivery.
+ *
+ * Returns the delivery row id, or null when nothing could be recorded. The caller has already
+ * won the right to deliver — the exactly-once guard is the `work` transition that precedes
+ * this call, never a flag this function sets.
+ *
+ * (Channel-aware delivery is carried over verbatim from `consumeParkAndDeliver`: iMessage /
+ * Teams / email / SMS, with the C18 group-chat and re-validation guards and the B-2
+ * multi-account reply-from, because each of those is an incident with a name.)
  */
-/**
- * Resolve COMPILE-PENDING fan-out parks ('park:!~...') for one agent. The join
- * completed and the model was steered to compile; this closes the loop no
- * matter what the model did: if the owner's ask records an answer (mig 113
- * key), the park quietly becomes relayed:; otherwise, after a short grace, the
- * engine relays the RECORDED join pieces itself (the sanctioned park-relay
- * delivery, receipts recorded at land time). Called from the runtime's
- * turn-end drain (prompt) and the TTL sweep (backstop).
- */
-export async function resolveCompilePendingParks(agentId: string): Promise<void> {
-  const db = getDb();
-  const pendingPrefix = `park:!${MULTI_PARK_MARK}`;
-  let rows: OpenParkRow[] = [];
+async function deliverJoinResultToOwner(
+  join: JoinState, deliveryText: string, opts?: { tool?: string },
+): Promise<string | null> {
+  const ask = askRowForJoin(join);
+  let meta: {
+    channel?: string; sender?: string; chatId?: string; chatType?: string; emailMessageId?: string;
+    emailService?: string; emailAccount?: string; smsFromNumber?: string; smsToNumber?: string;
+  } = {};
+  try { meta = ask?.inbound_meta ? JSON.parse(ask.inbound_meta) as typeof meta : {}; } catch { meta = {}; }
+  const tool = opts?.tool ?? 'a2a-join-relay';
+  let delivered = false;
+  let channel: DeliveryInput['channel'] = 'dashboard';
+  let recipientId: string | null = null;
   try {
-    rows = db.prepare(
-      `SELECT seq AS rowid, agent_id, conv_key, content, inbound_meta,
-              datetime(created_at/1000,'unixepoch') AS created_at FROM messages
-        WHERE agent_id = ? AND role = 'user' AND conv_key LIKE 'park:!%'
-        ORDER BY rowid ASC LIMIT 5`,
-    ).all(agentId) as OpenParkRow[];
-  } catch { return; }
-  for (const parked of rows) {
+    if (meta.channel === 'imessage' && meta.sender) {
+      const { sendResponseViaIMessage } = await import('../services/imessage-bridge.js');
+      delivered = !!sendResponseViaIMessage(deliveryText, join.agentId, meta.sender);
+      channel = 'imessage'; recipientId = meta.sender;
+    } else if (
+      meta.channel === 'teams' && meta.chatId &&
+      // C18: never relay into a GROUP chat (the owner's private "Heard back from X" would go
+      // to the whole group), and re-validate the sender at relay time (they may have been
+      // removed from the safe list mid-conversation). Either condition fails → the guaranteed
+      // dashboard fallback below.
+      meta.chatType !== 'group' && isSenderAuthorized('teams', meta.sender ?? '', 'agent')
+    ) {
+      const { executeTool } = await import('./tools.js');
+      const tc: ToolCall = { id: uuidv4(), name: 'teams_send_message', arguments: { chat_id: meta.chatId, message: deliveryText } };
+      const r = await executeTool(join.agentId, tc);
+      delivered = !r.isError; channel = 'teams'; recipientId = meta.chatId;
+    } else if (
+      meta.channel === 'email' && meta.emailMessageId &&
+      // C18: re-validate the email sender at relay time; a removed sender must not get the
+      // relayed answer (falls through to the dashboard fallback).
+      isSenderAuthorized('email', meta.sender ?? '', 'agent', { emailService: meta.emailService === 'outlook' ? 'outlook' : 'gmail' })
+    ) {
+      const { executeTool } = await import('./tools.js');
+      const toolName = meta.emailService === 'gmail' ? 'gmail_reply' : 'outlook_reply';
+      const tc: ToolCall = {
+        id: uuidv4(), name: toolName,
+        // B-2 (comms-audit): reply FROM the mailbox that received the owner's original
+        // question (multi-account), not an ambiguous default.
+        arguments: { message_id: meta.emailMessageId, body: deliveryText, ...(meta.emailAccount ? { account: meta.emailAccount } : {}) },
+      };
+      const r = await executeTool(join.agentId, tc);
+      delivered = !r.isError; channel = 'email'; recipientId = meta.sender ?? null;
+    } else if (meta.channel === 'sms' && (meta.smsFromNumber || meta.sender)) {
+      // BUG-3 (comms-audit): the owner can ask via SMS; route via the sms_send tool (like the
+      // teams/email branches) so the same executor, its safe-sender revalidation and the
+      // harness capture all apply, and text the original from-number back.
+      const { executeTool } = await import('./tools.js');
+      const to = meta.smsFromNumber ?? meta.sender!;
+      const tc: ToolCall = { id: uuidv4(), name: 'sms_send', arguments: { to, body: deliveryText } };
+      const r = await executeTool(join.agentId, tc);
+      delivered = !r.isError; channel = 'sms'; recipientId = to;
+    }
+  } catch (err) {
+    logger.warn('join relay: channel delivery failed, falling back to dashboard', {
+      agentId: join.agentId, work: join.id, channel: meta.channel,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    delivered = false;
+  }
+  let messageId: string | null = null;
+  if (!delivered) {
+    // Dashboard (or unhandled/failed channel): surface it as the agent's own chat message so
+    // it renders in their conversation. Always reaches them, so the text is never lost.
+    // Owner lane deliberately: this is the relay TO THE PERSON who asked.
+    messageId = uuidv4();
+    insertMessageIfAbsent({ id: messageId, agentId: join.agentId, role: 'assistant', content: deliveryText });
+    broadcast({
+      type: 'chat:message', agentId: join.agentId,
+      message: { id: messageId, agentId: join.agentId, role: 'assistant' as const, content: deliveryText, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
+    });
+    channel = 'dashboard'; recipientId = 'owner';
+  }
+  // PHASE-2 T4: the relay is a real outbound to a real person and it now RECORDS one — this
+  // is the row `work.done` points at. PINNED §8 lists the park relay among the paths that
+  // record nothing; T5 owns the doors and must route this through the same single writer
+  // rather than adding a second row beside it.
+  const deliveryId = recordDelivery({
+    agentId: join.agentId, tool, channel,
+    recipientId, recipientDisplay: null,
+    conversationId: join.replyConversationId,
+    messageId, outcome: 'delivered',
+    detail: `join ${join.id}`,
+  });
+  logger.info('join relay: engine delivered to owner', {
+    agentId: join.agentId, work: join.id, channel, viaChannel: delivered, deliveryId,
+  });
+  return deliveryId;
+}
+
+/** The honest "I could not get you an answer" notice, composed from the join itself.
+ *
+ *  OR2-PROVISIONAL: this is an engine-composed user-facing line. It is tolerated ONLY until
+ *  PHASE-4 T4 converts it to steer + verify + system-voice, and it is named in PHASE-4 T0's
+ *  pin list. What is NOT provisional is the exactly-once property, which is machine-enforced
+ *  by the `work` transition that precedes the send, not by this text. */
+function failClosedNotice(join: JoinState, askedNameHint?: string | null): string {
+  const ask = askRowForJoin(join);
+  const snippet = ask ? questionSnippet(ask.content) : '';
+  const pieces = joinPieces(join.id);
+  const outstanding = pieces.filter((p) => !isTerminal(p.state));
+  const body = join.total > 1
+    ? `I split this across several agents but could not get all the pieces back in time to give you a complete answer.`
+    : (() => {
+      const name = resolveAgentDisplayName(outstanding[0]?.assigneeAgent ?? pieces[0]?.assigneeAgent)
+        ?? askedNameHint ?? 'another agent';
+      return `I asked ${name} about this but could not get an answer.`;
+    })();
+  return body + (snippet ? ` (Your question was: "${snippet}")` : '');
+}
+
+/**
+ * A reply that ARRIVED but never landed on its piece (a crash between the A2A persist and the
+ * countdown). Bounded by created_at so the lookup rides idx_messages_agent_created, and keyed
+ * on the FULL thread id — the length-sniffing `parkThreadCondition` is gone with the 8-char
+ * tokens that forced it.
+ */
+function findUnlandedInboundReply(
+  agentId: string, threadId: string, sinceMs: number,
+): { payload: string; senderName: string; messageId: string; senderId: string | null } | null {
+  const row = getDb().prepare(
+    `SELECT id, content, source_agent_id FROM messages
+      WHERE agent_id = ? AND role = 'user' AND source_agent_id IS NOT NULL
+        AND source_agent_id != ? AND created_at >= ?
+        AND a2a_thread_id IN (?, ?)
+      ORDER BY (a2a_intent IN ('ANSWER','DELIVERABLE','COMPLETE','FAIL')) DESC, rowid DESC
+      LIMIT 1`,
+  ).get(agentId, agentId, sinceMs - 15 * 60_000, threadId, threadId.slice(0, 8)) as
+    | { id: string; content: string; source_agent_id: string | null } | undefined;
+  if (!row) return null;
+  // The stored row is the full context message: [A2A:...] envelope + payload + [Thread ...]
+  // footer (+ optional engine hint). Relay just the payload.
+  const payload = row.content.replace(/^\[A2A:[^\]]*\]\s*/, '').split('\n\n[Thread ')[0];
+  const fromTag = row.content.match(/^\[A2A:[A-Z]+\s+thread:\S+\s+from:([^\]]+)\]/);
+  const senderName = resolveAgentDisplayName(row.source_agent_id) ?? fromTag?.[1]?.trim() ?? 'the other agent';
+  return { payload, senderName, messageId: row.id, senderId: row.source_agent_id };
+}
+
+/** Record the A2A hand-back itself as a delivery: the piece IS something the platform
+ *  delivered, and `work.done` requires a delivery to point at (3h/3i). PINNED §8 names
+ *  `send_to_agent` as one of the ten unrecorded paths T5 closes AT THE DOOR — when it does,
+ *  this call becomes that door's, not a second row beside it. */
+function recordPieceDelivery(p: {
+  fromAgent: string; toAgent: string; messageId: string | null; intent: string;
+}): string | null {
+  return recordDelivery({
+    agentId: p.fromAgent, tool: 'send_to_agent', channel: 'a2a',
+    recipientId: p.toAgent, recipientDisplay: resolveAgentDisplayName(p.toAgent),
+    messageId: p.messageId, outcome: 'delivered', detail: `A2A ${p.intent}`,
+  });
+}
+
+/**
+ * The compile steer: all pieces are back, so hand the model their delivered content VERBATIM
+ * and ask for ONE combined reply.
+ *
+ * The receipts principle and the exact wording are carried over unchanged, because both are
+ * incident-derived: the separate-lane architecture keeps A2A deliverables out of the chat
+ * store, so "read the messages above" pointed at content the model could not reach (run
+ * bmrpxzuhxvh: four empty history_search calls and no compile), and an earlier wording that
+ * said "verify each piece's ACTUAL content" made the floor model exec a blocked loop over the
+ * staged files and spin 45 tool calls (run bmrplgdg33l). The content is quoted; tools are
+ * forbidden. What CHANGED is only where the quotes come from: the children's own recorded
+ * results instead of a `join-piece:` conv_key namespace that could come up empty.
+ */
+function steerModelToCompile(join: JoinState): void {
+  const PIECE_CAP = 1200;
+  const rendered = joinPieces(join.id).map((p, i) => {
+    const name = resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent';
+    const raw = (p.content ?? '').replace(/\s+/g, ' ').trim();
+    const body = raw.length > 0
+      ? (raw.length > PIECE_CAP ? `${raw.slice(0, PIECE_CAP)} [truncated]` : raw)
+      : `(no content came back — this piece ${p.state === 'abandoned' ? 'was abandoned' : 'failed'})`;
+    return `Piece ${i + 1} (from ${name}, thread ${p.threadId.slice(0, 8)}): "${body}"`;
+  });
+  const steer =
+    `All ${join.total} delegated pieces for the owner's request are now back. ` +
+    `The owner has NOT been answered yet. Here is each piece's delivered content, verbatim:\n\n` +
+    rendered.join('\n') +
+    `\n\nCompose ONE reply to the owner now that carries each piece's content exactly as delivered above ` +
+    `(quote the key results, e.g. any codes or figures, character for character; do not summarize them away, ` +
+    `and do not trust a tracker row that says "complete" over the delivered text itself). ` +
+    `Do NOT search, open files, run commands, or call any tools first; everything you need is quoted above. ` +
+    `If a piece reads as a failure, say so honestly in the same reply.`;
+  // Owner option B (2026-07-18): ride the IMPERATIVE engine-steer channel, not the ambient
+  // awareness NOTICE — an origin_kind='engine' row on the 'engine-steer' sentinel, kept out of
+  // the pending-event pool so it never drives its OWN turn; the deliverable's own wake carries
+  // it to the model.
+  insertEngineEventIfAbsent({
+    work: null, id: uuidv4(), agentId: join.agentId, content: steer,
+    sourceAgentId: null, originIntent: 'fanout_join', convKey: 'engine-steer',
+  });
+  logger.info('join complete: steered the model to compile the combined reply', {
+    agentId: join.agentId, work: join.id, total: join.total,
+  });
+}
+
+/**
+ * A terminal A2A reply landed on a thread this agent delegated on. Advance the join.
+ *
+ * Returns true when the join owned this reply (so the caller suppresses the ordinary
+ * deliverable hint — the engine owns delivery on a joined thread; C21).
+ */
+async function landReplyOnJoin(p: {
+  agentId: string; threadId: string; threadShort: string; payload: string;
+  fromAgent: string; intent: A2AIntent; messageId: string | null; senderName: string;
+}): Promise<boolean> {
+  const child = findJoinChildByThread(p.agentId, p.threadId);
+  if (!child) return await deliverLateAnswerIfJoinFailedClosed(p);
+
+  // Join hygiene (2026-07-23, run bmrwsrsi9gl): an EMPTY terminal reply is not a deliverable.
+  // Advancing on one shipped "(no delivered content found)" into the compile steer 18 seconds
+  // after the ASSIGNs went out. The refusal is inside `landPiece` so no caller can forget it;
+  // the piece stays outstanding for the real deliverable, or the TTL fails it closed.
+  const deliveryId = recordPieceDelivery({
+    fromAgent: p.fromAgent, toAgent: p.agentId, messageId: p.messageId, intent: p.intent,
+  });
+  let settle: ReturnType<typeof landPiece>;
+  if (p.intent === 'FAIL') {
+    // A terminal FAIL is a LANDED piece: the peer came back, and "it failed" is an answer the
+    // owner is entitled to. It does not get a result delivery — there is no result.
+    settle = settlePieceWithoutResult(child.id, {
+      to: 'failed', reason: `the peer replied FAIL on thread ${p.threadShort}`,
+      content: p.payload, actorId: p.fromAgent,
+    });
+  } else if (!deliveryId) {
+    logger.warn('join: the piece delivery could not be recorded; holding the piece rather than closing it unproven', {
+      agentId: p.agentId, thread: p.threadShort,
+    });
+    return true;
+  } else {
+    settle = landPiece(child.id, {
+      deliveryId, content: p.payload, messageId: p.messageId, actorId: p.fromAgent,
+    });
+  }
+  if (settle.result.kind === 'rejected' || settle.result.kind === 'conflict') {
+    logger.info('join: piece not advanced', {
+      agentId: p.agentId, thread: p.threadShort, result: settle.result.kind,
+      detail: 'gate' in settle.result ? settle.result.gate : undefined,
+    });
+    return true;
+  }
+  const join = settle.join;
+  if (!join.complete) {
+    logger.info('join: piece landed, holding for the rest', {
+      agentId: p.agentId, thread: p.threadShort, landed: join.landed, total: join.total,
+    });
+    return true;
+  }
+  await resolveCompletedJoin(join, p.senderName);
+  return true;
+}
+
+/**
+ * The countdown reached zero. Two outcomes and no third:
+ *   * ONE piece, and it landed  -> the ENGINE relays the answer to the owner itself. This is
+ *     D13's deterministic delivery and it is why an owner question delegated to one agent is
+ *     answered even when the model ghosts: the weak model re-read "ask X" and re-asked, an
+ *     ask→park→answer→re-ask LOOP, so the engine owns this one.
+ *   * MORE than one piece         -> steer the model to COMPILE. Relaying a partial as THE
+ *     answer IS the fan-out bug; the join stays `compile_pending` until the answer is
+ *     delivered, so a ghosted compile is still caught by the drain and the reaper.
+ * Nothing landed at all -> there is nothing to relay, and the honest thing is the fail-closed
+ * notice (3e).
+ */
+async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): Promise<void> {
+  if (join.outcome === 'fail-closed') {
+    const claimed = failJoinClosed(join.id, {
+      reason: 'every delegated piece came back empty, failed or abandoned',
+      expectedState: join.parentState,
+    });
+    if (claimed.kind !== 'applied') return;
+    await deliverJoinResultToOwner(join, failClosedNotice(join, senderNameHint), { tool: 'a2a-join-failed' });
+    return;
+  }
+  if (join.total === 1) {
+    const piece = joinPieces(join.id)[0];
+    const name = resolveAgentDisplayName(piece?.assigneeAgent) ?? senderNameHint ?? 'the other agent';
+    const answer = (piece?.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 1200);
+    const deliveryId = await deliverJoinResultToOwner(join, `Heard back from ${name}: ${answer}`);
+    if (deliveryId) settleJoinDelivered(join.id, deliveryId, 'the engine relayed the delegated answer');
+    return;
+  }
+  steerModelToCompile(join);
+}
+
+/**
+ * AUDIT-FIX (late answers), rekeyed. The join may already have failed closed — the owner got
+ * "could not get an answer" and the row is terminal. An answer arriving AFTER that must still
+ * reach them, ONCE, as an update, never be silently dropped.
+ *
+ * The exactly-once guard is the `failed -> open` transition: the winner delivers, and a second
+ * late answer finds the join already `done` and gets `conflict`.
+ */
+async function deliverLateAnswerIfJoinFailedClosed(p: {
+  agentId: string; threadId: string; threadShort: string; payload: string;
+  fromAgent: string; intent: A2AIntent; messageId: string | null; senderName: string;
+}): Promise<boolean> {
+  const failed = findFailedJoinForThread(p.agentId, p.threadId);
+  if (!failed) return false;
+  const join = joinState(failed.parentId);
+  if (!join) return false;
+  const evidence = recordPieceDelivery({
+    fromAgent: p.fromAgent, toAgent: p.agentId, messageId: p.messageId, intent: p.intent,
+  });
+  if (!evidence) return false;
+  const claimed = claimFailedJoinForLateAnswer(join.id, evidence, `${p.senderName} answered after all`);
+  if (claimed.kind !== 'applied') return true;
+  const answer = String(p.payload).replace(/\s+/g, ' ').trim().slice(0, 1200);
+  const deliveryId = await deliverJoinResultToOwner(
+    join, `Update: ${p.senderName} answered after all. ${answer}`, { tool: 'a2a-join-late' },
+  );
+  if (deliveryId) settleJoinDelivered(join.id, deliveryId, 'a late answer reached the owner');
+  return true;
+}
+
+/**
+ * Resolve COMPILE-PENDING joins for one agent: the pieces are all back and the model was
+ * steered to compile. This closes the loop no matter what the model did. If the owner's ask
+ * records an answer (the mig-113 answered edge), the join is quietly settled; otherwise, after
+ * a short grace, the engine relays the RECORDED pieces itself — the sanctioned park-relay
+ * delivery, now reading the children rather than a fake namespace.
+ *
+ * Called from the runtime's turn-end drain (prompt) and the TTL reaper (backstop).
+ */
+export async function resolveCompilePendingJoins(agentId: string): Promise<void> {
+  const db = getDb();
+  for (const join of compilePendingJoins(agentId)) {
     try {
-      const ans = db.prepare('SELECT answer_message_id FROM messages WHERE rowid = ?')
-        .get(parked.rowid) as { answer_message_id: string | null } | undefined;
+      // "Did the compile actually answer the owner?" is the ask's own answered edge, the same
+      // signal the string machine read — kept because the delivery ledger does not yet cover
+      // dashboard replies (T5 owns that; until it lands, `done` would never fire here).
+      const ans = db.prepare('SELECT answer_message_id, created_at FROM messages WHERE id = ?')
+        .get(join.rootId) as { answer_message_id: string | null; created_at: number } | undefined;
       if (ans?.answer_message_id) {
-        // The compile answered the owner; the receipt says so. Quiet consume.
-        setConvKeyByRowid({
-          rowid: parked.rowid,
-          value: parked.conv_key.replace(/^park:!/, 'relayed:'),
-          expect: parked.conv_key,
-        });
+        // The compile answered the owner; the receipt says so. Quiet settle — and it is
+        // deliberately NOT `done`: `done` requires a delivery row and the dashboard reply that
+        // answered has none until T5. The compile_pending flag clears, which is what stops the
+        // engine relaying on top of a real answer.
+        clearJoinCompilePending(join.id, 'the compile answered the owner (answer_message_id)');
         continue;
       }
-      // Grace: give the compile wake a real chance before the engine relays.
-      const age = db.prepare(`SELECT (julianday('now') - julianday(?)) * 86400 AS sec`)
-        .get(parked.created_at) as { sec: number } | undefined;
-      if ((age?.sec ?? 0) < 60) continue;
-      const threads = parked.conv_key.slice(pendingPrefix.length).split(MP_THREAD_SEP).filter(Boolean);
-      const pieces: string[] = [];
-      for (const t of threads) {
-        const rec = db.prepare(`
-          SELECT content, source_agent_id FROM messages
-           WHERE agent_id = ? AND conv_key = ? AND origin_intent = 'fanout_join_piece'
-           ORDER BY rowid DESC LIMIT 1
-        `).get(agentId, `join-piece:${t}`) as { content: string; source_agent_id: string | null } | undefined;
-        if (rec) {
-          const name = rec.source_agent_id
-            ? ((db.prepare('SELECT name FROM agents WHERE id = ?').get(rec.source_agent_id) as { name?: string } | undefined)?.name ?? 'a delegated agent')
-            : 'a delegated agent';
-          pieces.push(`From ${name}: ${rec.content.replace(/\s+/g, ' ').trim().slice(0, 600)}`);
-        }
-      }
+      const ageSec = ans ? (Date.now() - ans.created_at) / 1000 : COMPILE_GRACE_SECONDS + 1;
+      if (ageSec < COMPILE_GRACE_SECONDS) continue;
+      const pieces = joinPieces(join.id).filter((x) => (x.content ?? '').trim().length > 0);
       const text = pieces.length > 0
-        ? `All the delegated pieces are back; here they are directly:\n${pieces.join('\n')}`
+        ? `All the delegated pieces are back; here they are directly:\n${
+          pieces.map((x) => `From ${resolveAgentDisplayName(x.assigneeAgent) ?? 'a delegated agent'}: ${
+            (x.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 600)}`).join('\n')}`
         : 'The delegated pieces came back, but I could not assemble a combined reply in time.';
-      await consumeParkAndDeliver(
-        { rowid: parked.rowid, agent_id: parked.agent_id, conv_key: parked.conv_key, inbound_meta: parked.inbound_meta },
-        text,
-        { failedClosed: pieces.length === 0 },
-      );
-      logger.info('compile-pending park resolved: engine relayed the recorded pieces (the steered compile never answered the owner)', {
-        agentId, park: parked.conv_key.slice(0, 44), pieces: pieces.length,
+      if (pieces.length === 0) {
+        const claimed = failJoinClosed(join.id, {
+          reason: 'the compile never answered and no piece carried content',
+          expectedState: join.parentState,
+        });
+        if (claimed.kind !== 'applied') continue;
+        await deliverJoinResultToOwner(join, text, { tool: 'a2a-join-failed' });
+      } else {
+        const deliveryId = await deliverJoinResultToOwner(join, text, { tool: 'a2a-join-relay' });
+        if (deliveryId) settleJoinDelivered(join.id, deliveryId, 'the engine relayed the recorded pieces');
+        else clearJoinCompilePending(join.id, 'relayed the recorded pieces (delivery not recorded)');
+      }
+      logger.info('compile-pending join resolved: the engine relayed the recorded pieces (the steered compile never answered the owner)', {
+        agentId, work: join.id, pieces: pieces.length,
       });
     } catch (err) {
-      logger.warn('compile-pending park resolution failed (left for the sweep)', {
+      logger.warn('compile-pending join resolution failed (left for the reaper)', {
         agentId, error: err instanceof Error ? err.message : String(err),
       });
     }
   }
 }
 
-async function resolveOpenPark(parked: OpenParkRow, opts: { failIfUnanswered: boolean; askedNameHint?: string }): Promise<ParkResolution> {
-  // Fan-out (multi) park: a single stranded reply is NOT the answer (relaying one piece
-  // as THE answer is the fan-out bug), so we never relay from here. The live
-  // close-the-loop join completes a healthy fan-out; this safety net only FAILS a stuck
-  // one CLOSED (a piece never came back within TTL, or the asked agent is gone) with ONE
-  // honest owner notice on their own channel. A late straggler piece arriving after this
-  // fail-closed is dropped (the row is no longer an open park:~ row), the same accepted
-  // tradeoff the single-park fail-closed makes.
-  if (isMultiParkKey(parked.conv_key)) {
-    if (!opts.failIfUnanswered) return 'left-open';
-    const snippet = questionSnippet(parked.content);
-    const notice =
-      `I split this across several agents but could not get all the pieces back in time to give you a complete answer.` +
-      (snippet ? ` (Your question was: "${snippet}")` : '');
-    const ok = await consumeParkAndDeliver(
-      { rowid: parked.rowid, agent_id: parked.agent_id, conv_key: parked.conv_key, inbound_meta: parked.inbound_meta },
-      notice,
-      { failedClosed: true },
-    );
-    return ok ? 'failed-closed' : 'already-consumed';
+/**
+ * Resolve ONE join deterministically:
+ *   1. If a reply already arrived but never landed (a crash between the A2A persist and the
+ *      countdown), land it — relay the REAL answer, never a false failure notice.
+ *   2. Otherwise, when the caller says the wait is over (past TTL, or the asked agent is
+ *      terminated), fail CLOSED: the owner gets an explicit "could not get an answer" notice
+ *      on the join's own channel, exactly once, and the join is terminal so it cannot fire again.
+ *   3. Otherwise leave it for the next pass.
+ */
+async function resolveOpenJoin(
+  join: JoinState, opts: { failIfUnanswered: boolean; askedNameHint?: string | null },
+): Promise<'relayed' | 'failed-closed' | 'left-open' | 'already-settled'> {
+  const ask = askRowForJoin(join);
+  let state: JoinState | null = join;
+  for (const piece of joinPieces(join.id)) {
+    if (isTerminal(piece.state)) continue;
+    const stranded = findUnlandedInboundReply(join.agentId, piece.threadId, ask?.created_at ?? Date.now());
+    if (!stranded) continue;
+    const deliveryId = recordPieceDelivery({
+      fromAgent: stranded.senderId ?? 'unknown', toAgent: join.agentId,
+      messageId: stranded.messageId, intent: 'DELIVERABLE',
+    });
+    if (!deliveryId) continue;
+    const settled = landPiece(piece.childId, {
+      deliveryId, content: stranded.payload, messageId: stranded.messageId, actorId: stranded.senderId,
+    });
+    state = settled.result.kind === 'applied' ? settled.join : joinState(join.id);
   }
-  const reply = findUnrelayedInboundReply(parked);
-  if (reply) {
-    const answer = reply.payload.replace(/\s+/g, ' ').trim().slice(0, 1200);
-    const ok = await consumeParkAndDeliver(parked, `Heard back from ${reply.senderName}: ${answer}`);
-    return ok ? 'relayed-reply' : 'already-consumed';
+  state = state ?? joinState(join.id);
+  if (!state) return 'already-settled';
+  if (state.complete) {
+    await resolveCompletedJoin(state, opts.askedNameHint ?? undefined);
+    return 'relayed';
   }
   if (!opts.failIfUnanswered) return 'left-open';
-  const askedName = findAskedAgentForPark(parked)?.name ?? opts.askedNameHint ?? 'another agent';
-  const snippet = questionSnippet(parked.content);
-  const notice =
-    `I asked ${askedName} about this but could not get an answer.` +
-    (snippet ? ` (Your question was: "${snippet}")` : '');
-  const ok = await consumeParkAndDeliver(parked, notice, { failedClosed: true });
-  return ok ? 'failed-closed' : 'already-consumed';
+  const claimed = failJoinClosed(state.id, {
+    reason: 'the delegated answer never came back inside the deadline',
+    expectedState: state.parentState,
+  });
+  if (claimed.kind !== 'applied') return 'already-settled';
+  await deliverJoinResultToOwner(state, failClosedNotice(state, opts.askedNameHint), { tool: 'a2a-join-failed' });
+  return 'failed-closed';
 }
 
 /**
- * D13 TTL sweep (scheduled in index.ts, every 10 minutes). Any open park older
- * than PARK_TTL_MINUTES has waited long enough: relay a stranded reply if one
- * exists, otherwise fail closed with the owner notice. Exactly once per park
- * (atomic consume), bounded per pass, age-capped to PARK_MAX_AGE_DAYS.
+ * D13's TTL sweep, rekeyed onto `work.ttl_at` (scheduled in index.ts, every 10 minutes).
+ * Any join past its deadline has waited long enough: land a stranded reply if one exists,
+ * otherwise fail closed with the owner notice. Exactly once per join (the transition IS the
+ * guard), bounded per pass, age-capped by `dueJoins`.
  */
-export async function sweepExpiredParks(): Promise<{ failedClosed: number; relayedReplies: number }> {
-  const db = getDb();
+export async function sweepExpiredJoins(): Promise<{ failedClosed: number; relayedReplies: number }> {
   const out = { failedClosed: 0, relayedReplies: 0 };
-  let parks: OpenParkRow[] = [];
+  let joins: JoinState[] = [];
   try {
-    parks = db.prepare(
-      `SELECT seq AS rowid, agent_id, conv_key, content, inbound_meta,
-              datetime(created_at/1000,'unixepoch') AS created_at FROM messages
-        WHERE created_at >= (unixepoch('now', '-${PARK_MAX_AGE_DAYS} days') * 1000)
-          AND created_at < (unixepoch('now', '-${PARK_TTL_MINUTES} minutes') * 1000)
-          AND role = 'user' AND conv_key LIKE 'park:%'
-        ORDER BY rowid ASC LIMIT ${PARK_SWEEP_BATCH}`,
-    ).all() as OpenParkRow[];
+    joins = dueJoins(Date.now());
   } catch (err) {
-    logger.warn('park TTL sweep: scan failed', { error: err instanceof Error ? err.message : String(err) });
+    logger.warn('join TTL reaper: scan failed', { error: err instanceof Error ? err.message : String(err) });
     return out;
   }
-  for (const parked of parks) {
+  for (const join of joins) {
     try {
-      if (parked.conv_key.startsWith('park:!')) {
-        await resolveCompilePendingParks(parked.agent_id);
+      if (join.compilePending) {
+        await resolveCompilePendingJoins(join.agentId);
         continue;
       }
-      const outcome = await resolveOpenPark(parked, { failIfUnanswered: true });
-      if (outcome === 'relayed-reply') out.relayedReplies++;
+      const outcome = await resolveOpenJoin(join, { failIfUnanswered: true });
+      if (outcome === 'relayed') out.relayedReplies++;
       else if (outcome === 'failed-closed') out.failedClosed++;
-      logger.info('park TTL sweep: closed expired park', {
-        agentId: parked.agent_id, park: parked.conv_key, parkedAt: parked.created_at, outcome,
+      logger.info('join TTL reaper: closed expired join', {
+        agentId: join.agentId, work: join.id, outcome,
       });
     } catch (err) {
-      logger.warn('park TTL sweep: failed to close park', {
-        agentId: parked.agent_id, park: parked.conv_key, error: err instanceof Error ? err.message : String(err),
+      logger.warn('join TTL reaper: failed to close join', {
+        agentId: join.agentId, work: join.id, error: err instanceof Error ? err.message : String(err),
       });
     }
   }
@@ -1934,41 +1672,38 @@ export async function sweepExpiredParks(): Promise<{ failedClosed: number; relay
 }
 
 /**
- * D13 boot re-drain of parks. Scans ALL open parks (bounded + age-capped), not
- * just asks under 30 minutes: a restart used to strand every parked owner
- * question because the only re-drive was the in-memory close-the-loop. Relays
- * stranded replies, fails closed when the asked agent is terminated or the park
- * is past TTL, and leaves fresh parks for the periodic sweep. Only relays or
- * marks message rows, NEVER wakes an agent (no boot storm, no wake-budget use).
+ * D13's boot re-drain, rekeyed. Scans ALL open joins (bounded), not just recent ones: a
+ * restart used to strand every parked owner question because the only re-drive was the
+ * in-memory close-the-loop. Lands stranded replies, fails closed when the asked agent is
+ * terminated or the join is past TTL, and leaves fresh joins for the periodic reaper. It only
+ * relays or settles rows, NEVER wakes an agent, so it cannot start a boot storm and needs no
+ * wake-budget accounting.
  */
-export async function resolveParksAtBoot(): Promise<{ relayedReplies: number; failedClosed: number; leftOpen: number }> {
-  const db = getDb();
+export async function resolveJoinsAtBoot(): Promise<{ relayedReplies: number; failedClosed: number; leftOpen: number }> {
   const out = { relayedReplies: 0, failedClosed: 0, leftOpen: 0 };
-  const parks = db.prepare(
-    `SELECT seq AS rowid, agent_id, conv_key, content, inbound_meta,
-              datetime(created_at/1000,'unixepoch') AS created_at FROM messages
-      WHERE created_at >= (unixepoch('now', '-${PARK_MAX_AGE_DAYS} days') * 1000)
-        AND role = 'user' AND conv_key LIKE 'park:%'
-      ORDER BY rowid DESC LIMIT ${PARK_BOOT_BATCH}`,
-  ).all() as OpenParkRow[];
-  for (const parked of parks) {
+  const joins = openJoins(JOIN_BOOT_BATCH);
+  for (const join of joins) {
     try {
-      const ageMs = Date.now() - Date.parse(`${parked.created_at.replace(' ', 'T')}Z`);
-      const pastTtl = Number.isFinite(ageMs) && ageMs > PARK_TTL_MINUTES * 60_000;
-      // A terminated asked agent can never reply, don't make the owner wait out the TTL.
-      const askedTerminated = !pastTtl && findAskedAgentForPark(parked)?.status === 'terminated';
-      const outcome = await resolveOpenPark(parked, { failIfUnanswered: pastTtl || askedTerminated });
-      if (outcome === 'relayed-reply') out.relayedReplies++;
+      const pastTtl = join.ttlAt !== null && Date.now() > join.ttlAt;
+      // A terminated asked agent can never reply — don't make the owner wait out the TTL.
+      // The assignee is recorded on the child at delegation time; the string machine had to
+      // reconstruct it by scanning messages around the park's timestamp.
+      const askedTerminated = !pastTtl && joinPieces(join.id).some((piece) => {
+        if (isTerminal(piece.state) || !piece.assigneeAgent) return false;
+        const row = getDb().prepare('SELECT status FROM agents WHERE id = ?')
+          .get(piece.assigneeAgent) as { status?: string } | undefined;
+        return row?.status === 'terminated';
+      });
+      const outcome = await resolveOpenJoin(join, { failIfUnanswered: pastTtl || askedTerminated });
+      if (outcome === 'relayed') out.relayedReplies++;
       else if (outcome === 'failed-closed') out.failedClosed++;
       else if (outcome === 'left-open') out.leftOpen++;
       if (outcome !== 'left-open') {
-        logger.info('boot park re-drain: resolved park', {
-          agentId: parked.agent_id, park: parked.conv_key, parkedAt: parked.created_at, outcome,
-        });
+        logger.info('boot join re-drain: resolved join', { agentId: join.agentId, work: join.id, outcome });
       }
     } catch (err) {
-      logger.warn('boot park re-drain: failed to resolve park', {
-        agentId: parked.agent_id, park: parked.conv_key, error: err instanceof Error ? err.message : String(err),
+      logger.warn('boot join re-drain: failed to resolve join', {
+        agentId: join.agentId, work: join.id, error: err instanceof Error ? err.message : String(err),
       });
     }
   }
@@ -1976,45 +1711,46 @@ export async function resolveParksAtBoot(): Promise<{ relayedReplies: number; fa
 }
 
 /**
- * D13: when the runtime gives up on getting a real reply out of the asked agent
- * (synthetic ABANDONED, runtime.ts), the asker may be holding an owner question
- * parked on that thread. Fail it closed NOW, the owner gets "could not get an
- * answer" on their own channel, instead of the enforcer being silenced in
- * private while the owner waits forever. threadShort comes from the wire header;
- * the full thread id is recovered from the inbound ask row when available.
+ * D13: when the runtime gives up on getting a real reply out of the asked agent (synthetic
+ * ABANDONED, runtime.ts), the asker may hold a delegated piece on that thread. Settle the
+ * PIECE abandoned now — the countdown moves like any other landing (3e) — and if that
+ * completes the join with nothing to compile, the owner is told immediately instead of the
+ * enforcer being silenced in private.
+ *
+ * A fan-out piece abandoning does NOT fail the whole join: the others may still land, and the
+ * reaper owns the stuck case. That is the same tradeoff the string machine made, now visible
+ * as a countdown rather than implied by which key strings could not match.
  */
-export async function failParksForAbandonedAsk(inboundAskMessageId: string, threadShort: string, askedAgentId?: string): Promise<void> {
+export async function failJoinPieceForAbandonedAsk(
+  inboundAskMessageId: string, threadShort: string, askedAgentId?: string,
+): Promise<void> {
   try {
     const db = getDb();
-    const full = (db.prepare(
-      'SELECT a2a_thread_id FROM messages WHERE id = ?',
-    ).get(inboundAskMessageId) as { a2a_thread_id: string | null } | undefined)?.a2a_thread_id ?? null;
-    // Single-park exact keys only. A fan-out (multi) park's conv_key is
-    // park:~<full>#<remaining>, which never equals park:<one-thread>, so an abandoned
-    // PIECE of a fan-out does not fail the whole join closed here (other pieces may still
-    // land). A genuine terminal FAIL reply advances the join (close-the-loop); a silently
-    // abandoned piece leaves the join stuck, and the TTL sweep fails it closed once.
-    const keys = [...new Set([full ? `park:${full}` : '', threadShort ? `park:${threadShort}` : ''].filter(Boolean))];
-    if (keys.length === 0) return;
-    const parks = db.prepare(
-      `SELECT seq AS rowid, agent_id, conv_key, content, inbound_meta,
-              datetime(created_at/1000,'unixepoch') AS created_at FROM messages
-        WHERE created_at >= (unixepoch('now', '-${PARK_MAX_AGE_DAYS} days') * 1000)
-          AND role = 'user' AND conv_key IN (${keys.map(() => '?').join(',')})
-        ORDER BY rowid DESC LIMIT 5`,
-    ).all(...keys) as OpenParkRow[];
-    const askedNameHint = resolveAgentDisplayName(askedAgentId) ?? undefined;
-    for (const parked of parks) {
-      const outcome = await resolveOpenPark(parked, { failIfUnanswered: true, askedNameHint });
-      logger.info('A2A ABANDONED: failed asker park closed', { agentId: parked.agent_id, park: parked.conv_key, outcome });
+    const full = (db.prepare('SELECT a2a_thread_id FROM messages WHERE id = ?')
+      .get(inboundAskMessageId) as { a2a_thread_id: string | null } | undefined)?.a2a_thread_id ?? null;
+    if (!full) return;
+    const children = childrenForThread(full);
+    for (const child of children) {
+      if (isTerminal(child.state)) continue;
+      const settled = settlePieceWithoutResult(child.id, {
+        to: 'abandoned',
+        reason: `the asked agent gave up on thread ${threadShort} (synthetic ABANDONED)`,
+        actorId: askedAgentId ?? null,
+      });
+      if (settled.result.kind !== 'applied') continue;
+      if (settled.join.complete) {
+        await resolveCompletedJoin(settled.join, resolveAgentDisplayName(askedAgentId) ?? undefined);
+      }
+      logger.info('A2A ABANDONED: delegated piece settled abandoned', {
+        agentId: child.agentId, work: child.id, complete: settled.join.complete,
+      });
     }
   } catch (err) {
-    logger.warn('A2A ABANDONED: park fail-closed hook failed', {
+    logger.warn('A2A ABANDONED: join fail-closed hook failed', {
       inboundAskMessageId, error: err instanceof Error ? err.message : String(err),
     });
   }
 }
-
 /**
  * Helper to build a thread ID from a contextual seed.
  * Consistent thread IDs for the same context (e.g., task pokes)

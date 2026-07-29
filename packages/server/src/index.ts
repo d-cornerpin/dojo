@@ -664,30 +664,28 @@ async function main(): Promise<void> {
     logger.warn('Boot re-drain failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
   }
 
-  // 4b3. D13: boot re-drain of PARKED owner questions (fail-closed backstop).
-  // A parked owner question (conv_key 'park:<thread>') whose reply never came, or
-  // whose reply arrived but crashed before the relay, previously sat open FOREVER:
-  // nothing re-read parks after a restart (the 4b2 re-drain only covers waiting
-  // conversations and asks under 30 minutes), so "ask X and get back to me" ended
-  // in permanent silence with everything looking healthy. resolveParksAtBoot scans
-  // ALL open parks (bounded + age-capped so boot stays fast): it relays any answer
-  // that already exists, fails closed (deterministic owner notice on the park's own
-  // channel) when the asked agent is terminated or the park is past TTL, and leaves
-  // fresh parks for the periodic TTL sweep. It only relays or marks message rows,
-  // it NEVER wakes an agent, so it cannot start a boot storm and needs no
-  // wake-budget accounting. Delayed so the channel bridges (iMessage/Twilio) are up
-  // before any notice goes out; a bridge that is still down just means the notice
-  // takes the guaranteed dashboard fallback.
+  // 4b3. D13: boot re-drain of DELEGATED owner questions (fail-closed backstop).
+  // A delegated owner question whose reply never came, or whose reply arrived but crashed
+  // before the relay, previously sat open FOREVER: nothing re-read the join after a restart
+  // (the 4b2 re-drain only covers waiting conversations and asks under 30 minutes), so "ask X
+  // and get back to me" ended in permanent silence with everything looking healthy.
+  // resolveJoinsAtBoot scans ALL unsettled joins (`work`, bounded + age-capped so boot stays
+  // fast): it lands any reply that already arrived, fails closed (deterministic owner notice
+  // on the join's own channel) when the asked agent is terminated or the join is past its
+  // ttl_at, and leaves fresh joins for the periodic reaper. It only relays or settles rows, it
+  // NEVER wakes an agent, so it cannot start a boot storm and needs no wake-budget accounting.
+  // Delayed so the channel bridges (iMessage/Twilio) are up before any notice goes out; a
+  // bridge that is still down just means the notice takes the guaranteed dashboard fallback.
   setTimeout(() => {
     void (async () => {
       try {
-        const { resolveParksAtBoot } = await import('./agent/a2a-transport.js');
-        const r = await resolveParksAtBoot();
+        const { resolveJoinsAtBoot } = await import('./agent/a2a-transport.js');
+        const r = await resolveJoinsAtBoot();
         if (r.relayedReplies > 0 || r.failedClosed > 0 || r.leftOpen > 0) {
-          logger.info(`Boot park re-drain: relayed ${r.relayedReplies} stranded repl(ies), failed ${r.failedClosed} park(s) closed, left ${r.leftOpen} open for the TTL sweep`);
+          logger.info(`Boot join re-drain: relayed ${r.relayedReplies} stranded repl(ies), failed ${r.failedClosed} join(s) closed, left ${r.leftOpen} open for the TTL reaper`);
         }
       } catch (err) {
-        logger.warn('Boot park re-drain failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+        logger.warn('Boot join re-drain failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
       }
     })();
   }, 20_000);
@@ -1125,21 +1123,22 @@ async function main(): Promise<void> {
   setTimeout(() => { void scheduleEmbeddingBackfill(); }, 60_000);
   setInterval(() => { void scheduleEmbeddingBackfill(); }, 10 * 60_000);
 
-  // D13: TTL sweep for parked owner questions, the "no reply EVER comes" backstop.
-  // Every 10 minutes, any open park older than the park TTL is failed CLOSED: the
-  // engine relays a deterministic "could not get an answer" notice to the owner on
-  // the park's own channel (the same delivery path a real reply uses) and consumes
-  // the park (park: -> relayed:) so it fires exactly once. If the reply actually
-  // arrived but was never relayed, the sweep relays the REAL answer instead.
-  // Engine-enforced and model-independent: the owner is never left in silence
-  // because the asked agent died, was terminated, or dropped the ask.
+  // D13: the TTL reaper for delegated owner questions, the "no reply EVER comes" backstop.
+  // Every 10 minutes, any join past its `work.ttl_at` is failed CLOSED: the engine relays a
+  // deterministic "could not get an answer" notice to the owner on the join's own channel (the
+  // same delivery path a real reply uses) and the join goes terminal, so it fires exactly once
+  // — the `transition()` compare-and-swap IS that guard, not a string rewrite. If the reply
+  // actually arrived but never landed, the reaper lands it and relays the REAL answer instead.
+  // Engine-enforced and model-independent: the owner is never left in silence because the
+  // asked agent died, was terminated, or dropped the ask.
+  // PHASE-2 T9 folds this into the one reaper with its per-kind deadline table.
   setInterval(() => {
     void (async () => {
       try {
-        const { sweepExpiredParks } = await import('./agent/a2a-transport.js');
-        await sweepExpiredParks();
+        const { sweepExpiredJoins } = await import('./agent/a2a-transport.js');
+        await sweepExpiredJoins();
       } catch (err) {
-        logger.warn('park TTL sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+        logger.warn('join TTL reaper failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
       }
     })();
   }, 10 * 60_000);
