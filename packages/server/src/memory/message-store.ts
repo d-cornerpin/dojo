@@ -273,6 +273,32 @@ function isOwnerAsk(m: NewMessage, storedContent: string): boolean {
   const lane: Lane = m.lane ?? 'owner';
   if (lane !== 'owner') return false;
   if (m.sourceAgentId || m.a2aThreadId) return false;
+  // ── PHASE-2 T6 (C7) — A PERSON'S MESSAGE NAMES THE DOOR IT CAME THROUGH. ──
+  //
+  // OR4 is the ruling this reads: "channel, sender, trust and lane are stamped at INGEST,
+  // recorded on the message". A `role='user'` row on the owner lane with NO CHANNEL was
+  // not written by an ingest path — it is the platform writing to itself in the second
+  // person, and there are three such producers in this tree today:
+  //     tracker/pm-agent.ts:1398   the PM's own "Tracker review -- N active tasks" report
+  //     agent/v2/loop.ts (~:700)   the [ENGINE RENAME REQUEST] posted to the PM
+  //     agent/spawner.ts:381       a spawned agent's kickoff instruction
+  // Each opened an owner ask ticket that NOBODY CAN EVER SERVE OR CLOSE: no conversation
+  // identity, so no delivery can match it, and `closeAsksForDelivery` cannot fire.
+  //
+  // MEASURED on this box before the change (READONLY), and this is the whole evidence:
+  //     SELECT channel, sender_id IS NOT NULL, inbound_meta IS NOT NULL,
+  //            conversation_id IS NOT NULL, state, count(*)
+  //       FROM work w JOIN messages m ON m.id = w.root_id WHERE w.kind='ask' GROUP BY 1,2,3,4,5
+  //   -> every genuine ask (dashboard 66, imessage 14, email 1) carries ALL FOUR;
+  //      every stuck one (7 rows here, 55 tickets in total) carries NONE OF THEM.
+  // The separation is total, and it is a STRUCTURAL column stamped at ingest, not a reading
+  // of what the text says — which is the whole difference between this and the prose
+  // classifiers T6 deleted.
+  //
+  // requirement preserved: the set of rows that opens a ticket is still exactly the set the
+  // waiting set surfaces (T3's equivalence argument), because the waiting set JOINS the
+  // ticket — narrowing here narrows both, in lockstep, by construction.
+  if (!m.channel) return false;
   const o = deriveOrigin({
     role: 'user', content: storedContent,
     ...legacyOriginInputs(lane, m.channel ?? null),

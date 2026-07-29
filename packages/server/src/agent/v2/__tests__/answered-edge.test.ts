@@ -65,7 +65,8 @@ import {
 } from '../counterparty.js';
 import { getWaitingHumanConversations } from '../counterparty.js';
 import { getActiveUserDirective } from '../../../memory/directive.js';
-import { openAsk, transition } from '../../../work/store.js';
+import { abandonUnservableAsks, openAsk, transition } from '../../../work/store.js';
+import { insertMessage } from '../../../memory/message-store.js';
 
 const AGENT = 'kevin';
 const CONV = 'conv-1';
@@ -602,6 +603,53 @@ describe('2b — `abandoned` is reachable from >= 3 causes with a single-transit
       to: 'abandoned', by: 'agent', actorId: 'work-reaper',
       reason: 'no conversation identity: nothing delivered can ever match this ask',
     }).kind).toBe('applied');
+  });
+
+  it('cause 3, THE REAPER: an unservable ticket is abandoned with the reason on the row', () => {
+    seedInbound('m-x', { id: 'm-x', conversation_id: null });
+    const noIdentity = openAsk({
+      agentId: AGENT, messageId: 'm-x', conversationId: null, requesterId: null,
+      openedAt: Date.now(), title: 'orphan',
+    });
+    seedInbound('m-y', { id: 'm-y' });
+    const goneRoot = openAsk({
+      agentId: AGENT, messageId: 'm-y', conversationId: CONV, requesterId: 'owner',
+      openedAt: Date.now(), title: 'root about to vanish',
+    });
+    db().prepare("DELETE FROM messages WHERE id = 'm-y'").run();
+    const servable = openOne('m-ok');
+
+    const r = abandonUnservableAsks(AGENT);
+    expect(new Set(r.ids)).toEqual(new Set([noIdentity, goneRoot]));
+    // NEGATIVE: a servable ask is untouched.
+    expect((db().prepare('SELECT state FROM work WHERE id = ?').get(servable) as { state: string }).state)
+      .toBe('open');
+    // The reason travels with the row, not in a log line.
+    const ev = db().prepare(
+      "SELECT payload FROM work_events WHERE work_id = ? AND kind = 'transition'",
+    ).all(noIdentity) as Array<{ payload: string }>;
+    expect(ev.some((e) => e.payload.includes('no conversation identity'))).toBe(true);
+    // ...and it is idempotent: a second sweep finds nothing left to do.
+    expect(abandonUnservableAsks(AGENT).abandoned).toBe(0);
+  });
+
+  it('THE PRODUCER IS CLOSED: a platform-authored user row opens no ticket at all', () => {
+    // OR4: a person's message names the door it came through. Three engine paths wrote
+    // `role='user'` rows with no channel and each one opened an owner ask nobody could ever
+    // serve. Measured on the dev box: 55 such tickets, every one of them identity-less.
+    insertMessage({
+      agentId: AGENT, role: 'user', content: 'Tracker review -- 0 active tasks:',
+    } as never);
+    expect(db().prepare("SELECT count(*) AS c FROM work WHERE kind = 'ask'").get())
+      .toEqual({ c: 0 });
+    // NEGATIVE CONTROL: the same content through a real door DOES open one.
+    insertMessage({
+      agentId: AGENT, role: 'user', content: 'Tracker review -- 0 active tasks:',
+      lane: 'owner', channel: 'dashboard', senderId: 'owner', conversationId: CONV,
+      inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
+    } as never);
+    expect(db().prepare("SELECT count(*) AS c FROM work WHERE kind = 'ask'").get())
+      .toEqual({ c: 1 });
   });
 
   it('THE ONCE-GUARD: the second transition is refused, so exactly one caller acts', () => {

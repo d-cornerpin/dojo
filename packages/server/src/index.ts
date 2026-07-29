@@ -8,7 +8,7 @@ import { createLogger, setLogBroadcast } from './logger.js';
 import { getDb } from './db/connection.js';
 import { runMigrations } from './db/migrations.js';
 import { sweepByRowid } from './memory/message-store.js';
-import { transition, reconcileOrphanedClaims } from './work/store.js';
+import { transition, reconcileOrphanedClaims, abandonUnservableAsks } from './work/store.js';
 import { loadSecrets } from './config/loader.js';
 import { createServer } from './gateway/server.js';
 import { broadcast } from './gateway/ws.js';
@@ -601,6 +601,18 @@ async function main(): Promise<void> {
       }
     } catch (err) {
       logger.warn('Boot crash-reconciliation failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    }
+    // PHASE-2 T6 (C7, requirement 2b, cause 3): tickets that can NEVER be served or closed
+    // — no conversation identity, or a root message that no longer exists — get an honest
+    // terminal state instead of sitting `open` forever and telling every settled read that
+    // a person is waiting. Same once-guard as the other two causes: `transition()`'s CAS.
+    try {
+      const { abandoned } = abandonUnservableAsks();
+      if (abandoned > 0) {
+        logger.warn(`Boot: abandoned ${abandoned} ask ticket(s) that could never be served or closed (no conversation identity, or the message they were FOR is gone)`);
+      }
+    } catch (err) {
+      logger.warn('Boot unservable-ask sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
     }
   }
 

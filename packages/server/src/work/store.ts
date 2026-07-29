@@ -585,6 +585,60 @@ export function closeAsksForDelivery(p: DeliveryCloseInput): number {
   return closed;
 }
 
+/**
+ * 2b, CAUSE 3 — an ask NOBODY CAN EVER SERVE OR CLOSE gets an honest terminal state.
+ *
+ * Two shapes, both structural and both unservable by construction:
+ *   * no conversation identity — `closeAsksForDelivery` matches on the conversation, so a
+ *     ticket without one can never be closed by any delivery, ever;
+ *   * the root message is GONE — a cleared history or a terminated agent takes the row the
+ *     obligation was FOR, and nothing can be served against a message nobody can read.
+ *
+ * `abandoned` is the honest word for both: the platform is not going to answer this, and
+ * saying so is better than a ticket that sits `open` forever poisoning the settled read.
+ * The once-guard is `transition()`'s own `expectedState` CAS — the same guard the quarantine
+ * and the delegated-piece abandon use, which is what makes `abandoned` "reachable from >= 3
+ * causes with a SINGLE-transition once-guard" rather than three hand-rolled ones.
+ *
+ * PHASE-2 T6 also closed the PRODUCERS (`memory/message-store.ts`, the ingest-channel gate),
+ * so on a tree from this commit forward this reaper finds nothing to do. It stays because a
+ * producer nobody has met yet is exactly what #15 says not to assume away, and because the
+ * gone-root shape has no producer to close.
+ */
+export function abandonUnservableAsks(agentId?: string): { abandoned: number; ids: string[] } {
+  const db = getDb();
+  const scoped = agentId != null;
+  const rows = db.prepare(`
+    SELECT w.id AS id, w.state AS state,
+           (w.conversation_id IS NULL) AS no_identity,
+           (m.id IS NULL) AS no_root
+      FROM work w LEFT JOIN messages m ON m.id = w.root_id AND m.agent_id = w.agent_id
+     WHERE w.kind = 'ask' AND w.state IN ('open','claimed')
+       AND (w.conversation_id IS NULL OR m.id IS NULL)
+       ${scoped ? 'AND w.agent_id = ?' : ''}
+     ORDER BY w.opened_at ASC LIMIT 200
+  `).all(...(scoped ? [agentId] : [])) as Array<{
+    id: string; state: WorkState; no_identity: number; no_root: number;
+  }>;
+  const ids: string[] = [];
+  for (const r of rows) {
+    const why = r.no_root === 1
+      ? 'the message this obligation was FOR no longer exists, so it can never be served'
+      : 'no conversation identity: no delivery can ever match this ask, so it can never be closed';
+    const res = transition(r.id, {
+      to: 'abandoned', by: 'agent', actorId: 'work-reaper',
+      expectedState: r.state, reason: `unservable — ${why}`,
+    });
+    if (res.kind === 'applied') ids.push(r.id);
+  }
+  if (ids.length > 0) {
+    logger.warn('abandoned ask ticket(s) that could never be served or closed', {
+      agentId: agentId ?? '(all)', count: ids.length,
+    });
+  }
+  return { abandoned: ids.length, ids };
+}
+
 /** How far back a boot reconciliation will reach. Carried verbatim from the pickup-stamp
  *  reconciliation it replaces (`index.ts` 4b1): a claim stranded by a genuine crash is
  *  seconds-to-minutes old, and anything older is history a restart must not re-answer. */

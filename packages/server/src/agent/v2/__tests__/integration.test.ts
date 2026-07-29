@@ -316,8 +316,21 @@ function setupTestDb(): Database.Database {
   // ticket — which is not a shape production can ever be in, and it would have made every
   // "a human is waiting" assertion in this file vacuously false. Same reason this fixture
   // stopped hand-rolling CREATE TABLE: a fixture that drifts from the writer tests nothing.
+  //
+  // PHASE-2 T6 (C7): the seed also STAMPS ITS CHANNEL. A person's message names the door it
+  // came through (OR4, stamped at ingest), and the ticket gate now requires it — three
+  // engine paths were writing channel-less `role='user'` rows and each opened an owner ask
+  // nobody could ever serve. A fixture without a channel is the shape of one of THOSE, not
+  // of a person, and every "a human is waiting" assertion in this file would go vacuously
+  // false again. Same class of drift the T3 note above records; same repair.
+  db.prepare(
+    `INSERT INTO conversations (id, agent_id, channel, provider, counterparty_id, created_at)
+     VALUES ('conv-primary', 'primary', 'dashboard', NULL, 'owner', datetime('now'))`,
+  ).run();
   insertMessage({
     id: 'msg-user-1', agentId: 'primary', role: 'user', content: 'hello primary', turnNumber: 1,
+    channel: 'dashboard', senderId: 'owner', conversationId: 'conv-primary',
+    inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
   });
 
   return db;
