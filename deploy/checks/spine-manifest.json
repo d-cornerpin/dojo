@@ -380,18 +380,6 @@
       "disposition": "Phase 2 \u2014 absorbed as work events."
     },
     {
-      "name": "open_loops",
-      "definedIn": "packages/server/src/db/migrations/107_open_loops.sql",
-      "agentLink": "agent_id",
-      "stateColumn": "status",
-      "terminalStates": [
-        "resolved"
-      ],
-      "workShaped": true,
-      "why": "Structured unanswered obligations per agent (open | resolved | stale). Named in the plan as one of the five partial systems that each guess at 'is someone owed something'.",
-      "disposition": "Phase 2 \u2014 deleted; owner-attributed rows import as open `work` rows (Stable Bridge)."
-    },
-    {
       "name": "generation_jobs",
       "definedIn": "packages/server/src/db/migrations/063_generation_jobs.sql",
       "agentLink": "agent_id",

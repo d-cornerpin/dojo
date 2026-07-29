@@ -264,7 +264,6 @@
     "packages/server/src/memory/embeddings.ts": 251,
     "packages/server/src/memory/large-files.ts": 331,
     "packages/server/src/memory/message-store.ts": 842,
-    "packages/server/src/memory/open-loops.ts": 623,
     "packages/server/src/memory/party-label.ts": 40,
     "packages/server/src/memory/platform-noise.ts": 71,
     "packages/server/src/memory/recall.ts": 502,

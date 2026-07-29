@@ -133,6 +133,27 @@
       "to": 487,
       "by": "PHASE-2 T6 (2026-07-28)",
       "why": "NEW FILE, above the 400-line cap, and the addition is meant to be argued with. It is THE ANSWERED EDGE: the one place this tree answers 'has the person heard from us', replacing seven mechanisms that each answered it for themselves (a twenty-phrase prose classifier, two turn-local booleans, a legacy status scan joined by hand to a message column, an array the loop had to BUILD to learn a boolean, a loop-local variable set at four sites, `conv_key IS NULL`, `swept_at`) plus the turn record's own `exit_reason`, which finalizeTurn has always written and nothing read (R-0). Roughly two thirds of it is the argument, the measurements and the requirement-preserved lines \u2014 deliberately, because the danger with this particular collapse is not that it is wrong today but that somebody loosens a key later without knowing which incident bought it. Splitting it would put the answer-receipt read in one file and the closeout-owe read in another, which is the exact split requirement 2d exists to end."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 1229,
+      "to": 1460,
+      "by": "PHASE-2 T7 (2026-07-29)",
+      "why": "The commitment half of requirement 4a \u2014 `openCommitment` / `resolveCommitment` / `dismissCommitment` and the three obligation reads \u2014 and it cannot live anywhere else for the same structural reason T4's raise gives: `single-writer-conformance.test.ts` PART A holds an EMPTY allowlist for `work`, so a second module writing commitment rows fails the walk. What this raise BUYS, measured in the same commit: `memory/open-loops.ts` is DELETED ENTIRELY (623 lines \u2014 the fenced-section parser, the Jaccard/coverage matcher, the store-contradiction regex guard, the party-attribution map and both renderers), its unit test goes with it (321 lines), and the `open_loops` table is dropped by migration 136. The two renderers come back as `work/obligations.ts`, a READ-ONLY module of 118 lines. The T3/T4 question stands and is now overdue: the walk should learn about a `work/` DIRECTORY rather than a single file (T9)."
+    },
+    {
+      "path": "packages/server/src/agent/tools.ts",
+      "from": 10640,
+      "to": 10735,
+      "by": "PHASE-2 T7 (2026-07-29)",
+      "why": "`loop_resolve` (one verb, 18 lines of definition + 11 of dispatch) becomes `commitment_open` + `commitment_resolve` (two verbs, 37 + 68). The extra verb is the point of the task and not an accident: the deleted module had a RESOLUTION verb only, because a PARSER created the rows. Delete the parser without adding a creation door and the capability is deleted, not replaced \u2014 so the requirement-preserved line ('a promise the agent makes is tracked until it is delivered or dropped') would have been a lie. The dispatch is longer than the one it replaces because it refuses in three named ways the old one could not: outside a turn, on an id that does not resolve, and \u2014 the load-bearing one \u2014 on `kept` with no delivery recorded for the turn. PHASE-2 T8 absorbs both verbs into `work_open`/`work_close_request` with alias rows; `tools/aliases.ts:76-86` is the mechanism and it already exists."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9521,
+      "to": 9530,
+      "by": "PHASE-2 T7 (2026-07-29)",
+      "why": "+6 lines at ONE site: the per-turn OPEN LOOPS injection becomes the OPEN WORK injection, and the added lines are the comment recording why the block is keyed on `conversation_id` rather than on `conv_key` (the deleted block compared conv_key strings \u2014 the column that also carried the claim token and the park sigils, so a parked row changed which party its items belonged to). The call itself is one line for one line."
     }
   ],
   "maxNewFileLines": 400,
@@ -170,10 +191,10 @@
     "packages/server/src/agent/permissions.ts": 687,
     "packages/server/src/agent/runtime.ts": 1339,
     "packages/server/src/agent/spawner.ts": 1335,
-    "packages/server/src/agent/tools.ts": 10640,
+    "packages/server/src/agent/tools.ts": 10735,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 468,
     "packages/server/src/agent/v2/counterparty.ts": 890,
-    "packages/server/src/agent/v2/loop.ts": 9521,
+    "packages/server/src/agent/v2/loop.ts": 9530,
     "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/state.ts": 686,
@@ -200,7 +221,6 @@
     "packages/server/src/memory/assembler.ts": 2564,
     "packages/server/src/memory/compaction.ts": 1267,
     "packages/server/src/memory/message-store.ts": 868,
-    "packages/server/src/memory/open-loops.ts": 623,
     "packages/server/src/memory/recall.ts": 502,
     "packages/server/src/memory/retrieval.ts": 591,
     "packages/server/src/memory/summary-rebuild.ts": 428,
@@ -242,7 +262,7 @@
     "packages/server/src/voice/model-manager.ts": 583,
     "packages/server/src/voice/stt-service.ts": 538,
     "packages/server/src/voice/voice-ws.ts": 2299,
-    "packages/server/src/work/store.ts": 1229,
+    "packages/server/src/work/store.ts": 1460,
     "packages/shared/src/types.ts": 500,
     "packages/shared/src/visibility.ts": 815,
     "packages/shared/src/ws.ts": 1082,

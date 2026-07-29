@@ -142,10 +142,13 @@
 // Terminal vocabulary (documented, deliberately tight):
 //   done · complete · completed · failed · closed · abandoned · cancelled ·
 //   canceled · resolved
-// The plan's list plus both spellings of "cancel" plus `resolved` — measured
-// reason: `open_loops`, one of the five partial work-tracking systems the plan
-// names, uses `resolved` as its terminal state, and without it the gate would
-// classify a real work tracker as not work-shaped. Deliberately EXCLUDED:
+// The plan's list plus both spellings of "cancel" plus `resolved`. `resolved` was added for
+// one table — `open_loops`, whose terminal state it was — and PHASE-2 T7 deleted that table
+// and its manifest entry, so as of 2026-07-29 NO manifest table declares `resolved`
+// (`python3 -c "…terminalStates…"` returns nothing). It is KEPT anyway, deliberately: the
+// vocabulary describes what a work-shaped state column may look like in a tree that is still
+// being rebuilt, and narrowing it here would be a silent reclassification of the next table
+// somebody adds, for no measured gain. Deliberately EXCLUDED:
 // `error`, `terminated`, `delivered`, `approved`, `denied`, `stale` — these are
 // lifecycle or transport words (`agents.status` carries 'error'/'terminated' for
 // a process, not a unit of work), and admitting them would make the
