@@ -107,9 +107,22 @@ describe('every complete SQL literal in the converted files prepares against the
   });
 
   it('THE PLANTED FAULT: a renamed column is caught at prepare time', () => {
-    // The exact shape of the defect, asserted rather than described: `tr.task_id` is a real
-    // column and `tr.taskId` is not, and only the prepare distinguishes them.
-    expect(() => db.prepare('SELECT tr.id, tr.task_id FROM task_runs tr')).not.toThrow();
-    expect(() => db.prepare('SELECT tr.id, tr.taskId FROM task_runs tr')).toThrow(/no such column/);
+    // The exact shape of the defect, asserted rather than described: an alias-qualified column
+    // that EXISTS versus one that does not, where only the prepare distinguishes them.
+    //
+    // PHASE-2 T10F — THE EXAMPLE MOVED, THE PROPERTY DID NOT. This clause used to plant its
+    // fault on `task_runs` because that is where the T8T incident happened: a blanket text
+    // substitution turned three statements' `tr.task_id` into `r.task_id` (one is a substring
+    // of the other), typecheck and 1,776 unit tests stayed green, and an entire scheduler tick
+    // died behind one swallowed log line until the battery caught it. `task_runs` is dropped by
+    // migration `144`, so the fault is planted on a table that still exists — with the SAME
+    // hazard shape, a real snake_case column against a camelCase near-miss. The incident stays
+    // named here so the next reader knows what this guard is for.
+    expect(() => db.prepare('SELECT e.id, e.work_id FROM work_events e')).not.toThrow();
+    expect(() => db.prepare('SELECT e.id, e.workId FROM work_events e')).toThrow(/no such column/);
+    // ...and the substring half of the original incident, which is the part that hid: a
+    // shortened alias still parses as a name, so nothing but a prepare can refuse it.
+    expect(() => db.prepare('SELECT w.parent_id FROM work w')).not.toThrow();
+    expect(() => db.prepare('SELECT w.arent_id FROM work w')).toThrow(/no such column/);
   });
 });

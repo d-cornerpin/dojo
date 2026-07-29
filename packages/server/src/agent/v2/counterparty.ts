@@ -24,6 +24,7 @@ import {
 } from '../../memory/message-store.js';
 import { transition } from '../../work/store.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../../work/tracker-view.js';
+import { occurrenceRunStatus } from '../../work/occurrence-runs.js';
 import { postAgentNotice } from '../agent-notice.js';
 
 const logger = createLogger('counterparty');
@@ -419,9 +420,9 @@ export function retireSpentEngineEvents(agentId: string): number {
       let reason: string | null = null;
       let referentState: string | null = null;
       if (ev.run_id) {
-        const run = db.prepare('SELECT status FROM task_runs WHERE id = ?').get(ev.run_id) as { status: string } | undefined;
-        if (!run) { reason = 'run_missing'; referentState = 'run row gone'; }
-        else if (run.status !== 'running') { reason = 'run_closed'; referentState = `run ${run.status}`; }
+        const runStatus = occurrenceRunStatus(ev.run_id); // T10F: an occurrence id now
+        if (!runStatus) { reason = 'run_missing'; referentState = 'run row gone'; }
+        else if (runStatus !== 'running') { reason = 'run_closed'; referentState = `run ${runStatus}`; }
       }
       if (!reason && ev.task_id) {
         const task = db.prepare(`SELECT ${STATE_TO_STATUS_SQL('w.state')} AS status, w.is_paused AS is_paused FROM work w WHERE ${taskScope('w')} AND w.id = ?`).get(ev.task_id) as { status: string; is_paused: number } | undefined;

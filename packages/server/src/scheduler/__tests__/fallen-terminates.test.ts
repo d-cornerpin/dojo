@@ -40,23 +40,22 @@ vi.mock('../../config/platform.js', () => ({
 
 import { terminateLiveScheduleOnFallen, onTaskRunComplete } from '../runner.js';
 import { createWorkTable, seedTrackerTask, ms } from '../../work/__tests__/work-fixture.js';
+import { occurrenceRunStatus } from '../../work/occurrence-runs.js';
 
 function applySchema(db: Database.Database): void {
   createWorkTable(db);
   db.exec(`
-    CREATE TABLE task_runs (
-      id TEXT PRIMARY KEY,
-      task_id TEXT NOT NULL,
-      run_number INTEGER NOT NULL,
-      scheduled_for TEXT,
-      status TEXT NOT NULL DEFAULT 'pending',
-      assigned_to TEXT,
-      started_at TEXT,
-      completed_at TEXT,
-      result_summary TEXT,
-      error TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    -- PHASE-2 T10F: the close-out resolves the run's delivery (G7 -- a run that reached
+    -- nobody cannot be 'done'), so this suite now reaches deliveryForAgentSince. It could
+    -- not before: inFlightOccurrence found nothing in a task_runs-only fixture, so the whole
+    -- settle branch was dark here. More of the real path runs now, which is the point.
+    CREATE TABLE IF NOT EXISTS deliveries (
+      id TEXT PRIMARY KEY, agent_id TEXT, outcome TEXT, tool TEXT, created_at INTEGER
     );
+    -- PHASE-2 T10F: the task_runs fixture DDL is GONE with the table. A run is an
+    -- occurrence work row now, and createWorkTable above already declares it, including
+    -- ux_work_occurrence, so this suite's runs are subject to the same exactly-once
+    -- constraint production is.
     CREATE TABLE task_log (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL,
@@ -147,12 +146,20 @@ function seedLiveRecurring(db: Database.Database, overrides: Record<string, unkn
   return id;
 }
 
-function seedRun(db: Database.Database, taskId: string, status: string, runNumber = 4): string {
+/** PHASE-2 T10F: an open run is an OCCURRENCE row. `pending` and `running` were the two
+ *  open `task_runs` statuses and both map to `state='open'` — the distinction was never read
+ *  (every reader asked `status IN ('pending','running')` or closed on either), which is why
+ *  the absorption did not need to keep it. */
+function seedRun(db: Database.Database, taskId: string, _status: string, runNumber = 4): string {
   const id = `run-${Math.random().toString(36).slice(2, 10)}`;
   db.prepare(`
-    INSERT INTO task_runs (id, task_id, run_number, status, started_at, created_at)
-    VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
-  `).run(id, taskId, runNumber, status);
+    INSERT INTO work (id, kind, parent_id, agent_id, assignee_agent, requester, requester_id,
+                      root_kind, root_id, state, intent, wakes, closes_thread, title, sequence,
+                      opened_at, updated_at)
+    VALUES (?, 'occurrence', ?, 'primary', 'primary', 'schedule', ?, 'schedule', ?, 'open',
+            'occurrence', 0, 0, ?, ?, ?, ?)
+  `).run(id, taskId, taskId, taskId, `occurrence #${runNumber}`, runNumber,
+         Date.now() - 60_000, Date.now() - 60_000);
   return id;
 }
 
@@ -177,8 +184,10 @@ describe('terminateLiveScheduleOnFallen (RC-17.5)', () => {
     expect(task.is_paused).toBe(1);
     expect(task.next_run_at).toBeNull();
 
-    const run = db.prepare('SELECT status FROM task_runs WHERE id = ?').get(runId) as { status: string };
-    expect(run.status).toBe('skipped');
+    // PHASE-2 T10F — RE-EXPRESSED. The open run is closed 'skipped' exactly as before; the
+    // row it is closed on is the occurrence. Asserted through the projection the owner's run
+    // history reads, so this clause also covers the mapping rather than just the state.
+    expect(occurrenceRunStatus(runId)).toBe('skipped');
 
     const log = db.prepare(`SELECT COUNT(*) AS n FROM task_log WHERE task_id = ? AND action_taken = 'schedule terminated on fallen'`).get(taskId) as { n: number };
     expect(log.n).toBe(1);

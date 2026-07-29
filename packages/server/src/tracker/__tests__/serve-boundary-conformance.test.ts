@@ -72,7 +72,18 @@ describe('serve boundary (P2)', () => {
     const cp = read('agent/v2/counterparty.ts');
     const fn = cp.slice(cp.indexOf('export function retireSpentEngineEvents'));
     const body = fn.slice(0, 3000);
-    expect(body).toMatch(/SELECT status FROM task_runs WHERE id = \?/);
+    // PHASE-2 T10F — RE-EXPRESSED, NOT WEAKENED. This clause used to pin the literal
+    // `SELECT status FROM task_runs WHERE id = ?`, and `task_runs` is gone. What it protects
+    // is unchanged and is what is asserted now: BOTH referents are read LIVE at sweep time,
+    // never carried on the trigger row. The run's referent is the occurrence row, asked
+    // through the module that owns it (`occurrenceRunStatus`), so the read cannot drift from
+    // the writer the way a hand-copied SQL string can.
+    expect(body, 'the run referent must be read live, not taken off the trigger')
+      .toMatch(/occurrenceRunStatus\(ev\.run_id\)/);
+    // ...and it is a FUNCTION CALL, not a status cached on the message row — the property the
+    // old literal was standing for. A negative control on the whole class of regression.
+    expect(body, 'no run status may be read from the trigger row itself')
+      .not.toMatch(/ev\.run_status|m\.run_status/);
     // PHASE-2 T8b: the live referent is a `work` row, read through the tracker's own scope.
     expect(body).toMatch(/AS status, w\.is_paused AS is_paused FROM work w/);
   });

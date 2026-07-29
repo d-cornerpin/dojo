@@ -26,6 +26,8 @@ import {
 } from '../work/tracker-store.js';
 import {
   claimOccurrence, releaseOccurrence, settleOccurrence, occurrenceOf, inFlightOccurrence,
+  assignOccurrence, skipOpenOccurrences, sweepOrphanedOccurrences,
+  sweepTerminatedAgentOccurrences,
 } from '../work/occurrences.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -740,13 +742,15 @@ export async function checkScheduledTasks(): Promise<void> {
       reason: `scheduled occurrence ${claimedOccurrence} fired`,
     });
 
-    const runId = uuidv4();
-
-    // 1. Create run instance for the claimed occurrence
-    db.prepare(`
-      INSERT INTO task_runs (id, task_id, run_number, scheduled_for, status, created_at)
-      VALUES (?, ?, ?, ?, 'pending', datetime('now'))
-    `).run(runId, taskId, runNumber, claimedOccurrence);
+    // PHASE-2 T10F — THE OCCURRENCE ID *IS* THE RUN ID, and `task_runs` is gone.
+    //
+    // T8c2 built the occurrence row and left the `task_runs` INSERT standing eighteen lines
+    // below the claim: two records of one fact, written by this function, on every fire. The
+    // second one is deleted here. Nothing downstream changes shape — `runId` is still the
+    // lineage key the engine event carries and `retireEngineEventsForRun` sweeps by — and one
+    // mislabel is fixed on the way past: the trigger already declared
+    // `rootKind: 'occurrence', rootId: runId` while `runId` was a `task_runs` uuid. Now it is.
+    const runId = occurrenceId;
 
     // 2. Determine who runs it
     let assignedAgent = taskRow.assigned_to as string | null;
@@ -762,8 +766,14 @@ export async function checkScheduledTasks(): Promise<void> {
           `No available agents in group "${groupName}" for scheduled task "${taskRow.title}". Task run #${runNumber} skipped.`, {
             taskId, runId, event: 'no_agent_available',
           });
-        // Mark run as skipped
-        db.prepare("UPDATE task_runs SET status = 'skipped', error = 'No available agent in group' WHERE id = ?").run(runId);
+        // PHASE-2 T10F: the `task_runs` row was marked 'skipped' HERE and the occurrence
+        // released immediately after — so the old shape recorded a skipped run #N and then
+        // let #N be claimed again, i.e. history could carry the same run number twice. The
+        // release is the record now: `releaseOccurrence` writes `occurrence_released` with
+        // this reason ON THE SCHEDULE, deliberately, because the occurrence row is about to
+        // be deleted so its sequence can be re-claimed and an event on a deleted row is a
+        // record nobody can find. D21's "retries on the next tick exactly as before" is the
+        // requirement, and it is the one the released row serves.
         // D21: release the claim taken above and restore the occurrence and prior
         // last_run_at, so the task retries on the next tick exactly as it did before the
         // claim existed. The occurrence ROW goes with it — releasing the sequence is what
@@ -814,10 +824,12 @@ export async function checkScheduledTasks(): Promise<void> {
       logger.warn('scheduler: writeTaskLog on fire failed (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
     }
 
-    // 4. Update run instance
-    db.prepare(`
-      UPDATE task_runs SET status = 'running', started_at = ?, assigned_to = ? WHERE id = ?
-    `).run(now, assignedAgent, runId);
+    // 4. Record who actually runs it. The claim fired on the schedule's own assignee (or
+    //    'scheduler'); the group pick, the primary fallback and the terminated-agent
+    //    reassignment above are all resolved after it, and the run history renders this.
+    //    `started_at` needs no write: the occurrence's `opened_at` IS the instant it was
+    //    claimed, which is what 'running' meant.
+    assignOccurrence(runId, assignedAgent);
 
     // 5. Trigger execution
     const taskTitle = taskRow.title as string;
@@ -886,12 +898,16 @@ export async function checkScheduledTasks(): Promise<void> {
 export async function onTaskRunComplete(taskId: string, status: string, summary: string): Promise<boolean> {
   const db = getDb();
 
-  // Find the latest running run for this task
-  const run = db.prepare(`
-    SELECT * FROM task_runs WHERE task_id = ? AND status = 'running' ORDER BY run_number DESC LIMIT 1
-  `).get(taskId) as Record<string, unknown> | undefined;
+  // Find the run in flight for this task. PHASE-2 T10F: this was a SELECT over task_runs for
+  // the newest row with status 'running', sitting three statements above
+  // `inFlightOccurrence(taskId)`, which asks the same question of the row that replaced it.
+  // One question, one asker. (The old statement is not quoted verbatim here on purpose: the
+  // SQL-prepare guard in `work/__tests__/override-sql-prepares.test.ts` scans backticked
+  // spans and cannot tell a documented statement from a live one, so quoting a statement
+  // against a dropped table turns a strict guard into a false red.)
+  const inFlight = inFlightOccurrence(taskId);
 
-  if (!run) {
+  if (!inFlight) {
     // No active run, either a non-scheduled task or the occurrence was already
     // closed by another path. Nothing to advance. RC-17: report the no-op with a
     // boolean so callers (work_validate(action="validate")) don't misread an unchanged, already-
@@ -899,19 +915,27 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
     return false;
   }
 
-  const runId = run.id as string;
+  const runId = inFlight.id;
   const now = new Date().toISOString();
 
-  // Update the run BY ID, but only while it is still 'running'. RC-17: .changes
-  // === 1 is the close token. If a concurrent tick or a duplicate dev process
-  // already closed this exact occurrence, we lose the race and must NOT advance
-  // run_count / recompute next_run_at again (that is the P-5 run-counter
-  // inflation class). Bail as a no-op instead.
-  const closed = db.prepare(`
-    UPDATE task_runs SET status = ?, completed_at = ?, result_summary = ? WHERE id = ? AND status = 'running'
-  `).run(status, now, summary, runId);
-  if (closed.changes !== 1) {
-    logger.info('Scheduler: run already closed elsewhere, skipping advance', { taskId, runId });
+  // PHASE-2 T8c2 item 4: settle the occurrence ROW with the run that closed it. Its terminal
+  // state is the run's own outcome — a run that reached nobody cannot be `done`, because G7
+  // is a DB CHECK, and no sentinel delivery is invented to pretend otherwise.
+  //
+  // PHASE-2 T10F — AND THIS SETTLE IS NOW THE CLOSE TOKEN. RC-17's token was
+  // `UPDATE ... WHERE id=? AND status='running'` with `.changes === 1`; a row already terminal
+  // cannot be transitioned again, so `applied` carries exactly the same meaning and the
+  // duplicate `task_runs` write is gone. Losing the race must still NOT advance run_count /
+  // recompute next_run_at (the P-5 run-counter inflation class), so it bails as a no-op.
+  const occRow = db.prepare('SELECT agent_id, opened_at FROM work WHERE id = ?')
+    .get(runId) as { agent_id: string; opened_at: number } | undefined;
+  const delivered = occRow ? deliveryForAgentSince(occRow.agent_id, occRow.opened_at) : null;
+  const settled = settleOccurrence(runId, status, delivered, summary);
+  if (settled.kind !== 'applied') {
+    logger.info('Scheduler: run already closed elsewhere, skipping advance', {
+      taskId, runId, result: settled.kind,
+      gate: 'gate' in settled ? settled.gate : undefined,
+    });
     return false;
   }
 
@@ -919,23 +943,6 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   // done, so any unserved trigger row for this run retires now instead of
   // waking a turn later to redo finished work.
   retireEngineEventsForRun(runId);
-
-  // PHASE-2 T8c2 item 4: settle the occurrence ROW with the run that closed it. Its terminal
-  // state is the run's own outcome — a run that reached nobody cannot be `done`, because G7
-  // is a DB CHECK, and no sentinel delivery is invented to pretend otherwise.
-  const inFlight = inFlightOccurrence(taskId);
-  if (inFlight) {
-    const occRow = db.prepare('SELECT agent_id, opened_at FROM work WHERE id = ?')
-      .get(inFlight.id) as { agent_id: string; opened_at: number } | undefined;
-    const delivered = occRow ? deliveryForAgentSince(occRow.agent_id, occRow.opened_at) : null;
-    const settled = settleOccurrence(inFlight.id, status, delivered, summary);
-    if (settled.kind !== 'applied') {
-      logger.warn('Scheduler: occurrence did not settle', {
-        taskId, occurrenceId: inFlight.id, result: settled.kind,
-        gate: 'gate' in settled ? settled.gate : undefined,
-      });
-    }
-  }
 
   // Update task run count
   bumpWorkAttempts(taskId);
@@ -1207,13 +1214,10 @@ export function terminateLiveScheduleOnFallen(
     return { terminated: false, runsSkipped: 0, isReminder };
   }
 
-  const skipped = db.prepare(`
-    UPDATE task_runs
-    SET status = 'skipped', completed_at = datetime('now'),
-        result_summary = ?
-    WHERE task_id = ? AND status IN ('pending', 'running')
-  `).run(`Skipped: ${reason}; schedule stopped`, taskId);
-  const runsSkipped = skipped.changes;
+  // PHASE-2 T10F: the same UPDATE, against the rows that replaced `task_runs`. The COUNT is a
+  // preserved fact and not a log line — it is quoted to the owner below and it gates the
+  // reminder heads-up.
+  const runsSkipped = skipOpenOccurrences(taskId, reason);
 
   writeTaskLog({
     taskId,
@@ -1241,19 +1245,11 @@ export function terminateLiveScheduleOnFallen(
 // ── Orphan cleanup ──
 
 /**
- * Find task_runs stuck in 'running' whose assigned agent is terminated.
+ * Find in-flight occurrences whose assigned agent is terminated.
  * Auto-complete them so the task can move on (or finish if it was the last run).
  */
 function cleanupOrphanedRuns(): void {
-  const db = getDb();
-
-  const orphans = db.prepare(`
-    SELECT tr.id as run_id, tr.task_id, tr.assigned_to
-    FROM task_runs tr
-    LEFT JOIN agents a ON a.id = tr.assigned_to
-    WHERE tr.status = 'running'
-      AND (a.status = 'terminated' OR a.id IS NULL)
-  `).all() as Array<{ run_id: string; task_id: string; assigned_to: string | null }>;
+  const orphans = sweepTerminatedAgentOccurrences();
 
   if (orphans.length === 0) return;
 
@@ -1273,9 +1269,9 @@ function cleanupOrphanedRuns(): void {
     // regardless of status), so the cleanup still unblocks the schedule; it just
     // records the dead run truthfully. Mirrors cleanupStaleRuns, which already
     // passes 'failed' for the same class of dead run.
-    onTaskRunComplete(orphan.task_id, 'failed', 'Auto-failed: assigned agent was terminated before the run completed').catch(err => {
+    onTaskRunComplete(orphan.taskId, 'failed', 'Auto-failed: assigned agent was terminated before the run completed').catch(err => {
       logger.error('Scheduler: orphan cleanup failed for task', {
-        taskId: orphan.task_id,
+        taskId: orphan.taskId,
         error: err instanceof Error ? err.message : String(err),
       });
     });
@@ -1297,12 +1293,12 @@ function cleanupStaleRuns(): void {
   // schedule_status combination got it there. v2.3.8.
   const HARD_STUCK_THRESHOLD_MINUTES = 120;
 
-  // ── RC-17.4: task_runs-keyed orphan sweep ──
+  // ── RC-17.4: the orphaned-occurrence sweep ──
   // The recovery machinery below keys on TASKS (schedule_status='running'),
   // so it cannot see runs that were orphaned when a path reset the task row
   // WITHOUT closing the run: work_update(action="complete_step") closes a fired recurring
   // task with zero run bookkeeping, and the force-reset / missed-runs paths
-  // rewrite schedule_status directly. Those 'running' task_runs rows then
+  // rewrite schedule_status directly. Those open runs then
   // accumulate forever (transcript-proven pool drain: runs 42/43/44/45 never
   // closed), and onTaskRunComplete's "newest running run" selection can grab a
   // stale one. Invariant: a legitimately in-flight run always has its parent at
@@ -1312,29 +1308,11 @@ function cleanupStaleRuns(): void {
   // by design (no owner heads-up): this drains stale bookkeeping, it is not a
   // live reminder the owner needs told about. A short age guard avoids racing an
   // in-flight advance.
-  const orphanRuns = db.prepare(`
-    SELECT tr.id AS run_id, tr.task_id, tr.run_number
-    FROM task_runs tr
-    LEFT JOIN work t ON t.id = tr.task_id
-    WHERE tr.status IN ('pending', 'running')
-      AND (t.id IS NULL OR t.schedule_status != 'running')
-      AND COALESCE(tr.started_at, tr.created_at) < datetime('now', '-5 minutes')
-  `).all() as Array<{ run_id: string; task_id: string; run_number: number }>;
-  if (orphanRuns.length > 0) {
-    for (const o of orphanRuns) {
-      // Close BY ID and only while still open, so a concurrent advance wins
-      // the race instead of us clobbering its close.
-      const closed = db.prepare(`
-        UPDATE task_runs
-        SET status = 'skipped', completed_at = datetime('now'),
-            result_summary = 'Auto-skipped: orphaned run (parent task not running this occurrence)'
-        WHERE id = ? AND status IN ('pending', 'running')
-      `).run(o.run_id);
-      if (closed.changes === 1) {
-        logger.warn('Scheduler: swept orphaned task_run', { taskId: o.task_id, runId: o.run_id, runNumber: o.run_number });
-      }
-    }
-  }
+  // PHASE-2 T10F: the query, the age guard and the close-only-while-open race are all
+  // carried into `sweepOrphanedOccurrences`, which keys on the occurrence rows that
+  // replaced `task_runs`. Each clause is asserted in `work/__tests__/occurrence-runs.test.ts`,
+  // including the age guard's negative control (a FRESH orphan is left alone).
+  sweepOrphanedOccurrences();
 
   // 1. Standard stale-running detection. Use the OLDER of (per-task
   // updated_at, agent last message) — same per-task pattern as PM's poke
@@ -1687,10 +1665,10 @@ function pruneTerminalTasks(): void {
 
     // Clear agent references first
     db.prepare(`UPDATE agents SET task_id = NULL WHERE task_id IN (${placeholders})`).run(...ids);
-    // Delete related records. The poke rows are `work_events` now (T8c item 1) and
-    // `deleteTrackerRow` already deletes those in the same transaction as the row itself, so
-    // there is no separate poke cleanup to do.
-    db.prepare(`DELETE FROM task_runs WHERE task_id IN (${placeholders})`).run(...ids);
+    // Delete related records. The poke rows are `work_events` now (T8c item 1), and the runs
+    // are occurrence CHILDREN of each task (PHASE-2 T10F) — `deleteTrackerRow` deletes
+    // children, their events and their adjudications in the same transaction as the row
+    // itself, so there is no separate cleanup to do for either.
     // Delete the tasks (children, events and adjudications go with them)
     for (const id of ids) deleteTrackerRow(id);
 

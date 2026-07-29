@@ -29,6 +29,7 @@ import {
   patchWork, deleteTrackerRow, deliveryForTaskClose, deliveryForCompletedChildren,
 } from '../../work/tracker-store.js';
 import { statusToState, tsToMs } from '../../work/tracker-view.js';
+import { deleteOccurrencesOf } from '../../work/occurrences.js';
 import { recordOwnerCloseReceipt } from '../../agent/v2/deliveries.js';
 import { createLogger } from '../../logger.js';
 import { getPrimaryAgentId, getPMAgentId, getDashboardHiddenAgentIds } from '../../config/platform.js';
@@ -860,12 +861,16 @@ trackerRouter.delete('/projects/:id', (c) => {
   const taskIds = db.prepare(`SELECT w.id AS id FROM work w WHERE ${taskScope('w')} AND w.parent_id = ?`).all(id) as Array<{ id: string }>;
   const ids = taskIds.map(t => t.id);
 
-  // Delete child rows for these tasks
+  // Delete child rows for these tasks.
+  // PHASE-2 T10F — AND THIS SITE WAS ALREADY BROKEN, which the absorption exposed rather
+  // than caused. `deleteTrackerRow(project)` deletes the project's CHILDREN (the tasks); an
+  // occurrence is a child of a TASK, so it is a GRANDCHILD, and `parent_id REFERENCES
+  // work(id)` has no cascade. Since T8c2 started writing occurrence rows, deleting a project
+  // whose task had ever fired would fail the whole transaction on a foreign key. Removing
+  // the grandchildren first is what the old per-run delete line was doing by accident, and
+  // now it is done on purpose. Logged as its own defect in DOJO-ISSUES-LOG.md.
   if (ids.length > 0) {
-    const ph = ids.map(() => '?').join(',');
-    // Pokes live in `work_events` (T8c item 1) and `deleteTrackerRow` removes those with
-    // the row, so only `task_runs` still needs its own cascade here.
-    db.prepare(`DELETE FROM task_runs WHERE task_id IN (${ph})`).run(...ids);
+    deleteOccurrencesOf(ids);
   }
 
   // Delete the project and its tasks (children first, inside one transaction).
@@ -885,7 +890,10 @@ trackerRouter.delete('/tasks/:id', (c) => {
     return c.json({ ok: false, error: 'Task not found' }, 404);
   }
 
-  db.prepare('DELETE FROM task_runs WHERE task_id = ?').run(id);
+  // PHASE-2 T10F: no separate run cascade is owed here — an occurrence is a CHILD of this
+  // task, and `deleteTrackerRow` already deletes children and their events in one
+  // transaction. (The project route above is different: there the occurrences are
+  // grandchildren, which nothing was removing.)
   deleteTrackerRow(id);
 
   logger.info('Task deleted', { taskId: id });

@@ -49,6 +49,7 @@ import { ensurePMAgentRunning, noteTransitionForReview } from './pm-agent.js';
 import { recordRemediation } from '../work/poke-ladder.js';
 import { injectTaskAssignmentNotification, claimAssignmentNoticeForTerminalTask } from './notify.js';
 import { writeTaskLog } from './task-log.js';
+import { inFlightOccurrence, skipOpenOccurrencesAsComplete } from '../work/occurrences.js';
 import { calculateNextRun, normalizeDbTimestamp, parseDaysOfWeek, wallToInstant, getBoxTimeZone, type ScheduledTask, type WallClock } from '../scheduler/engine.js';
 import { onTaskRunComplete, terminateLiveScheduleOnFallen } from '../scheduler/runner.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -1623,7 +1624,11 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         return closeRefusalText(taskId, allRunsRes, 'complete');
       }
       patchWork(taskId, { schedule_status: 'completed', is_paused: 1 });
-      db.prepare("UPDATE task_runs SET status = 'complete', completed_at = datetime('now'), result_summary = ? WHERE task_id = ? AND status = 'running'").run(notes ?? 'All runs completed by agent', taskId);
+      // PHASE-2 T10F: close the run in flight on the row that replaced `task_runs`. The
+      // agent's assertion is 'complete' with no delivery of its own, so the occurrence
+      // settles `abandoned` while its history still reads `complete` — G7's rule kept, the
+      // owner's word kept.
+      skipOpenOccurrencesAsComplete(taskId, notes ?? 'All runs completed by agent');
       const updatedTask = getTask(taskId)!;
       broadcast({ type: 'tracker:task_updated', data: updatedTask });
       notifyPrimaryAgent(
@@ -1659,9 +1664,9 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       // existing [NO-OP] stale-trigger text and do NOT advance. The deliberate
       // "stop the whole schedule" path (complete_all_runs=true) is handled
       // above this block and is intentionally not gated.
-      const openRun = db.prepare(
-        `SELECT id FROM task_runs WHERE task_id = ? AND status = 'running' ORDER BY run_number DESC LIMIT 1`
-      ).get(taskId) as { id: string } | undefined;
+      // PHASE-2 T10F: the "actually-open occurrence" signal is now asked of the occurrence
+      // row itself, which is what RC-17.1's own comment was describing.
+      const openRun = inFlightOccurrence(taskId);
       const scheduleStatusNow = (
         db.prepare('SELECT schedule_status FROM work WHERE id = ?').get(taskId) as { schedule_status: string } | undefined
       )?.schedule_status;
@@ -3204,7 +3209,8 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
       return closeRefusalText(taskId, schedDoneRes, 'complete');
     }
     patchWork(taskId, { is_paused: 1, schedule_status: 'completed' });
-    db.prepare("UPDATE task_runs SET status = 'complete', completed_at = datetime('now'), result_summary = 'Schedule stopped and marked complete' WHERE task_id = ? AND status = 'running'").run(taskId);
+    // PHASE-2 T10F: same close, against the occurrence rows.
+    skipOpenOccurrencesAsComplete(taskId, 'Schedule stopped and marked complete');
     const freshSchedDone = getTask(taskId);
     if (freshSchedDone) broadcast({ type: 'tracker:task_updated', data: freshSchedDone });
     logger.info('Schedule paused and task marked complete', { taskId }, agentId);

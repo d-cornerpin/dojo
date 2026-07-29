@@ -70,6 +70,9 @@ export const OCCURRENCE_EVENT = {
   fired: 'occurrence_fired',
   /** A won claim was handed back unfired (no agent available). Payload: `{ reason }`. */
   released: 'occurrence_released',
+  /** The run closed, carrying ITS OWN outcome word. Payload: `{ run_status, summary }`.
+   *  PHASE-2 T10F: the discriminator `work.state` cannot hold — see `settleOccurrence`. */
+  settled: 'occurrence_settled',
 } as const;
 
 /**
@@ -221,25 +224,185 @@ export function releaseOccurrence(
 export function settleOccurrence(
   occurrenceId: string, runStatus: string, deliveryId: string | null, summary: string | null,
 ): TransitionResult {
+  let result: TransitionResult;
   if (runStatus === 'failed') {
-    return transition(occurrenceId, {
+    result = transition(occurrenceId, {
       to: 'failed', by: 'scheduler', actorId: 'scheduler',
       reason: `the run for this occurrence failed${summary ? `: ${summary}` : ''}`,
+      note: summary,
     });
-  }
-  if (runStatus === 'complete' && deliveryId) {
-    return transition(occurrenceId, {
+  } else if (runStatus === 'complete' && deliveryId) {
+    result = transition(occurrenceId, {
       to: 'done', by: 'scheduler', actorId: 'scheduler',
       resultDeliveryId: deliveryId,
       reason: 'the run for this occurrence finished and delivered',
+      note: summary,
+    });
+  } else {
+    result = transition(occurrenceId, {
+      to: 'abandoned', by: 'scheduler', actorId: 'scheduler',
+      reason: runStatus === 'complete'
+        ? 'the run for this occurrence finished with nothing delivered to a person'
+        : `the occurrence was ${runStatus} without running`,
+      note: summary,
     });
   }
-  return transition(occurrenceId, {
-    to: 'abandoned', by: 'scheduler', actorId: 'scheduler',
-    reason: runStatus === 'complete'
-      ? 'the run for this occurrence finished with nothing delivered to a person'
-      : `the occurrence was ${runStatus} without running`,
-  });
+
+  // PHASE-2 T10F — THE RUN'S OWN WORD, recorded because the STATE cannot carry it.
+  //
+  // `abandoned` is the terminal state for two different runs: one that finished and reached
+  // nobody, and one that never ran at all. G7 makes that unavoidable (`done` is unreachable
+  // without a delivery, and no sentinel is invented). But `task_runs.status` told those two
+  // apart — the owner's run history renders `complete` for the first and `skipped` for the
+  // second — so the discriminator is preserved HERE rather than lost in the mapping. It is an
+  // event and not a column because it is a fact about the run, not about the row's state, and
+  // `work_events` is where this spine puts facts about what happened.
+  if (result.kind === 'applied') {
+    appendWorkEvent(occurrenceId, OCCURRENCE_EVENT.settled, 'scheduler', {
+      run_status: runStatus, summary: summary ?? null,
+    });
+  }
+  return result;
+}
+
+/**
+ * Record who is actually running this occurrence.
+ *
+ * The claim has to happen BEFORE the assignee is known — it is what makes "fire once" a
+ * constraint, and it fires on the schedule's own `assigned_to` (or `scheduler`). Who runs it is
+ * resolved afterwards: a group pick, the primary-agent fallback, or the reassignment a
+ * terminated assignee forces. `task_runs.assigned_to` was written at exactly this point
+ * (`runner.ts` step 4) and the run history renders it, so the occurrence row learns it too
+ * rather than keeping the schedule's stale guess.
+ */
+export function assignOccurrence(occurrenceId: string, agentId: string): void {
+  getDb().prepare(
+    `UPDATE work SET agent_id = ?, assignee_agent = ?, updated_at = ?
+      WHERE id = ? AND kind = ?`,
+  ).run(agentId, agentId, Date.now(), occurrenceId, OCCURRENCE_KIND);
+}
+
+/**
+ * Close every open occurrence of a schedule as skipped, and return HOW MANY.
+ *
+ * The count is a preserved fact, not a log line: the fallen path quotes it to the owner
+ * ("N open run(s) skipped") and gates the reminder heads-up on it being non-zero.
+ */
+export function skipOpenOccurrences(workId: string, reason: string): number {
+  const open = getDb().prepare(
+    `SELECT id FROM work WHERE kind = ? AND parent_id = ? AND state IN ('open','claimed')`,
+  ).all(OCCURRENCE_KIND, workId) as Array<{ id: string }>;
+  let closed = 0;
+  for (const o of open) {
+    if (settleOccurrence(o.id, 'skipped', null, `Skipped: ${reason}; schedule stopped`).kind
+        === 'applied') closed += 1;
+  }
+  return closed;
+}
+
+/**
+ * Close every open occurrence of a schedule recording the run's own word as `complete`.
+ *
+ * The three sites this replaces all said the same thing —
+ * `UPDATE task_runs SET status='complete' ... WHERE status='running'` — when a human-or-agent
+ * decision retired the whole schedule: "all runs completed by agent", "schedule stopped and
+ * marked complete", "auto-completed: group deleted". None of them had a delivery to point at,
+ * so the occurrence settles `abandoned` (G7: `done` means DELIVERED, and no sentinel is
+ * invented) while the run history still reads `complete`, which is what the caller asserted.
+ */
+export function skipOpenOccurrencesAsComplete(workId: string, summary: string): number {
+  const open = getDb().prepare(
+    `SELECT id FROM work WHERE kind = ? AND parent_id = ? AND state IN ('open','claimed')`,
+  ).all(OCCURRENCE_KIND, workId) as Array<{ id: string }>;
+  let closed = 0;
+  for (const o of open) {
+    if (settleOccurrence(o.id, 'complete', null, summary).kind === 'applied') closed += 1;
+  }
+  return closed;
+}
+
+/** RC-17.4's age guard, carried verbatim from the query it replaces
+ *  (`scheduler/runner.ts` `cleanupStaleRuns`: `datetime('now','-5 minutes')`). It exists to
+ *  avoid racing an in-flight advance, so it is not a threshold anybody invented here. */
+export const ORPHAN_RUN_GRACE_MS = 5 * 60 * 1000;
+
+/**
+ * Sweep occurrences whose schedule is not running them.
+ *
+ * RC-17.4's invariant, unchanged: a legitimately in-flight run always has its parent at
+ * `schedule_status='running'` — the claim sets both in one transaction, and close-out closes
+ * the run BEFORE moving the schedule. So an open occurrence whose parent is not running it is
+ * an orphan. Silent by design: this drains stale bookkeeping, it is not a live reminder the
+ * owner needs told about.
+ */
+export function sweepOrphanedOccurrences(nowMs = Date.now()): number {
+  const orphans = getDb().prepare(
+    `SELECT w.id, w.parent_id, w.sequence FROM work w
+       LEFT JOIN work p ON p.id = w.parent_id
+      WHERE w.kind = ? AND w.state IN ('open','claimed')
+        AND (p.id IS NULL OR p.schedule_status != 'running')
+        AND w.opened_at < ?`,
+  ).all(OCCURRENCE_KIND, nowMs - ORPHAN_RUN_GRACE_MS) as
+    Array<{ id: string; parent_id: string; sequence: number }>;
+
+  let swept = 0;
+  for (const o of orphans) {
+    const settled = settleOccurrence(
+      o.id, 'skipped', null,
+      'Auto-skipped: orphaned run (parent task not running this occurrence)',
+    );
+    if (settled.kind === 'applied') {
+      swept += 1;
+      logger.warn('swept orphaned occurrence', {
+        workId: o.parent_id, occurrenceId: o.id, sequence: o.sequence,
+      });
+    }
+  }
+  return swept;
+}
+
+/** Open occurrences whose assigned agent is terminated or gone. Reported, not closed: the
+ *  caller routes them through the full run-complete flow, because closing the occurrence
+ *  without advancing the schedule is what stalled a cadence before. */
+export function sweepTerminatedAgentOccurrences(): Array<{
+  occurrenceId: string; taskId: string; assignedTo: string | null;
+}> {
+  const rows = getDb().prepare(
+    `SELECT w.id AS occurrence_id, w.parent_id AS task_id, w.agent_id AS assigned_to
+       FROM work w LEFT JOIN agents a ON a.id = w.agent_id
+      WHERE w.kind = ? AND w.state IN ('open','claimed')
+        AND (a.id IS NULL OR a.status = 'terminated')`,
+  ).all(OCCURRENCE_KIND) as Array<{
+    occurrence_id: string; task_id: string; assigned_to: string | null;
+  }>;
+  return rows.map(r => ({
+    occurrenceId: r.occurrence_id, taskId: r.task_id, assignedTo: r.assigned_to,
+  }));
+}
+
+/**
+ * Delete the occurrence rows of these schedules, and their events, returning the count.
+ *
+ * The three `DELETE FROM task_runs` sites were deleting runs alongside their tasks. On the
+ * spine an occurrence is a CHILD `work` row, and `parent_id REFERENCES work(id)` has no
+ * cascade — so this is no longer a courtesy: deleting a schedule without it fails on the
+ * foreign key. Its own clause asserts that.
+ */
+export function deleteOccurrencesOf(workIds: string[]): number {
+  if (workIds.length === 0) return 0;
+  const db = getDb();
+  const ph = workIds.map(() => '?').join(',');
+  let removed = 0;
+  db.transaction(() => {
+    db.prepare(
+      `DELETE FROM work_events WHERE work_id IN (
+         SELECT id FROM work WHERE kind = ? AND parent_id IN (${ph}))`,
+    ).run(OCCURRENCE_KIND, ...workIds);
+    removed = db.prepare(
+      `DELETE FROM work WHERE kind = ? AND parent_id IN (${ph})`,
+    ).run(OCCURRENCE_KIND, ...workIds).changes;
+  })();
+  return removed;
 }
 
 /** The occurrence this schedule has in flight, if any. A crashed fire leaves exactly this

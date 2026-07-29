@@ -2,6 +2,7 @@ import { exec } from 'node:child_process';
 import { getCurrentToolCallId, runWithToolCallId, currentTurnNumber, currentTurnRoot } from './turn-state.js';
 import { taskScope, projectScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../work/tracker-store.js';
+import { skipOpenOccurrencesAsComplete } from '../work/occurrences.js';
 import { promisify } from 'node:util';
 
 const execAsync = promisify(exec);
@@ -7512,7 +7513,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
             } else {
               logger.warn('group-delete task close refused', { taskId: t.id, result: r });
             }
-            groupDb2.prepare("UPDATE task_runs SET status = 'complete', completed_at = datetime('now'), result_summary = 'Auto-completed: group deleted' WHERE task_id = ? AND status = 'running'").run(t.id);
+            skipOpenOccurrencesAsComplete(t.id, 'Auto-completed: group deleted');
           }
           if (orphanedTasks.length > 0) {
             logger.info('Auto-completed orphaned tasks during group deletion', { groupId, count: orphanedTasks.length });
