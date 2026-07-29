@@ -57,12 +57,34 @@ export const isTerminal = (s: WorkState): boolean => TERMINAL_STATES.includes(s)
  *  Reopening a TERMINAL row is legal but only for an authority (see gate G8): "late answer
  *  reopens the work" is a real requirement, and it is also exactly the move a confused model
  *  makes on a stale id. */
+// ⚠ PHASE-2 T8c2 item 7 — `on_deck` WAS UNREACHABLE, AND THE MEASUREMENT IS WHY THIS ROW
+// CHANGED. Eleven production call sites ask to put work back in the queue: the scheduler's
+// recurring cadence reset ("run finished; waiting for the next occurrence",
+// `runner.ts:1010`), its unfired release, the PM ladder's rung-4 auto-reset
+// (`pm-agent.ts:1771`), scheduling a task for later, resuming a paused schedule, resolving
+// missed runs, the healer, and the owner dragging a card on the dashboard. Every one of them
+// moves from `claimed` or `paused`, and NEITHER had `on_deck` in its row — so every one was
+// refused with `illegal-transition`, silently, because most of those callers do not read the
+// result. Measured on this box before the fix: 536 recorded transitions across 8 distinct
+// moves and **ZERO into `on_deck` from any state**, with zero rows sitting in it.
+//
+// It is a regression with a date: before PHASE-2 T8b these went through
+// `tracker/schema.ts:updateTask({status})`, an ungated column patch, and simply worked. T8b
+// correctly routed them through this gate; the table it routed them into was written (T2)
+// before those callers existed and nobody enumerated them against it. `on_deck -> claimed`
+// was already legal, so the asymmetry was an omission, not a decision.
+//
+// THE RULE, stated so the next reader does not have to infer it: `on_deck` is a NON-TERMINAL
+// QUEUE state, and every non-terminal state may return to it. Terminal states are untouched —
+// they still have exactly the one `open` reopen edge, so the reopen-requires-authority gate
+// below keeps its whole subject. Asserted with negative controls in
+// `__tests__/transition.test.ts`.
 const LEGAL: Record<WorkState, readonly WorkState[]> = {
   open:      ['claimed', 'on_deck', 'paused', 'blocked', 'done', 'failed', 'abandoned'],
   on_deck:   ['open', 'claimed', 'paused', 'blocked', 'failed', 'abandoned'],
-  claimed:   ['open', 'paused', 'blocked', 'done', 'failed', 'abandoned'],
-  paused:    ['open', 'claimed', 'blocked', 'done', 'failed', 'abandoned'],
-  blocked:   ['open', 'claimed', 'paused', 'done', 'failed', 'abandoned'],
+  claimed:   ['open', 'on_deck', 'paused', 'blocked', 'done', 'failed', 'abandoned'],
+  paused:    ['open', 'claimed', 'on_deck', 'blocked', 'done', 'failed', 'abandoned'],
+  blocked:   ['open', 'claimed', 'on_deck', 'paused', 'done', 'failed', 'abandoned'],
   done:      ['open'],
   failed:    ['open', 'abandoned'],
   abandoned: ['open'],

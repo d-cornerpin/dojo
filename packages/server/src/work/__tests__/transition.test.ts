@@ -130,6 +130,51 @@ describe('G5 — the legal-transition table', () => {
     if (bad.kind === 'rejected') expect(bad.gate).toBe('illegal-transition');
     expect(transition('w1', { to: 'claimed', by: 'agent', reason: 'x' }).kind).toBe('applied');
   });
+
+  // ── PHASE-2 T8c2 item 7 — putting work BACK IN THE QUEUE ──
+  // `on_deck` was unreachable: eleven production callers move to it and every one moves from
+  // `claimed` or `paused`, neither of which had it. Measured on the box before the fix: 536
+  // recorded transitions, ZERO into `on_deck` from any state. The rule now is that `on_deck`
+  // is a non-terminal QUEUE state and every non-terminal state may return to it.
+
+  it('the scheduler can return a finished recurring run to the queue (claimed -> on_deck)', () => {
+    // `runner.ts:1010`, "run finished; waiting for the next occurrence" — the cadence reset
+    // every recurring schedule depends on, refused silently until this task.
+    seedWork('w1', { state: 'claimed' });
+    const r = transition('w1', {
+      to: 'on_deck', by: 'scheduler', actorId: 'scheduler',
+      reason: 'run finished; waiting for the next occurrence',
+    });
+    expect(r.kind).toBe('applied');
+  });
+
+  it('the PM ladders auto-reset can requeue an idle claim (claimed -> on_deck)', () => {
+    seedWork('w1', { state: 'claimed' });
+    expect(transition('w1', {
+      to: 'on_deck', by: 'pm', actorId: 'pm', claim: 'authoritative',
+      reason: 'auto-reset: the escalation ladder ran out',
+    }).kind).toBe('applied');
+  });
+
+  it('a resumed schedule can requeue (paused -> on_deck) and a blocked one can too', () => {
+    seedWork('w1', { state: 'paused' });
+    expect(transition('w1', { to: 'on_deck', by: 'agent', reason: 'schedule resumed' }).kind).toBe('applied');
+    seedWork('w2', { state: 'blocked' });
+    expect(transition('w2', { to: 'on_deck', by: 'agent', reason: 'unblocked, back in the queue' }).kind).toBe('applied');
+  });
+
+  it('NEGATIVE CONTROL: a TERMINAL row still cannot be requeued directly', () => {
+    // The widening is deliberately scoped to non-terminal states. A settled row keeps its
+    // single `open` reopen edge, so `reopen-requires-authority` keeps its whole subject —
+    // if `done -> on_deck` were legal, a confused model could resurrect settled work with
+    // no authority at all.
+    for (const state of ['done', 'failed', 'abandoned'] as const) {
+      seedWork(`t-${state}`, { state, closed_at: 1700000000001, result_delivery_id: 'd-1' });
+      const r = transition(`t-${state}`, { to: 'on_deck', by: 'agent', reason: 'try to requeue' });
+      expect(r.kind).toBe('rejected');
+      if (r.kind === 'rejected') expect(r.gate).toBe('illegal-transition');
+    }
+  });
 });
 
 describe('G6 — the engine may only assert what it can point at (OR2)', () => {
