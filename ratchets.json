@@ -91,6 +91,48 @@
       "to": 9404,
       "by": "PHASE-2 T5 fix (2026-07-28)",
       "why": "+15 for the receipt-ordering fix in `25d83d4`. The iMessage and SMS auto-routes wrote their C26 receipt ONE STATEMENT below the outbound scope that had just recorded the send, so `deliveries.receipt_id` read 0 of 119 on the live ledger and would have shipped as the written-only column the Phase-1 exit named as the failure mode to avoid. Both receipts moved inside their scope callback, which costs a closure and the paragraph explaining why the placement is load-bearing. Caught by counting rows on the box, not by reading the diff \u2014 the comment says so, because the next person to move one of these lines needs to know what it breaks."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9404,
+      "to": 9521,
+      "by": "PHASE-2 T6 (2026-07-28)",
+      "why": "PHASE-2 T6's five in-loop rekeys, net +117 after a trim pass that moved the reasoning to the module it belongs to. What LANDED here cannot live elsewhere: these are gates INSIDE the turn, and each one now reads a record where it used to compute an answer for itself \u2014 the redundant-closeout floor (the prose classifier is DELETED and the authority is the delivery ledger), the silent-closeout owe-filter, the turn-record's FIRST READER at finalize (R-0: `finalizeTurn` has always written the true outcome and NOTHING read it), the waiting-on-owner disposition and its reopen edge, and the settled read collapsing from an array-build to one query. What it BUYS, measured in the same task: `classifiers/output.ts` -24 (the twenty-phrase CLOSEOUT regex and its two consts, gone), `memory/directive.ts` -4 net on the selector with R-2 closed (a four-line JSON-shape probe becomes `answer_message_id IS NULL`), one dead flag stripped, and four hand-rolled copies of the answered-edge read replaced by calls. The line count is the wrong meter for this one and the plan says so (#7): what to read is the demolition ledger."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 1175,
+      "to": 1229,
+      "by": "PHASE-2 T6 (2026-07-28)",
+      "why": "+54 for `abandonUnservableAsks()` \u2014 requirement 2b's THIRD cause of `abandoned`, and it must be in this module because `transition()` is the only writer of `work.state` and the single-writer walk's Part A allowlist is EMPTY. It disposes of tickets nobody can ever serve or close (no conversation identity, or a root message that no longer exists); 74 such rows on the dev box got their one-shot honest disposition at boot, 25 identity-less and 49 gone-root, each with its reason on its own `work_events` row. THIS IS THE FOURTH CONSECUTIVE TASK TO RAISE THIS FILE (T3 590->1145, T4, T5 1175, now 1229). The real fix is the question T3 asked and T4 and T5 repeated: should the single-module walk learn about a `work/` DIRECTORY? T9 owns that ruling and it is now four tasks overdue."
+    },
+    {
+      "path": "packages/server/src/memory/message-store.ts",
+      "from": 842,
+      "to": 868,
+      "by": "PHASE-2 T6 (2026-07-28)",
+      "why": "+26, all of it ONE structural clause and the measurement that justifies it. `isOwnerAsk` now requires the row to carry a CHANNEL, because OR4 says channel/sender/trust/lane are stamped at INGEST and a `role='user'` row without one did not come through a door \u2014 it is the platform writing to itself in the second person. Three producers were doing exactly that (the PM's own situation report, the [ENGINE RENAME REQUEST], a spawned agent's kickoff), each opening an owner ask ticket nobody could ever serve, and the PM was being told THE OWNER was talking to it. The comment carries the query and its result because the evidence is the whole argument: every genuine ask on this box carries channel+sender+meta+conversation, every stuck one carries none of the four."
+    },
+    {
+      "path": "packages/server/src/index.ts",
+      "from": 1267,
+      "to": 1279,
+      "by": "PHASE-2 T6 (2026-07-28)",
+      "why": "+12: the boot sweep that gives unservable ask tickets an honest terminal state, placed beside the crash reconciliation it belongs with (both answer 'what did a restart inherit that nobody can finish'). Twelve lines and a `try` \u2014 there is no smaller honest form."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 1799,
+      "to": 1805,
+      "by": "PHASE-2 T6 (2026-07-28)",
+      "why": "+6 in `resolveCompilePendingJoins`, which T4's report named as owed to T6 BY NAME. The site stops holding its own reading of the answered edge and calls the one reader, which also means it now sees the ticket's `result_delivery_id` before the mig-113 stamp \u2014 strictly more evidence for the same decision. The +6 is the receipt appearing in the settle's reason string plus the two-line explanation of why `done` still is not asserted here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/answered-edge.ts",
+      "from": 0,
+      "to": 487,
+      "by": "PHASE-2 T6 (2026-07-28)",
+      "why": "NEW FILE, above the 400-line cap, and the addition is meant to be argued with. It is THE ANSWERED EDGE: the one place this tree answers 'has the person heard from us', replacing seven mechanisms that each answered it for themselves (a twenty-phrase prose classifier, two turn-local booleans, a legacy status scan joined by hand to a message column, an array the loop had to BUILD to learn a boolean, a loop-local variable set at four sites, `conv_key IS NULL`, `swept_at`) plus the turn record's own `exit_reason`, which finalizeTurn has always written and nothing read (R-0). Roughly two thirds of it is the argument, the measurements and the requirement-preserved lines \u2014 deliberately, because the danger with this particular collapse is not that it is wrong today but that somebody loosens a key later without knowing which incident bought it. Splitting it would put the answer-receipt read in one file and the closeout-owe read in another, which is the exact split requirement 2d exists to end."
     }
   ],
   "maxNewFileLines": 400,
@@ -119,7 +161,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1381,
-    "packages/server/src/agent/a2a-transport.ts": 1799,
+    "packages/server/src/agent/a2a-transport.ts": 1805,
     "packages/server/src/agent/browser.ts": 412,
     "packages/server/src/agent/destructive-gate.ts": 552,
     "packages/server/src/agent/model.ts": 2655,
@@ -131,7 +173,7 @@
     "packages/server/src/agent/tools.ts": 10640,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 468,
     "packages/server/src/agent/v2/counterparty.ts": 890,
-    "packages/server/src/agent/v2/loop.ts": 9404,
+    "packages/server/src/agent/v2/loop.ts": 9521,
     "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/state.ts": 686,
@@ -154,10 +196,10 @@
     "packages/server/src/healer/diagnostic.ts": 1035,
     "packages/server/src/healer/healer-agent.ts": 1170,
     "packages/server/src/healer/injury-recovery.ts": 809,
-    "packages/server/src/index.ts": 1267,
+    "packages/server/src/index.ts": 1279,
     "packages/server/src/memory/assembler.ts": 2564,
     "packages/server/src/memory/compaction.ts": 1267,
-    "packages/server/src/memory/message-store.ts": 842,
+    "packages/server/src/memory/message-store.ts": 868,
     "packages/server/src/memory/open-loops.ts": 623,
     "packages/server/src/memory/recall.ts": 502,
     "packages/server/src/memory/retrieval.ts": 591,
@@ -200,10 +242,11 @@
     "packages/server/src/voice/model-manager.ts": 583,
     "packages/server/src/voice/stt-service.ts": 538,
     "packages/server/src/voice/voice-ws.ts": 2299,
-    "packages/server/src/work/store.ts": 1175,
+    "packages/server/src/work/store.ts": 1229,
     "packages/shared/src/types.ts": 500,
     "packages/shared/src/visibility.ts": 815,
     "packages/shared/src/ws.ts": 1082,
-    "watchdog/src/index.ts": 1198
+    "watchdog/src/index.ts": 1198,
+    "packages/server/src/agent/v2/answered-edge.ts": 487
   }
 }
