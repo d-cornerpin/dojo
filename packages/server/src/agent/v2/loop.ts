@@ -139,8 +139,9 @@ import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngine
 // every gate in this file that used to answer it for itself (research 07 rows 1a/1b/1c/1e/
 // 1g/2d). Nothing below reads the model's prose to decide it any more.
 import {
-  closedWithoutDelivery, owesAnswer, pauseDriveWorkWaitingOnOwner, resumeWorkOnOwnerAsk,
-  stillClaimedWork, terminalDeliveryForTurn, turnDeliveredToPerson,
+  answerReceiptForAsk, closedWithoutDelivery, owesAnswer, pauseDriveWorkWaitingOnOwner,
+  recordedAnswerInConversation, resumeWorkOnOwnerAsk, stillClaimedWork, terminalDeliveryForTurn,
+  turnDeliveredToPerson,
 } from './answered-edge.js';
 import { resolveOwnerAffinityChannel, affinityPromotionAllowed, recordAffinityPromotion, affinityPromotionRefusedNoBasis } from './owner-affinity.js';
 import { getProactiveSendStreak, bumpProactiveSendStreak, resetProactiveSendStreak, PROACTIVE_SEND_DEMOTE_THRESHOLD } from './proactive-budget.js';
@@ -356,10 +357,13 @@ function userRequestedCloseWantsReply(
     // read replaces the length>40 adjacency probe; the probe survives only as
     // the pre-spine fallback for rootless tasks.
     if (task.source_message_id) {
-      const askAnswered = db.prepare(
-        'SELECT answer_message_id FROM messages WHERE id = ?',
-      ).get(task.source_message_id) as { answer_message_id: string | null } | undefined;
-      if (askAnswered) return askAnswered.answer_message_id == null;
+      // PHASE-2 T6 (C5): ONE reader. `answerReceiptForAsk` is the ticket's
+      // `result_delivery_id` and the mig-113 stamp read in a single statement, so this site
+      // and the four others that asked the same question can no longer answer it
+      // differently. `legacyRow` distinguishes "this ask has no ticket AND no stamp" (fall
+      // through to the pre-spine probe) from "asked and not yet answered" (return true).
+      const receipt = answerReceiptForAsk(task.source_message_id);
+      if (!(receipt.legacyRow && !receipt.answered)) return !receipt.answered;
     }
     const alreadyAnswered = !!db.prepare(`
       SELECT 1 FROM messages
@@ -4920,14 +4924,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // is ghosted too, silence stands (marker row + loud log below); the
           // ladder and stamps own the follow-up.
           try {
-            const prior = db.prepare(`
-              SELECT m2.content AS answer FROM messages m1
-              JOIN messages m2 ON m2.id = m1.answer_message_id
-              WHERE m1.agent_id = ? AND m1.role = 'user' AND m1.conv_key = ?
-                AND m1.answer_message_id IS NOT NULL AND m2.role = 'assistant'
-              ORDER BY m1.created_at DESC LIMIT 1
-            `).get(agentId, chosenConvKey) as { answer: string } | undefined;
-            const excerpt = (prior?.answer ?? '').replace(/\s+/g, ' ').trim().slice(0, 220);
+            const excerpt = (recordedAnswerInConversation(agentId, chosenConvKey) ?? '')
+              .replace(/\s+/g, ' ').trim().slice(0, 220);
             if (excerpt.length > 0) {
               const steer2 =
                 `[Engine record: you again ended with [no-reply] on the user's direct ask, but you already answered this in this conversation. Your recorded answer: "${excerpt}". Reply now with one brief line in your own words pointing back to that. Do not re-do the work and do not stay silent.]`;
@@ -8419,10 +8417,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
         const rootIds = justCompletedScaffold
           .map((t) => (t as unknown as { source_message_id?: string | null }).source_message_id)
           .filter((x): x is string => !!x);
-        const answeredByKey = rootIds.length === justCompletedScaffold.length && rootIds.length > 0 && rootIds.every((mid) => {
-          const row = db.prepare('SELECT answer_message_id FROM messages WHERE id = ?').get(mid) as { answer_message_id: string | null } | undefined;
-          return !!row?.answer_message_id;
-        });
+        // PHASE-2 T6 (C5): the same ONE reader the owe-filter uses, so "the user already
+        // has this" cannot mean two different things in two places in this file.
+        const answeredByKey = rootIds.length === justCompletedScaffold.length && rootIds.length > 0
+          && rootIds.every((mid) => !owesAnswer(mid));
         const userAlreadyAnswered = answeredByKey || (justCompletedScaffold.length > 0 && !!db.prepare(`
           SELECT 1 FROM messages
           WHERE agent_id = ? AND role = 'assistant' AND created_at >= (unixepoch(?) * 1000)

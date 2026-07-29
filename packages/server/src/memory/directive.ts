@@ -84,25 +84,35 @@ export function getActiveUserDirective(
     baseParams.push(opts.conversationKey);
   }
 
-  // Exclude asks already ANSWERED on their own conversation. An answered request
-  // must never be re-pinned as the active directive: that is the OPEN-11 bug
-  // where an unrelated later turn (a scheduler tick, an inbound email) re-runs a
-  // stale answered ask and the agent re-replies out of nowhere. A user row is
-  // "answered" iff a later assistant message carrying USER-FACING TEXT exists on
-  // the SAME conv_key. Keying on a real text reply (not on pickup) means this can
-  // NEVER drop the ask currently being answered, at context-assembly time the
-  // turn has not produced its reply yet, so no later text row exists, and never
-  // touches a still-waiting ask (conv_key IS NULL can't match the correlation, so
-  // those rows are always kept). Pure tool_use assistant turns are NOT a reply,
-  // so a half-finished ask (tools fired, no text yet) also stays in force. This
-  // only ever REMOVES an answered ask from the headline pin; it never blocks a
-  // turn, the live conversation tail is unaffected.
-  baseClauses.push(
-    "NOT EXISTS (SELECT 1 FROM messages a " +
-      "WHERE a.agent_id = messages.agent_id AND a.role = 'assistant' " +
-      "AND a.conv_key IS NOT NULL AND a.conv_key = messages.conv_key AND a.rowid > messages.rowid " +
-      "AND (a.content NOT LIKE '[%' OR a.content LIKE '%\"type\":\"text\"%'))",
-  );
+  // Exclude asks already ANSWERED. An answered request must never be re-pinned as the
+  // active directive: that is the OPEN-11 bug where an unrelated later turn (a scheduler
+  // tick, an inbound email) re-runs a stale answered ask and the agent re-replies out of
+  // nowhere.
+  //
+  // ── PHASE-2 T6 (C5) — R-2 IS CLOSED HERE. ──
+  //
+  // The clause this replaces asked "does a later assistant row on the same conv_key carry
+  // USER-FACING TEXT", and it decided that by SNIFFING THE CONTENT:
+  //     AND (a.content NOT LIKE '[%' OR a.content LIKE '%"type":"text"%')
+  // — a JSON-shape probe standing in for "this was a reply". Research 21 records it as R-2
+  // ("the directive gate keys on content shape, no origin_intent filter") and the fix it
+  // asks for is exactly this: ONE reader of answeredness, and a ban on shape-sniffing.
+  //
+  // The replacement is the ANSWERED EDGE itself — `answer_message_id`, stamped at turn
+  // finalize by the truthful-answer key and by nothing else (migration 113). It is the same
+  // column `agent/v2/answered-edge.ts` reads for every other consumer, so "answered" means
+  // one thing across the tree.
+  //
+  // requirement preserved, clause by clause, because each was load-bearing:
+  //   * "can NEVER drop the ask currently being answered" — the stamp is written at turn
+  //     FINALIZE, and this query runs during assembly, before the reply exists. Strictly
+  //     safer than the old probe, which only needed a later text row to exist;
+  //   * "never touches a still-waiting ask" — an unanswered row has a NULL stamp and is
+  //     always kept;
+  //   * "a half-finished ask (tools fired, no text yet) stays in force" — tool rows never
+  //     produce an answer stamp, so no shape test is needed to exclude them;
+  //   * it only ever REMOVES a row from the headline pin; the live tail is untouched.
+  baseClauses.push('answer_message_id IS NULL');
 
   // Prefer the most recent substantive ask.
   const substantive = db

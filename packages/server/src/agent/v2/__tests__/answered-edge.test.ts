@@ -63,6 +63,7 @@ import {
   ENGINE_EVENT_EXPIRY_HOURS,
   ENGINE_EVENT_MAX_ATTEMPTS,
 } from '../counterparty.js';
+import { getActiveUserDirective } from '../../../memory/directive.js';
 import { openAsk, transition } from '../../../work/store.js';
 
 const AGENT = 'kevin';
@@ -630,6 +631,52 @@ describe('1g — the truthful-answer key names the DELIVERY that proves it', () 
     // is why the expectation is one line and not two.)
     const assignments = src.split('\n').filter((l) => /(?<![!=<>])\bterminalAnswerRowId\s*=[^=]/.test(l));
     expect(assignments.map((l) => l.trim())).toEqual(['terminalAnswerRowId = rowId;']);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// R-2 — the directive gate (research 21). It keyed on CONTENT SHAPE; requirement 2d says
+// the answered edge is the one authority and the shape-sniff is banned.
+// ══════════════════════════════════════════════════════════════════════════════
+describe('R-2 — the directive gate keys on `answer_message_id IS NULL`, never on content shape', () => {
+  const directiveSrc = (): string => fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'memory', 'directive.ts'),
+    'utf8',
+  );
+
+  it('the gate is the answered edge', () => {
+    expect(directiveSrc()).toContain("baseClauses.push('answer_message_id IS NULL')");
+  });
+
+  it('BAN: no shape probe over message content survives in the selector', () => {
+    // The exact idiom R-2 named, plus the two neighbours it would be rewritten as. A gate
+    // that reads the SHAPE of what the model wrote is a gate the model can dodge.
+    const code = directiveSrc()
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*'))
+      .join('\n');
+    expect(code).not.toMatch(/content\s+(NOT\s+)?LIKE/i);
+    expect(code).not.toMatch(/"type":"text"/);
+    expect(code).not.toMatch(/json_(valid|type)\s*\(\s*content/i);
+  });
+
+  it('an ANSWERED ask drops out of the pin and an unanswered one stays', () => {
+    seedInbound('m-open', { id: 'm-open', content: 'x'.repeat(250), created_at: Date.now() - 2000 });
+    seedInbound('m-done', { id: 'm-done', content: 'y'.repeat(250), created_at: Date.now() - 1000 });
+    db().prepare('UPDATE messages SET answer_message_id = ? WHERE id = ?').run('a-1', 'm-done');
+    // The newest row is the answered one; the pin must skip it and land on the older ask.
+    expect(getActiveUserDirective(AGENT)?.messageId).toBe('m-open');
+    db().prepare('UPDATE messages SET answer_message_id = ? WHERE id = ?').run('a-2', 'm-open');
+    expect(getActiveUserDirective(AGENT)).toBeNull();
+  });
+
+  it('NEGATIVE: a half-finished ask (tools fired, no reply yet) stays in force', () => {
+    seedInbound('m-open', { id: 'm-open', content: 'z'.repeat(250) });
+    db().prepare(
+      `INSERT INTO messages (id, agent_id, lane, role, content, created_at, provenance, display_kind, display_tier)
+       VALUES ('tool-1', ?, 'owner', 'assistant', '[{"type":"tool_use"}]', ?, 'live', 'tool-turn', 'agent-only')`,
+    ).run(AGENT, Date.now());
+    expect(getActiveUserDirective(AGENT)?.messageId).toBe('m-open');
   });
 });
 

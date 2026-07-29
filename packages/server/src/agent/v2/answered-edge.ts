@@ -109,6 +109,26 @@ export function owesAnswer(messageId: string | null | undefined): boolean {
   return !answerReceiptForAsk(messageId).answered;
 }
 
+/**
+ * The agent's OWN recorded answer in this conversation, most recent first.
+ *
+ * The engine hands this back to the model to restate when a question it already answered is
+ * ghosted a second time (OR2: the engine never speaks as the agent, so it quotes the
+ * agent's own words rather than re-serving them itself). It is the answered edge walked in
+ * the other direction — from the ask to the reply — and it lives here so the edge has one
+ * home rather than a hand-written two-table join inside the loop.
+ */
+export function recordedAnswerInConversation(agentId: string, convKey: string): string | null {
+  const r = getDb().prepare(
+    `SELECT m2.content AS answer
+       FROM messages m1 JOIN messages m2 ON m2.id = m1.answer_message_id
+      WHERE m1.agent_id = ? AND m1.role = 'user' AND m1.conv_key = ?
+        AND m1.answer_message_id IS NOT NULL AND m2.role = 'assistant'
+      ORDER BY m1.created_at DESC LIMIT 1`,
+  ).get(agentId, convKey) as { answer: string } | undefined;
+  return r?.answer ?? null;
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // 1a — "did THIS turn already put the result in front of the person": a RECEIPT.
 // ════════════════════════════════════════════════════════════════════════════════

@@ -19,6 +19,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
 import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
+import { answerReceiptForAsk } from './v2/answered-edge.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
 import { type DeliveryInput } from './v2/deliveries.js';
 import { recordAtDoor, withOutboundAsync } from './v2/outbound.js';
@@ -1573,17 +1574,22 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<void>
   const db = getDb();
   for (const join of compilePendingJoins(agentId)) {
     try {
-      // "Did the compile actually answer the owner?" is the ask's own answered edge, the same
-      // signal the string machine read — kept because the delivery ledger does not yet cover
-      // dashboard replies (T5 owns that; until it lands, `done` would never fire here).
-      const ans = db.prepare('SELECT answer_message_id, created_at FROM messages WHERE id = ?')
-        .get(join.rootId) as { answer_message_id: string | null; created_at: number } | undefined;
-      if (ans?.answer_message_id) {
+      // "Did the compile actually answer the owner?" — PHASE-2 T6 (C5) collapsed this onto
+      // the ONE answered-edge reader, which is what T4's report named as owed here. The
+      // question and the answer are unchanged; what changed is that this site no longer
+      // has its OWN reading of the edge. It now sees the ticket's `result_delivery_id`
+      // FIRST (T5 made deliveries universal, so a dashboard reply produces one) and the
+      // mig-113 stamp second, which is strictly more evidence than the raw column was.
+      const receipt = answerReceiptForAsk(join.rootId);
+      const ans = db.prepare('SELECT created_at FROM messages WHERE id = ?')
+        .get(join.rootId) as { created_at: number } | undefined;
+      if (receipt.answered) {
         // The compile answered the owner; the receipt says so. Quiet settle — and it is
-        // deliberately NOT `done`: `done` requires a delivery row and the dashboard reply that
-        // answered has none until T5. The compile_pending flag clears, which is what stops the
-        // engine relaying on top of a real answer.
-        clearJoinCompilePending(join.id, 'the compile answered the owner (answer_message_id)');
+        // deliberately NOT `done` unless a delivery proves it: `done` requires a delivery row
+        // and inventing one to make a state reachable is the forgery the spine refuses. The
+        // compile_pending flag clears, which is what stops the engine relaying on top of a
+        // real answer.
+        clearJoinCompilePending(join.id, `the compile answered the owner (${receipt.deliveryId ? `delivery ${receipt.deliveryId}` : 'answer stamp'})`);
         continue;
       }
       const ageSec = ans ? (Date.now() - ans.created_at) / 1000 : COMPILE_GRACE_SECONDS + 1;
