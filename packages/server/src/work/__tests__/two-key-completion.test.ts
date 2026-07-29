@@ -357,6 +357,29 @@ describe("the trigger's key and the PM's verdict are different questions", () =>
     expect(completeValidated('w1')).toBe(1);
   });
 
+  // THE POST-TRIGGER BATTERY FOUND THIS AND IT IS PINNED HERE SO IT CANNOT COME BACK.
+  // Run `bms61tr0bzr` went green and still reported, on two of three attempts,
+  // `NO_UNEXPECTED_TOOL_ERROR: [work_update] Error: that status change was refused
+  // (requires-validation)`. `agent/tools.ts:4685` sets `isError = content.startsWith('Error')`,
+  // so the sanctioned outcome of the sanctioned verb was reaching the model, the dashboard and
+  // the harness as a tool BREAKING — and telling a weak model "Error" about the thing that just
+  // worked is the retry spin the tracker's forgiveness rules exist to prevent.
+  it('THE KEY-1 FILING IS NOT ERROR-SHAPED — a recorded request must not read as a broken tool', async () => {
+    const { closeRefusalTextForTest } = await import('../../tracker/tools.js');
+    const filed = closeRefusalTextForTest('abcdef12-0000', {
+      kind: 'rejected', workId: 'abcdef12-0000', gate: 'requires-validation',
+      detail: 'close request recorded (event 1)',
+    }, 'complete');
+    expect(filed.startsWith('Error')).toBe(false);
+    expect(filed).toContain('[FILED]');
+    // POSITIVE CONTROL of the same shape: a genuine refusal still IS error-shaped, so the
+    // clause above is not passing because the function stopped saying "Error" at all.
+    const refused = closeRefusalTextForTest('abcdef12-0000', {
+      kind: 'rejected', workId: 'abcdef12-0000', gate: 'done-requires-delivery', detail: 'no delivery',
+    }, 'complete');
+    expect(refused.startsWith('Error')).toBe(true);
+  });
+
   it('the engine can still uphold a BLOCKED claim — the scoping is done-only', () => {
     seedWork('w1');
     transition('w1', { to: 'blocked', by: 'engine', reason: 'waiting on a person', evidenceRef: 'd-1' });

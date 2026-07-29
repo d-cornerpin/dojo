@@ -376,11 +376,39 @@ export async function fileAssignDeliverableCloseRequest(
  * name. The one the tracker meets most is G7 — `done` means DELIVERED — so the text names the
  * missing thing rather than saying "error", which is what turns a refusal into a next action.
  */
+/** Exported for `work/__tests__/two-key-completion.test.ts`, which pins the one property the
+ *  post-trigger battery found missing: a FILED Key-1 request must not be error-shaped, and a
+ *  genuine refusal still must be. Both directions, so neither can drift. */
+export { closeRefusalText as closeRefusalTextForTest };
+
 function closeRefusalText(taskId: string, r: TransitionResult, wanted: string): string {
   if (r.kind === 'applied') return '';
   if (r.kind === 'noop') return `[NO-OP] task_id=${taskId} | already ${wanted}, no change made.`;
   if (r.kind === 'conflict') {
     return `Error: task ${taskId.slice(0, 8)} moved to "${stateToStatus(r.actual)}" while you were working on it. Re-read it before changing it again.`;
+  }
+  // ── PHASE-2 T8T: A FILED KEY-1 REQUEST IS NOT AN ERROR, AND THE BATTERY SAID SO ──
+  //
+  // The post-trigger OR8 run went green and still handed back a finding worth having: two of
+  // three attempts logged `NO_UNEXPECTED_TOOL_ERROR: [work_update] Error: that status change
+  // was refused (requires-validation)…`. The generic arm below starts with "Error", and
+  // `agent/tools.ts:4685` sets `isError = content.startsWith('Error')` — so the sanctioned
+  // outcome of the sanctioned verb was being reported to the model, to the dashboard and to
+  // the harness as a tool BREAKING.
+  //
+  // It did not break. The request was RECORDED; that is the whole design. Saying "Error" to a
+  // weak model is also an invitation to retry the thing that just worked, which is the
+  // 189-call spin this tracker's forgiveness rules exist to prevent. So it reads as what it
+  // is, and the text names WHO closes it and WHEN so the model stops rather than loops.
+  if (r.gate === 'requires-validation') {
+    return (
+      `[FILED] task_id=${taskId.slice(0, 8)} | your close request is recorded — this is the ` +
+      `normal way work finishes, not a failure. You do not close your own work: the engine ` +
+      `closes it automatically against the delivery you just made, and the PM validates it ` +
+      `against the goal. Nothing further is needed from you on this task; do NOT retry the ` +
+      `status change. If it genuinely needs to close a different way, say so in a note with ` +
+      `work_note.`
+    );
   }
   if (r.gate === 'done-requires-delivery' || r.gate === 'delivery-unresolved') {
     return (
