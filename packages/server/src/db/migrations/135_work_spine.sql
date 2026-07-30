@@ -307,10 +307,10 @@ SELECT
   'legacy', 0, 0, 0, NULL,
   p.title, NULL, NULL, p.description, NULL,
   0, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL, NULL,
-  COALESCE(CAST(strftime('%s', p.created_at) AS INTEGER) * 1000,
-           CAST(strftime('%s', p.updated_at) AS INTEGER) * 1000,
-           CAST(strftime('%s', p.completed_at) AS INTEGER) * 1000,
-           1600000000001),
+  MAX(COALESCE(CAST(strftime('%s', p.created_at) AS INTEGER) * 1000,
+               CAST(strftime('%s', p.updated_at) AS INTEGER) * 1000,
+               CAST(strftime('%s', p.completed_at) AS INTEGER) * 1000,
+               1600000000001), 1600000000001),
   CASE WHEN p.status IN ('complete','cancelled','fallen')
        THEN COALESCE(CAST(strftime('%s', p.completed_at) AS INTEGER) * 1000,
                      CAST(strftime('%s', p.updated_at) AS INTEGER) * 1000,
@@ -325,10 +325,27 @@ FROM projects p;
 
 -- ── 3c. TASKS ──
 --
--- `1600000000001` is the floor sentinel for a row whose every timestamp is unreadable. It is
--- one millisecond above the `opened_at` CHECK boundary (2020-09-13) and is deliberately NOT
--- `now`: an ancient row stamped with today's clock would look fresh to every age cliff in
--- the platform. Measured count of rows needing it on both bodies: 0.
+-- `1600000000001` is the floor sentinel for a row whose timestamp this schema cannot
+-- represent. It is one millisecond above the `opened_at` CHECK boundary (2020-09-13) and is
+-- deliberately NOT `now`: an ancient row stamped with today's clock would look fresh to every
+-- age cliff in the platform. Measured count of rows needing it on both bodies: 0.
+--
+-- ⚠ AMENDED PHASE-2 T13 (2026-07-30), RULING 12 — the floor is CLAMPED, not merely DEFAULTED.
+-- The `opened_at` ladders below are wrapped in `MAX(..., 1600000000001)`. A bare COALESCE
+-- handles an UNREADABLE instant and NOT a readable one that lands below the floor: a
+-- `created_at` of '1999-01-01' parses fine, converts to 915148800000, fails
+-- `CHECK (opened_at > 1600000000000)`, and aborts this file — which on a real box aborts the
+-- whole chain and therefore the BOOT. Migration `138:87-99` hit exactly that on a planted row
+-- during its own rehearsal and fixed it for ITS rows; this file kept the hazard for four more
+-- migrations. Proven both ways before the edit: an unmodified `pre-127` body replays the whole
+-- chain clean, and the SAME body with one pre-2020 `projects.created_at` (or `tasks.created_at`)
+-- aborts here — 0 rows on either real body we hold, which is why only a planted row can show it.
+-- `closed_at` and `updated_at` are deliberately NOT clamped: neither carries a CHECK, and
+-- rewriting a readable historical instant that the schema CAN store would falsify it.
+-- The edit was free because `origin/main` is at `111` and `Preflight` has never been pushed:
+-- no box but this dev box has ever run `135`, and its `_migrations` row carries NO checksum
+-- (applied before RULING 7's recording existed), so the boot audit reports it `unverifiable`
+-- exactly as before rather than `diverged`.
 
 INSERT INTO work (
   id, kind, parent_id, agent_id, assignee_agent, requester, requester_id, conversation_id,
@@ -368,10 +385,10 @@ SELECT
   COALESCE(t.run_count, 0), NULL, NULL, NULL, t.anchor_time,
   CAST(strftime('%s', t.next_run_at) AS INTEGER) * 1000,
   NULL,
-  COALESCE(CAST(strftime('%s', t.created_at) AS INTEGER) * 1000,
-           CAST(strftime('%s', t.updated_at) AS INTEGER) * 1000,
-           CAST(strftime('%s', t.completed_at) AS INTEGER) * 1000,
-           1600000000001),
+  MAX(COALESCE(CAST(strftime('%s', t.created_at) AS INTEGER) * 1000,
+               CAST(strftime('%s', t.updated_at) AS INTEGER) * 1000,
+               CAST(strftime('%s', t.completed_at) AS INTEGER) * 1000,
+               1600000000001), 1600000000001),
   CASE WHEN t.status IN ('complete','fallen','cancelled')
        THEN COALESCE(CAST(strftime('%s', t.completed_at) AS INTEGER) * 1000,
                      CAST(strftime('%s', t.updated_at) AS INTEGER) * 1000,
