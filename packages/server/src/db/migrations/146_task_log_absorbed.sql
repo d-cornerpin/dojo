@@ -115,9 +115,29 @@ SELECT tl.task_id, 'audit',
          'action_taken',  tl.action_taken,
          'note',          tl.note,
          'evidence_json', tl.evidence_json,
-         'provenance',    'migrated'),
+         'provenance',    'migrated',
+         -- HOTFIX-144 sweep: an instant this schema cannot read is PRESERVED VERBATIM here
+         -- rather than lost with the table. `null` on every row whose instant converted,
+         -- which is every row on every body measured.
+         'created_at_raw', CASE WHEN strftime('%s', tl.created_at) IS NULL
+                                THEN tl.created_at END),
        tl.from_entity,
-       strftime('%s', tl.created_at) * 1000
+       -- HOTFIX-144 sweep, and the scope of it is a MEASUREMENT rather than a worry (#14).
+       -- A MISSING instant is UNREPRESENTABLE here and I checked rather than assumed: the
+       -- source DDL at `009_phase6.sql:47` is `TEXT DEFAULT (datetime('now'))` with no NOT
+       -- NULL, but `138_repoint_side_table_fks.sql` REBUILDS this table as
+       -- `created_at TEXT NOT NULL DEFAULT (datetime('now'))`, and `138` sorts before this
+       -- file. Planting a NULL is refused by the engine.
+       -- AN UNREADABLE instant is a different question and is NOT excluded: NOT NULL does not
+       -- mean parseable, and any TEXT `strftime` cannot read converts to NULL exactly as a
+       -- missing one would. `work_events.created_at` is NOT NULL, so that made this
+       -- expression NULL and aborted the file — and on a real box a migration abort is a BOOT
+       -- abort. 0 such rows on every body we hold, and legal on all of them.
+       -- The entry is still CARRIED: "it happened" is the fact and the instant is the detail
+       -- (`135`'s clamp and `144`'s ladder make the same call), dated at its own work row's
+       -- opening instant, which `work` guarantees NOT NULL.
+       COALESCE(strftime('%s', tl.created_at) * 1000,
+                (SELECT w2.opened_at FROM work w2 WHERE w2.id = tl.task_id))
   FROM task_log tl
  WHERE tl.entry_kind <> 'transition'
    AND EXISTS (SELECT 1 FROM work w WHERE w.id = tl.task_id);
@@ -133,9 +153,29 @@ SELECT tl.task_id, 'audit',
          'action_taken',  tl.action_taken,
          'note',          tl.note,
          'evidence_json', tl.evidence_json,
-         'provenance',    'migrated'),
+         'provenance',    'migrated',
+         -- HOTFIX-144 sweep: an instant this schema cannot read is PRESERVED VERBATIM here
+         -- rather than lost with the table. `null` on every row whose instant converted,
+         -- which is every row on every body measured.
+         'created_at_raw', CASE WHEN strftime('%s', tl.created_at) IS NULL
+                                THEN tl.created_at END),
        tl.from_entity,
-       strftime('%s', tl.created_at) * 1000
+       -- HOTFIX-144 sweep, and the scope of it is a MEASUREMENT rather than a worry (#14).
+       -- A MISSING instant is UNREPRESENTABLE here and I checked rather than assumed: the
+       -- source DDL at `009_phase6.sql:47` is `TEXT DEFAULT (datetime('now'))` with no NOT
+       -- NULL, but `138_repoint_side_table_fks.sql` REBUILDS this table as
+       -- `created_at TEXT NOT NULL DEFAULT (datetime('now'))`, and `138` sorts before this
+       -- file. Planting a NULL is refused by the engine.
+       -- AN UNREADABLE instant is a different question and is NOT excluded: NOT NULL does not
+       -- mean parseable, and any TEXT `strftime` cannot read converts to NULL exactly as a
+       -- missing one would. `work_events.created_at` is NOT NULL, so that made this
+       -- expression NULL and aborted the file — and on a real box a migration abort is a BOOT
+       -- abort. 0 such rows on every body we hold, and legal on all of them.
+       -- The entry is still CARRIED: "it happened" is the fact and the instant is the detail
+       -- (`135`'s clamp and `144`'s ladder make the same call), dated at its own work row's
+       -- opening instant, which `work` guarantees NOT NULL.
+       COALESCE(strftime('%s', tl.created_at) * 1000,
+                (SELECT w2.opened_at FROM work w2 WHERE w2.id = tl.task_id))
   FROM task_log tl
  WHERE tl.entry_kind = 'transition'
    AND tl.from_status IS NOT tl.to_status
@@ -157,9 +197,29 @@ SELECT tl.task_id, 'audit',
          'action_taken',  tl.action_taken,
          'note',          tl.note,
          'evidence_json', tl.evidence_json,
-         'provenance',    'migrated'),
+         'provenance',    'migrated',
+         -- HOTFIX-144 sweep: an instant this schema cannot read is PRESERVED VERBATIM here
+         -- rather than lost with the table. `null` on every row whose instant converted,
+         -- which is every row on every body measured.
+         'created_at_raw', CASE WHEN strftime('%s', tl.created_at) IS NULL
+                                THEN tl.created_at END),
        tl.from_entity,
-       strftime('%s', tl.created_at) * 1000
+       -- HOTFIX-144 sweep, and the scope of it is a MEASUREMENT rather than a worry (#14).
+       -- A MISSING instant is UNREPRESENTABLE here and I checked rather than assumed: the
+       -- source DDL at `009_phase6.sql:47` is `TEXT DEFAULT (datetime('now'))` with no NOT
+       -- NULL, but `138_repoint_side_table_fks.sql` REBUILDS this table as
+       -- `created_at TEXT NOT NULL DEFAULT (datetime('now'))`, and `138` sorts before this
+       -- file. Planting a NULL is refused by the engine.
+       -- AN UNREADABLE instant is a different question and is NOT excluded: NOT NULL does not
+       -- mean parseable, and any TEXT `strftime` cannot read converts to NULL exactly as a
+       -- missing one would. `work_events.created_at` is NOT NULL, so that made this
+       -- expression NULL and aborted the file — and on a real box a migration abort is a BOOT
+       -- abort. 0 such rows on every body we hold, and legal on all of them.
+       -- The entry is still CARRIED: "it happened" is the fact and the instant is the detail
+       -- (`135`'s clamp and `144`'s ladder make the same call), dated at its own work row's
+       -- opening instant, which `work` guarantees NOT NULL.
+       COALESCE(strftime('%s', tl.created_at) * 1000,
+                (SELECT w2.opened_at FROM work w2 WHERE w2.id = tl.task_id))
   FROM task_log tl
  WHERE tl.entry_kind = 'transition'
    AND tl.from_status IS tl.to_status
