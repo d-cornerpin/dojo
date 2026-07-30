@@ -2037,7 +2037,7 @@ export function trackerAddNotes(agentId: string, args: Record<string, unknown>):
       note: notes,
     });
 
-    return `[OK] task_id=${taskId}\n\nObservation appended to task_log.`;
+    return `[OK] task_id=${taskId}\n\nObservation appended to the task's audit trail.`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.error('trackerAddNotes failed', { error: msg }, agentId);
