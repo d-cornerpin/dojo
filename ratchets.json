@@ -557,7 +557,7 @@
     "packages/server/src/agent/spawner.ts": 1382,
     "packages/server/src/agent/tools.ts": 10482,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
-    "packages/server/src/agent/v2/counterparty.ts": 901,
+    "packages/server/src/agent/v2/counterparty.ts": 906,
     "packages/server/src/agent/v2/loop.ts": 9578,
     "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/recovery.ts": 596,
