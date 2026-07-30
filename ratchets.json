@@ -269,6 +269,13 @@
     },
     {
       "path": "packages/server/src/gateway/routes/tracker.ts",
+      "from": 904,
+      "to": 905,
+      "by": "PHASE-2 T10G (2026-07-29), RULING 10",
+      "why": "ONE line, and it is an import that DELETED a duplication. `/tasks/:id/log` restated the audit-trail kind vocabulary inline as a 6-line union type, and that copy had already drifted \u2014 it was missing the two verdict kinds the trail names once `task_log` is absorbed. The union is now `TaskLogEntryKind[]` imported from the seam that owns it, so the file is net \u22125 lines of duplication for +1 line of import. The two `task_log` statements in `/hygiene` were re-pointed in the same change (validate rates now come from `adjudications`, the verdict record itself, instead of string-matching `action_taken LIKE '%valid=true%'` on rows labelled `transition`)."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/tracker.ts",
       "from": 877,
       "to": 886,
       "by": "PHASE-2 T8b2 (2026-07-29)",
@@ -561,7 +568,7 @@
     "packages/server/src/gateway/routes/config.ts": 2531,
     "packages/server/src/gateway/routes/memory.ts": 635,
     "packages/server/src/gateway/routes/setup-deps.ts": 512,
-    "packages/server/src/gateway/routes/tracker.ts": 904,
+    "packages/server/src/gateway/routes/tracker.ts": 905,
     "packages/server/src/gateway/routes/twilio.ts": 501,
     "packages/server/src/gateway/routes/update.ts": 1022,
     "packages/server/src/gateway/routes/upload.ts": 607,
