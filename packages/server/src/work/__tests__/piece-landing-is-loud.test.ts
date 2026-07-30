@@ -73,7 +73,7 @@ function plantTheBrokenTrigger(db: Database.Database): void {
 function seedJoinChild(): { parent: string; child: string } {
   const db = mockDb.current!;
   db.prepare(
-    `INSERT INTO messages (id, agent_id, role, content, lane, channel, conv_key, created_at, seq)
+    `INSERT INTO messages (id, agent_id, role, content, lane, channel, conversation_id, created_at, seq)
      VALUES ('m-1', ?, 'user', 'ask Ana, then tell me', 'owner', 'dashboard', 'owner', ?, NULL)`,
   ).run(AGENT, Date.now());
   const parent = openAsk({

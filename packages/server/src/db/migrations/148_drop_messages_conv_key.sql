@@ -1,0 +1,82 @@
+-- ════════════════════════════════════════════════════════════════════════════════════════
+-- 148 — `messages.conv_key` IS DROPPED.  PHASE-2 T10I, RULING 11, and the last item on
+--       PHASE-2 Step 1's list.
+--
+-- verdict: STRIP.
+-- requirement preserved: NONE REMAINING ON THIS COLUMN — and that sentence is the whole file,
+--   so here is the positive enumeration behind it rather than an absence (#15). This column
+--   did two jobs and both are elsewhere, on columns that mean them:
+--
+--     the CLAIM job  — "has anybody taken this row on", once spelled `conv_key IS NULL`:
+--       * the OWNER ASK       -> `work(kind='ask').state`, moved by T3 (a CAS whose loser is a
+--                                `conflict` value rather than a zero somebody must remember)
+--       * the ENGINE EVENT    -> `messages.served_by_turn`, moved by T9
+--       * the A2A TERMINAL WAKE -> `messages.served_by_turn`, moved by T4 — and T10I found the
+--                                SECOND reader T4 had left behind in `loop.ts`, still asking
+--                                `conv_key === null` and working only because nothing wrote the
+--                                sentinel any more
+--       * the RIDER exclusion — "an engine row that rides a turn must never BE one", carried by
+--                                the fake keys `engine`/`engine-steer`/`engine-notice` —
+--                                -> `origin_intent` against `ENGINE_RIDER_INTENTS`
+--                                (`agent/v2/engine-riders.ts`), moved by T10H, which is where
+--                                that requirement was found BROKEN rather than merely moved
+--
+--     the IDENTITY job — "which conversation does this row belong to":
+--       * -> `messages.conversation_id`, a real FK into `conversations`, backfilled by `147`
+--            through that table's own UNIQUE(agent_id, channel, provider, counterparty_id,
+--            thread_root) and re-pointed reader by reader in the commit before this one.
+--
+--   The conv_key STRING FORMAT is not being retired — only this column is. `conversationKey()`
+--   still produces it and four other tables still carry it: `work.origin_conv_key`,
+--   `turns.conv_key`, `tool_receipts.conv_key`, `summaries.conv_key`. Two of those are JOINED
+--   to each other on it (`tracker/delivery-evidence.ts` matches a work's `origin_conv_key`
+--   against a turn's `conv_key`), so they are self-consistent and OUT OF SCOPE. This is also
+--   why PHASE-2 Step 2's grep-zero token could never be `conv_key` and had to be re-scoped to
+--   `messages.conv_key` (T10H's measurement, #14).
+--
+-- ── ZERO PRODUCTION READERS, BY COMMAND AT THIS HEAD (#14, re-derived not inherited) ──
+--
+--   grep -rn "conv_key" packages/server/src packages/dashboard/src watchdog/src \
+--     | grep -v /migrations/ | grep -v "__tests__\|\.test\." | <drop comment-only lines> \
+--     | grep -v origin_conv_key
+--   -> 13 lines, and every one of them is on ANOTHER TABLE:
+--        receipts/store.ts ×2, agent/v2/outbound-ledger.ts ×6   -> tool_receipts.conv_key
+--        tracker/delivery-evidence.ts ×1, answered-edge.ts ×3,
+--        agent/v2/turn-record.ts ×1                              -> turns.conv_key
+--   ZERO on `messages`.
+--
+-- ── THE DATA THAT GOES, MEASURED, AND WHY NONE OF IT IS A LOSS ──
+--
+-- On this box at `147`: 5,532 rows carried a `conv_key`. 5,181 of them now carry the
+-- `conversation_id` that names the same conversation (4,296 filled by `147`, 885 already
+-- stamped by their producers), and the 351 that do not are the four categories `147`'s header
+-- enumerates and its guard machine-checks:
+--
+--   330  SENTINELS (`engine` / `engine-steer` / `engine-notice`) — never conversations. What
+--        they encoded is `origin_intent` + `lane` now, and `ENGINE_RIDER_INTENTS` carries the
+--        requirement. Dropping the column deletes the last copy of a value that already had a
+--        better home.
+--    18  identities `conversations` has no row for (harness-injected rows on this box;
+--        pre-P5 history on a lived-in one). Not invented, by ruling; the product mints the row
+--        on that agent's next owner turn.
+--     3  `email:<addr>` naming 19 mail-thread conversations at once — the case where
+--        `conv_key` was measurably LESS precise than the column replacing it.
+--
+-- ── THIS FILE IS DELIBERATELY NOT RE-RUNNABLE, AND THAT IS THE SAFER CHOICE ──
+-- SQLite has no `DROP COLUMN IF EXISTS`, so a second manual apply fails loudly with
+-- `no such column: conv_key` (the same shape `145` chose and stated). The runner records the
+-- name inside the apply transaction, so it never re-runs by itself.
+--
+-- No index, no trigger, no view and no CHECK on `messages` referenced this column — verified on
+-- the live body before the file was written (`sqlite_master` scanned for all four), so no table
+-- rebuild is owed and `ALTER TABLE … DROP COLUMN` (SQLite >= 3.35) is enough. The four
+-- FTS/embedding triggers on `messages` do not mention it.
+--
+-- ⚠ AND SQLITE ITSELF IS THE SECOND WITNESS, discovered by planting the fault rather than by
+-- reading: pointing this statement at `conversation_id` instead does not silently succeed — it
+-- refuses with `error in index ix_msg_conv_seq after drop column`, because a column an index
+-- references CANNOT be dropped. So "this drop applies cleanly" is itself evidence that nothing
+-- indexed depends on `conv_key`, from the engine rather than from a scan of mine.
+-- ════════════════════════════════════════════════════════════════════════════════════════
+
+ALTER TABLE messages DROP COLUMN conv_key;

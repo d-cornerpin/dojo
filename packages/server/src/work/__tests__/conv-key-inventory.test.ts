@@ -252,6 +252,44 @@ describe('PHASE-2 T3 — the conv_key claim predicate, resolved site by site', (
     expect(stripComments('/* WHERE conv_key IS NULL */').match(PREDICATE)).toBeNull();
   });
 
+  // ── PHASE-2 T10I: A SCHEMA ASSERTION, BECAUSE A SOURCE SCAN CANNOT SEE THIS ──
+  // T10F's carried finding, acted on rather than repeated: two conformance tests it inherited
+  // asserted "nobody writes this column" and stayed GREEN against a column that no longer
+  // existed — a clause passing for a reason that had stopped being the reason. Every clause
+  // above this one is a source scan and would keep passing if `148` were reverted, so the
+  // column's absence is asserted against the MIGRATION CHAIN, which is strictly stronger than
+  // any grep of the TypeScript.
+  it('T10I: `messages.conv_key` is GONE FROM THE SCHEMA, not merely unread', () => {
+    const MIG = path.join(REPO, 'packages/server/src/db/migrations');
+    const files = fs.readdirSync(MIG).filter((f) => f.endsWith('.sql')).sort();
+    expect(files.length).toBeGreaterThan(140);            // non-vacuity: the chain was found
+
+    // The drop exists, by name, and it is the LAST thing the chain says about this column.
+    const dropIdx = files.findIndex((f) => f === '148_drop_messages_conv_key.sql');
+    expect(dropIdx, 'migration 148 must be in the chain').toBeGreaterThan(-1);
+    expect(fs.readFileSync(path.join(MIG, files[dropIdx]), 'utf8'))
+      .toMatch(/ALTER TABLE messages DROP COLUMN conv_key;/);
+
+    // ⚠ AND NOTHING AFTER IT MAY RE-ADD THE COLUMN. This is the gap T10G found the hard way:
+    // a `CREATE TABLE` scan could not see migration `138` resurrecting a table via
+    // `ALTER … RENAME TO`, so the check has to look for every verb that can put a column back
+    // on this table — and it has to start AFTER the drop's own file, or a re-add on the very
+    // next line would pass (T10F's second planted fault found exactly that off-by-one in its
+    // author's own scan).
+    const after = files.slice(dropIdx + 1);
+    for (const f of after) {
+      const sql = fs.readFileSync(path.join(MIG, f), 'utf8')
+        .replace(/^\s*--[^\n]*/gm, '');                  // migration comments discuss it freely
+      expect(sql, `${f} re-adds messages.conv_key after 148 dropped it`)
+        .not.toMatch(/ALTER TABLE\s+["'`]?messages["'`]?\s+ADD\s+(COLUMN\s+)?["'`]?conv_key/i);
+      // A rebuild-and-rename would reintroduce it just as effectively.
+      if (/CREATE TABLE\s+["'`]?messages/i.test(sql) || /RENAME TO\s+["'`]?messages/i.test(sql)) {
+        expect(sql, `${f} rebuilds or renames into \`messages\` — check it does not carry conv_key`)
+          .not.toMatch(/\bconv_key\b/);
+      }
+    }
+  });
+
   it('SELF-TEST: the walk actually reaches outside packages/', () => {
     const files = walk(path.join(REPO, 'watchdog/src'));
     expect(files.length).toBeGreaterThan(0);

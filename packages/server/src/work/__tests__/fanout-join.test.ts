@@ -20,7 +20,9 @@
 //   3i  answered-by is an explicit edge (`result_delivery_id`), not string inference.
 //   3j  no short-token parks; a real FK.
 //   3k  the queue index is (agent_id, state, kind).
-//   3l  the conv_key identity half stays first-class — delegating never overwrites it.
+//   3l  the conversation-identity half stays first-class — delegating never overwrites it.
+//       PHASE-2 T10I: that identity is `messages.conversation_id` (`conv_key` dropped at
+//       migration `148`). The requirement is unchanged and the clauses below moved with it.
 //
 // Two more properties the plan names in the same breath, and both were REAL DEFECTS of
 // the string machine (07 §3 "Defects" i–iii):
@@ -82,8 +84,8 @@ function seedDelivery(id: string, over: Record<string, unknown> = {}): string {
  *  delegation exit runs in. */
 function seedClaimedAsk(messageId = 'm-1'): string {
   mockDb.current!.prepare(
-    `INSERT INTO messages (id, agent_id, role, content, lane, channel, conv_key, created_at, seq)
-     VALUES (?, ?, 'user', 'ask Ana and Bo, then tell me', 'owner', 'dashboard', 'owner', ?, NULL)`,
+    `INSERT INTO messages (id, agent_id, role, content, lane, channel, conversation_id, created_at, seq)
+     VALUES (?, ?, 'user', 'ask Ana and Bo, then tell me', 'owner', 'dashboard', 'conv-1', ?, NULL)`,
   ).run(messageId, AGENT, Date.now());
   const id = openAsk({
     agentId: AGENT, messageId, conversationId: 'conv-1', requesterId: 'owner',
@@ -523,18 +525,21 @@ describe('3g + 3l: delegating never overwrites the conversation identity', () =>
     for (const k of kids) expect(row(k)!.reply_conversation_id).toBe('conv-2');
   });
 
-  it('POSITIVE: the owner message keeps its own conv_key through the whole join', () => {
+  it('POSITIVE: the owner message keeps its own conversation through the whole join', () => {
     const parent = seedClaimedAsk();
+    // The join's reply conversation is DELIBERATELY a different one from the ask's, so this
+    // clause cannot pass by the two being equal — the requirement is that delegating does not
+    // overwrite the ask row's own identity (3g/3l), and that needs two distinct values.
     openDelegationJoin({
-      parentWorkId: parent, agentId: AGENT, replyConversationId: 'conv-1',
+      parentWorkId: parent, agentId: AGENT, replyConversationId: 'conv-2',
       ttlAt: Date.now() + 60 * 60_000, threads: [{ threadId: T1 }],
     });
     landPiece(findJoinChildByThread(AGENT, T1)!.id, {
       deliveryId: seedDelivery('d-1'), content: 'x', messageId: null,
     });
     settleJoinDelivered(parent, seedDelivery('d-owner', { channel: 'dashboard', conversation_id: 'conv-1' }), 'relayed');
-    const m = mockDb.current!.prepare('SELECT conv_key FROM messages WHERE id = ?').get('m-1') as { conv_key: string };
-    expect(m.conv_key).toBe('owner');
+    const m = mockDb.current!.prepare('SELECT conversation_id FROM messages WHERE id = ?').get('m-1') as { conversation_id: string };
+    expect(m.conversation_id).toBe('conv-1');
   });
 
   it('NEGATIVE: a reply conversation that is not a real conversation row is recorded as absent, never as a park sigil', () => {
@@ -544,9 +549,14 @@ describe('3g + 3l: delegating never overwrites the conversation identity', () =>
       ttlAt: Date.now() + 60 * 60_000, threads: [{ threadId: T1 }],
     });
     expect(row(parent)!.reply_conversation_id).toBeNull();
-    const m = mockDb.current!.prepare('SELECT conv_key FROM messages WHERE id = ?').get('m-1') as { conv_key: string };
-    expect(m.conv_key).toBe('owner');
-    expect(m.conv_key.startsWith('park:')).toBe(false);
+    const m = mockDb.current!.prepare('SELECT conversation_id FROM messages WHERE id = ?').get('m-1') as { conversation_id: string };
+    expect(m.conversation_id).toBe('conv-1');
+    // PHASE-2 T10I: the sigil is no longer merely unwritten, it is UNREPRESENTABLE — the column
+    // it lived in is gone, and a uuid FK cannot hold `park:~…`. Asserted against the schema,
+    // which is strictly stronger than asserting the value's absence.
+    expect(mockDb.current!.prepare(
+      "SELECT count(*) AS c FROM pragma_table_info('messages') WHERE name = 'conv_key'",
+    ).get()).toEqual({ c: 0 });
   });
 });
 
@@ -572,11 +582,13 @@ describe('3h + 3i: a piece result is a child field, not a row in a fake namespac
     expect(pieces.map((p) => p.resultDeliveryId).sort()).toEqual(['d-1', 'd-2']);
     expect(pieces.map((p) => p.content).join(' ')).toContain('4417');
     expect(pieces.map((p) => p.content).join(' ')).toContain('blue');
-    // The harvest never reads a conv_key namespace: there are no `join-piece:` rows at all.
-    const fake = mockDb.current!.prepare(
-      "SELECT count(*) AS c FROM messages WHERE conv_key LIKE 'join-piece:%' OR conv_key LIKE 'park:%'",
-    ).get() as { c: number };
-    expect(fake.c).toBe(0);
+    // The harvest never reads a fake namespace, and after PHASE-2 T10I there is no column left
+    // to hold one: `messages.conv_key` is dropped at `148`. The old form of this clause
+    // (`WHERE conv_key LIKE 'join-piece:%'`) would now THROW rather than assert — a check
+    // dying because its subject left the schema. This asserts the absence at the schema level.
+    expect(mockDb.current!.prepare(
+      "SELECT count(*) AS c FROM pragma_table_info('messages') WHERE name = 'conv_key'",
+    ).get()).toEqual({ c: 0 });
   });
 
   it('NEGATIVE: a piece cannot be landed with a delivery id that resolves to nothing', () => {

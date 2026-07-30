@@ -249,13 +249,27 @@ describe('the terminal-wake finder reads one lane and one keyspace', () => {
     expect(findUnservedTerminalWake(AGENT)).toBeNull();
   });
 
-  it('T4 NEGATIVE CONTROL: the retired conv_key sentinel does NOT hide an unserved wake', () => {
-    const wake = insertMessage({
+  // ── RETIRED DELIBERATELY AND RE-EXPRESSED STRONGER (PHASE-2 T10I) ──
+  // T4's control wrote the retired sentinel (`UPDATE messages SET conv_key = 'a2a'`) and
+  // asserted the finder still returned the wake. Migration `148` DROPPED `messages.conv_key`,
+  // so that UPDATE would now throw and this control would die of a missing column rather than
+  // prove anything — the failure mode PINNED §12 named and asked to be handled deliberately
+  // rather than discovered.
+  //
+  // The requirement it protected is that the OLD claim cannot hide an unserved wake, and after
+  // the drop that is true by CONSTRUCTION: the sentinel is unwritable because the column is
+  // gone. Asserted at the schema level, which no source scan could establish — plus the
+  // positive half, because "the column is gone" must not become a clause that passes while the
+  // finder has quietly stopped finding anything.
+  it('T4 NEGATIVE CONTROL, re-expressed: the retired sentinel is UNREPRESENTABLE, and the finder still finds', () => {
+    insertMessage({
       agentId: AGENT, role: 'user', lane: 'a2a',
       sourceAgentId: PEER, a2aThreadId: 'thr-sentinel', a2aIntent: 'COMPLETE', a2aRequiresResponse: true,
       content: '[A2A:COMPLETE thread:thr-sentinel from:Obligation Peer] done',
     });
-    mockDb.current!.prepare("UPDATE messages SET conv_key = 'a2a' WHERE id = ?").run(wake.id);
+    expect(mockDb.current!.prepare(
+      "SELECT count(*) AS c FROM pragma_table_info('messages') WHERE name = 'conv_key'",
+    ).get()).toEqual({ c: 0 });
     expect(findUnservedTerminalWake(AGENT)).not.toBeNull();
   });
 
