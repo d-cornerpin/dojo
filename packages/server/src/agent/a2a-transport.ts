@@ -29,9 +29,10 @@ import {
   JOIN_TTL_MINUTES, THREAD_HOP_CAP, isTerminal,
   findJoinChildByThread, findFailedJoinForThread, childrenForThread,
   landPiece, settlePieceWithoutResult, joinState, joinPieces, dueJoins, openJoins,
+  dueJoinsUnderClosedParent,
   compilePendingJoins, failJoinClosed, settleJoinDelivered, clearJoinCompilePending,
   claimFailedJoinForLateAnswer, threadHopCount, bumpThreadHopCount,
-  type JoinState,
+  type JoinState, type JoinPiece,
 } from '../work/store.js';
 // A2A protocol constants and helpers, inlined here to avoid runtime
 // imports from @dojo/shared (which points at .ts source and can't be
@@ -1671,13 +1672,130 @@ async function resolveOpenJoin(
 }
 
 /**
+ * The notice for a join whose PARENT already closed (issues-log #19). Built from a snapshot of
+ * the pieces taken BEFORE they are settled, because after the settle nothing is outstanding and
+ * the sentence would have nobody to name.
+ *
+ * Two shapes, and the split is the honesty requirement, not decoration:
+ *   * nothing came back  -> the existing `failClosedNotice`, verbatim. One composer for "I could
+ *     not get an answer", not two that can drift.
+ *   * something came back -> say what arrived AND who never did. Sending only "I could not get a
+ *     complete answer" while a real piece sits recorded on the child is the same class of lie
+ *     requirement 3e refuses when it forbids compiling an answer out of nothing.
+ */
+function closedParentNotice(
+  join: JoinState, snapshot: JoinPiece[], askedNameHint?: string | null,
+): string {
+  const landed = snapshot.filter((p) => p.state === 'done' && (p.content ?? '').trim().length > 0);
+  if (landed.length === 0) return failClosedNotice(join, askedNameHint);
+  const missing = snapshot.filter((p) => !isTerminal(p.state));
+  const names = missing.map((p) => resolveAgentDisplayName(p.assigneeAgent) ?? askedNameHint ?? 'another agent');
+  const who = names.length === 1 ? names[0] : `${names.length} of the agents I asked`;
+  const back = landed
+    .map((p) => `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}: ${
+      (p.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 600)}`)
+    .join('\n');
+  return `Following up on something I answered earlier: ${who} never came back inside the deadline. `
+    + `Here is what did arrive:\n${back}`;
+}
+
+/**
+ * THE SECOND TIMEOUT ARM — a join past its deadline whose parent has ALREADY CLOSED
+ * (issues-log #19, PHASE-2 T13). See `dueJoinsUnderClosedParent` for why this population is the
+ * normal product of every delegating turn and why widening the first arm was refused.
+ *
+ * The order is the same discipline the first arm uses, for the same reason:
+ *   1. LAND a stranded reply first. Telling the owner "I could not get an answer" while the
+ *      answer sits unlanded on the child is the failure mode `resolveOpenJoin` step 1 exists to
+ *      prevent, and it does not stop mattering because the parent closed.
+ *   2. If that leaves nothing outstanding, RELAY what came back. The compile path cannot do it
+ *      (`compilePendingJoins` excludes a terminal parent, and its settle moves the PARENT), so
+ *      this arm relays the recorded pieces itself — the sanctioned engine relay, reading the
+ *      children.
+ *   3. Otherwise settle the outstanding CHILDREN `abandoned` and send ONE notice. The child
+ *      transition IS the exactly-once guard: a second pass finds the countdown at zero and the
+ *      finder no longer yields the row. The PARENT is not transitioned at all — its state,
+ *      `result_delivery_id` and `closed_at` are exactly what the delivered answer left.
+ */
+async function resolveJoinUnderClosedParent(
+  join: JoinState, opts: { askedNameHint?: string | null } = {},
+): Promise<'relayed' | 'noticed' | 'already-settled'> {
+  const ask = askRowForJoin(join);
+  let state: JoinState | null = join;
+  for (const piece of joinPieces(join.id)) {
+    if (isTerminal(piece.state)) continue;
+    const stranded = findUnlandedInboundReply(join.agentId, piece.threadId, ask?.created_at ?? Date.now());
+    if (!stranded) continue;
+    const deliveryId = recordPieceDelivery({
+      fromAgent: stranded.senderId ?? 'unknown', toAgent: join.agentId,
+      messageId: stranded.messageId, intent: 'DELIVERABLE',
+    });
+    if (!deliveryId) continue;
+    const settled = landPiece(piece.childId, {
+      deliveryId, content: stranded.payload, messageId: stranded.messageId, actorId: stranded.senderId,
+    });
+    state = settled.result.kind === 'applied' ? settled.join : joinState(join.id);
+  }
+  state = state ?? joinState(join.id);
+  if (!state) return 'already-settled';
+
+  const snapshot = joinPieces(state.id);
+  const outstanding = snapshot.filter((p) => !isTerminal(p.state));
+
+  if (outstanding.length === 0) {
+    // Everything is back after all. Relay it; the parent is already terminal so there is no
+    // state move to make and nothing to guard beyond `compile_pending`, which is cleared so the
+    // ordinary drain cannot relay a second time if the parent is ever reopened.
+    const withContent = snapshot.filter((p) => (p.content ?? '').trim().length > 0);
+    if (withContent.length === 0) return 'already-settled';
+    const text = `All the delegated pieces are back; here they are directly:\n${
+      withContent.map((p) => `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}: ${
+        (p.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 600)}`).join('\n')}`;
+    await deliverJoinResultToOwner(state, text, { tool: 'a2a-join-relay' });
+    if (state.compilePending) {
+      clearJoinCompilePending(state.id, 'relayed the recorded pieces under a closed parent');
+    }
+    return 'relayed';
+  }
+
+  // Settle FIRST, deliver second — the guard has to be won before the send, exactly as the
+  // first arm wins `failJoinClosed` before it delivers.
+  let claimed = 0;
+  for (const piece of outstanding) {
+    const r = settlePieceWithoutResult(piece.childId, {
+      to: 'abandoned', actorId: 'work-reaper',
+      reason: 'the deadline passed and the ask it belonged to had already been answered',
+    });
+    if (r.result.kind === 'applied') claimed++;
+  }
+  // Defence in depth, and stated as such rather than claimed as the guard: the FINDER is what
+  // makes this exactly-once (after the settle the countdown is at zero and
+  // `dueJoinsUnderClosedParent` no longer yields the row — proven by the second-sweep clause).
+  // This line covers only the two-scanners-at-once race, which a single-process 10-minute reaper
+  // cannot produce in a test, so it is deliberately WITHOUT a planted-fault proof — removing it
+  // changed no test, and that was measured rather than assumed. Its transition-level twin IS
+  // bite-proven (`fanout-join.test.ts`, the double-settle clause).
+  if (claimed === 0) return 'already-settled';
+  await deliverJoinResultToOwner(
+    state, closedParentNotice(state, snapshot, opts.askedNameHint), { tool: 'a2a-join-failed' },
+  );
+  return 'noticed';
+}
+
+/**
  * D13's TTL sweep, rekeyed onto `work.ttl_at` (scheduled in index.ts, every 10 minutes).
  * Any join past its deadline has waited long enough: land a stranded reply if one exists,
  * otherwise fail closed with the owner notice. Exactly once per join (the transition IS the
  * guard), bounded per pass, age-capped by `dueJoins`.
+ *
+ * TWO ARMS since PHASE-2 T13 (issues-log #19). The first reads `dueJoins` (live parent) and the
+ * second `dueJoinsUnderClosedParent` (the parent already delivered its answer). They are disjoint
+ * by construction — the predicates are complementary on `state` — so no join is handled twice.
  */
-export async function sweepExpiredJoins(): Promise<{ failedClosed: number; relayedReplies: number }> {
-  const out = { failedClosed: 0, relayedReplies: 0 };
+export async function sweepExpiredJoins(): Promise<{
+  failedClosed: number; relayedReplies: number; noticedUnderClosedParent: number;
+}> {
+  const out = { failedClosed: 0, relayedReplies: 0, noticedUnderClosedParent: 0 };
   let joins: JoinState[] = [];
   try {
     joins = dueJoins(Date.now());
@@ -1699,6 +1817,31 @@ export async function sweepExpiredJoins(): Promise<{ failedClosed: number; relay
       });
     } catch (err) {
       logger.warn('join TTL reaper: failed to close join', {
+        agentId: join.agentId, work: join.id, error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  // ── The second arm ──
+  let orphaned: JoinState[] = [];
+  try {
+    orphaned = dueJoinsUnderClosedParent(Date.now());
+  } catch (err) {
+    logger.warn('join TTL reaper: closed-parent scan failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return out;
+  }
+  for (const join of orphaned) {
+    try {
+      const outcome = await resolveJoinUnderClosedParent(join);
+      if (outcome === 'relayed') out.relayedReplies++;
+      else if (outcome === 'noticed') out.noticedUnderClosedParent++;
+      logger.info('join TTL reaper: expired join under an already-closed parent', {
+        agentId: join.agentId, work: join.id, parentState: join.parentState,
+        remaining: join.remaining, landed: join.landed, outcome,
+      });
+    } catch (err) {
+      logger.warn('join TTL reaper: failed to resolve join under a closed parent', {
         agentId: join.agentId, work: join.id, error: err instanceof Error ? err.message : String(err),
       });
     }

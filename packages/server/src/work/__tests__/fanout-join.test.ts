@@ -53,6 +53,7 @@ import {
   openDelegationJoin, findJoinChildByThread, landPiece, settlePieceWithoutResult,
   joinState, joinPieces, dueJoins, failJoinClosed, settleJoinDelivered,
   reopenJoinForLateAnswer, threadHopCount, bumpThreadHopCount, THREAD_HOP_CAP,
+  dueJoinsUnderClosedParent, JOIN_MAX_AGE_DAYS, transition,
 } from '../store.js';
 
 const AGENT = 'kevin';
@@ -458,6 +459,160 @@ describe('3d: the TTL reaper fails a stuck join closed exactly once', () => {
     // ...but it is due for COMPILE resolution, not for a "could not get an answer"
     // notice: the reaper reads the same outcome the countdown computed.
     expect(joinState(parent)!.outcome).toBe('compile');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// 3d, SECOND ARM — issues-log #19: the parent closing must not silence the deadline
+//
+// THE DEFECT. The parent ask closes on the reply the agent sends the owner (T5's
+// `closeAsksForDelivery`) and the join is opened in the SAME turn — in the event log
+// `join_opened` lands AFTER the `claimed -> done` transition. So EVERY delegating turn
+// leaves a `done` parent with a live countdown. Both timeout finders (`dueJoins`, the
+// 10-minute reaper's input, and `openJoins`, the boot re-drain's) carried
+// `state NOT IN ('done','failed','abandoned')` on the PARENT, so neither ever yielded one:
+// T11 measured 14 delegated pieces open 8–13 HOURS past their TTL under 13 done parents,
+// and the fail-closed owner notice was never sent. A late reply still LANDS (`landPiece`
+// works fine under a terminal parent), so the row was reachable by the peer and by nothing
+// else — the person who asked is simply never told their delegated half did not come back.
+//
+// THE SHAPE OF THE FIX, and why it is keyed on the CHILD. `failJoinClosed` transitions the
+// PARENT and takes the parent's current state as its exactly-once guard, so it cannot run
+// here: `done -> failed` is a terminal-to-terminal move this state machine does not make,
+// and teaching it to would let any reaper re-open a delivered answer. The second arm settles
+// the OUTSTANDING PIECES instead — which is a move the machine already makes, decrements the
+// same countdown, and leaves the parent's delivered outcome untouched. The child transition
+// IS the exactly-once guard, exactly as the parent transition is for the first arm.
+// ════════════════════════════════════════════════════════════════════════
+
+describe('3d second arm: a deadline still expires when the parent ask has already closed', () => {
+  /** The exact shape T11 measured: parent delivered and `done`, countdown still running. */
+  function seedOrphanedJoin(
+    msgId: string, opts: { ttlAt: number; threads?: string[] } = { ttlAt: Date.now() - 1000 },
+  ): string {
+    const parent = seedClaimedAsk(msgId);
+    openDelegationJoin({
+      parentWorkId: parent, agentId: AGENT, replyConversationId: 'conv-1',
+      ttlAt: opts.ttlAt, threads: (opts.threads ?? [T1]).map((threadId) => ({ threadId })),
+    });
+    // The agent answered the owner; the ask closes on that delivery. This is T5's own path,
+    // not a contrivance — `transition(..., to: 'done')` with a real delivery to point at.
+    // `evidenceRef` is not decoration: G6 refuses `by:'engine'` without it, which is the gate
+    // that stops the engine closing work it cannot point at.
+    const owner = seedDelivery('d-owner-' + msgId, { channel: 'dashboard' });
+    const r = transition(parent, {
+      to: 'done', by: 'engine', actorId: 'engine',
+      reason: 'delivered via dashboard',
+      evidenceRef: owner, resultDeliveryId: owner,
+    });
+    expect(r.kind).toBe('applied');
+    return parent;
+  }
+
+  it('POSITIVE: a past-TTL join under a CLOSED parent is found by the second arm', () => {
+    const parent = seedOrphanedJoin('m-orphan');
+    expect(row(parent)!.state).toBe('done');
+    expect(row(parent)!.remaining_children).toBe(1);
+    expect(dueJoinsUnderClosedParent(Date.now()).map((j) => j.id)).toContain(parent);
+  });
+
+  it('NEGATIVE: the FIRST arm still does not see it — the two arms are disjoint, not duplicated', () => {
+    const parent = seedOrphanedJoin('m-orphan');
+    expect(dueJoins(Date.now()).map((j) => j.id)).not.toContain(parent);
+  });
+
+  it('NEGATIVE: an OPEN parent past its TTL belongs to the first arm only', () => {
+    const parent = seedClaimedAsk('m-open');
+    openDelegationJoin({
+      parentWorkId: parent, agentId: AGENT, replyConversationId: 'conv-1',
+      ttlAt: Date.now() - 1000, threads: [{ threadId: T1 }],
+    });
+    expect(dueJoins(Date.now()).map((j) => j.id)).toContain(parent);
+    expect(dueJoinsUnderClosedParent(Date.now()).map((j) => j.id)).not.toContain(parent);
+  });
+
+  it('NEGATIVE: a closed parent whose deadline has NOT passed is left alone', () => {
+    const parent = seedOrphanedJoin('m-fresh', { ttlAt: Date.now() + 60 * 60_000 });
+    expect(dueJoinsUnderClosedParent(Date.now()).map((j) => j.id)).not.toContain(parent);
+  });
+
+  it('NEGATIVE: a closed parent whose countdown already reached zero is NOT outstanding', () => {
+    const parent = seedOrphanedJoin('m-landed');
+    landPiece(findJoinChildByThread(AGENT, T1)!.id, {
+      deliveryId: seedDelivery('d-piece'), content: 'came back late but it came back', messageId: null,
+    });
+    expect(row(parent)!.remaining_children).toBe(0);
+    expect(dueJoinsUnderClosedParent(Date.now()).map((j) => j.id)).not.toContain(parent);
+  });
+
+  it('NEGATIVE: a closed ask that never delegated at all is never in either arm', () => {
+    const plain = seedClaimedAsk('m-plain');
+    const plainDelivery = seedDelivery('d-plain', { channel: 'dashboard' });
+    transition(plain, {
+      to: 'done', by: 'engine', actorId: 'engine', reason: 'answered',
+      evidenceRef: plainDelivery, resultDeliveryId: plainDelivery,
+    });
+    expect(row(plain)!.remaining_children).toBeNull();
+    expect(dueJoinsUnderClosedParent(Date.now()).map((j) => j.id)).not.toContain(plain);
+    expect(dueJoins(Date.now()).map((j) => j.id)).not.toContain(plain);
+  });
+
+  it('POSITIVE: settling the outstanding piece is a move the machine MAKES — the countdown '
+    + 'moves and the parent\'s delivered outcome is untouched', () => {
+    const parent = seedOrphanedJoin('m-settle');
+    const child = findJoinChildByThread(AGENT, T1)!.id;
+    const before = row(parent)!;
+    const r = settlePieceWithoutResult(child, {
+      to: 'abandoned', reason: 'the deadline passed and the parent had already closed',
+    });
+    expect(r.result.kind).toBe('applied');
+    expect(row(child)!.state).toBe('abandoned');
+    const after = row(parent)!;
+    expect(after.remaining_children).toBe(0);
+    // The parent is EXACTLY as it was on every fact that describes the owner's answer.
+    expect(after.state).toBe('done');
+    expect(after.state).toBe(before.state);
+    expect(after.result_delivery_id).toBe(before.result_delivery_id);
+    expect(after.closed_at).toBe(before.closed_at);
+    // ...and the join_complete event records the honest outcome: nothing landed.
+    const jc = events(parent).filter((e) => e.kind === 'join_complete');
+    expect(jc).toHaveLength(1);
+    expect(JSON.parse(jc[0].payload!)).toMatchObject({ landed: 0, outcome: 'fail-closed' });
+  });
+
+  it('POSITIVE + NEGATIVE: the CHILD settle is the exactly-once guard — a second reaper pass '
+    + 'finds nothing to settle and the arm goes empty', () => {
+    const parent = seedOrphanedJoin('m-once');
+    const child = findJoinChildByThread(AGENT, T1)!.id;
+    const first = settlePieceWithoutResult(child, { to: 'abandoned', reason: 'deadline' });
+    const second = settlePieceWithoutResult(child, { to: 'abandoned', reason: 'deadline' });
+    expect(first.result.kind).toBe('applied');
+    expect(second.result.kind).not.toBe('applied');
+    expect(row(parent)!.remaining_children).toBe(0);
+    expect(dueJoinsUnderClosedParent(Date.now()).map((j) => j.id)).not.toContain(parent);
+  });
+
+  it('POSITIVE: a PARTIAL fan-out under a closed parent settles only what is outstanding', () => {
+    const parent = seedOrphanedJoin('m-partial', { ttlAt: Date.now() - 1000, threads: [T1, T2] });
+    landPiece(findJoinChildByThread(AGENT, T1)!.id, {
+      deliveryId: seedDelivery('d-t1'), content: 'T1 answered', messageId: null,
+    });
+    expect(row(parent)!.remaining_children).toBe(1);
+    expect(dueJoinsUnderClosedParent(Date.now()).map((j) => j.id)).toContain(parent);
+    const st = joinState(parent)!;
+    expect(st.landed).toBe(1);
+    expect(st.outcome).toBe('compile');   // something DID come back; the notice must say so
+    const outstanding = joinPieces(parent).filter((p) => p.state === 'open');
+    expect(outstanding).toHaveLength(1);
+    expect(outstanding[0].threadId).toBe(T2);
+  });
+
+  it('NEGATIVE: the age cap applies to this arm too — a join older than the window is not '
+    + 'resurrected months later', () => {
+    const parent = seedOrphanedJoin('m-ancient');
+    const ancient = Date.now() - (JOIN_MAX_AGE_DAYS + 1) * 24 * 60 * 60 * 1000;
+    mockDb.current!.prepare('UPDATE work SET opened_at = ? WHERE id = ?').run(ancient, parent);
+    expect(dueJoinsUnderClosedParent(Date.now()).map((j) => j.id)).not.toContain(parent);
   });
 });
 

@@ -1234,6 +1234,59 @@ export function dueJoins(nowMs: number, limit = 25): JoinState[] {
   return rows.map((r) => joinState(r.id)).filter((s): s is JoinState => s !== null);
 }
 
+/**
+ * Joins past their deadline whose PARENT has already closed — the second timeout arm, and the
+ * whole of issues-log #19.
+ *
+ * WHY THE POPULATION EXISTS AT ALL. The parent ask closes on the reply the agent sends the owner
+ * (T5's `closeAsksForDelivery`) and the join opens in the SAME turn: in the event log
+ * `join_opened` lands AFTER the `claimed -> done` transition. A `done` parent with a live
+ * countdown is therefore the NORMAL product of every delegating turn, not an exotic state.
+ * `dueJoins` above and `openJoins` below both carry `state NOT IN ('done','failed','abandoned')`
+ * on the parent, so neither ever yielded one — T11 measured 14 delegated pieces sitting `open`
+ * 8–13 HOURS past their TTL under 13 such parents, with the fail-closed owner notice never sent.
+ * A late reply still lands (`landPiece` is happy under a terminal parent), so the row was
+ * reachable by the peer and by nothing else, and the person who asked was never told.
+ *
+ * IT IS A SEPARATE FINDER RATHER THAN A WIDENED ONE, deliberately. Dropping the state predicate
+ * from `dueJoins` hands `resolveOpenJoin` — and therefore `failJoinClosed` — a terminal parent,
+ * and `failJoinClosed` transitions the PARENT with its current state as the exactly-once guard.
+ * `done -> failed` is a terminal-to-terminal move this machine does not make, and teaching it to
+ * would let a reaper re-open work whose answer was already delivered. This arm's caller settles
+ * the outstanding CHILDREN instead: a move the machine already makes, on the same countdown,
+ * leaving every fact that describes the owner's answer exactly as it was.
+ *
+ * `remaining_children > 0`, not `IS NOT NULL`: a terminal parent at zero has nothing
+ * outstanding. (`dueJoins` needs `IS NOT NULL` because a LIVE parent at zero still owes the
+ * compile relay.) Same `ttl_at` read and the same age cap as the first arm — no second clock and
+ * no invented staleness bound.
+ *
+ * ⚠ `state = 'done'` AND NOT "any terminal state", and the reason was found by the test rather
+ * than reasoned out. The first draft matched all three terminal states, and
+ * `join-closed-parent-reaper.test.ts`'s first-arm control went red immediately: the first arm's
+ * own `failJoinClosed` leaves the parent `failed` WITH the countdown still above zero, which is
+ * character-for-character the shape this finder hunts — so the owner got the fail-closed notice
+ * and then a second notice about the same join, in the same pass, every pass. The distinguishing
+ * fact is what the owner has already been told:
+ *   * `done`      — the parent's answer was DELIVERED and said nothing about the outstanding
+ *                   piece. That silence is #19, and it is this arm's whole subject.
+ *   * `failed`    — reached by `failJoinClosed`, which delivers its own notice. Nothing is owed.
+ *   * `abandoned` — reached by the ask-abandon paths (quarantine, unservable-ask reaper), which
+ *                   own their own honesty story. Speaking here would be a new behaviour, not a
+ *                   repair, so it is deliberately out of scope and asserted as such.
+ */
+export function dueJoinsUnderClosedParent(nowMs: number, limit = 25): JoinState[] {
+  const floor = nowMs - JOIN_MAX_AGE_DAYS * 24 * 60 * 60 * 1000;
+  const rows = getDb().prepare(`
+    SELECT id FROM work
+     WHERE remaining_children > 0 AND ttl_at IS NOT NULL
+       AND ttl_at <= ? AND opened_at >= ?
+       AND state = 'done'
+     ORDER BY opened_at ASC LIMIT ?
+  `).all(nowMs, floor, limit) as Array<{ id: string }>;
+  return rows.map((r) => joinState(r.id)).filter((s): s is JoinState => s !== null);
+}
+
 /** Every join of one agent that reached zero and is still waiting for the compiled answer.
  *  Read at turn end, so the loop closes no matter what the model did with the steer. */
 export function compilePendingJoins(agentId: string, limit = 5): JoinState[] {
