@@ -32,6 +32,7 @@ import { statusToState, tsToMs } from '../../work/tracker-view.js';
 import { deleteOccurrencesOf } from '../../work/occurrences.js';
 import { recordOwnerCloseReceipt } from '../../agent/v2/deliveries.js';
 import { createLogger } from '../../logger.js';
+import type { TaskLogEntryKind } from '../../tracker/task-log.js';
 import { getPrimaryAgentId, getPMAgentId, getDashboardHiddenAgentIds } from '../../config/platform.js';
 
 const logger = createLogger('tracker-routes');
@@ -292,12 +293,11 @@ trackerRouter.get('/tasks/:id/log', async (c) => {
   const limitParam = c.req.query('limit');
   const limit = limitParam ? Math.min(Math.max(parseInt(limitParam, 10) || 100, 1), 500) : 100;
   const kindsParam = c.req.query('kinds');
+  // PHASE-2 T10G: the vocabulary has ONE owner (`TaskLogEntryKind`) instead of being restated
+  // here. The inline copy had already drifted — it was missing the two verdict kinds the trail
+  // now names — which is the same two-declarations-of-one-list problem this phase exists to end.
   const kinds = kindsParam
-    ? (kindsParam.split(',').map((k) => k.trim()).filter(Boolean) as Array<
-        'transition' | 'observation' | 'reject' | 'override' | 'evidence' |
-        'directive' | 'poke' | 'auto_sweep' | 'smell_flag' |
-        'user_verdict_request' | 'user_verdict_applied' | 'legacy_note'
-      >)
+    ? (kindsParam.split(',').map((k) => k.trim()).filter(Boolean) as TaskLogEntryKind[])
     : undefined;
 
   const resolved = resolveTaskId(rawId);
@@ -323,15 +323,17 @@ trackerRouter.get('/hygiene', async (c) => {
     const { getDb } = await import('../../db/connection.js');
     const db = getDb();
 
-    // Validation outcomes per from_entity (PM rejects vs blesses) over last 7 days.
+    // Validation outcomes per adjudicator (rejects vs blesses) over the last 7 days.
+    // PHASE-2 T10G: read from `adjudications`, the verdict record itself. The old statement
+    // inferred these rates by string-matching `action_taken LIKE '%valid=true%'` on trail rows
+    // labelled `transition` — the mislabel RULING 10 named (migration `146` has the numbers).
     const validateOutcomes = db.prepare(`
-      SELECT from_entity,
-             SUM(CASE WHEN entry_kind = 'reject' THEN 1 ELSE 0 END) as rejects,
-             SUM(CASE WHEN entry_kind = 'transition' AND action_taken LIKE '%valid=true%' THEN 1 ELSE 0 END) as validates
-      FROM task_log
-      WHERE datetime(created_at) > datetime('now', '-7 days')
-        AND (entry_kind = 'reject' OR (entry_kind = 'transition' AND action_taken LIKE '%valid=%'))
-      GROUP BY from_entity
+      SELECT by_agent AS from_entity,
+             SUM(CASE WHEN verdict = 'rejected' THEN 1 ELSE 0 END) as rejects,
+             SUM(CASE WHEN verdict = 'upheld' THEN 1 ELSE 0 END) as validates
+      FROM adjudications
+      WHERE created_at > (unixepoch('now') - 7 * 86400) * 1000
+      GROUP BY by_agent
     `).all() as Array<{ from_entity: string; rejects: number; validates: number }>;
 
     // Smell flag counts by reason category (rough cluster) over last 7 days.
@@ -343,9 +345,9 @@ trackerRouter.get('/hygiene', async (c) => {
           ELSE 'other'
         END as category,
         COUNT(*) as count
-      FROM task_log
-      WHERE entry_kind = 'smell_flag'
-        AND datetime(created_at) > datetime('now', '-7 days')
+      FROM (SELECT json_extract(payload, '$.reason') AS reason FROM work_events
+             WHERE kind = 'audit' AND json_extract(payload, '$.entry_kind') = 'smell_flag'
+               AND created_at > (unixepoch('now') - 7 * 86400) * 1000)
       GROUP BY category
     `).all() as Array<{ category: string; count: number }>;
 

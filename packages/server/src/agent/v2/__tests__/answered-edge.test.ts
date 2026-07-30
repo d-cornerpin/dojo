@@ -67,6 +67,7 @@ import { getWaitingHumanConversations } from '../counterparty.js';
 import { getActiveUserDirective } from '../../../memory/directive.js';
 import { abandonUnservableAsks, openAsk, transition } from '../../../work/store.js';
 import { insertMessage } from '../../../memory/message-store.js';
+import { listTaskLog } from '../../../tracker/task-log.js';
 import { seedTrackerTask } from '../../../work/__tests__/work-fixture.js';
 
 const AGENT = 'kevin';
@@ -512,9 +513,18 @@ describe('a turn that SPOKE to the owner and closed nothing hands the ball over 
     seedDelivery('d1', { turn_number: 6 });
     seedLegacyTask('t-1');
     pauseDriveWorkWaitingOnOwner(AGENT, 6);
-    const log = db().prepare('SELECT entry_kind, to_status FROM task_log WHERE task_id = ?').all('t-1') as
-      Array<{ entry_kind: string; to_status: string | null }>;
-    expect(log.some((e) => e.to_status === 'paused')).toBe(true);
+    // PHASE-2 T10G — RE-EXPRESSED, and STRICTLY STRONGER than it was. The property is the
+    // clause's own title and it has not moved: the pause must be findable, not merely applied.
+    // What changed is WHERE the record lives and how good it is. This site used to write a
+    // best-effort `task_log` transition row AFTER `setTrackerStatus` returned; the pause is now
+    // recorded by `transition()` INSIDE the state-change transaction, so a crash can no longer
+    // apply the pause and lose its record. Asserted through `listTaskLog` — the same projection
+    // the owner's Activity panel reads — so the clause covers the render path too, and in
+    // TRACKER vocabulary (`paused`), which is what a human looking for it would search for.
+    const log = listTaskLog('t-1');
+    expect(log.some((e) => e.entryKind === 'transition' && e.toStatus === 'paused')).toBe(true);
+    // The reason travels with it: an audit line with no why is the thing the spine replaced.
+    expect(log.find((e) => e.toStatus === 'paused')!.reason).toContain('waiting on them');
   });
 });
 

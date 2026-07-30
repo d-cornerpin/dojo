@@ -21,7 +21,7 @@ import { postAgentNotice } from '../agent/agent-notice.js';
 import { listTasks, getTask } from './schema.js';
 import { currentRung, lastPoke as lastPokeOf, recordPoke, recordRemediation } from '../work/poke-ladder.js';
 import { getAgentRuntime } from '../agent/runtime.js';
-import { getRecentObservations, getRecentTransitions, formatEntryLine } from './task-log.js';
+import { getRecentObservations, getRecentTransitions, formatEntryLine, listTaskLog } from './task-log.js';
 import {
   deleteForAgentBefore,
   deleteNonSystemForAgent,
@@ -545,20 +545,18 @@ export async function escalateCloseoutMissToPM(ctx: {
   try {
     const receiptLines: string[] = [];
     for (const r of rows) {
-      const auditRows = db.prepare(`
-        SELECT action_taken, reason, note, created_at
-        FROM task_log
-        WHERE task_id = ?
-          AND entry_kind IN ('tool_use', 'transition', 'observation')
-        ORDER BY created_at DESC, rowid DESC
-        LIMIT 6
-      `).all(r.id) as Array<{ action_taken: string | null; reason: string | null; note: string | null; created_at: string }>;
+      // PHASE-2 T10G: reads the trail through its own seam now that the table is gone.
+      // `tool_use` LEAVES the kind list and is not replaced: it is not one of the thirteen
+      // kinds `TaskLogEntryKind` declares, no writer in the tree has ever emitted it, and the
+      // box carried zero rows of it — a dead kind inside a live predicate, which is why the
+      // list is a measurement and not a copy.
+      const auditRows = listTaskLog(r.id, { limit: 6, kinds: ['transition', 'observation'] });
       if (auditRows.length === 0) continue;
       receiptLines.push(`  ${r.id.slice(0, 8)} recent audit (newest first):`);
       for (const a of auditRows) {
-        const action = a.action_taken ?? '(no action recorded)';
+        const action = a.actionTaken ?? '(no action recorded)';
         const detail = [a.reason, a.note].filter(Boolean).join(' / ').slice(0, 180);
-        receiptLines.push(`    [${a.created_at}] ${action}${detail ? `, ${detail}` : ''}`);
+        receiptLines.push(`    [${a.createdAt}] ${action}${detail ? `, ${detail}` : ''}`);
       }
     }
     // C26: engine-written verification receipts. These are machine facts (the
@@ -710,16 +708,26 @@ function runSmellDetector(taskId: string, toStatus: string): void {
   } else if (toStatus === 'paused' || toStatus === 'in_progress') {
     // Pause-resume thrash: count transitions in/out of paused for this task
     // within the last 30 minutes.
+    // PHASE-2 T10G: counted off the spine's own transition events. The predicate is carried
+    // shape-for-shape, and it survives the vocabulary change because `paused` is the ONE word
+    // the two vocabularies share — `setTrackerStatus` passes it straight through to
+    // `transition()`, so the event payload says `paused` exactly as the old column did.
+    // MEASURED before the re-point rather than assumed: `work_events` transition payloads on
+    // this box carry `to` values `done|claimed|abandoned|failed|open|paused|blocked`, so the
+    // input this guard needs is present. The old table's own two paused rows are why this was
+    // not converted on the "it never fires" reasoning (#15).
     const cycles = db.prepare(`
-      SELECT COUNT(*) as c FROM task_log
-      WHERE task_id = ?
-        AND entry_kind = 'transition'
-        AND (to_status = 'paused' OR (from_status = 'paused' AND to_status != 'paused'))
-        AND datetime(created_at) > datetime('now', '-${SMELL_PAUSE_THRASH_WINDOW_MIN} minutes')
+      SELECT COUNT(*) as c FROM work_events
+      WHERE work_id = ?
+        AND kind = 'transition'
+        AND (json_extract(payload, '$.to') = 'paused'
+             OR (json_extract(payload, '$.from') = 'paused'
+                 AND json_extract(payload, '$.to') != 'paused'))
+        AND created_at > (unixepoch('now') - ${SMELL_PAUSE_THRASH_WINDOW_MIN} * 60) * 1000
     `).get(taskId) as { c: number } | undefined;
     if (cycles && cycles.c >= SMELL_PAUSE_THRASH_CYCLES) {
       // The window here is the rate definition of "thrash", not a scar; the
-      // count already reads structured task_log transitions. Structured flag.
+      // count already reads structured spine transitions. Structured flag.
       const flag = JSON.stringify({ kind: 'pause_resume_thrash', cycles: cycles.c, windowMin: SMELL_PAUSE_THRASH_WINDOW_MIN });
       patchWork(taskId, { last_smell_flag: flag }, { touch: false });
       void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
@@ -1161,11 +1169,10 @@ async function runPMReview(): Promise<void> {
   // setting pause_validated=1) makes this filter irrelevant for engine
   // pauses going forward, but if any other code path leaves an
   // unvalidated auto-pause in the world, PM at least sees the reason.
-  const recentObservation = db.prepare(`
-    SELECT note FROM task_log
-    WHERE task_id = ? AND entry_kind IN ('observation', 'legacy_note', 'auto_sweep')
-    ORDER BY created_at DESC, rowid DESC LIMIT 1
-  `);
+  // PHASE-2 T10G: the trail's own reader. Same three kinds, same newest-first order; the
+  // statement is gone because the table is.
+  const recentObservation = (id: string): { note: string | null } | undefined =>
+    listTaskLog(id, { limit: 1, kinds: ['observation', 'legacy_note', 'auto_sweep'] })[0];
   const legacyNotesStmt = db.prepare(`SELECT notes FROM work WHERE id = ?`);
 
   for (const pTask of unvalidatedPauseRows) {
@@ -1185,7 +1192,7 @@ async function runPMReview(): Promise<void> {
           : lastMsg.content;
       }
     }
-    const logRow = recentObservation.get(pTask.id) as { note: string | null } | undefined;
+    const logRow = recentObservation(pTask.id);
     const legacyRow = legacyNotesStmt.get(pTask.id) as { notes: string | null } | undefined;
     const rawReason = logRow?.note ?? legacyRow?.notes ?? null;
     const pauseReason = rawReason && rawReason.trim()
@@ -1244,15 +1251,13 @@ async function runPMReview(): Promise<void> {
   // Phase B.1: per-task lookup for goal-edit history. If the goal was
   // edited AFTER the task moved to in_progress, the assigned agent may have
   // moved the goalposts; PM needs to know.
-  const goalEditStmt = db.prepare(`
-    SELECT note, datetime(created_at) as edited_at
-    FROM task_log
-    WHERE task_id = ?
-      AND entry_kind = 'observation'
-      AND action_taken = 'goal_edited'
-    ORDER BY created_at DESC
-    LIMIT 3
-  `);
+  // PHASE-2 T10G: read off the trail. The `action_taken = 'goal_edited'` discriminator is
+  // preserved as a filter on the projected entry, because that string is the whole signal.
+  const goalEditStmt = (id: string): Array<{ note: string | null; edited_at: string }> =>
+    listTaskLog(id, { limit: 20, kinds: ['observation'] })
+      .filter((e) => e.actionTaken === 'goal_edited')
+      .slice(0, 3)
+      .map((e) => ({ note: e.note, edited_at: e.createdAt }));
 
   for (const cTask of unvalidatedCompleteRows) {
     // ── Engine-maintenance adjudication (owner ruling 2026-07-18) ──
@@ -1319,7 +1324,7 @@ async function runPMReview(): Promise<void> {
     const runLine = isRecurringRun
       ? `\n  Per-run completion (recurring task, next fire at ${cTask.next_run_at}). On valid=true the engine archives result/evidence to task_log and resets to on_deck for next fire.`
       : '';
-    const goalEdits = goalEditStmt.all(cTask.id) as Array<{ note: string | null; edited_at: string }>;
+    const goalEdits = goalEditStmt(cTask.id);
     const goalEditLine = goalEdits.length > 0
       ? `\n  ⚠ GOAL EDITED ${goalEdits.length} time(s). Most recent: ${goalEdits[0].edited_at}. ` +
         `Compare result against the ORIGINAL goal, not the rewritten one. Diffs:\n` +
@@ -1367,7 +1372,7 @@ async function runPMReview(): Promise<void> {
     const agentName = bTask.assigned_to
       ? agents.find(a => a.id === bTask.assigned_to)?.name ?? bTask.assigned_to
       : 'unassigned';
-    const obsRow = recentObservation.get(bTask.id) as { note: string | null } | undefined;
+    const obsRow = recentObservation(bTask.id);
     const blockReason = obsRow?.note?.trim() || '(no recent observation)';
     issues.push({
       stableId: `${bTask.id}|UNVALIDATED_BLOCK|${bTask.revert_count}`,

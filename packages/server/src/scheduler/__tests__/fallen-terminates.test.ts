@@ -56,19 +56,11 @@ function applySchema(db: Database.Database): void {
     -- occurrence work row now, and createWorkTable above already declares it, including
     -- ux_work_occurrence, so this suite's runs are subject to the same exactly-once
     -- constraint production is.
-    CREATE TABLE task_log (
-      id TEXT PRIMARY KEY,
-      task_id TEXT NOT NULL,
-      from_entity TEXT NOT NULL,
-      entry_kind TEXT NOT NULL,
-      from_status TEXT,
-      to_status TEXT,
-      reason TEXT,
-      action_taken TEXT,
-      note TEXT,
-      evidence_json TEXT,
-      created_at TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+    -- PHASE-2 T10G: the task_log fixture DDL is GONE with the table, exactly as T10F's
+    -- task_runs DDL went. The audit trail is a work_events row of kind 'audit' now, and
+    -- createWorkTable above already declares work_events, so this suite asserts against the
+    -- real spine table rather than a hand-rolled twin that could drift from it.
+    -- (No backticks in here: this comment lives inside a JS template literal.)
     -- PHASE-1 T4 (2026-07-27): widened to the migration-127 spine.
     --
     -- This fixture hand-rolled a 5-column messages table and never wrote to it, which is
@@ -189,7 +181,15 @@ describe('terminateLiveScheduleOnFallen (RC-17.5)', () => {
     // history reads, so this clause also covers the mapping rather than just the state.
     expect(occurrenceRunStatus(runId)).toBe('skipped');
 
-    const log = db.prepare(`SELECT COUNT(*) AS n FROM task_log WHERE task_id = ? AND action_taken = 'schedule terminated on fallen'`).get(taskId) as { n: number };
+    // PHASE-2 T10G — RE-EXPRESSED, not weakened. The requirement is unchanged: terminating a
+    // fallen schedule leaves an audit line somebody can find. The line is an `auto_sweep`
+    // entry on the spine's own event log now, so the assertion reads the payload rather than a
+    // dropped table's column — and it still pins the exact action string, which is the signal.
+    const log = db.prepare(`SELECT COUNT(*) AS n FROM work_events
+      WHERE work_id = ? AND kind = 'audit'
+        AND json_extract(payload, '$.entry_kind') = 'auto_sweep'
+        AND json_extract(payload, '$.action_taken') = 'schedule terminated on fallen'`)
+      .get(taskId) as { n: number };
     expect(log.n).toBe(1);
   });
 

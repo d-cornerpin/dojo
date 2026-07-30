@@ -1,15 +1,32 @@
-// Structured task audit log.
+// The tracker's audit trail — THE ONE HISTORY THE OWNER READS.
 //
-// Replaces freeform tasks.notes appends as the canonical record of every
-// touch on a task. PM situation reports, dashboard task detail, and the
-// agent context renderer all read from here instead of grepping prose.
+// ════════════════════════════════════════════════════════════════════════════════════════
+// PHASE-2 T10G (RULING 10) — `task_log` IS ABSORBED. verdict: REKEY.
 //
-// Phase B.0. Migration 050 creates the table and backfills existing notes.
+// requirement preserved: every touch on a tracker row, readable in one place, newest first —
+// who did it, what kind of touch, what moved, why, what they did and what they wrote. Three
+// surfaces render it through `formatEntryLine` and none of them changed: the Activity panel
+// (`dashboard/src/pages/Tracker.tsx:293`), the PM's ledger line (`tracker/pm-agent.ts`) and
+// the agent context block (`memory/assembler.ts`).
+//
+// This module used to own a TABLE. It is now the SEAM: the vocabulary, the write, and the
+// rendering. The SQL lives in `work/audit-trail.ts`, beside the spine tables it reads. The
+// seam is why the absorption is a rewrite of two files instead of a cutover of 57 call sites —
+// every writer in the tree goes through `writeTaskLog` and every reader through the four
+// readers below, so the storage moved and the callers did not have to.
+//
+// THE FULL EVIDENCE IS IN `db/migrations/146_task_log_absorbed.sql` — it is a
+// DE-DUPLICATION, not a copy, and the header there carries every measurement: 40 of the 51
+// row-moving `transition` entries had a spine twin within 3 s (stable from 1 s to 60 s), the
+// 59 non-moving ones were PM validations ALREADY in `adjudications` on an identical work set,
+// and only 11 moving entries plus the 55 prose entries held anything the spine did not.
+// ════════════════════════════════════════════════════════════════════════════════════════
 
-import { v4 as uuidv4 } from 'uuid';
-import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
+import {
+  appendAuditEntry, readAuditTrail, workExists, type TrailRow,
+} from '../work/audit-trail.js';
 
 const logger = createLogger('task-log');
 
@@ -26,7 +43,11 @@ export type TaskLogEntryKind =
   | 'closeout_miss'
   | 'user_verdict_request'
   | 'user_verdict_applied'
-  | 'legacy_note';
+  | 'legacy_note'
+  // T10G: the two the spine names honestly. A PM blessing used to arrive here wearing a
+  // `transition` label with `from_status = to_status`; it is a VERDICT and now says so.
+  | 'claim_upheld'
+  | 'claim_rejected';
 
 export interface TaskLogEntryInput {
   taskId: string;
@@ -59,23 +80,9 @@ export interface TaskLogEntry {
   createdAt: string;
 }
 
-interface TaskLogRow {
-  id: string;
-  task_id: string;
-  from_entity: string;
-  entry_kind: string;
-  from_status: string | null;
-  to_status: string | null;
-  reason: string | null;
-  action_taken: string | null;
-  note: string | null;
-  evidence_json: string | null;
-  created_at: string;
-}
-
-function mapRow(row: TaskLogRow): TaskLogEntry {
+function mapRow(row: TrailRow): TaskLogEntry {
   return {
-    id: row.id,
+    id: String(row.id),
     taskId: row.task_id,
     fromEntity: row.from_entity,
     entryKind: row.entry_kind as TaskLogEntryKind,
@@ -90,39 +97,39 @@ function mapRow(row: TaskLogRow): TaskLogEntry {
 }
 
 /**
- * Write one entry to the task log.
- * Best-effort: failures are logged but never thrown, since the log is an
- * audit trail and the calling status transition should not abort if the
- * log write fails.
+ * Write one entry to the audit trail.
+ *
+ * Best-effort by design: failures are logged and never thrown, because the trail records a
+ * state change and must not be able to abort one.
+ *
+ * RULING 10 — A `transition` WRITES NOTHING AND RETURNS null. The spine records every state
+ * change inside the state-change transaction with strictly more fidelity (`from`/`to`/`by`/
+ * `reason`/`evidence_ref`/`result_delivery_id`/`claim`/`note`), where this trail's copy was
+ * best-effort and outside it. A second record of one fact is the thing this phase deletes.
+ *
+ * The guard is HERE, in the seam, so the de-duplication is enforced in one place rather than
+ * trusted to 17 call sites. ⚠ Those 17 sites are now INERT and are NOT claimed as deliberate
+ * design: they are named, measured residue owed a cleanup pass (T10G report §task_log). Two of
+ * them carry an `actionTaken` gloss the spine event has no column for, so the cleanup is a
+ * judgement per site — fold the prose into the transition's own `reason`, or drop it — and not
+ * a blind delete. It is behaviour-neutral either way, which is why it is owed rather than
+ * rushed at the end of a session.
  */
 export function writeTaskLog(input: TaskLogEntryInput): string | null {
+  if (input.entryKind === 'transition') return null;
   try {
-    const db = getDb();
-    const id = uuidv4();
-    db.prepare(`
-      INSERT INTO task_log
-        (id, task_id, from_entity, entry_kind, from_status, to_status,
-         reason, action_taken, note, evidence_json, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    `).run(
-      id,
-      input.taskId,
-      input.fromEntity,
-      input.entryKind,
-      input.fromStatus ?? null,
-      input.toStatus ?? null,
-      input.reason ?? null,
-      input.actionTaken ?? null,
-      input.note ?? null,
-      input.evidenceJson ?? null,
-    );
-
+    if (!workExists(input.taskId)) {
+      logger.warn('writeTaskLog skipped: no such work row', {
+        taskId: input.taskId, entryKind: input.entryKind,
+      });
+      return null;
+    }
+    const id = appendAuditEntry(input.taskId, input.fromEntity, input);
     broadcast({
       type: 'tracker:task_log',
       data: { taskId: input.taskId, entryKind: input.entryKind, fromEntity: input.fromEntity },
     });
-
-    return id;
+    return String(id);
   } catch (err) {
     logger.warn('writeTaskLog failed (non-fatal)', {
       taskId: input.taskId,
@@ -134,33 +141,15 @@ export function writeTaskLog(input: TaskLogEntryInput): string | null {
 }
 
 /**
- * List recent log entries for a task, newest first.
- * `kinds` filter lets the PM situation report grab just the entries it
- * needs (e.g. recent smell_flag + observation + reject) without pulling
- * the whole audit trail.
+ * List recent trail entries for a task, newest first.
+ * `kinds` lets the PM situation report grab just the entries it needs without pulling the
+ * whole history. The projection itself is `work/audit-trail.ts:readAuditTrail`.
  */
 export function listTaskLog(
   taskId: string,
   opts?: { limit?: number; kinds?: TaskLogEntryKind[] },
 ): TaskLogEntry[] {
-  const db = getDb();
-  const limit = opts?.limit ?? 50;
-  const kinds = opts?.kinds ?? null;
-
-  let sql = `SELECT * FROM task_log WHERE task_id = ?`;
-  const params: unknown[] = [taskId];
-
-  if (kinds && kinds.length > 0) {
-    const placeholders = kinds.map(() => '?').join(',');
-    sql += ` AND entry_kind IN (${placeholders})`;
-    params.push(...kinds);
-  }
-
-  sql += ` ORDER BY created_at DESC, rowid DESC LIMIT ?`;
-  params.push(limit);
-
-  const rows = db.prepare(sql).all(...params) as TaskLogRow[];
-  return rows.map(mapRow);
+  return readAuditTrail(taskId, opts).map(mapRow);
 }
 
 /**
@@ -175,19 +164,22 @@ export function getRecentObservations(taskId: string, limit = 5): TaskLogEntry[]
 }
 
 /**
- * Get the most recent status-changing entries (transitions, overrides,
- * user verdict applications). Useful for "what's the recent history of
- * this row" panels and PM context.
+ * Get the most recent status-changing entries (transitions, overrides, user verdict
+ * applications). Useful for "what's the recent history of this row" panels and PM context.
+ *
+ * T10G: the two verdict kinds join the set, because the PM's blessings used to arrive in it
+ * wearing a `transition` label. Dropping them would quietly shorten the PM's own ledger.
  */
 export function getRecentTransitions(taskId: string, limit = 10): TaskLogEntry[] {
   return listTaskLog(taskId, {
     limit,
-    kinds: ['transition', 'override', 'user_verdict_applied', 'auto_sweep'],
+    kinds: ['transition', 'override', 'user_verdict_applied', 'auto_sweep',
+      'claim_upheld', 'claim_rejected'],
   });
 }
 
 /**
- * Convenience helper: format a task_log entry as one human-readable line.
+ * Convenience helper: format a trail entry as one human-readable line.
  * Used by PM situation report builder, dashboard renderer, agent context
  * renderer. Keeps formatting consistent across readers.
  */
