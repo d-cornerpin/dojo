@@ -98,47 +98,32 @@ function measure(): Record<string, number> {
 // ── THE SURVIVORS, each with the mechanism it belongs to and the task that owns it ──
 // Every entry below was opened and read at T3, not inherited from a list.
 const RESOLVED: Record<string, number> = {
-  // ── BUCKET B IS EMPTY (PHASE-2 T9, 2026-07-29). ──
-  // T6 owed this and named T9 the owner: the five ENGINE-EVENT sites re-expressed on
-  // `served_by_turn IS NULL` before T10 drops the column, exactly the rekey T4 performed for
-  // the terminal A2A wake. All five moved, and the fifth one had a trap in it:
-  //   * `DELIVERABLE_ENGINE_EVENT_WHERE`   (counterparty.ts)  -> `served_by_turn IS NULL`
-  //   * `sweepByRowid(requireUnclaimed)`   (message-store.ts) -> `served_by_turn IS NULL`
-  //   * `sweepByReferent`                  (message-store.ts) -> `served_by_turn IS NULL`
-  //   * the boot staleness sweep's engine arm — moved WHOLE into `work/work-reaper.ts`
-  //     (`sweepBootStaleness`), predicate on `served_by_turn IS NULL`
-  //   * the pickup CAS `setConvKeyByRowid({value:'engine', expect:null})` -> the atomic claim
-  //     is `claimEngineEventByRowid` at turn-identity allocation, its revert is
-  //     `releaseEngineEventByRowid`, and the `expect` parameter is STRIPPED because it had no
-  //     caller left.
-  // ⚠ AND THE ONE THAT WOULD HAVE GONE WRONG SILENTLY: `claimTrackerNoticeForTask` WROTE the
-  // sentinel `conv_key='engine'` to retire a legacy assignment notice, and only worked
-  // because eligibility asked `conv_key IS NULL`. Moving eligibility without moving the
-  // writer would have left the sentinel excluding nothing and re-delivered the 14 still
-  // unclaimed pre-112 notices on the owner's real body as fresh "begin working on this task"
-  // prompts. It writes `swept_at` now — the same retirement the keyed arm already used.
+  // ── ⬛ THE MAP IS EMPTY. PHASE-2 T10I, 2026-07-30. ──
   //
-  // What is LEFT in the message writer is bucket D only:
-  //   tagTurnOutputConvKey — "do not re-tag an already-tagged output row". IDENTITY.
-  'packages/server/src/memory/message-store.ts': 1,
-  // D — conversation-scoped recall. The comment at :275 states the requirement exactly:
-  // an untagged row is this turn's own scratch, and a bare `conv_key IS NULL` would bleed
-  // ANOTHER human's unclaimed inbound into this recall (inv 4). 3l keeps this half
-  // first-class; it dies with the column at T10.
-  'packages/server/src/memory/recall.ts': 2,
-  // ── REMOVED BY T7 (2026-07-29) ──
-  // `packages/server/src/memory/open-loops.ts` carried ONE occurrence and it was never on
-  // `messages` at all: it was `open_loops.conv_key`, the dedup key of the prose-parsed
-  // open-loops store. PINNED §1 counted it among the "live SQL predicates in production",
-  // which is why it had an entry here — a predicate, on a different table, doing a different
-  // job. T7 deleted the module (623 lines) and migration `136_drop_open_loops.sql` deleted the
-  // table, so the site is gone rather than re-pointed. The other site this file used to name
-  // in that module (`:123`, the store-contradiction probe) was already rekeyed onto the work
-  // lookup by T3 and is asserted below.
+  // This file's own opening line set the exit condition: "When the map is empty, the column's
+  // claim job is gone from the tree entirely." It is. Every bucket, with the task that closed
+  // it and the column each requirement moved onto:
   //
-  // (The serve-boundary conformance test's copy of this predicate went with bucket B — it
-  // now pins `served_by_turn IS NULL AND swept_at IS NULL`, the same requirement on the
-  // column that means it.)
+  //   A. the OWNER-ASK queue          -> T3  -> `work(kind='ask').state = 'open'`
+  //   B. the ENGINE-EVENT claim/queue -> T9  -> `messages.served_by_turn IS NULL`
+  //   C. the A2A terminal-wake claim  -> T4  -> `messages.served_by_turn IS NULL`
+  //      ⚠ and T4 left ONE reader behind, which T10I found: `loop.ts`'s terminal-wake
+  //      detection still asked `conv_key === null` for "not yet claimed". It kept working only
+  //      because nothing wrote the sentinel any more — i.e. it was reading "unclaimed" off a
+  //      column that had stopped recording claims, and a re-introduced identity stamp on that
+  //      row would have silently suppressed every terminal wake. Both readers of that edge now
+  //      ask `served_by_turn` the same question.
+  //   D. conversation IDENTITY        -> T10I -> `messages.conversation_id` (migration `147`
+  //      backfilled it through `conversations`' unique key; the two surviving sites here were
+  //      `tagTurnOutputConvKey`'s do-not-re-tag guard and conversation-scoped recall, and both
+  //      moved to the same `IS NULL` test on the column that means it)
+  //
+  // ⚠ THIS TEST IS NOT VACUOUS NOW, AND THAT IS DELIBERATE. An empty map is exactly the shape
+  // that can pass by measuring nothing, so the selftest below plants the predicate into a real
+  // file and requires the walk to see it. The clauses under it keep asserting the REPLACEMENTS
+  // positively (#15: a removal may never rest on an absence) — the ticket state, the serve
+  // edge, the watchdog's own join, the reaper's lane scope — so this file goes on earning its
+  // keep after the column is gone: it is now the gate that stops the predicate coming BACK.
 };
 
 describe('PHASE-2 T3 — the conv_key claim predicate, resolved site by site', () => {
@@ -201,8 +186,11 @@ describe('PHASE-2 T3 — the conv_key claim predicate, resolved site by site', (
     // The claim and its revert are a matched CAS pair on one column.
     expect(store).toMatch(/SET served_by_turn = @turnNumber\s+WHERE rowid = @rowid AND agent_id = @agentId AND served_by_turn IS NULL/);
     expect(store).toMatch(/SET served_by_turn = NULL\s+WHERE rowid = @rowid AND agent_id = @agentId AND served_by_turn = @turnNumber/);
-    // And `setConvKeyByRowid` no longer offers a claim guard to anybody.
-    const setter = store.slice(store.indexOf('export function setConvKeyByRowid'));
+    // And the identity setter no longer offers a claim guard to anybody. PHASE-2 T10I renamed
+    // it with its column (`setConvKeyByRowid` -> `stampConversationIdByRowid`); the property
+    // this clause pins is unchanged — an identity write carries no compare-and-swap, because
+    // every claim is a CAS on the column that records claims.
+    const setter = store.slice(store.indexOf('export function stampConversationIdByRowid'));
     expect(setter.slice(0, 500)).not.toMatch(/expect/);
   });
 
@@ -226,15 +214,22 @@ describe('PHASE-2 T3 — the conv_key claim predicate, resolved site by site', (
     expect(finder).not.toMatch(/conv_key/);
     // ...and nothing in the tree writes the sentinel any more.
     //
-    // NEGATIVE CONTROL, RE-EXPRESSED (PHASE-2 T9). T4 pinned "the OTHER sentinel write
-    // (`value: 'engine', expect: null`) must still be here", so that this clause could not
-    // pass by somebody deleting every conv_key write. T9 removed exactly that write — it was
-    // the engine-event pickup claim, the last claim job on the column — so the control has to
-    // point at what genuinely survives instead of at a demolished mechanism. The surviving
-    // write is the one requirement 3l keeps: the trigger row's conversation IDENTITY stamp.
+    // NEGATIVE CONTROL, RE-EXPRESSED TWICE, AND BOTH RE-EXPRESSIONS ARE THE HISTORY OF THIS
+    // COLUMN. T4 pinned "the OTHER sentinel write must still be here" so the clause could not
+    // pass by deleting every conv_key write; T9 removed exactly that write (the engine-event
+    // pickup claim); and PHASE-2 T10I moved the last survivor — the trigger row's IDENTITY
+    // stamp — onto `conversation_id`. The control therefore points at the identity write that
+    // genuinely survives, in its current spelling, so this clause still cannot pass by deleting
+    // the wrong thing.
     const loop = src('packages/server/src/agent/v2/loop.ts');
     expect(loop).not.toMatch(/value: 'a2a'/);
-    expect(loop).toMatch(/setConvKeyByRowid\(\{ rowid: triggerRow\.rowid, agentId, value: chosenConvKey \}\)/);
+    expect(loop).toMatch(/stampConversationIdByRowid\(\{ rowid: triggerRow\.rowid, agentId, conversationId: chosenConversationId \}\)/);
+    // ⚠ AND THE ONE T4 MISSED. Its own re-point moved `findUnservedTerminalWake` onto the serve
+    // edge, but `loop.ts`'s SECOND reader of "has this wake been claimed" kept asking
+    // `conv_key === null`, and it kept working only because nothing wrote the sentinel any
+    // more. T10I moved it. Pinned here because the failure mode is silent in the dangerous
+    // direction: an identity stamp landing on that row would suppress every terminal wake.
+    expect(loop).toMatch(/mostRecentInbound\.served_by_turn === null/);
     // The serve stamp is GATED on the wake actually driving the turn. Ungated, it would mark a
     // wake served that LOST the turn to a waiting human — swallowing it — because that stamp
     // is now the finder's own predicate. This clause is what stops the gate being "tidied" away.

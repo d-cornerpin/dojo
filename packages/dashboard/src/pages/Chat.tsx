@@ -98,7 +98,7 @@ interface ChatMessage {
    *  Regular mode hides background-run tool CHIPS by keying on this; the
    *  surfaced text of a background turn still renders. Absent on local
    *  optimistic/streaming bubbles (treated as user-visible). */
-  convKey?: string | null;
+  conversationId?: string | null;
 }
 
 
@@ -517,26 +517,37 @@ const isErroredToolResult = (info?: ToolResultInfo): boolean => !!info?.isError;
 // A tool chip is user-visible in REGULAR mode only when its row was produced
 // serving a HUMAN conversation. The turn's conv_key is the structural signal:
 // a user-triggered turn stamps its own assistant/tool rows with the human
-// conversation key ('owner', 'imessage:…', 'email:…', 'teams:…', …); a
-// background / engine turn (scheduler sync, watcher, tracker-driven surface)
-// leaves them null because the turn had no waiting human (chosenConvKey null,
-// so the teardown stamp is a no-op). Verified against the live DB: the 'engine'
-// sentinels only ever land on the role='user' TRIGGER row, never on the agent's
-// own assistant/tool output, so on a chip row `null` IS the background marker.
+// conversation (`conversations.id`); a background / engine turn (scheduler sync, watcher,
+// tracker-driven surface) leaves them null because the turn had no waiting human
+// (chosenConversationId null, so the teardown stamp is a no-op). Verified against the live
+// DB: `null` IS the background marker on a chip row.
 // PHASE-2 T4: the 'park:'/'relayed:' sentinels are GONE (a delegated question is parent/child
 // rows in `work` and nothing rewrites conv_key to hold join state), so the clauses testing for
 // them are deleted rather than left reading a dead namespace.
 // This hides only the CHIP; a background turn's surfaced TEXT is a separate assistant row and
-// still renders. Wordy mode shows every chip. Absent convKey (undefined, e.g. a local
+// still renders. Wordy mode shows every chip. Absent conversationId (undefined, e.g. a local
 // optimistic bubble) defaults to user-visible so a live user turn never loses its own chips.
-// NOTE: legacy rows written before conv_key stamping (migration 076) are null too, so their
-// chips are hidden in regular mode and only appear in wordy mode (bounded history tradeoff).
+// NOTE: legacy rows written before conversation stamping are null too, so their chips are
+// hidden in regular mode and only appear in wordy mode (bounded history tradeoff). Migration
+// `147` backfilled the ones whose old `conv_key` named a resolvable conversation, so this
+// tradeoff covers strictly fewer rows than it did.
+// ── PHASE-2 T10I: the signal is `conversationId`, and the sentinel clause is GONE ──
+// The three `'engine…'` values this used to test for were FAKE CONVERSATION KEYS the engine
+// wrote onto the identity column, and the comment above records what they actually were: they
+// only ever landed on a role='user' TRIGGER row, never on the agent's own output — so on a
+// CHIP row (assistant/tool) they were unreachable and the `null` branch was doing all the
+// work. `conversation_id` cannot hold a sentinel at all (an events-lane rider has no
+// conversation), so testing for one would be testing for a value the schema can no longer
+// produce, which is worse than deleting the clause: it would read as a live guard.
+// requirement preserved, unchanged: an own-output row with NO conversation belongs to a
+// background/engine turn and its CHIP is hidden in regular mode; a row that belongs to a real
+// conversation shows. `undefined` still means "no signal" (a local optimistic bubble) and
+// still shows, so a live user turn never loses its own chips.
 const isBackgroundTurnRow = (m: ChatMessage): boolean => {
-  const ck = m.convKey;
-  if (ck === undefined) return false;      // no signal → show (safety for live user turns)
-  if (ck === null || ck === '') return true;
-  if (ck === 'engine' || ck === 'engine-steer' || ck === 'engine-notice') return true;
-  return false;                            // a real human conversation key → show
+  const cid = m.conversationId;
+  if (cid === undefined) return false;     // no signal → show (safety for live user turns)
+  if (cid === null || cid === '') return true;
+  return false;                            // a real conversation → show
 };
 
 const toolChips = (
@@ -544,9 +555,9 @@ const toolChips = (
   resultById: Map<string, ToolResultInfo>,
   wordyMode: boolean,
   // Mid-run in-flight cutoff (2026-07-23, owner report: chips vanish on a
-  // mid-run refresh, return after the run). conv_key is stamped at turn
-  // TEARDOWN, so a REST reload during an active turn sees the turn's own
-  // rows as convKey null and the background test hides their chips. While
+  // mid-run refresh, return after the run). `conversation_id` is stamped on own output at
+  // turn TEARDOWN, so a REST reload during an active turn sees the turn's own
+  // rows as conversationId null and the background test hides their chips. While
   // the agent is working, rows created at/after the current trigger are the
   // live turn's; exempt them. Once the run ends the stamp governs again.
   liveCutoff: string | null = null,
@@ -963,7 +974,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             attachments: m.attachments,
             source: m.source ?? null,
             origin: m.origin,
-            convKey: m.convKey,
+            conversationId: m.conversationId,
           })),
         );
         setHasMore(result.data.length >= 50);
@@ -1011,7 +1022,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
         attachments: m.attachments,
         source: m.source ?? null,
         origin: m.origin,
-        convKey: m.convKey,
+        conversationId: m.conversationId,
       }));
       setMessages(prev => [...older, ...prev]);
       setHasMore(result.data.length >= 50);
@@ -1298,7 +1309,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             // Carry the turn's conversation key so a finalized tool-only row's
             // chips get the same background-vs-user discrimination live as on
             // reload (null = background run, chips hidden in regular mode).
-            convKey: e.message.convKey ?? existing.convKey,
+            conversationId: e.message.conversationId ?? existing.conversationId,
           };
           // v2.5.21 — Removed the v2.5.20 move-to-tail. It fired when
           // chat:message arrived for a streaming bubble AND the bubble
@@ -1357,7 +1368,7 @@ export const Chat = ({ panel = null }: ChatProps) => {
             attachments: e.message.attachments,
             source: e.message.source ?? null,
             origin: e.message.origin,
-            convKey: e.message.convKey,
+            conversationId: e.message.conversationId,
           },
         ];
       });

@@ -85,7 +85,7 @@ export interface RecallOptions {
   since?: string;
   /**
    * Conversation scoping (OPEN-15). Default 'conversation', recall is limited
-   * to the CURRENT conversation (rows tagged with this turn's conv_key, plus
+   * to the CURRENT conversation (rows carrying this turn's `conversation_id`, plus
    * untagged current-turn / legacy rows). This stops an unrelated task's output
    * (e.g. an `apt autoremove` exec from a different conversation) bleeding into
    * the recall when the agent asks "what was just said." Pass 'all' for the
@@ -93,13 +93,13 @@ export interface RecallOptions {
    */
   scope?: 'conversation' | 'all';
   /**
-   * E-C1: the conv_key of the conversation THIS turn is serving, threaded from the
-   * live turn state. A string scopes recall to that conversation; explicit null
+   * E-C1: the `conversations.id` of the conversation THIS turn is serving, threaded from the
+   * live turn state. An id scopes recall to that conversation; explicit null
    * means an engine/A2A turn (no human conversation) so recall stays on untagged
    * rows and never latches a prior human conversation; `undefined` (called outside
-   * a turn) falls back to the legacy "most-recently-stamped conv_key" heuristic.
+   * a turn) falls back to the legacy "most-recently-stamped conversation" heuristic.
    */
-  turnConvKey?: string | null;
+  turnConversationId?: string | null;
 }
 
 const ROLE_LABEL: Record<string, string> = {
@@ -242,47 +242,55 @@ export function recallRecentThread(agentId: string, opts: RecallOptions): string
       clauses.push('created_at >= (unixepoch(?) * 1000)');
       params.push(sessionBoundary);
     }
-    // Conversation scoping (OPEN-15). The current turn's trigger inbound is
-    // stamped with its conv_key at pickup (loop.ts), so the most recently
-    // stamped conv_key in this session identifies the conversation we're in.
+    // Conversation scoping (OPEN-15). The current turn's trigger inbound carries its
+    // `conversation_id` — resolved by the producer at ingest and re-stamped at pickup if the
+    // producer could not (loop.ts) — so the most recently stamped conversation in this
+    // session identifies the conversation we're in.
     // Limit recall to that conversation plus untagged rows (current-turn,
     // not-yet-stamped work and legacy rows), which keeps the live thread while
     // dropping OTHER conversations' tagged output, the cross-task bleed that
     // surfaced unrelated `apt`/package output during a flight-info question.
     if (opts.scope !== 'all') {
-      // E-C1: prefer the LIVE turn's conv_key over re-deriving "most recently
+      // E-C1: prefer the LIVE turn's conversation over re-deriving "most recently
       // stamped", which on an engine/A2A turn latched the last HUMAN conversation
-      // and bled it into the recall. A string = that conversation; explicit null =
+      // and bled it into the recall. An id = that conversation; explicit null =
       // engine/A2A turn (untagged rows only, no human-conv bleed); undefined =
       // called outside a turn, use the legacy heuristic.
-      let scopeKey: string | null | undefined;
-      if (opts.turnConvKey !== undefined) {
-        scopeKey = opts.turnConvKey;
+      //
+      // PHASE-2 T10I: the scope is `conversations.id`, not a `conversationKey()` string. The
+      // fallback query below cannot latch a SENTINEL any more, and that was a real hazard in
+      // the string form: `engine`, `engine-steer` and `engine-notice` were valid `conv_key`
+      // values on events-lane rows, so "the most recently stamped key in this session" could
+      // scope a human recall to a rider. An events-lane rider has no conversation, so it can
+      // no longer be picked up here at all.
+      let scopeConversationId: string | null | undefined;
+      if (opts.turnConversationId !== undefined) {
+        scopeConversationId = opts.turnConversationId;
       } else {
         const cur = db
           .prepare(
-            `SELECT conv_key FROM messages
-               WHERE agent_id = ? AND conv_key IS NOT NULL${sessionBoundary ? ' AND created_at >= (unixepoch(?) * 1000)' : ''}
+            `SELECT conversation_id FROM messages
+               WHERE agent_id = ? AND conversation_id IS NOT NULL${sessionBoundary ? ' AND created_at >= (unixepoch(?) * 1000)' : ''}
                ORDER BY seq DESC LIMIT 1`,
           )
-          .get(...(sessionBoundary ? [agentId, sessionBoundary] : [agentId])) as { conv_key: string } | undefined;
-        scopeKey = cur?.conv_key;
+          .get(...(sessionBoundary ? [agentId, sessionBoundary] : [agentId])) as { conversation_id: string } | undefined;
+        scopeConversationId = cur?.conversation_id;
       }
-      if (scopeKey) {
+      if (scopeConversationId) {
         // C17: keep the current conversation's stamped rows, but restrict the NULL part to
-        // the agent's OWN activity (assistant/tool) or A2A rows, NEVER a bare `conv_key IS
-        // NULL`, which also matches ANOTHER human's not-yet-claimed waiting inbound and
-        // legacy rows, bleeding a different human's conversation into this recall (inv 4).
-        // The current conversation's own user rows get stamped conv_key at pickup/turn-end
-        // (C15), so they're covered by `conv_key = ?`; the NULL branch is only for this
-        // turn's still-untagged own scratch.
-        clauses.push("(conv_key = ? OR (conv_key IS NULL AND (role IN ('assistant','tool') OR source_agent_id IS NOT NULL)))");
-        params.push(scopeKey);
-      } else if (opts.turnConvKey === null) {
-        // Engine/A2A turn (no human conv_key): restrict to the agent's own untagged
+        // the agent's OWN activity (assistant/tool) or A2A rows, NEVER a bare
+        // `conversation_id IS NULL`, which also matches ANOTHER human's not-yet-claimed
+        // waiting inbound and legacy rows, bleeding a different human's conversation into
+        // this recall (inv 4). The current conversation's own user rows are stamped at ingest
+        // by their producer (C15), so they're covered by `conversation_id = ?`; the NULL
+        // branch is only for this turn's still-untagged own scratch.
+        clauses.push("(conversation_id = ? OR (conversation_id IS NULL AND (role IN ('assistant','tool') OR source_agent_id IS NOT NULL)))");
+        params.push(scopeConversationId);
+      } else if (opts.turnConversationId === null) {
+        // Engine/A2A turn (no human conversation): restrict to the agent's own untagged
         // activity / A2A rows, never a human's unclaimed inbound or a prior human
         // conversation's tagged output.
-        clauses.push("conv_key IS NULL AND (role IN ('assistant','tool') OR source_agent_id IS NOT NULL)");
+        clauses.push("conversation_id IS NULL AND (role IN ('assistant','tool') OR source_agent_id IS NOT NULL)");
       }
     }
     if (opts.since) {

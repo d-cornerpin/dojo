@@ -76,47 +76,57 @@ export function contentOverlap(aWords: string[], bWords: string[]): number {
 }
 
 export interface ReAnswerMatch {
-  convKey: string;
+  conversationId: string;
   similarity: number;
   snippet: string;
 }
 
 /**
- * Does `candidate` (an about-to-be-delivered reply for `excludeConvKey`)
+ * Does `candidate` (an about-to-be-delivered reply for `excludeConversationId`)
  * near-duplicate a recent assistant answer from a DIFFERENT conversation?
  *
  * Only settled history can match: rows compared against are claimed,
  * natural-language assistant rows in other conversations. A user re-asking the
  * same question in its own conversation never trips this, that turn's trigger
  * conversation is excluded from comparison.
+ *
+ * ── REKEY (PHASE-2 T10I), and the sentinel exclusion is the part worth reading. This used
+ * to say `conv_key NOT IN ('engine','engine-steer')`, i.e. it excluded engine chatter by
+ * naming two of the three fake conversation keys the engine wrote (`engine-notice` was never
+ * in the list — a third value the guard would have compared against a human reply). What it
+ * was reaching for is `lane <> 'events'`, which is stamped at ingest, cannot be forgotten by
+ * a new writer, and covers all three. Same shape as T10H's rider fix on the other half of
+ * this column: the requirement stops depending on a fake key.
+ * requirement preserved: engine chatter is never compared against a human reply, and a row
+ * with no conversation at all is never a "different conversation".
  */
 export function findCrossConvReAnswer(
   db: ReturnType<typeof getDb>,
   agentId: string,
   candidate: string,
-  excludeConvKey: string | null,
+  excludeConversationId: string | null,
 ): ReAnswerMatch | null {
   if (!candidate || candidate.length < MIN_COMPARABLE_CHARS) return null;
   const candWords = normalizeForSimilarity(candidate);
   if (candWords.length < 12) return null;
 
   const rows = db.prepare(
-    `SELECT conv_key, content FROM messages
+    `SELECT conversation_id, content FROM messages
       WHERE agent_id = ? AND role = 'assistant'
-        AND conv_key IS NOT NULL
-        AND (? IS NULL OR conv_key != ?)
-        AND conv_key NOT IN ('engine', 'engine-steer')
+        AND conversation_id IS NOT NULL
+        AND (? IS NULL OR conversation_id != ?)
+        AND lane <> 'events'
         AND content NOT LIKE '[{%'
         AND length(content) >= ${MIN_COMPARABLE_CHARS}
         AND created_at >= (unixepoch('now', '-${LOOKBACK_HOURS} hours') * 1000)
       ORDER BY created_at DESC LIMIT ${MAX_CANDIDATES}`,
-  ).all(agentId, excludeConvKey, excludeConvKey) as Array<{ conv_key: string; content: string }>;
+  ).all(agentId, excludeConversationId, excludeConversationId) as Array<{ conversation_id: string; content: string }>;
 
   for (const r of rows) {
     const sim = contentOverlap(candWords, normalizeForSimilarity(r.content));
     if (sim >= SIMILARITY_THRESHOLD) {
       return {
-        convKey: r.conv_key,
+        conversationId: r.conversation_id,
         similarity: Math.round(sim * 100) / 100,
         snippet: r.content.replace(/\s+/g, ' ').slice(0, 100),
       };

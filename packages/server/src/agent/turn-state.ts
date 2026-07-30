@@ -25,6 +25,22 @@ export const currentTurnKind = new Map<string, 'user' | 'a2a'>();
 // No entry = called outside a turn → recall falls back to the legacy heuristic.
 export const currentTurnConvKey = new Map<string, string | null>();
 
+// PHASE-2 T10I: the same fact as `currentTurnConvKey`, as `conversations.id`.
+//
+// ⚠ BOTH MAPS EXIST ON PURPOSE and this is not a duplicate mechanism. `conv_key` did not
+// die at T10I — it died on `messages` only. It is still first-class on FOUR other tables
+// (`work.origin_conv_key`, `turns.conv_key`, `tool_receipts.conv_key`, `summaries.conv_key`),
+// two of which are JOINED to each other on it (`tracker/delivery-evidence.ts` matches a
+// work's `origin_conv_key` against a turn's `conv_key`). So the string above is what those
+// four columns are stamped with, and the id below is what the MESSAGE readers scope on.
+// Deleting either would break the other's consumers; they are two records of one fact only
+// until the four surviving columns are themselves rekeyed, which is not this task's.
+//
+// Same lifecycle contract as the map above, exactly: an entry means a turn is in progress,
+// a non-null value = that human conversation, explicit null = engine/A2A turn, no entry =
+// called outside a turn.
+export const currentTurnConversationId = new Map<string, string | null>();
+
 // T-4: the iMessage address this turn is conversing with (the turn counterparty's
 // senderId, when it's a human iMessage turn). This is the ONLY iMessage
 // recipient state (the racy per-agent last-inbound map was stripped, P5c), so an
@@ -112,7 +128,14 @@ export function clearTurnReceipts(agentId: string): void {
 // continuation is used at most once, and if a real human turn arrived in between it is
 // stale and must be dropped so it can never falsely restore on a later background wake.
 // (Import type only, erased at compile, so no runtime cycle with counterparty.ts.)
-export const continuationContext = new Map<string, { convKey: string; counterparty: import('./v2/counterparty.js').TurnCounterparty }>();
+export const continuationContext = new Map<string, {
+  convKey: string;
+  /** PHASE-2 T10I: the conversation as the FK, so the restored turn scopes its recall and
+   *  its assembler tail the same way the original turn did. Nullable because a turn can pick
+   *  a conversation the producer never resolved a row for (non-door inserts). */
+  conversationId: string | null;
+  counterparty: import('./v2/counterparty.js').TurnCounterparty;
+}>();
 
 // A2A turn isolation (v3.1.10).
 //

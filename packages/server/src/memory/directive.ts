@@ -44,22 +44,22 @@ export function getActiveUserDirective(
      */
     excludeEngine?: boolean;
     /**
-     * On a HUMAN turn, the conv_key of the conversation this turn is addressing.
+     * On a HUMAN turn, the `conversations.id` of the conversation this turn is addressing.
      * When set, the directive is scoped to THIS conversation only (comms-audit T-1):
      * the most-recent substantive ask is picked from the current counterparty's
      * conversation, never from a DIFFERENT human's. Without this, talking to a contact
      * could pin the owner's task as the ACTIVE USER DIRECTIVE (cross-conversation leak).
      * Leave undefined on engine/A2A turns (the engine event / A2A thread drives those).
      */
-    conversationKey?: string | null;
+    conversationId?: string | null;
   },
 ): { content: string; messageId: string; createdAt: string } | null {
   // C16: the '__none__' sentinel means "this turn has no user directive", used on A2A
   // and engine turns, whose directive comes from the A2A payload / engine event (rendered
   // by the counterparty/engine header), NOT from the newest user row. Returning null here
   // stops an A2A inbound from being pinned as the ACTIVE USER DIRECTIVE. (Distinct from
-  // conversationKey undefined = "unscoped, pick newest" and a real key = "scope to it".)
-  if (opts?.conversationKey === '__none__') return null;
+  // conversationId undefined = "unscoped, pick newest" and a real key = "scope to it".)
+  if (opts?.conversationId === '__none__') return null;
   const db = getDb();
 
   const sessionRow = db
@@ -76,12 +76,15 @@ export function getActiveUserDirective(
   if (opts?.excludeEngine) {
     baseClauses.push("lane <> 'events'");
   }
-  // T-1: scope to the current conversation. The current ask is conv_key-stamped at
-  // pickup (turn start, before assembly), so it matches; a DIFFERENT human's ask
-  // carries a different conv_key and is excluded from the directive pin.
-  if (opts?.conversationKey) {
-    baseClauses.push('conv_key = ?');
-    baseParams.push(opts.conversationKey);
+  // T-1: scope to the current conversation. The current ask carries its `conversation_id`
+  // from ingest (and the turn re-stamps it at pickup if no producer did), so it matches; a
+  // DIFFERENT human's ask carries a different conversation and is excluded from the pin.
+  // PHASE-2 T10I: rekeyed off `conv_key`. The `'__none__'` sentinel above is UNCHANGED and
+  // stays a sentinel on purpose — it does not name a conversation, it means "this turn has
+  // none", which is a different statement from `undefined` ("unscoped, pick newest").
+  if (opts?.conversationId && opts.conversationId !== '__none__') {
+    baseClauses.push('conversation_id = ?');
+    baseParams.push(opts.conversationId);
   }
 
   // Exclude asks already ANSWERED. An answered request must never be re-pinned as the

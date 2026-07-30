@@ -15,7 +15,7 @@ import { isPMAgent } from '../config/platform.js';
 import { buildAssemblyContext, assembleSystemFromRegistry } from '../prompt/registry/assembler.js';
 import type { AssemblyTurnState } from '../prompt/registry/types.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
-import { turnBoundary, currentTurnConvKey } from '../agent/turn-state.js';
+import { turnBoundary, currentTurnConversationId } from '../agent/turn-state.js';
 import type { Summary } from './dag.js';
 import type { Message } from '@dojo/shared';
 import { parseDivider, NEW_SESSION_DIVIDER_LABEL } from '@dojo/shared';
@@ -534,10 +534,18 @@ function scopeToA2AThread(tail: Message[], threadId: string | null): Message[] {
       // human turn's leftover tool debris (minus its conv-stamped answer, which
       // the text rule above already drops) otherwise reads as an unfinished job
       // and the agent re-does settled work at its A2A counterparty (the
-      // re-answer ghost, same root as the human/engine scopers). A2A rows only
-      // ever carry a2a/engine conv keys; anything else is a human stamp.
+      // re-answer ghost, same root as the human/engine scopers).
+      //
+      // PHASE-2 T10I: "is this a HUMAN stamp" used to be spelled by EXCLUDING two sentinel
+      // shapes from the key (`!== 'a2a'`, `!startsWith('engine')`) — a test that depended on
+      // the engine writing a fake key and on that list staying in step with ten writers of it.
+      // requirement preserved exactly: an own-output row belonging to a human conversation is
+      // dropped from an A2A turn's tail.
       const isToolActivity = typeof m.content === 'string' && m.content.trimStart().startsWith('[{');
-      const humanStamped = !!m.convKey && m.convKey !== 'a2a' && !m.convKey.startsWith('engine');
+      // `Message` carries no `lane` (it is a row column, not part of the assembler's view),
+      // so "not an a2a stamp" is read off the origin's channel — the same fact, from the
+      // signal this function is already branching on.
+      const humanStamped = !!m.conversationId && o.channel !== 'a2a';
       return (isToolActivity && !humanStamped) || o.channel === 'a2a';
     }
     return false;                                          // exclude human + engine
@@ -569,19 +577,19 @@ function scopeToEngineTurn(tail: Message[]): Message[] {
     // in-flight / legacy) rows keep the old safe default. Without this, a
     // settled turn's tool debris leaked into engine turns even after the
     // haiku-failure fix dropped the conv-stamped SELF rows.
-    if (!o) return !m.convKey;
+    if (!o) return !m.conversationId;
     if (o.kind === 'engine') return true;      // kept; EVENTS lane lifts it out
     if (o.kind === 'self') {
-      // Keep ONLY the current turn's own work (untagged, conv_key is stamped at
-      // turn end). Any self message stamped with a PRIOR conversation's conv_key
-      //, including its tool RESULTS, is dropped. This is stricter than the A2A
+      // Keep ONLY the current turn's own work (untagged — `conversation_id` is stamped at
+      // turn END on own output, deliberately). Any self message stamped with a PRIOR
+      // conversation, including its tool RESULTS, is dropped. This is stricter than the A2A
       // scoper on purpose: the bug it fixes is the engine turn regenerating a
       // stale human request's answer from that request's leftover tool results
       // (a scheduled haiku task re-emitted the previous "memory rundown" because
       // the rundown's exec results, tagged for the human conversation, were tool
       // activity and survived). A scheduled task works from its directive + fresh
       // tools, never a prior conversation's loaded data.
-      return !m.convKey;
+      return !m.conversationId;
     }
     return false;                              // drop human + agent inbound
   });
@@ -606,7 +614,17 @@ function scopeToEngineTurn(tail: Message[]): Message[] {
  * echo row must land in the RECIPIENT's scoped tail and NOWHERE else, and no other
  * conversation's user rows may ever cross into a turn's scoped tail.
  */
-export function scopeToHumanConversation(tail: Message[], cp: TurnCounterparty | undefined): Message[] {
+export function scopeToHumanConversation(
+  tail: Message[],
+  cp: TurnCounterparty | undefined,
+  /** PHASE-2 T10I: the counterparty's conversation as `conversations.id`, resolved once by the
+   *  turn at pickup and handed down. The INBOUND half below still matches on
+   *  `conversationKey()` — a human row's membership is decided from its ORIGIN, which the row
+   *  carries in full, and that function is the one matcher for the question. The OWN-OUTPUT
+   *  half needs the FK: a self row has no origin to key on, so its membership IS the stamp.
+   *  Null = no resolved conversation, and own output falls back to "is it unstamped". */
+  cpConversationId?: string | null,
+): Message[] {
   const a2aStripped = stripA2AFromTail(tail);
   if (!cp) return a2aStripped;
   const cpKey = conversationKey(cp.channel, cp.senderId, cp.name, cp.threadId);
@@ -626,7 +644,7 @@ export function scopeToHumanConversation(tail: Message[], cp: TurnCounterparty |
     // EVERYTHING ELSE is the agent's own turn output: final reply text, engine
     // acks, tool calls, and tool RESULTS, however deriveOrigin classified them
     // (tool-role rows come through unclassified). A turn's output belongs to
-    // its conversation AS A UNIT: conv_key is that stamp, and it must gate the
+    // its conversation AS A UNIT: `conversation_id` is that stamp, and it must gate the
     // debris exactly like the answer. The old shape kept unclassified rows
     // unconditionally while dropping the conv-stamped final reply, so a turn
     // scoped elsewhere saw a settled turn's promise + tool math WITHOUT its
@@ -636,7 +654,7 @@ export function scopeToHumanConversation(tail: Message[], cp: TurnCounterparty |
     // Same rule the engine scoper adopted for the identical bug (the re-emitted
     // memory-rundown haiku failure), now applied symmetrically. Untagged rows
     // (current-turn in-flight work, legacy pre-076 history) are kept.
-    return !m.convKey || m.convKey === cpKey;
+    return !m.conversationId || m.conversationId === cpConversationId;
   });
 }
 
@@ -1042,30 +1060,34 @@ async function assembleMessageContext(
     // On engine/A2A turns leave it unscoped (the engine event / A2A thread drives those).
     const cp = turnContext?.counterparty;
     // RR#1 (comms-audit): scope to the EXACT conv_key the pickup stamped on the
-    // trigger (chosenConvKey, mirrored into currentTurnConvKey), NOT a key re-derived
+    // trigger (chosenConversationId, mirrored into currentTurnConversationId), NOT re-derived
     // from the resolved counterparty. resolveTurnCounterparty can downgrade the channel
     // (inboundChannel ?? origin.channel) or substitute the owner name where the pickup
     // used the raw sender, producing a key that does not equal the stamped one, which
     // would empty the ACTIVE USER DIRECTIVE on the very turn meant to answer the user.
     // Fall back to re-derivation only outside a turn (map unset).
-    const stampedConvKey = currentTurnConvKey.get(agentId);
+    const stampedConversationId = currentTurnConversationId.get(agentId);
     // C16: on an A2A (agent) or engine turn, SUPPRESS the ACTIVE USER DIRECTIVE entirely.
     // Those turns have their OWN directive source, the A2A payload / engine event, already
     // scoped into the tail and rendered by the counterparty/engine header. Passing null here
     // meant "unscoped = pick the newest user row across ALL conversations", which on an A2A
-    // turn selected the A2A inbound (role='user', conv_key NULL) and rendered it as
+    // turn selected the A2A inbound (role='user', no conversation) and rendered it as
     // "ACTIVE USER DIRECTIVE" while the header said "this is NOT your user", identity
     // conflation on exactly the turns the redesign isolates. The '__none__' sentinel makes
     // getActiveUserDirective return null. Human turns keep their scoped directive.
-    const directiveConvKey =
+    // PHASE-2 T10I: there is no re-derivation fallback any more, and that is deliberate.
+    // The old `?? conversationKey(...)` could rebuild the STRING outside a turn; a
+    // `conversations.id` cannot be computed from a counterparty without a database read, and
+    // reading (or worse, minting) one here would put a second conversations writer inside
+    // the assembler. Unset map = no scope, which is the same "pick the newest user row" the
+    // old code reached when the map was unset. The turn sets the map at pickup.
+    const directiveConversationId =
       (turnContext?.isEngineTurn || cp?.kind === 'agent')
         ? '__none__'
-        : (cp && cp.kind === 'user'
-            ? (stampedConvKey ?? conversationKey(cp.channel, cp.senderId, cp.name, cp.threadId))
-            : null);
+        : (cp && cp.kind === 'user' ? (stampedConversationId ?? null) : null);
     const directive = getActiveUserDirective(agentId, {
       excludeEngine: !turnContext?.isEngineTurn,
-      conversationKey: directiveConvKey,
+      conversationId: directiveConversationId,
     });
     if (directive) {
       const block = formatDirectiveBlock(directive);
@@ -1126,7 +1148,7 @@ async function assembleMessageContext(
     ? scopeToA2AThread(freshTailRaw, turnContext.counterparty.threadId)
     : turnContext?.isEngineTurn
     ? scopeToEngineTurn(freshTailRaw)
-    : scopeToHumanConversation(freshTailRaw, turnContext?.counterparty);
+    : scopeToHumanConversation(freshTailRaw, turnContext?.counterparty, currentTurnConversationId.get(agentId) ?? null);
 
   // ── EVENTS lane (attribution redesign, Phase 5) ──
   // Engine-origin messages (tracker/scheduler/healer/system notices) are events

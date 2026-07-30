@@ -82,8 +82,6 @@ export interface NewMessage {
   mood?: string | null;
   displayKind?: DisplayKind;
   displayTier?: DisplayTier;
-  /** PHASE2-DELETES — the claim/park machine keeps running unchanged this phase. */
-  convKey?: string | null;
 }
 
 export interface Persisted {
@@ -201,14 +199,14 @@ const INSERT_SQL = `
       source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, token_count,
       model_id, cost, latency_ms, reasoning_content, inbound_meta, attachments,
       external_message_id, speaker, voice_session_id, task_id, run_id, root_kind, root_id,
-      conv_key, provenance, sent_at, created_at
+      provenance, sent_at, created_at
     ) VALUES (
       @id, @agentId, @conversationId, @lane, @originIntent, @role, @content, @mood,
       @displayKind, @displayTier, @turnNumber, @groupId, @channel, @senderId, @authorized,
       @sourceAgentId, @a2aThreadId, @a2aIntent, @a2aRequiresResponse, @tokenCount,
       @modelId, @cost, @latencyMs, @reasoningContent, @inboundMeta, @attachments,
       @externalMessageId, @speaker, @voiceSessionId, @taskId, @runId, @rootKind, @rootId,
-      @convKey, 'live', @sentAt, ${NOW_MS}
+      'live', @sentAt, ${NOW_MS}
     )`;
 
 function bind(m: NewMessage): { lane: Lane; id: string; displayKind: DisplayKind; displayTier: DisplayTier;
@@ -246,7 +244,7 @@ function bind(m: NewMessage): { lane: Lane; id: string; displayKind: DisplayKind
       inboundMeta: m.inboundMeta ?? null, attachments: m.attachments ?? null,
       externalMessageId: m.externalMessageId ?? null, speaker: m.speaker ?? null,
       voiceSessionId: m.voiceSessionId ?? null, taskId: m.taskId ?? null, runId: m.runId ?? null,
-      rootKind: m.rootKind ?? null, rootId: m.rootId ?? null, convKey: m.convKey ?? null,
+      rootKind: m.rootKind ?? null, rootId: m.rootId ?? null,
       sentAt,
     },
   };
@@ -564,7 +562,10 @@ export function unservedHead(agentId: string): StoredMessage[] {
 // is annotated at its own definition and predates this phase.
 // ════════════════════════════════════════════════════════════════════════════════
 
-// ── conv_key: conversation IDENTITY, and the engine/park claim machine ──
+// ── conversation IDENTITY (`conversation_id`) and the turn-serve edge ──
+// PHASE-2 T10I: the identity writers below moved off `messages.conv_key` onto the FK. The
+// claim machine that shared the column is already gone (T3/T4/T9 moved every claim onto the
+// column that means it) and the sentinel writers went with the CLAIM half at T10H.
 //
 // PHASE-2 T3 SPLIT THIS COLUMN'S TWO JOBS. It carried the conversation's identity AND the
 // owner ask's claim token, and the "is it NULL" test WAS the work queue. The OWNER-ASK
@@ -574,67 +575,80 @@ export function unservedHead(agentId: string): StoredMessage[] {
 // their own owners this phase (T6/T9 for the engine retry lifecycle and its one reaper,
 // T4 for the park machine).
 
-/** Stamp a row's conversation IDENTITY by rowid.
+/** Stamp a row's conversation IDENTITY by rowid — `conversations.id`, not a key string.
  *
- *  ── STRIP (PHASE-2 T9): the `expect` guard is gone, and with it the last claim job on
- *  `conv_key`. requirement preserved: every claim this parameter served is now a
- *  compare-and-swap on the column that actually means "somebody took this" —
- *    * the owner ask     -> `transition(… expectedState: 'open')` on the ticket (T3), where a
- *                           lost race is a `conflict` value rather than a zero somebody has
- *                           to remember to check;
- *    * the terminal wake -> `served_by_turn`, gated on the wake driving the turn (T4);
- *    * the engine event  -> `claimEngineEventByRowid` / `releaseEngineEventByRowid` (T9).
- *  Enumerated, not assumed: at this HEAD the ONE production caller
- *  (`agent/v2/loop.ts`, the trigger row's identity stamp) passes no `expect` at all, so the
- *  branch had nothing left to guard. What remains is an unconditional identity write, which
- *  is what requirement 3l says this column is for, and it dies with the column at T10. */
-export function setConvKeyByRowid(
-  p: { rowid: number; agentId?: string; value: string | null },
+ *  ── REKEY (PHASE-2 T10I). This was `setConvKeyByRowid`, and the value it wrote was a
+ *  composite string built by `conversationKey()`. It writes the FK now, and the FK is
+ *  resolved through `conversations`' own unique key by the ONE writer that owns that table.
+ *  requirement preserved: THE TRIGGER ROW BELONGS TO THIS CONVERSATION whether or not this
+ *  turn won the race to serve it — identity is stamped unconditionally, separately from the
+ *  claim, which is exactly the separation requirement 3l asked for and the park machine
+ *  violated.
+ *
+ *  Why it survives rather than dying with the column: a producer resolves the conversation at
+ *  ingest and is best-effort by contract — a failure inserts NULL rather than blocking an
+ *  inbound. This is the second chance, at pickup. Measured first: 66 owner-lane user rows on
+ *  the dev box carry no `conversation_id`, all of them non-door inserts. */
+export function stampConversationIdByRowid(
+  p: { rowid: number; agentId?: string; conversationId: string | null },
 ): number {
   const db = getDb();
   const agent = p.agentId ? 'AND agent_id = @agentId' : '';
   return db.prepare(
-    `UPDATE messages SET conv_key = @value WHERE rowid = @rowid ${agent}`,
-  ).run({ rowid: p.rowid, agentId: p.agentId ?? null, value: p.value }).changes;
+    `UPDATE messages SET conversation_id = @value WHERE rowid = @rowid ${agent}`,
+  ).run({ rowid: p.rowid, agentId: p.agentId ?? null, value: p.conversationId }).changes;
 }
 
 /** Tag this turn's OWN output rows with the conversation they served, so one
- *  counterparty's work cannot bleed into another's turn (content isolation, mig 076).
+ *  counterparty's work cannot bleed into another's turn (content isolation, mig 076;
+ *  rekeyed off `conv_key` onto `conversation_id` at PHASE-2 T10I).
  *
- *  `lane` is not decoration. Before T4 this UPDATE could only ever reach owner-lane rows,
- *  because the agent's a2a own output physically lived in `inter_agent_messages` and had
- *  its own tagger. T4 folded that output into `messages` as `lane='a2a'`, so without the
- *  predicate the human conversation's key would start landing on coordination rows — a
- *  behaviour change T4 has no mandate to make. The lane filter keeps it byte-identical. */
-export function tagTurnOutputConvKey(
-  p: { agentId: string; turnNumber: number; convKey: string; lane?: Lane },
+ *  ⚠ THE TWO PREDICATES BELOW ARE THE MECHANISM, NOT DECORATION, AND BOTH SURVIVED THE
+ *  REKEY UNCHANGED IN MEANING:
+ *
+ *  `conversation_id IS NULL` — do not re-tag. An own-output row already carrying an id belongs
+ *  to an EARLIER turn. It is also why this stamp is LATE rather than at insert: all three
+ *  assembler scopers read NULL as "this turn's own work, keep it", so stamping at insert would
+ *  make the live turn's own context look like a prior conversation's and be dropped.
+ *
+ *  `lane` — before T4 this UPDATE could only ever reach owner-lane rows, because the agent's
+ *  a2a own output physically lived in `inter_agent_messages` and had its own tagger. T4 folded
+ *  that output into `messages` as `lane='a2a'`, so without the predicate the human
+ *  conversation's identity would start landing on coordination rows. The lane filter keeps it
+ *  byte-identical. */
+export function tagTurnOutputConversationId(
+  p: { agentId: string; turnNumber: number; conversationId: string; lane?: Lane },
 ): number {
   const db = getDb();
   const laneClause = `AND lane = @lane`;
   return db.prepare(
-    `UPDATE messages SET conv_key = @convKey
+    `UPDATE messages SET conversation_id = @conversationId
        WHERE agent_id = @agentId AND turn_number = @turnNumber
-         AND role IN ('assistant','tool') AND conv_key IS NULL ${laneClause}`,
-  ).run({ agentId: p.agentId, turnNumber: p.turnNumber, convKey: p.convKey, lane: p.lane ?? 'owner' }).changes;
+         AND role IN ('assistant','tool') AND conversation_id IS NULL ${laneClause}`,
+  ).run({ agentId: p.agentId, turnNumber: p.turnNumber, conversationId: p.conversationId, lane: p.lane ?? 'owner' }).changes;
 }
 
-/** Stamp a served row's conversation identity and the turn that served it, in one
- *  statement.
+/** Record the TURN that served a row.
  *
- *  T3: the `AND conv_key IS NULL` guard is gone with the claim it belonged to. Its ONE
- *  production caller is `claimAssembledSiblings`, whose "may I take this?" question is now
- *  asked and answered on the ticket (`transition(… expectedState: 'open')`) BEFORE this is
- *  called; a second guard on a second row would be two mechanisms deciding one thing, and
- *  the one that reached `.changes === 0` silently was the weaker of the two.
- *  requirement preserved: a sibling already served by another turn is not re-stamped — the
- *  ticket's CAS refuses first, and this is not reached. */
-export function claimRowByRowid(
-  p: { agentId: string; rowid: number; convKey: string; servedByTurn?: number | null },
+ *  ── SHRINK (PHASE-2 T10I). This used to stamp the conversation identity here too
+ *  (`SET conv_key = @convKey, served_by_turn = …`). It does not any more, and the reason is
+ *  positive rather than tidy-up: its ONE caller is `claimAssembledSiblings`, whose rows are
+ *  sibling USER rows in the conversation being served — and a user row's `conversation_id` was
+ *  already resolved by its own producer at ingest. Writing it again from the turn's side was a
+ *  second writer for a fact that already had one, and on a lived-in body the two could
+ *  disagree (the producer knows the mail THREAD; the turn only knows the sender).
+ *  requirement preserved: the serve edge. `served_by_turn` is what the drain, the reaper and
+ *  the answered edge read, and it is untouched.
+ *
+ *  T3's note, still true: there is no `conv_key IS NULL` guard here because the "may I take
+ *  this?" question is asked and answered on the TICKET (`transition(… expectedState:'open')`)
+ *  before this is reached. */
+export function recordServingTurnByRowid(
+  p: { agentId: string; rowid: number; servedByTurn?: number | null },
 ): number {
   const db = getDb();
   return db.prepare(
-    `UPDATE messages SET conv_key = @convKey,
-        served_by_turn = COALESCE(@servedByTurn, served_by_turn)
+    `UPDATE messages SET served_by_turn = COALESCE(@servedByTurn, served_by_turn)
       WHERE agent_id = @agentId AND rowid = @rowid`,
   ).run({ ...p, servedByTurn: p.servedByTurn ?? null }).changes;
 }

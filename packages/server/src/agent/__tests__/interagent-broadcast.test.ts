@@ -54,13 +54,13 @@ describe('T9 — own-output event family', () => {
       ...BASE,
       interAgentTurn: false,
       modelId: 'deepseek/v4-flash',
-      convKey: 'owner',
+      conversationId: 'conv-owner-1',
       attachments: [{ fileId: 'f1', filename: 'a.png', mimeType: 'image/png', size: 1, path: '/a.png', category: 'image' }],
       reasoningContent: 'because',
     });
     if (ev.type !== 'chat:message') throw new Error('unreachable');
     expect(ev.message.modelId).toBe('deepseek/v4-flash');
-    expect(ev.message.convKey).toBe('owner');
+    expect(ev.message.conversationId).toBe('conv-owner-1');
     expect(ev.message.attachments).toHaveLength(1);
     expect(ev.message.reasoningContent).toBe('because');
   });

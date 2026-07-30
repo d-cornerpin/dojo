@@ -15,13 +15,14 @@ import { getOwnerName } from '../../config/platform.js';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import {
-  claimRowByRowid,
+  recordServingTurnByRowid,
   createdAtText,
   recordDeliveryAttempt,
   rehomeUndeliveredCreatedAt,
   sweepByReferent,
   sweepByRowid,
 } from '../../memory/message-store.js';
+import { conversationIdentityOf, type ConversationIdentity } from '../../memory/conversations.js';
 import { ENGINE_RIDER_INTENTS_SQL } from './engine-riders.js';
 import { transition } from '../../work/store.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../../work/tracker-view.js';
@@ -48,12 +49,18 @@ const logger = createLogger('counterparty');
 // conversations here — they never open an ask.
 export interface WaitingConversation {
   key: string;
+  /** PHASE-2 T10I: the conversation as `conversations.id`, off the OLDEST unanswered row.
+   *  NULL when no producer resolved one — the turn re-resolves at pickup via `identity`. */
+  conversationId: string | null;
+  /** This conversation's `conversations` unique-key identity, from the SAME origin `key` is
+   *  derived from, so the pickup stamp cannot disagree with the key beside it. */
+  identity: ConversationIdentity;
   /** The ticket this conversation's oldest unanswered message opened. The pickup CAS
    *  addresses THIS, not a rowid, and the D-2 race is settled on it. */
   workId: string;
   /** The conversation's NEWEST unanswered message row (kept for logging/context). */
   latest: {
-    rowid: number; id: string; conversation_id: string | null; conv_key: string | null; content: string;
+    rowid: number; id: string; conversation_id: string | null; content: string;
     /** The stamped-at-ingest lane and channel (OR4). Attribution is PROJECTED from these
      *  (`legacyOriginInputs`) — the two compat columns are never read here. */
     lane: string; channel: string | null; source_agent_id: string | null;
@@ -86,7 +93,7 @@ export interface WaitingConversation {
  *  messages` and the source walk in memory/__tests__/lane-readers.test.ts could not see it.
  *  The unit suite could: 45 integration tests went red on the promotion's first run because
  *  the turn stopped claiming its trigger. The walk resolves same-file constants now. */
-const WAITING_COLS = `m.seq AS rowid, m.id, m.conversation_id, m.conv_key, m.content, m.lane, m.channel,
+const WAITING_COLS = `m.seq AS rowid, m.id, m.conversation_id, m.content, m.lane, m.channel,
   m.source_agent_id, m.a2a_thread_id, m.a2a_intent, m.a2a_requires_response, m.inbound_meta,
   m.origin_intent, ${createdAtText('m.created_at')}, w.id AS work_id`;
 
@@ -164,7 +171,7 @@ export function getWaitingHumanConversations(agentId: string): WaitingConversati
   // mid-turn (a relay request before a follow-up ping) was collaterally served by the
   // unrelated reply and dropped without ever getting a turn. A per-ITEM claim cannot drop a
   // distinct ask: every open ask gets its own turn until it is itself picked up (P4).
-  const agg = new Map<string, { latest: WaitingConversation['latest']; oldest: WaitingConversation['latest']; oldestWaitingRowid: number; workId: string }>();
+  const agg = new Map<string, { latest: WaitingConversation['latest']; oldest: WaitingConversation['latest']; oldestWaitingRowid: number; workId: string; identity: ConversationIdentity }>();
   for (const r of rows) {                              // C1: now OLDEST → newest by rowid (ASC)
     const o = originOfCandidate(r);
     // The single "owes a reply" definition (see MESSAGE-ATTRIBUTION-REDESIGN §3):
@@ -177,12 +184,20 @@ export function getWaitingHumanConversations(agentId: string): WaitingConversati
     const key = conversationKey(o.channel, o.senderId, o.senderName, o.threadId);
     let e = agg.get(key);
     // C1: first seen (ASC) = OLDEST unanswered, and its ticket is the one the turn claims.
-    if (!e) { e = { latest: r, oldest: r, oldestWaitingRowid: r.rowid, workId: r.work_id }; agg.set(key, e); }
+    if (!e) {
+      e = {
+        latest: r, oldest: r, oldestWaitingRowid: r.rowid, workId: r.work_id,
+        identity: conversationIdentityOf(o.channel, o.senderId, o.senderName, o.threadId),
+      };
+      agg.set(key, e);
+    }
     e.latest = r;                                      // iterating oldest→newest, last write = newest unanswered
   }
   return [...agg.entries()]
     .map(([key, e]) => ({
       key,
+      conversationId: e.oldest.conversation_id ?? null,
+      identity: e.identity,
       workId: e.workId,
       latest: e.latest,
       oldest: e.oldest,
@@ -269,7 +284,7 @@ export function claimAssembledSiblings(agentId: string, convKey: string, assembl
       reason: 'answered as a sibling inside this turn\'s assembled context',
     });
     if (res.kind !== 'applied') continue;
-    claimRowByRowid({ agentId, rowid: r.rowid, convKey, servedByTurn: turnNumber ?? null });
+    recordServingTurnByRowid({ agentId, rowid: r.rowid, servedByTurn: turnNumber ?? null });
     n++;
   }
   return n;

@@ -396,7 +396,7 @@ IMPORTANT INSTRUCTIONS:
   const initMsgId = uuidv4();
   insertEngineEventIfAbsent({
     id: initMsgId, agentId, content: taskMessage,
-    sourceAgentId: null, originIntent: 'spawn_kickoff', convKey: null,
+    sourceAgentId: null, originIntent: 'spawn_kickoff',
     work: taskId ? { taskId, runId: null, rootKind: 'task', rootId: taskId } : null,
   });
   broadcastMessage(agentId, { id: initMsgId, role: 'user', content: taskMessage });

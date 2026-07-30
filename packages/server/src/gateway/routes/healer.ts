@@ -243,7 +243,6 @@ export function resolveHealerProposal(input: {
         content,
         sourceAgentId: null,
         originIntent: 'healer',
-        convKey: null,
       });
 
       // D-A step 5 seam: this row persists to the inter-agent STORE (above), so

@@ -143,14 +143,14 @@ export function owesAnswer(messageId: string | null | undefined): boolean {
  * the other direction — from the ask to the reply — and it lives here so the edge has one
  * home rather than a hand-written two-table join inside the loop.
  */
-export function recordedAnswerInConversation(agentId: string, convKey: string): string | null {
+export function recordedAnswerInConversation(agentId: string, conversationId: string): string | null {
   const r = getDb().prepare(
     `SELECT m2.content AS answer
        FROM messages m1 JOIN messages m2 ON m2.id = m1.answer_message_id
-      WHERE m1.agent_id = ? AND m1.role = 'user' AND m1.conv_key = ?
+      WHERE m1.agent_id = ? AND m1.role = 'user' AND m1.conversation_id = ?
         AND m1.answer_message_id IS NOT NULL AND m2.role = 'assistant'
       ORDER BY m1.created_at DESC LIMIT 1`,
-  ).get(agentId, convKey) as { answer: string } | undefined;
+  ).get(agentId, conversationId) as { answer: string } | undefined;
   return r?.answer ?? null;
 }
 

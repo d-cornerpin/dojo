@@ -1514,7 +1514,7 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
   // context, and still shows in the dashboard through the same broadcast below.
   insertEngineEventIfAbsent({
     id: msgId, agentId: pmId, content: situationReport,
-    sourceAgentId: null, originIntent: 'pm_review', convKey: null, work: null,
+    sourceAgentId: null, originIntent: 'pm_review', work: null,
   });
 
   broadcast({

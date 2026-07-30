@@ -353,13 +353,13 @@ function rowToMessage(row: Record<string, unknown>): Message {
     reasoningContent: (row.reasoning_content as string | null) ?? null,
     attachments: row.attachments ? JSON.parse(row.attachments as string) : undefined,
     source: row.lane === 'a2a' ? 'a2a' : row.channel === 'voice' ? 'voice' : null,
-    // The conversation this turn served. Stamped on the agent's OWN
-    // assistant/tool rows at turn end (migration 076 / loop C15) with the human
-    // conversation key ('owner', 'imessage:…', 'email:…', …); a background /
-    // engine turn (scheduler sync, watcher, tracker-driven surface) leaves it
-    // null. The dashboard reads it to hide background-run tool CHIPS in regular
-    // mode while keeping user-triggered chips (and all surfaced text) visible.
-    convKey: (row.conv_key as string | null | undefined) ?? null,
+    // The conversation this row belongs to (`conversations.id`). Resolved at ingest on
+    // inbound rows; stamped on the agent's OWN assistant/tool rows at turn end (loop C15).
+    // A background / engine turn (scheduler sync, watcher, tracker-driven surface) leaves it
+    // null. The dashboard reads it to hide background-run tool CHIPS in regular mode while
+    // keeping user-triggered chips (and all surfaced text) visible. PHASE-2 T10I: was
+    // `conv_key`, a composite string that also carried three engine sentinels.
+    conversationId: (row.conversation_id as string | null | undefined) ?? null,
     // Canonical attribution for the dashboard's origin-based classifier
     // (mirrors the memory store + agents route projection).
     origin: deriveOrigin({

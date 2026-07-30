@@ -43,7 +43,7 @@ export interface OwnOutputBroadcast {
    *  `chat:message`; the Inter-Agent lane keeps what it is given. */
   createdAt: string;
   modelId?: string | null;
-  convKey?: string | null;
+  conversationId?: string | null;
   attachments?: Message['attachments'];
   reasoningContent?: string | null;
 }
@@ -89,12 +89,12 @@ export function ownOutputBroadcast(p: OwnOutputBroadcast): ChatMessageEvent | In
       createdAt: p.createdAt,
       attachments: p.attachments,
       reasoningContent: p.reasoningContent ?? undefined,
-      // Carried on the OWNER arm only, and deliberately: conv_key is stamped on the row
-      // at turn teardown, so a mid-turn broadcast is the only place the live view can
+      // Carried on the OWNER arm only, and deliberately: own-output `conversation_id` is
+      // stamped at turn teardown, so a mid-turn broadcast is the only place the live view can
       // learn it. That is research 17 §C2's defect (bug (a), "tool chips vanish on
       // refresh") and §C2 is not this task's — T9 must not regress the live half while
       // the reload half waits for its owner.
-      convKey: p.convKey ?? null,
+      conversationId: p.conversationId ?? null,
     },
   };
 }

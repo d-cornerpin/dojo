@@ -44,28 +44,36 @@ function msg(partial: Partial<Message> & Pick<Message, 'id' | 'role' | 'content'
   } as Message;
 }
 
-const mayaKey = conversationKey('imessage', 'maya', 'Maya', null);   // imessage:maya
-const davidKey = conversationKey('imessage', 'sam', 'Sam', null); // imessage:sam
+// PHASE-2 T10I: the conversation is `conversations.id` now, so the scoper takes it as an
+// argument rather than re-deriving a key. `conversationKey` is still exercised below — the
+// INBOUND half of the scoper still matches human rows on their origin, and this is the
+// function that decides that — so the import is not residue.
+const mayaConv = 'conv-maya';
+const samConv = 'conv-sam';
+// A positive control on the surviving matcher: the scoper's INBOUND half still decides
+// membership with this function, so if it ever stopped producing a stable key the gates below
+// would pass for the wrong reason.
+expect(conversationKey('imessage', 'maya', 'Maya', null)).toBe('imessage:maya');
 
 // The synthetic echo row persistCrossConvSendEcho writes: an assistant row homed to
 // the RECIPIENT's conversation (Sam), carrying the verbatim sent question.
 const echoRow = msg({
   id: 'echo1', role: 'assistant',
   content: '[Sent via iMessage to Sam]: whats your Delta SkyMiles number?',
-  convKey: davidKey, origin: selfOrigin,
+  conversationId: samConv, origin: selfOrigin,
 });
 const mayaUserRow = msg({
   id: 'maya-in', role: 'user', content: 'can you ask Sam for his SkyMiles number?',
-  convKey: null, origin: userOrigin('imessage', 'maya', 'Maya'),
+  conversationId: null, origin: userOrigin('imessage', 'maya', 'Maya'),
 });
 const davidUserRow = msg({
   id: 'david-in', role: 'user', content: '5550001234',
-  convKey: null, origin: userOrigin('imessage', 'sam', 'Sam'),
+  conversationId: null, origin: userOrigin('imessage', 'sam', 'Sam'),
 });
 
 describe('RC-1 gate (a): the echo row is homed to the RECIPIENT only', () => {
   it("appears in Sam's (recipient) scoped tail", () => {
-    const scoped = scopeToHumanConversation([mayaUserRow, echoRow, davidUserRow], userCp('imessage', 'sam', 'Sam'));
+    const scoped = scopeToHumanConversation([mayaUserRow, echoRow, davidUserRow], userCp('imessage', 'sam', 'Sam'), samConv);
     expect(scoped.map((m) => m.id)).toContain('echo1');
     // and Sam's own inbound stays, Maya's inbound is gone
     expect(scoped.map((m) => m.id)).toContain('david-in');
@@ -73,7 +81,7 @@ describe('RC-1 gate (a): the echo row is homed to the RECIPIENT only', () => {
   });
 
   it("does NOT appear in Maya's (original counterparty) scoped tail", () => {
-    const scoped = scopeToHumanConversation([mayaUserRow, echoRow, davidUserRow], userCp('imessage', 'maya', 'Maya'));
+    const scoped = scopeToHumanConversation([mayaUserRow, echoRow, davidUserRow], userCp('imessage', 'maya', 'Maya'), mayaConv);
     expect(scoped.map((m) => m.id)).not.toContain('echo1');
     expect(scoped.map((m) => m.id)).toContain('maya-in');
     expect(scoped.map((m) => m.id)).not.toContain('david-in');
@@ -84,15 +92,15 @@ describe('RC-1 gate (b): scopeToHumanConversation still excludes other conversat
   it('a different human conversation never crosses into a turn scoped elsewhere', () => {
     // Sam's turn must not see Maya's inbound, and vice versa (the exact conflation
     // the redesign kills; pinned so the echo change does not loosen it).
-    const davidScoped = scopeToHumanConversation([mayaUserRow, davidUserRow], userCp('imessage', 'sam', 'Sam'));
+    const davidScoped = scopeToHumanConversation([mayaUserRow, davidUserRow], userCp('imessage', 'sam', 'Sam'), samConv);
     expect(davidScoped.map((m) => m.id)).toEqual(['david-in']);
-    const mayaScoped = scopeToHumanConversation([mayaUserRow, davidUserRow], userCp('imessage', 'maya', 'Maya'));
+    const mayaScoped = scopeToHumanConversation([mayaUserRow, davidUserRow], userCp('imessage', 'maya', 'Maya'), mayaConv);
     expect(mayaScoped.map((m) => m.id)).toEqual(['maya-in']);
   });
 
   it('a self row stamped for another conversation is dropped (re-answer-ghost guard)', () => {
-    const otherSelf = msg({ id: 'other-self', role: 'assistant', content: 'done', convKey: mayaKey, origin: selfOrigin });
-    const scoped = scopeToHumanConversation([otherSelf, davidUserRow], userCp('imessage', 'sam', 'Sam'));
+    const otherSelf = msg({ id: 'other-self', role: 'assistant', content: 'done', conversationId: mayaConv, origin: selfOrigin });
+    const scoped = scopeToHumanConversation([otherSelf, davidUserRow], userCp('imessage', 'sam', 'Sam'), samConv);
     expect(scoped.map((m) => m.id)).not.toContain('other-self');
   });
 });

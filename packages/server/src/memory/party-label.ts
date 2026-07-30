@@ -11,18 +11,29 @@
 // every fact. The memory of a conversation must carry that conversation's identity.
 
 import { getOwnerName } from '../config/platform.js';
+import { getDb } from '../db/connection.js';
 import type { Message } from '@dojo/shared';
 
-/** Turn a conv_key ("owner" | "imessage:alex chen" | "email:x@y" | "a2a:…") into a label. */
-export function convKeyToLabel(convKey: string | null | undefined): string | null {
-  if (!convKey) return null;
-  if (convKey === 'owner') return getOwnerName();
-  const idx = convKey.indexOf(':');
-  if (idx === -1) return convKey;
-  const channel = convKey.slice(0, idx);
-  const who = convKey.slice(idx + 1);
-  if (channel === 'a2a') return 'an agent thread';
-  return who ? `${who} (${channel})` : channel;
+/** Turn a `conversations.id` into a party label.
+ *
+ *  ── REKEY (PHASE-2 T10I). This was `convKeyToLabel`, which PARSED a composite string back
+ *  into the parts it was built from. Those parts are columns in `conversations`, so it reads
+ *  them — and gains the counterparty's NAME, which the string never carried ("+15551234
+ *  (imessage)" becomes "Alex Chen (imessage)"). A peer thread stays unnamed on purpose: a
+ *  summary must not attribute agent coordination to a person. One PK lookup per own-output row
+ *  on a batch (summarisation) path, not a turn path. */
+export function conversationLabel(conversationId: string | null | undefined): string | null {
+  if (!conversationId) return null;
+  try {
+    const row = getDb().prepare(
+      'SELECT channel, counterparty_id, counterparty_name FROM conversations WHERE id = ?',
+    ).get(conversationId) as { channel: string; counterparty_id: string | null; counterparty_name: string | null } | undefined;
+    if (!row) return null;
+    if (row.channel === 'a2a') return 'an agent thread';
+    if (row.channel === 'dashboard' || row.channel === 'voice' || row.counterparty_id === 'owner') return getOwnerName();
+    const who = row.counterparty_name ?? row.counterparty_id;
+    return who ? `${who} (${row.channel})` : row.channel;
+  } catch { return null; }
 }
 
 /** Human-readable "who this message belongs to" for memory input tags. */
@@ -36,5 +47,5 @@ export function summaryPartyTag(m: Message): string | null {
     return o.channel ? `${who} (${o.channel})` : who;
   }
   // assistant (self) / tool work — tag with the conversation it was part of
-  return convKeyToLabel(m.convKey);
+  return conversationLabel(m.conversationId);
 }

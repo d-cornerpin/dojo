@@ -73,7 +73,7 @@ import { queueEmbedding } from '../../memory/embeddings.js';
 import { isPrimaryAgent, isTrainerAgent, isPMAgent, isHealerAgent, isDreamerAgent } from '../../config/platform.js';
 import os from 'node:os';
 import path from 'node:path';
-import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnImRecipient, currentModelRequestId, currentTurnNumber, currentTurnRoot, currentTurnServedWork, continuationContext, clearTurnReceipts, clearRecallBudget, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
+import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnConversationId, currentTurnImRecipient, currentModelRequestId, currentTurnNumber, currentTurnRoot, currentTurnServedWork, continuationContext, clearTurnReceipts, clearRecallBudget, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
 import { persistEngineSteer } from './engine-steer.js';
 import { pushEngineMessage } from './engine-message.js';
 import { findRecentDeliveries, findRecentDeliveriesKeyed, getRecentOutbound, mostRecentDeliveryTo, mostRecentDeliveryToConversation, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
@@ -145,13 +145,14 @@ import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, TOOL_AND_OUTPUT_RESERVE } from '../../memory/compaction.js';
 import { estimateTokens } from '../../memory/store.js';
 import {
-  insertMessageIfAbsent, insertEngineEventIfAbsent, setConvKeyByRowid, tagTurnOutputConvKey,
+  insertMessageIfAbsent, insertEngineEventIfAbsent, stampConversationIdByRowid, tagTurnOutputConversationId,
   claimEngineEventByRowid, releaseEngineEventByRowid, isRowUnserved,
   markServedByRowid, setAnswerMessageId,
 } from '../../memory/message-store.js';
+import { conversationIdentityOf, resolveOrCreateConversation } from '../../memory/conversations.js';
 import { buildOpenWorkInjection } from '../../work/obligations.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
-import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, claimAssembledSiblings, getOwedMidTurnArrivals, conversationKey, type TurnCounterparty } from './counterparty.js';
+import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, claimAssembledSiblings, getOwedMidTurnArrivals, type TurnCounterparty } from './counterparty.js';
 // PHASE-2 T6 — THE ANSWERED EDGE. One module answers "has the person heard from us" for
 // every gate in this file that used to answer it for itself (research 07 rows 1a/1b/1c/1e/
 // 1g/2d). Nothing below reads the model's prose to decide it any more.
@@ -708,7 +709,7 @@ async function dispatchPMRenameHandoff(params: {
     // `tracker/pm-agent.ts`'s note at the `insertEngineEventIfAbsent` call there.
     insertEngineEventIfAbsent({
       id: renameMsgId, agentId: pmId, content: renameRequest,
-      sourceAgentId: null, originIntent: 'pm_rename', convKey: null, work: null,
+      sourceAgentId: null, originIntent: 'pm_rename', work: null,
     });
     broadcast({
       type: 'chat:message',
@@ -926,7 +927,7 @@ export function setAgentStatus(agentId: string, status: AgentStatus): void {
         UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?
       `).run(status, agentId);
     }
-    if (status === 'idle') { currentTurnKind.delete(agentId); currentTurnConvKey.delete(agentId); currentTurnImRecipient.delete(agentId); currentModelRequestId.delete(agentId); currentTurnNumber.delete(agentId); currentTurnRoot.delete(agentId); currentTurnServedWork.delete(agentId); clearTurnReceipts(agentId); clearRecallBudget(agentId); }
+    if (status === 'idle') { currentTurnKind.delete(agentId); currentTurnConvKey.delete(agentId); currentTurnConversationId.delete(agentId); currentTurnImRecipient.delete(agentId); currentModelRequestId.delete(agentId); currentTurnNumber.delete(agentId); currentTurnRoot.delete(agentId); currentTurnServedWork.delete(agentId); clearTurnReceipts(agentId); clearRecallBudget(agentId); }
     // On 'working', carry the turn kind so the composer can stay quiet on pure
     // A2A turns (unless wordy mode). Defaults to 'user' until the counterparty
     // is resolved early in the turn.
@@ -1039,6 +1040,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
   continuationContext.delete(agentId);
   const isHumanContinuation = waitingConvs.length === 0 && !!continuation;
   const chosenConvKey = isHumanContinuation ? continuation!.convKey : (waitingConvs[0]?.key ?? null);
+  // PHASE-2 T10I: the same choice as the FK. `conversationId` is resolved at ingest by the
+  // producer and read straight off the trigger row here; the `??` fallback below (at the
+  // pickup stamp) is what covers a row no door ever resolved for. `chosenConvKey` SURVIVES
+  // beside it because four other tables are still keyed by the string — see
+  // `currentTurnConversationId`'s note in turn-state.ts.
+  let chosenConversationId: string | null = isHumanContinuation
+    ? (continuation!.conversationId ?? null)
+    : (waitingConvs[0]?.oldest?.conversation_id ?? null);
   // F9: timestamp of the turn's most recent context assembly; sibling user rows
   // of the same conversation created before this instant were IN the assembled
   // context and are claimed at teardown (see claimAssembledSiblings).
@@ -1056,6 +1065,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // to it. null on engine/A2A turns (no waiting human) so recall doesn't latch the
   // last human conversation. Cleared when the agent goes idle.
   currentTurnConvKey.set(agentId, chosenConvKey);
+  currentTurnConversationId.set(agentId, chosenConversationId);
   // OPEN-12: trigger on the OLDEST unanswered message in the chosen conversation,
   // so a conversation's pending messages are answered oldest-first, a later ping
   // ("are you there?") can never be answered before the request that came before it.
@@ -1113,9 +1123,36 @@ export async function runV2Turn(agentId: string): Promise<void> {
     }
     // Identity, always, and independent of the claim: this row belongs to this
     // conversation whether or not this turn won the race to serve it.
-    try {
-      setConvKeyByRowid({ rowid: triggerRow.rowid, agentId, value: chosenConvKey });
-    } catch { /* best effort, served-tagging also happens at turn end */ }
+    //
+    // PHASE-2 T10I: the identity is `conversations.id`. Two cases, and the second is the
+    // reason this write still exists after the backfill:
+    //   * the producer resolved it at ingest (the normal path) — nothing to do, the row
+    //     already carries it, and re-writing it from the turn's coarser view could only make
+    //     it worse (a door knows the mail thread; a turn knows the sender);
+    //   * the producer could NOT (`resolveOrCreateConversation` is best-effort by contract and
+    //     returns null rather than blocking an inbound) or the row never passed a door at all
+    //     — resolve it here, once, through the same one writer, from the identity the waiting
+    //     set derived from this row's own stamped origin.
+    // This is a DOOR-TIME resolution, not a backfill guess: the turn is genuinely having this
+    // conversation right now, which is what `resolveOrCreateConversation` exists to record.
+    // It logs when it fires, because a live occurrence means a producer is not stamping and
+    // that is a finding rather than routine.
+    if (!chosenConversationId) {
+      const identity = waitingConvs[0]?.identity;
+      if (identity) {
+        try {
+          chosenConversationId = resolveOrCreateConversation(agentId, identity);
+          logger.info('v2: trigger row carried no conversation_id; resolved at pickup', {
+            agentId, rowid: triggerRow.rowid, convKey: chosenConvKey, conversationId: chosenConversationId,
+          }, agentId);
+        } catch { /* best effort; the turn proceeds unscoped exactly as it would have */ }
+      }
+    }
+    if (chosenConversationId) {
+      try {
+        stampConversationIdByRowid({ rowid: triggerRow.rowid, agentId, conversationId: chosenConversationId });
+      } catch { /* best effort, served-tagging also happens at turn end */ }
+    }
     // C24: reset the turn-continuation counter at the start of a genuinely NEW
     // human-triggered turn (a fresh trigger claimed here). The counter bounds CONSECUTIVE
     // time-budget auto-continuations of ONE turn; without a reset it accumulated across the
@@ -1291,7 +1328,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // requirement preserved: a peer ASSIGN that arrived last is the trigger the assembler
   // scopes the tail to. The `_src` tag is gone with the second table (one rowid space).
   const mostRecentInbound = db.prepare(`
-    SELECT seq AS rowid, content, lane, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, conv_key
+    SELECT seq AS rowid, content, lane, origin_intent, source_agent_id, a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, served_by_turn
       FROM messages
      WHERE agent_id = @agentId AND role = 'user'
      ORDER BY created_at DESC, rowid DESC
@@ -1299,7 +1336,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   `).get({ agentId }) as {
     rowid: number; content: string; lane: string; origin_intent: string | null;
     source_agent_id: string | null; a2a_thread_id: string | null; a2a_intent: string | null;
-    a2a_requires_response: number | null; inbound_meta: string | null; conv_key: string | null;
+    a2a_requires_response: number | null; inbound_meta: string | null; served_by_turn: number | null;
   } | undefined;
   // A reply-needed peer A2A (QUESTION/ASSIGN/BLOCK) is most-recent. Engine-origin
   // rows (fromAgent='system') are NOT peer A2A, they drive an engine turn instead,
@@ -1316,7 +1353,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // deliverable that woke the agent: it woke blind to what it was woken for, and
   // could run a stale owner directive. Detect the wake structurally: the most-recent
   // inbound is a PEER (not engine) terminal A2A intent that actually woke this agent
-  // (a2a_requires_response=1) and has not yet been claimed by a turn (conv_key NULL).
+  // (a2a_requires_response=1) and has not yet been claimed by a turn.
+  //
+  // PHASE-2 T10I: "not yet claimed" is `served_by_turn IS NULL`. It was `conv_key IS NULL`,
+  // which is the LAST survivor of the claim job T4 already moved off this column: T4
+  // re-pointed `findUnservedTerminalWake` onto `served_by_turn` and deleted the
+  // `conv_key='a2a'` sentinel that fed it, but this second reader of the same fact was
+  // missed, and it kept working only because nothing wrote the sentinel any more — i.e. it
+  // was reading "unclaimed" off a column that no longer records claims. Now both readers of
+  // that edge ask the same column the same question.
   // Gated with !hasUnansweredUser below so a waiting human always wins (no hijack).
   const TERMINAL_WAKE_INTENTS = new Set(['DELIVERABLE', 'ANSWER', 'COMPLETE', 'FAIL']);
   let terminalWakeA2A: { intent: string; threadShort: string; threadId: string; fromName: string; rowid: number } | null = null;
@@ -1327,7 +1372,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
     mostRecentInbound.a2a_intent &&
     TERMINAL_WAKE_INTENTS.has(mostRecentInbound.a2a_intent) &&
     mostRecentInbound.a2a_requires_response === 1 &&
-    mostRecentInbound.conv_key === null
+    mostRecentInbound.served_by_turn === null
   ) {
     const senderRow = mostRecentInbound.source_agent_id
       ? (db.prepare('SELECT name FROM agents WHERE id = ?').get(mostRecentInbound.source_agent_id) as { name?: string } | undefined)
@@ -1787,7 +1832,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // null). On a continuation-of-a-continuation, chosenConvKey is the restored value, so it
   // re-stashes and the chain holds.
   const stashContinuationIfHuman = () => {
-    if (chosenConvKey) continuationContext.set(agentId, { convKey: chosenConvKey, counterparty });
+    if (chosenConvKey) continuationContext.set(agentId, { convKey: chosenConvKey, conversationId: chosenConversationId, counterparty });
   };
 
   // Persist + broadcast an outbound routing marker (a role='system'
@@ -1852,7 +1897,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // is filtered out of the RECIPIENT's next turn by scopeToHumanConversation. So the
   // recipient answers a question with no visible trace of it ever being asked (the
   // "easily confused" bug, F-1/F-3/K-1). This persists ONE additive assistant echo
-  // row INTO the recipient's conversation (conv_key = recipient's key) carrying the
+  // row INTO the recipient's conversation (the recipient's `conversation_id`) carrying the
   // verbatim sent text, so on the recipient's next turn the model sees its own
   // question and can bind the bare answer. Additive and side-effect-free: it does NOT
   // retro-stamp the tool rows (that would destabilise the SENDING turn's own
@@ -1878,15 +1923,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
     try {
       const text = (sentText ?? '').trim();
       if (!text) return;
-      const echoKey = conversationKey(channel, recipientId, recipientName, null);
+      // PHASE-2 T10I: the echo lands in the recipient's conversation as the FK. It is
+      // resolve-or-CREATE and that is correct rather than convenient — the agent has just
+      // spoken to this recipient through a real door, so the conversation exists as a fact
+      // whether or not a row had been minted for it yet, and the recipient's own next
+      // inbound would resolve the identical row.
+      const echoIdentity = conversationIdentityOf(channel, recipientId, recipientName, null);
+      const echoConversationId = resolveOrCreateConversation(agentId, echoIdentity);
       // Defensive: never echo into the conversation this turn is already serving
       // (the toCp guard at the call site already excludes recipient==counterparty).
-      if (!echoKey || echoKey === chosenConvKey) return;
+      if (!echoConversationId || echoConversationId === chosenConversationId) return;
       const echoId = uuidv4();
       const content = `[Sent via ${channelWord} to ${recipientName}]: ${text}`;
       insertMessageIfAbsent({
         id: echoId, agentId, role: 'assistant', content, turnNumber,
-        convKey: echoKey, originIntent: 'cross_conv_send_echo',
+        conversationId: echoConversationId, originIntent: 'cross_conv_send_echo',
       });
       broadcast({
         type: 'chat:message',
@@ -1895,11 +1946,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
           id: echoId, agentId, role: 'assistant' as const, content,
           tokenCount: null, modelId: null, cost: null, latencyMs: null,
           createdAt: new Date().toISOString(),
-          convKey: echoKey,
+          conversationId: echoConversationId,
         },
       });
       logger.info('RC-1: dual-homed cross-recipient send echo into recipient conversation', {
-        agentId, turnNumber, echoKey, channel: channelWord,
+        agentId, turnNumber, echoConversationId, channel: channelWord,
       }, agentId);
     } catch (err) {
       logger.debug('RC-1 cross-conv echo failed (non-fatal, additive)', {
@@ -2527,7 +2578,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
               content: driftNudge,
               sourceAgentId: null,
               originIntent: 'thrash_drift',
-              convKey: 'engine-steer',
               turnNumber,
             });
           } catch { /* best effort */ }
@@ -2632,7 +2682,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
               `If this block looks wrong and is stopping something the user needs, tell them what you were attempting so they can decide.`,
             sourceAgentId: null,
             originIntent: 'thrash_block',
-            convKey: 'engine-steer',
             turnNumber,
           });
         } catch (err) {
@@ -2718,7 +2767,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
               content: steerMsg,
               sourceAgentId: null,
               originIntent: 'thrash_gate',
-              convKey: 'engine-steer',
               turnNumber,
             });
             // C6 (as it was): stamp a non-NULL conv_key sentinel ('engine-steer'), because
@@ -3517,7 +3565,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
               content: `[Engine hint] ${DELEGATION_HINT_BODY}`,
               sourceAgentId: null,
               originIntent: 'delegation_hint',
-              convKey: 'engine-steer',
               turnNumber,
             });
 
@@ -3816,14 +3863,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // read from the per-ask answer stamps (mig 113), so answered-ness
           // survives compaction structurally and the model never re-answers
           // a settled question. Bounded: 3 lines; human turns; volatile lane.
-          if (chosenConvKey) {
+          if (chosenConversationId) {
             try {
               const answeredAsks = db.prepare(
                 `SELECT content, created_at FROM messages
-                  WHERE agent_id = ? AND conv_key = ? AND role = 'user'
+                  WHERE agent_id = ? AND conversation_id = ? AND role = 'user'
                     AND answer_message_id IS NOT NULL
                   ORDER BY created_at DESC LIMIT 3`,
-              ).all(agentId, chosenConvKey) as Array<{ content: string; created_at: string }>;
+              ).all(agentId, chosenConversationId) as Array<{ content: string; created_at: string }>;
               if (answeredAsks.length > 0) {
                 const lines = answeredAsks.map((a) => {
                   const excerpt = a.content.replace(/^\[[^\]]*\]\s*/g, '').trim().slice(0, 90);
@@ -5066,7 +5113,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // the durable "served" signal (the conversation won't be re-picked) AND
           // the content-isolation tag (its work won't bleed into another turn).
           if (chosenConvKey) {
-            try { tagTurnOutputConvKey({ agentId, turnNumber, convKey: chosenConvKey }); } catch { /* best effort */ }
+            try { if (chosenConversationId) tagTurnOutputConversationId({ agentId, turnNumber, conversationId: chosenConversationId }); } catch { /* best effort */ }
           }
           logger.info('v2: agent ended turn silently via [no-reply] sentinel', {
             agentId, loopCount: state.loopCount,
@@ -5353,7 +5400,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           modelId: effectiveModelIdForPersist,
           attachments: queuedAttachments.length > 0 ? queuedAttachments : undefined,
           reasoningContent: result.reasoningContent ?? undefined,
-          convKey: chosenConvKey,
+          conversationId: chosenConversationId,
         }));
         // v2.7.24, also track text-with-tools iterations as deliverable
         // assistant text. Previously this branch ran (because there are
@@ -5919,7 +5966,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 content: rePrompt,
                 sourceAgentId: null,
                 originIntent: 'owed_interrupt',
-                convKey: 'engine-steer',
                 turnNumber,
               });
             } catch { /* best effort */ }
@@ -5998,7 +6044,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   content: steer,
                   sourceAgentId: null,
                   originIntent: 'promise_floor',
-                  convKey: 'engine-steer',
                   turnNumber,
                 });
               } catch { /* best effort */ }
@@ -6056,7 +6101,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 content: steer,
                 sourceAgentId: null,
                 originIntent: 'a2a_handoff_floor',
-                convKey: 'engine-steer',
                 turnNumber,
               });
             } catch { /* best effort */ }
@@ -6138,7 +6182,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // delete delivered history); this detector remains as production
             // telemetry proving that fix holds. It must never alter behavior.
             logger.warn('v2 re-answer telemetry: final reply resembles a settled answer from another conversation (delivering normally; root fix is the assembler)', {
-              agentId, turnNumber, convKey: chosenConvKey, matchConv: reAnswer.convKey, similarity: reAnswer.similarity,
+              agentId, turnNumber, convKey: chosenConvKey, matchConv: reAnswer.conversationId, similarity: reAnswer.similarity,
             }, agentId);
           }
         }
@@ -7837,7 +7881,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 content: autoNoteText,
                 sourceAgentId: null,
                 originIntent: 'auto_scaffold',
-                convKey: 'engine-steer',
                 turnNumber,
               });
             } catch { /* best effort */ }
@@ -8542,7 +8585,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // later turn for a different counterparty never sees this turn's reply or
         // work in its live tail (content bleed across conversations).
         if (chosenConvKey) {
-          try { tagTurnOutputConvKey({ agentId, turnNumber, convKey: chosenConvKey }); } catch { /* best effort */ }
+          try { if (chosenConversationId) tagTurnOutputConversationId({ agentId, turnNumber, conversationId: chosenConversationId }); } catch { /* best effort */ }
         }
 
         const { resolveReplyDestination } = await import('./reply-destination.js');
@@ -9107,7 +9150,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
             content: reportMsg,
             sourceAgentId: null,
             originIntent: 'completion_report',
-            convKey: null,
             turnNumber,
           });
           // Queue wakeup so handleMessage's finally fires the report turn.
@@ -9250,7 +9292,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // the rows are already tagged, so `conv_key IS NULL` makes this a no-op. Best-effort.
     if (chosenConvKey) {
       try {
-        tagTurnOutputConvKey({ agentId, turnNumber, convKey: chosenConvKey });
+        if (chosenConversationId) tagTurnOutputConversationId({ agentId, turnNumber, conversationId: chosenConversationId });
       } catch { /* best effort, turn teardown must not throw */ }
       // F9: claim same-conversation sibling user rows that were inside this
       // turn's final assembled context (they got answered by this reply); a
@@ -9258,17 +9300,23 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // conversations only, never the engine sentinel. (PHASE-2 T4: the park/relayed sentinel
       // tests that stood beside it are gone with the namespace — a chosen conv key could only
       // ever be a real conversation or 'engine', and nothing writes a join into this column.)
+      // PHASE-2 T10I: the `chosenConvKey !== 'engine'` guard is GONE and it is not a
+      // widening. It excluded the engine SENTINEL — a fake conversation key — from a claim
+      // that only ever applies to a human conversation's sibling rows. `chosenConversationId`
+      // cannot be a sentinel: an events-lane rider has no conversation, so an engine turn
+      // reaches here with null and the condition below excludes it structurally instead of
+      // by name. (Asserted: the sentinel value can no longer be produced.)
       if (
         lastAssembledAtIso &&
-        chosenConvKey !== 'engine'
+        chosenConversationId
       ) {
         try {
           // Abort-safety: only claim siblings when this turn actually persisted
           // an ANSWER for this conversation. A no-answer abort must leave them
           // NULL so the drain re-serves them (never silently dropped).
           const answered = db.prepare(
-            `SELECT 1 FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'assistant' AND conv_key = ? LIMIT 1`,
-          ).get(agentId, turnNumber, chosenConvKey);
+            `SELECT 1 FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'assistant' AND conversation_id = ? LIMIT 1`,
+          ).get(agentId, turnNumber, chosenConversationId);
           const claimed = answered ? claimAssembledSiblings(agentId, chosenConvKey, lastAssembledAtIso, turnNumber) : 0;
           if (claimed > 0) {
             logger.info('F9 batch-claim: claimed sibling rows answered by this turn', { agentId, convKey: chosenConvKey, claimed }, agentId);
@@ -9487,7 +9535,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         const leftoverId = uuidv4();
         insertMessageIfAbsent({
           id: leftoverId, agentId, role: 'assistant', content: caption,
-          attachments: JSON.stringify(leftover.attachments), convKey: chosenConvKey, turnNumber,
+          attachments: JSON.stringify(leftover.attachments), conversationId: chosenConversationId, turnNumber,
         });
         broadcast({
           type: 'chat:message',

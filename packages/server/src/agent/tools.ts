@@ -4966,11 +4966,13 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         // means "show me everything recent."
         const recallScope = args.scope === 'all' ? 'all' : 'conversation';
         // E-C1: scope recall to the conversation THIS turn is serving (from live
-        // turn state), not the last-stamped-conv_key heuristic that bled an
-        // unrelated human conversation into recall on engine/A2A turns.
-        const { currentTurnConvKey } = await import('./turn-state.js');
-        const turnConvKey = currentTurnConvKey.has(agentId)
-          ? (currentTurnConvKey.get(agentId) ?? null)
+        // turn state), not the last-stamped heuristic that bled an unrelated human
+        // conversation into recall on engine/A2A turns. PHASE-2 T10I: the scope is the
+        // conversation's FK; the `.has()` test is the three-state contract (entry+id = that
+        // conversation, entry+null = engine/A2A turn, no entry = outside a turn).
+        const { currentTurnConversationId } = await import('./turn-state.js');
+        const turnConversationId = currentTurnConversationId.has(agentId)
+          ? (currentTurnConversationId.get(agentId) ?? null)
           : undefined;
         const { recallRecentThread } = await import('../memory/recall.js');
         content = recallRecentThread(agentId, {
@@ -4982,7 +4984,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
           beforeId,
           since,
           scope: recallScope,
-          turnConvKey,
+          turnConversationId,
         });
         // RC-3: bill the emitted output against this turn's recall budget.
         {

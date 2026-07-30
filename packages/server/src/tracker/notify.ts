@@ -168,7 +168,6 @@ export function injectTaskAssignmentNotification(
       content,
       sourceAgentId: creatorAgentId === 'dojo-system' ? null : creatorAgentId,
       originIntent: 'tracker',
-      convKey: null,
       // P1 lineage spine: the task this notice assigns, as a COLUMN. The
       // terminal-task retire (claimAssignmentNoticeForTerminalTask) becomes a
       // keyed UPDATE at P2 instead of a content LIKE scan.

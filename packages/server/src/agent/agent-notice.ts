@@ -83,14 +83,15 @@ export function postAgentNotice(opts: AgentNoticeOpts): string | null {
     // `origin_intent`, which means the requirement no longer depends on a fake conversation key
     // and survives `conv_key`'s deletion.
     //
-    // The `convKey: 'engine-notice'` write below is therefore RESIDUE for the pending-event
-    // job — but it is NOT dead: `re-answer-guard.ts` and the dashboard's `isBackgroundTurnRow`
-    // still read the sentinels to tell engine chatter from a human conversation. Both of those
-    // readers need the column's IDENTITY half re-pointed (`conversation_id`), which is the
-    // migration T10H did NOT reach. So the write stays, named as owed, rather than being
-    // deleted out from under two live readers.
-    // It still surfaces in the EVENTS/awareness lane (which filters on `lane`, not `conv_key`)
-    // and is still excluded from compaction.
+    // PHASE-2 T10I: the `convKey: 'engine-notice'` write is GONE, and the two readers T10H
+    // named as keeping it alive were re-pointed in the same change — `re-answer-guard.ts` now
+    // excludes engine chatter with `lane <> 'events'`, and the dashboard's
+    // `isBackgroundTurnRow` reads `conversation_id` (an events-lane row has no conversation, so
+    // a sentinel is no longer a value the schema can hold). Nothing about this notice's
+    // behaviour changed: it still surfaces in the EVENTS/awareness lane (which filters on
+    // `lane`, not on a key), it is still excluded from compaction, and it still cannot drive a
+    // turn of its own — that requirement moved to `ENGINE_RIDER_INTENTS` at T10H, which is a
+    // fact about `origin_intent` and survives the column's drop.
     insertEngineEventIfAbsent({
       work: null,
       id,
@@ -98,7 +99,6 @@ export function postAgentNotice(opts: AgentNoticeOpts): string | null {
       content,
       sourceAgentId: null,             // a subsystem/service name, not a peer agent id
       originIntent: opts.intent ?? 'agent_notice',
-      convKey: 'engine-notice',
     });
     // D-A step 5: an engine notice is inter-agent traffic (origin_kind='engine'),
     // so it broadcasts on the dedicated `interagent:message` lane, NOT chat:message.

@@ -27,7 +27,8 @@ function makeDb(): Database.Database {
   const db = new Database(':memory:');
   db.exec(`CREATE TABLE messages (
     id TEXT PRIMARY KEY, agent_id TEXT, role TEXT, content TEXT,
-    conv_key TEXT, created_at INTEGER DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000)
+    conversation_id TEXT, lane TEXT NOT NULL DEFAULT 'owner',
+    created_at INTEGER DEFAULT (CAST(strftime('%s','now') AS INTEGER) * 1000)
   );`);
   return db;
 }
@@ -35,10 +36,10 @@ function makeDb(): Database.Database {
 // T6b: `created_at` is epoch-ms INTEGER on the spine (migration 131), so the fixture's
 // clock has to speak the same units as the guard's lookback predicate. Written as a
 // SQLite expression, exactly as before, so the test still reads as "30 hours ago".
-function seed(db: Database.Database, id: string, convKey: string, content: string, createdAt = "'now'"): void {
+function seed(db: Database.Database, id: string, conversationId: string, content: string, createdAt = "'now'"): void {
   db.prepare(
-    `INSERT INTO messages (id, agent_id, role, content, conv_key, created_at) VALUES (?, 'a1', 'assistant', ?, ?, (CAST(strftime('%s', ${createdAt}) AS INTEGER) * 1000))`,
-  ).run(id, content, convKey);
+    `INSERT INTO messages (id, agent_id, role, content, conversation_id, created_at) VALUES (?, 'a1', 'assistant', ?, ?, (CAST(strftime('%s', ${createdAt}) AS INTEGER) * 1000))`,
+  ).run(id, content, conversationId);
 }
 
 describe('re-answer-guard', () => {
@@ -54,34 +55,34 @@ describe('re-answer-guard', () => {
 
   it('flags a reworded duplicate of a settled answer from another conversation', () => {
     const db = makeDb();
-    seed(db, 'm1', 'owner', ORIGINAL);
-    const match = findCrossConvReAnswer(db as never, 'a1', REWORDING_B, 'email:list@example.com');
+    seed(db, 'm1', 'conv-owner', ORIGINAL);
+    const match = findCrossConvReAnswer(db as never, 'a1', REWORDING_B, 'conv-list');
     expect(match).not.toBeNull();
-    expect(match!.convKey).toBe('owner');
+    expect(match!.conversationId).toBe('conv-owner');
   });
 
   it('flags the other rewording too', () => {
     const db = makeDb();
-    seed(db, 'm1', 'owner', ORIGINAL);
-    const match = findCrossConvReAnswer(db as never, 'a1', REWORDING_A, 'email:list@example.com');
+    seed(db, 'm1', 'conv-owner', ORIGINAL);
+    const match = findCrossConvReAnswer(db as never, 'a1', REWORDING_A, 'conv-list');
     expect(match).not.toBeNull();
   });
 
   it('does not flag unrelated prose', () => {
     const db = makeDb();
-    seed(db, 'm1', 'owner', ORIGINAL);
-    expect(findCrossConvReAnswer(db as never, 'a1', UNRELATED, 'email:list@example.com')).toBeNull();
+    seed(db, 'm1', 'conv-owner', ORIGINAL);
+    expect(findCrossConvReAnswer(db as never, 'a1', UNRELATED, 'conv-list')).toBeNull();
   });
 
   it('never compares against the turn\'s own trigger conversation (re-asks stay answerable)', () => {
     const db = makeDb();
-    seed(db, 'm1', 'owner', ORIGINAL);
-    expect(findCrossConvReAnswer(db as never, 'a1', REWORDING_B, 'owner')).toBeNull();
+    seed(db, 'm1', 'conv-owner', ORIGINAL);
+    expect(findCrossConvReAnswer(db as never, 'a1', REWORDING_B, 'conv-owner')).toBeNull();
   });
 
   it('ignores short texts entirely', () => {
     const db = makeDb();
-    seed(db, 'm1', 'owner', ORIGINAL);
+    seed(db, 'm1', 'conv-owner', ORIGINAL);
     expect(findCrossConvReAnswer(db as never, 'a1', 'About 35.4 inches, just under 3 feet.', 'email:x@example.com')).toBeNull();
   });
 

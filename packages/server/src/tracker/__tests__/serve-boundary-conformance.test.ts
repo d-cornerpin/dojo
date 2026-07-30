@@ -195,8 +195,14 @@ describe('turn record (P4)', () => {
     expect(store).toMatch(/SET served_by_turn = \? WHERE rowid = \?/);
     expect(store).toMatch(/SET answer_message_id = @answerMessageId[\s\S]{0,200}served_by_turn = @servedByTurn/);
     const cp = read('agent/v2/counterparty.ts');
-    expect(cp).toMatch(/claimRowByRowid\(\{/);
-    expect(store).toMatch(/conv_key = @convKey,[\s\S]{0,80}served_by_turn = COALESCE/);
+    expect(cp).toMatch(/recordServingTurnByRowid\(\{/);
+    // PHASE-2 T10I: `claimRowByRowid` SHRANK into `recordServingTurnByRowid` — it no longer
+    // writes the conversation identity, because a sibling USER row's `conversation_id` was
+    // already resolved by its own producer at ingest and a second writer for one fact is the
+    // disease. The serve edge — the thing THIS clause is about — is unchanged, and the
+    // assertion is now strictly about it rather than about it plus a co-written column.
+    expect(store).toMatch(/export function recordServingTurnByRowid/);
+    expect(store).toMatch(/UPDATE messages SET served_by_turn = COALESCE\(@servedByTurn, served_by_turn\)/);
   });
 
   // ── RETIRED DELIBERATELY (PHASE-2 T8c item 3), and replaced by the demolition it now

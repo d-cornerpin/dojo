@@ -174,30 +174,83 @@ describe('PHASE-2 T10H — the rider set is COMPLETE, enforced against the write
     .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
     .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
 
-  it('every steer site that used the conv_key sentinel writes a KNOWN rider intent', () => {
-    const files = ['packages/server/src/agent/v2/loop.ts', 'packages/server/src/agent/a2a-transport.ts'];
-    const found: string[] = [];
-    for (const f of files) {
-      const text = stripComments(src(f));
-      // The sentinel write and its `originIntent:` sit inside one object literal; take the
-      // nearest preceding intent for each sentinel occurrence.
-      const lines = text.split('\n');
-      lines.forEach((line, i) => {
-        if (!/convKey: 'engine-steer'/.test(line)) return;
-        for (let j = i; j >= Math.max(0, i - 12); j--) {
-          // ⚠ `[a-z_]+` was wrong here and the walk caught it: `a2a_handoff_floor` carries a
-          // DIGIT, so the first version reported "no originIntent within 12 lines" for a site
-          // that has one two lines above. My assertion, not the tree — corrected with the
-          // reason in place rather than widened until it passed (T8a's precedent).
-          const m = /originIntent: '([a-z0-9_]+)'/.exec(lines[j]);
-          if (m) { found.push(m[1]); return; }
+  /** ⚠ PHASE-2 T10I REPLACED THIS CLAUSE'S ANCHOR, AND THE REASON IS THE POINT.
+   *
+   *  T10H's version found the steer sites by grepping for `convKey: 'engine-steer'` — the very
+   *  sentinel write it had just proved was doing nothing. T10I deletes those writes (the column
+   *  goes at `148`), so the anchor went with them, and a walk anchored on a deleted string is a
+   *  walk that passes by finding zero sites. T10H already guarded against exactly that with
+   *  `found.length > 0`, which is why this had to be REPLACED rather than allowed to lapse.
+   *
+   *  The replacement is STRICTLY STRONGER, and it is stronger because of what the old anchor
+   *  could not see: it could only find sites that REMEMBERED to write the sentinel, which is
+   *  the same weakness that let the hole open in the first place. This walk reads every
+   *  events-lane WRITER in the tree — every `insertEngineEvent` / `insertEngineEventIfAbsent`
+   *  call — and requires each one's `originIntent` to be classified, as either a rider or a
+   *  declared DELIVERABLE. A new events-lane writer with an unclassified intent now fails the
+   *  build whether or not its author knew this list existed. */
+  const DECLARED_DELIVERABLE_INTENTS = [
+    // Each of these IS the reason for a turn (engine-riders.ts's own first paragraph). Listed
+    // here rather than exported, because this is the TEST's partition of the space: production
+    // only needs to know what a rider is.
+    'scheduler', 'tracker', 'reminder', 'a2a_request', 'completion_report', 'spawn_kickoff',
+    'pm_review', 'pm_rename', 'validation_check', 'engine_event_expired', 'agent_health',
+    'block_validated', 'schedule_run_failed', 'schedule_run_failed_owner', 'learning_loop',
+    'healer', 'cross_conv_send_echo',
+  ] as const;
+
+  it('EVERY events-lane writer in the tree carries a CLASSIFIED intent (rider or deliverable)', () => {
+    const roots = ['packages/server/src'];
+    const sites: Array<{ where: string; intent: string }> = [];
+    const walk = (dir: string): void => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const fp = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== 'node_modules' && e.name !== 'migrations') walk(fp); continue; }
+        if (!e.name.endsWith('.ts') || e.name.includes('.test.')) continue;
+        // The writer module DECLARES these two functions; its own occurrences are the
+        // definitions and the one forwarding to the other, not calls with an intent.
+        if (path.relative(REPO, fp).endsWith('memory/message-store.ts')) continue;
+        const text = stripComments(fs.readFileSync(fp, 'utf8'));
+        for (const fn of ['insertEngineEventIfAbsent(', 'insertEngineEvent(']) {
+          let idx = text.indexOf(fn);
+          while (idx !== -1) {
+            // The call's own object literal. 900 chars covers the longest of these calls
+            // (measured: the widest is auto_scaffold's at ~360) without reaching the next one.
+            const window = text.slice(idx, idx + 900);
+            const m = /originIntent: '([a-z0-9_]+)'/.exec(window);
+            const rel = path.relative(REPO, fp).split(path.sep).join('/');
+            const line = text.slice(0, idx).split('\n').length;
+            sites.push({ where: `${rel}:${line}`, intent: m ? m[1] : '<none>' });
+            idx = text.indexOf(fn, idx + 1);
+          }
         }
-        found.push(`<no originIntent within 12 lines of ${f}:${i + 1}>`);
-      });
+      }
+    };
+    for (const r of roots) walk(path.join(REPO, r));
+
+    // Non-vacuity, both ways: the walk must find the writers, AND it must find the nine steer
+    // sites specifically — the ones the deleted anchor used to name.
+    expect(sites.length, 'the walk must find events-lane writers, or it is vacuous').toBeGreaterThan(9);
+    const STEER_INTENTS = ['thrash_gate', 'thrash_drift', 'thrash_block', 'delegation_hint',
+      'owed_interrupt', 'promise_floor', 'a2a_handoff_floor', 'auto_scaffold', 'fanout_join'];
+    for (const intent of STEER_INTENTS) {
+      expect(sites.map((s) => s.intent), `steer site '${intent}' is no longer written anywhere — either it moved (re-point this map) or a rider lost its writer`).toContain(intent);
     }
-    expect(found.length, 'the walk must find the steer sites, or it is vacuous').toBeGreaterThan(0);
-    for (const intent of found) {
-      expect(ENGINE_RIDER_INTENTS as readonly string[], `steer intent '${intent}' is not in ENGINE_RIDER_INTENTS`).toContain(intent);
+
+    // ONE site passes its intent as a VARIABLE (`opts.intent ?? 'agent_notice'`), and it is
+    // named here rather than skipped by pattern: the clause below this one walks every
+    // `postAgentNotice(` caller and checks the intent each one passes, plus the default. A
+    // literal-only scan cannot see through a variable, so the coverage is split across two
+    // clauses on purpose — and a NEW dynamic writer fails here until it is either given a
+    // literal or added to this list with its own coverage argument.
+    const DYNAMIC_INTENT_SITES_COVERED_BY_THE_POSTAGENTNOTICE_CLAUSE = [
+      'packages/server/src/agent/agent-notice.ts',
+    ];
+    const classified = new Set<string>([...ENGINE_RIDER_INTENTS, ...DECLARED_DELIVERABLE_INTENTS]);
+    for (const s of sites) {
+      if (s.intent === '<none>'
+          && DYNAMIC_INTENT_SITES_COVERED_BY_THE_POSTAGENTNOTICE_CLAUSE.some((f) => s.where.startsWith(f))) continue;
+      expect(classified.has(s.intent), `${s.where} writes an events-lane row with intent '${s.intent}', which is neither a declared rider (agent/v2/engine-riders.ts) nor a declared deliverable (this test). Classify it: a rider must never drive a turn of its own; a deliverable must.`).toBe(true);
     }
   });
 

@@ -31,7 +31,6 @@ beforeEach(() => {
       id TEXT PRIMARY KEY,
       lane TEXT NOT NULL DEFAULT 'owner',
       conversation_id TEXT,
-      conv_key TEXT,
       a2a_thread_id TEXT
     );
   `);
@@ -78,30 +77,29 @@ describe('dominantMessageLineage (P5c)', () => {
   // nothing reads any more, and the a2a assertion would simply have stopped being tested.
   it('returns the modal non-null lineage across every lane in the chunk', () => {
     const db = mockDb.current!;
-    const ins = db.prepare('INSERT INTO messages (id, lane, conversation_id, conv_key, a2a_thread_id) VALUES (?, ?, ?, ?, ?)');
-    ins.run('m1', 'owner', 'convA', 'imessage:x', null);
-    ins.run('m2', 'owner', 'convA', 'imessage:x', null);
-    ins.run('m3', 'owner', 'convB', 'dashboard', null);
-    ins.run('m4', 'owner', null, null, null);
-    ins.run('ia1', 'a2a', 'convA', 'a2a:t', 'thread-9');
+    const ins = db.prepare('INSERT INTO messages (id, lane, conversation_id, a2a_thread_id) VALUES (?, ?, ?, ?)');
+    ins.run('m1', 'owner', 'convA', null);
+    ins.run('m2', 'owner', 'convA', null);
+    ins.run('m3', 'owner', 'convB', null);
+    ins.run('m4', 'owner', null, null);
+    ins.run('ia1', 'a2a', 'convA', 'thread-9');
     const l = dominantMessageLineage(['m1', 'm2', 'm3', 'm4', 'ia1']);
     expect(l.conversationId).toBe('convA');
-    expect(l.convKey).toBe('imessage:x');
     expect(l.a2aThreadId).toBe('thread-9');
   });
 
   it('is all-null on empty input and unknown ids, and never throws without a DB', () => {
-    expect(dominantMessageLineage([])).toEqual({ conversationId: null, convKey: null, a2aThreadId: null });
-    expect(dominantMessageLineage(['nope'])).toEqual({ conversationId: null, convKey: null, a2aThreadId: null });
+    expect(dominantMessageLineage([])).toEqual({ conversationId: null, a2aThreadId: null });
+    expect(dominantMessageLineage(['nope'])).toEqual({ conversationId: null, a2aThreadId: null });
     mockDb.current = null;
-    expect(dominantMessageLineage(['m1'])).toEqual({ conversationId: null, convKey: null, a2aThreadId: null });
+    expect(dominantMessageLineage(['m1'])).toEqual({ conversationId: null, a2aThreadId: null });
   });
 
   it('breaks ties deterministically (lexicographic smallest wins at equal count)', () => {
     const db = mockDb.current!;
-    const ins = db.prepare('INSERT INTO messages (id, lane, conversation_id, conv_key, a2a_thread_id) VALUES (?, ?, ?, ?, ?)');
-    ins.run('t1', 'owner', 'convZ', null, null);
-    ins.run('t2', 'owner', 'convA', null, null);
+    const ins = db.prepare('INSERT INTO messages (id, lane, conversation_id, a2a_thread_id) VALUES (?, ?, ?, ?)');
+    ins.run('t1', 'owner', 'convZ', null);
+    ins.run('t2', 'owner', 'convA', null);
     expect(dominantMessageLineage(['t1', 't2']).conversationId).toBe('convA');
   });
 });

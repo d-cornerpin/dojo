@@ -19,6 +19,42 @@ export interface ConversationIdentity {
   threadRoot?: string | null;
 }
 
+/**
+ * The `conversations` identity of a resolved counterparty — the SAME three inputs
+ * `conversationKey()` takes, mapped onto this table's unique key instead of onto a string.
+ *
+ * PHASE-2 T10I. It exists so a turn can resolve its own conversation at PICKUP when the
+ * producer could not at ingest (this module is best-effort by contract and returns null rather
+ * than blocking an inbound). Measured first: 66 owner-lane user rows on the dev box carry no
+ * `conversation_id`, all of them non-door inserts (harness fixtures, spawn kickoffs).
+ *
+ * ⚠ `provider` and `threadRoot` are DELIBERATELY NULL — a real limit, not an omission. A door
+ * knows gmail-vs-outlook and WHICH mail thread; a turn does not. So this is strictly coarser
+ * than a producer's identity and is only reached for a row no producer stamped (every email and
+ * teams row on both measured bodies carries a producer-resolved id). If that stops being true
+ * the fix is at the door, not a coarser identity here — and the caller logs when it fires.
+ */
+export function conversationIdentityOf(
+  channel: string | null, senderId: string | null, senderName: string | null, threadId?: string | null,
+): ConversationIdentity {
+  if (channel === 'a2a') {
+    return { channel: 'a2a', provider: null, counterpartyId: senderId ?? null, threadRoot: threadId ?? null };
+  }
+  // `conversationKey()` folds dashboard, voice AND a null channel into the one string
+  // 'owner'; the owner's conversation is per-agent and per-channel here, and 'dashboard' is
+  // the one the four owner-side producers resolve.
+  if (channel === 'dashboard' || channel === 'voice' || channel === null) {
+    return { channel: channel ?? 'dashboard', provider: null, counterpartyId: 'owner', threadRoot: null };
+  }
+  return {
+    channel,
+    provider: null,
+    counterpartyId: senderId ?? senderName ?? 'unknown',
+    counterpartyName: senderName ?? null,
+    threadRoot: null,
+  };
+}
+
 export function resolveOrCreateConversation(agentId: string, ident: ConversationIdentity): string | null {
   try {
     const db = getDb();
@@ -58,9 +94,17 @@ export function resolveOrCreateConversation(agentId: string, ident: Conversation
 
 /** Dominant (modal) non-null lineage across a set of message ids (lanes & lineage P5c).
  *  Summaries and archives call this so conversation identity survives the compaction
- *  boundary instead of dropping at it. Each field's mode is computed independently: a chunk
- *  can carry one dominant conversation but several conv_keys, and each is separately useful
- *  to recall/audits. Ties break deterministically (count, then lexicographic).
+ *  boundary instead of dropping at it. Each field's mode is computed independently.
+ *  Ties break deterministically (count, then lexicographic).
+ *
+ *  ── SHRINK (PHASE-2 T10I): the `conv_key` tally is GONE because its INPUT is
+ *  (`messages.conv_key` drops at `148`). Measured before cutting: `dag.ts` is the only writer
+ *  AND the only reader of `summaries.conv_key` (`:153`, a higher-depth summary's modal lineage
+ *  from its parents'), so the value went in a circle and out to nobody. That column now has no
+ *  writer — residue on a table this phase does not own, NAMED for SWEEP C rather than dropped
+ *  in passing.
+ *  requirement preserved: a summary still carries the modal CONVERSATION and A2A THREAD of the
+ *  chunk it compressed — the two lineage fields anything outside `dag.ts` reads.
  *  Best-effort by design: any failure returns all-null lineage and never blocks the writer.
  *
  *  T5: ONE query per chunk. This ran the same statement twice, once against each message
@@ -69,26 +113,24 @@ export function resolveOrCreateConversation(agentId: string, ident: Conversation
  *  lineage of the chunk it compressed, counted once per row. */
 export function dominantMessageLineage(messageIds: string[]): {
   conversationId: string | null;
-  convKey: string | null;
   a2aThreadId: string | null;
 } {
-  const empty = { conversationId: null, convKey: null, a2aThreadId: null };
+  const empty = { conversationId: null, a2aThreadId: null };
   if (messageIds.length === 0) return empty;
   try {
     const db = getDb();
-    const tallies: Record<'conversation_id' | 'conv_key' | 'a2a_thread_id', Map<string, number>> = {
+    const tallies: Record<'conversation_id' | 'a2a_thread_id', Map<string, number>> = {
       conversation_id: new Map(),
-      conv_key: new Map(),
       a2a_thread_id: new Map(),
     };
     for (let i = 0; i < messageIds.length; i += 500) {
       const chunk = messageIds.slice(i, i + 500);
       const ph = chunk.map(() => '?').join(',');
       const rows = db.prepare(
-        `SELECT conversation_id, conv_key, a2a_thread_id FROM messages WHERE id IN (${ph})`,
-      ).all(...chunk) as Array<{ conversation_id: string | null; conv_key: string | null; a2a_thread_id: string | null }>;
+        `SELECT conversation_id, a2a_thread_id FROM messages WHERE id IN (${ph})`,
+      ).all(...chunk) as Array<{ conversation_id: string | null; a2a_thread_id: string | null }>;
       for (const r of rows) {
-        for (const col of ['conversation_id', 'conv_key', 'a2a_thread_id'] as const) {
+        for (const col of ['conversation_id', 'a2a_thread_id'] as const) {
           const v = r[col];
           if (v) tallies[col].set(v, (tallies[col].get(v) ?? 0) + 1);
         }
@@ -104,7 +146,6 @@ export function dominantMessageLineage(messageIds: string[]): {
     };
     return {
       conversationId: mode(tallies.conversation_id),
-      convKey: mode(tallies.conv_key),
       a2aThreadId: mode(tallies.a2a_thread_id),
     };
   } catch {

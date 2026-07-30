@@ -91,7 +91,7 @@ export function createdAtText(col = 'created_at', alias = 'created_at'): string 
  *  a column happened to be selected. `seq` is projected as itself: it IS the rowid. */
 const SELECT_COLS = `seq, id, agent_id, role, content, token_count, model_id, cost,
   latency_ms, ${createdAtText()}, turn_number, reasoning_content, lane, channel, source_agent_id,
-  a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, origin_intent, conv_key`;
+  a2a_thread_id, a2a_intent, a2a_requires_response, inbound_meta, origin_intent, conversation_id`;
 
 export interface MessageRow {
   /** The insertion key — `INTEGER PRIMARY KEY AUTOINCREMENT`, the table's rowid. */
@@ -116,7 +116,9 @@ export interface MessageRow {
   a2a_requires_response: number | null;
   inbound_meta: string | null;
   origin_intent: string | null;
-  conv_key: string | null;
+  /** `conversations.id` — the FK that replaced `conv_key` as conversation identity
+   *  (PHASE-2 T10I). NULL means "not stamped yet", never "no conversation". */
+  conversation_id: string | null;
 }
 
 export function rowToMessage(row: MessageRow): Message {
@@ -154,7 +156,7 @@ export function rowToMessage(row: MessageRow): Message {
     a2aIntent: row.a2a_intent,
     a2aRequiresResponse: row.a2a_requires_response,
     inboundMeta: row.inbound_meta,
-    convKey: row.conv_key,
+    conversationId: row.conversation_id,
     // The single canonical "who is this from" signal, derived from stamped columns.
     origin: deriveOrigin({
       role: row.role as Message['role'],

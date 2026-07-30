@@ -69,8 +69,8 @@ export function createLeafSummary(
   const lineage = dominantMessageLineage(messageIds);
 
   const insertSummary = db.prepare(`
-    INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, earliest_at, latest_at, descendant_count, conversation_id, conv_key, a2a_thread_id, created_at)
-    VALUES (?, ?, 0, 'leaf', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, earliest_at, latest_at, descendant_count, conversation_id, a2a_thread_id, created_at)
+    VALUES (?, ?, 0, 'leaf', ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `);
 
   // PHASE-1 T7. `summary_messages.message_id` carries a real foreign key to `messages(id)`
@@ -95,7 +95,7 @@ export function createLeafSummary(
   `);
 
   const txn = db.transaction(() => {
-    insertSummary.run(id, agentId, content, tokenCount, earliestAt, latestAt, messageIds.length, lineage.conversationId, lineage.convKey, lineage.a2aThreadId);
+    insertSummary.run(id, agentId, content, tokenCount, earliestAt, latestAt, messageIds.length, lineage.conversationId, lineage.a2aThreadId);
 
     for (const messageId of messageIds) {
       insertLink.run(id, messageId);
@@ -150,8 +150,8 @@ export function createCondensedSummary(
   // P5c: condensed summaries inherit the modal lineage of their parents, same
   // deterministic tie-break as dominantMessageLineage.
   const parentLineage = db.prepare(
-    `SELECT conversation_id, conv_key, a2a_thread_id FROM summaries WHERE id IN (${parentPlaceholders})`,
-  ).all(...parentIds) as Array<{ conversation_id: string | null; conv_key: string | null; a2a_thread_id: string | null }>;
+    `SELECT conversation_id, a2a_thread_id FROM summaries WHERE id IN (${parentPlaceholders})`,
+  ).all(...parentIds) as Array<{ conversation_id: string | null; a2a_thread_id: string | null }>;
   const modal = (vals: Array<string | null>): string | null => {
     const tally = new Map<string, number>();
     for (const v of vals) if (v) tally.set(v, (tally.get(v) ?? 0) + 1);
@@ -163,13 +163,12 @@ export function createCondensedSummary(
   };
   const lineage = {
     conversationId: modal(parentLineage.map(r => r.conversation_id)),
-    convKey: modal(parentLineage.map(r => r.conv_key)),
     a2aThreadId: modal(parentLineage.map(r => r.a2a_thread_id)),
   };
 
   const insertSummary = db.prepare(`
-    INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, earliest_at, latest_at, descendant_count, conversation_id, conv_key, a2a_thread_id, created_at)
-    VALUES (?, ?, ?, 'condensed', ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    INSERT INTO summaries (id, agent_id, depth, kind, content, token_count, earliest_at, latest_at, descendant_count, conversation_id, a2a_thread_id, created_at)
+    VALUES (?, ?, ?, 'condensed', ?, ?, ?, ?, ?, ?, ?, datetime('now'))
   `);
 
   const insertLink = db.prepare(`
@@ -177,7 +176,7 @@ export function createCondensedSummary(
   `);
 
   const txn = db.transaction(() => {
-    insertSummary.run(id, agentId, depth, content, tokenCount, earliestAt, latestAt, descendantRow.total, lineage.conversationId, lineage.convKey, lineage.a2aThreadId);
+    insertSummary.run(id, agentId, depth, content, tokenCount, earliestAt, latestAt, descendantRow.total, lineage.conversationId, lineage.a2aThreadId);
 
     for (const parentId of parentIds) {
       insertLink.run(id, parentId);

@@ -1438,7 +1438,7 @@ function steerModelToCompile(join: JoinState): void {
   // it to the model.
   insertEngineEventIfAbsent({
     work: null, id: uuidv4(), agentId: join.agentId, content: steer,
-    sourceAgentId: null, originIntent: 'fanout_join', convKey: 'engine-steer',
+    sourceAgentId: null, originIntent: 'fanout_join',
   });
   logger.info('join complete: steered the model to compile the combined reply', {
     agentId: join.agentId, work: join.id, total: join.total,

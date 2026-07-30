@@ -247,13 +247,21 @@ export interface Message {
   a2aRequiresResponse?: number | null;
   inboundMeta?: string | null;
   /**
-   * Conversation this message belongs to (migration 076). Stamped at end of
-   * turn on the agent's OWN messages (assistant/tool) with the turn's
-   * conversationKey, so the live-tail scoper keeps a self-message only for the
-   * conversation it was produced in — one counterparty's work can't bleed into
-   * another counterparty's turn. NULL on inbound user/system rows + legacy.
+   * Conversation this message belongs to — `conversations.id`, a real FK.
+   *
+   * Resolved at ingest by the producer (`memory/conversations.ts`, OR4/P5) on inbound rows,
+   * and stamped at END OF TURN on the agent's OWN rows (assistant/tool), so the live-tail
+   * scoper keeps a self-message only for the conversation it was produced in — one
+   * counterparty's work cannot bleed into another counterparty's turn.
+   *
+   * The three-valued reading is load-bearing and predates the column (PHASE-2 T10I replaced
+   * `convKey` here, keeping it exactly): a MATCHING id is this conversation, a DIFFERENT id
+   * is another conversation's settled work and is dropped, and **NULL means "not stamped
+   * yet" — this turn's own in-flight work — and is KEPT.** Dropping the NULL case is the
+   * re-answer ghost (owner transcripts 2026-07-07 / 2026-07-09), so the late stamp is
+   * deliberate, not an oversight.
    */
-  convKey?: string | null;
+  conversationId?: string | null;
   /**
    * Canonical "who is this message from", consolidated from role + the
    * structured columns above + (for legacy rows) the `[SOURCE: …]`/`[A2A: …]`
