@@ -34,7 +34,16 @@
 //   packages-base-dir defaults to <repo>/packages.
 import fs from 'node:fs';
 import path from 'node:path';
+import { register } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+// SHIP-PREP 2026-07-30: the built modules below carry bare `@dojo/shared` specifiers, which
+// resolve to TypeScript SOURCE through the workspace symlink and cannot be loaded by plain
+// Node — so every import failed and this gate reported a tool-list drift that did not exist.
+// The hook points that ONE specifier at the built entry, for this script only. Full reasoning
+// in `resolve-shared-dist.mjs`; the shipped artifact solves the same thing at
+// `build-package.sh:63-67`.
+register('./resolve-shared-dist.mjs', import.meta.url);
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -83,21 +92,51 @@ const isRealTool = (name) =>
   REGISTRY.has(name) || (name.startsWith('user_') && REGISTRY.has(name.slice(5)));
 
 // ── (a) every surviving hand list references a real tool ──
+// SHIP-PREP 2026-07-30: read each hand list through `iter`/`keys` instead of spreading it
+// inline. A spread of a vanished export throws `TypeError: x is not iterable` and kills the
+// process with a stack trace BEFORE the `listErrors` check below can report it — so the gate
+// could not notice its own subject leaving (T10F's lesson). Now a missing export is a named
+// gate failure.
+const iter = (mod, modName, sym) => {
+  const v = mod?.[sym];
+  if (v == null || typeof v[Symbol.iterator] !== 'function') {
+    return { __missing: `${modName}.${sym}` };
+  }
+  return [...v];
+};
+const keys = (mod, modName, sym) => {
+  const v = mod?.[sym];
+  if (v == null || typeof v !== 'object') return { __missing: `${modName}.${sym}` };
+  return Object.keys(v);
+};
+
 const HAND_LISTS = [
-  ['loop.SEARCH_TOOLS', [...loop.SEARCH_TOOLS]],
-  ['loop.GENERATION_TOOLS', [...loop.GENERATION_TOOLS]],
-  ['loop.COORDINATION_TOOLS', [...loop.COORDINATION_TOOLS]],
-  ['loop.MUTATING_TOOLS', [...loop.MUTATING_TOOLS]],
-  // hoarding.LOADING_TOOLS retired 2026-07-08 (anti-hoarding now counts measured
-  // result SIZE, not a reader name-set). STRUCTURING_TOOLS survives, phantom check only.
-  ['hoarding.STRUCTURING_TOOLS', [...hoarding.STRUCTURING_TOOLS]],
-  ['concurrency.TOOL_CATEGORY', Object.keys(concurrency.TOOL_CATEGORY)],
-  ['ack.SELF_ACKNOWLEDGING_TOOLS', [...ack.SELF_ACKNOWLEDGING_TOOLS]],
-  ['receipts.RECEIPT_TOOLS', Object.keys(receipts.RECEIPT_TOOLS)],
-  ['sensei.SEND_TO_PEOPLE', [...sensei.SEND_TO_PEOPLE]],
+  ['loop.SEARCH_TOOLS', iter(loop, 'loop', 'SEARCH_TOOLS')],
+  ['loop.GENERATION_TOOLS', iter(loop, 'loop', 'GENERATION_TOOLS')],
+  ['loop.COORDINATION_TOOLS', iter(loop, 'loop', 'COORDINATION_TOOLS')],
+  ['loop.MUTATING_TOOLS', iter(loop, 'loop', 'MUTATING_TOOLS')],
+  // hoarding.LOADING_TOOLS retired 2026-07-08 (anti-hoarding now counts measured result SIZE,
+  // not a reader name-set).
+  // hoarding.STRUCTURING_TOOLS retired by PHASE-2 T8V (`5a50446`, "24 tool verbs become six,
+  // and every engine site that decided by NAME moves with them") — the symbol no longer
+  // exists in `agent/v2/classifiers/hoarding.ts`, only in a comment there. SHIP-PREP removed
+  // the entry rather than the mechanism: there is no name-set left to police. Verified by
+  // command against the built module, not from the comment.
+  ['concurrency.TOOL_CATEGORY', keys(concurrency, 'concurrency', 'TOOL_CATEGORY')],
+  ['ack.SELF_ACKNOWLEDGING_TOOLS', iter(ack, 'ack', 'SELF_ACKNOWLEDGING_TOOLS')],
+  ['receipts.RECEIPT_TOOLS', keys(receipts, 'receipts', 'RECEIPT_TOOLS')],
+  ['sensei.SEND_TO_PEOPLE', iter(sensei, 'sensei', 'SEND_TO_PEOPLE')],
 ];
 const listErrors = [];
 for (const [label, names] of HAND_LISTS) {
+  if (names && names.__missing) {
+    listErrors.push(
+      `${label}: the export has VANISHED from the product (${names.__missing} is not exported). ` +
+      `Either the mechanism was retired — in which case delete this entry and say where — or a ` +
+      `rename slipped past. A gate must notice its own subject leaving.`,
+    );
+    continue;
+  }
   if (!Array.isArray(names) || names.length === 0) {
     listErrors.push(`${label}: could not read the list (import/shape problem).`);
     continue;
