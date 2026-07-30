@@ -2721,13 +2721,28 @@ export async function runV2Turn(agentId: string): Promise<void> {
               convKey: 'engine-steer',
               turnNumber,
             });
-            // C6: stamp a non-NULL conv_key sentinel ('engine-steer'). The steer is
-            // origin_kind='engine' with conv_key NULL, so getPendingEngineEvent (which
-            // selects conv_key-NULL engine rows) would return it → the drain fires an
-            // engine turn → which can mint ANOTHER steer → unbounded thrash-steer loop.
-            // A non-NULL conv_key makes it un-selectable as a pending event while still
-            // reaching the model (the EVENTS/awareness lane filters on origin_kind, not
-            // conv_key) and still rendering in the dashboard.
+            // C6 (as it was): stamp a non-NULL conv_key sentinel ('engine-steer'), because
+            // getPendingEngineEvent selected conv_key-NULL engine rows and would otherwise
+            // return this steer → the drain fires an engine turn → which can mint ANOTHER
+            // steer → unbounded thrash-steer loop.
+            //
+            // ⚠ PHASE-2 T10H — C6'S REQUIREMENT NOW LIVES SOMEWHERE THAT SURVIVES THE COLUMN.
+            // T9 moved the pending-event claim onto `served_by_turn`, which left this sentinel
+            // excluding nothing at NINE steer sites plus every awareness notice — silently,
+            // because the drain's engine arm logs nothing and only the wake-budget breaker at
+            // 30 ever spoke. The exclusion is `ENGINE_RIDER_INTENTS` now (see
+            // `memory/message-store.ts`), read off THIS row's `origin_intent`, complete by
+            // measurement and enforced against these very writers by
+            // `agent/v2/__tests__/engine-rider-never-drives-a-turn.test.ts`.
+            //
+            // The `convKey: 'engine-steer'` writes at all nine sites are RESIDUE for this job
+            // and are kept ONLY because `re-answer-guard.ts` and the dashboard's
+            // `isBackgroundTurnRow` still read the sentinels for a DIFFERENT job (engine
+            // chatter vs a human conversation). Those two need `conv_key`'s identity half
+            // re-pointed onto `conversation_id`, which T10H did not reach — so they are owed,
+            // named, and not deleted out from under a live reader.
+            // The steer still reaches the model (the EVENTS/awareness lane filters on `lane`,
+            // not `conv_key`) and still renders in the dashboard.
           } catch { /* best effort */ }
           logger.warn('v2: thrash gate activated for signature', {
             toolName: thrash.toolName, signature: thrash.signature,

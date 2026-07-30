@@ -73,12 +73,24 @@ export function postAgentNotice(opts: AgentNoticeOpts): string | null {
     // chat table where a forgetful downstream filter could leak it into human chat.
     // The merged tail loaders + assembler classify it into the EVENTS/awareness lane
     // byte-identically to the old `messages` row.
-    // conv_key sentinel 'engine-notice' (C6): a notice is role='user' origin_kind='engine',
-    // which is exactly the shape getPendingEngineEvent selects (conv_key-NULL engine rows) —
-    // without a non-NULL conv_key every awareness notice would be mistaken for a pending
-    // engine EVENT and drive a spurious engine turn. The sentinel keeps it out of the
-    // pending-event and human-waiting pools while it still surfaces in the EVENTS/awareness
-    // lane (which filters on origin_kind, not conv_key) and is excluded from compaction.
+    // ⚠ PHASE-2 T10H — THIS SENTINEL NO LONGER DOES THE JOB THIS COMMENT DESCRIBED, AND FOR A
+    // DAY NOTHING DID. The paragraph below used to read: "without a non-NULL conv_key every
+    // awareness notice would be mistaken for a pending engine EVENT and drive a spurious
+    // engine turn." That was true while `getPendingEngineEvent` selected on `conv_key IS NULL`.
+    // T9 correctly moved that claim onto `served_by_turn` and the sentinel stopped excluding
+    // anything — so every notice DID become a pending-event candidate, silently, until T10H
+    // gave the predicate `ENGINE_RIDER_INTENTS`. The exclusion now reads this row's
+    // `origin_intent`, which means the requirement no longer depends on a fake conversation key
+    // and survives `conv_key`'s deletion.
+    //
+    // The `convKey: 'engine-notice'` write below is therefore RESIDUE for the pending-event
+    // job — but it is NOT dead: `re-answer-guard.ts` and the dashboard's `isBackgroundTurnRow`
+    // still read the sentinels to tell engine chatter from a human conversation. Both of those
+    // readers need the column's IDENTITY half re-pointed (`conversation_id`), which is the
+    // migration T10H did NOT reach. So the write stays, named as owed, rather than being
+    // deleted out from under two live readers.
+    // It still surfaces in the EVENTS/awareness lane (which filters on `lane`, not `conv_key`)
+    // and is still excluded from compaction.
     insertEngineEventIfAbsent({
       work: null,
       id,

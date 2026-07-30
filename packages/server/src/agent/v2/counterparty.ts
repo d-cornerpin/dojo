@@ -22,6 +22,7 @@ import {
   sweepByReferent,
   sweepByRowid,
 } from '../../memory/message-store.js';
+import { ENGINE_RIDER_INTENTS_SQL } from './engine-riders.js';
 import { transition } from '../../work/store.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../../work/tracker-view.js';
 import { occurrenceRunStatus } from '../../work/occurrence-runs.js';
@@ -337,8 +338,8 @@ export const ENGINE_EVENT_EXPIRY_HOURS = 6;
 export const ENGINE_EVENT_BACKOFF_MINUTES = [1, 5, 15, 30, 60];
 
 // Deliverable engine events only: the same intent exclusions as getPendingEngineEvent
-// (thrash-gate steers / hints / system chatter never deliver, so they never expire
-// "loudly" either; the boot sweep disposes them silently as before).
+// (a RIDER never delivers, so it never expires "loudly" either; the boot sweep disposes them
+// silently as before).
 // T6: `origin_kind = 'engine'` became `lane = 'events'` — the same fact, CHECK-constrained
 // at the database instead of carried in a nullable free-text column. `origin_intent` stays
 // byte-identical: it is the SECOND axis (which subsystem produced this) and `lane` cannot
@@ -352,10 +353,14 @@ export const ENGINE_EVENT_BACKOFF_MINUTES = [1, 5, 15, 30, 60];
 // identity half and only that), and T6 named T9 its owner with T10 as backstop because
 // `conv_key` drops there. `served_by_turn` already means exactly "a turn took this", is
 // already stamped on this very row by the same turn, and has no second meaning to destroy.
+//
+// ⚠ PHASE-2 T10H — AND THAT RE-POINT LEFT A HOLE THE SENTINEL HAD BEEN COVERING: a three-value
+// literal against TEN rider writers, so 21 rider intents could drive turns of their own,
+// silently, for four sittings. Finding, measurements and shape argument: `engine-riders.ts`.
 const DELIVERABLE_ENGINE_EVENT_WHERE =
   `role = 'user' AND lane = 'events' AND served_by_turn IS NULL
    AND swept_at IS NULL
-   AND (origin_intent IS NULL OR origin_intent NOT IN ('thrash_gate', 'hint', 'system'))`;
+   AND (origin_intent IS NULL OR origin_intent NOT IN ${ENGINE_RIDER_INTENTS_SQL})`;
 
 // T6 — THE TWO-TABLE DISPATCH IS GONE. D-A step 4 split an engine event's home between
 // `messages` and `inter_agent_messages`, so every lifecycle read UNIONed both and tagged
@@ -575,10 +580,10 @@ export function getNextEngineEventRetryAt(agentId: string): number | null {
  * Re-home each such row to the new boundary so it survives the reset and gets its
  * turn in the fresh session. Scope is deliberately narrow so the reset-wipe
  * semantics hold and nothing already-answered is resurfaced:
- *   - only DELIVERABLE_ENGINE_EVENT_WHERE rows (lane='events', conv_key NULL,
- *     unswept, not a thrash-gate / hint / system steer): an already-claimed event
- *     (conv_key set, i.e. delivered) or ordinary human conversation (any other
- *     lane) is never touched, so a reset still wipes the chat as intended;
+ *   - only DELIVERABLE_ENGINE_EVENT_WHERE rows (lane='events', `served_by_turn` NULL,
+ *     unswept, not an ENGINE RIDER): an already-claimed event (`served_by_turn` set, i.e.
+ *     delivered) or ordinary human conversation (any other lane) is never touched, so a
+ *     reset still wipes the chat as intended. (This prose still said `conv_key`.)
  *   - only rows still inside the delivery lifecycle (under max attempts) and inside
  *     the 6-hour horizon, so an already-exhausted event is left to expire loudly,
  *     never revived.
