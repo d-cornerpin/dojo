@@ -674,6 +674,62 @@
       "why": "A NEW file past the 400-line cap, pinned so the addition is argued rather than noticed later \u2014 which is what the cap is for. It is 561 lines of which 169 are comment and 46 blank: 346 lines of code for research 06's whole C section (C9 the five clauses, C10 the priority-ordered repair, C11 the loud failure) plus the provider-boundary entry point and the divergence instrument. SPLITTING IT WAS CONSIDERED AND REFUSED: validate / repair / boundary are one subject \u2014 the repair re-runs the validation after every drop, and the boundary is the only caller of either \u2014 so three files would be three imports of one job, which is the disease this overhaul exists to delete. The comment weight is deliberate and load-bearing: it carries the measurement that decided the shape-vs-size line (73 real calls, 17 divergences, 0 of them size), the derivation of the detect window, and the grep recipes the day-7 flip decision is taken from. IT SHRINKS AT T4 STEP 2B ONLY IN THE SENSE THAT ITS COUNTERPARTS DO: the flip deletes ~118 lines of front-trimmer from `agent/model.ts`, which is what this file replaces."
     },
     {
+      "path": "packages/shared/src/markers.ts",
+      "from": 0,
+      "to": 286,
+      "by": "PHASE-3 T5 Step 1 (2026-08-01)",
+      "why": "A NEW file, PINNED DECREASE-ONLY at its birth count rather than left to drift to the 400-line cap \u2014 the stronger of the two remedies the growth detector offers, and the right one here because this file is a VOCABULARY and every future task will be tempted to add one more marker to it. It is THE marker taxonomy (research 06 E17): five families, each with an anchored and an unanchored matcher BUILT FROM ONE PREFIX ARRAY, so the two forms cannot drift apart the way summary-rebuild.ts's unanchored list and platform-noise.ts's anchored list already had. Roughly 150 of the 286 lines are the reasoning: what each family owns, why membership stays with the consumers (a New Session divider is user-visible to the display taxonomy and excluded by the summary filter - two questions), why the A2A legacy prefixes are deliberately split out of the platform half (folding them into platform-noise.ts would delete real vault memories), and the four measured drifts each matcher closes. Stripping that to hit a number would be the arithmetic-over-functionality move the owner ruled out on 2026-07-26. From here it may only shrink."
+    },
+    {
+      "path": "packages/shared/src/origin.ts",
+      "from": 235,
+      "to": 246,
+      "by": "PHASE-3 T5 Step 1 (2026-08-01)",
+      "why": "+11 and PINNED DECREASE-ONLY, having crossed the growth detector's 240-line early-warning line. The growth is the marker-taxonomy import block and the comment recording what the three re-declarations it replaces actually cost: the A2A envelope's thread capture was correct HERE and wrong in four other files; the legacy source regex knew only AGENT MESSAGE, so GROUP BROADCAST and PM AGENT POKE fell past the agent branch; and ENGINE_PREFIXES matched with startsWith, so '[System note:' matched neither '[System:' (colon required) nor '[SYSTEM' (case-sensitive) and classified engine scaffolding as the owner's own words. Pinned rather than re-recorded because this file is the attribution authority and OR4 makes its size worth arguing about."
+    },
+    {
+      "path": "packages/server/src/memory/summary-rebuild.ts",
+      "from": 428,
+      "to": 433,
+      "by": "PHASE-3 T5 Step 1 (2026-08-01)",
+      "why": "ONE MARKER TAXONOMY (research 06 E17/E18). Six files pay a small import + pointer cost so that five marker FAMILIES stop being spelled seven ways. What was deleted does not show up in these counts because it was deleted from OTHER files or replaced in place: two byte-identical A2A alternations one /i flag apart, three inlined hex-only envelope regexes, two re-declared fresh-read sentinels plus two inlined literals, two copies of the fresh-read extractor regex, an eight-entry hand-written [SOURCE: ...] anchor list and its unanchored near-twin. The residual growth in each file below is its IMPORT STATEMENT plus a one- or two-line pointer; the explanations live once, in packages/shared/src/markers.ts. +5: the two-line import, plus the note recording that this file's contamination list was an accidental superset in one direction (bare 'PM AGENT POKE') and a subset in the other (missing '[SOURCE: ENGINE'), and that the bare poke form is KEPT on purpose so a legacy row with no sender still counts."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 1951,
+      "to": 1953,
+      "by": "PHASE-3 T5 Step 1 (2026-08-01)",
+      "why": "ONE MARKER TAXONOMY (research 06 E17/E18). Six files pay a small import + pointer cost so that five marker FAMILIES stop being spelled seven ways. What was deleted does not show up in these counts because it was deleted from OTHER files or replaced in place: two byte-identical A2A alternations one /i flag apart, three inlined hex-only envelope regexes, two re-declared fresh-read sentinels plus two inlined literals, two copies of the fresh-read extractor regex, an eight-entry hand-written [SOURCE: ...] anchor list and its unanchored near-twin. The residual growth in each file below is its IMPORT STATEMENT plus a one- or two-line pointer; the explanations live once, in packages/shared/src/markers.ts. +2: the import, and one line saying the 8 in threadId.slice(0, 8) is the MARKER's shape rather than this function's opinion - the readers slice the same number out of the same envelope."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9601,
+      "to": 9603,
+      "by": "PHASE-3 T5 Step 1 (2026-08-01)",
+      "why": "ONE MARKER TAXONOMY (research 06 E17/E18). Six files pay a small import + pointer cost so that five marker FAMILIES stop being spelled seven ways. What was deleted does not show up in these counts because it was deleted from OTHER files or replaced in place: two byte-identical A2A alternations one /i flag apart, three inlined hex-only envelope regexes, two re-declared fresh-read sentinels plus two inlined literals, two copies of the fresh-read extractor regex, an eight-entry hand-written [SOURCE: ...] anchor list and its unanchored near-twin. The residual growth in each file below is its IMPORT STATEMENT plus a one- or two-line pointer; the explanations live once, in packages/shared/src/markers.ts. +2: the import, and the fresh-read extractor becoming a call. The regex it replaced was byte-identical to memory/assembler.ts's copy."
+    },
+    {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1289,
+      "to": 1291,
+      "by": "PHASE-3 T5 Step 1 (2026-08-01)",
+      "why": "ONE MARKER TAXONOMY (research 06 E17/E18). Six files pay a small import + pointer cost so that five marker FAMILIES stop being spelled seven ways. What was deleted does not show up in these counts because it was deleted from OTHER files or replaced in place: two byte-identical A2A alternations one /i flag apart, three inlined hex-only envelope regexes, two re-declared fresh-read sentinels plus two inlined literals, two copies of the fresh-read extractor regex, an eight-entry hand-written [SOURCE: ...] anchor list and its unanchored near-twin. The residual growth in each file below is its IMPORT STATEMENT plus a one- or two-line pointer; the explanations live once, in packages/shared/src/markers.ts. +2: the import plus its note. This file's A2A_INBOUND_MARKER_RE carried /i and assembler.ts's identical alternation did not - research 06 section 5's seed pair. Its own comment already PROMISED the two matched; the import is what makes the promise true."
+    },
+    {
+      "path": "packages/server/src/techniques/tools.ts",
+      "from": 890,
+      "to": 892,
+      "by": "PHASE-3 T5 Step 1 (2026-08-01)",
+      "why": "ONE MARKER TAXONOMY (research 06 E17/E18). Six files pay a small import + pointer cost so that five marker FAMILIES stop being spelled seven ways. What was deleted does not show up in these counts because it was deleted from OTHER files or replaced in place: two byte-identical A2A alternations one /i flag apart, three inlined hex-only envelope regexes, two re-declared fresh-read sentinels plus two inlined literals, two copies of the fresh-read extractor regex, an eight-entry hand-written [SOURCE: ...] anchor list and its unanchored near-twin. The residual growth in each file below is its IMPORT STATEMENT plus a one- or two-line pointer; the explanations live once, in packages/shared/src/markers.ts. +2: the re-export plus the import. This file DECLARED TECHNIQUE_FRESH_SENTINEL and was imported by nobody while four other sites re-declared or inlined the literal; its own header said not to change the sentinel without grepping for every consumer, which is the instruction that does not scale."
+    },
+    {
+      "path": "packages/server/src/vault/tools.ts",
+      "from": 608,
+      "to": 609,
+      "by": "PHASE-3 T5 Step 1 (2026-08-01)",
+      "why": "ONE MARKER TAXONOMY (research 06 E17/E18). Six files pay a small import + pointer cost so that five marker FAMILIES stop being spelled seven ways. What was deleted does not show up in these counts because it was deleted from OTHER files or replaced in place: two byte-identical A2A alternations one /i flag apart, three inlined hex-only envelope regexes, two re-declared fresh-read sentinels plus two inlined literals, two copies of the fresh-read extractor regex, an eight-entry hand-written [SOURCE: ...] anchor list and its unanchored near-twin. The residual growth in each file below is its IMPORT STATEMENT plus a one- or two-line pointer; the explanations live once, in packages/shared/src/markers.ts. +1, and it is the import line. The inline literal it replaces was on an existing line."
+    },
+    {
       "path": "packages/server/src/memory/assembly-validation.ts",
       "from": 561,
       "to": 576,
@@ -714,7 +770,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1381,
-    "packages/server/src/agent/a2a-transport.ts": 1951,
+    "packages/server/src/agent/a2a-transport.ts": 1953,
     "packages/server/src/agent/browser.ts": 412,
     "packages/server/src/agent/destructive-gate.ts": 552,
     "packages/server/src/agent/model.ts": 2742,
@@ -726,7 +782,7 @@
     "packages/server/src/agent/tools.ts": 10484,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9601,
+    "packages/server/src/agent/v2/loop.ts": 9603,
     "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/state.ts": 703,
@@ -751,12 +807,12 @@
     "packages/server/src/healer/injury-recovery.ts": 810,
     "packages/server/src/index.ts": 1172,
     "packages/server/src/memory/assembler.ts": 2638,
-    "packages/server/src/memory/compaction.ts": 1289,
+    "packages/server/src/memory/compaction.ts": 1291,
     "packages/server/src/memory/lanes.ts": 649,
     "packages/server/src/memory/message-store.ts": 980,
     "packages/server/src/memory/recall.ts": 510,
     "packages/server/src/memory/retrieval.ts": 591,
-    "packages/server/src/memory/summary-rebuild.ts": 428,
+    "packages/server/src/memory/summary-rebuild.ts": 433,
     "packages/server/src/microsoft/auth.ts": 623,
     "packages/server/src/microsoft/tools-office.ts": 3446,
     "packages/server/src/microsoft/tools-read.ts": 1604,
@@ -780,7 +836,7 @@
     "packages/server/src/techniques/share-export.ts": 464,
     "packages/server/src/techniques/share-import.ts": 412,
     "packages/server/src/techniques/store.ts": 609,
-    "packages/server/src/techniques/tools.ts": 890,
+    "packages/server/src/techniques/tools.ts": 892,
     "packages/server/src/tools/unified-read.ts": 753,
     "packages/server/src/tracker/pm-agent.ts": 2090,
     "packages/server/src/tracker/schema.ts": 1155,
@@ -791,13 +847,15 @@
     "packages/server/src/vault/maintenance.ts": 2163,
     "packages/server/src/vault/retrieval.ts": 450,
     "packages/server/src/vault/store.ts": 1205,
-    "packages/server/src/vault/tools.ts": 608,
+    "packages/server/src/vault/tools.ts": 609,
     "packages/server/src/voice/hume-engine.ts": 605,
     "packages/server/src/voice/model-manager.ts": 583,
     "packages/server/src/voice/stt-service.ts": 538,
     "packages/server/src/voice/voice-ws.ts": 2299,
     "packages/server/src/work/store.ts": 1665,
     "packages/shared/src/types.ts": 508,
+    "packages/shared/src/markers.ts": 286,
+    "packages/shared/src/origin.ts": 246,
     "packages/shared/src/visibility.ts": 865,
     "packages/shared/src/ws.ts": 1082,
     "watchdog/src/index.ts": 1198,
