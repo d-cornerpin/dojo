@@ -144,6 +144,7 @@ import {
 // review (see "Engine-injected ack, DISABLED" comment below).
 import { isForwardPromiseReply, pickA2AHandoffAck } from './ack-copy.js';
 import { findCrossConvReAnswer } from './re-answer-guard.js';
+import { recordReAnswerCheck } from './re-answer-sink.js';
 import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD } from '../../memory/compaction.js';
 import { estimateTokens } from '../../memory/budget.js';
@@ -6208,6 +6209,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
           chosenConvKey !== 'engine'
         ) {
           const reAnswer = findCrossConvReAnswer(db, agentId, persistedContent, chosenConvKey ?? null);
+          // PHASE-3 T7 Step 2 — THE QUIET WINDOW'S DURABLE EVIDENCE. Every check is
+          // recorded, matched or not, so the file carries a DENOMINATOR and "quiet" is
+          // distinguishable from "never ran" (roadmap #15). The `logger.warn` below stays
+          // for the live-tail reader; it is not the window's evidence, because the file it
+          // writes to retains minutes (see `re-answer-sink.ts`'s header for the measurement).
+          // Behaviour is untouched: this records, it does not decide.
+          recordReAnswerCheck({
+            agentId,
+            turnNumber,
+            convKey: chosenConvKey ?? null,
+            match: reAnswer,
+            replyChars: persistedContent.trim().length,
+          });
           if (reAnswer) {
             // LOG-ONLY, deliberately (2026-07-10). The steer version of this
             // floor false-positived on legitimately similar recurring content
