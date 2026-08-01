@@ -826,6 +826,13 @@
       "to": 9613,
       "by": "PHASE-3 T7 Step 2 (2026-08-01)",
       "why": "+14 for the quiet window's DURABLE record: an import and one `recordReAnswerCheck({...})` call beside the detector that has been log-only since 2026-07-10, plus the six comment lines saying why the `logger.warn` under it is no longer the window's evidence. The sink itself is a new module (`agent/v2/re-answer-sink.ts`, 220 lines, pinned from birth). Net against T7's own starting pin of 9609: +4 — Step 1 took 10 lines OUT of this file when the registry-exempt pending-question block became a lane call. The window it opens is what licenses deleting the SETTLED_HINT, the settled-HOLD carve-outs and the echo rows, all of which live in THIS file: this is 14 lines borrowed against a much larger strip, with the strip's own date on it (research 18 §open-1)."
+    },
+    {
+      "path": "packages/server/src/agent/v2/receipt.ts",
+      "from": 399,
+      "to": 433,
+      "by": "PHASE-3 T7 (2026-08-01)",
+      "why": "THIS FILE WAS NEVER PINNED and sat at 399 — ONE LINE under the 400-line new-file cap, so the first honest addition to it was always going to trip the gate. It is pinned here at its real count, which is what the gate asks for in its own refusal message. The +34: `lane.deliveries` is the SECOND lane the assembler declares and the loop fills, so T6's `withMeasuredLoopTail` (which exists because the assembler's report can only say 'did not fire' about a lane it does not emit) becomes a two-lane split — the deliveries message is measured against ITS 316-token reserve and taken OUT of the loop tail's, because the same tokens billed against two reserves is a number in the receipt that never happened. FOUND LIVE: the first real turn carrying the lane printed `post-budget lane did not fire on this turn` while the rendered message sat six rows below it in the same receipt. Also in the +34: `RECEIPTS_ROOT` became a per-call resolution, because a module-load constant ignores a test's redirected HOME and wrote into the real ~/.dojo — the rule both durable sinks already follow."
     }
   ],
   "maxNewFileLines": 400,
@@ -901,6 +908,7 @@
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/deliveries-lane.ts": 240,
     "packages/server/src/agent/v2/re-answer-sink.ts": 220,
+    "packages/server/src/agent/v2/receipt.ts": 433,
     "packages/server/src/memory/summary-rebuild.ts": 460,
     "packages/server/src/microsoft/auth.ts": 623,
     "packages/server/src/microsoft/tools-office.ts": 3446,
