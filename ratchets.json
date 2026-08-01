@@ -819,6 +819,13 @@
       "to": 524,
       "by": "PHASE-3 T7 (2026-08-01)",
       "why": "+19 for ONE registry entry, `msg.deliveries` at slot 1860 — 14 of them its `reason` field, which is where this registry records why an injection exists and what it replaced (the cross-conversation echo ROW duplication and the registry-exempt pending-question header). The render is a one-line payload pass-through, the same shape as `msg.technique-strong`, `msg.pending-nudge` and `msg.delegation-hint`: the content is computed where the in-flight array is, the DECLARATION lives here. Emitting through the registry is what makes T6's lane tagging automatic, so the alternative to these 19 lines is a second door into the message array."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9599,
+      "to": 9613,
+      "by": "PHASE-3 T7 Step 2 (2026-08-01)",
+      "why": "+14 for the quiet window's DURABLE record: an import and one `recordReAnswerCheck({...})` call beside the detector that has been log-only since 2026-07-10, plus the six comment lines saying why the `logger.warn` under it is no longer the window's evidence. The sink itself is a new module (`agent/v2/re-answer-sink.ts`, 220 lines, pinned from birth). Net against T7's own starting pin of 9609: +4 — Step 1 took 10 lines OUT of this file when the registry-exempt pending-question block became a lane call. The window it opens is what licenses deleting the SETTLED_HINT, the settled-HOLD carve-outs and the echo rows, all of which live in THIS file: this is 14 lines borrowed against a much larger strip, with the strip's own date on it (research 18 §open-1)."
     }
   ],
   "maxNewFileLines": 400,
@@ -859,7 +866,7 @@
     "packages/server/src/agent/tools.ts": 10484,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9599,
+    "packages/server/src/agent/v2/loop.ts": 9613,
     "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/state.ts": 703,
@@ -893,6 +900,7 @@
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/deliveries-lane.ts": 240,
+    "packages/server/src/agent/v2/re-answer-sink.ts": 220,
     "packages/server/src/memory/summary-rebuild.ts": 460,
     "packages/server/src/microsoft/auth.ts": 623,
     "packages/server/src/microsoft/tools-office.ts": 3446,
