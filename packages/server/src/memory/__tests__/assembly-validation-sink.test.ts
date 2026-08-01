@@ -94,12 +94,28 @@ async function boundary(messages: ValidatedMessage[], contextWindow = 8_000) {
   });
 }
 
+/**
+ * PHASE-3 T4 Step 2b (2026-08-01): the mode is `'repair'`, so a divergent boundary call no
+ * longer returns — it repairs or it THROWS, and `boundary()` supplies no lane map, so the
+ * oversized fixture takes C10's refusal. The sink's subject is unchanged and the clauses
+ * below get STRONGER for it: they now prove the durable line is on disk on the throwing
+ * path, which is what `validateAtProviderBoundary`'s "the DURABLE half FIRST" comment
+ * claims and what a day-7 read depends on. A sink that only wrote on the returning path
+ * would lose exactly the incidents worth having.
+ */
+async function boundaryThatFails(messages: ValidatedMessage[], contextWindow = 8_000) {
+  let threw = false;
+  try { await boundary(messages, contextWindow); } catch { threw = true; }
+  expect(threw).toBe(true);
+}
+
 // ════════ 1. the sink exists and captures a real divergence ════════
 
 describe('the durable divergence sink', () => {
   it('1. a divergent call at the provider boundary lands one JSON line on disk', async () => {
-    const result = await boundary(oversized());
-    expect(result.ok).toBe(false);
+    // repair mode: this call THROWS (C10 refusal — no lane map). The line must already be
+    // on disk when it does, or the loudest incidents would be the ones the window loses.
+    await boundaryThatFails(oversized());
 
     const p = assemblyValidationSinkPath();
     expect(fs.existsSync(p)).toBe(true);
@@ -119,16 +135,16 @@ describe('the durable divergence sink', () => {
   });
 
   it('3. it is APPEND-ONLY: a second divergence adds a line and leaves the first byte-identical', async () => {
-    await boundary(oversized());
+    await boundaryThatFails(oversized());
     const first = fs.readFileSync(assemblyValidationSinkPath(), 'utf8');
-    await boundary(oversized());
+    await boundaryThatFails(oversized());
     const both = fs.readFileSync(assemblyValidationSinkPath(), 'utf8');
     expect(both.startsWith(first)).toBe(true);
     expect(both.trim().split('\n')).toHaveLength(2);
   });
 
   it('4. the record carries what the day-7 read needs, INCLUDING its own denominator', async () => {
-    await boundary(oversized());
+    await boundaryThatFails(oversized());
     const [rec] = readAssemblyValidationSink(assemblyValidationSinkPath());
     // when
     expect(typeof rec.at).toBe('string');
@@ -150,10 +166,10 @@ describe('the durable divergence sink', () => {
   });
 
   it('5. it SURVIVES a process restart, which the in-process counters deliberately do not', async () => {
-    await boundary(oversized());
+    await boundaryThatFails(oversized());
     // a restart is exactly this: the module counters go to zero, the file does not
     __resetAssemblyValidationCounters();
-    await boundary(oversized());
+    await boundaryThatFails(oversized());
     const recs = readAssemblyValidationSink(assemblyValidationSinkPath());
     expect(recs).toHaveLength(2);
     // and the second record's own denominator restarted at 1 — which is WHY the pid is on

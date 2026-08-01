@@ -112,11 +112,18 @@ export const CONTEXT_BLOCK_THRESHOLD = 0.99;
 /**
  * THE OUTPUT HALF OF THE RESERVE. **DERIVED, and here is the derivation** (PHASE-3 T4).
  *
- * It is not a number this module chose. It is `agent/model.ts`'s own
+ * It is not a number this module chose. It WAS `agent/model.ts`'s own
  * `minOutputReserve = 4096` — the Anthropic transport's declared floor, the STRICTER of the
- * two the tree already enforces (the OpenAI path declares 1,024). Reserving less than the
- * transport itself demands would guarantee the transport re-trims whatever the assembler
- * admitted, which is the two-authorities defect this phase exists to close.
+ * two the tree then enforced (the OpenAI path declared 1,024). Reserving less than the
+ * transport itself demanded would have guaranteed the transport re-trimming whatever the
+ * assembler admitted, which is the two-authorities defect this phase exists to close.
+ *
+ * PHASE-3 T4 STEP 2B (2026-08-01) CLOSED IT, AND THIS IS NOW THE ONLY DECLARATION. Both
+ * front-trimmers are deleted, so `minOutputReserve` no longer exists in `agent/model.ts` and
+ * this constant is not a copy of anything — it is the number itself, with its derivation
+ * (below) attached. The provenance above is kept rather than tidied away: 4,096 is not an
+ * arbitrary reserve, it is the floor a real transport demanded, and a later worker who reads
+ * only "4096" without that history is one step from re-tuning it on taste.
  *
  * CHECKED against reality rather than assumed, because a floor inherited from one transport
  * is still a claim about what a model emits (#14). Measured on the dev body,

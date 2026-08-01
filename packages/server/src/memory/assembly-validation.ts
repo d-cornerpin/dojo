@@ -24,14 +24,26 @@
 //       falling back to oldest-first, because the fallback IS the mechanism being deleted.
 //   C11 unrepairable is a THROW (`AssemblyValidationError`), never a warning.
 //
-// ── THE MODE, AND WHY IT IS DETECT TODAY ────────────────────────────────────────────────
-// `ASSEMBLY_VALIDATION_MODE` is `'detect'` for a dated 7-calendar-day window (PHASE-3 T4
-// Step 2's AS-BUILT note carries the literal start date and SHA). In detect mode the
-// validator LOGS divergence and the call proceeds — the front-trimmers are still the
-// surviving ceiling backstop and T4's sequencing rider forbids deleting them while this is
-// only detecting. On day 7 ONE constant below flips to `'repair'` and both front-trimmers
-// are deleted IN THE SAME COMMIT (T4 Step 2b). Coupled, never separate: repair without the
-// deletion is two authorities; deletion without repair is no authority at all.
+// ── THE MODE, AND WHY IT IS REPAIR (PHASE-3 T4 Step 2b, 2026-08-01) ─────────────────────
+// `ASSEMBLY_VALIDATION_MODE` was `'detect'` from 2026-07-31 (`b6699c9`). The owner CANCELLED
+// the 7-calendar-day window on 2026-08-01 ("on the dev box, elapsed time is not evidence —
+// driven traffic is") and replaced the date with an evidence threshold, refusal-shaped: run
+// the phase's union OR8 set through the detect-mode validator and flip only if NO new
+// divergence class appears.
+//
+// THE EVIDENCE THE FLIP RESTS ON, all measured, none inherited:
+//   • day 0 (2026-07-31, `b6699c9`): 73 real calls, 17 divergent, **0 of them budget** — two
+//     SHAPE classes, both root-caused and FIXED at T6 (`efc949c`);
+//   • the durable sink `~/.dojo/logs/assembly-validation.jsonl` has held **2 lines since**,
+//     and both PREDATE the fix commits;
+//   • the driven pre-flip arm (2026-08-01, `1d112ad`, one process): **checked=63 diverged=0**,
+//     9/9 scenarios GREEN, **zero new sink lines and no new divergence class**.
+// Both front-trimmers are deleted IN THIS SAME COMMIT. Coupled, never separate: repair
+// without the deletion is two authorities; deletion without repair is no authority at all.
+//
+// The `'detect'` value is KEPT on the type, and the branch below with it. It is the revert
+// path for one constant, which is what made this flip a one-line decision in the first place;
+// PHASE-3 T9's exit gate asserts `'repair'`, so it cannot rot back to detecting unnoticed.
 //
 // ── WHAT THIS MODULE DELIBERATELY DOES NOT DO ───────────────────────────────────────────
 // It does not repair SHAPE. Orphan tool blocks are `sanitizeOrphanToolBlocks`'s job and it
@@ -58,12 +70,12 @@ export type ValidatedMessage = {
 export type AssemblyValidationMode = 'detect' | 'repair';
 
 /**
- * THE MODE. `'detect'` until T4 Step 2b's dated flip; `'repair'` after it, in the same
- * commit that deletes both provider front-trimmers. PHASE-3 T9's exit gate asserts
- * `'repair'`, and `assembly-validation.test.ts` pins whichever value is current so the flip
- * is a one-line change with a test that notices it.
+ * THE MODE. `'repair'` since PHASE-3 T4 Step 2b (2026-08-01), in the same commit that
+ * deleted both provider front-trimmers. PHASE-3 T9's exit gate asserts `'repair'`, and
+ * `assembly-validation.test.ts` pins whichever value is current so a change here is a
+ * one-line change with a test that notices it.
  */
-export const ASSEMBLY_VALIDATION_MODE: AssemblyValidationMode = 'detect';
+export const ASSEMBLY_VALIDATION_MODE: AssemblyValidationMode = 'repair';
 
 export type ViolationCode =
   | 'empty-assembly'
@@ -337,23 +349,44 @@ export function repairAssembly(
 
   const sizeViolation = before.violations.some((v) => v.code === 'budget-exceeded');
   if (!sizeViolation) {
-    // ── SHAPE-ONLY: reported, never thrown, and this boundary is exactly where that line
-    // is drawn (PHASE-3 T4, decided ON MEASUREMENT rather than in the abstract) ──
+    // ── SHAPE-ONLY: ENFORCING since PHASE-3 T4 Step 2b (2026-08-01), and the line moved on
+    // EVIDENCE, exactly as it was drawn on evidence in the first place ──
     //
-    // C11's "fail loud, never warn-and-send" names ONE mechanism: the Anthropic
-    // front-trimmer that, when the array is STILL over the limit after trimming, logs a
-    // warning and sends anyway. Its subject is SIZE. Killing a turn over a SHAPE defect
-    // this validator did not create, and that the provider in front of it tolerates today,
-    // would be a brand-new authority nobody asked for.
+    // T4 made shape report-only, and it was right to: the first live detect run
+    // (2026-07-31, 73 real calls) produced 17 divergences, **0 of them size**, every one
+    // shape, and 17/17 came from TWO PRODUCT DEFECTS this validator did not create —
+    // `sanitizeOrphanToolBlocks` repairing one orphan direction and creating the other
+    // (14), and the PM path skipping `applyIntegrityPass` (3). Throwing then would have
+    // killed 23% of turns over pre-existing faults.
     //
-    // The measurement that settled it, from the first live detect run (2026-07-31, 73 real
-    // calls through the OR8 set): 17 divergences, **0 of them size**, and every one shape —
-    // 14 `tool-result-without-use` each preceded WITHIN THE SAME SECOND by
-    // `sanitizeOrphanToolBlocks`'s own "Stripped orphan tool_use blocks" line, plus 3 on
-    // the PM. Had this thrown, the flip would have killed 23% of turns on day 7 over
-    // defects that pre-date it. Both have named owners and are in the issues log; the flip's
-    // precondition is that they read ZERO, not that this function shouts louder.
-    return { messages: [...messages], droppedLaneIds: [], before, after: before };
+    // BOTH DEFECTS WERE ROOT-CAUSED AND FIXED AT T6 (`efc949c`), and the measurement after
+    // them is what licenses this: the durable sink has taken **zero** new lines since, and
+    // the driven pre-flip arm at `1d112ad` read **checked=63 diverged=0** across the union
+    // OR8 set. The 23% is 0%.
+    //
+    // Why THROW rather than keep reporting: this module does not repair shape BY DESIGN
+    // (see the header — orphan blocks are `sanitizeOrphanToolBlocks`'s job, and a second
+    // repairer would be the duplicate mechanism this phase exists to delete). A shape
+    // violation that reaches this line has therefore survived `sanitizeOrphanToolBlocks`,
+    // `applyIntegrityPass` AND both T6 fixes, which makes it UNREPAIRABLE here and unknown
+    // everywhere — and "unrepairable is a loud failure, never warn-and-send" is C11's own
+    // clause, restored. Anthropic answers these shapes with a 400 regardless, so sending
+    // anyway does not save the turn; it only trades a local failure that names the defect
+    // for an opaque provider error that does not.
+    //
+    // The revert is the SAME one constant the mode is: set `ASSEMBLY_VALIDATION_MODE` back
+    // to `'detect'` and nothing here can throw. T9's full battery is the large-denominator
+    // confirmation with repair live; a shape throw there is a finding with a named owner,
+    // which is the outcome this line exists to produce.
+    throw new AssemblyValidationError(
+      `assembly has a SHAPE violation this validator cannot repair${who}: ` +
+        `${before.violations.map((v) => `${v.code}: ${v.detail}`).join(' | ')}. ` +
+        `Shape is repaired upstream (sanitizeOrphanToolBlocks, applyIntegrityPass); a ` +
+        `violation surviving to the provider boundary is an unknown defect, and the ` +
+        `provider answers it with a 400 anyway. Failing loud here names it (C11).`,
+      before.violations,
+      [],
+    );
   }
 
   const laneIds = opts.laneIds;
@@ -554,9 +587,10 @@ export async function validateAtProviderBoundary(
     input.agentId,
   );
 
-  // DETECT ONLY, for the dated window in T4 Step 2's AS-BUILT note: send anyway. The
-  // deliberate no-op is the whole point of the window — it measures what repair mode WOULD
-  // have done before repair mode is allowed to do it.
+  // DETECT: send anyway. This was the dated window's deliberate no-op (2026-07-31 →
+  // 2026-08-01), and it is kept as the ONE-CONSTANT REVERT PATH for the flip above — the
+  // property that let Step 2b be a one-line decision rather than a re-write. T9's exit gate
+  // asserts `'repair'`, so this branch cannot quietly become the resting state again.
   if (ASSEMBLY_VALIDATION_MODE === 'detect') return result;
 
   // Repair mode: fix the array the transports are about to read, or throw (C11). The throw

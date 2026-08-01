@@ -1213,83 +1213,19 @@ async function callOpenAIModel(
   // o-series models use max_completion_tokens, others use max_tokens
   const isReasoningModel = modelInfo.apiModelId.match(/^o[1-4]/);
 
-  // Estimate input tokens to cap output so we don't exceed context window.
-  // PHASE-3 T2: the ONE estimator. Was /3 "conservative"; measured over 1,409 real calls
-  // the truth is 3.9 chars/token, so /3 over-costed input ~30%. See memory/budget.ts.
-  const inputEstimate = openaiMessages.reduce((sum, m) => {
-    const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
-    return sum + estimateTokens(content);
-  }, 0) + estimateTokens(JSON.stringify(openaiTools ?? []));
-
-  // Hard guard: if the input alone exceeds the context window (minus a
-  // minimum output reservation), trim the oldest messages until it fits.
-  // OpenAI-compatible providers (MiniMax, OpenRouter, etc.) reject
-  // over-limit requests outright, unlike Anthropic which auto-truncates.
-  // Keep at least the system message (index 0) and the most recent user
-  // message (last index); trim from the middle outward.
-  const minOutputReserve = 1024;
-  const hardCeiling = modelInfo.contextWindow - minOutputReserve;
-  if (inputEstimate > hardCeiling && openaiMessages.length > 2) {
-    logger.warn('Input exceeds context window, trimming oldest messages to fit', {
-      inputEstimate,
-      contextWindow: modelInfo.contextWindow,
-      messageCount: openaiMessages.length,
-    }, agentId);
-
-    // Preserve the system message (first) and the most recent messages.
-    // Drop from index 1 forward (oldest conversation messages) until we're
-    // under the ceiling. Each dropped message reclaims its estimated tokens.
-    //
-    // IMPORTANT: After dropping, clean up orphaned tool messages. When we
-    // drop an assistant message with tool_calls, the subsequent role='tool'
-    // messages reference tool_call_ids that no longer exist. And vice versa:
-    // dropping a role='tool' message leaves the assistant's tool_calls
-    // dangling. OpenAI-compatible providers reject both cases.
-    let currentEstimate = inputEstimate;
-    while (currentEstimate > hardCeiling && openaiMessages.length > 2) {
-      const dropped = openaiMessages.splice(1, 1)[0];
-      const droppedTokens = estimateTokens(
-        (typeof dropped.content === 'string' ? dropped.content : JSON.stringify(dropped.content ?? '')),
-      );
-      currentEstimate -= droppedTokens;
-
-      // After dropping, walk forward from index 1 stripping orphans:
-      // - role='tool' messages whose tool_call_id has no matching assistant
-      // - assistant messages with tool_calls whose IDs have no matching tool message
-      while (openaiMessages.length > 2) {
-        const first = openaiMessages[1] as unknown as Record<string, unknown>; // index 0 is system
-        if (!first) break;
-        if (first.role === 'tool') {
-          // Orphan tool result, its assistant was just dropped
-          const toolTokens = estimateTokens(
-            (typeof first.content === 'string' ? first.content : JSON.stringify(first.content ?? '')),
-          );
-          openaiMessages.splice(1, 1);
-          currentEstimate -= toolTokens;
-          continue;
-        }
-        if (first.role === 'assistant' && Array.isArray(first.tool_calls)) {
-          // Assistant with tool_calls at the front, check if next message
-          // is the matching tool result. If not, drop this assistant too.
-          const next = openaiMessages[2] as unknown as Record<string, unknown> | undefined;
-          if (!next || next.role !== 'tool') {
-            const astTokens = estimateTokens(
-              (typeof first.content === 'string' ? first.content : JSON.stringify(first.content ?? '')),
-            );
-            openaiMessages.splice(1, 1);
-            currentEstimate -= astTokens;
-            continue;
-          }
-        }
-        break;
-      }
-    }
-
-    logger.info('Trimmed context to fit', {
-      newEstimate: currentEstimate,
-      remainingMessages: openaiMessages.length,
-    }, agentId);
-  }
+  // ── THE OPENAI FRONT-TRIMMER IS DELETED (PHASE-3 T4 Step 2b, 2026-08-01) ──
+  // STRIP. It was `model.ts:1224-1292` at `1d112ad`: a `splice(1, 1)` loop that deleted the
+  // OLDEST conversation messages until the input fit, plus its own orphan repair.
+  // requirement preserved: NEVER EXCEED THE PROVIDER'S WINDOW. That requirement now belongs
+  // upstream and it is enforced IN PRIORITY ORDER instead of oldest-first — the allocator
+  // budgets against `contextWindowPolicy` (memory/budget.ts) and `validateAssembly` /
+  // `repairAssembly` (memory/assembly-validation.ts) check and repair at this same boundary,
+  // dropping the LOWEST-PRIORITY lane and throwing when nothing droppable is left (C10/C11).
+  // What this deletion actually removes is the INVERSION: a front-trimmer only knows slot
+  // order, so it ate `lane.scratchpad` (priority 20) while keeping `lane.events` (40) — the
+  // owner's directive going out of the window before the morning briefing did.
+  // Measured before deleting: day-0 detect run 73 calls / **0 budget violations**; the driven
+  // pre-flip arm at `1d112ad` **checked=63 diverged=0**. The trimmer had nothing to trim.
 
   // Reserve at most 25% of context for output, or whatever's left after input
   const finalInputEstimate = openaiMessages.reduce((sum, m) => {
@@ -2305,58 +2241,29 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
 
   const systemTokenEstimate = estimateTokens(systemPrompt);
 
-  // Hard cap: input (system + messages + tools) must leave room for output
-  const minOutputReserve = 4096;
-  const hardInputLimit = modelInfo.contextWindow - minOutputReserve;
-  let inputEstimate = systemTokenEstimate + estimateMessageTokens(anthropicMessages) + toolTokenEstimate;
+  // ── THE ANTHROPIC FRONT-TRIMMER IS DELETED (PHASE-3 T4 Step 2b, 2026-08-01) ──
+  // STRIP. It was `model.ts:2244-2292` at `1d112ad`: `minOutputReserve = 4096`, a
+  // `hardInputLimit`, a `splice(0, 1)` loop deleting the OLDEST messages until the input
+  // fit, its own leading-`tool_result` repair, and — the part requirement C11 names by
+  // name — a final `logger.warn('Input still exceeds context window after trimming')`
+  // that then SENT ANYWAY.
+  // requirement preserved: NEVER EXCEED THE PROVIDER'S WINDOW, and never send an array that
+  // does. Both halves now live upstream and both are stronger: the allocator budgets against
+  // `contextWindowPolicy` (memory/budget.ts), and `validateAssembly`/`repairAssembly`
+  // (memory/assembly-validation.ts) run at THIS boundary in `'repair'` mode — repairing in
+  // PRIORITY order (lowest lane first, C10) and THROWING when nothing droppable is left
+  // (C11). Warn-and-send has no expression left in the tree.
+  // Measured before deleting: day-0 detect run 73 calls / **0 budget violations**; the driven
+  // pre-flip arm at `1d112ad` **checked=63 diverged=0**. On real traffic this loop never ran.
+  const inputEstimate = systemTokenEstimate + estimateMessageTokens(anthropicMessages) + toolTokenEstimate;
 
-  // If over budget, drop oldest messages (after any briefing/vault/summary preamble)
-  // Keep at least the last 4 messages so the agent has immediate context
-  while (inputEstimate > hardInputLimit && anthropicMessages.length > 4) {
-    anthropicMessages.splice(0, 1);
-    // After trimming, walk forward until we land on a valid first message.
-    // Two invariants to enforce: (1) first message must be role=user, and
-    // (2) that user message must not START with tool_result blocks, if it
-    // does, those tool_result IDs refer to a tool_use we just trimmed away,
-    // which causes the Anthropic API to 400 with
-    // "unexpected tool_use_id found in tool_result blocks". Strip orphan
-    // tool_results off the front of the first user message (or drop it
-    // entirely if that's all it contained).
-    while (anthropicMessages.length > 0) {
-      const first = anthropicMessages[0];
-      if (first.role !== 'user') {
-        anthropicMessages.splice(0, 1);
-        continue;
-      }
-      if (Array.isArray(first.content)) {
-        const blocks = first.content as unknown as Array<Record<string, unknown>>;
-        const kept = blocks.filter(b => b.type !== 'tool_result');
-        if (kept.length === 0) {
-          // Entire message was orphan tool_results, drop it
-          anthropicMessages.splice(0, 1);
-          continue;
-        }
-        if (kept.length < blocks.length) {
-          anthropicMessages[0] = { ...first, content: kept as unknown as Anthropic.ContentBlockParam[] };
-        }
-      }
-      break;
-    }
-    inputEstimate = systemTokenEstimate + estimateMessageTokens(anthropicMessages) + toolTokenEstimate;
-  }
-
-  if (inputEstimate > hardInputLimit) {
-    logger.warn('Input still exceeds context window after trimming', {
-      agentId,
-      inputEstimate,
-      hardInputLimit,
-      contextWindow: modelInfo.contextWindow,
-      messageCount: anthropicMessages.length,
-    }, agentId);
-  }
-
-  // Also run on the post-trim anthropicMessages in case budget trimming
-  // created new orphans (the universal check above ran on the pre-trim input)
+  // KEPT with the trimmer gone, deliberately (T4 Step 2b pinned it as a SEPARATE guard).
+  // Its old comment said "post-trim … in case budget trimming created new orphans", and that
+  // reason died with the loop above. What it is now is the last pairing check on the array
+  // this transport actually sends — `anthropicMessages` is a shallow re-map of `messages`,
+  // so the universal `sanitizeOrphanToolBlocks` at the boundary already covers it, and this
+  // is layered defense rather than a duplicate mechanism (Part I). Deleting a guard because
+  // its stated reason went away is exactly the inference roadmap #15 forbids.
   sanitizeOrphanToolBlocks(anthropicMessages as unknown as Array<{ role: string; content: unknown }>, agentId);
 
   const anthropicAvailable = Math.max(1024, modelInfo.contextWindow - inputEstimate - 500);
@@ -2512,8 +2419,14 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
       requestType: routerTier ?? (tools ? 'agent_turn' : 'completion'),
       cacheReadTokens,
       cacheCreationTokens,
-      // Step 3: the same sum this transport's hard cap compares against `hardInputLimit`,
-      // so the recorded estimate is the one that decided whether history was trimmed.
+      // T2 Step 3 recorded this as "the same sum this transport's hard cap compares against
+      // `hardInputLimit`, so the recorded estimate is the one that decided whether history
+      // was trimmed". T4 Step 2b DELETED that hard cap, so the second half of that sentence
+      // no longer names anything. What survives is the first half and it is the reason to
+      // keep recording it: this is the sum the transport actually sends, beside what the
+      // provider charged, which is how the estimator's divisor stays checkable against
+      // reality (`memory/budget.ts`). Nothing here decides a trim any more — the allocator
+      // and `validateAssembly` do that upstream.
       estimatedInputTokens: inputEstimate,
     });
 

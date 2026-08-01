@@ -344,32 +344,56 @@ describe('C11 — unrepairable fails loud', () => {
     expect(returned).toBeNull();
   });
 
-  it('does NOT throw on a SHAPE-only violation — that line is drawn on measurement', () => {
-    // C11's subject is the front-trimmer's warn-and-send, which is about SIZE. The first
-    // live detect run (73 real calls) produced 17 divergences and ZERO of them were size:
-    // 14 orphan tool_results that `sanitizeOrphanToolBlocks` itself had just created by
-    // stripping their tool_use, and 3 on the PM path. Throwing on those would have killed
-    // 23% of turns on flip day over defects this validator did not create. They are
-    // REPORTED — loudly, with their owners — and the flip's precondition is that they read
-    // zero. See the module header and DOJO-ISSUES-LOG.
+  it('THROWS on a SHAPE-only violation — and the line moved on evidence, twice', () => {
+    // T4 made this REPORT-ONLY and was right to. The first live detect run (73 real calls,
+    // 2026-07-31) produced 17 divergences and ZERO of them were size: 14 orphan
+    // tool_results that `sanitizeOrphanToolBlocks` itself had just created by stripping
+    // their tool_use, and 3 on the PM path. Throwing then would have killed 23% of turns
+    // over defects this validator did not create.
+    //
+    // T6 root-caused and FIXED both (dojo `efc949c`), and Step 2b re-decided on the
+    // measurement that followed: the durable sink has taken ZERO new lines since, and the
+    // driven pre-flip arm at `1d112ad` read checked=63 diverged=0 across the union OR8 set.
+    // A shape violation reaching this line has now survived `sanitizeOrphanToolBlocks`,
+    // `applyIntegrityPass` and both T6 fixes — unrepairable here (this module does not
+    // repair shape by design) and unknown everywhere. "Unrepairable is a loud failure,
+    // never warn-and-send" is C11's own clause.
     const shapeOnly: ValidatedMessage[] = [user('a'), asst('b'), toolResult('t-missing')];
-    const r = repairAssembly(shapeOnly, { budgetTokens: 1_000_000, laneIds: [null, null, null] });
+    expect(() => repairAssembly(shapeOnly, { budgetTokens: 1_000_000, laneIds: [null, null, null] }))
+      .toThrow(AssemblyValidationError);
+    // and the thrown error CARRIES the violation, so the failure names the defect
+    try {
+      repairAssembly(shapeOnly, { budgetTokens: 1_000_000, laneIds: [null, null, null] });
+    } catch (e) {
+      expect(e).toBeInstanceOf(AssemblyValidationError);
+      expect((e as AssemblyValidationError).violations.map((v) => v.code))
+        .toContain('tool-result-without-use');
+    }
+  });
+
+  it('a CLEAN array still returns untouched — the throw is scoped to real violations', () => {
+    // Negative control for the clause above: enforcement that fires on everything is not
+    // enforcement, it is an outage. `repairAssembly` on a valid array is a no-op.
+    // THIS CONTROL CAUGHT ITS OWN FIRST DRAFT: `[user, asst]` ends on an assistant turn,
+    // which is `last-message-is-assistant` — a shape violation — so the "clean" fixture
+    // threw and proved the clause above rather than bounding it. Recorded because a
+    // negative control that is secretly positive is worse than none.
+    const clean: ValidatedMessage[] = [user('hello'), asst('hi there'), user('and then?')];
+    const r = repairAssembly(clean, { budgetTokens: 1_000_000, laneIds: [null, null, null] });
+    expect(r.after.ok).toBe(true);
     expect(r.droppedLaneIds).toEqual([]);
-    expect(r.messages).toEqual(shapeOnly);
-    // and the violation is still ON the record, not swallowed
-    expect(r.after.ok).toBe(false);
-    expect(r.after.violations.map((v) => v.code)).toContain('tool-result-without-use');
+    expect(r.messages).toEqual(clean);
   });
 });
 
 // ════════ the mode, and the flip ════════
 
 describe('the installed mode', () => {
-  it('is DETECT today — PHASE-3 T4 Step 2 opens a dated 7-day window', () => {
-    // T4 Step 2b flips this ONE constant to 'repair' and deletes both provider
-    // front-trimmers in the same commit. PHASE-3 T9's exit gate asserts 'repair';
-    // this clause is what makes the flip a one-line, testable change rather than a hunt.
-    expect(ASSEMBLY_VALIDATION_MODE).toBe('detect');
+  it('is REPAIR — PHASE-3 T4 Step 2b flipped it 2026-08-01, with both front-trimmers', () => {
+    // The flip was ONE constant and this clause is what noticed it, which is the property
+    // it was written for. PHASE-3 T9's exit gate asserts the same value, so the mode
+    // cannot drift back to a permanently-detecting detector unnoticed.
+    expect(ASSEMBLY_VALIDATION_MODE).toBe('repair');
   });
 });
 
@@ -399,11 +423,13 @@ describe('the detect-only window log', () => {
     expect(line).toContain('overBy=${result.overBy}');
   });
 
-  it('DETECT mode sends anyway — the deliberate no-op is what the window measures', () => {
+  it('the DETECT branch still returns before the repair — the one-constant revert path', () => {
     const src = fs.readFileSync(
       path.join(process.cwd(), 'src/memory/assembly-validation.ts'), 'utf8',
     );
-    // The detect branch returns BEFORE the repair, and the repair is what Step 2b enables.
+    // Step 2b flipped the constant, not the structure: `'detect'` still short-circuits ahead
+    // of `repairAssembly`, so setting the mode back is a one-line, complete revert. If this
+    // ordering were ever inverted, the "revert" would silently keep repairing.
     const body = src.slice(src.indexOf('export async function validateAtProviderBoundary'));
     const detectAt = body.indexOf("ASSEMBLY_VALIDATION_MODE === 'detect'");
     const repairAt = body.indexOf('repairAssembly(input.messages');
