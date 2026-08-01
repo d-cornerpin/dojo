@@ -695,6 +695,13 @@
       "why": "A NEW file, pinned at birth. It holds the number SWEEP C retires the nightly summary rebuild on, and the reason it needs to be a NUMBER rather than an impression is roadmap #15: one clean night is equally consistent with a clean stock and a broken detector. So it records three facts - how many summaries were actually examined, what was found, and the consecutive-clean streak - persisted in config so a nightly job's evidence survives a restart, and a run that scanned ZERO does not advance the streak."
     },
     {
+      "path": "packages/server/src/agent/v2/turn-record.ts",
+      "from": 155,
+      "to": 197,
+      "by": "PHASE-3 T5 rider (c) / G24 (2026-08-01)",
+      "why": "+49, and PINNED DECREASE-ONLY rather than re-recorded to the growth baseline - the stronger of the two remedies, and the right one for the module that owns turn identity. The addition is `currentTurnNumber`, which REPLACES four copies of `SELECT MAX(turn_number) FROM messages WHERE agent_id = ?` in memory/assembler.ts (three readers) and memory/compaction.ts (the writer of the window those readers compare against) - PHASE-2's handed-forward grep token and T9's exit gate. The function is nine lines; the rest is the record of two measurements a later reader cannot re-derive cheaply. (1) Why MAX and not 'the open turn': 139 of 3,090 live turn rows have ended_at IS NULL because a died turn never reaches finalizeTurn, and agent kevin - the agent both prompt goldens are bound to - held an open row at turn 246 while 264 had been allocated, so that reader would have answered eighteen turns stale. (2) The shift this introduces: on 29 of 48 agents the old expression was exactly one higher, on the other 19 it was LOWER by up to two because those agents ran turns that persisted nothing; the continuity-brief window is shape-preserved because its writer moves with its readers, and the absolute stub age shifts 40 of 2,766 live tool rows (1.4%), all toward keeping content one turn longer. Deleting that record to hit a line count would leave the next worker re-deriving it from the live database."
+    },
+    {
       "path": "packages/server/src/memory/assembly-validation-sink.ts",
       "from": 0,
       "to": 146,
@@ -841,6 +848,7 @@
     "packages/server/src/memory/recall.ts": 510,
     "packages/server/src/memory/retrieval.ts": 591,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
+    "packages/server/src/agent/v2/turn-record.ts": 197,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/summary-rebuild.ts": 460,
     "packages/server/src/microsoft/auth.ts": 623,

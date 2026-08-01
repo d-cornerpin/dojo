@@ -190,7 +190,7 @@
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/reply-destination.ts": 86,
     "packages/server/src/agent/v2/state.ts": 701,
-    "packages/server/src/agent/v2/turn-record.ts": 155,
+    "packages/server/src/agent/v2/turn-record.ts": 197,
     "packages/server/src/agent/web-tools.ts": 373,
     "packages/server/src/agent/work-verb-schema.ts": 97,
     "packages/server/src/config/loader.ts": 178,
