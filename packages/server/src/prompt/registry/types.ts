@@ -105,13 +105,23 @@ export enum MessageSlot {
   Scratchpad = 800, // A9
   ActiveDirective = 900, // A10 (tier 2; sits closest to the tail)
   ScaffoldingAck = 1000, // A11 (assistant beat closing the scaffolding block)
+  // PHASE-3 T3: the EVENTS & NOTICES awareness lane. It has always been emitted here —
+  // between the ack and the live tail (`assembler.ts:1215` pre-repin) — and was the one
+  // section with NO admission gate, NO token add and NO record. Declaring the slot ADDS a
+  // number between two existing ones; it renumbers nothing, so the byte-equivalence
+  // contract above is untouched.
+  Events = 1050,
   // ── the live recent-message tail (rehydrated rows, ledger A1) ──
   FreshTail = 1100,
   // ── engine injections (§3c), fire post-tail in this order ──
   TechniqueStrong = 1200, // C12 strong-match procedure (engine message)
   TechniqueWeak = 1300, // weak hint (legacy: appended to systemPrompt; moves here at R5)
   ContextGap = 1400, // "ask the user" hint
-  TrackerNotif = 1500, // auto-tracker task notice
+  // PHASE-3 T3: MessageSlot.TrackerNotif (1500) was STRIPPED with its entry — the auto-
+  // tracker notice's only injector died in `d00f270` and the requirement is owned by
+  // `tracker/notify.ts` (see the tombstone in entries.ts). The number stays RETIRED, not
+  // reused: the slot values are a byte-equivalence contract and re-pointing 1500 at a
+  // different section would silently reorder a future array.
   DelegationHint = 1550, // F9: explicit-delegation routing hint (advice voice)
   Attachments = 1600, // image/PDF content blocks
   PendingNudge = 1700, // steering nudge
@@ -190,8 +200,6 @@ export interface AssemblyContext {
   // here; the registry entry renders the payload and injects via the registry
   // channel, so the DECLARATION + injection are registry-owned without pulling
   // the interleaved computation out of the loop.
-  /** Auto-tracker task notice (from the multistep classifier). */
-  trackerNotif?: string | null;
   /** Strong-match technique engine message (C12), already formatted. */
   techniqueStrong?: string | null;
   /** Weak-match technique hint (raw system-prompt append). */

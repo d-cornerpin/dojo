@@ -51,9 +51,12 @@ const EXPECTED_MESSAGE = [
   'msg.technique-strong',
   'msg.technique-weak',
   'msg.context-gap',
-  'msg.tracker-notif',
-  // F9 (2026-07-08): explicit-delegation engine hint, slot 1550 between
-  // TrackerNotif (1500) and the later message slots.
+  // PHASE-3 T3: 'msg.tracker-notif' STRIPPED (RULING P3-R1 item 2) — its injector died in
+  // `d00f270` and the requirement is owned by `tracker/notify.ts`'s persisted, broadcast,
+  // waking notice. Removed from the lock rather than left as a registered-never-injected
+  // entry, which is the shape T1's golden caught.
+  // F9 (2026-07-08): explicit-delegation engine hint, slot 1550 (the retired
+  // TrackerNotif number was 1500).
   'msg.delegation-hint',
   'msg.pending-nudge',
   'msg.tool-note',

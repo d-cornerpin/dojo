@@ -391,17 +391,29 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
       return hint ? { role: 'user', content: hint } : null;
     },
   },
-  {
-    id: 'msg.tracker-notif',
-    target: 'messages',
-    slot: MessageSlot.TrackerNotif,
-    precedenceTier: 7,
-    reason:
-      'When the multistep classifier auto-creates a tracker project, tell the agent ' +
-      'so it works the tracked task. Content is computed by the loop classifier ' +
-      '(which also creates the project); the entry renders + injects it.',
-    render: (ctx) => (ctx.trackerNotif ? { role: 'user', content: ctx.trackerNotif } : null),
-  },
+  // ── STRIP (PHASE-3 T3, RULING P3-R1 item 2): `msg.tracker-notif` (slot 1500). ──
+  //
+  // requirement preserved: "an agent that has just been ASSIGNED work learns it was
+  // assigned, and how to close it" — owned end to end by
+  // `tracker/notify.ts:injectTaskAssignmentNotification`, which PERSISTS a
+  // `[SOURCE: TRACKER TASK ASSIGNMENT]` engine-event row into the assignee's conversation,
+  // broadcasts it to the dashboard, and WAKES the assignee. The entry was never that
+  // mechanism: it was the SAME content pushed a second time into the in-flight array, for
+  // the one case where the assignee was the agent already running (`skipWake: true`).
+  //
+  // Re-derived at `8f36cdb` before deciding, not inferred from the absence (#15):
+  //   • its only injection site was the multistep classifier's auto-create block, deleted
+  //     whole by `d00f270` (PHASE-2 T8c item 3 — 1,135 of 1,183 auto-created projects were
+  //     empty; the classifier no longer creates anything);
+  //   • `injectTaskAssignmentNotification` is ALIVE with two live callers,
+  //     `tracker/tools.ts:891` and `:1214`, both agent-driven;
+  //   • `skipWake: true` now has ZERO callers whole-tree (`git grep -n skipWake` →
+  //     `notify.ts:42/:103/:193` and nothing else), so in every surviving path the assignee
+  //     is a DIFFERENT agent, is woken, and reads the notice as a persisted row on its own
+  //     next assembly. The same-turn duplicate is not merely unused; it is unreachable.
+  // A registered entry with no injection site is exactly what the lane table makes
+  // impossible, so it is removed rather than left registered and never rendered.
+  // (`AssemblyContext.trackerNotif` goes with it; `skipWake` is enumerated for T9.)
   {
     id: 'msg.delegation-hint',
     target: 'messages',

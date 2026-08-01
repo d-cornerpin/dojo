@@ -37,6 +37,7 @@ const recoverDreamerFromContextOverflowSpy = vi.fn(async () => false);
 const removeCapabilitySpy = vi.fn();
 const recordErrorMock = vi.fn(() => false);
 const drainPendingAttachmentsSpy = vi.fn(() => []);
+const clearConsumedOneShotFlagsSpy = vi.fn();
 const enforceModelCapabilitiesSpy = vi.fn(() => ({ useTools: true }));
 const recordCostSpy = vi.fn();
 const queueEmbeddingSpy = vi.fn();
@@ -94,6 +95,9 @@ vi.mock('../../runtime.js', () => ({
   injectAttachmentBlocks: (...args: unknown[]) => injectAttachmentBlocksSpy(...args),
   enforceModelCapabilities: (...args: unknown[]) => enforceModelCapabilitiesSpy(...args),
   getAgentRuntime: () => ({ handleMessage: (...args: unknown[]) => handleMessageSpy(...args) }),
+  // PHASE-3 T3 / S3: the turn clears the one-shot markers the assembly reported consuming.
+  // The loop imports this statically, so a mock that omits it makes every turn throw.
+  clearConsumedOneShotFlags: (...args: unknown[]) => clearConsumedOneShotFlagsSpy(...args),
 }));
 
 vi.mock('../../pending-attachments.js', () => ({

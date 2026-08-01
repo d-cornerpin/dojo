@@ -109,7 +109,7 @@ import {
 
 // Force-import side-effect: also register the runtime singleton getter so v2
 // can fire self-continuation handleMessage() calls (matches v1 behavior).
-import { getAgentRuntime } from '../runtime.js';
+import { getAgentRuntime, clearConsumedOneShotFlags } from '../runtime.js';
 
 import {
   type AgentTurnState,
@@ -1722,6 +1722,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // engine receipts without threading it through every send executor. Cleared at
   // the turn boundary (idle), like currentTurnConvKey.
   currentTurnNumber.set(agentId, turnNumber);
+  // S3 (PHASE-3 T3): restart rehydration, at the TURN, once per agent per process.
+  // `memory/assembler.ts:1262-1281` (pre-repin) did this from inside the assembly read path
+  // on EVERY assembly — a mutation on a read, and one that re-broke the cached tools prefix
+  // for every agent on the first assembly after any restart. The requirement it encoded (an
+  // agent should not have to re-call load_tool_docs for a tool it was already using before
+  // the server restarted) is preserved exactly, at the boundary where a restart is visible.
+  try {
+    const { rehydrateSessionToolsFromHistory } = await import('../../tools/tool-docs.js');
+    rehydrateSessionToolsFromHistory(agentId);
+  } catch { /* best effort — never break a turn over a cache warm-up */ }
   // Per-ask forward link: the claimed trigger records WHICH turn serves it (the claim
   // above only made it invisible to the waiting set). Two rows, one fact: the ticket's
   // `claimed_by_turn` is what the delivery close and the boot reconciliation read; the
@@ -3124,6 +3134,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
         broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: 'a2a', userFacing: !!chosenConvKey });
       }
       const ctx = await assembleContext(agentId, contextModelId, sharedTurnContext);
+      // ── S3 (PHASE-3 T3): ASSEMBLY IS A READ; THE TURN OWNS THE WRITE. ──
+      // `memory/assembler.ts` used to `UPDATE agents SET config` from inside its own read
+      // path to clear the one-shot A2A-preempt and Stop markers it had just rendered. That
+      // made any probe, retry or dry-run silently consume a marker the user had earned. The
+      // assembler now REPORTS what it consumed and the turn clears it, once, here.
+      clearConsumedOneShotFlags(agentId, ctx.consumedOneShotFlags);
       lastAssembledAtIso = new Date().toISOString(); // F9: see claimAssembledSiblings
       let systemPrompt = ctx.systemPrompt;
       const messages = ctx.messages;
@@ -3886,6 +3902,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }, agentId);
         }
       }
+
+      // ── RULING P3-R1 (PHASE-3 T3): msg.peer-status, RESTORED. ──
+      // The entry has been registered at MessageSlot.PeerStatus (1875) since `5cb1758` and
+      // NO injection site has ever existed, so the live idle/working state the 2026-07-16
+      // cache fix relocated out of the cached group roster has never reached a model. No
+      // decision removed it (#15: the absence is not a ruling) — that commit's own stated
+      // intent was to RELOCATE, and the relocation only ever landed its first half.
+      // It goes HERE because the near-tail order 1850 -> 1875 -> 1900 is a preserved
+      // contract (this phase's Global Constraints): after msg.turn-context, before
+      // msg.current-time, behind the cache boundary by construction.
+      injectRegistryMessage('msg.peer-status', messages, mctx);
 
       injectRegistryMessage('msg.current-time', messages, mctx);
 

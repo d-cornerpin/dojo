@@ -9,12 +9,28 @@ import { conversationKey, type TurnCounterparty } from '../agent/v2/counterparty
 import { getContextWindow } from '../agent/model.js';
 import { getRecentMessages } from './store.js';
 import { estimateTokens, contextWindowPolicy, assertSystemPromptFits, SUMMARY_SHARE } from './budget.js';
+import {
+  fitLanes,
+  laneLimit,
+  renderScaffoldingAck,
+  renderTokens,
+  truncateTextLane,
+  LANE_PRIORITY,
+  POST_BUDGET_LANES,
+  POST_BUDGET_RESERVE_TOKENS,
+  SCAFFOLDING_ACK_RESERVE_TOKENS,
+  type AllocationReport,
+  type Lane,
+  type LaneCandidate,
+  type LaneMessage,
+  type LaneRender,
+} from './lanes.js';
 import { getContextSummaries } from './dag.js';
 import { getLatestBriefing } from './briefing.js';
 import { retrieveForContext } from '../vault/retrieval.js';
 import { isPMAgent } from '../config/platform.js';
 import { buildAssemblyContext, assembleSystemFromRegistry } from '../prompt/registry/assembler.js';
-import type { AssemblyTurnState } from '../prompt/registry/types.js';
+import { MessageSlot, type AssemblyTurnState } from '../prompt/registry/types.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
 import { turnBoundary, currentTurnConversationId } from '../agent/turn-state.js';
 import type { Summary } from './dag.js';
@@ -354,6 +370,26 @@ export interface AssembledContext {
    * are persisted and later summarized, so it is live-view loss, not data loss.
    */
   freshTailDropped?: number;
+  /**
+   * PHASE-3 T3: the allocator's own record — one grant per lane, INCLUDING the rejected and
+   * the truncated ones, plus every recorded over-budget event. Before this, a section the
+   * budget dropped produced a byte-identical context to a section that never existed
+   * (research 06 §8). Undefined on the PM path until T6 gives it the same shape (F22).
+   */
+  allocation?: AllocationReport;
+  /**
+   * PHASE-3 T3 / S3 — ASSEMBLY IS PURE. The one-shot engine markers (A2A preempt, Stop) are
+   * READ here and CLEARED by the turn that owns them (`agent/v2/loop.ts`). Assembly used to
+   * `UPDATE agents SET config` from its own read path, so any probe, retry or dry-run
+   * silently consumed a marker the user had earned.
+   */
+  consumedOneShotFlags?: ConsumedOneShotFlags;
+}
+
+/** One-shot agent-config markers an assembly consumed; the turn clears them (S3). */
+export interface ConsumedOneShotFlags {
+  a2aPreemptPending?: boolean;
+  stopMarkerPending?: boolean;
 }
 
 /**
@@ -659,6 +695,421 @@ export function scopeToHumanConversation(
   });
 }
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE MESSAGE CONTEXT, BUILT FROM THE LANE TABLE (PHASE-3 T3, requirements B4–B8).
+//
+// What stood here before, measured by reading at `8f36cdb` (§T0-B): twelve independent
+// admission gates in build order, two adds with no gate at all, an EVENTS push with neither
+// gate nor add, 41 bare numeric literals, and a hardcoded ack that told the model the
+// priority order was the exact reverse of the one the budget spent. `usedTokens` was
+// write-only past the gates.
+//
+// Now: every section is a LANE (`memory/lanes.ts`) that declares its id, its priority, its
+// floor, its ceiling, its position and its own `truncate()`. The lanes render, the two-pass
+// fit decides, and every decision — including every rejection — lands in an
+// `AllocationReport` that also GENERATES the ack, so the array can no longer claim a
+// section the budget dropped.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** The bundle every lane render reads. Built once per assembly; the expensive parts lazily. */
+interface LaneRenderCtx {
+  agentId: string;
+  modelId: string;
+  contextWindow: number;
+  policy: ReturnType<typeof contextWindowPolicy>;
+  turnContext?: PromptTurnContext;
+  shouldFireScaffolding: boolean;
+  /** Scoped live tail + the awareness rows lifted out of it. Computed once. */
+  tail: () => { freshTail: Message[]; awarenessEvents: Message[] };
+  /** Scrubbed context summaries. Computed once. */
+  summaries: () => Summary[];
+}
+
+/** Every lane declares a floor of at least this — a header and a sentence still say something. */
+const MIN_LANE_FLOOR_TOKENS = 64;
+
+type TailPayload = { rows: Message[]; agentId: string; dropped: number };
+
+/** Cost of carrying stored rows, the unit `budgetFreshTail` spends (canonical since T2). */
+function rowTokens(rows: Message[]): number {
+  return rows.reduce((t, m) => t + (m.tokenCount ?? estimateTokens(m.content)), 0);
+}
+
+function textRender(content: string | null): LaneRender | null {
+  if (!content) return null;
+  const messages: LaneMessage[] = [{ role: 'user', content }];
+  return { messages, tokens: renderTokens(messages) };
+}
+
+/**
+ * THE LANE TABLE. Priority is data here and nowhere else; `slot` is position and is
+ * independent of it (the briefing is emitted FIRST and drops FIRST — see `lanes.ts`).
+ * Every entry carries a `truncate`, so a lane under pressure is shortened, not deleted.
+ */
+function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unknown>> {
+  const lim = (id: string, g: 'rows' | 'chars' | 'tokens' | 'retrieval', k: string) => laneLimit(id, g, k);
+  // §T0-B E `:1595` — `min(available * 0.7, 6000)`. The SHARE survives as this lane's
+  // ceiling (it is the same 0.7 `memory/budget.ts` hands the compaction gate, so the gate's
+  // model of the assembler cannot drift from it again); the "available" it multiplies is now
+  // the declared content budget rather than "whatever two earlier gates happened to leave".
+  const summariesCeiling = Math.min(
+    Math.floor(contentBudget * SUMMARY_SHARE),
+    laneLimit('lane.summaries', 'tokens', 'relevanceBudget'),
+  );
+  return [
+    {
+      id: 'lane.briefing',
+      slot: MessageSlot.MorningBriefing,
+      priority: LANE_PRIORITY['lane.briefing'],
+      minTokens: 0,
+      maxTokens: Infinity,
+      truncate: truncateTextLane,
+      render: (ctx) => {
+        if (!ctx.shouldFireScaffolding) return null;
+        const briefing = getLatestBriefing(ctx.agentId);
+        if (!briefing) return null;
+        return textRender(
+          `<briefing generated="${new Date().toISOString().split('T')[0]}">\n${briefing.content}\n</briefing>`,
+        );
+      },
+    },
+    {
+      id: 'lane.vault',
+      slot: MessageSlot.VaultPull,
+      priority: LANE_PRIORITY['lane.vault'],
+      minTokens: 0,
+      maxTokens: Infinity,
+      truncate: truncateTextLane,
+      render: async (ctx) => {
+        if (!ctx.shouldFireScaffolding) return null;
+        try {
+          const recentForQuery = getRecentMessages(ctx.agentId, lim('lane.vault', 'rows', 'queryMessages'));
+          let queryText = recentForQuery.map((m) => m.content).join(' ').slice(0, lim('lane.vault', 'chars', 'query'));
+          if (queryText.length <= 10) {
+            queryText = 'current projects active tasks recent work status updates decisions';
+          }
+          const vaultResult = await retrieveForContext(queryText, ctx.contextWindow, ctx.agentId);
+          const sections: string[] = [];
+          if (vaultResult.section) sections.push(vaultResult.section);
+          try {
+            const { getSessionContextEntries } = await import('../vault/store.js');
+            const sessionCtx = getSessionContextEntries(ctx.agentId);
+            const alreadyIncluded = new Set(vaultResult.entryIds);
+            const fresh = sessionCtx.filter((e) => !alreadyIncluded.has(e.id));
+            if (fresh.length > 0) {
+              const lines = fresh.map((e) => `[${e.type}] ${e.content}`);
+              sections.push(
+                `═══ SESSION CONTEXT (vault entries tagged session_context) ═══\n${lines.join('\n\n')}\n═══ END SESSION CONTEXT ═══`,
+              );
+            }
+          } catch { /* best effort */ }
+          return sections.length > 0 ? textRender(sections.join('\n\n')) : null;
+        } catch (err) {
+          logger.warn('Vault context injection failed', {
+            error: err instanceof Error ? err.message : String(err),
+          }, ctx.agentId);
+          return null;
+        }
+      },
+    },
+    {
+      id: 'lane.summaries',
+      slot: MessageSlot.Summaries,
+      priority: LANE_PRIORITY['lane.summaries'],
+      minTokens: 0,
+      maxTokens: summariesCeiling,
+      truncate: truncateTextLane,
+      render: async (ctx) => {
+        const summaries = ctx.summaries();
+        if (summaries.length === 0) return null;
+        const chosen = await selectSummariesByRelevance(summaries, summariesCeiling, ctx.agentId);
+        if (chosen.length === 0) return null;
+        const summaryText = chosen.map((s) => formatSummaryXml(s)).join('\n\n');
+        return textRender(
+          `═══ COMPRESSED HISTORY (summaries of earlier messages, not live conversation) ═══\nThe following are compressed summaries of older conversation history. These capture key facts and decisions but are NOT live messages. Do not respond to them directly, they are context only. Any "couldn't do X" / "not supported" noted here may be outdated (the platform gains tools over time); check your current tool list before repeating it.\n\n${summaryText}\n\n═══ END COMPRESSED HISTORY ═══`,
+        );
+      },
+    },
+    {
+      id: 'lane.relevant-memory',
+      slot: MessageSlot.RelevantMemory,
+      priority: LANE_PRIORITY['lane.relevant-memory'],
+      minTokens: 0,
+      maxTokens:
+        laneLimit('lane.relevant-memory', 'tokens', 'messageBudget') +
+        laneLimit('lane.relevant-memory', 'tokens', 'vaultBudget'),
+      truncate: truncateTextLane,
+      render: async (ctx) => {
+        try {
+          return textRender(await buildRelevantMemoryBlock(ctx.agentId, !ctx.shouldFireScaffolding, ctx.policy));
+        } catch (err) {
+          logger.debug('relevant-memory block failed', {
+            error: err instanceof Error ? err.message : String(err),
+          }, ctx.agentId);
+          return null;
+        }
+      },
+    },
+    {
+      id: 'lane.attempt-ledger',
+      slot: MessageSlot.AttemptLedger,
+      priority: LANE_PRIORITY['lane.attempt-ledger'],
+      minTokens: 0,
+      // §T0-B B `:914` was a DOUBLE gate — `< 800` AND `< remaining`. The 800 is a lane
+      // ceiling and the remaining-check is the allocator's job; one number, one owner.
+      maxTokens: laneLimit('lane.attempt-ledger', 'tokens', 'cap'),
+      truncate: truncateTextLane,
+      render: async (ctx) => {
+        try {
+          const { listTasks } = await import('../tracker/schema.js');
+          const { getRecentObservations, getRecentTransitions, formatEntryLine } = await import('../tracker/task-log.js');
+          const activeForLedger = listTasks({ status: 'in_progress', assignedTo: ctx.agentId })
+            .slice(0, lim('lane.attempt-ledger', 'rows', 'tasks'));
+          const sections: string[] = [];
+          for (const task of activeForLedger) {
+            const entries = [
+              ...getRecentObservations(task.id, lim('lane.attempt-ledger', 'rows', 'observations')),
+              ...getRecentTransitions(task.id, lim('lane.attempt-ledger', 'rows', 'transitions')),
+            ].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+              .slice(-lim('lane.attempt-ledger', 'rows', 'entries'));
+            if (entries.length === 0) continue;
+            let revertNote = '';
+            try {
+              const row = getDb().prepare(`SELECT ${revertCountExpr('w')} AS revert_count FROM work w WHERE w.id = ?`)
+                .get(task.id) as { revert_count: number | null } | undefined;
+              if (row?.revert_count) revertNote = `, reverted ${row.revert_count}x already`;
+            } catch { /* column may not exist on old DBs */ }
+            sections.push(`Task "${task.title}"${revertNote}:\n${entries.map((e) => `  ${formatEntryLine(e)}`).join('\n')}`);
+          }
+          if (sections.length === 0) return null;
+          return textRender(
+            `═══ ATTEMPT LEDGER (engine record of work on your active tasks, do not repeat attempts already logged here) ═══\n${sections.join('\n\n')}\n═══ END ATTEMPT LEDGER ═══`,
+          );
+        } catch { return null; /* tracker may be empty or absent */ }
+      },
+    },
+    {
+      id: 'lane.active-tasks',
+      slot: MessageSlot.ActiveTasks,
+      priority: LANE_PRIORITY['lane.active-tasks'],
+      minTokens: 0,
+      maxTokens: Infinity,
+      truncate: truncateTextLane,
+      render: async (ctx) => {
+        if (!ctx.shouldFireScaffolding) return null;
+        try {
+          const { listTasks } = await import('../tracker/schema.js');
+          const activeTasks = listTasks({ status: 'in_progress', assignedTo: ctx.agentId });
+          if (activeTasks.length === 0) return null;
+          // Skip if the last few turns already mention these task IDs.
+          const recent = getRecentMessages(ctx.agentId, lim('lane.active-tasks', 'rows', 'recentMentionWindow'));
+          const recentText = recent.map((m) => m.content).join(' ');
+          const allMentionedRecently = activeTasks.every((t) =>
+            recentText.includes(t.id) || recentText.includes(t.id.slice(0, 8)),
+          );
+          if (allMentionedRecently) return null;
+          const stampStmt = getStampDb().prepare(
+            `SELECT w.id AS id, ${stampColumns('w')},
+                    w.step_number AS step_number, w.total_steps AS total_steps,
+                    w.parent_id AS project_id
+               FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
+          );
+          const descCap = lim('lane.active-tasks', 'chars', 'description');
+          const noteCap = lim('lane.active-tasks', 'chars', 'lastNote');
+          const taskLines = activeTasks.slice(0, lim('lane.active-tasks', 'rows', 'tasks')).map((t) => {
+            let line = `• ${t.title} (ID: ${t.id.slice(0, 8)}, priority: ${t.priority})`;
+            try {
+              const st = stampStmt.get(t.id) as TaskStampFields | undefined;
+              if (st) {
+                const stamp = renderTaskStamps(st);
+                const steps = renderStepFacts(st);
+                line += `\n  State: ${stamp}${steps ? ` | ${steps}` : ''}`;
+              }
+            } catch { /* stamps are best-effort */ }
+            if (t.description) line += `\n  Instructions: ${t.description.slice(0, descCap)}${t.description.length > descCap ? '...' : ''}`;
+            if (t.notes) {
+              const lastNote = t.notes.split('\n').filter(Boolean).pop();
+              if (lastNote) line += `\n  Last note: ${lastNote.slice(0, noteCap)}`;
+            }
+            return line;
+          });
+          return textRender(
+            `═══ YOUR ACTIVE TASKS (from tracker, ground truth) ═══\nYou are currently assigned to these in_progress tasks. This is what you should be working on:\n\n${taskLines.join('\n\n')}\n\n═══ END ACTIVE TASKS ═══`,
+          );
+        } catch { return null; /* tracker may not be available */ }
+      },
+    },
+    {
+      id: 'lane.continuity',
+      slot: MessageSlot.CompactionContinuity,
+      priority: LANE_PRIORITY['lane.continuity'],
+      minTokens: 0,
+      maxTokens: Infinity,
+      truncate: truncateTextLane,
+      render: (ctx) => {
+        try {
+          const db = getDb();
+          const configRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(ctx.agentId) as { config: string } | undefined;
+          if (!configRow?.config) return null;
+          const agentConfig = JSON.parse(configRow.config) as Record<string, unknown>;
+          const continuityBrief = agentConfig.continuityBrief as string | undefined;
+          const validUntil = agentConfig.continuityBriefValidUntilTurn as number | undefined;
+          if (typeof validUntil !== 'number' || validUntil <= 0) return null;
+          const turnRow = db
+            .prepare('SELECT MAX(turn_number) AS max_turn FROM messages WHERE agent_id = ?')
+            .get(ctx.agentId) as { max_turn: number | null } | undefined;
+          const currentTurn = (turnRow?.max_turn ?? 0) + 1;
+          if (!(currentTurn < validUntil)) return null;
+          if (!continuityBrief || continuityBrief.length <= 50) return null;
+          return textRender(
+            `═══ CONTINUITY BRIEF (snapshot from before the last compaction, the live conversation below is more recent and authoritative when in conflict) ═══\n\n${continuityBrief}\n\n═══ END CONTINUITY BRIEF ═══`,
+          );
+        } catch { return null; /* best effort */ }
+      },
+    },
+    {
+      id: 'lane.scratchpad',
+      slot: MessageSlot.Scratchpad,
+      priority: LANE_PRIORITY['lane.scratchpad'],
+      minTokens: 0,
+      maxTokens: Infinity,
+      truncate: truncateTextLane,
+      render: (ctx) => {
+        try {
+          const db = getDb();
+          const cfgRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(ctx.agentId) as { config: string } | undefined;
+          if (!cfgRow?.config) return null;
+          const cfg = JSON.parse(cfgRow.config) as Record<string, unknown>;
+          const scratchpad = typeof cfg.scratchpad === 'string' ? cfg.scratchpad.trim() : '';
+          if (scratchpad.length === 0) return null;
+          return textRender(
+            `═══ YOUR SCRATCHPAD (agent-maintained outline + progress, survives compaction; update with scratchpad_set) ═══\n` +
+            `${scratchpad}\n` +
+            `═══ END SCRATCHPAD ═══`,
+          );
+        } catch (err) {
+          logger.warn('Scratchpad injection failed', {
+            error: err instanceof Error ? err.message : String(err),
+          }, ctx.agentId);
+          return null;
+        }
+      },
+    },
+    {
+      id: 'lane.directive',
+      slot: MessageSlot.ActiveDirective,
+      priority: LANE_PRIORITY['lane.directive'],
+      // THE INVERSION, in one field. This lane used to be tested LAST against a budget nine
+      // sections had already eaten (`:1098`). It is priority 10 and it reserves a floor.
+      minTokens: MIN_LANE_FLOOR_TOKENS,
+      maxTokens: Infinity,
+      truncate: truncateTextLane,
+      render: async (ctx) => {
+        try {
+          const { getActiveUserDirective, formatDirectiveBlock } = await import('./directive.js');
+          const cp = ctx.turnContext?.counterparty;
+          const stampedConversationId = currentTurnConversationId.get(ctx.agentId);
+          const directiveConversationId =
+            (ctx.turnContext?.isEngineTurn || cp?.kind === 'agent')
+              ? '__none__'
+              : (cp && cp.kind === 'user' ? (stampedConversationId ?? null) : null);
+          const directive = getActiveUserDirective(ctx.agentId, {
+            excludeEngine: !ctx.turnContext?.isEngineTurn,
+            conversationId: directiveConversationId,
+          });
+          return directive ? textRender(formatDirectiveBlock(directive)) : null;
+        } catch (err) {
+          logger.warn('Active directive injection failed', {
+            error: err instanceof Error ? err.message : String(err),
+          }, ctx.agentId);
+          return null;
+        }
+      },
+    },
+    {
+      id: 'lane.events',
+      slot: MessageSlot.Events,
+      priority: LANE_PRIORITY['lane.events'],
+      minTokens: 0,
+      maxTokens: Infinity,
+      truncate: truncateTextLane,
+      render: (ctx) => {
+        const { awarenessEvents } = ctx.tail();
+        if (awarenessEvents.length === 0) return null;
+        const gistCap = lim('lane.events', 'chars', 'gist');
+        const eventLines = awarenessEvents.slice(-lim('lane.events', 'rows', 'events')).map((m) => {
+          const o = m.origin;
+          const rawContent = typeof m.content === 'string' ? m.content : '';
+          const body = rawContent
+            .replace(/^\s*\[[^\]]*\]\s*/, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          const label = o?.kind === 'user'
+            ? `${o.channel ?? 'msg'} notice${o.senderName ? ` from ${o.senderName}` : ''}`
+            : (o?.intent ?? 'event');
+          const structured = o?.kind === 'user' ? buildAwarenessGist(m.inboundMeta, rawContent) : null;
+          const gist = structured ?? body.slice(0, gistCap);
+          const at = renderMessageTimeStamp(m.createdAt);
+          return `• ${at ?? ''}[${label}] ${gist}`;
+        });
+        return textRender(
+          '═══ EVENTS & NOTICES (things that happened, and notifications addressed to the ' +
+          'owner that you are AWARE of but are NOT in conversation with, NOT the person ' +
+          'you are replying to below. Surface one to the owner only if it genuinely ' +
+          'matters; never reply to its sender) ═══\n' +
+          eventLines.join('\n'),
+        );
+      },
+    },
+    {
+      id: 'lane.fresh-tail',
+      slot: MessageSlot.FreshTail,
+      priority: LANE_PRIORITY['lane.fresh-tail'],
+      // B8: the ONE mandatory floor. A context with no live conversation is worse than one
+      // slightly over budget — `budgetFreshTail`'s last-group safety, made a declaration.
+      minTokens: MIN_LANE_FLOOR_TOKENS,
+      mandatoryFloor: true,
+      maxTokens: Infinity,
+      truncate: (render, maxTokens) => {
+        const p = render.payload as TailPayload;
+        const kept = budgetFreshTail(p.rows, maxTokens);
+        const dropped = Math.max(0, p.rows.length - kept.length);
+        return tailRender({ rows: kept, agentId: p.agentId, dropped: p.dropped + dropped });
+      },
+      render: (ctx) => {
+        const { freshTail } = ctx.tail();
+        if (freshTail.length === 0) return null;
+        // Pre-cap oversized tool_result content BEFORE budgeting: without it a single
+        // 5.9MB tool_result consumes the whole budget and evicts the user's question.
+        return tailRender({ rows: capLargeToolResultStrings(freshTail), agentId: ctx.agentId, dropped: 0 });
+      },
+    },
+  ];
+}
+
+/**
+ * Convert stored rows into the emitted messages. The lane's COST is the row cost — the unit
+ * `budgetFreshTail` spends and the one migration `150` made canonical — so the allocator and
+ * the truncator speak one language. The stamp/parse difference between a stored row and its
+ * emitted form rides inside the declared post-budget reserve.
+ */
+function tailRender(payload: TailPayload): LaneRender<TailPayload> {
+  let rows = sanitizeToolPairs(payload.rows);
+  rows = stubOldToolResults(rows, payload.agentId);
+  const messages: LaneMessage[] = [];
+  for (const msg of rows) {
+    const parsed = parseMessageContent(msg);
+    if (msg.role === 'tool') {
+      messages.push({ role: 'user', content: parsed as Anthropic.ContentBlockParam[] });
+    } else if (msg.role === 'user' || msg.role === 'assistant') {
+      const out: LaneMessage = { role: msg.role, content: stampTextContent(parsed, msg.createdAt) };
+      if (msg.role === 'assistant' && msg.reasoningContent) out.reasoningContent = msg.reasoningContent;
+      messages.push(out);
+    }
+  }
+  return { messages, tokens: rowTokens(payload.rows), payload };
+}
+
 async function assembleMessageContext(
   agentId: string,
   modelId: string,
@@ -671,65 +1122,32 @@ async function assembleMessageContext(
   const maxTokens = policy.assemblyBudgetTokens;
 
   // Budget the message array against the registry-produced system prompt's size.
-  let usedTokens = estimateTokens(systemPrompt);
+  const systemTokens = estimateTokens(systemPrompt);
   // Fail loud rather than assemble a lie: a negative budget used to produce a
   // single-message context silently (budgetFreshTail's last-group safety, nothing logged).
-  assertSystemPromptFits(usedTokens, policy);
-
-  const messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }> = [];
+  assertSystemPromptFits(systemTokens, policy);
 
   // PM agent gets a lightweight context: system prompt + recent messages only.
-  // No briefing, no vault, no summaries. The tracker is its memory.
+  // No briefing, no vault, no summaries. The tracker is its memory. Its row cap is a lane
+  // declaration like every other (§T0-B C `:681`).
   if (isPMAgent(agentId)) {
-    const freshTail = getRecentMessages(agentId, 10);
-    const tailMessages = budgetFreshTail(freshTail, maxTokens - usedTokens);
-    const sanitized = sanitizeToolPairs(tailMessages);
-
-    for (const msg of sanitized) {
-      const parsed = parseMessageContent(msg);
-      if (msg.role === 'tool') {
-        messages.push({ role: 'user', content: parsed as Anthropic.ContentBlockParam[] });
-      } else if (msg.role === 'user' || msg.role === 'assistant') {
-        messages.push({ role: msg.role, content: parsed });
-      }
-    }
-
+    const freshTail = getRecentMessages(agentId, laneLimit('lane.pm-tail', 'rows', 'tail'));
+    const tailMessages = budgetFreshTail(freshTail, maxTokens - systemTokens);
+    const pm = tailRender({ rows: tailMessages, agentId, dropped: 0 });
+    const messages = [...pm.messages];
     // Ensure starts with user role
     while (messages.length > 0 && messages[0].role !== 'user') messages.shift();
-
     logger.debug('PM agent context assembled (lightweight)', {
-      agentId,
-      systemTokens: usedTokens,
-      messageCount: messages.length,
+      agentId, systemTokens, messageCount: messages.length,
     }, agentId);
-
-    return { systemPrompt, systemVolatile: "", messages };
+    return { systemPrompt, systemVolatile: '', messages };
   }
 
-  // Track whether any scaffolding section was injected so we can push a
-  // single combined ack at the end (instead of one ack per section).
-  let injectedAnyScaffolding = false;
-
-  // ── v2 scaffolding gating (Part V + Part XVIII §C; v2.9.20 post-
-  // compaction re-fire) ──
-  //
-  // In v1, scaffolding (briefing/vault/tracker/continuity) injects every
-  // turn, costing 5–10K tokens per turn even when nothing is new. In v2,
-  // scaffolding injects ONLY on session-start turns (first turn after a
-  // session reset, or first turn ever for an agent). Mid-session turns
-  // skip scaffolding entirely. The agent retrieves anything they need
-  // on demand via vault_search / work_update(action="get") / etc.
-  //
-  // v2.9.20: that original design assumed the agent would *know* to
-  // retrieve. After compaction, the live tail can lose enough
-  // procedural context that the agent doesn't realize it should
-  // re-establish, Mike's 2026-06-06 photo-album incident showed the
-  // agent literally "felt like a brand new session" when scaffolding
-  // had last fired 30 turns earlier despite multiple compactions in
-  // between. So now we ALSO fire scaffolding for a window after each
-  // compaction. The window expires (we don't pay v1's per-turn cost
-  // forever) but covers enough turns for the agent to re-internalise
-  // its project context.
+  // ── v2 scaffolding gating (Part V + Part XVIII §C; v2.9.20 post-compaction re-fire) ──
+  // Scaffolding injects on session-start turns and for a window after each compaction; the
+  // agent retrieves anything else on demand. (Mike's 2026-06-06 photo-album incident: after
+  // compaction the live tail can lose enough procedural context that the agent does not
+  // realise it should re-establish.)
   const isSessionStartTurn = isV2SessionStart(agentId);
   const isWithinPostCompactionScaffoldingWindow = (() => {
     try {
@@ -742,10 +1160,8 @@ async function assembleMessageContext(
         .prepare('SELECT MAX(turn_number) AS max_turn FROM messages WHERE agent_id = ?')
         .get(agentId) as { max_turn: number | null } | undefined;
       const currentTurn = (turnRow?.max_turn ?? 0) + 1;
-      // Brief itself injects through turn `validUntil` (3 turns by
-      // default). We re-fire the wider scaffolding for an additional
-      // 5 turns past that, giving the agent ~8 turns of full context
-      // post-compaction to re-establish.
+      // The brief itself injects through `validUntil`; the wider scaffolding re-fires for
+      // 5 turns past that, giving ~8 turns of full context to re-establish.
       const SCAFFOLDING_EXTRA_TURNS = 5;
       return currentTurn < validUntil + SCAFFOLDING_EXTRA_TURNS;
     } catch {
@@ -757,603 +1173,146 @@ async function assembleMessageContext(
     logger.info('Re-firing scaffolding within post-compaction window', { agentId }, agentId);
   }
 
-  // 2. Morning briefing, session-start only
-  if (shouldFireScaffolding) {
-    const briefing = getLatestBriefing(agentId);
-    if (briefing) {
-      const briefingText = `<briefing generated="${new Date().toISOString().split('T')[0]}">\n${briefing.content}\n</briefing>`;
-      const briefingTokens = estimateTokens(briefingText);
-
-      if (usedTokens + briefingTokens < maxTokens) {
-        messages.push({ role: 'user', content: briefingText });
-        usedTokens += briefingTokens;
-        injectedAnyScaffolding = true;
-      }
-    }
-  }
-
-  // 2.5. Vault entries, v1: always; v2: session start only (Part XVIII §C)
-  // In v2 the vault is treated as long-term memory injected once at session
-  // start, like Claude Code's CLAUDE.md. Per-turn vault retrieval moves to
-  // the agent's explicit vault_search calls.
-  //
-  // Session-start vault content is the union of:
-  //   1. Pinned entries (always-load, handled by retrieveForContext)
-  //   2. `session_context`-tagged entries (Phase 4 §C, explicit session load)
-  //   3. Relevance-ranked entries for the current conversation topic (legacy)
-  //
-  // This is additive: existing users get their pinned + relevance behavior;
-  // new users can opt into the Claude Code pattern by tagging entries
-  // `session_context` and pinning the truly always-load ones.
-  if (shouldFireScaffolding) {
-    try {
-      const recentForQuery = getRecentMessages(agentId, 3);
-      let queryText = recentForQuery.map(m => m.content).join(' ').slice(0, 500);
-      if (queryText.length <= 10) {
-        queryText = 'current projects active tasks recent work status updates decisions';
-      }
-      const vaultResult = await retrieveForContext(queryText, contextWindow, agentId);
-      const sections: string[] = [];
-      if (vaultResult.section) sections.push(vaultResult.section);
-
-      // Phase 4 §C, also inject session_context-tagged entries that aren't
-      // already in the relevance result. Dedupe by entry ID.
+  // ── The lane render context ──
+  let tailCache: { freshTail: Message[]; awarenessEvents: Message[] } | null = null;
+  let summaryCache: Summary[] | null = null;
+  const laneCtx: LaneRenderCtx = {
+    agentId,
+    modelId,
+    contextWindow,
+    policy,
+    turnContext,
+    shouldFireScaffolding,
+    summaries: () => {
+      if (summaryCache) return summaryCache;
+      const rawSummaries = getContextSummaries(agentId);
+      // v2.7.7: scrub summaries that describe an EARLIER version of a technique the agent
+      // has freshly re-read this session — the path by which an agent references a script
+      // that no longer exists.
+      let freshlyReadTechniques: Set<string> = new Set();
       try {
-        const { getSessionContextEntries } = await import('../vault/store.js');
-        // W3-4: scoped to this agent's vault (per-agent design).
-        const sessionCtx = getSessionContextEntries(agentId);
-        const alreadyIncluded = new Set(vaultResult.entryIds);
-        const fresh = sessionCtx.filter((e) => !alreadyIncluded.has(e.id));
-        if (fresh.length > 0) {
-          const lines = fresh.map((e) => `[${e.type}] ${e.content}`);
-          const sessionCtxSection =
-            `═══ SESSION CONTEXT (vault entries tagged session_context) ═══\n${lines.join('\n\n')}\n═══ END SESSION CONTEXT ═══`;
-          sections.push(sessionCtxSection);
-        }
-      } catch {
-        /* best effort */
-      }
+        const recentForScrub = getRecentMessages(agentId, laneLimit('lane.summaries', 'rows', 'scrubWindow'));
+        freshlyReadTechniques = extractFreshlyReadTechniques(recentForScrub);
+      } catch { /* best effort, fall back to no scrub */ }
+      summaryCache = scrubSummariesAgainstFreshTechniques(rawSummaries, freshlyReadTechniques);
+      return summaryCache;
+    },
+    tail: () => {
+      if (tailCache) return tailCache;
+      // Exclude user messages that arrived after the current turn started so they get a
+      // clean run via the wakeup mechanism instead of being buried mid-context.
+      const turnCutoff = turnBoundary.get(agentId);
+      const freshTailRaw = getRecentMessages(agentId, policy.freshTailCount, turnCutoff);
+      // Counterparty scoping (attribution redesign): the live conversation is scoped to the
+      // ONE counterparty this turn addresses, so the model can never see two senders mixed.
+      const scopedTail = turnContext?.counterparty?.kind === 'agent'
+        ? scopeToA2AThread(freshTailRaw, turnContext.counterparty.threadId)
+        : turnContext?.isEngineTurn
+        ? scopeToEngineTurn(freshTailRaw)
+        : scopeToHumanConversation(freshTailRaw, turnContext?.counterparty, currentTurnConversationId.get(agentId) ?? null);
+      // EVENTS / awareness lane: engine notices AND unauthorized human inbound — things the
+      // agent should be AWARE of but is NOT in conversation with. An action-required
+      // engine-origin A2A stays FULL in the live tail on its engine turn.
+      const keepFullId = turnContext?.engineEventKeepFullId ?? null;
+      const awarenessEvents = scopedTail.filter((m) =>
+        m.role === 'user' &&
+        (keepFullId ? m.id !== keepFullId : true) &&
+        (m.origin?.kind === 'engine' || (m.origin?.kind === 'user' && m.origin?.authorized === false)),
+      );
+      const awarenessIds = new Set(awarenessEvents.map((m) => m.id));
+      tailCache = { freshTail: scopedTail.filter((m) => !awarenessIds.has(m.id)), awarenessEvents };
+      return tailCache;
+    },
+  };
 
-      if (sections.length > 0) {
-        const combined = sections.join('\n\n');
-        const vaultTokens = estimateTokens(combined);
-        if (usedTokens + vaultTokens < maxTokens) {
-          messages.push({ role: 'user', content: combined });
-          usedTokens += vaultTokens;
-          injectedAnyScaffolding = true;
-        }
-      }
+  // Reservations taken off the top: the generated ack (slot 1000) and the post-budget lanes
+  // (B7 — the seven appends plus the loop's own tail-append). Before this they were spent
+  // after `usedTokens` stopped being consulted (research 06's write-only finding).
+  const offTheTop = SCAFFOLDING_ACK_RESERVE_TOKENS + POST_BUDGET_RESERVE_TOKENS;
+  const contentBudget = Math.max(0, maxTokens - systemTokens - offTheTop);
+
+  // ── Render every lane, then let the two-pass fit decide ──
+  const lanes = buildContentLanes(contentBudget);
+  const candidates: LaneCandidate[] = [];
+  for (const lane of lanes) {
+    let render: LaneRender | null = null;
+    try {
+      render = (await lane.render(laneCtx)) as LaneRender | null;
     } catch (err) {
-      logger.warn('Vault context injection failed', {
-        error: err instanceof Error ? err.message : String(err),
+      // One bad lane may not fail the whole assembly, and a swallowed failure may not read
+      // as "the lane had nothing" — it is recorded as empty with the error in the log.
+      logger.warn('lane render failed', {
+        lane: lane.id, error: err instanceof Error ? err.message : String(err),
       }, agentId);
     }
+    candidates.push({ lane: lane as Lane, render });
   }
 
-  // 3. Summaries from context_items
-  const rawSummaries = getContextSummaries(agentId);
+  const { emitted, report } = fitLanes(candidates, contentBudget, { offTheTopTokens: offTheTop });
 
-  // v2.7.7, scrub summaries that reference techniques the agent has
-  // freshly read in the current fresh tail. Pre-existing summaries
-  // describe earlier versions of the technique and are the path by
-  // which an agent ends up referencing scripts that no longer exist.
-  // Cheap recent-window scan: just enough to catch fresh reads.
-  let freshlyReadTechniques: Set<string> = new Set();
-  try {
-    const recentForScrub = getRecentMessages(agentId, 30);
-    freshlyReadTechniques = extractFreshlyReadTechniques(recentForScrub);
-  } catch { /* best effort, fall back to no scrub */ }
-  const summaries = scrubSummariesAgainstFreshTechniques(rawSummaries, freshlyReadTechniques);
-
-  if (summaries.length > 0) {
-    // Selection by meaning under a hard cap (budgetSummaries is the internal
-    // fallback when relevance scoring can't run, see selectSummariesByRelevance).
-    const summariesToInclude = await selectSummariesByRelevance(summaries, maxTokens - usedTokens, agentId);
-
-    if (summariesToInclude.length > 0) {
-      const summaryText = summariesToInclude.map(s => formatSummaryXml(s)).join('\n\n');
-      const summaryTokens = estimateTokens(summaryText);
-
-      const wrappedText = `═══ COMPRESSED HISTORY (summaries of earlier messages, not live conversation) ═══\nThe following are compressed summaries of older conversation history. These capture key facts and decisions but are NOT live messages. Do not respond to them directly, they are context only. Any "couldn't do X" / "not supported" noted here may be outdated (the platform gains tools over time); check your current tool list before repeating it.\n\n${summaryText}\n\n═══ END COMPRESSED HISTORY ═══`;
-
-      messages.push({ role: 'user', content: wrappedText });
-      usedTokens += summaryTokens;
-      injectedAnyScaffolding = true;
-    }
-  }
-
-  // 3.6. Relevant memory (remediation Phase 2, Invariant II): per-turn pull of
-  // OLD raw messages by meaning. Summaries cover compacted epochs; this covers
-  // facts still in un-compacted history that have fallen out of the fresh
-  // tail (told two sessions ago, never compacted, not yet vaulted by the
-  // Dreamer). Tight budget, cached per query so per-iteration context
-  // rebuilds don't re-run vector search.
-  try {
-    // D4: include a per-turn vault subsection on non-scaffolding turns (session
-    // start already injects the vault via retrieveForContext, so skip there).
-    const block = await buildRelevantMemoryBlock(agentId, !shouldFireScaffolding);
-    if (block && estimateTokens(block) < maxTokens - usedTokens) {
-      messages.push({ role: 'user', content: block });
-      usedTokens += estimateTokens(block);
-      injectedAnyScaffolding = true;
-    }
-  } catch (err) {
-    logger.debug('relevant-memory block failed', {
-      error: err instanceof Error ? err.message : String(err),
-    }, agentId);
-  }
-
-  // 3.7. Attempt ledger (remediation Phase 2, Invariant II / Cluster C):
-  // deterministic task-id join, NOT semantic, the engine knows which task
-  // the agent is on. What was already tried is engine fact and belongs in
-  // front of the model before it repeats itself ("works in circles"). The
-  // durable record (task_log + tasks.revert_count) existed all along; this
-  // surfaces it. Tight cap; rejects and recent transitions matter most.
-  try {
-    const { listTasks } = await import('../tracker/schema.js');
-    const { getRecentObservations, getRecentTransitions, formatEntryLine } = await import('../tracker/task-log.js');
-    const activeForLedger = listTasks({ status: 'in_progress', assignedTo: agentId }).slice(0, 2);
-    const sections: string[] = [];
-    for (const task of activeForLedger) {
-      const entries = [
-        ...getRecentObservations(task.id, 4),
-        ...getRecentTransitions(task.id, 4),
-      ].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-6);
-      if (entries.length === 0) continue;
-      let revertNote = '';
-      try {
-        const row = getDb().prepare(`SELECT ${revertCountExpr('w')} AS revert_count FROM work w WHERE w.id = ?`)
-          .get(task.id) as { revert_count: number | null } | undefined;
-        if (row?.revert_count) revertNote = `, reverted ${row.revert_count}x already`;
-      } catch { /* column may not exist on old DBs */ }
-      sections.push(`Task "${task.title}"${revertNote}:\n${entries.map((e) => `  ${formatEntryLine(e)}`).join('\n')}`);
-    }
-    if (sections.length > 0) {
-      const ledgerText = `═══ ATTEMPT LEDGER (engine record of work on your active tasks, do not repeat attempts already logged here) ═══\n${sections.join('\n\n')}\n═══ END ATTEMPT LEDGER ═══`;
-      const ledgerTokens = estimateTokens(ledgerText);
-      if (ledgerTokens < 800 && ledgerTokens < maxTokens - usedTokens) {
-        messages.push({ role: 'user', content: ledgerText });
-        usedTokens += ledgerTokens;
-        injectedAnyScaffolding = true;
-      }
-    }
-  } catch { /* tracker may be empty or absent */ }
-
-  // 3.5. Active task injection, v1: always; v2: session start only AND
-  // skip if the last 3 turns already mention any of those task IDs (Part V
-  // table). The skip avoids re-injecting the same task block when the agent
-  // is already actively discussing those tasks, common right after a
-  // session reset where they immediately picked up the work.
-  if (shouldFireScaffolding) try {
-    const { listTasks } = await import('../tracker/schema.js');
-    const activeTasks = listTasks({ status: 'in_progress', assignedTo: agentId });
-    if (activeTasks.length > 0) {
-      // Skip task scaffolding injection if the last 3 turns already mention
-      // these task IDs, no point repeating them in the prompt.
-      let allMentionedRecently = false;
-      {
-        const recent = getRecentMessages(agentId, 6); // ~3 outer turns of msgs
-        const recentText = recent.map(m => m.content).join(' ');
-        allMentionedRecently = activeTasks.every(t =>
-          recentText.includes(t.id) || recentText.includes(t.id.slice(0, 8)),
-        );
-      }
-      if (!allMentionedRecently) {
-        // Ticket stamps (2026-07-22): this standing view used to say "work on
-        // this" with zero state, steering the model into re-doing delivered
-        // work. Each line now carries the engine's stamp (one compact line)
-        // plus live step-sequence facts, so the model KNOWS state here.
-        const stampStmt = getStampDb().prepare(
-          `SELECT w.id AS id, ${stampColumns('w')},
-                  w.step_number AS step_number, w.total_steps AS total_steps,
-                  w.parent_id AS project_id
-             FROM work w WHERE ${taskScope('w')} AND w.id = ?`,
-        );
-        const taskLines = activeTasks.slice(0, 5).map(t => {
-          let line = `• ${t.title} (ID: ${t.id.slice(0, 8)}, priority: ${t.priority})`;
-          try {
-            const st = stampStmt.get(t.id) as TaskStampFields | undefined;
-            if (st) {
-              const stamp = renderTaskStamps(st);
-              const steps = renderStepFacts(st);
-              line += `\n  State: ${stamp}${steps ? ` | ${steps}` : ''}`;
-            }
-          } catch { /* stamps are best-effort */ }
-          if (t.description) line += `\n  Instructions: ${t.description.slice(0, 300)}${t.description.length > 300 ? '...' : ''}`;
-          if (t.notes) {
-            const lastNote = t.notes.split('\n').filter(Boolean).pop();
-            if (lastNote) line += `\n  Last note: ${lastNote.slice(0, 200)}`;
-          }
-          return line;
-        });
-        const taskContext = `═══ YOUR ACTIVE TASKS (from tracker, ground truth) ═══\nYou are currently assigned to these in_progress tasks. This is what you should be working on:\n\n${taskLines.join('\n\n')}\n\n═══ END ACTIVE TASKS ═══`;
-        const taskTokens = estimateTokens(taskContext);
-        if (usedTokens + taskTokens < maxTokens) {
-          messages.push({ role: 'user', content: taskContext });
-          usedTokens += taskTokens;
-          injectedAnyScaffolding = true;
-        }
-      }
-    }
-  } catch { /* tracker may not be available */ }
-
-  // 3.7. Continuity brief.
-  // v1: inject on every assembly when present.
-  // v2 (Phase 4 §C, Part XVIII §C): inject ONLY for the 3 turns after an
-  // emergency compaction set continuityBriefValidUntilTurn. After that
-  // window the fresh tail is authoritative and the brief falls away.
-  // Below, currentTurn = MAX(turn_number)+1, the same number v2/loop.ts
-  // uses to label the in-progress turn.
-  try {
-    const db = getDb();
-    const configRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
-    if (configRow?.config) {
-      const agentConfig = JSON.parse(configRow.config) as Record<string, unknown>;
-      const continuityBrief = agentConfig.continuityBrief as string | undefined;
-
-      let shouldInjectBrief = false;
-      // Inject only if we're inside the validUntilTurn window (set when the
-      // brief was generated). Outside that window, the brief is stale and the
-      // fresh tail is more authoritative anyway.
-      const validUntil = agentConfig.continuityBriefValidUntilTurn as number | undefined;
-      if (typeof validUntil === 'number' && validUntil > 0) {
-        const turnRow = db
-          .prepare('SELECT MAX(turn_number) AS max_turn FROM messages WHERE agent_id = ?')
-          .get(agentId) as { max_turn: number | null } | undefined;
-        const currentTurn = (turnRow?.max_turn ?? 0) + 1;
-        shouldInjectBrief = currentTurn < validUntil;
-      }
-
-      if (shouldInjectBrief && continuityBrief && continuityBrief.length > 50) {
-        // Wrap with explicit framing so the agent doesn't treat the brief
-        // as authoritative when it conflicts with the fresh tail.
-        const wrappedBrief = `═══ CONTINUITY BRIEF (snapshot from before the last compaction, the live conversation below is more recent and authoritative when in conflict) ═══\n\n${continuityBrief}\n\n═══ END CONTINUITY BRIEF ═══`;
-        const briefTokens = estimateTokens(wrappedBrief);
-        if (usedTokens + briefTokens < maxTokens) {
-          messages.push({ role: 'user', content: wrappedBrief });
-          usedTokens += briefTokens;
-          injectedAnyScaffolding = true;
-        }
-      }
-    }
-  } catch { /* best effort */ }
-
-  // 3.85. Agent scratchpad, agent-controlled outline / progress / checkpoint
-  // surface set via scratchpad_set. Re-injected every turn so the agent's
-  // working state survives compaction. Sits just before the ACTIVE USER
-  // DIRECTIVE so the directive remains closest to fresh tail.
-  try {
-    const db = getDb();
-    const cfgRow = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
-    if (cfgRow?.config) {
-      const cfg = JSON.parse(cfgRow.config) as Record<string, unknown>;
-      const scratchpad = typeof cfg.scratchpad === 'string' ? cfg.scratchpad.trim() : '';
-      if (scratchpad.length > 0) {
-        const block =
-          `═══ YOUR SCRATCHPAD (agent-maintained outline + progress, survives compaction; update with scratchpad_set) ═══\n` +
-          `${scratchpad}\n` +
-          `═══ END SCRATCHPAD ═══`;
-        const scratchTokens = estimateTokens(block);
-        if (usedTokens + scratchTokens < maxTokens) {
-          messages.push({ role: 'user', content: block });
-          usedTokens += scratchTokens;
-          injectedAnyScaffolding = true;
-        }
-      }
-    }
-  } catch (err) {
-    logger.warn('Scratchpad injection failed', {
-      error: err instanceof Error ? err.message : String(err),
-    }, agentId);
-  }
-
-  // 3.9. Active user directive, pin the user's most recent substantive ask
-  // verbatim, right before the fresh tail. Survives compaction (read fresh
-  // from messages every turn), so even when the original prompt has been
-  // folded into a summary, the agent still sees what's being asked in the
-  // user's own words. This is the "don't forget what we're doing" anchor
-  //, the single most important piece of context the system can preserve.
-  try {
-    const { getActiveUserDirective, formatDirectiveBlock } = await import('./directive.js');
-    // On a human/A2A turn, the directive must be the human's ask, never a
-    // scheduler/reminder event that just fired (OPEN-11). On an engine turn the
-    // engine event IS the directive, so keep engine rows eligible there.
-    // T-1: on a HUMAN turn, scope the directive to THIS conversation so a different
-    // human's task can't be pinned as the active directive (cross-conversation leak).
-    // On engine/A2A turns leave it unscoped (the engine event / A2A thread drives those).
-    const cp = turnContext?.counterparty;
-    // RR#1 (comms-audit): scope to the EXACT conv_key the pickup stamped on the
-    // trigger (chosenConversationId, mirrored into currentTurnConversationId), NOT re-derived
-    // from the resolved counterparty. resolveTurnCounterparty can downgrade the channel
-    // (inboundChannel ?? origin.channel) or substitute the owner name where the pickup
-    // used the raw sender, producing a key that does not equal the stamped one, which
-    // would empty the ACTIVE USER DIRECTIVE on the very turn meant to answer the user.
-    // Fall back to re-derivation only outside a turn (map unset).
-    const stampedConversationId = currentTurnConversationId.get(agentId);
-    // C16: on an A2A (agent) or engine turn, SUPPRESS the ACTIVE USER DIRECTIVE entirely.
-    // Those turns have their OWN directive source, the A2A payload / engine event, already
-    // scoped into the tail and rendered by the counterparty/engine header. Passing null here
-    // meant "unscoped = pick the newest user row across ALL conversations", which on an A2A
-    // turn selected the A2A inbound (role='user', no conversation) and rendered it as
-    // "ACTIVE USER DIRECTIVE" while the header said "this is NOT your user", identity
-    // conflation on exactly the turns the redesign isolates. The '__none__' sentinel makes
-    // getActiveUserDirective return null. Human turns keep their scoped directive.
-    // PHASE-2 T10I: there is no re-derivation fallback any more, and that is deliberate.
-    // The old `?? conversationKey(...)` could rebuild the STRING outside a turn; a
-    // `conversations.id` cannot be computed from a counterparty without a database read, and
-    // reading (or worse, minting) one here would put a second conversations writer inside
-    // the assembler. Unset map = no scope, which is the same "pick the newest user row" the
-    // old code reached when the map was unset. The turn sets the map at pickup.
-    const directiveConversationId =
-      (turnContext?.isEngineTurn || cp?.kind === 'agent')
-        ? '__none__'
-        : (cp && cp.kind === 'user' ? (stampedConversationId ?? null) : null);
-    const directive = getActiveUserDirective(agentId, {
-      excludeEngine: !turnContext?.isEngineTurn,
-      conversationId: directiveConversationId,
+  // ── Emit in SLOT order, with the generated ack at its declared position ──
+  const ackText = renderScaffoldingAck(report.admittedIds);
+  const messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }> = [];
+  let ackEmitted = false;
+  const pushAck = () => {
+    if (ackEmitted || !ackText) return;
+    ackEmitted = true;
+    // The ack is generated from the admitted lane ids and NOTHING else — no clock, no
+    // counts, no ids. It sits AHEAD of the tail boundary, so a single volatile byte here
+    // re-bills every message after it on every turn (research 25 H2; `lanes.test.ts` pins
+    // the purity, the assembled-array golden pins the bytes).
+    messages.push({ role: 'assistant', content: ackText });
+    report.grants.push({
+      id: 'lane.scaffolding-ack',
+      slot: MessageSlot.ScaffoldingAck,
+      priority: LANE_PRIORITY['lane.scaffolding-ack'],
+      requested: estimateTokens(ackText),
+      granted: estimateTokens(ackText),
+      status: 'admitted',
+      reason: `generated from ${report.admittedIds.length} admitted lane(s); reserved off the top`,
     });
-    if (directive) {
-      const block = formatDirectiveBlock(directive);
-      const directiveTokens = estimateTokens(block);
-      if (usedTokens + directiveTokens < maxTokens) {
-        messages.push({ role: 'user', content: block });
-        usedTokens += directiveTokens;
-        injectedAnyScaffolding = true;
-      }
-    }
-  } catch (err) {
-    logger.warn('Active directive injection failed', {
-      error: err instanceof Error ? err.message : String(err),
-    }, agentId);
+  };
+  for (const e of emitted) {
+    if (e.slot > MessageSlot.ScaffoldingAck) pushAck();
+    messages.push(...e.messages);
   }
+  pushAck();
 
-  // Single combined ack for ALL scaffolding sections. Pre-2026-05-01 each
-  // section pushed its own assistant ack, five separate scaffolding
-  // messages. Now one ack closes them all. The ack also names the
-  // source-priority hierarchy explicitly so the agent doesn't anchor
-  // on a stale brief or vault entry when the live conversation
-  // (below) shows different state, a common failure mode that drove
-  // verification spirals before this framing was added.
-  if (injectedAnyScaffolding) {
-    const combinedAck = 'Understood, I have reviewed my background context (briefing, vault, summaries, active tasks, continuity brief, scratchpad, active user directive). Source priority for this turn: active user directive > my scratchpad > live conversation below > active tracker tasks > continuity brief > vault entries > briefing. When sources disagree, trust the most recent and most specific. The active user directive is the WHAT, never lose it. The scratchpad is my own working outline; I maintain it via scratchpad_set as I make progress and read from it when I need to remember where I am.';
-    messages.push({ role: 'assistant', content: combinedAck });
-    usedTokens += estimateTokens(combinedAck);
-  }
+  // NOTE: the current clock time is intentionally NOT injected here. It is volatile per
+  // call, and injecting it BEFORE the fresh tail would break prompt caching for the entire
+  // history. It is the LAST engine message in the loop (msg.current-time), after the tail.
 
-  // NOTE: the current clock time is intentionally NOT injected here. It is a
-  // volatile, per-call value, and injecting it BEFORE the fresh tail would
-  // break prompt caching for the entire conversation history (the cache prefix
-  // would diverge at the timestamp every turn). It is instead injected as the
-  // LAST engine message in the loop (msg.current-time), after the fresh tail,
-  // where its churn costs no cache. See renderCurrentTimeMessage().
+  const tailGrant = report.grants.find((g) => g.id === 'lane.fresh-tail');
+  const tailPayload = (candidates.find((c) => c.lane.id === 'lane.fresh-tail')?.render?.payload ?? null) as TailPayload | null;
+  // FA-M1: >0 means the model lost recent turns from its live view. The dropped rows are
+  // persisted and later summarized, so it is live-view loss, not data loss.
+  const freshTailDropped = tailPayload?.dropped ?? 0;
 
-  // 4. Fresh tail, exclude user messages that arrived after the current turn
-  // started so they get a clean run via the wakeup mechanism instead of being
-  // buried mid-context where the LLM might ignore them
-  const freshTailCount = policy.freshTailCount;
-  const turnCutoff = turnBoundary.get(agentId);
-  const freshTailRaw = getRecentMessages(agentId, freshTailCount, turnCutoff);
-
-  // Counterparty scoping (attribution redesign, Phase 4), the live
-  // conversation is scoped to the ONE counterparty this turn addresses, so the
-  // model can never see two senders' messages mixed together (the root of the
-  // "the PM agent is asking me two things" conflation).
-  //   • User turn  → the human conversation only (A2A inbound + the agent's own
-  //                  send_to_agent activity stripped; engine events stay for now,
-  //                  Phase 5 moves them to a dedicated EVENTS lane).
-  //   • A2A turn   → ONLY the current A2A thread + the agent's own output. The
-  //                  human's live messages are excluded; the agent answers about
-  //                  the user's work from MEMORY (vault/summaries/tracker), not
-  //                  the raw user tail. This is what the redesign turns on.
-  // Messages are untouched on disk, this only shapes what THIS turn's model
-  // call sees; memory/dreamer/vault are unaffected.
-  const scopedTail = turnContext?.counterparty?.kind === 'agent'
-    ? scopeToA2AThread(freshTailRaw, turnContext.counterparty.threadId)
-    : turnContext?.isEngineTurn
-    ? scopeToEngineTurn(freshTailRaw)
-    : scopeToHumanConversation(freshTailRaw, turnContext?.counterparty, currentTurnConversationId.get(agentId) ?? null);
-
-  // ── EVENTS lane (attribution redesign, Phase 5) ──
-  // Engine-origin messages (tracker/scheduler/healer/system notices) are events
-  // that HAPPENED, not the user or another agent talking. Today they ride in
-  // the live tail as role='user' with a [SOURCE: …] marker, so a weak model can
-  // mistake an engine notice for a peer message. Pull them OUT of the live
-  // conversation and render them as ONE clearly-labeled background block. On a
-  // clean turn (no engine events) this is a no-op, the live conversation is
-  // unchanged. Actionable engine directives (STOP / gate refusals / nudges)
-  // are tool_results or registry injections, not these role='user' notices, so
-  // they keep their salience and are unaffected.
-  // Only role='user' engine NOTICES (tracker/scheduler/healer/etc. that today
-  // masquerade as user messages) go to the EVENTS lane. role='system' engine
-  // messages are left in place, the message builder already skips them, and
-  // surfacing them here would change long-standing behavior.
-  // EVENTS / awareness lane: engine notices AND unauthorized human inbound (mailbox
-  // notifications about the owner's inbox, unknown senders), things the agent should
-  // be AWARE of but is NOT in conversation with. Authorized human inbound and the
-  // current A2A counterparty stay in the live tail. (MESSAGE-ATTRIBUTION-REDESIGN §3, §4.4.)
-  // An action-required engine-origin A2A message (Healer QUESTION, PM escalation,
-  // destructive-gate approval token) is kept FULL in the live tail on its engine
-  // turn instead of being collapsed into the truncated awareness gist, so the
-  // receiver sees the whole directive it must act on. Everything else engine-origin
-  // still goes to the awareness lane.
-  const keepFullId = turnContext?.engineEventKeepFullId ?? null;
-  const awarenessEvents = scopedTail.filter((m) =>
-    m.role === 'user' &&
-    (keepFullId ? m.id !== keepFullId : true) &&
-    (m.origin?.kind === 'engine' || (m.origin?.kind === 'user' && m.origin?.authorized === false)),
-  );
-  const awarenessIds = new Set(awarenessEvents.map((m) => m.id));
-  const freshTail = scopedTail.filter((m) => !awarenessIds.has(m.id));
-  if (awarenessEvents.length > 0) {
-    const eventLines = awarenessEvents.slice(-10).map((m) => {
-      const o = m.origin;
-      const rawContent = typeof m.content === 'string' ? m.content : '';
-      const body = rawContent
-        .replace(/^\s*\[[^\]]*\]\s*/, '') // drop the leading [SOURCE: …] marker
-        .replace(/\s+/g, ' ')
-        .trim();
-      // Engine events are labeled by intent. An unauthorized human inbound is a
-      // notification ABOUT the owner, label it by channel + sender so the agent
-      // knows it is not addressed to it.
-      const label = o?.kind === 'user'
-        ? `${o.channel ?? 'msg'} notice${o.senderName ? ` from ${o.senderName}` : ''}`
-        : (o?.intent ?? 'event');
-      // RC-5.4: build the gist from the STRUCTURED inbound_meta fields when present
-      // instead of slicing 400 chars of the notification boilerplate. The MAILBOX EVENT
-      // preamble alone is ~407 chars, so the raw slice often carried ZERO email metadata
-      // (the model woke knowing only "an email arrived" and improvised). For a mailbox
-      // notification (user-kind awareness event) surface sender + subject + a short
-      // preview; fall back to the raw slice when there is no structured meta.
-      const structured = o?.kind === 'user' ? buildAwarenessGist(m.inboundMeta, rawContent) : null;
-      const gist = structured ?? body.slice(0, 400);
-      // Time-awareness: stamp each event with when it happened so notification
-      // staleness ("arrived 3 hours ago" vs "just now") is subtraction, not a
-      // guess. Deterministic per row, same cache property as the tail stamps.
-      const at = renderMessageTimeStamp(m.createdAt);
-      return `• ${at ?? ''}[${label}] ${gist}`;
-    });
-    messages.push({
-      role: 'user',
-      content:
-        '═══ EVENTS & NOTICES (things that happened, and notifications addressed to the ' +
-        'owner that you are AWARE of but are NOT in conversation with, NOT the person ' +
-        'you are replying to below. Surface one to the owner only if it genuinely ' +
-        'matters; never reply to its sender) ═══\n' +
-        eventLines.join('\n'),
-    });
-  }
-
-  // Pre-cap oversized tool_result content BEFORE budgeting. capLargeToolResultsInPlace
-  // runs later (post-parse, on the in-memory message array) but by then it's too
-  // late, budgetFreshTail has already used the raw uncapped token counts to decide
-  // what fits. Without this pre-cap, a single 5.9MB tool_result would consume the
-  // entire context budget and evict everything older, including the user's
-  // actual question, leaving the model with no idea what was being asked.
-  const cappedFreshTail = capLargeToolResultStrings(freshTail);
-
-  // Budget: only include messages that fit
-  const tailMessages = budgetFreshTail(cappedFreshTail, maxTokens - usedTokens);
-  // FA-M1: budgetFreshTail drops whole groups oldest-first when the tail can't
-  // fit. The output is a suffix of the input, so the length delta is exactly the
-  // number of evicted messages. Captured here (before later orphan sanitization,
-  // which drops for a different reason) so the loop can surface the live-view loss.
-  const freshTailDropped = Math.max(0, cappedFreshTail.length - tailMessages.length);
-
-  // Sanitize fresh tail: drop orphaned tool_result messages whose tool_use
-  // was trimmed by budget constraints, and ensure valid pairing
-  let sanitized = sanitizeToolPairs(tailMessages);
-
-  // ── v2 stub-and-store (Part XVIII §E) ──
-  // After STUB_AFTER_TURNS turns, raw tool_result content gets replaced with
-  // a stub. Combined with vault as long-term memory (§C), the agent doesn't
-  // need raw results kept around. Without this, even with per-tool result
-  // caps and lazy loading, context grows linearly with turn count over a
-  // long session. With it, context stays roughly flat, old tool results
-  // become stubs and the model uses the vault for findings that matter.
-  //
-  // NULL turn_number → treated as "very old" (pre-v2 messages), they get
-  // stubbed too. v2-persisted messages have turn_number set; the rare gap
-  // is user messages (persisted by chat route) which are NULL but never
-  // tool_result anyway, so stubOldToolResults skips them.
-  sanitized = stubOldToolResults(sanitized, agentId);
-
-  // Auto-load tools that appear in recent assistant tool_use blocks.
-  // This handles the case where an agent previously loaded a tool but the
-  // server restarted (in-memory session state was lost). Without this,
-  // the agent would need to re-call load_tool_docs for tools it's already
-  // been using in this conversation.
-  try {
-    const { markToolsLoaded } = await import('../tools/tool-docs.js');
-    const seenToolNames = new Set<string>();
-    for (const msg of sanitized) {
-      if (msg.role !== 'assistant') continue;
-      try {
-        const parsed = JSON.parse(msg.content);
-        if (Array.isArray(parsed)) {
-          for (const block of parsed) {
-            if (block?.type === 'tool_use' && typeof block.name === 'string') {
-              seenToolNames.add(block.name);
-            }
-          }
-        }
-      } catch { /* not JSON, skip */ }
-    }
-    if (seenToolNames.size > 0) {
-      markToolsLoaded(agentId, [...seenToolNames]);
-    }
-  } catch { /* best effort */ }
-
-  for (const msg of sanitized) {
-    const parsed = parseMessageContent(msg);
-
-    if (msg.role === 'tool') {
-      // Tool results go as user role with content blocks
-      messages.push({ role: 'user', content: parsed as Anthropic.ContentBlockParam[] });
-    } else if (msg.role === 'user' || msg.role === 'assistant') {
-      // For assistant messages with thinking-mode reasoning_content, carry
-      // it through as a sibling field so the model.ts dispatch can echo it
-      // back to the provider on the next request. DeepSeek explicitly
-      // requires this on tool-call follow-up turns; other providers
-      // ignore the field harmlessly.
-      const out: { role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[]; reasoningContent?: string } = {
-        role: msg.role,
-        // Time-awareness: text rows carry their recorded time so the model can
-        // subtract against the current-time footer (see the stamp helpers above).
-        content: stampTextContent(parsed, msg.createdAt),
-      };
-      if (msg.role === 'assistant' && msg.reasoningContent) {
-        out.reasoningContent = msg.reasoningContent;
-      }
-      messages.push(out as { role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] });
-    }
-    // Skip system messages in history
-  }
-
-  // ── Prune old image / document blocks from tool_result history ──
-  // file_read on an image returns the image as a base64 content block
-  // inside the tool_result. Each ~647KB PNG ≈ 250K tokens base64. After
-  // 4 file_reads on slide PNGs, the fresh tail can exceed the model's
-  // context window before any text is even considered (user reported
-  // inputEstimate=777K with messageCount=3, caused entirely by stacked
-  // image blocks). Only the MOST RECENT image is needed for vision; older
-  // ones can be replaced with a text stub. The agent can re-call
-  // file_read on the path if it genuinely needs to re-examine.
-  // ── Integrity pass (R6), post-combine repairs, one named stage ──
-  // prune old images, cap large tool results, strip leading orphans, merge
-  // consecutive roles, sanitize orphaned tool blocks, strip a leading
-  // tool_result, pop a trailing assistant. See applyIntegrityPass.
+  // ── Integrity pass (R6): post-combine repairs, one named stage ──
   let merged = applyIntegrityPass(messages, agentId);
+
+  // ── Post-budget lanes (B7). Each is DECLARED in `lanes.ts` with a reserved allowance, so
+  // the fit above already set their tokens aside instead of spending them after the fact. ──
+  const postBudget: string[] = [];
+  const consumedOneShotFlags: ConsumedOneShotFlags = {};
 
   // Guard: if we have zero messages after all filtering, pull the last user message
   // directly from DB so the agent at least sees what it's supposed to respond to.
-  //
-  // CRITICAL: respect session_started_at. After a reset_session call, the
-  // assembler is asked to build context for the post-reset turn. If we
-  // recover a user message from BEFORE the reset boundary, the model
-  // re-processes "Reset your session" (or any natural phrasing of it) and
-  // calls reset_session again → loop. The earlier `NOT LIKE '%reset_session%'`
-  // filter only caught the snake_case tool name; real users say "reset" or
-  // "fresh start" or "wipe your context", none of which match.
-  //
-  // Post-reset behavior: when session_started_at is set and no user message
-  // exists after that boundary, return an empty messages array. The v2 loop's
-  // empty-messages guard (loop.ts:459) will exit cleanly to idle. A generic
-  // "Continue with your current task" fallback would conflict with FRESH_START's
-  // "wait for the user's next message" instruction and trigger the agent to
-  // spam-poll the tracker looking for work.
+  // CRITICAL: respect session_started_at — recovering a pre-reset message makes the model
+  // re-process "reset your session" and call reset_session again → loop.
   if (merged.length === 0) {
+    postBudget.push('lane.empty-context-fallback');
     try {
       const db = getDb();
       const sessionRow = db.prepare(
-        'SELECT session_started_at FROM agents WHERE id = ?'
+        'SELECT session_started_at FROM agents WHERE id = ?',
       ).get(agentId) as { session_started_at: string | null } | undefined;
       const sessionBoundary = sessionRow?.session_started_at ?? null;
 
       const baseConditions = [
-        "agent_id = ?",
+        'agent_id = ?',
         "role = 'user'",
         "content NOT LIKE '[System:%'",
-        // Belt + suspenders: still skip messages that literally name the tool.
         "content NOT LIKE '%reset_session%'",
       ];
       const params: unknown[] = [agentId];
@@ -1370,15 +1329,10 @@ async function assembleMessageContext(
         }, agentId);
         merged.push({ role: 'user', content: lastUserMsg.content });
       } else if (sessionBoundary) {
-        // Fresh post-reset session with nothing to process, let the loop's
-        // empty-messages guard idle the agent. No fallback message.
         logger.info('Context assembly: post-reset with no user message after boundary, returning empty for clean idle', {
-          sessionBoundary,
-          agentId,
+          sessionBoundary, agentId,
         }, agentId);
       } else {
-        // No session boundary set and no recoverable message, preserve
-        // legacy fallback so the agent has something to respond to.
         logger.error('Context assembly produced 0 messages after filtering and no recoverable user message', {
           agentId,
         }, agentId);
@@ -1389,52 +1343,37 @@ async function assembleMessageContext(
     }
   }
 
-  // If this is a new session, inject a brief context note into the first user message
-  // so the agent understands the conversation was intentionally reset.
-  // This only fires once, after the agent responds, there will be assistant messages
-  // in the session and this won't trigger again.
+  // If this is a new session, prepend a context note to the first user message so the agent
+  // understands the conversation was intentionally reset.
   try {
     const db = getDb();
     const sessionRow = db.prepare('SELECT session_started_at FROM agents WHERE id = ?').get(agentId) as { session_started_at: string | null } | undefined;
     if (sessionRow?.session_started_at) {
       const assistantInSession = db.prepare(
-        "SELECT COUNT(*) as cnt FROM messages WHERE agent_id = ? AND role = 'assistant' AND created_at >= (unixepoch(?) * 1000)"
+        "SELECT COUNT(*) as cnt FROM messages WHERE agent_id = ? AND role = 'assistant' AND created_at >= (unixepoch(?) * 1000)",
       ).get(agentId, sessionRow.session_started_at) as { cnt: number };
       if (assistantInSession.cnt === 0 && merged.length > 0 && merged[merged.length - 1].role === 'user') {
         const lastMsg = merged[merged.length - 1];
         if (typeof lastMsg.content === 'string') {
+          postBudget.push('lane.new-session');
           lastMsg.content = `[New Session] Your previous conversation history has been archived. You still have access to your long-term memory via vault_search. You DO NOT have the detailed conversation from before, only summaries. If the user references something specific from before, use vault_search to find it.\n\n${lastMsg.content}`;
         }
       }
     }
   } catch { /* session_started_at column may not exist yet */ }
 
-  // If the user pressed Stop since the last turn, inject a stop marker into
-  // the last user message telling the model to abandon its prior plan. The
-  // flag is set by stopAgent() in runtime.ts and cleared here after we've
-  // applied it. The marker exists only in the model's in-memory context, 
-  // it is never persisted to the messages table, so the dashboard chat feed
-  // does not show it to the user.
+  // ── One-shot engine markers (A2A preempt, Stop). PURE READ (S3): the flags are READ here
+  // and CLEARED by the turn that owns them. Assembly used to `UPDATE agents SET config` from
+  // the read path, so a probe, a retry or a dry-run silently consumed a one-shot marker. ──
   try {
     const db = getDb();
     const row = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
     if (row?.config) {
       const config = JSON.parse(row.config) as Record<string, unknown>;
-      // ── A2A preempt marker (v2.5.38) ──
-      // When another agent's wake-intent A2A delivery preempted this
-      // agent's mid-flight turn, the transport set a2aPreemptPending in
-      // this agent's config. Inject a context note on the next assembly
-      // explaining what happened, encouraging a response, warning about
-      // possible orphan tool_use, and surfacing the recent preempt
-      // count so the agent can self-throttle if pinged repeatedly.
-      // Prepend to the LAST user message (the inbound A2A) so the
-      // model reads the framing immediately before the message itself.
+
       if (config.a2aPreemptPending && typeof config.a2aPreemptPending === 'object') {
         const p = config.a2aPreemptPending as {
-          fromName?: string;
-          intent?: string;
-          threadShort?: string;
-          recentCount?: number;
+          fromName?: string; intent?: string; threadShort?: string; recentCount?: number;
         };
         const fromName = p.fromName ?? 'another agent';
         const intent = p.intent ?? 'message';
@@ -1462,63 +1401,41 @@ async function assembleMessageContext(
               ...(lastMsg.content as Anthropic.ContentBlockParam[]),
             ];
           }
+          postBudget.push('lane.a2a-preempt');
+          consumedOneShotFlags.a2aPreemptPending = true;
         }
-        // Clear the pending flag so the marker fires exactly once.
-        delete config.a2aPreemptPending;
-        db.prepare("UPDATE agents SET config = ? WHERE id = ?").run(JSON.stringify(config), agentId);
       }
 
       if (config.stopMarkerPending === true) {
-        // v2.5.35, Wording fix. Pre-fix the marker said "Read the next
-        // user message as a fresh request", but the marker is PREPENDED
-        // to that user message, not placed before a separate one. Models
-        // (especially weaker ones) read "the next user message" as "wait
-        // for the message that comes after this one to arrive" and just
-        // sit idle, producing no response. Then the user re-sends the
-        // same prompt, the flag has been cleared, no marker fires, and
-        // the second send goes through normally, that's the "first
-        // prompt after Stop gets ignored" symptom reported in v2.5.34
-        // and earlier.
+        // v2.5.35 wording: the marker is PREPENDED to the user's new message, so it must not
+        // say "the next user message" — weaker models read that as "wait for one to arrive".
         const STOP_MARKER = '[Context note: the user just hit the Stop button on your previous turn. Your previous plan is CANCELLED. Do NOT continue the tool loop you were executing. Do NOT retry the last action with a different approach. Do NOT resume your prior work. The user\'s new request follows IMMEDIATELY BELOW, respond to that message as a fresh ask, not whatever you were doing before.]';
         if (merged.length > 0 && merged[merged.length - 1].role === 'user') {
           const lastMsg = merged[merged.length - 1];
           if (typeof lastMsg.content === 'string') {
             lastMsg.content = `${STOP_MARKER}\n\n${lastMsg.content}`;
           } else if (Array.isArray(lastMsg.content)) {
-            // Content blocks (e.g. tool_result), prepend a text block
             lastMsg.content = [
               { type: 'text', text: STOP_MARKER } as Anthropic.TextBlockParam,
               ...(lastMsg.content as Anthropic.ContentBlockParam[]),
             ];
           }
+          postBudget.push('lane.stop-marker');
+          consumedOneShotFlags.stopMarkerPending = true;
         }
-        // Clear the flag so the marker fires exactly once.
-        config.stopMarkerPending = false;
-        db.prepare("UPDATE agents SET config = ? WHERE id = ?").run(JSON.stringify(config), agentId);
       }
     }
   } catch { /* config may not exist or be malformed */ }
 
   // ── A2A reply salience (v3.1.10) ──
-  // On a dedicated A2A turn the inbound A2A must be the SALIENT, actionable
-  // item, exactly as it is on a natural (just-arrived / preempt) turn, where
-  // the model reliably replies via send_to_agent. On a FORCED A2A turn (a
-  // still-unreplied A2A that a prior user turn deferred) the A2A is buried
-  // behind the already-answered user exchange, so a weak model never realizes
-  // it owes a reply and writes suppressed chat text instead. Fix: move the
-  // most-recent inbound A2A to the tail and prepend a reply directive, so the
-  // forced turn looks like a natural one. Only runs on A2A turns; on user turns
-  // the A2A was already stripped from the tail, so this is a no-op there.
+  // On a FORCED A2A turn the inbound A2A is buried behind an already-answered user exchange,
+  // so a weak model never realizes it owes a reply. Move the most-recent unreplied A2A to
+  // the tail with a reply directive, so the forced turn looks like a natural one.
   if (turnContext?.isA2ATurn && merged.length > 0) {
-    // Threads this agent has ALREADY replied to (durable, survives across the
-    // tool-iterations of a single turn). Once the agent replies mid-turn, the
-    // a2a_replies row appears here, so we stop re-surfacing that A2A and remove
-    // it, otherwise the directive would re-fire each iteration and the model
-    // would send the same reply again and again.
     const repliedShorts = new Set<string>();
     try {
       const rows = getDb().prepare(
-        "SELECT DISTINCT substr(thread_id,1,8) AS s FROM a2a_replies WHERE agent_id = ?",
+        'SELECT DISTINCT substr(thread_id,1,8) AS s FROM a2a_replies WHERE agent_id = ?',
       ).all(agentId) as Array<{ s: string }>;
       for (const r of rows) repliedShorts.add(r.s);
     } catch { /* table may not exist yet */ }
@@ -1528,14 +1445,11 @@ async function assembleMessageContext(
     };
     const isA2AMsg = (m: { role: string; content: string | Anthropic.ContentBlockParam[] }) =>
       m.role === 'user' && typeof m.content === 'string' && A2A_INBOUND_RE.test(m.content);
-    // Drop already-replied A2As so the agent doesn't re-engage them.
     merged = merged.filter((m) => {
       if (!isA2AMsg(m)) return true;
       const short = threadShortOf(m.content as string);
       return !(short && repliedShorts.has(short));
     });
-    // Surface the most-recent still-unreplied A2A at the tail with a reply
-    // directive, so a forced turn looks like a natural (just-arrived) one.
     if (merged.length > 0 && !isA2AMsg(merged[merged.length - 1])) {
       let idx = -1;
       for (let i = merged.length - 1; i >= 0; i--) {
@@ -1555,19 +1469,49 @@ async function assembleMessageContext(
             `above were already handled; do not re-answer them.]\n\n${a2aMsg.content}`;
         }
         merged.push(a2aMsg);
+        postBudget.push('lane.a2a-salience');
       }
     }
   }
 
+  // Record the post-budget lanes that actually fired, against their declared reserves.
+  for (const l of POST_BUDGET_LANES) {
+    const fired = postBudget.includes(l.id);
+    report.grants.push({
+      id: l.id,
+      slot: l.slot,
+      priority: Number.MAX_SAFE_INTEGER,
+      requested: fired ? l.reserveTokens : 0,
+      granted: fired ? l.reserveTokens : 0,
+      status: fired ? 'admitted' : 'empty',
+      reason: fired
+        ? `post-budget lane fired; ${l.reserveTokens} tokens reserved off the top (${l.measured})`
+        : 'post-budget lane did not fire on this turn',
+    });
+  }
+  report.grants.sort((a, b) => a.slot - b.slot);
+
   logger.info('Context assembled', {
-    systemPromptTokens: estimateTokens(systemPrompt),
-    summaryCount: summaries.length,
-    freshTailCount: tailMessages.length,
+    systemPromptTokens: systemTokens,
+    contentBudget,
+    reservedOffTheTop: offTheTop,
+    spentTokens: report.spentTokens,
+    admittedLanes: report.admittedIds.length,
+    rejectedLanes: report.grants.filter((g) => g.status === 'rejected').length,
+    truncatedLanes: report.grants.filter((g) => g.status === 'truncated').length,
+    overBudgetEvents: report.overBudget.length,
+    freshTailCount: tailGrant?.granted ?? 0,
     totalMessages: merged.length,
-    estimatedTokens: usedTokens,
   }, agentId);
 
-  return { systemPrompt, systemVolatile: "", messages: merged, freshTailDropped };
+  return {
+    systemPrompt,
+    systemVolatile: '',
+    messages: merged,
+    freshTailDropped,
+    allocation: report,
+    consumedOneShotFlags,
+  };
 }
 
 // ── Helpers ──
@@ -1587,19 +1531,19 @@ ${summary.content}
 // survives as the internal fallback when relevance scoring can't run (see
 // selectSummariesByRelevance), never as a window-filling default.
 
-const SUMMARY_RELEVANCE_BUDGET_TOKENS = 6000;
-const SUMMARY_RECENCY_FLOOR = 2;
+// PHASE-3 T3: `SUMMARY_RELEVANCE_BUDGET_TOKENS = 6000` and `SUMMARY_RECENCY_FLOOR = 2`
+// (§T0-B E `:1587`/`:1588`) are lane declarations now — `LANE_LIMITS['lane.summaries']` —
+// and the caller passes the lane's own granted ceiling instead of this function re-deriving
+// a share of a budget the gates had already eaten.
 
 async function selectSummariesByRelevance(
   summaries: Summary[],
-  availableTokens: number,
+  budget: number,
   agentId: string,
 ): Promise<Summary[]> {
-  const budget = Math.min(Math.floor(availableTokens * SUMMARY_SHARE), SUMMARY_RELEVANCE_BUDGET_TOKENS);
-
   // Continuity floor: the newest summaries are the compressed tail of the
   // live thread and always ride along.
-  const floor = summaries.slice(-SUMMARY_RECENCY_FLOOR);
+  const floor = summaries.slice(-laneLimit('lane.summaries', 'tokens', 'recencyFloor'));
   const picked = new Set(floor.map((s) => s.id));
   let used = floor.reduce((t, s) => t + s.tokenCount, 0);
 
@@ -1614,8 +1558,8 @@ async function selectSummariesByRelevance(
       const { vectorSearch } = await import('./vector-search.js');
       const hits = await vectorSearch(queryText, agentId, {
         sourceType: 'summary',
-        limit: 12,
-        minSimilarity: 0.3,
+        limit: laneLimit('lane.summaries', 'retrieval', 'limit'),
+        minSimilarity: laneLimit('lane.summaries', 'retrieval', 'minSimilarity'),
       });
       const byId = new Map(summaries.map((s) => [s.id, s]));
       for (const hit of hits) {
@@ -1646,8 +1590,10 @@ async function selectSummariesByRelevance(
 
 // ── Relevant memory block (per-turn, relevance mode only) ──
 
-const RELEVANT_MEMORY_BUDGET_TOKENS = 1200;
-const RELEVANT_MEMORY_VAULT_BUDGET_TOKENS = 2000; // D4: per-turn vault subsection
+// PHASE-3 T3: the two budgets (§T0-B E `:1646`/`:1647`), the four retrieval knobs
+// (F `:1755`/`:1758`/`:1805`/`:1807`), the row caps (C `:1748`/`:1777`/`:1818`/`:1684`) and
+// the char slices (D `:1688`/`:1694`/`:1703`/`:1771`/`:1812`) are all
+// `LANE_LIMITS['lane.relevant-memory']` declarations now.
 const RELEVANT_MEMORY_CACHE_MS = 60_000;
 // Derived-data cache only (loss = recompute); keyed by (agent, includeVault),
 // validated by query text, so N tool iterations of one turn run vector search
@@ -1684,17 +1630,17 @@ function stripRecallEnvelope(content: string): string {
 // pushed the user row out of the 3-row window.
 function buildPerTurnRecallQuery(agentId: string): string {
   let recent: ReturnType<typeof getRecentMessages> = [];
-  try { recent = getRecentMessages(agentId, 10); } catch { return ''; }
+  try { recent = getRecentMessages(agentId, laneLimit('lane.relevant-memory', 'rows', 'recallWindow')); } catch { return ''; }
   const humanUser = recent
     .filter((m) => m.role === 'user' && typeof m.content === 'string' && !isSyntheticRow(m.content))
     .map((m) => m.content as string);
-  const q = humanUser.join('\n').slice(-500);
+  const q = humanUser.join('\n').slice(-laneLimit('lane.relevant-memory', 'chars', 'recallHead'));
   if (q.trim().length > 10) return q;
   for (let i = recent.length - 1; i >= 0; i--) {
     const c = recent[i]?.content;
     if (typeof c !== 'string') continue;
     const stripped = stripRecallEnvelope(c).replace(/\s+/g, ' ').trim();
-    if (stripped.length > 10) return stripped.slice(-500);
+    if (stripped.length > 10) return stripped.slice(-laneLimit('lane.relevant-memory', 'chars', 'recallTail'));
   }
   return '';
 }
@@ -1703,7 +1649,8 @@ function buildPerTurnRecallQuery(agentId: string): string {
 function ftsMessageHits(query: string, agentId: string, limit: number): Array<{ sourceId: string }> {
   try {
     const db = getDb();
-    const safe = query.replace(/["']/g, ' ').split(/\s+/).filter((w) => w.length > 2).slice(0, 8).join(' ');
+    const safe = query.replace(/["']/g, ' ').split(/\s+/).filter((w) => w.length > 2)
+      .slice(0, laneLimit('lane.relevant-memory', 'chars', 'queryWords')).join(' ');
     if (!safe) return [];
     const rows = db.prepare(
       `SELECT m.id FROM messages_fts fts JOIN messages m ON m.rowid = fts.rowid
@@ -1715,7 +1662,11 @@ function ftsMessageHits(query: string, agentId: string, limit: number): Array<{ 
   }
 }
 
-async function buildRelevantMemoryBlock(agentId: string, includeVault: boolean): Promise<string | null> {
+async function buildRelevantMemoryBlock(
+  agentId: string,
+  includeVault: boolean,
+  policy: ReturnType<typeof contextWindowPolicy>,
+): Promise<string | null> {
   const queryText = buildPerTurnRecallQuery(agentId);
   if (queryText.trim().length <= 10) return null;
 
@@ -1748,17 +1699,25 @@ async function buildRelevantMemoryBlock(agentId: string, includeVault: boolean):
     // The fresh tail already includes these; this block is only for what fell
     // out. getRecentMessages is session-aware, so a fact taught just before a
     // reset stays ELIGIBLE (it is outside the new session's tail).
-    const tailIds = new Set(getRecentMessages(agentId, 80).map((m) => m.id));
+    // REQUIREMENT B6, THE RECONCILE. This read was `getRecentMessages(agentId, 80)` — a
+    // literal copy of `getFreshTailCount`'s 200K-window answer. On a 32K model the tail
+    // showed 40 rows while this exclusion window claimed 80, so 40 rows were excluded from
+    // recall that were NOT in the tail: they were unreachable by either path. One number,
+    // one owner (`memory/budget.ts`), read off the policy this assembly is already using.
+    const tailIds = new Set(getRecentMessages(agentId, policy.freshTailCount).map((m) => m.id));
 
     // --- older raw messages by meaning ---
     let msgHits: Array<{ sourceId: string }>;
     if (queryEmbedding) {
       const { vectorSearch } = await import('./vector-search.js');
       msgHits = await vectorSearch(queryText, agentId, {
-        sourceType: 'message', limit: 8, minSimilarity: 0.35, queryEmbedding,
+        sourceType: 'message',
+        limit: laneLimit('lane.relevant-memory', 'retrieval', 'messageLimit'),
+        minSimilarity: laneLimit('lane.relevant-memory', 'retrieval', 'messageMinSimilarity'),
+        queryEmbedding,
       });
     } else {
-      msgHits = ftsMessageHits(queryText, agentId, 8);
+      msgHits = ftsMessageHits(queryText, agentId, laneLimit('lane.relevant-memory', 'retrieval', 'ftsLimit'));
     }
     let usedMsg = 0;
     // Selection stays similarity-ranked (best hits win the budget), but
@@ -1771,13 +1730,13 @@ async function buildRelevantMemoryBlock(agentId: string, includeVault: boolean):
       if (!row || typeof row.content !== 'string') continue;
       if (row.content.trim().startsWith('[') && row.content.includes('"type"')) continue; // tool JSON rows
       if (isSyntheticRow(row.content)) continue;
-      const snippet = row.content.replace(/\s+/g, ' ').slice(0, 300);
+      const snippet = row.content.replace(/\s+/g, ' ').slice(0, laneLimit('lane.relevant-memory', 'chars', 'hitPreview'));
       const line = `- [${row.created_at}] ${row.role}: ${snippet}`;
       const lineTokens = estimateTokens(line);
-      if (usedMsg + lineTokens > RELEVANT_MEMORY_BUDGET_TOKENS) break;
+      if (usedMsg + lineTokens > laneLimit('lane.relevant-memory', 'tokens', 'messageBudget')) break;
       msgCandidates.push({ createdAt: row.created_at, line });
       usedMsg += lineTokens;
-      if (msgCandidates.length >= 5) break;
+      if (msgCandidates.length >= laneLimit('lane.relevant-memory', 'rows', 'minTailForRecall')) break;
     }
     // 2026-07-03: present recalled lines oldest → newest, newest LAST (the
     // recency-salient slot for LLMs). Similarity ordering put a stale
@@ -1805,20 +1764,28 @@ async function buildRelevantMemoryBlock(agentId: string, includeVault: boolean):
         // recall; squad recall flows via squad_recall. Correct under D-A (squad
         // namespaces stay opt-in). Filter-only change: no effect on the cache
         // prefix ordering (results are still deterministic by similarity).
-        vhits = await semanticSearch(queryText, { limit: 6, minSimilarity: 0.45, queryEmbedding, agentId, personalOnly: true });
+        vhits = await semanticSearch(queryText, {
+          limit: laneLimit('lane.relevant-memory', 'retrieval', 'vaultLimit'),
+          minSimilarity: laneLimit('lane.relevant-memory', 'retrieval', 'vaultMinSimilarity'),
+          queryEmbedding, agentId, personalOnly: true,
+        });
       } else {
-        vhits = listEntries({ search: queryText, limit: 6, agentId, includeOwnerScope: true });
+        vhits = listEntries({
+          search: queryText,
+          limit: laneLimit('lane.relevant-memory', 'retrieval', 'vaultEntryLimit'),
+          agentId, includeOwnerScope: true,
+        });
       }
       let usedVault = 0;
       for (const e of vhits) {
         if (pinnedIds.has(e.id)) continue;
-        const snippet = e.content.replace(/\s+/g, ' ').slice(0, 300);
+        const snippet = e.content.replace(/\s+/g, ' ').slice(0, laneLimit('lane.relevant-memory', 'chars', 'vaultPreview'));
         const line = `- [vault:${e.type}] ${snippet}`;
         const lineTokens = estimateTokens(line);
-        if (usedVault + lineTokens > RELEVANT_MEMORY_VAULT_BUDGET_TOKENS) break;
+        if (usedVault + lineTokens > laneLimit('lane.relevant-memory', 'tokens', 'vaultBudget')) break;
         vaultLines.push(line);
         usedVault += lineTokens;
-        if (vaultLines.length >= 5) break;
+        if (vaultLines.length >= laneLimit('lane.relevant-memory', 'rows', 'minTailForVault')) break;
       }
     }
   } catch (err) {

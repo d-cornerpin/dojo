@@ -410,9 +410,10 @@ export function stopAgent(agentId: string): void {
     broadcast({ type: 'agent:status', agentId, status: 'idle' });
   } catch { /* best effort */ }
 
-  // Mark stopMarkerPending in the agent's config. The memory assembler
-  // picks this up on the next turn, injects the marker text into the
-  // last user message (in-memory only), and clears the flag.
+  // Mark stopMarkerPending in the agent's config. The memory assembler READS it on the
+  // next turn and injects the marker text into the last user message (in-memory only);
+  // the TURN then clears it via clearConsumedOneShotFlags below. (PHASE-3 T3 / S3: the
+  // assembler used to clear it from its own read path, so any probe or retry consumed it.)
   try {
     const db = getDb();
     const row = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
@@ -426,6 +427,52 @@ export function stopAgent(agentId: string): void {
   }
 
   logger.info('Agent stop requested', {}, agentId);
+}
+
+/**
+ * Clear the one-shot `agents.config` markers an assembly reported consuming (PHASE-3 T3,
+ * S3). ONE OWNER PER JOB: `stopAgent` above sets `stopMarkerPending`, `a2a-transport.ts`
+ * sets `a2aPreemptPending`, and this clears whichever the turn actually delivered.
+ *
+ * WHY IT IS NOT IN THE ASSEMBLER, which is where it used to live: assembly is a READ, and
+ * it happens more than once per turn (every tool iteration re-assembles) and in places that
+ * are not turns at all (the dev cache-prefix probe, the assembled-context golden). A clear
+ * on that path means the marker is consumed by whoever assembled first, which is not
+ * necessarily the call that showed it to the model. Read-many, write-once is the shape.
+ *
+ * The write is a read-modify-write of one JSON column, so it is done in a transaction: two
+ * markers cleared by two iterations of one turn must not lose each other's edit.
+ */
+export function clearConsumedOneShotFlags(
+  agentId: string,
+  consumed?: { a2aPreemptPending?: boolean; stopMarkerPending?: boolean },
+): void {
+  if (!consumed || (!consumed.a2aPreemptPending && !consumed.stopMarkerPending)) return;
+  try {
+    const db = getDb();
+    db.transaction(() => {
+      const row = db.prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
+      if (!row?.config) return;
+      const config = JSON.parse(row.config) as Record<string, unknown>;
+      let changed = false;
+      if (consumed.a2aPreemptPending && config.a2aPreemptPending !== undefined) {
+        delete config.a2aPreemptPending;
+        changed = true;
+      }
+      if (consumed.stopMarkerPending && config.stopMarkerPending === true) {
+        config.stopMarkerPending = false;
+        changed = true;
+      }
+      if (changed) {
+        db.prepare("UPDATE agents SET config = ?, updated_at = datetime('now') WHERE id = ?")
+          .run(JSON.stringify(config), agentId);
+      }
+    })();
+  } catch (err) {
+    logger.warn('Failed to clear consumed one-shot markers', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
 }
 
 /**

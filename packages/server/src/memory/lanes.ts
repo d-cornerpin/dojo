@@ -1,0 +1,644 @@
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE LANE TABLE AND THE TWO-PASS FIT. Priority is data, and the allocator reads it.
+// PHASE-3 T3. Research 06 requirements B4–B8.
+// ════════════════════════════════════════════════════════════════════════════════════════
+//
+// ── THE DEFECT THIS MODULE DELETES ──────────────────────────────────────────────────────
+// Research 06 §2, re-derived at `8f36cdb`: the assembler declared its priority order as
+// PROSE THE MODEL READS (the combined ack, `assembler.ts:1118`) —
+//
+//     "directive > scratchpad > live conversation > tasks > continuity > vault > briefing"
+//
+// — and then consumed the budget in EXACTLY REVERSE ORDER. Briefing was tested first
+// (`:767`, against a full budget) and the directive last (`:1098`, against a budget nine
+// sections had already eaten). Under pressure the assembler dropped precisely what mattered
+// most, and it told the model the opposite in the same array. There was no priority data
+// structure anywhere: twelve independent `if (usedTokens + X < maxTokens)` gates, each with
+// no `else`, no record, and no knowledge of the ten decisions before it.
+//
+// ── WHAT REPLACES IT ────────────────────────────────────────────────────────────────────
+// One ordered table. Each lane declares six things — `{id, priority, min, max, render,
+// truncate}` — plus its POSITION (`slot`), because the cache-prefix law (roadmap #10, OR7)
+// makes position part of a lane's contract and not an afterthought of build order.
+//
+// PRIORITY IS INDEPENDENT OF POSITION. `lane.briefing` is emitted FIRST (slot 100) and
+// drops FIRST (priority 110); `lane.directive` is emitted LAST of the scaffolding (slot
+// 900) and survives LONGEST (priority 10). That separation is the whole point: physical
+// order is what the model reads, priority is what the budget spends.
+//
+// EVERY LANE IMPLEMENTS `truncate()`. A lane that can only be taken whole is a lane that
+// gets dropped whole, which is how a 40-token directive lost to a 4,000-token briefing.
+// `truncate` is required by the type; `lanes.test.ts` proves every entry has one and that
+// each one actually reduces.
+//
+// ── THE TWO-PASS FIT ────────────────────────────────────────────────────────────────────
+//   Pass 1 (RESERVE):    walk in PRIORITY order; set aside `min(minTokens, cost)` for each
+//                        lane while budget remains. A lane whose minimum cannot be reserved
+//                        is rejected here, with a reason, and never silently.
+//   Pass 2 (DISTRIBUTE): walk in PRIORITY order again; each lane may take up to
+//                        `min(cost, maxTokens)` of what is left, but never the reservations
+//                        still owed to the lanes below it. Granted < cost ⇒ `truncate()`.
+//
+// The two passes are why a floor is a floor: pass 1 is the guarantee, pass 2 is the
+// generosity. One pass with a running total is what the assembler had, and one pass cannot
+// express "the directive gets its 64 tokens even though the briefing was rendered first".
+//
+// ── EVERY DECISION IS RECORDED ──────────────────────────────────────────────────────────
+// `AllocationReport` carries one `LaneGrant` per lane — `{requested, granted, status,
+// reason}` — including the REJECTED ones. Before this, a rejected section produced a
+// byte-identical context to a section that never existed (research 06 §8). The report is
+// also what generates the scaffolding ack, so the array can no longer claim a section the
+// budget dropped.
+//
+// ── OVER-BUDGET IS AN EVENT, NOT A SHRUG ────────────────────────────────────────────────
+// `budgetFreshTail`'s "include the last group anyway" safety (requirement B8) is real and
+// stays: a context with no live message at all is worse than one slightly over. It is now
+// RECORDED as an `OverBudgetEvent` on the report instead of being a `logger.warn` nobody
+// reads.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+import type Anthropic from '@anthropic-ai/sdk';
+import { estimateTokens } from './budget.js';
+import { MessageSlot } from '../prompt/registry/types.js';
+
+// ── Vocabulary ──────────────────────────────────────────────────────────────────────────
+
+export type LaneMessage = {
+  role: 'user' | 'assistant';
+  content: string | Anthropic.ContentBlockParam[];
+  reasoningContent?: string;
+};
+
+/** What a lane produced, plus whatever its own `truncate` needs to shrink it. */
+export interface LaneRender<P = unknown> {
+  messages: LaneMessage[];
+  /** Cost of carrying these messages, by the ONE estimator (`memory/budget.ts`). */
+  tokens: number;
+  /** Lane-private payload (e.g. the raw rows behind the fresh tail). */
+  payload?: P;
+}
+
+export type LaneStatus = 'admitted' | 'truncated' | 'rejected' | 'empty';
+
+export interface LaneGrant {
+  id: string;
+  slot: number;
+  priority: number;
+  /** What the lane's render actually cost. */
+  requested: number;
+  /** What the allocator gave it. */
+  granted: number;
+  status: LaneStatus;
+  /** Plain words. Never empty — a decision with no reason is the thing this replaces. */
+  reason: string;
+}
+
+export interface OverBudgetEvent {
+  laneId: string;
+  /** How many tokens past the budget this lane's forced inclusion put the assembly. */
+  overBy: number;
+  reason: string;
+}
+
+export interface AllocationReport {
+  /** Tokens the content lanes were allowed to spend (after every declared reservation). */
+  budgetTokens: number;
+  /** Tokens pass 1 set aside as minimums. */
+  reservedTokens: number;
+  /** Tokens pass 2 actually granted. */
+  spentTokens: number;
+  /** Reservations taken off the top before the fit ran (ack + post-budget + loop tail). */
+  offTheTopTokens: number;
+  grants: LaneGrant[];
+  /** Ids of the lanes that reached the model, in EMISSION (slot) order. */
+  admittedIds: string[];
+  overBudget: OverBudgetEvent[];
+}
+
+/**
+ * One lane. `render` may be async (most read the database); `truncate` never is — shrinking
+ * is arithmetic on something already in hand, and a truncate that could go to the database
+ * would be a second render with a different answer.
+ */
+export interface Lane<C = unknown, P = unknown> {
+  id: string;
+  /** Physical position in the emitted array. `MessageSlot` values; see the cache law. */
+  slot: number;
+  /** Lower survives longer. Independent of `slot` — that independence IS the fix. */
+  priority: number;
+  /** Guaranteed floor, reserved in pass 1 before any lower-priority lane is considered. */
+  minTokens: number;
+  /** Ceiling in pass 2. `Infinity` = take what the remainder allows. */
+  maxTokens: number;
+  /**
+   * Requirement B8. A lane whose floor MUST be honoured even when the budget cannot cover
+   * it — the fresh tail, and only the fresh tail: a context with no live message at all is
+   * worse than one slightly over. This is `budgetFreshTail`'s "include the last group
+   * anyway" safety (`assembler.ts:2219-2228` pre-repin), promoted from a `logger.warn` to a
+   * declared lane property that produces a recorded `OverBudgetEvent`.
+   */
+  mandatoryFloor?: boolean;
+  render: (ctx: C) => Promise<LaneRender<P> | null> | LaneRender<P> | null;
+  truncate: (render: LaneRender<P>, maxTokens: number) => LaneRender<P>;
+}
+
+// ── The declared priority ladder ─────────────────────────────────────────────────────────
+//
+// Seven of these eleven rungs are the owner-facing ladder the ack has always printed
+// (research 06 §2 quotes it verbatim): directive > scratchpad > live conversation > tasks >
+// continuity > vault > briefing. They keep that order exactly.
+//
+// FOUR LANES ARE NOT IN THAT PROSE and their placement is a DECLARED CHOICE, recorded here
+// rather than buried in a comparator:
+//
+//   lane.events           directly under the live conversation. It is the same "what just
+//                         happened" class, and it is the ONE lane that had no gate at all
+//                         (`assembler.ts:1215`, pushed with no add and no test) — so an
+//                         unbounded lane becomes a bounded one at the priority its content
+//                         actually warrants.
+//   lane.attempt-ledger   directly under the tasks it is the engine's record OF. It already
+//                         declared its own 800-token ceiling and that ceiling is preserved.
+//   lane.summaries        above the vault: summaries are THIS conversation's own compressed
+//                         history, the vault is everything else.
+//   lane.relevant-memory  beside the vault, above it: it is a retrieval of raw history that
+//                         has fallen out of the tail, which is nearer the live thread than a
+//                         curated vault entry.
+//
+// The ack lane sits at 35 — just under the live conversation and above every scaffolding
+// lane it closes — because an ack that survives while every section it acknowledges was
+// dropped is a lie, and one that drops while sections survive leaves an unclosed block.
+// Its reservation is taken off the top (see `SCAFFOLDING_ACK_RESERVE_TOKENS`), so its
+// priority only decides whether it renders at all.
+export const LANE_PRIORITY: Record<string, number> = {
+  'lane.directive': 10,
+  'lane.scratchpad': 20,
+  'lane.fresh-tail': 30,
+  'lane.scaffolding-ack': 35,
+  'lane.events': 40,
+  'lane.active-tasks': 50,
+  'lane.attempt-ledger': 60,
+  'lane.continuity': 70,
+  'lane.summaries': 80,
+  'lane.relevant-memory': 90,
+  'lane.vault': 100,
+  'lane.briefing': 110,
+};
+
+/**
+ * The ladder the ack prints, in declared priority order. Generated from `LANE_PRIORITY`, so
+ * the sentence the model reads and the order the budget spends cannot disagree — which is
+ * exactly how they came to disagree in the first place.
+ */
+export const LANE_LADDER_LABEL: Record<string, string> = {
+  'lane.directive': 'active user directive',
+  'lane.scratchpad': 'my scratchpad',
+  'lane.fresh-tail': 'live conversation below',
+  'lane.events': 'events & notices',
+  'lane.active-tasks': 'active tracker tasks',
+  'lane.attempt-ledger': 'attempt ledger',
+  'lane.continuity': 'continuity brief',
+  'lane.summaries': 'compressed history',
+  'lane.relevant-memory': 'relevant memory',
+  'lane.vault': 'vault entries',
+  'lane.briefing': 'briefing',
+};
+
+/** The section names the ack lists as reviewed, in EMISSION order. */
+export const LANE_SECTION_LABEL: Record<string, string> = {
+  'lane.briefing': 'briefing',
+  'lane.vault': 'vault',
+  'lane.summaries': 'summaries',
+  'lane.relevant-memory': 'relevant memory',
+  'lane.attempt-ledger': 'attempt ledger',
+  'lane.active-tasks': 'active tasks',
+  'lane.continuity': 'continuity brief',
+  'lane.scratchpad': 'scratchpad',
+  'lane.directive': 'active user directive',
+};
+
+// ── The declared numbers ────────────────────────────────────────────────────────────────
+//
+// §T0-B's clusters C (15 row caps), D (12 char slices), E (8 sub-budgets) and F (6 retrieval
+// knobs) were 41 bare literals scattered through 1,500 lines of `assembler.ts`, each one
+// invisible to the lane that owned it. They are lane declarations now: one record per lane,
+// read by that lane's render, with the pre-repin site beside every value so the move is
+// auditable rather than asserted.
+
+export interface LaneLimits {
+  /** Row caps (§T0-B cluster C). */
+  rows?: Record<string, number>;
+  /** Char slices (§T0-B cluster D). */
+  chars?: Record<string, number>;
+  /** Token sub-budgets (§T0-B cluster E). */
+  tokens?: Record<string, number>;
+  /** Retrieval knobs (§T0-B cluster F). */
+  retrieval?: Record<string, number>;
+}
+
+export const LANE_LIMITS: Record<string, LaneLimits> = {
+  // §T0-B C `:681`(10) — the PM tail is its own lane and its own row cap.
+  'lane.pm-tail': { rows: { tail: 10 } },
+
+  // §T0-B C `:787`(3), D `:788`(0,500) — the vault query is built from the last 3 rows,
+  // sliced to 500 chars. F `:792` → `vault/retrieval.ts:27-32`'s four tiers stay in the
+  // retrieval module (they are that module's declaration, not this lane's).
+  'lane.vault': { rows: { queryMessages: 3 }, chars: { query: 500 } },
+
+  // §T0-B C `:840`(30) — the fresh-technique scrub window. E `:1587`/`:1588`/`:1595`/`:1637`
+  // — the relevance budget, the recency floor, and the share of what remains.
+  'lane.summaries': {
+    rows: { scrubWindow: 30 },
+    tokens: { relevanceBudget: 6000, recencyFloor: 2 },
+    retrieval: { limit: 12, minSimilarity: 0.3 },
+  },
+
+  // §T0-B E `:1646`/`:1647`, F `:1755`(8/0.35), `:1758`(fts 8), `:1805`(6/0.45),
+  // `:1807`(limit 6), D `:1771`(0,300), `:1812`(0,300), C `:1748`(80), `:1777`(≥5),
+  // `:1818`(≥5), `:1684`(10), D `:1688`(−500), `:1694`(−500), `:1703`(8 words).
+  //
+  // REQUIREMENT B6, THE RECONCILE: `:1748`'s hardcoded 80 was `getFreshTailCount`'s
+  // 200K-window answer written as a literal, so on a 32K model the recall window read 80
+  // rows while the tail read 40. It is `freshTailCount` now — one number, one owner.
+  'lane.relevant-memory': {
+    rows: { recallWindow: 10, minTailForRecall: 5, minTailForVault: 5 },
+    chars: { recallHead: 500, recallTail: 500, queryWords: 8, hitPreview: 300, vaultPreview: 300 },
+    tokens: { messageBudget: 1200, vaultBudget: 2000 },
+    retrieval: {
+      messageLimit: 8, messageMinSimilarity: 0.35, ftsLimit: 8,
+      vaultLimit: 6, vaultMinSimilarity: 0.45, vaultEntryLimit: 6,
+    },
+  },
+
+  // §T0-B E `:911`(800) — the ledger's own hard ceiling, and C `:896`/`:897`/`:898`,
+  // D `:959`/`:962`, C `:892`(0,2), `:949`(0,5).
+  'lane.attempt-ledger': {
+    rows: { tasks: 2, observations: 4, transitions: 4, entries: 6 },
+    tokens: { cap: 800 },
+  },
+  'lane.active-tasks': {
+    rows: { tasks: 5, recentMentionWindow: 6 },
+    chars: { description: 300, lastNote: 200 },
+  },
+
+  // §T0-B C `:932`(6) — the "already mentioned recently" window. Declared on the lane that
+  // reads it (active-tasks), above.
+
+  // §T0-B C `:1185`(−10), D `:1205`(0,400) — the awareness lane's row cap and gist slice.
+  'lane.events': { rows: { events: 10 }, chars: { gist: 400 } },
+
+  // §T0-B G `:43`, `:61`, `:2043`, `:2082`, `:256` — the content caps that shape the tail
+  // before it is budgeted. Declared here; the constants stay exported from `assembler.ts`
+  // where their incident history lives.
+  'lane.fresh-tail': {
+    tokens: { maxToolResult: 15000, stubAfterTurns: 12 },
+    chars: { toolResultKeepFloor: 500 },
+    rows: { maxKeepImages: 1 },
+  },
+
+  // §T0-B D `:440`(140), `:441`(160) — the awareness gist's structured slices.
+  'lane.awareness-gist': { chars: { subject: 140, preview: 160 } },
+};
+
+/** Read a declared limit. Throws rather than defaulting: an undeclared number is a bug. */
+export function laneLimit(laneId: string, group: keyof LaneLimits, key: string): number {
+  const v = LANE_LIMITS[laneId]?.[group]?.[key];
+  if (typeof v !== 'number') {
+    throw new Error(`lane limit not declared: ${laneId}.${group}.${key}`);
+  }
+  return v;
+}
+
+// ── The reservations taken off the top ───────────────────────────────────────────────────
+//
+// Requirement B7: the seven post-budget appends and the loop's own tail-append become
+// DECLARED lanes with RESERVED tokens. Before this they were spent after `usedTokens`
+// stopped being consulted — research 06's "usedTokens is write-only" finding, re-confirmed
+// by reading at `8f36cdb`.
+//
+// Every number below is MEASURED, from `checks/golden/assembled-context.json` (the nine
+// turn-state matrix T1 blessed) or from the fixed string itself. None is invented; #14.
+
+export interface PostBudgetLane {
+  id: string;
+  slot: number;
+  reserveTokens: number;
+  /** Where the number came from. A reserve with no derivation is a rumour. */
+  measured: string;
+}
+
+export const POST_BUDGET_LANES: PostBudgetLane[] = [
+  {
+    id: 'lane.engine-end-of-history',
+    slot: 1150,
+    reserveTokens: 54,
+    measured: 'fixed 216-char string (assembler.ts applyIntegrityPass); golden max 216 chars',
+  },
+  {
+    id: 'lane.empty-context-fallback',
+    slot: 1160,
+    reserveTokens: 8,
+    measured: "fixed 'Continue with your current task.' = 32 chars; fires only when the array is empty",
+  },
+  {
+    id: 'lane.new-session',
+    slot: 1170,
+    reserveTokens: 74,
+    measured: 'fixed 296-char [New Session] prefix, prepended to an existing message',
+  },
+  {
+    id: 'lane.a2a-preempt',
+    slot: 1180,
+    reserveTokens: 225,
+    measured: 'fixed template, 900 chars with the storm hint; prepended to an existing message',
+  },
+  {
+    id: 'lane.stop-marker',
+    slot: 1190,
+    reserveTokens: 83,
+    measured: 'fixed 331-char marker; prepended to an existing message',
+  },
+  {
+    id: 'lane.a2a-salience',
+    slot: 1195,
+    reserveTokens: 108,
+    measured: 'fixed 430-char reply directive; prepended to a message already in the array',
+  },
+  {
+    id: 'lane.loop-tail',
+    slot: MessageSlot.TurnContext,
+    reserveTokens: 1420,
+    measured:
+      'golden-v0 nine-cell matrix: msg.turn-context max 4,780 chars (1,195 tokens) + ' +
+      'msg.current-time 345 (87) + msg.tool-note 299 (75) + msg.peer-status, bounded by ' +
+      'group size, measured at 63 chars for a 2-peer group (16). 1,195+87+75+16 = 1,373, ' +
+      'rounded up to 1,420 for the one-line engine hints that share the lane.',
+  },
+];
+
+export const POST_BUDGET_RESERVE_TOKENS = POST_BUDGET_LANES.reduce((t, l) => t + l.reserveTokens, 0);
+
+// ── The scaffolding ack, generated and BYTE-STABLE ──────────────────────────────────────
+//
+// The ack sits at slot 1000, AHEAD of the tail boundary, so the cache-prefix law binds it
+// absolutely: it must be byte-identical across turns or every message after it re-bills.
+// Requirement B says it must be GENERATED from the allocator report so it can no longer
+// claim sections the budget dropped. Those two look like a contradiction and are not.
+//
+// THE RESOLUTION: the ack is a PURE FUNCTION OF THE ADMITTED LANE ID SET. Nothing else
+// reaches it — no clock, no token counts, no percentages, no row counts, no agent id.
+// Two turns that admit the same lanes produce byte-identical acks; two turns that admit
+// different lanes were ALREADY divergent at the lane that changed, which sits AHEAD of the
+// ack, so the ack adds no new invalidation. `lanes.test.ts` pins that with a purity clause
+// (a generated ack may not contain a digit that did not come from the lane table) and the
+// assembled-array golden pins the bytes.
+//
+// The old string was a hardcoded 576-char paragraph that named all seven sections
+// unconditionally — the model was told "I have reviewed my briefing" on turns where the
+// briefing had been dropped for budget.
+
+const ACK_HEAD = 'Understood, I have reviewed my background context (';
+const ACK_MID = '). Source priority for this turn: ';
+const ACK_TAIL =
+  '. When sources disagree, trust the most recent and most specific. The active user ' +
+  'directive is the WHAT, never lose it. The scratchpad is my own working outline; I ' +
+  'maintain it via scratchpad_set as I make progress and read from it when I need to ' +
+  'remember where I am.';
+
+/**
+ * Generate the ack from the admitted lane ids. Pure: same ids in, same bytes out.
+ *
+ * The ladder always carries `live conversation below` because the fresh tail is the one
+ * lane that cannot be absent — `budgetFreshTail`'s last-group safety guarantees it — and a
+ * priority ladder with a hole where the live conversation should be reads as a claim that
+ * there is none.
+ */
+export function renderScaffoldingAck(admittedLaneIds: readonly string[]): string | null {
+  const admitted = new Set(admittedLaneIds);
+  const sections = Object.keys(LANE_SECTION_LABEL)
+    .filter((id) => admitted.has(id))
+    .map((id) => LANE_SECTION_LABEL[id]);
+  if (sections.length === 0) return null;
+
+  const ladder = Object.keys(LANE_PRIORITY)
+    .sort((a, b) => LANE_PRIORITY[a] - LANE_PRIORITY[b])
+    .filter((id) => id === 'lane.fresh-tail' || admitted.has(id))
+    .map((id) => LANE_LADDER_LABEL[id])
+    .filter((label): label is string => Boolean(label));
+
+  return `${ACK_HEAD}${sections.join(', ')}${ACK_MID}${ladder.join(' > ')}${ACK_TAIL}`;
+}
+
+/**
+ * The ack's reservation: the worst case the generator can produce, derived FROM the
+ * generator rather than guessed beside it. A constant that cannot disagree with the string
+ * it budgets for.
+ */
+export const SCAFFOLDING_ACK_RESERVE_TOKENS = (() => {
+  const all = Object.keys(LANE_SECTION_LABEL);
+  const text = renderScaffoldingAck(all) ?? '';
+  return estimateTokens(text);
+})();
+
+// ── Cost ────────────────────────────────────────────────────────────────────────────────
+
+/** What one emitted message costs, by the ONE estimator, exactly as the transports count it. */
+export function messageTokens(m: LaneMessage): number {
+  const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+  return estimateTokens(content);
+}
+
+export function renderTokens(messages: LaneMessage[]): number {
+  return messages.reduce((t, m) => t + messageTokens(m), 0);
+}
+
+// ── Truncators ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * The marker a truncated lane carries. The model must be able to tell "this section was
+ * shortened to fit" from "this is all there was" — silence is how a partial brief gets read
+ * as a complete one.
+ */
+export const LANE_TRUNCATION_MARKER = '\n[… this section was shortened to fit the context budget …]';
+
+/** Smallest truncation that still says something. Below this a lane is rejected, not sliced. */
+export const MIN_TRUNCATION_TOKENS = estimateTokens(LANE_TRUNCATION_MARKER) + 8;
+
+/**
+ * Shrink a wrapped block (`═══ HEADER ═══ … ═══ END … ═══`) to fit, keeping the header and
+ * the closing line so the model still knows what it is looking at and where it ends.
+ */
+export function truncateWrappedText(text: string, maxTokens: number): string {
+  const budgetChars = Math.max(0, maxTokens * 4 - LANE_TRUNCATION_MARKER.length);
+  if (text.length <= budgetChars) return text;
+  const lines = text.split('\n');
+  const head = lines[0].startsWith('═══') ? lines[0] : '';
+  const tailLine = lines.length > 1 && lines[lines.length - 1].startsWith('═══') ? lines[lines.length - 1] : '';
+  const fixed = (head ? head.length + 1 : 0) + (tailLine ? tailLine.length + 1 : 0);
+  const bodyBudget = Math.max(0, budgetChars - fixed);
+  const body = text.slice(head ? head.length + 1 : 0, tailLine ? text.length - tailLine.length - 1 : text.length);
+  const cut = body.slice(0, bodyBudget);
+  return [head, cut + LANE_TRUNCATION_MARKER, tailLine].filter(Boolean).join('\n');
+}
+
+/** The default truncate for a single-message text lane. */
+export function truncateTextLane<P>(render: LaneRender<P>, maxTokens: number): LaneRender<P> {
+  const m = render.messages[0];
+  if (!m || typeof m.content !== 'string') return render;
+  const content = truncateWrappedText(m.content, maxTokens);
+  const messages = [{ ...m, content }];
+  return { messages, tokens: renderTokens(messages), payload: render.payload };
+}
+
+// ── The fit ─────────────────────────────────────────────────────────────────────────────
+
+export interface LaneCandidate<C = unknown, P = unknown> {
+  lane: Lane<C, P>;
+  render: LaneRender<P> | null;
+}
+
+export interface FitResult {
+  /** Admitted lanes in EMISSION (slot) order, with the messages to push. */
+  emitted: Array<{ id: string; slot: number; messages: LaneMessage[]; tokens: number }>;
+  report: AllocationReport;
+}
+
+/**
+ * The two-pass fit. Pure arithmetic over already-rendered lanes: no database, no clock, no
+ * i/o — so it is testable without a server and deterministic by construction.
+ */
+export function fitLanes(
+  candidates: Array<LaneCandidate<unknown, unknown>>,
+  budgetTokens: number,
+  opts: { offTheTopTokens?: number } = {},
+): FitResult {
+  const budget = Math.max(0, Math.floor(budgetTokens));
+  const grants: LaneGrant[] = [];
+  const overBudget: OverBudgetEvent[] = [];
+
+  // Lanes that rendered nothing are recorded as `empty`, never omitted: "the briefing did
+  // not exist" and "the briefing was dropped" are different facts and the receipt must be
+  // able to tell them apart (research 06 §8).
+  const live: Array<{ c: LaneCandidate; cost: number; reserved: number; granted: number }> = [];
+  for (const c of candidates) {
+    if (!c.render || c.render.messages.length === 0) {
+      grants.push({
+        id: c.lane.id, slot: c.lane.slot, priority: c.lane.priority,
+        requested: 0, granted: 0, status: 'empty',
+        reason: 'lane rendered no content on this turn',
+      });
+      continue;
+    }
+    live.push({ c, cost: c.render.tokens, reserved: 0, granted: 0 });
+  }
+
+  const byPriority = [...live].sort((a, b) =>
+    a.c.lane.priority - b.c.lane.priority || a.c.lane.slot - b.c.lane.slot,
+  );
+
+  // ── Pass 1: reserve the minimums, highest priority first ──
+  let reserved = 0;
+  for (const e of byPriority) {
+    const want = Math.min(e.c.lane.minTokens, e.cost);
+    if (want <= 0) continue;
+    if (reserved + want <= budget) {
+      e.reserved = want;
+      reserved += want;
+    } else if (e.c.lane.mandatoryFloor) {
+      // B8: the floor is honoured anyway, and the overrun is RECORDED.
+      e.reserved = want;
+      reserved += want;
+      overBudget.push({
+        laneId: e.c.lane.id,
+        overBy: reserved - budget,
+        reason:
+          `lane declares a MANDATORY ${e.c.lane.minTokens}-token floor and the ${budget}-token ` +
+          `budget could not cover it; included anyway because a context with no live ` +
+          `conversation is worse than one over budget (requirement B8)`,
+      });
+    } else {
+      e.reserved = -1; // rejected in pass 1; recorded below
+    }
+  }
+
+  // ── Pass 2: distribute the remainder, highest priority first ──
+  let spent = 0;
+  for (let i = 0; i < byPriority.length; i++) {
+    const e = byPriority[i];
+    if (e.reserved < 0) {
+      e.granted = 0;
+      grants.push({
+        id: e.c.lane.id, slot: e.c.lane.slot, priority: e.c.lane.priority,
+        requested: e.cost, granted: 0, status: 'rejected',
+        reason:
+          `budget exhausted before this lane's ${e.c.lane.minTokens}-token minimum could be ` +
+          `reserved (priority ${e.c.lane.priority}, ${budget} tokens for all lanes)`,
+      });
+      continue;
+    }
+    // Never spend a reservation still owed to a lane below this one.
+    let owedBelow = 0;
+    for (let j = i + 1; j < byPriority.length; j++) {
+      if (byPriority[j].reserved > 0) owedBelow += byPriority[j].reserved;
+    }
+    const available = Math.max(0, budget - spent - owedBelow);
+    const ceiling = Math.min(e.cost, e.c.lane.maxTokens);
+    // A lane never gets less than the floor pass 1 already set aside for it.
+    const grant = Math.max(e.reserved, Math.min(ceiling, available));
+
+    if (grant <= 0) {
+      e.granted = 0;
+      grants.push({
+        id: e.c.lane.id, slot: e.c.lane.slot, priority: e.c.lane.priority,
+        requested: e.cost, granted: 0, status: 'rejected',
+        reason:
+          `no tokens left at priority ${e.c.lane.priority}: ${spent} of ${budget} spent by ` +
+          `higher-priority lanes, ${owedBelow} still reserved below`,
+      });
+      continue;
+    }
+
+    e.granted = grant;
+    spent += grant;
+
+    if (grant >= e.cost) {
+      grants.push({
+        id: e.c.lane.id, slot: e.c.lane.slot, priority: e.c.lane.priority,
+        requested: e.cost, granted: grant, status: 'admitted',
+        reason: 'fit whole',
+      });
+    } else {
+      const shrunk = e.c.lane.truncate(e.c.render as LaneRender, grant);
+      (e.c as { render: LaneRender | null }).render = shrunk;
+      grants.push({
+        id: e.c.lane.id, slot: e.c.lane.slot, priority: e.c.lane.priority,
+        requested: e.cost, granted: shrunk.tokens, status: 'truncated',
+        reason:
+          `shortened from ${e.cost} to ${grant} tokens` +
+          (e.c.lane.maxTokens < e.cost ? ` (lane ceiling ${e.c.lane.maxTokens})` : ''),
+      });
+      spent += shrunk.tokens - grant;
+    }
+  }
+
+  const admitted = live
+    .filter((e) => e.granted > 0 && e.c.render && e.c.render.messages.length > 0)
+    .sort((a, b) => a.c.lane.slot - b.c.lane.slot);
+
+  return {
+    emitted: admitted.map((e) => ({
+      id: e.c.lane.id,
+      slot: e.c.lane.slot,
+      messages: (e.c.render as LaneRender).messages,
+      tokens: (e.c.render as LaneRender).tokens,
+    })),
+    report: {
+      budgetTokens: budget,
+      reservedTokens: reserved,
+      spentTokens: spent,
+      offTheTopTokens: opts.offTheTopTokens ?? 0,
+      grants: grants.sort((a, b) => a.slot - b.slot),
+      admittedIds: admitted.map((e) => e.c.lane.id),
+      overBudget,
+    },
+  };
+}

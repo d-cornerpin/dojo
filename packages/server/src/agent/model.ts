@@ -2283,11 +2283,19 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
   // Use ~3.5 chars/token (conservative) to avoid underestimating.
   // Two-phase tool loading: only send always-loaded + session-loaded tools.
   let filteredTools: ToolDefinition[] = [];
+  // S1 (PHASE-3 T3): where the cache breakpoint goes. The LAST ALWAYS-LOADED tool, so a
+  // mid-session `load_tool_docs` appends behind it and the ~24.7K-token cached prefix
+  // survives. `-1` = no always-loaded tool at all; the breakpoint then falls back to the end
+  // of the array, which is the pre-S1 behaviour and the only honest answer when there is no
+  // stable head to cache.
+  let toolCacheBreakpoint = -1;
   if (tools) {
     const allPermitted = getFilteredTools(agentId);
-    const { filterToolsForApiCall, getAgentAlwaysLoadedTools } = await import('../tools/tool-docs.js');
+    const { partitionToolsForApiCall, getAgentAlwaysLoadedTools } = await import('../tools/tool-docs.js');
     const alwaysLoaded = getAgentAlwaysLoadedTools(agentId);
-    filteredTools = filterToolsForApiCall(agentId, allPermitted, alwaysLoaded);
+    const part = partitionToolsForApiCall(agentId, allPermitted, alwaysLoaded);
+    filteredTools = part.tools;
+    toolCacheBreakpoint = part.cacheBreakpointIndex;
   }
   const toolsJson = tools ? JSON.stringify(filteredTools) : '';
   // PHASE-3 T2: the ONE estimator. Was /3.5 here and /3 on the OpenAI path — two answers to
@@ -2367,12 +2375,22 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     // Tools are a large block that never changes turn-to-turn, so caching them
     // is a guaranteed win. Anthropic caches everything up to the breakpoint, and
     // tools come before the system block in the request, so this marker caches
-    // the full tools array (and the system block's marker extends it).
+    // the tools array up to the breakpoint (and the system block's marker extends it).
+    //
+    // S1 (PHASE-3 T3, §T0-E): the breakpoint used to sit on `arr.length - 1` — the LAST
+    // tool, whichever it happened to be. Membership grows mid-session (`load_tool_docs`),
+    // so "the last tool" moved, and every such load re-wrote the cached prefix: the next
+    // call re-billed ~24.7K tokens, about 13× the whole prefix growth the owner accepted.
+    // It now sits on the last ALWAYS-LOADED tool, which `partitionToolsForApiCall`
+    // guarantees is a stable, deterministically ordered head. Session extras append behind
+    // it and cost nothing but themselves.
     ...(filteredTools.length > 0 ? { tools: filteredTools.map((t, i, arr) => ({
       name: t.name,
       description: t.description,
       input_schema: t.input_schema as Anthropic.Tool['input_schema'],
-      ...(i === arr.length - 1 ? { cache_control: CACHE_EPHEMERAL } : {}),
+      ...(i === (toolCacheBreakpoint >= 0 ? toolCacheBreakpoint : arr.length - 1)
+        ? { cache_control: CACHE_EPHEMERAL }
+        : {}),
     })) } : {}),
   };
 

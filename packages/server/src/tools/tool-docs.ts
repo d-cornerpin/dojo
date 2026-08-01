@@ -243,30 +243,175 @@ export function markToolsLoaded(agentId: string, toolNames: string[]): void {
 
 export function clearSessionLoadedTools(agentId: string): void {
   sessionLoadedTools.delete(agentId);
+  // A reset is a DECISION to forget. Leaving the rehydration flag set is what makes it
+  // stick: without this the next turn would re-import the pre-reset history's tool names
+  // and hand the agent back the session it was just told to drop.
+  rehydratedAgents.add(agentId);
+}
+
+// ── Restart rehydration (PHASE-3 T3 / S3) ───────────────────────────────────────────────
+//
+// WHAT MOVED AND WHY. `memory/assembler.ts:1262-1281` (pre-repin) called `markToolsLoaded`
+// from inside the assembly READ path: it scanned the fresh tail for `tool_use` names and
+// mutated this module's session state. Two costs, both measured:
+//
+//   1. PURITY. Assembly is a read. A mutation there means a probe, a retry or a dry-run
+//      changes what the next real call sends. (This phase's Global Constraints: "Assembly
+//      becomes PURE".)
+//   2. CACHE. It ran on EVERY assembly, so the first assembly after any restart re-broke the
+//      cached prefix for every agent at once, and any assembly could grow the array again.
+//
+// THE REQUIREMENT IT ENCODED IS PRESERVED, not deleted (#15): "an agent previously loaded a
+// tool but the server restarted, so the in-memory session state was lost; it should not have
+// to re-call load_tool_docs for a tool it is already using." That is a RESTART-RECOVERY
+// concern, so it belongs where a restart is visible — once per agent per process, driven by
+// the turn owner, not once per context assembly.
+
+const rehydratedAgents = new Set<string>();
+
+/**
+ * Re-import the tool names this agent was already using, ONCE per process. Idempotent and
+ * cheap after the first call. Called by the turn owner (`agent/v2/loop.ts`) at the top of a
+ * turn; never from an assembly.
+ */
+export function rehydrateSessionToolsFromHistory(agentId: string, recentLimit = 40): void {
+  if (rehydratedAgents.has(agentId)) return;
+  rehydratedAgents.add(agentId);
+  try {
+    const db = getDb();
+    const rows = db.prepare(
+      "SELECT content FROM messages WHERE agent_id = ? AND role = 'assistant' ORDER BY created_at DESC, rowid DESC LIMIT ?",
+    ).all(agentId, recentLimit) as Array<{ content: string }>;
+    const seen = new Set<string>();
+    for (const r of rows) {
+      if (typeof r.content !== 'string' || !r.content.includes('tool_use')) continue;
+      try {
+        const parsed = JSON.parse(r.content);
+        if (!Array.isArray(parsed)) continue;
+        for (const block of parsed) {
+          if (block?.type === 'tool_use' && typeof block.name === 'string') seen.add(block.name);
+        }
+      } catch { /* not JSON, skip */ }
+    }
+    if (seen.size > 0) {
+      markToolsLoaded(agentId, [...seen]);
+      logger.info('Rehydrated session tool docs from history after restart', {
+        agentId, count: seen.size,
+      });
+    }
+  } catch { /* best effort — a missing table must not break a turn */ }
+}
+
+/** Test seam: forget that an agent was rehydrated (the process boundary, made addressable). */
+export function resetRehydrationForTests(agentId?: string): void {
+  if (agentId) rehydratedAgents.delete(agentId);
+  else rehydratedAgents.clear();
 }
 
 // ── Resolve which tools get sent in the API tools parameter ──
 
 /**
- * Given an agent's permitted tools and their always-loaded list,
- * return only the tools that should actually be sent in the API call.
- * This includes:
- * - All always-loaded tools
- * - Tools loaded via load_tool_docs earlier in the session
- * - load_tool_docs itself (meta-tool, always available)
+ * ════════════════════════════════════════════════════════════════════════════════════════
+ * S1 — THE TOOLS ARRAY IS A DECLARED PREFIX LANE (PHASE-3 T3, §T0-E).
+ * ════════════════════════════════════════════════════════════════════════════════════════
+ *
+ * ── THE DEFECT, MEASURED ────────────────────────────────────────────────────────────────
+ * The cacheable prefix is `tools + system`, ≈ 98,945 chars ≈ 24.7K tokens (§T0-E, from
+ * 1,460 real context receipts). The volatile message array the allocator fights over is
+ * ≈ 6,810 chars — 6.4% of the input. And the prefix was being thrown away on purpose:
+ *
+ *   • the cache breakpoint sat on the LAST tool in the array (`model.ts:2375`,
+ *     `i === arr.length - 1`);
+ *   • membership was `allPermittedTools.filter(...)` — REGISTRY order — so a tool loaded
+ *     mid-session by `load_tool_docs` could land AHEAD of an always-loaded one;
+ *   • therefore every mid-session tool load rewrote the cached prefix, and the next call
+ *     paid full price for ~24.7K tokens — about 13× the entire prefix growth the owner
+ *     accepted on 2026-07-30.
+ *
+ * ── THE FIX, AND IT TRIMS NOTHING ───────────────────────────────────────────────────────
+ * Two orderings, no removals, no wording change, no tool dropped:
+ *   (a) always-loaded tools are emitted FIRST, in the order their set DECLARES them (the
+ *       `PRIMARY_AGENT_ALWAYS_LOADED` array above and its siblings), and session-loaded
+ *       extras follow in registry order;
+ *   (b) `model.ts` puts `cache_control` on the LAST ALWAYS-LOADED tool, so a mid-session
+ *       load appends BEHIND the breakpoint and the ~24.7K-token prefix survives.
+ *
+ * A tool that is BOTH always-loaded and session-loaded (load_tool_docs marks the ones it
+ * hands back, whether or not they were already preloaded) counts as always-loaded: the
+ * always-loaded set is a declaration and the session set is a cache of what was fetched.
+ *
+ * Rider 1 of §T0-E: `systemVolatile` must stay `''` or the system half re-breaks anyway.
+ * It does — `assembler.ts` returns `''` at every site and the cache-prefix gate asserts it.
+ */
+export interface PartitionedTools {
+  /** The array to send: `alwaysLoaded` then `sessionExtras`, in that order. */
+  tools: ToolDefinition[];
+  /** The stable head — the cached prefix's tools half. */
+  alwaysLoaded: ToolDefinition[];
+  /** Session-loaded extras, which ride BEHIND the cache breakpoint. */
+  sessionExtras: ToolDefinition[];
+  /**
+   * Index in `tools` of the last always-loaded tool — where `cache_control` goes.
+   * `-1` when there is no always-loaded tool at all (then nothing is cacheable and the
+   * breakpoint falls back to the end of the array, which is the old behaviour).
+   */
+  cacheBreakpointIndex: number;
+}
+
+/**
+ * Given an agent's permitted tools and their always-loaded list, return the tools that
+ * should be sent in the API call, PARTITIONED and ORDERED so the always-loaded head is a
+ * stable, cacheable prefix.
+ *
+ * Determinism: the head follows the declared always-loaded order (de-duplicated, first
+ * declaration wins) and the tail follows `allPermittedTools` order. Neither depends on
+ * `Set` iteration of a set the session mutated, which is what made the old array's order a
+ * function of WHEN a tool was loaded.
+ */
+export function partitionToolsForApiCall(
+  agentId: string,
+  allPermittedTools: ToolDefinition[],
+  alwaysLoaded: string[],
+): PartitionedTools {
+  const loaded = getSessionLoadedTools(agentId);
+  const alwaysLoadedSet = new Set(alwaysLoaded);
+  alwaysLoadedSet.add('load_tool_docs'); // Always include the meta-tool
+
+  const byName = new Map<string, ToolDefinition>();
+  for (const t of allPermittedTools) if (!byName.has(t.name)) byName.set(t.name, t);
+
+  // The head, in DECLARED order. `load_tool_docs` is appended only if the declaration did
+  // not already name it, so a set that lists it first keeps it first.
+  const headNames: string[] = [];
+  const seen = new Set<string>();
+  for (const name of [...alwaysLoaded, 'load_tool_docs']) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    if (byName.has(name)) headNames.push(name);
+  }
+  const head = headNames.map((n) => byName.get(n) as ToolDefinition);
+
+  // The tail: everything else the session loaded, in registry order.
+  const tail = allPermittedTools.filter((t) => !seen.has(t.name) && loaded.has(t.name));
+
+  return {
+    tools: [...head, ...tail],
+    alwaysLoaded: head,
+    sessionExtras: tail,
+    cacheBreakpointIndex: head.length > 0 ? head.length - 1 : -1,
+  };
+}
+
+/**
+ * The flat array, for callers that do not place the cache breakpoint. Same membership as
+ * before S1 — only the ORDER changed, and that change is the point.
  */
 export function filterToolsForApiCall(
   agentId: string,
   allPermittedTools: ToolDefinition[],
   alwaysLoaded: string[],
 ): ToolDefinition[] {
-  const loaded = getSessionLoadedTools(agentId);
-  const alwaysLoadedSet = new Set(alwaysLoaded);
-  alwaysLoadedSet.add('load_tool_docs'); // Always include the meta-tool
-
-  return allPermittedTools.filter(t =>
-    alwaysLoadedSet.has(t.name) || loaded.has(t.name)
-  );
+  return partitionToolsForApiCall(agentId, allPermittedTools, alwaysLoaded).tools;
 }
 
 // ── Execute load_tool_docs ──
