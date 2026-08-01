@@ -297,6 +297,19 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
 
   // §T0-B D `:440`(140), `:441`(160) — the awareness gist's structured slices.
   'lane.awareness-gist': { chars: { subject: 140, preview: 160 } },
+
+  // PHASE-3 T7: THE DELIVERIES LANE. Three of the four numbers are RC-1's own, lifted from
+  // the pending-question header they were literals inside (`agent/v2/loop.ts` pre-repin:
+  // the 48-hour window, the 300-char quote, the 120-char echo probe). The FOURTH is the
+  // change: `rows` was an implicit 1 (`LIMIT 1`) because the echo ROWS carried everything
+  // older, and a lane that replaces those rows has to carry more than the newest one. 3 is
+  // the cap, not a target — a conversation with more pending questions than that has a
+  // bigger problem than this lane, and the reserve below is what pays for the choice.
+  'lane.deliveries': {
+    rows: { deliveries: 3 },
+    chars: { quoted: 300, echoProbe: 120, quotedFloor: 40 },
+    retrieval: { windowHours: 48 },
+  },
 };
 
 /** Read a declared limit. Throws rather than defaulting: an undeclared number is a bug. */
@@ -388,6 +401,31 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       'therefore a RECORDED over-budget event at the validator, not a silent one, which ' +
       'is the same disposition requirement B8 gives the forced last group. Narrowing the ' +
       '25,000 cap is a product-behaviour change and is enumerated for T9, not taken here.',
+  },
+  {
+    id: 'lane.deliveries',
+    slot: MessageSlot.Deliveries,
+    reserveTokens: 316,
+    measured:
+      'PHASE-3 T7, DERIVED FROM THE GENERATOR, not guessed beside it: the worst case ' +
+      '`memory/deliveries-lane.ts` can render under its own declared caps above — ' +
+      '3 rows x (300-char quote + frame) + the list header + the truncation marker = ' +
+      '1,262 chars = 316 tokens. `deliveries-lane.test.ts` calls ' +
+      '`deliveriesLaneWorstCaseTokens()` and pins this literal to it, so the declaration ' +
+      'and the renderer cannot drift, and a second clause proves no input can exceed it ' +
+      '(this lane is the first post-budget lane whose content VARIES, so its reserve is ' +
+      'ENFORCED by `truncate()` rather than merely recorded). ' +
+      'THE REAL DISTRIBUTION, measured on the live body at `5d82dc8` (43 ' +
+      'conversation-days with a delivered non-dashboard/voice row): 28 carry 1 delivery, ' +
+      '3 carry 2, 7 carry 3, 1 carries 4, 1 carries 6 — and three storm buckets carry 49, ' +
+      '87 and 196, which is what the row cap is FOR. Delivery-linked receipt text runs ' +
+      '2-145 chars (mean 37, n=18); all send receipts 2-500 (mean 111, n=467), so the ' +
+      '300-char quote binds only the longest few. ' +
+      'WHAT IT BUYS, stated rather than assumed: 316 tokens leave the content budget on ' +
+      'EVERY assembly. The mechanism it replaces charges MORE and charges it forever — an ' +
+      'echo row is a PERSISTED message in the recipient\'s conversation, so it is re-billed ' +
+      'inside the fresh tail on every turn until it ages out, and it can never be ' +
+      'truncated because it is indistinguishable from history.',
   },
 ];
 

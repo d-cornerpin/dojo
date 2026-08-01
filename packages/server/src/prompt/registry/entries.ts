@@ -472,6 +472,25 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     render: (ctx) => renderTurnContext(ctx),
   },
   {
+    id: 'msg.deliveries',
+    target: 'messages',
+    slot: MessageSlot.Deliveries,
+    precedenceTier: 7,
+    reason:
+      'PHASE-3 T7: THE DELIVERIES LANE — what this agent has already sent the ' +
+      'counterparty, read from the `deliveries` rows (mig 121) by ' +
+      '`memory/deliveries-lane.ts`, so the recipient\'s next turn sees the question it ' +
+      'was asked. It replaces RC-1\'s cross-conversation ECHO ROW DUPLICATION (an extra ' +
+      'assistant message written into the recipient\'s conversation) and the ' +
+      'registry-exempt pending-question header that echo suppressed. Volatile by shape ' +
+      '(relative times) and scoped to the conversation being served, so it lives past ' +
+      'the cache boundary at 1860 — the physical position the header already held, ' +
+      'between turn-context and peer-status. Content is rendered + fitted to the lane\'s ' +
+      'declared reserve by the lane module; the loop supplies it because the dedup ' +
+      'against the not-yet-stripped echo rows is a fact about the in-flight array.',
+    render: (ctx) => (ctx.deliveriesLane ? { role: 'user', content: ctx.deliveriesLane } : null),
+  },
+  {
     id: 'msg.peer-status',
     target: 'messages',
     slot: MessageSlot.PeerStatus,

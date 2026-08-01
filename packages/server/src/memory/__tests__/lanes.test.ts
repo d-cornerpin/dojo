@@ -408,7 +408,16 @@ describe('the declared numbers (§T0-B clusters C/D/E/F) are lane declarations',
   });
 
   it('every declared limit belongs to a lane that exists', () => {
-    const known = new Set([...Object.keys(LANE_PRIORITY), 'lane.pm-tail', 'lane.awareness-gist']);
+    // The fit-ranked lanes, plus the three that declare limits without a priority: the PM
+    // tail and the awareness gist (sub-renders of lanes that DO have one), and PHASE-3 T7's
+    // `lane.deliveries`, which is POST-BUDGET — reserved off the top like the other seven in
+    // POST_BUDGET_LANES, never ranked by the two-pass fit, because it rides the volatile
+    // tail where the cache-prefix law puts per-turn content.
+    const known = new Set([
+      ...Object.keys(LANE_PRIORITY),
+      ...POST_BUDGET_LANES.map((l) => l.id),
+      'lane.pm-tail', 'lane.awareness-gist',
+    ]);
     for (const id of Object.keys(LANE_LIMITS)) {
       expect(known.has(id), `${id} declares limits but is not a lane`).toBe(true);
     }

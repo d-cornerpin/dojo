@@ -132,6 +132,14 @@ export enum MessageSlot {
   // prefix into this near-tail engine message, so nothing volatile lives in the
   // system string (all-provider cache fix, P-1). Sits just before CurrentTime.
   TurnContext = 1850,
+  // PHASE-3 T7: THE DELIVERIES LANE (`memory/deliveries-lane.ts`) — what this agent has
+  // already sent the counterparty, read from the `deliveries` rows (mig 121) instead of
+  // from a duplicated message row. It carries relative times and is scoped to the
+  // conversation being served, so it is volatile by shape and belongs past the boundary;
+  // 1860 is the physical position RC-1's pending-question header already occupied (after
+  // turn-context, before peer-status). Adding a number BETWEEN two existing ones renumbers
+  // nothing, so the byte-equivalence contract above is untouched (same move as Events=1050).
+  Deliveries = 1860,
   // Live peer statuses (2026-07-16 cache finding): the group roster in the
   // cached prefix carries NAMES only; the volatile idle/working state renders
   // here so a peer's status flip never invalidates the cached prefix.
@@ -207,6 +215,12 @@ export interface AssemblyContext {
   /** F9: explicit-delegation routing hint (advice voice), set by the loop when
    *  the user explicitly routes work to the agent's own agents. */
   delegationHint?: string | null;
+  /** PHASE-3 T7: the deliveries lane's rendered message (`memory/deliveries-lane.ts`),
+   *  already fitted to the lane's declared reserve. The loop computes it because the
+   *  lane's dedup is an ARRAY fact — "is this text already in the assembled context" —
+   *  which only the holder of the in-flight array can answer; the lane owns the read of
+   *  the `deliveries` rows, the rendering and the truncation. */
+  deliveriesLane?: string | null;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -252,6 +266,7 @@ export const VOLATILE_TURN_FIELDS = [
   'techniqueStrong',
   'techniqueWeakHint',
   'delegationHint',
+  'deliveriesLane',
 ] as const satisfies readonly (keyof AssemblyContext)[];
 
 export type VolatileTurnField = (typeof VOLATILE_TURN_FIELDS)[number];

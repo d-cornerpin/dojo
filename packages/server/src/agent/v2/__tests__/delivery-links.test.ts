@@ -30,13 +30,13 @@ vi.mock('../../../db/connection.js', () => ({
   },
 }));
 
-import { mostRecentDeliveryToConversation } from '../outbound-ledger.js';
+import { recentDeliveriesToConversation } from '../outbound-ledger.js';
 import { findDeliveryEvidenceForTask } from '../../../tracker/delivery-evidence.js';
 
 const AGENT = 'agent-1';
 
 // ⚠ TIME-BOMB REPAIR (PHASE-2 T8c, 2026-07-29). These fixtures used to carry the LITERAL
-// instants `2026-07-28 09:00:00 / 10:00:00 / 11:00:00`, and `mostRecentDeliveryToConversation`
+// instants `2026-07-28 09:00:00 / 10:00:00 / 11:00:00`, and `recentDeliveriesToConversation`
 // filters on `created_at >= datetime('now', '-24 hours')`. At 2026-07-29 10:04 UTC the window
 // opened past 10:00:00 and all three clauses in section 1 went red — on the wall clock, with
 // nothing in the tree changed. Verified as pre-existing rather than assumed: the same three
@@ -110,14 +110,14 @@ describe('deliveries.receipt_id is READ, not merely written', () => {
     seedReceipt('r-decoy', { sent_text: 'the WRONG text', created_at: rel(1) });
     seedDelivery({ receipt_id: 'r-right' });
 
-    const d = mostRecentDeliveryToConversation(AGENT, 'conv-im', 24);
+    const d = recentDeliveriesToConversation(AGENT, 'conv-im', 24, 1)[0] ?? null;
     expect(d).not.toBeNull();
     expect(d!.sentText).toBe('the RIGHT text');
   });
 
   it('NEGATIVE CONTROL: a delivery whose receipt_id points at nothing reports no sent text', () => {
     seedDelivery({ receipt_id: 'r-missing' });
-    const d = mostRecentDeliveryToConversation(AGENT, 'conv-im', 24);
+    const d = recentDeliveriesToConversation(AGENT, 'conv-im', 24, 1)[0] ?? null;
     expect(d!.sentText).toBeNull();
     expect(d!.verified).toBe(false);
   });
@@ -127,7 +127,7 @@ describe('deliveries.receipt_id is READ, not merely written', () => {
     // regression dressed as a rekey.
     seedReceipt('r-legacy', { sent_text: 'legacy text' });
     seedDelivery({ receipt_id: null });
-    const d = mostRecentDeliveryToConversation(AGENT, 'conv-im', 24);
+    const d = recentDeliveriesToConversation(AGENT, 'conv-im', 24, 1)[0] ?? null;
     expect(d!.sentText).toBe('legacy text');
   });
 });

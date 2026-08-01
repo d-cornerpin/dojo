@@ -61,6 +61,12 @@ const EXPECTED_MESSAGE = [
   'msg.pending-nudge',
   'msg.tool-note',
   'msg.turn-context',
+  // PHASE-3 T7: THE DELIVERIES LANE, slot 1860 — what this agent has already sent the
+  // counterparty, read from the `deliveries` rows by `memory/deliveries-lane.ts`. It takes
+  // over from the registry-exempt `engine.pending-question` push AND from the
+  // cross-conversation echo ROW duplication that push used to defer to (T7 Step 2 strips
+  // the rows). Volatile by shape, so it sits past the 1850 boundary and before peer-status.
+  'msg.deliveries',
   // Live peer statuses in the volatile lane (2026-07-16 cache finding): the
   // cached group roster carries names only; idle/working churn lands here.
   'msg.peer-status',

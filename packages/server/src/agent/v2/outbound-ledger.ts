@@ -242,36 +242,45 @@ function deliveryJoinToOutbound(db: ReturnType<typeof getDb>, agentId: string, d
 }
 
 /**
- * P6b-2: the ID-keyed selection for the pending-question header. The most
- * recent DELIVERED outbound INTO a conversation, from the deliveries rows
- * (mig 121), joined to its receipt for the verbatim sent text. No recipient
- * fuzz: the conversation id IS the identity. Returns null when the
- * conversation has no delivery rows (the caller falls back to the legacy
- * hint path while pre-121 history ages out).
+ * P6b-2: the ID-keyed selection the DELIVERIES LANE reads. The most recent
+ * DELIVERED outbounds INTO a conversation, newest first, from the deliveries
+ * rows (mig 121), each joined to its receipt for the verbatim sent text. No
+ * recipient fuzz: the conversation id IS the identity. Returns [] when the
+ * conversation has no delivery rows (the caller falls back to the legacy hint
+ * path while pre-121 history ages out).
+ *
+ * PHASE-3 T7: this was `mostRecentDeliveryToConversation`, LIMIT 1, because its
+ * one consumer (the pending-question header) quoted a single message and the
+ * cross-conversation ECHO ROW carried everything older. The lane that replaces
+ * those duplicated rows has to cover what they covered — a recipient's
+ * conversation accumulates every question the agent asked it — so the limit is
+ * the lane's own declared row cap (`LANE_LIMITS['lane.deliveries'].rows`),
+ * passed in rather than hardcoded here.
  */
-export function mostRecentDeliveryToConversation(
+export function recentDeliveriesToConversation(
   agentId: string,
   conversationId: string,
   windowHours: number,
-): OutboundDelivery | null {
+  limit: number,
+): OutboundDelivery[] {
   try {
     const db = getDb();
     const hours = Math.max(1, Math.floor(windowHours));
-    const d = db.prepare(
+    const n = Math.max(1, Math.floor(limit));
+    const rows = db.prepare(
       `SELECT tool, channel, recipient_id, recipient_display, turn_number, receipt_id, created_at
          FROM deliveries
         WHERE agent_id = ? AND conversation_id = ? AND outcome = 'delivered'
           AND channel NOT IN ('dashboard', 'voice')
           AND created_at >= datetime('now', ?)
-        ORDER BY created_at DESC LIMIT 1`,
-    ).get(agentId, conversationId, `-${hours} hours`) as DeliveryJoinRow | undefined;
-    if (!d) return null;
-    return deliveryJoinToOutbound(db, agentId, d);
+        ORDER BY created_at DESC LIMIT ?`,
+    ).all(agentId, conversationId, `-${hours} hours`, n) as DeliveryJoinRow[];
+    return rows.map((d) => deliveryJoinToOutbound(db, agentId, d));
   } catch (err) {
-    logger.warn('mostRecentDeliveryToConversation failed (non-fatal)', {
+    logger.warn('recentDeliveriesToConversation failed (non-fatal)', {
       agentId, error: err instanceof Error ? err.message : String(err),
     }, agentId);
-    return null;
+    return [];
   }
 }
 

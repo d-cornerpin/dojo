@@ -78,7 +78,8 @@ import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTur
 import { persistEngineSteer } from './engine-steer.js';
 import { pushEngineMessage } from './engine-message.js';
 import { tagMessageLane, collectMessageLaneIds } from '../../memory/message-lane-tag.js';
-import { findRecentDeliveries, findRecentDeliveriesKeyed, getRecentOutbound, mostRecentDeliveryTo, mostRecentDeliveryToConversation, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
+import { findRecentDeliveries, findRecentDeliveriesKeyed, getRecentOutbound, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
+import { renderDeliveriesLaneMessage } from '../../memory/deliveries-lane.js';
 import { writeToolReceipt } from '../../receipts/store.js';
 import { resolveToolAlias } from '../../tools/aliases.js';
 // PHASE-2 T8V: the six work verbs made tool NAMES insufficient to identify an
@@ -3833,46 +3834,35 @@ export async function runV2Turn(agentId: string): Promise<void> {
             pushEngineMessage(messages, `RECENT OUTBOUND (engine-verified):\n${outLines.join('\n')}`, 'engine.recent-outbound'); // registry-exempt(2026-07-16): RC-12 receipts block reads per-iteration ledger state; migrate with the volatile-injection registry refactor
           }
 
-          // Pending-question header (RC-1 item 2): quote the agent's own most-recent
-          // message TO THIS counterparty (never another conversation's content) so a
-          // bare answer ("5550001234") is bindable even by the weakest model. Dedup:
-          // a CROSS-recipient send (receipt convKey != this turn's key) already put an
-          // echo row into this counterparty's fresh tail carrying the same text, so the
-          // header would duplicate it, skip it while that echo is recent (still in the
-          // live tail); inject it for a same-conversation send (never echoed) or an old
-          // cross-recipient send whose echo has aged out of the tail window.
-          // P6b-2: ID-keyed selection first. The turn root carries THIS
-          // conversation's identity; the most recent delivery INTO it comes
-          // from the deliveries rows, no recipient fuzz. The alias-hint path
-          // survives as the legacy prong while pre-121 history ages out.
+          // ── THE DELIVERIES LANE (PHASE-3 T7 Step 1, research 18 §open-1) ──
+          // Quote the agent's own recent messages TO THIS counterparty (never another
+          // conversation's content) so a bare answer ("5550001234") is bindable even by
+          // the weakest model. It reads the `deliveries` rows natively and is DECLARED in
+          // the lane table (`lane.deliveries`: position 1860, a 316-token reserve, and a
+          // real `truncate()`), which is what lets the cross-conversation ECHO ROW
+          // DUPLICATION be stripped in T7 Step 2 — until now those persisted rows were the
+          // primary and this header was the fallback they suppressed.
+          //
+          // The read, the render and the fit live in `memory/deliveries-lane.ts`. What
+          // stays HERE is the one thing only the array's holder can answer: is this text
+          // already visible? (The echo rows are still being written during T7's quiet
+          // window; quoting a row the tail already carries would duplicate it.) When the
+          // echo writer dies the predicate stops matching and the lane carries the job
+          // whole — nothing else about this site changes.
           const pendConvId = currentTurnRoot.get(agentId)?.conversationId ?? null;
-          let pend: ReturnType<typeof mostRecentDeliveryTo> = pendConvId
-            ? mostRecentDeliveryToConversation(agentId, pendConvId, 48)
-            : null;
-          if (!pend) {
-            const pendHints = [counterparty.senderId, counterparty.name].filter(
+          mctx.deliveriesLane = renderDeliveriesLaneMessage({
+            agentId,
+            conversationId: pendConvId,
+            counterpartyName: counterparty.name,
+            recipientHints: [counterparty.senderId, counterparty.name].filter(
               (h): h is string => !!h && h.trim().length > 0,
-            );
-            for (const h of pendHints) { pend = mostRecentDeliveryTo(agentId, h, 48); if (pend) break; }
-          }
-          if (pend && pend.sentText && pend.sentText.trim()) {
-            // P6b-2: the 2h "echo probably still in the tail" clock is dead.
-            // We HOLD the assembled context right here, so whether the echo
-            // row duplicates this header is a direct presence check on it.
-            const quotedProbe = pend.sentText.trim().slice(0, 120);
-            const echoInAssembledTail = quotedProbe.length > 0 && messages.some(
+            ),
+            alreadyVisible: (probe) => probe.length > 0 && messages.some(
               (mRow) => mRow.role === 'assistant' && typeof mRow.content === 'string' &&
-                mRow.content.includes('[Sent via') && mRow.content.includes(quotedProbe),
-            );
-            if (!echoInAssembledTail) {
-              const quoted = pend.sentText.trim().slice(0, 300);
-              pushEngineMessage( // registry-exempt(2026-07-16): RC-1 pending-question header reads per-iteration receipt state; migrate with the volatile-injection registry refactor
-                messages,
-                `[Your most recent message to ${counterparty.name}, sent ${relativeTimeAgo(pend.createdAt)}: "${quoted}"]`,
-                'engine.pending-question',
-              );
-            }
-          }
+                mRow.content.includes('[Sent via') && mRow.content.includes(probe),
+            ),
+          });
+          injectRegistryMessage('msg.deliveries', messages, mctx);
 
           // OPEN WORK (PHASE-2 T7): what this agent still OWES — the current
           // conversation's open asks and commitments first, then up to 3 from other
