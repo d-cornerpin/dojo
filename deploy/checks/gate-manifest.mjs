@@ -269,11 +269,18 @@ export const GATES = [
   },
 ];
 
-// ── CLI: `--emit <tier> [phase]` prints TSV for release.sh ──
-// Columns: id, script, releaseArgs (space-joined, may be empty), title, fail.
-// Deliberately TSV and deliberately not JSON: release.sh is bash 3.2 on macOS and has
-// no jq guarantee, and a shell loop over `IFS=$'\t' read` cannot silently mis-parse a
-// field the way a hand-written JSON scrape can.
+// ── CLI: `--emit <tier> [phase]` prints one record per line for release.sh ──
+// Columns: id, script, releaseArgs (space-joined, may be EMPTY), title, fail.
+//
+// The separator is US (\x1f), not a tab, and that is not decoration. Bash treats tab
+// as IFS *whitespace*, so `IFS=$'\t' read` COLLAPSES two adjacent tabs into one
+// delimiter — an empty `releaseArgs` column therefore shifted every later field left
+// by one and release.sh printed each gate's failure message as its step title. It
+// still ran the right gates and still exited 0, so only rehearsing the actual shell
+// caught it (non-negotiable #16). \x1f is not whitespace, so empty fields survive, and
+// no title or prose can contain it.
+//
+// Deliberately not JSON: release.sh is bash 3.2 on macOS with no jq guarantee.
 if (import.meta.url === `file://${process.argv[1]}`) {
   const [flag, tier, phase] = process.argv.slice(2);
   if (flag !== '--emit' || !tier) {
@@ -288,6 +295,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       (g.releaseArgs ?? []).join(' '),
       g.title,
       g.fail ?? '',
-    ].join('\t') + '\n');
+    ].join('\x1f') + '\n');
   }
 }

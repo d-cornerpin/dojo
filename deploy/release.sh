@@ -289,7 +289,7 @@ GATE_TOTAL="$(printf '%s' "$GATE_ROWS" | grep -c . || true)"
 [ "${GATE_TOTAL:-0}" -ge 8 ] \
   || fail "Gate manifest: only ${GATE_TOTAL:-0} pre-build blocking gate(s) declared; a gate list that empties itself passes every release. NOT publishing."
 GATE_N=0
-while IFS=$'\t' read -r g_id g_script g_args g_title g_fail; do
+while IFS=$'\x1f' read -r g_id g_script g_args g_title g_fail; do
   [ -n "$g_id" ] || continue
   GATE_N=$((GATE_N + 1))
   step "Blocking gate $GATE_N/$GATE_TOTAL: $g_title"
@@ -321,7 +321,7 @@ step "Report tier (${REPORT_TOTAL:-0} instruments — recorded into the release 
   echo '```'
 } >> "$RELEASE_RECORD"
 REPORT_N=0
-while IFS=$'\t' read -r r_id r_script r_args r_title r_fail; do
+while IFS=$'\x1f' read -r r_id r_script r_args r_title r_fail; do
   [ -n "$r_id" ] || continue
   REPORT_N=$((REPORT_N + 1))
   {
