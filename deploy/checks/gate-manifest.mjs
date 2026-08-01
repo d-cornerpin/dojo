@@ -38,6 +38,9 @@
 // release.sh's own shell (a `cd`, an env, a subshell) rather than a plain node call.
 // ════════════════════════════════════════
 
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 export const GATES = [
   // ════════ blocking ════════
   {
@@ -282,7 +285,21 @@ export const GATES = [
 // no title or prose can contain it.
 //
 // Deliberately not JSON: release.sh is bash 3.2 on macOS with no jq guarantee.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// The main-entry guard compares REAL PATHS, not hand-built URL strings. `import.meta.url`
+// percent-encodes (a space becomes %20) and `process.argv[1]` does not, so the popular
+// `import.meta.url === \`file://${process.argv[1]}\`` idiom is FALSE for every checkout
+// whose path contains a space — this repo's does. That is not theoretical: it shipped in
+// T8G, made every `--emit` print nothing, and was invisible to `npm run gates` (which
+// imports GATES rather than spawning this file). The release refused to publish with
+// "only 0 pre-build blocking gate(s) declared" — the vacuity floor doing its job — and
+// `check-gate-manifest.mjs` §4b now runs this CLI and compares its row count to the list.
+// T8G's rehearsal could not have caught it: the worktree lived under a path with no spaces.
+const invokedDirectly = (() => {
+  if (!process.argv[1]) return false;
+  try { return fileURLToPath(import.meta.url) === path.resolve(process.argv[1]); }
+  catch { return false; }
+})();
+if (invokedDirectly) {
   const [flag, tier, phase] = process.argv.slice(2);
   if (flag !== '--emit' || !tier) {
     console.error('usage: node deploy/checks/gate-manifest.mjs --emit <blocking|report|release-only> [phase]');

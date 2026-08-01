@@ -38,6 +38,7 @@
 // ════════════════════════════════════════
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { GATES } from './gate-manifest.mjs';
 
@@ -129,6 +130,70 @@ for (const r of REQUIRED_EMITS) {
       '  list again, which is the whole defect. Restore the loop.',
       '',
     );
+  }
+}
+
+// ════════ 4b. the emit CLI actually EMITS — run it, do not read it ════════
+// Section 4 proves release.sh *asks* for the manifest. It cannot prove the manifest
+// *answers*, and those are different facts.
+//
+// They came apart for real at the PHASE-3 T8G merge (2026-07-31). `gate-manifest.mjs`
+// guarded its CLI block with `import.meta.url === \`file://${process.argv[1]}\``, which
+// is wrong for any checkout path containing a space or a non-ASCII byte: `import.meta.url`
+// percent-encodes and a raw `argv[1]` does not, so the two strings never match, the CLI
+// block never ran, and every `--emit` printed NOTHING. `npm run gates` was unaffected —
+// it IMPORTS the array — so the tree stayed green while `release.sh` had zero gates. The
+// vacuity floor above caught it at the release (exit 1, "only 0 declared"), which is a
+// safe failure and not a silent one, but it was found by RUNNING the release rather than
+// by any check. This section is that discovery converted into a gate.
+//
+// It matters beyond one typo: the two consumers use the module two different ways (npm
+// imports it, release.sh spawns it), and section 4's text match only ever sees one of
+// them. Anything that breaks the spawned path — the entry guard, a stray write to
+// stdout, a crash under a different cwd — is invisible until a release run.
+{
+  const EMITS = [
+    { argv: ['--emit', 'blocking', 'pre-build'], want: GATES.filter((g) => g.tier === 'blocking' && g.phase === 'pre-build').length },
+    { argv: ['--emit', 'report'], want: byTier('report').length },
+  ];
+  for (const e of EMITS) {
+    let out = '';
+    let spawnErr = null;
+    try {
+      out = execFileSync(process.execPath, [path.join(HERE, 'gate-manifest.mjs'), ...e.argv], {
+        encoding: 'utf8', cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) { spawnErr = err; }
+    const rows = out.split('\n').filter((l) => l.length > 0);
+    if (spawnErr) {
+      fail(
+        `✗ \`gate-manifest.mjs ${e.argv.join(' ')}\` did not run: ${spawnErr.message.split('\n')[0]}`,
+        '  release.sh spawns this exact command and fails the release when it cannot read it.',
+        '',
+      );
+      continue;
+    }
+    if (rows.length !== e.want) {
+      fail(
+        `✗ \`gate-manifest.mjs ${e.argv.join(' ')}\` emitted ${rows.length} row(s); the manifest declares ${e.want}.`,
+        '  release.sh reads this command\'s stdout and runs one gate per line. An emit that',
+        '  prints nothing is a release with no gates — and `npm run gates` cannot see it,',
+        '  because npm imports the array instead of spawning the file.',
+        '  Usual cause: the main-entry guard at the bottom of gate-manifest.mjs. Compare',
+        '  `fileURLToPath(import.meta.url)` against `path.resolve(process.argv[1])` — never',
+        '  a hand-built `file://` + argv string, which breaks on any path with a space.',
+        '',
+      );
+      continue;
+    }
+    const badCols = rows.filter((l) => l.split('\x1f').length !== 5);
+    if (badCols.length) {
+      fail(
+        `✗ \`gate-manifest.mjs ${e.argv.join(' ')}\` emitted ${badCols.length} row(s) without 5 \\x1f-separated columns.`,
+        '  release.sh reads id / script / releaseArgs / title / fail off each line by position.',
+        '',
+      );
+    }
   }
 }
 
