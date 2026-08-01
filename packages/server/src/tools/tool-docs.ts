@@ -403,6 +403,33 @@ export function partitionToolsForApiCall(
 }
 
 /**
+ * THE MEASURED TOOL PAYLOAD, in tokens of the one estimator — what the transport will
+ * actually serialise for this agent on this call, not an estimate of it.
+ *
+ * PHASE-3 T4. The budget's `toolAndOutputReserve` was the literal 15,000 from
+ * `assembler.ts:670`, and T2 measured that the primary's tools array alone is ~17,500
+ * tokens — the schemas exceeded the whole reserve before one output token, so the
+ * assembler's ceiling was over the window before the transport even added the tools. T2
+ * refused to retune it by hand (#14 forbids inventing a threshold) and named the honest
+ * fix: the assembler has to KNOW the payload. This is that number.
+ *
+ * It is the same expression `model.ts` runs on every call — `partitionToolsForApiCall`'s
+ * array, JSON-stringified — so the budget reserves what the wire carries. Not a parallel
+ * estimate of it: a second way to size the tools array is the disease this phase deletes.
+ *
+ * `agent/tools.js` is imported DYNAMICALLY for the same reason `model.ts` does it: that
+ * module is the tool hub and importing it statically from here would close a cycle.
+ */
+export async function measureAgentToolPayloadTokens(agentId: string): Promise<number> {
+  const { getFilteredTools } = await import('../agent/tools.js');
+  const { estimateTokens } = await import('../memory/budget.js');
+  const allPermitted = getFilteredTools(agentId);
+  const alwaysLoaded = getAgentAlwaysLoadedTools(agentId);
+  const part = partitionToolsForApiCall(agentId, allPermitted, alwaysLoaded);
+  return estimateTokens(JSON.stringify(part.tools));
+}
+
+/**
  * The flat array, for callers that do not place the cache breakpoint. Same membership as
  * before S1 — only the ORDER changed, and that change is the point.
  */

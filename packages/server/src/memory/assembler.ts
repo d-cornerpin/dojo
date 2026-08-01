@@ -6,7 +6,8 @@ import { createLogger } from '../logger.js';
 import { taskScope, msToText, revertCountExpr, stampColumns } from '../work/tracker-view.js';
 import { type PromptTurnContext } from '../prompt/assembler.js';
 import { conversationKey, type TurnCounterparty } from '../agent/v2/counterparty.js';
-import { getContextWindow } from '../agent/model.js';
+import { getContextWindow, getModelOutputCap } from '../agent/model.js';
+import { measureAgentToolPayloadTokens } from '../tools/tool-docs.js';
 import { getRecentMessages } from './store.js';
 import { estimateTokens, contextWindowPolicy, assertSystemPromptFits, SUMMARY_SHARE } from './budget.js';
 import {
@@ -370,6 +371,13 @@ export interface AssembledContext {
    * are persisted and later summarized, so it is live-view loss, not data loss.
    */
   freshTailDropped?: number;
+  /**
+   * PHASE-3 T4: what this assembly set aside for tool schemas + output, MEASURED — the
+   * tools payload this agent's transport will serialise plus the derived output allowance.
+   * The loop reads it to size the compaction gate's compressible budget; before T4 it
+   * imported a 15,000 constant that was smaller than the primary's tool schemas alone.
+   */
+  reserveTokens?: number;
   /**
    * PHASE-3 T3: the allocator's own record — one grant per lane, INCLUDING the rejected and
    * the truncated ones, plus every recorded over-budget event. Before this, a section the
@@ -1144,7 +1152,14 @@ async function assembleMessageContext(
 ): Promise<AssembledContext> {
   const contextWindow = getContextWindow(modelId);
   // ONE budget (PHASE-3 T2): threshold, reserve and ceiling from `memory/budget.ts`.
-  const policy = contextWindowPolicy(contextWindow);
+  // PHASE-3 T4: the reserve is MEASURED, not a constant — the tools payload this agent's
+  // transport will actually serialise, plus the derived output allowance. The old 15,000
+  // literal was smaller than the primary's tool schemas alone, so the assembler's ceiling
+  // sat ABOVE the window and the provider front-trimmers were doing the real work.
+  const policy = contextWindowPolicy(contextWindow, {
+    toolPayloadTokens: await measureAgentToolPayloadTokens(agentId),
+    maxOutputTokens: getModelOutputCap(modelId),
+  });
   const maxTokens = policy.assemblyBudgetTokens;
 
   // Budget the message array against the registry-produced system prompt's size.
@@ -1166,7 +1181,7 @@ async function assembleMessageContext(
     logger.debug('PM agent context assembled (lightweight)', {
       agentId, systemTokens, messageCount: messages.length,
     }, agentId);
-    return { systemPrompt, systemVolatile: '', messages };
+    return { systemPrompt, systemVolatile: '', messages, reserveTokens: policy.toolAndOutputReserve };
   }
 
   // ── v2 scaffolding gating (Part V + Part XVIII §C; v2.9.20 post-compaction re-fire) ──
@@ -1535,6 +1550,7 @@ async function assembleMessageContext(
     systemVolatile: '',
     messages: merged,
     freshTailDropped,
+    reserveTokens: policy.toolAndOutputReserve,
     allocation: report,
     consumedOneShotFlags,
   };

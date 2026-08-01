@@ -142,7 +142,7 @@ import {
 import { isForwardPromiseReply, pickA2AHandoffAck } from './ack-copy.js';
 import { findCrossConvReAnswer } from './re-answer-guard.js';
 import { compactionGate } from './classifiers/compaction.js';
-import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, TOOL_AND_OUTPUT_RESERVE } from '../../memory/compaction.js';
+import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD } from '../../memory/compaction.js';
 import { estimateTokens } from '../../memory/budget.js';
 import {
   insertMessageIfAbsent, insertEngineEventIfAbsent, stampConversationIdByRowid, tagTurnOutputConversationId,
@@ -2939,7 +2939,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       //   90–96% warn (log + chat:warning broadcast, every WARN is a v2 architecture bug)
       //   96–99% emergency compact (force checkAndCompact + queue wakeup)
       //   ≥99%   block (surrender turn, recovery cascade re-runs)
-      const assembledEstimate = estimateAssembledTokens(agentId, contextWindow);
+      const assembledEstimate = await estimateAssembledTokens(agentId, contextWindow, contextModelId);
       // FA-M1: gate the compressible total against the compressible BUDGET (window
       // minus the non-compressible overhead the assembler produced), not the full
       // window. The numerator stays compressible-only so compaction still never
@@ -3199,7 +3199,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // (system prompt + the tool-schema/output reserve it also reserves) so the
       // NEXT iteration's pre-call gate measures the compressible total against the
       // real compressible budget instead of the full window.
-      assemblerOverheadTokens = estimateTokens(systemPrompt) + TOOL_AND_OUTPUT_RESERVE;
+      // PHASE-3 T4: this used to add the imported `TOOL_AND_OUTPUT_RESERVE` constant, which
+      // is now measured per agent and no longer importable. `ctx.reserveTokens` is the
+      // number the assembler ACTUALLY set aside on the assembly that just ran — the loop
+      // reads the decision instead of re-deriving it, which is the same one-owner move.
+      assemblerOverheadTokens = estimateTokens(systemPrompt) + (ctx.reserveTokens ?? 0);
 
       // FA-M1: surface the assembler's oldest-fresh-tail eviction. budgetFreshTail
       // silently dropped older fresh-tail groups to fit the window (live-view loss

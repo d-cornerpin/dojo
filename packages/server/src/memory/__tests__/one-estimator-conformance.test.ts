@@ -140,16 +140,60 @@ describe('ONE estimator, whole tree (research 06 requirement A2)', () => {
     }
   });
 
-  it('has exactly ONE declaration of the threshold, the reserve and the divisor', () => {
+  it('has exactly ONE declaration of the threshold, the output reserve and the divisor', () => {
     const declRes: Array<[RegExp, string]> = [
       [/^\s*(?:export\s+)?const\s+CHARS_PER_TOKEN\s*=\s*\d/m, 'CHARS_PER_TOKEN'],
-      [/^\s*(?:export\s+)?const\s+TOOL_AND_OUTPUT_RESERVE\s*=\s*\d/m, 'TOOL_AND_OUTPUT_RESERVE'],
+      [/^\s*(?:export\s+)?const\s+OUTPUT_RESERVE_TOKENS\s*=\s*\d/m, 'OUTPUT_RESERVE_TOKENS'],
       [/^\s*(?:export\s+)?const\s+CONTEXT_THRESHOLD\s*=\s*[\d.]/m, 'CONTEXT_THRESHOLD'],
     ];
     for (const [re, name] of declRes) {
       const holders = files.filter((f) => re.test(stripComments(fs.readFileSync(path.join(REPO, f), 'utf8'))));
       expect(holders, `${name} must be declared exactly once, in ${CANONICAL}`).toEqual([CANONICAL]);
     }
+  });
+
+  it('TOOL_AND_OUTPUT_RESERVE is GONE — grep-zero, not merely single-sourced (PHASE-3 T4)', () => {
+    // This clause REPLACES "TOOL_AND_OUTPUT_RESERVE is declared exactly once", and it is
+    // strictly harder to pass. The old clause could only ever ask "is the constant in one
+    // place"; T4 measured that the constant was WRONG in a way no amount of single-sourcing
+    // fixes — 15,000 is smaller than the primary agent's tool schemas alone (17,502), so
+    // the assembler's ceiling sat above the window. The reserve is now COMPUTED per agent
+    // per call from the measured payload, so the honest assertion is that the constant
+    // does not exist anywhere, in any spelling, including a re-export.
+    //
+    // requirement preserved: "one number for the tokens the assembler does not control" —
+    // owned by `toolAndOutputReserve()` in memory/budget.ts, which no caller can bypass
+    // because `contextWindowPolicy` has no signature without its measured inputs.
+    // Comments are stripped: the demolition record NAMES the constant it removed (the
+    // `requirement preserved:` lines in budget.ts and compaction.ts), which is the
+    // convention, not a survivor. What must be zero is CODE that still spells it.
+    const offenders = files.filter((f) =>
+      /TOOL_AND_OUTPUT_RESERVE/.test(stripComments(fs.readFileSync(path.join(REPO, f), 'utf8'))));
+    expect(files.length, 'vacuity guard: the file list is empty').toBeGreaterThan(200);
+    expect(offenders, 'TOOL_AND_OUTPUT_RESERVE is back — the reserve is measured now').toEqual([]);
+  });
+
+  it('nobody can build a policy without measuring — the reserve has no default', () => {
+    // The escape hatch that would quietly re-create the constant is an optional parameter.
+    const budget = stripComments(fs.readFileSync(path.join(REPO, CANONICAL), 'utf8'));
+    expect(budget).toContain('export function toolAndOutputReserve');
+    // `measured` is REQUIRED: no `measured?:` and no `= …` default. The parameter list is
+    // sliced to its own closing paren by brace/paren depth — an earlier version of this
+    // clause cut at the first `{`, which lands INSIDE the type literal, so it went green
+    // over a planted default it never saw. Caught by taking the bite proof.
+    const start = budget.indexOf('export function contextWindowPolicy');
+    expect(start, 'contextWindowPolicy vanished').toBeGreaterThan(-1);
+    const open = budget.indexOf('(', start);
+    let depth = 0; let end = open;
+    for (let i = open; i < budget.length; i++) {
+      const ch = budget[i];
+      if (ch === '(' ) depth++;
+      else if (ch === ')') { depth--; if (depth === 0) { end = i; break; } }
+    }
+    const params = budget.slice(open + 1, end);
+    expect(params).toContain('measured:');
+    expect(params).not.toContain('measured?:');
+    expect(params, 'a default here silently re-creates the constant').not.toMatch(/measured\s*:[^,]*=/s);
   });
 
   it('makes dialect 3 UNSPELLABLE: no caller can hand `token_count` a number', () => {

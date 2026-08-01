@@ -110,19 +110,74 @@ export const CONTEXT_WARN_THRESHOLD = 0.90;
 export const CONTEXT_BLOCK_THRESHOLD = 0.99;
 
 /**
- * Tokens the model layer adds outside the assembler's control (tool schemas) plus an
- * output reserve.
+ * THE OUTPUT HALF OF THE RESERVE. **DERIVED, and here is the derivation** (PHASE-3 T4).
  *
- * MEASURED AND KNOWN TOO SMALL, recorded here rather than silently retuned (#14 forbids
- * inventing a threshold): the primary agent's always-loaded tools array is 70,006 chars
- * live = 17,502 tokens at the canonical divisor, i.e. the tool schemas ALONE exceed this
- * reserve before a single output token is counted. Making the reserve honest means the
- * assembler has to know the tools payload, which is exactly what PHASE-3 T3's S1 does
- * (the tools array becomes a declared prefix lane). Until then the provider front-trimmers
- * remain the backstop, and T4 Step 2b must not delete them before `validateAssembly`
- * repairs in priority order.
+ * It is not a number this module chose. It is `agent/model.ts`'s own
+ * `minOutputReserve = 4096` — the Anthropic transport's declared floor, the STRICTER of the
+ * two the tree already enforces (the OpenAI path declares 1,024). Reserving less than the
+ * transport itself demands would guarantee the transport re-trims whatever the assembler
+ * admitted, which is the two-authorities defect this phase exists to close.
+ *
+ * CHECKED against reality rather than assumed, because a floor inherited from one transport
+ * is still a claim about what a model emits (#14). Measured on the dev body,
+ * `SELECT output_tokens FROM cost_records WHERE output_tokens > 0` — **n = 8,244 real
+ * calls**:
+ *
+ *     p50 227 · p90 674 · p99 1,581 · p99.9 3,121 · max 6,907
+ *
+ * So 4,096 covers better than 99.9% of everything this platform has ever generated, with
+ * 31% headroom over p99.9. The all-time max (6,907, one call in 8,244) exceeds it, and that
+ * is NOT a lie in the arithmetic: the reserve governs how much HISTORY the assembler
+ * admits, while the transport's own `max_tokens` is computed from what the window actually
+ * has left (`model.ts`: `min(maxOutputTokens, cw - inputEstimate - 500)`). A long answer
+ * gets the room the window really has; the reserve only stops the assembler from spending
+ * it in advance.
+ *
+ * Re-derive before changing it. The command is written above; never tune it to a number.
  */
-export const TOOL_AND_OUTPUT_RESERVE = 15000;
+export const OUTPUT_RESERVE_TOKENS = 4096;
+
+/**
+ * The reserve, COMPUTED — the tokens the assembler must not spend because the model layer
+ * will.
+ *
+ * ── WHAT STOOD HERE, AND WHY IT HAD TO GO ──
+ * `TOOL_AND_OUTPUT_RESERVE = 15000`, a literal that arrived in `assembler.ts:670` with no
+ * derivation anywhere. T2 measured what it was standing in for and found it was not merely
+ * imprecise, it had the wrong SIGN: the primary agent's tools array alone measures 70,006
+ * chars = **17,502 tokens**, so the schemas exceeded the entire reserve before a single
+ * output token. Read forward, the arithmetic said the assembler's ceiling was ALREADY over
+ * the window:
+ *
+ *     assemblyBudget = floor(0.96 · cw) − 15,000
+ *     what the wire carries = assemblyBudget + tools = floor(0.96 · cw) + 2,502
+ *
+ * On a 32K model that is 33,222 tokens of input against a 32,000-token window — over the
+ * ceiling before output, every turn, which is exactly why the provider front-trimmers were
+ * still doing real work. T2 refused to retune it (#14) and named the prerequisite: the
+ * assembler has to know the payload. T3's S1 made the payload knowable; this closes it.
+ *
+ * With the reserve honest the arithmetic closes exactly:
+ *
+ *     assemblyBudget + tools + output = floor(0.96 · cw)
+ *
+ * `toolPayloadTokens` is MEASURED per agent per call (`measureAgentToolPayloadTokens`),
+ * never a constant, because a sub-agent's array is a different size from the primary's and
+ * one number for both would over-reserve for one and under-reserve for the other.
+ * `maxOutputTokens` caps the output half at what the model can actually emit — reserving
+ * 4,096 from a model that tops out at 2,048 sets aside room nothing can use.
+ */
+export function toolAndOutputReserve(measured: {
+  toolPayloadTokens: number;
+  maxOutputTokens?: number;
+}): number {
+  const tools = Math.max(0, Math.ceil(measured.toolPayloadTokens || 0));
+  const cap = measured.maxOutputTokens;
+  const output = Number.isFinite(cap) && (cap as number) > 0
+    ? Math.min(OUTPUT_RESERVE_TOKENS, Math.floor(cap as number))
+    : OUTPUT_RESERVE_TOKENS;
+  return tools + output;
+}
 
 /**
  * Per-message cap the compaction GATE applies before summing the fresh tail, so one
@@ -186,14 +241,23 @@ function clampWindow(contextWindow: number): number {
 /**
  * The eight-plus numbers, derived once, clamped, from the one place that owns them.
  *
- * CLAMPING IS NOT COSMETIC. `floor(0.96 · 15000) − 15000` is negative, and a negative
- * budget does not fail — it flows into `budgetFreshTail(tail, maxTokens − usedTokens)`,
- * whose "include the last group anyway" safety then hands the model exactly one message
- * with nothing logged and nothing broadcast. Zero is representable; negative is a lie.
+ * `measured` IS REQUIRED, and that is the design (PHASE-3 T4). There is no default and no
+ * overload without it, so no caller can quietly fall back to a constant nobody derived —
+ * which is how the 15,000 survived four phases. Both production callers hold an `agentId`
+ * and a window; measuring costs one already-memoised tool-list read.
+ *
+ * CLAMPING IS NOT COSMETIC. `floor(0.96 · 15000) − reserve` is negative on a small window,
+ * and a negative budget does not fail — it flows into `budgetFreshTail(tail, maxTokens −
+ * usedTokens)`, whose "include the last group anyway" safety then hands the model exactly
+ * one message with nothing logged and nothing broadcast. Zero is representable; negative
+ * is a lie. `assertSystemPromptFits` is what turns that zero into a loud failure.
  */
-export function contextWindowPolicy(contextWindow: number): ContextWindowPolicy {
+export function contextWindowPolicy(
+  contextWindow: number,
+  measured: { toolPayloadTokens: number; maxOutputTokens?: number },
+): ContextWindowPolicy {
   const cw = clampWindow(contextWindow);
-  const reserve = Math.max(0, TOOL_AND_OUTPUT_RESERVE);
+  const reserve = Math.max(0, toolAndOutputReserve(measured));
   return {
     contextWindow: cw,
     compactionThreshold: CONTEXT_THRESHOLD,

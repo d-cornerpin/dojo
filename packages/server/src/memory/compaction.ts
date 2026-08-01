@@ -75,22 +75,46 @@ export const NO_CONVERSATION_PLACEHOLDER = '(system/inter-agent activity, no use
 // just needs to know "is the fresh tail genuinely full of conversation",
 // not "did somebody dump a 30K file into a single tool result".
 // STRIP (PHASE-3 T2): `MAX_GATE_MESSAGE_TOKENS` (now `policy.gateMessageCap`) and
-// `TOOL_AND_OUTPUT_RESERVE`, which was ALSO a bare literal in `assembler.ts:670`. Both are
-// `memory/budget.ts`'s; the re-export keeps `loop.ts:145`'s import path working.
-export { TOOL_AND_OUTPUT_RESERVE } from './budget.js';
+// `TOOL_AND_OUTPUT_RESERVE`, which was ALSO a bare literal in `assembler.ts:670`.
+// STRIP (PHASE-3 T4): the re-export itself. The reserve is no longer a constant anybody can
+// import — it is `toolAndOutputReserve({ measured tools, model output cap })`, computed per
+// agent per call. `loop.ts` used the re-exported constant to describe the overhead the
+// assembler had just produced; it now reads the number the assembler ACTUALLY used, off the
+// dry-run below. requirement preserved: "the loop knows how much of the window the
+// assembler did not control" — owned by `estimateAssembledTokens`'s `reserveTokens`.
 
 /** The compaction gate's view of what the assembler will produce — an ALLOCATOR DRY-RUN
  *  since PHASE-3 T2, not a second model of it. What stood here derived the assembler's
- *  ceiling from THIS module's threshold (0.96) while the assembler used 0.75. */
-export function estimateAssembledTokens(agentId: string, contextWindow: number): {
+ *  ceiling from THIS module's threshold (0.96) while the assembler used 0.75.
+ *
+ *  ASYNC since PHASE-3 T4, and for the reason the dry-run exists: the assembler's reserve
+ *  is now MEASURED from this agent's real tools payload, and a gate that modelled it with a
+ *  constant while the assembler measured it would be a second model of the budget again —
+ *  the exact defect T2 deleted. Measuring needs the tool hub, which is loaded dynamically
+ *  to avoid a cycle, so the dry run is async. All three call sites were already inside
+ *  async functions. */
+export async function estimateAssembledTokens(
+  agentId: string,
+  contextWindow: number,
+  /** The model the turn will actually call, when the caller knows it. Absent means the
+   *  output cap is unknown and the reserve uses its own floor rather than inventing one. */
+  modelId?: string,
+): Promise<{
   total: number;
   summaryTokens: number;
   freshTailTokens: number;
   briefTokens: number;
   freshTailCount: number;
   summaryCount: number;
-} {
-  const policy = contextWindowPolicy(contextWindow);
+  /** What the assembler set aside for tool schemas + output on this agent, measured. */
+  reserveTokens: number;
+}> {
+  const { measureAgentToolPayloadTokens } = await import('../tools/tool-docs.js');
+  const { getModelOutputCap } = await import('../agent/model.js');
+  const policy = contextWindowPolicy(contextWindow, {
+    toolPayloadTokens: await measureAgentToolPayloadTokens(agentId),
+    maxOutputTokens: modelId ? getModelOutputCap(modelId) : undefined,
+  });
   const summaries = getContextSummaries(agentId);
   const rawSummaryTokens = summaries.reduce((sum, s) => sum + (s.tokenCount ?? 0), 0);
 
@@ -133,6 +157,7 @@ export function estimateAssembledTokens(agentId: string, contextWindow: number):
     briefTokens,
     freshTailCount: freshTail.length,
     summaryCount: summaries.length,
+    reserveTokens: policy.toolAndOutputReserve,
   };
 }
 
@@ -478,7 +503,7 @@ async function runCheckAndCompact(
     modelId = resolved;
   }
 
-  const assembled = estimateAssembledTokens(agentId, contextWindow);
+  const assembled = await estimateAssembledTokens(agentId, contextWindow, modelId);
   const totalTokens = assembled.total;
   const activeThreshold = getContextThreshold();
   const threshold = activeThreshold * contextWindow;
@@ -661,7 +686,7 @@ async function runCheckAndCompact(
       : await runCondensation(agentId, modelId, DEFAULTS.incrementalMaxDepth);
     rebuildContextItems(agentId);
 
-    const tokensAfter = estimateAssembledTokens(agentId, contextWindow).total;
+    const tokensAfter = (await estimateAssembledTokens(agentId, contextWindow, modelId)).total;
     const tokensReclaimed = tokensBefore - tokensAfter;
 
     const result = { leafCreated, condensedCreated, tokensReclaimed: Math.max(tokensReclaimed, 0) };

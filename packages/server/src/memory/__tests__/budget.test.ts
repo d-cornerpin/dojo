@@ -46,7 +46,8 @@ import {
   CONTEXT_THRESHOLD,
   CONTEXT_WARN_THRESHOLD,
   CONTEXT_BLOCK_THRESHOLD,
-  TOOL_AND_OUTPUT_RESERVE,
+  OUTPUT_RESERVE_TOKENS,
+  toolAndOutputReserve,
 } from '../budget.js';
 
 describe('the ONE estimator', () => {
@@ -91,13 +92,63 @@ describe('the ONE threshold (owner ruling, PHASE-3 T0b, 2026-07-26)', () => {
   });
 });
 
+// PHASE-3 T4: `contextWindowPolicy` no longer has a reserve constant to fall back on —
+// `measured` is REQUIRED, by design. These clauses pass the primary agent's own live
+// figure (70,006 chars of tool schemas = 17,502 tokens, re-measured at T4's HEAD by
+// `check-cache-prefix`) so the arithmetic below is the arithmetic that actually runs.
+const MEASURED_PRIMARY = { toolPayloadTokens: 17_502, maxOutputTokens: 64_000 };
+const RESERVE_PRIMARY = 17_502 + OUTPUT_RESERVE_TOKENS;
+
+describe('the reserve — DERIVED from the measured payload, never a constant (PHASE-3 T4)', () => {
+  it('is the measured tools payload PLUS the derived output allowance', () => {
+    expect(toolAndOutputReserve(MEASURED_PRIMARY)).toBe(RESERVE_PRIMARY);
+    // and it MOVES with the payload, which a constant cannot do: a sub-agent carrying a
+    // third of the primary's schemas reserves a third of the tools half.
+    expect(toolAndOutputReserve({ toolPayloadTokens: 5_800, maxOutputTokens: 64_000 }))
+      .toBe(5_800 + OUTPUT_RESERVE_TOKENS);
+  });
+
+  it('the output half is the transports own floor, not a number this module picked', () => {
+    // `agent/model.ts`'s Anthropic `minOutputReserve = 4096`, the stricter of the two the
+    // tree enforces. Measured against 8,244 real `cost_records` rows it covers p99.9
+    // (3,121) with headroom. See budget.ts for the full derivation and the command.
+    expect(OUTPUT_RESERVE_TOKENS).toBe(4096);
+  });
+
+  it('caps the output half at what the model can actually emit', () => {
+    // Reserving 4,096 from a model that tops out at 2,048 sets aside room nothing can use.
+    expect(toolAndOutputReserve({ toolPayloadTokens: 1_000, maxOutputTokens: 2_048 }))
+      .toBe(1_000 + 2_048);
+    // An unknown cap uses the floor rather than inventing one.
+    expect(toolAndOutputReserve({ toolPayloadTokens: 1_000 })).toBe(1_000 + OUTPUT_RESERVE_TOKENS);
+  });
+
+  it('THE OLD 15,000 WAS SMALLER THAN THE TOOL SCHEMAS ALONE — the defect, in arithmetic', () => {
+    // What the wire carried before T4: assemblyBudget + tools, i.e. the ceiling the
+    // assembler enforced was ABOVE the window before a single output token.
+    const cw = 32_000;
+    const oldBudget = Math.floor(0.96 * cw) - 15_000;
+    expect(oldBudget + MEASURED_PRIMARY.toolPayloadTokens).toBeGreaterThan(cw);   // 33,222 > 32,000
+
+    // With the reserve honest it closes exactly: budget + tools + output = floor(0.96·cw).
+    const p = contextWindowPolicy(cw, MEASURED_PRIMARY);
+    expect(p.assemblyBudgetTokens + p.toolAndOutputReserve).toBe(Math.floor(0.96 * cw));
+    expect(p.assemblyBudgetTokens + MEASURED_PRIMARY.toolPayloadTokens).toBeLessThan(cw);
+  });
+
+  it('never goes negative on a payload bigger than the window', () => {
+    const p = contextWindowPolicy(8_000, { toolPayloadTokens: 90_000 });
+    expect(p.assemblyBudgetTokens).toBe(0);
+  });
+});
+
 describe('ContextWindowPolicy — the numbers, in one place, clamped', () => {
   it('derives the assembly budget the assembler and the compaction gate BOTH used to derive privately', () => {
-    const p = contextWindowPolicy(200_000);
+    const p = contextWindowPolicy(200_000, MEASURED_PRIMARY);
     expect(p.contextWindow).toBe(200_000);
     expect(p.compactionThreshold).toBe(0.96);
-    expect(p.toolAndOutputReserve).toBe(TOOL_AND_OUTPUT_RESERVE);
-    expect(p.assemblyBudgetTokens).toBe(Math.floor(0.96 * 200_000) - 15_000);
+    expect(p.toolAndOutputReserve).toBe(RESERVE_PRIMARY);
+    expect(p.assemblyBudgetTokens).toBe(Math.floor(0.96 * 200_000) - RESERVE_PRIMARY);
     expect(p.freshTailCount).toBe(getFreshTailCount(200_000));
     expect(p.gateMessageCap).toBe(4000);
     expect(p.summaryShare).toBe(0.7);
@@ -108,12 +159,12 @@ describe('ContextWindowPolicy — the numbers, in one place, clamped', () => {
     // into `budgetFreshTail(tail, maxTokens - usedTokens)`, whose "include the last
     // group anyway" safety then hands the model exactly one message with no warning
     // anywhere. A clamped zero cannot silently invert a comparison.
-    const p = contextWindowPolicy(15_000);
+    const p = contextWindowPolicy(15_000, MEASURED_PRIMARY);
     expect(p.assemblyBudgetTokens).toBe(0);
     expect(p.assemblyBudgetTokens).toBeGreaterThanOrEqual(0);
 
     for (const cw of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
-      const q = contextWindowPolicy(cw);
+      const q = contextWindowPolicy(cw, MEASURED_PRIMARY);
       expect(Number.isFinite(q.contextWindow)).toBe(true);
       expect(q.contextWindow).toBeGreaterThanOrEqual(0);
       expect(q.assemblyBudgetTokens).toBeGreaterThanOrEqual(0);
@@ -132,13 +183,14 @@ describe('ContextWindowPolicy — the numbers, in one place, clamped', () => {
   });
 
   it('is a pure function of the window — same window in, same numbers out', () => {
-    expect(contextWindowPolicy(128_000)).toEqual(contextWindowPolicy(128_000));
+    expect(contextWindowPolicy(128_000, MEASURED_PRIMARY)).toEqual(contextWindowPolicy(128_000, MEASURED_PRIMARY));
   });
 });
 
 describe('the small-window floor — a loud failure, never a silent starvation', () => {
   it('throws when the system prompt alone exceeds the assembly budget', () => {
-    const p = contextWindowPolicy(20_000);            // budget = 19,200 − 15,000 = 4,200
+    // budget = 19,200 - (17,502 + 4,096) = 0 after clamping, so ANY system prompt is too big.
+    const p = contextWindowPolicy(20_000, MEASURED_PRIMARY);
     expect(() => assertSystemPromptFits(7_022, p)).toThrow(SystemPromptTooLargeError);
     // and the message has to carry the numbers, because the fix is always
     // "which of these three is wrong", never "context is full"
@@ -146,20 +198,22 @@ describe('the small-window floor — a loud failure, never a silent starvation',
       assertSystemPromptFits(7_022, p);
     } catch (e) {
       expect(String((e as Error).message)).toContain('7022');
-      expect(String((e as Error).message)).toContain('4200');
       expect(String((e as Error).message)).toContain('20000');
+      // the reserve is now IN the message, because "which of the three is wrong" gained a
+      // third answer the moment the reserve stopped being a constant everyone knew.
+      expect(String((e as Error).message)).toContain(String(RESERVE_PRIMARY));
     }
   });
 
   it('does NOT throw for the windows the platform actually runs on', () => {
     // §T0-E measured the real system prompt at a median of 28,085 chars ≈ 7,022 tokens.
     for (const cw of [32_000, 65_536, 128_000, 200_000, 204_800, 1_048_576]) {
-      expect(() => assertSystemPromptFits(7_022, contextWindowPolicy(cw))).not.toThrow();
+      expect(() => assertSystemPromptFits(7_022, contextWindowPolicy(cw, MEASURED_PRIMARY))).not.toThrow();
     }
   });
 
   it('throws on the exact boundary + 1 and passes ON the boundary', () => {
-    const p = contextWindowPolicy(200_000);
+    const p = contextWindowPolicy(200_000, MEASURED_PRIMARY);
     expect(() => assertSystemPromptFits(p.assemblyBudgetTokens, p)).not.toThrow();
     expect(() => assertSystemPromptFits(p.assemblyBudgetTokens + 1, p)).toThrow(SystemPromptTooLargeError);
   });

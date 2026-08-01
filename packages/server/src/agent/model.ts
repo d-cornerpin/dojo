@@ -2680,3 +2680,22 @@ export function getContextWindow(modelId: string): number {
     return 200000; // Default fallback
   }
 }
+
+/**
+ * The most output tokens this model can emit, for the budget's output reserve (PHASE-3 T4).
+ * `getModelInfo` is private (it reads the provider row and normalises six fields); this is
+ * the one field `memory/budget.ts` needs and the same one both transports cap `max_tokens`
+ * against (`:1353`, `:2368`), so the reserve and the request agree by construction.
+ * `undefined` on an unknown model means "no cap known" and the reserve uses its own floor
+ * rather than inventing one.
+ */
+export function getModelOutputCap(modelId: string): number | undefined {
+  try {
+    const info = getModelInfo(modelId);
+    return Number.isFinite(info.maxOutputTokens) && info.maxOutputTokens > 0
+      ? info.maxOutputTokens
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
