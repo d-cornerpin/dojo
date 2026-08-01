@@ -65,6 +65,22 @@ describe('T10I — the assembler scopes on conversation_id', () => {
     expect(scopeToHumanConversation(tail, cp('+1555'), MINE).map((m) => m.id)).toEqual(['inflight']);
   });
 
+  // PHASE-3 STRIP-3 — the causal link, pinned so nobody has to re-derive it. This is the
+  // BEHAVIOUR the loop's stale turn-conversation map fed on: "I do not know this turn's
+  // conversation" and "this turn has no conversation" are the same input here, and the
+  // answer to both is to drop every stamped own-output row. That is correct for a genuine
+  // engine/A2A turn and catastrophic for a human turn whose map was simply written too
+  // early — it is the re-answer ghost's own shape. The map's write therefore has to happen
+  // after its value is final (loop.ts, pinned below); this clause says why.
+  it('a NULL counterparty conversation drops stamped own output — which is why the turn must publish the resolved id', () => {
+    const tail = [
+      msg({ id: 'answered', role: 'assistant', content: 'here is your answer', origin: selfOrigin, conversationId: MINE }),
+    ];
+    expect(scopeToHumanConversation(tail, cp('+1555'), null).map((m) => m.id)).toEqual([]);
+    // The same row, with the identity the turn actually has, survives.
+    expect(scopeToHumanConversation(tail, cp('+1555'), MINE).map((m) => m.id)).toEqual(['answered']);
+  });
+
   it('still excludes ANOTHER human\'s inbound (the no-bleed property, carried across the re-point)', () => {
     const tail = [
       msg({ id: 'other-human', role: 'user', content: 'dinner?', origin: userOrigin('imessage', '+1999', 'Sam'), conversationId: THEIRS }),
@@ -133,6 +149,50 @@ describe('T10I — the identity readers no longer read messages.conv_key', () =>
   it('the dashboard receives conversationId and tells a background row by LANE, not by a sigil', () => {
     const s = stripComments(src('packages/dashboard/src/pages/Chat.tsx'));
     expect(s).not.toMatch(/convKey/);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// PHASE-3 STRIP-3 — the conv-KEY-where-a-conversation-ID-is-required class, closed.
+//
+// STRIP-2 enumerated it tree-wide: 13 non-test signatures take a conversation-id parameter
+// (21 call sites read), 51 direct SQL bind sites across 26 files, and every reader of
+// key-holding turn state. The bind-site axis returns ZERO — both live members cross a
+// FUNCTION BOUNDARY, and both values are `string`, so neither `tsc` nor a grep at the
+// statement can see them. Signatures had to be read. These clauses are what stops the class
+// coming back the same invisible way; the behavioural halves live in
+// `agent/v2/__tests__/integration.test.ts` ("STRIP-3").
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('STRIP-3 — the two conv-key/conversation-id call sites, pinned', () => {
+  const loop = (): string => stripComments(src('packages/server/src/agent/v2/loop.ts'));
+
+  it('the ghosted-ask ladder looks its recorded answer up by conversation ID, never by conv key', () => {
+    const s = loop();
+    expect(s).toMatch(/recordedAnswerInConversation\(agentId, chosenConversationId\)/);
+    expect(s).not.toMatch(/recordedAnswerInConversation\(agentId, chosenConvKey\)/);
+  });
+
+  it('the turn-conversation map has ONE writer and it runs AFTER the pickup repair', () => {
+    const s = loop();
+    // One writer. Two `.set()`s would be two owners of one fact — and the second would be
+    // exactly the "patch it later" shape that produced the stale value in the first place.
+    expect(s.match(/currentTurnConversationId\.set\(/g) ?? []).toHaveLength(1);
+    // …and it runs after the repair that can REASSIGN what it publishes. Written as an
+    // ordering, because the defect was an ordering: the value was correct, the moment was not.
+    const repairAt = s.indexOf('chosenConversationId = resolveOrCreateConversation(');
+    const publishAt = s.indexOf('currentTurnConversationId.set(');
+    expect(repairAt).toBeGreaterThan(-1);
+    expect(publishAt).toBeGreaterThan(repairAt);
+  });
+
+  it('the correctly-typed KEY consumers are untouched — a "fix" that rekeyed these would be a new bug', () => {
+    // Enumerated by STRIP-2 so nobody sweeps them up with the two real defects: these four
+    // take a conv KEY on purpose and compare against `conversationKey()` output.
+    const s = loop();
+    expect(s).toMatch(/claimAssembledSiblings\(/);
+    expect(s).toMatch(/accumulateUntrackedWorkAcrossTurns\(/);
+    expect(stripComments(src('packages/server/src/agent/v2/counterparty.ts')))
+      .toMatch(/quarantineWaitingConversation\(agentId: string, convKey: string/);
   });
 });
 

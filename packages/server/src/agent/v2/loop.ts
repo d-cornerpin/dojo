@@ -1069,7 +1069,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // to it. null on engine/A2A turns (no waiting human) so recall doesn't latch the
   // last human conversation. Cleared when the agent goes idle.
   currentTurnConvKey.set(agentId, chosenConvKey);
-  currentTurnConversationId.set(agentId, chosenConversationId);
+  // The ID half of the same publication is written AFTER the pickup block below, where
+  // `chosenConversationId` becomes final. See the note at that write.
   // OPEN-12: trigger on the OLDEST unanswered message in the chosen conversation,
   // so a conversation's pending messages are answered oldest-first, a later ping
   // ("are you there?") can never be answered before the request that came before it.
@@ -1176,6 +1177,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
       return;
     }
   }
+
+  // E-C1 / PHASE-2 T10I: publish the conversation this turn serves, as `conversations.id`.
+  // PHASE-3 STRIP-3 MOVED IT HERE (it was beside its KEY sibling above) because THIS is where
+  // `chosenConversationId` is final: the pickup repair just above resolves one for exactly the
+  // trigger rows no producer stamped. Written early, the map said "no conversation" on a turn
+  // that had one, `memory/assembler.ts` handed that null to `scopeToHumanConversation`, and
+  // the own-output rule dropped every stamped answer — the model saw its asks with its replies
+  // missing and answered again (dojo `8bc7d7a`'s re-answer ghost; 23.6% of user rows on the dev
+  // body carry no `conversation_id`). MOVED, not doubled — a second `.set()` is two owners of
+  // one fact. Pinned by integration.test.ts, "STRIP-3 … (b)".
+  currentTurnConversationId.set(agentId, chosenConversationId);
 
   // N-1 (comms-audit): re-arm a stranded human ask. The pickup claim above marks the ask
   // served so a concurrent turn can't double-serve it. If THIS turn then aborts BEFORE
@@ -5000,14 +5012,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }, agentId);
           continue;
         }
-        if (ghostedWorkAsk && state.steeredForGhostedAskThisTurn && !state.ghostedAskSecondSteerThisTurn && chosenConvKey) {
+        if (ghostedWorkAsk && state.steeredForGhostedAskThisTurn && !state.ghostedAskSecondSteerThisTurn && chosenConversationId) {
           // Second (last) steer, owner ruling 2026-07-22: the engine never
           // speaks as the agent, so instead of re-serving the recorded answer
           // itself, hand the model its own recorded words to restate. If this
           // is ghosted too, silence stands (marker row + loud log below); the
           // ladder and stamps own the follow-up.
+          //
+          // PHASE-3 STRIP-3: gate and lookup both read `chosenConvKey` before.
+          // `recordedAnswerInConversation` filters `m1.conversation_id = ?` — a UUID column —
+          // and a conv key matches 0 of the dev body's 6,975 stamped rows where real ids match
+          // 954, so this rung had never once fired since the T10I rekey. Both values are
+          // `string` and the key crossed a function boundary: no type and no bind-site grep
+          // could see it. Pinned by integration.test.ts, "STRIP-3 … (a)".
           try {
-            const excerpt = (recordedAnswerInConversation(agentId, chosenConvKey) ?? '')
+            const excerpt = (recordedAnswerInConversation(agentId, chosenConversationId) ?? '')
               .replace(/\s+/g, ' ').trim().slice(0, 220);
             if (excerpt.length > 0) {
               const steer2 =

@@ -280,6 +280,7 @@ vi.mock('../../../logger.js', () => ({
 // Now import the module under test (after mocks are set up)
 import { runV2Turn } from '../loop.js';
 import { stoppedAgents, recoveryRunStreak, pendingWakeups } from '../../shared-state.js';
+import { currentTurnConversationId } from '../../turn-state.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { claimAsk, askIdForMessage } from '../../../work/store.js';
@@ -1882,5 +1883,118 @@ describe('T1: engine steer delivery (the pendingNudge drain)', () => {
     );
     expect(at).toBeGreaterThanOrEqual(0);
     expect(first[at].role).toBe('user');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// PHASE-3 STRIP-3 — WHICH CONVERSATION IDENTITY THE TURN HANDS ITS CONSUMERS
+//
+// STRIP-2 enumerated the conv-KEY-passed-as-conversation-ID class tree-wide (13 signatures,
+// 21 call sites, 51 SQL bind sites) and found exactly two live members. Both cross a
+// function boundary, so no bind-site grep can see them and no type can catch them — both
+// values are `string`. These two clauses are the alarm, and both were written RED.
+//
+//   (a) `loop.ts` handed `recordedAnswerInConversation` a conv KEY ('owner') where its SQL
+//       filters `m1.conversation_id = ?` — a UUID column. Measured on the live body: a key
+//       matches 0 of 6,975 stamped rows (0 of them non-UUID) where real ids match 954. The
+//       call therefore always returned null, `excerpt.length > 0` was always false, and the
+//       ghosted-work-ask ladder's SECOND rung — the one that hands the model its own
+//       recorded words to restate rather than the engine speaking as the agent (OR2) — has
+//       never once fired since the T10I rekey.
+//
+//   (b) `currentTurnConversationId` was written from the PRE-repair value: the pickup repair
+//       (`loop.ts`, "resolved at pickup") reassigns `chosenConversationId` for exactly the
+//       trigger rows no producer stamped, and never re-set the map. On such a turn the map
+//       said null while the turn genuinely had a conversation, so `scopeToHumanConversation`
+//       dropped every conversation-stamped answer the agent had given and the model was
+//       shown its own asks with its replies missing. That is dojo 8bc7d7a's re-answer ghost,
+//       reachable in production (23.6% of user rows on the dev body carry no conversation).
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('STRIP-3: the turn hands down conversation IDENTITY, never a conversation KEY', () => {
+  it('(b) a trigger row the producer never stamped still publishes the turn\'s conversation to the assembler', async () => {
+    // Take the seeded (already stamped) ask out of the waiting set so the UNSTAMPED row is
+    // the trigger. Without this the aggregate's `oldest` is the stamped row and the pickup
+    // repair never fires — the test would pass while measuring nothing.
+    expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
+    insertMessage({
+      id: 'msg-unstamped', agentId: 'primary', role: 'user', content: 'did you get my note?',
+      turnNumber: 2, channel: 'dashboard', senderId: 'owner', conversationId: null,
+      inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
+    });
+    // POSITIVE CONTROL on the fixture itself: the row really is unstamped going in, so a
+    // green below cannot come from a producer having stamped it after all.
+    expect(
+      (mockDb.current!.prepare('SELECT conversation_id AS c FROM messages WHERE id = ?')
+        .get('msg-unstamped') as { c: string | null }).c,
+    ).toBeNull();
+
+    // The assembler is mocked in this suite, so the observation point is the map AT ASSEMBLY
+    // TIME — the exact expression `memory/assembler.ts` reads. The loop deletes the entry when
+    // the agent goes idle, so reading it after the turn would measure nothing.
+    const seenAtAssembly: Array<string | null | undefined> = [];
+    assembleContextMock.mockImplementation(async () => {
+      seenAtAssembly.push(currentTurnConversationId.get('primary'));
+      return { systemPrompt: '<system prompt>', messages: [{ role: 'user', content: 'hello' }] };
+    });
+    callModelSpy.mockResolvedValue({
+      content: 'Yes, got it.', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
+    });
+
+    await runV2Turn('primary');
+
+    // The pickup repair ran and stamped the row (the DB half — this half already worked).
+    expect(
+      (mockDb.current!.prepare('SELECT conversation_id AS c FROM messages WHERE id = ?')
+        .get('msg-unstamped') as { c: string | null }).c,
+    ).toBe('conv-primary');
+    // …and the map the assembler reads carried the SAME identity. This is the half that was
+    // broken: null here is the re-answer ghost's own input.
+    expect(seenAtAssembly.length).toBeGreaterThan(0);
+    expect(seenAtAssembly[0]).toBe('conv-primary');
+  });
+
+  it('(a) the ghosted-ask ladder\'s second steer hands the model its own recorded answer', async () => {
+    // The recorded answer the second rung is supposed to quote: an answered ask in THIS
+    // conversation, written the way the answered edge records one (`answer_message_id`).
+    // Raw SQL on purpose — this pair is settled history, not a waiting ask, so it must not
+    // open a ticket.
+    mockDb.current!.prepare(
+      `INSERT INTO messages (id, agent_id, role, content, turn_number, conversation_id, created_at)
+       VALUES ('msg-prior-answer', 'primary', 'assistant', 'The launch is on the 14th; the pricing page is already live.', 1, 'conv-primary', (CAST(strftime('%s','now') AS INTEGER) * 1000) - 60000)`,
+    ).run();
+    mockDb.current!.prepare(
+      `INSERT INTO messages (id, agent_id, role, content, turn_number, conversation_id, channel, sender_id, answer_message_id, created_at)
+       VALUES ('msg-prior-ask', 'primary', 'user', 'when does the launch happen?', 1, 'conv-primary', 'dashboard', 'owner', 'msg-prior-answer', (CAST(strftime('%s','now') AS INTEGER) * 1000) - 61000)`,
+    ).run();
+
+    // The trigger: a WORK-classified human ask (three action verbs → the multistep
+    // heuristic's `definitely_multi`, so no classifier model call is needed).
+    expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
+    insertMessage({
+      id: 'msg-work-ask', agentId: 'primary', role: 'user',
+      content: 'Draft the launch email and build the pricing page and schedule the announcement.',
+      turnNumber: 2, channel: 'dashboard', senderId: 'owner', conversationId: 'conv-primary',
+      inboundMeta: JSON.stringify({ channel: 'dashboard', relation: 'owner' }),
+    });
+
+    // The model ghosts every time: bare sentinel, no tool calls.
+    callModelSpy.mockResolvedValue({
+      content: '[no-reply]', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
+    });
+
+    await runV2Turn('primary');
+
+    const messagesOfCall = (i: number): string =>
+      JSON.stringify((callModelSpy.mock.calls[i]?.[0] as { messages?: unknown })?.messages ?? []);
+
+    // POSITIVE CONTROL: the ladder was reached and its FIRST rung fired. Without this a
+    // green below could mean "the ladder never ran", which is the opposite finding.
+    expect(callModelSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(messagesOfCall(1)).toContain('[Engine hint: you ended with [no-reply]');
+
+    // THE CLAUSE: the second rung fires, and it carries the agent's OWN recorded words.
+    expect(callModelSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(messagesOfCall(2)).toContain('[Engine record: you again ended with [no-reply]');
+    expect(messagesOfCall(2)).toContain('The launch is on the 14th');
   });
 });
