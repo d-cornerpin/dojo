@@ -21,6 +21,9 @@
 // structured MessageOrigin instead of re-parsing content markers.
 import type { MessageOrigin } from './origin.js';
 
+import { A2A_ENVELOPE_PREFIX, A2A_INBOUND_RE, ENGINE_INJECTION_PREFIXES,
+  SOURCE_ENVELOPE_PREFIXES } from './markers.js';
+
 export const DISPLAY_TIERS = ['user-visible', 'agent-only', 'never-shown'] as const;
 export type VisibilityTier = (typeof DISPLAY_TIERS)[number];
 
@@ -119,7 +122,10 @@ export interface DisplayMessageInput {
 // marker parser (parseInboundChannel), both of which are untouched.
 
 // ════════════════════════════════════════
-// Marker constants (the ONLY place these strings live)
+// Marker constants — the DISPLAY half. PHASE-3 T5 moved the ASSEMBLY families (inbound-A2A,
+// platform envelopes, engine scaffolding, new-session, fresh-read) to `markers.ts`, where
+// they have ONE owner; this header used to claim to be that owner and was not. What stays:
+// display POLICY, and the markers that exist only for the chat surface.
 // ════════════════════════════════════════
 
 export type ChannelKind = 'imessage' | 'teams' | 'sms' | 'email' | 'phone';
@@ -128,27 +134,20 @@ export type ChannelKind = 'imessage' | 'teams' | 'sms' | 'email' | 'phone';
 // mode. Inbound CHANNEL markers (iMessage/phone/Teams/SMS/email) are NOT
 // in this list: they are user-visible (header stripped + a clean badge),
 // handled by parseInboundChannel before these prefixes are checked.
+// PHASE-3 T5: SHAPES from `markers.ts`, MEMBERSHIP here. `'[SOURCE: GROUP BROADCAST FROM'`
+// was in neither shared module (research 06 §5), so a broadcast reached only the generic
+// `'[SOURCE:'` arm and classified `engine-note` instead of `a2a` — never leaked (both
+// tiers are agent-only) but OR4 makes the lane part of the record, not just the tier.
 export const HIDDEN_USER_CONTENT_PREFIXES: readonly string[] = [
-  '[A2A:',
-  '[SOURCE: AGENT MESSAGE FROM',
-  '[SOURCE: PM AGENT POKE FROM',
-  '[SOURCE: TRACKER TASK',
-  '[SOURCE: SCHEDULER',
-  '[SOURCE: HEALER',
-  '[SOURCE: ENGINE',
-  '[SOURCE: SUB-AGENT COMPLETION',
-  '[SOURCE: SYSTEM',
+  ...SOURCE_ENVELOPE_PREFIXES,
+  A2A_ENVELOPE_PREFIX,
   '[System:',
   '[CONTINUITY BRIEF',
   'Tracker review --',
 ];
 
 // Engine injections that carry a visible-ish prefix. Hidden in regular.
-export const ENGINE_INJECTION_PREFIXES: readonly string[] = [
-  '[Engine hint:',
-  '[Engine note:',
-  '[System note:',
-];
+export { ENGINE_INJECTION_PREFIXES };
 
 // Assistant text the engine produced on the agent's behalf (errors,
 // continuity acks). Hidden in regular; the agent's real words are shown.
@@ -635,7 +634,8 @@ function classifyInner(msg: DisplayMessageInput): DisplayClassification {
     if (parseInboundChannel(content)) {
       return { tier: 'user-visible', kind: 'user-text' };
     }
-    if (trimmed.startsWith('[A2A:') || trimmed.startsWith('[SOURCE: AGENT MESSAGE FROM')) {
+    // PHASE-3 T5: was two of the four inbound forms. One matcher, all four.
+    if (A2A_INBOUND_RE.test(trimmed)) {
       return { tier: 'agent-only', kind: 'a2a' };
     }
     if (

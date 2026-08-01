@@ -14,6 +14,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { A2A_THREAD_SHORT_LENGTH } from '@dojo/shared';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
@@ -678,7 +679,8 @@ export async function deliverA2AMessage(envelope: A2AEnvelope): Promise<A2ADeliv
   // a DELIVERABLE message body said "do not reply" while the footer said
   // "Reply expected, use send_to_agent". Receiving agents read both and
   // got confused. Now there are three honest states, one per intent group.
-  const threadShort = threadId.slice(0, 8);
+  // PHASE-3 T5: the 8 is the MARKER's shape, not this function's opinion.
+  const threadShort = threadId.slice(0, A2A_THREAD_SHORT_LENGTH);
   let threadInfo: string;
   if (effectiveIntent === 'QUESTION' || effectiveIntent === 'ASSIGN' || effectiveIntent === 'BLOCK') {
     // Open-thread reply intents, receiver should reply on the same thread.

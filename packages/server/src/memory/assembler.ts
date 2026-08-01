@@ -36,7 +36,9 @@ import { MessageSlot, type AssemblyTurnState } from '../prompt/registry/types.js
 import { turnBoundary, currentTurnConversationId } from '../agent/turn-state.js';
 import type { Summary } from './dag.js';
 import type { Message } from '@dojo/shared';
-import { parseDivider, NEW_SESSION_DIVIDER_LABEL } from '@dojo/shared';
+// PHASE-3 T5 — the marker taxonomy. Four shapes this file used to spell itself.
+import { parseDivider, NEW_SESSION_DIVIDER_LABEL, A2A_INBOUND_RE, TECHNIQUE_FRESH_SENTINEL,
+  parseA2AThreadShort, parseTechniqueFreshRead } from '@dojo/shared';
 
 const logger = createLogger('memory-assembler');
 
@@ -112,7 +114,7 @@ export const V2_STUB_AFTER_TURNS = 12;
 // the technique name with a stub. The fresh read is the source of
 // truth; summaries describing earlier versions are noise at best
 // and contradictions at worst.
-const TECHNIQUE_FRESH_SENTINEL = '══ TECHNIQUE FRESH READ ══';
+
 
 function extractFreshlyReadTechniques(messages: Message[]): Set<string> {
   const names = new Set<string>();
@@ -128,10 +130,9 @@ function extractFreshlyReadTechniques(messages: Message[]): Set<string> {
     for (const block of blocks) {
       const b = block as { type?: string; content?: unknown };
       if (b.type !== 'tool_result' || typeof b.content !== 'string') continue;
-      // wrapTechniqueResult emits exactly:
-      //   `══ TECHNIQUE FRESH READ ══ <name> (<timestamp>)\n...`
-      const m2 = b.content.match(/^══ TECHNIQUE FRESH READ ══ (.+?) \(/);
-      if (m2) names.add(m2[1]);
+      // PHASE-3 T5 (E19): this regex was byte-duplicated in agent/v2/loop.ts. ONE extractor.
+      const name = parseTechniqueFreshRead(b.content);
+      if (name) names.add(name);
     }
   }
   return names;
@@ -454,13 +455,9 @@ async function assembleContextViaRegistry(
   return { ...built, systemPrompt, systemVolatile: '', systemEntryIds: sys.entryIds };
 }
 
-/**
- * Prose fallback for identifying an inbound A2A row when its structured origin is
- * missing (legacy/un-classified rows). The PRIMARY signal is the structured
- * `origin.kind === 'agent'` (derived from the source_agent_id / a2a_thread_id
- * columns); this regex is only the backup so a row without origin can't slip through.
- */
-const A2A_INBOUND_RE = /^\s*(\[A2A:|\[SOURCE: AGENT MESSAGE FROM|\[SOURCE: GROUP BROADCAST FROM|\[SOURCE: PM AGENT POKE FROM)/;
+// PHASE-3 T5: `A2A_INBOUND_RE` is IMPORTED. It was declared here WITHOUT `/i` and again in
+// compaction.ts WITH it — research 06 §5's seed pair. Still only the prose FALLBACK; the
+// primary signal remains the structured `origin.kind === 'agent'`.
 
 /**
  * RC-5.4: build a compact awareness-lane gist for a mailbox/channel notification from
@@ -1480,10 +1477,9 @@ async function assembleMessageContext(
       ).all(agentId) as Array<{ s: string }>;
       for (const r of rows) repliedShorts.add(r.s);
     } catch { /* table may not exist yet */ }
-    const threadShortOf = (c: string): string | null => {
-      const m = c.match(/thread:([0-9a-f]{8})/);
-      return m ? m[1] : null;
-    };
+    // PHASE-3 T5: was hex-only, so it returned null for every NAMED thread id and skipped
+    // the dedupe. Measured live: 70 of 250 `thread:` tokens (28%) are not hex.
+    const threadShortOf = (c: string): string | null => parseA2AThreadShort(c);
     const isA2AMsg = (m: { role: string; content: string | Anthropic.ContentBlockParam[] }) =>
       m.role === 'user' && typeof m.content === 'string' && A2A_INBOUND_RE.test(m.content);
     merged = merged.filter((m) => {

@@ -27,6 +27,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import type Anthropic from '@anthropic-ai/sdk';
 import { getDb } from '../../db/connection.js';
+import { A2A_INBOUND_RE, NEW_SESSION_BRACKET_RE, SOURCE_ENVELOPE_OPENER } from '@dojo/shared';
 import { createLogger } from '../../logger.js';
 
 const logger = createLogger('context-receipt');
@@ -129,16 +130,32 @@ function summarizeSystemPrompt(
 
 // Engine/source tags that classify where a synthetic user-role message came
 // from. Read-only pattern sniffing; if none match, the message is organic.
+//
+// ── PHASE-3 T5: THE ORDER WAS THE DEFECT (research 06 §5) ──────────────────────────────
+// `'[SOURCE:'` was tested BEFORE `'[A2A:'`, and this list is first-match-wins. A legacy
+// A2A row (`[SOURCE: AGENT MESSAGE FROM …`, `[SOURCE: GROUP BROADCAST FROM …`) therefore
+// tagged `source-tagged` and could NEVER tag `a2a` — the receipt said "an envelope" about
+// a row that was peer traffic, and the one field a reader would use to count A2A in a
+// context was structurally incapable of counting the legacy half of it.
+//
+// The fix is not "move one line up": the A2A test now uses the shared matcher, which knows
+// all four inbound forms, and it runs FIRST. The generic `[SOURCE:` opener stays as the
+// catch-all BELOW it, which is the only order in which both are true.
+//
+// The `new-session-marker` test also gained its closer. It was `startsWith('[New Session')`
+// with nothing after it — `platform-noise.ts` required `[New Session]` and this required
+// no bracket at all, so the two disagreed about `[New Sessions are great]` AND about the
+// dated `[New Session: …]` form. One matcher now.
 const SOURCE_PATTERNS: Array<{ tag: string; test: (s: string) => boolean }> = [
-  { tag: 'source-tagged', test: (s) => s.startsWith('[SOURCE:') },
-  { tag: 'a2a', test: (s) => s.startsWith('[A2A:') },
+  { tag: 'a2a', test: (s) => A2A_INBOUND_RE.test(s) },
+  { tag: 'source-tagged', test: (s) => s.startsWith(SOURCE_ENVELOPE_OPENER) },
   { tag: 'engine-hint', test: (s) => s.startsWith('[Engine hint') },
   { tag: 'engine-note', test: (s) => s.startsWith('[Engine note') },
   { tag: 'engine-ack', test: (s) => s.startsWith('[Engine ack') },
   { tag: 'engine-other', test: (s) => s.startsWith('[ENGINE') || s.startsWith('[Engine') },
   { tag: 'system-note', test: (s) => s.startsWith('[System note') },
   { tag: 'dojo-technique-wrap', test: (s) => s.startsWith('[DOJO') },
-  { tag: 'new-session-marker', test: (s) => s.startsWith('[New Session') },
+  { tag: 'new-session-marker', test: (s) => NEW_SESSION_BRACKET_RE.test(s) },
 ];
 
 function classifySource(text: string): string {

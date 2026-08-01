@@ -52,6 +52,7 @@ import {
   NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX,
   NO_REPLY_TAIL_RE, isBareNoReplySentinel, stripMoodMarker, formatRoutingMarker,
 } from '@dojo/shared';
+import { parseTechniqueFreshRead } from '@dojo/shared';
 import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 
 import { assembleContext } from '../../memory/assembler.js';
@@ -7412,8 +7413,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
                     // First read of this technique in this work-stream.
                     // Engage the gate.
                     let displayName = reqName;
-                    const m = toolResult.content.match(/^══ TECHNIQUE FRESH READ ══ (.+?) \(/);
-                    if (m) displayName = m[1];
+                    // PHASE-3 T5 (E19): was byte-identical to assembler.ts's. ONE extractor.
+                    const freshName = parseTechniqueFreshRead(toolResult.content);
+                    if (freshName) displayName = freshName;
                     const pending = {
                       techniqueId: reqName,
                       techniqueName: displayName,

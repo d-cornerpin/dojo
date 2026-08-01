@@ -20,6 +20,9 @@
 // owe a reply" from "most recent user message is an ASSIGN" without any
 // memory of the agent already having replied.
 
+// PHASE-3 T5: the envelope regex was inlined TWICE here, hex-only, so every named-thread
+// A2A fell out of both reply readers.
+import { A2A_ENVELOPE_RE, A2A_THREAD_SHORT_LENGTH } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 
@@ -115,12 +118,12 @@ export function findUnrepliedAssignForAgent(agentId: string, lookback: number = 
     let fromName: string;
     if (row.a2a_intent && row.a2a_thread_id && row.source_agent_id) {
       intent = row.a2a_intent;
-      threadShort = row.a2a_thread_id.slice(0, 8);
+      threadShort = row.a2a_thread_id.slice(0, A2A_THREAD_SHORT_LENGTH);
       threadIdFull = row.a2a_thread_id;   // FA-C2: full id available from the structural column
       const senderRow = db.prepare('SELECT name FROM agents WHERE id = ?').get(row.source_agent_id) as { name?: string } | undefined;
       fromName = senderRow?.name ?? row.source_agent_id;
     } else {
-      const match = row.content?.match(/^\[A2A:([A-Z]+)\s+thread:([0-9a-f]{8})\s+from:([^\]]+)\]/);
+      const match = row.content?.match(A2A_ENVELOPE_RE);
       if (!match) continue;
       intent = match[1];
       threadShort = match[2];
@@ -221,7 +224,7 @@ export function findInboundAssignByThread(agentId: string, threadId: string): { 
     .all({ agentId }) as Array<{ id: string; content: string }>;
 
   for (const row of rows) {
-    const match = row.content?.match(/^\[A2A:([A-Z]+)\s+thread:([0-9a-f]{8})\s+from:([^\]]+)\]/);
+    const match = row.content?.match(A2A_ENVELOPE_RE);
     if (!match) continue;
     if (match[2] !== threadShort) continue;
     if (!REPLY_NEEDED_INTENTS.has(match[1])) continue;

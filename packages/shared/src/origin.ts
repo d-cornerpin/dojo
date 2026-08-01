@@ -21,6 +21,27 @@
 // ════════════════════════════════════════
 import type { ChannelKind, InboundMeta } from './visibility.js';
 import { parseInboundChannel } from './visibility.js';
+// PHASE-3 T5: three shapes this file used to re-declare now have ONE owner.
+//
+// The A2A envelope's thread capture was already correct HERE and wrong in four other
+// files — thread ids are often named ("pm-review-2026-06-25") and the [0-9a-f]{8} form
+// those files used silently failed every one. Importing means that fix cannot be made in
+// one place and missed in four again.
+//
+// The legacy source regex recognised only `AGENT MESSAGE`, so a `GROUP BROADCAST` or
+// `PM AGENT POKE` envelope fell past the agent branch (research 06 §5's "recognizes only
+// 2 of 4 markers"). `A2A_LEGACY_SOURCE_RE` is all three.
+//
+// ENGINE_PREFIXES was ['[SOURCE:', '[System:', '[SYSTEM', '[Engine', '[CONTINUITY BRIEF',
+// '[Context note'] matched with startsWith, so '[System note:' matched NEITHER '[System:'
+// (colon required) NOR '[SYSTEM' (case-sensitive) and fell through to the owner-chat
+// default. The shared matcher is case-insensitive and names the note form explicitly.
+import {
+  A2A_ENVELOPE_RE,
+  A2A_LEGACY_SOURCE_RE,
+  ENGINE_SCAFFOLD_RE,
+  SOURCE_ENVELOPE_OPENER,
+} from './markers.js';
 
 /** Every channel a message can physically arrive on, plus the two non-channel origins. */
 export type Channel = ChannelKind | 'dashboard' | 'voice' | 'a2a' | 'engine';
@@ -89,14 +110,6 @@ export function legacyOriginInputs(
   };
 }
 
-// thread ids are NOT always hex — they're often named (e.g. "pm-review-2026-06-25",
-// "thread-jlpvqj-poke-14a"), and the marker carries a slice(0,8) of that. The old
-// [0-9a-fA-F]+ pattern silently failed every named-thread A2A, so deriveOrigin fell
-// back to kind:'user' and inbound A2A leaked into the dashboard chat with wordy OFF.
-// Match any non-space, non-']' run instead.
-const A2A_MARKER_RE = /^\[A2A:([A-Z]+)\s+thread:([^\s\]]+)\s+from:([^\]]+)\]/;
-const LEGACY_AGENT_RE = /^\[SOURCE: AGENT MESSAGE FROM ([^\]]+)\]/i;
-
 function safeParseMeta(raw: string): InboundMeta | null {
   try {
     const m = JSON.parse(raw) as InboundMeta;
@@ -130,8 +143,6 @@ function engineOrigin(trimmed: string): MessageOrigin {
     intent: engineIntent(trimmed), authorized: false,
   };
 }
-
-const ENGINE_PREFIXES = ['[SOURCE:', '[System:', '[SYSTEM', '[Engine', '[CONTINUITY BRIEF', '[Context note'];
 
 /**
  * Resolve a message's origin from its (structured columns first, text markers
@@ -178,8 +189,8 @@ export function deriveOrigin(f: OriginFields): MessageOrigin {
   // A2A-looking string (e.g. the owner pasting an agent transcript into the dashboard)
   // must be classified by its channel (inbound_meta), not reclassified as an agent
   // message and hidden. A genuine legacy A2A row has no inbound_meta, so it still matches.
-  const a2a = A2A_MARKER_RE.exec(trimmed);
-  const legacyAgent = LEGACY_AGENT_RE.exec(trimmed);
+  const a2a = A2A_ENVELOPE_RE.exec(trimmed);
+  const legacyAgent = A2A_LEGACY_SOURCE_RE.exec(trimmed);
   if (f.sourceAgentId || f.a2aThreadId || ((a2a || legacyAgent) && !f.inboundMeta)) {
     return {
       kind: 'agent', relation: 'agent', channel: 'a2a',
@@ -223,7 +234,7 @@ export function deriveOrigin(f: OriginFields): MessageOrigin {
   }
 
   // 5. Engine coordination wearing role='user' (scheduler/tracker/healer/system…).
-  if (ENGINE_PREFIXES.some((p) => trimmed.startsWith(p))) {
+  if (ENGINE_SCAFFOLD_RE.test(trimmed) || trimmed.startsWith(SOURCE_ENVELOPE_OPENER)) {
     return engineOrigin(trimmed);
   }
 

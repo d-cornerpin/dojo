@@ -107,8 +107,10 @@ function authorizeTechniqueMutation(agentId: string, classification: string, ver
 // content. The policy now lives ONLY in the tool descriptions
 // (system prompt level); each result just identifies itself.
 //
-// Don't change the sentinel string without grepping for every consumer.
-export const TECHNIQUE_FRESH_SENTINEL = '══ TECHNIQUE FRESH READ ══';
+// PHASE-3 T5: this export WAS the owner and was imported by NOBODY — two modules
+// re-declared the literal, two more inlined it. The literal lives in @dojo/shared now.
+export { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
+import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 
 function wrapTechniqueResult(techniqueName: string, body: string): string {
   return (

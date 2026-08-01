@@ -17,6 +17,8 @@
 //     exceed the hop limit (preventing acknowledgment loops).
 // ════════════════════════════════════════
 
+// PHASE-3 T5: was an inline hex-only A2A envelope regex. ONE regex, imported.
+import { A2A_ENVELOPE_RE } from '@dojo/shared';
 import type { ToolCall } from '@dojo/shared';
 
 /** Intents that wake the receiver and expect a reply. */
@@ -188,7 +190,7 @@ export function parseA2ATrigger(content: string | null): {
   fromName: string;
 } | null {
   if (!content) return null;
-  const match = content.match(/^\[A2A:([A-Z]+)\s+thread:([0-9a-f]{8})\s+from:([^\]]+)\]/);
+  const match = content.match(A2A_ENVELOPE_RE);
   if (!match) return null;
   const intent = match[1];
   // Only return non-null for reply-needed intents — terminal intents

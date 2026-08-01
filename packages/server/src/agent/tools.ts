@@ -87,6 +87,7 @@ import { getEffectiveAudioGenModel } from '../services/audio-gen-model.js';
 import { getToolConfigGeneration } from './tool-config-generation.js';
 import { getModelVoiceCatalog, defaultVoiceCatalogFor, formatVoiceCatalog } from '../services/voice-catalog.js';
 import type { ToolCall, ToolResult } from '@dojo/shared';
+import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import { NEW_SESSION_DIVIDER } from '@dojo/shared';
 
 const logger = createLogger('tools');
@@ -4818,7 +4819,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         // remember WHAT THEY DECIDED while following a technique
         // (parameters chosen, paths produced, errors hit), they can
         //, they just can't paste the technique body itself.
-        if (newContent.includes('══ TECHNIQUE FRESH READ ══')) {
+        if (newContent.includes(TECHNIQUE_FRESH_SENTINEL)) {   // PHASE-3 T5: was the inline literal
           content =
             'Refused: scratchpad content contains a technique fresh-read banner, looks like a copy-paste of technique_read / use_technique output. Scratchpad is re-injected on every turn, which would re-introduce the staleness the engine prevents on the tool-result side. Vault decisions ("chose path X for reason Y") or step-state ("step 3: writing yaml") in the scratchpad, re-call technique_read whenever you need the actual technique body.';
           isError = true;

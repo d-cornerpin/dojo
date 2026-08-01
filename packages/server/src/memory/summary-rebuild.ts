@@ -27,7 +27,8 @@
 // many minutes and burn a visible chunk of money in one shot.
 // ════════════════════════════════════════════════════════════════════════
 
-import { NEW_SESSION_DIVIDER } from '@dojo/shared';
+import { NEW_SESSION_DIVIDER, A2A_INBOUND_ANYWHERE_RE, SOURCE_ENVELOPE_ANYWHERE_RE,
+  NEW_SESSION_BRACKET_ANYWHERE_RE } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { isPlatformNoise } from './platform-noise.js';
@@ -74,8 +75,14 @@ export const NIGHTLY_SUMMARY_REBUILD_LIMIT = 30;
 //     leading role tag from each line and re-apply the live message-level
 //     filter to what remains.
 const SUMMARY_CONTAMINATION_PATTERNS: RegExp[] = [
-  /\[A2A:/i,
-  /\[SOURCE: (AGENT MESSAGE FROM|GROUP BROADCAST FROM|PM AGENT POKE|SUB-AGENT COMPLETION|TRACKER TASK|AGENT HEALTH ALERT|AGENT NOTICE|HEALER|SCHEDULER|SYSTEM)/i,
+  // PHASE-3 T5: these were a hand-written UNANCHORED superset of platform-noise.ts's
+  // anchored list (research 06 §5's named pair) — wider on `PM AGENT POKE` (no ` FROM`),
+  // NARROWER on `[SOURCE: ENGINE`, neither difference deliberate. Both forms now come from
+  // the same prefix arrays. The bare poke form below is kept ON PURPOSE: a legacy row with
+  // no sender must still count as contamination.
+  A2A_INBOUND_ANYWHERE_RE,
+  SOURCE_ENVELOPE_ANYWHERE_RE,
+  /\[SOURCE: PM AGENT POKE/i,
   /═══ DREAM CYCLE ═══/,
   /═══ COMPRESSED HISTORY/,
   /Vault state: \d+ entries/,
@@ -86,7 +93,9 @@ const SUMMARY_CONTAMINATION_PATTERNS: RegExp[] = [
   /\[CONTINUITY BRIEF/i,
   // PHASE-1 T8: shape from @dojo/shared; membership in this contamination list stays local.
   new RegExp(NEW_SESSION_DIVIDER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
-  /\[New Session\]/i,
+  // PHASE-3 T5: required the closing bracket, so the dated `[New Session: …]` form was
+  // invisible to it. Same matcher as platform-noise.ts now.
+  NEW_SESSION_BRACKET_ANYWHERE_RE,
 ];
 
 // "This conversation consists solely of tool calls…" filler summaries. The

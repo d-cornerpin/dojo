@@ -4,6 +4,7 @@
 // ════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
+import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import { createLogger } from '../logger.js';
 import { createEntry, semanticSearch, findNearDuplicateEntry, markObsolete, getEntry, updateEntry, listEntries, formatCitationSuffix, resolveRecallScope, OWNER_VAULT_AGENT_ID } from './store.js';
 import { searchUnfiledArchives, UNFILED_ARCHIVE_LABEL, type UnfiledArchiveSnippet } from './retrieval.js';
@@ -198,7 +199,7 @@ export async function executeVaultRemember(
   // to capture WHY they made a decision while following a technique,
   // they can vault the decision itself ("chose path A because the
   // technique said X") rather than copy-pasting the technique body.
-  if (content.includes('══ TECHNIQUE FRESH READ ══')) {
+  if (content.includes(TECHNIQUE_FRESH_SENTINEL)) {   // PHASE-3 T5: was the inline literal
     return (
       `Refused: this content looks like it came from a technique_read / use_technique ` +
       `response (contains the fresh-read sentinel). Techniques mutate on disk and the ` +

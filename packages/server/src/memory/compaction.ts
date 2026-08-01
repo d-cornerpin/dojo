@@ -22,7 +22,8 @@ import { lastCompactionDividerAt } from '../agent/shared-state.js';
 import { summaryPartyTag } from './party-label.js';
 import { isPlatformNoise } from './platform-noise.js';
 import type { Message } from '@dojo/shared';
-import { formatDivider } from '@dojo/shared';
+// PHASE-3 T5 — the marker taxonomy. Both of the latter two were re-declared below.
+import { formatDivider, A2A_INBOUND_RE, TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 
 // Inbound A2A, a peer agent's message TO this agent. For the primary's own context
 // summary this is inter-agent traffic, not the user's conversation, so it is excluded
@@ -30,7 +31,9 @@ import { formatDivider } from '@dojo/shared';
 // turn (assembler.ts A2A_INBOUND_RE): the modern [A2A: …] envelope plus the legacy
 // agent-message / group-broadcast / PM-poke source markers, otherwise a legacy variant
 // would be stripped from live turns but still bleed into the persistent summary.
-const A2A_INBOUND_MARKER_RE = /^\s*(\[A2A:|\[SOURCE: AGENT MESSAGE FROM|\[SOURCE: GROUP BROADCAST FROM|\[SOURCE: PM AGENT POKE FROM)/i;
+// PHASE-3 T5: was `A2A_INBOUND_MARKER_RE` here with `/i` and the byte-identical
+// alternation WITHOUT it in assembler.ts. The comment's promise above is now enforced by
+// the import rather than by hope.
 
 /** A row that must NOT be folded into a context summary: platform/inter-agent plumbing
  *  or an inbound peer A2A message. Keeps another agent's work out of the primary's
@@ -38,7 +41,7 @@ const A2A_INBOUND_MARKER_RE = /^\s*(\[A2A:|\[SOURCE: AGENT MESSAGE FROM|\[SOURCE
  *  Exported for the nightly contaminated-summary rebuild (memory/summary-rebuild.ts),
  *  which re-runs old summaries' source messages through this same filter. */
 export function isNonConversationForSummary(content: string | null | undefined): boolean {
-  return isPlatformNoise(content) || (!!content && A2A_INBOUND_MARKER_RE.test(content));
+  return isPlatformNoise(content) || (!!content && A2A_INBOUND_RE.test(content));
 }
 
 /** Placeholder stored when a summarized span contains no user conversation at all
@@ -173,7 +176,6 @@ const logger = createLogger('memory-compaction');
 // paraphrased copy of the technique and the agent later reads the
 // summary as authoritative, defeating the v2.7.4 stub-after-1-turn
 // freshness enforcement on the raw tool_result side.
-const TECHNIQUE_FRESH_SENTINEL = '══ TECHNIQUE FRESH READ ══';
 const TECHNIQUE_SCRUB_STUB =
   '[technique read withheld from summary by engine policy, call technique_read for the current on-disk content; do not paraphrase from this summary]';
 

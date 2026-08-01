@@ -21,11 +21,21 @@
 // inter-agent traffic, not the user's conversation.
 // ════════════════════════════════════════════════════════════════════════
 
-import { NEW_SESSION_DIVIDER } from '@dojo/shared';
+// PHASE-3 T5: the SHAPES come from the taxonomy; the MEMBERSHIP below stays local policy
+// (PHASE-1 T8's non-fold entry is the record of why those are two questions).
+import { NEW_SESSION_DIVIDER, CONTEXT_NOTE_PREFIX, NEW_SESSION_BRACKET_RE,
+  PLATFORM_SOURCE_ENVELOPE_PREFIXES } from '@dojo/shared';
+
+/** `^\s*<literal>`, case-insensitive — the anchored form of a taxonomy prefix. */
+function noiseOf(prefix: string): RegExp {
+  return new RegExp(`^\\s*${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i');
+}
 
 export const PLATFORM_NOISE_PATTERNS: RegExp[] = [
   /^\s*\[CONTINUITY BRIEF/i,
-  /^\s*\[New Session\]/i,
+  // PHASE-3 T5: required the CLOSING bracket, so the dated `[New Session: … ]` form was
+  // invisible. One matcher, both live spellings.
+  NEW_SESSION_BRACKET_RE,
   // PHASE-1 T8: the divider's SHAPE is @dojo/shared's; its MEMBERSHIP in this list is local
   // policy and stays local. Those are different questions, and this entry proves it — the
   // display taxonomy classifies a New Session divider as USER-VISIBLE while this list
@@ -33,15 +43,20 @@ export const PLATFORM_NOISE_PATTERNS: RegExp[] = [
   // summariser change a display change.
   new RegExp(`^\\s*${NEW_SESSION_DIVIDER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
   /^\s*\[System: /i,
-  /^\s*\[SOURCE: SYSTEM/i,
-  /^\s*\[SOURCE: HEALER/i,
-  /^\s*\[SOURCE: SCHEDULER/i,
-  /^\s*\[SOURCE: SUB-AGENT COMPLETION/i,
-  /^\s*\[SOURCE: TRACKER TASK/i,
+  // PHASE-3 T5: eight hand-written [SOURCE: …] anchors became ONE taxonomy list — the
+  // PLATFORM half ONLY. `A2A_LEGACY_SOURCE_PREFIXES` stays OUT because the header above
+  // says why: an A2A deliverable can be genuine memory and the vault keeps it. Importing
+  // the FULL `SOURCE_ENVELOPE_PREFIXES` here would have deleted real memories.
+  ...PLATFORM_SOURCE_ENVELOPE_PREFIXES.map(noiseOf),
+  // Deliberately BROADER than the taxonomy's `… PM AGENT POKE FROM`: no ` FROM`, so a
+  // legacy poke row with no sender is still excluded. Tidying it away would admit them.
   /^\s*\[SOURCE: PM AGENT POKE/i,
-  /^\s*\[SOURCE: AGENT HEALTH ALERT/i,
-  /^\s*\[SOURCE: AGENT NOTICE/i, // brief self-attributed service-agent notices (spawner)
-  /^\s*\[Context note: the user just hit the Stop button/i,
+  // PHASE-3 T5: was the STOP marker's full sentence only; its identical-prefixed twin, the
+  // A2A-preempt note, was not — research 06 §5's "'[Context note:' gap". MEASURED before
+  // widening: 0 rows and 0 summaries carry `[Context note:` in any form (both markers are
+  // assembly-time injections, never persisted), so this closes a latent asymmetry, not a
+  // live leak. Said that way rather than claimed as a fix.
+  noiseOf(CONTEXT_NOTE_PREFIX),
   /^\s*Tracker review --/i,
   /^I got stuck on that/i,
   /^I'm sorry — I'm having trouble/i,
