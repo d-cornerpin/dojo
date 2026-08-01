@@ -1751,8 +1751,19 @@ function stripRecallEnvelope(content: string): string {
 // second branch — "the newest substantive row, envelope-stripped" — which is a DIFFERENT
 // row on every iteration. Both relevance-selected lanes (summaries, relevant-memory) then
 // re-select against a different query, and both sit AHEAD of the tail boundary, so the
-// whole array behind them is re-billed. That is the K10 defect `check-message-prefix` has
-// been red on since 2026-07-27.
+// whole array behind them is re-read. That is the K10 defect `check-message-prefix` was
+// red on from 2026-07-27.
+//
+// ── TWO CORRECTIONS TO THE PARAGRAPH ABOVE (PHASE-3 KITFIX-PREFIX, 2026-08-01, P3-R4) ───
+// It said "re-BILLED", and three later documents inherited a "~23KB re-billed every turn"
+// figure from that word. Measured through the provider's own prompt-cache counters on
+// matched arms: DeepSeek matches at 128-token block granularity inside the byte stream, so
+// on the turns the check called fully broken it still CACHE-READ 91–93% of the prompt. The
+// marginal cost of an across-turn re-selection is ≈1,186 tokens/turn (a floor — the cache
+// frontier keeps walking forward while the block stays still), not ~23KB. And the check is
+// not red any more: it was judging whichever two receipt files were newest on disk, a
+// measured 41.9% coin flip; it drives its own fixed-ask pair now and this memo is what
+// makes that pair hold. `overhaul-research/25-cache-preservation.md` is the evidence base.
 //
 // This function's own name and its D4 docstring already say "ONE per-turn recall query".
 // It was one per ASSEMBLY. Memoising it against `turnBoundary` — the timestamp the turn
