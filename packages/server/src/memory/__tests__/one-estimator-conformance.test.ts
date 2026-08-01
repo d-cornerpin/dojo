@@ -152,6 +152,28 @@ describe('ONE estimator, whole tree (research 06 requirement A2)', () => {
     }
   });
 
+  it('makes dialect 3 UNSPELLABLE: no caller can hand `token_count` a number', () => {
+    // Step 3b (ii). The fix is not a validation, it is the removal of the escape hatch:
+    // `tokenCount` left `NewMessage` entirely, so `loop.ts` cannot re-offer the provider's
+    // OUTPUT count for the whole turn to a column the budget spends as INPUT cost. A type
+    // that cannot express the mistake is the only version of this fix that stays fixed.
+    const ms = stripComments(fs.readFileSync(path.join(REPO, 'packages/server/src/memory/message-store.ts'), 'utf8'));
+    const iface = ms.slice(ms.indexOf('export interface NewMessage'), ms.indexOf('export interface Persisted'));
+    expect(iface.length).toBeGreaterThan(200);                       // vacuity guard
+    expect(/^\s*tokenCount\??\s*:/m.test(iface), 'NewMessage accepts a tokenCount again').toBe(false);
+    expect(ms.includes('estimateStoredTokens(prepared.content)'), 'the write site must derive it').toBe(true);
+
+    const offenders = files
+      .filter((f) => /tokenCount:\s*(?!null)/.test(stripComments(fs.readFileSync(path.join(REPO, f), 'utf8'))))
+      .filter((f) => {
+        // A `tokenCount:` that PROJECTS a stored row outward is fine; one that feeds an
+        // insert is the defect. Scope to the call sites that reach the writer.
+        const src = stripComments(fs.readFileSync(path.join(REPO, f), 'utf8'));
+        return /insertMessage(IfAbsent)?\(\{[^}]*tokenCount:/s.test(src);
+      });
+    expect(offenders, 'a caller is passing tokenCount into the message writer again').toEqual([]);
+  });
+
   it('leaves NO literal 0.75 / 0.96 / 0.90 / 0.99 threshold outside the budget module', () => {
     // The four declarations §T0-C found (assembler:26, compaction:209, compaction:529,
     // classifiers/compaction.ts:38-41) all become imports. A bare literal here is how the

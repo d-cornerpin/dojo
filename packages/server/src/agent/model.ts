@@ -1710,6 +1710,8 @@ async function callOpenAIModel(
       inputTokens: uncachedInputTokens, outputTokens, latencyMs,
       requestType: routerTier ?? 'agent_turn',
       cacheReadTokens,
+      // Step 3: the post-trim estimate, i.e. the one describing the request that went out.
+      estimatedInputTokens: finalInputEstimate,
     });
 
     recordProviderSuccess(modelInfo.providerId);
@@ -2497,6 +2499,9 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
       requestType: routerTier ?? (tools ? 'agent_turn' : 'completion'),
       cacheReadTokens,
       cacheCreationTokens,
+      // Step 3: the same sum this transport's hard cap compares against `hardInputLimit`,
+      // so the recorded estimate is the one that decided whether history was trimmed.
+      estimatedInputTokens: inputEstimate,
     });
 
     // Update rate limits from response headers (if available from stream)

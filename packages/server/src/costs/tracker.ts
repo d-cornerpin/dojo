@@ -7,6 +7,7 @@ import { getDb } from '../db/connection.js';
 import { currentModelRequestId } from '../agent/turn-state.js';
 import { createLogger } from '../logger.js';
 import { checkAlertsAfterCost } from './budget.js';
+import { CHARS_PER_TOKEN } from '../memory/budget.js';
 
 const logger = createLogger('costs');
 
@@ -43,6 +44,10 @@ export interface RecordCostParams {
   // a hit-ratio reader must not treat as a miss).
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  /** PHASE-3 T2 Step 3 (research 06 A2): what the estimator said this call's input would
+   *  cost, beside what the provider charged. Undefined where no estimate is computed
+   *  (ollama, agent-sdk) and stored NULL — never 0, which reads as a perfect prediction. */
+  estimatedInputTokens?: number;
 }
 
 interface ModelPricing {
@@ -121,7 +126,7 @@ function getModelPricing(modelId: string): ModelPricing {
 const warnedUnknownPriceModels = new Set<string>();
 
 export function recordCost(params: RecordCostParams): void {
-  const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType, imageWidth, imageHeight, units, cacheReadTokens, cacheCreationTokens } = params;
+  const { agentId, modelId, providerId, inputTokens, outputTokens, latencyMs, requestType, imageWidth, imageHeight, units, cacheReadTokens, cacheCreationTokens, estimatedInputTokens } = params;
 
   try {
     const pricing = getModelPricing(modelId);
@@ -169,8 +174,9 @@ export function recordCost(params: RecordCostParams): void {
     db.prepare(`
       INSERT INTO cost_records (id, agent_id, model_id, provider_id, input_tokens, output_tokens,
                                 cost_usd, latency_ms, request_type,
-                                cache_read_tokens, cache_creation_tokens, request_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                                cache_read_tokens, cache_creation_tokens, request_id,
+                                estimated_input_tokens, estimator_chars_per_token, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `).run(
       uuidv4(),
       agentId,
@@ -189,6 +195,10 @@ export function recordCost(params: RecordCostParams): void {
       // P6b: joins this spend to the router decision that produced it
       // (router_log.request_id). NULL for out-of-turn calls by design.
       currentModelRequestId.get(agentId) ?? null,
+      // Estimate and divisor travel together: 4-chars/token and 3.5-chars/token rows are
+      // different measurements and a trend that mixes them silently is #14's class.
+      estimatedInputTokens ?? null,
+      estimatedInputTokens === undefined ? null : CHARS_PER_TOKEN,
     );
 
     // Invalidate daily spend cache so next budget check gets fresh data
