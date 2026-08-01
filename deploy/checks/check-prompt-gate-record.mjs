@@ -3,9 +3,10 @@
 // PROMPT-GATE RECORD READER (PHASE-0 T13 Step 2). RELEASE-BLOCKING.
 //
 // ── Why this exists ─────────────────────────────────────────────────────
-// Four kit checks read the live server through the dev instruments:
+// Five kit checks read the live server through the dev instruments:
 // check-cache-prefix, check-prompt-inventory, check-steer-delivery,
-// check-message-prefix. They cannot run inside a release — the instruments
+// check-message-prefix, check-assembled-context. They cannot run inside a
+// release — the instruments
 // PATCH the tree a release ships, and the release has a gate that refuses any
 // artifact still carrying them. So a release could never execute them, and
 // "the cache-prefix gate stays blocking" was a sentence people remembered
@@ -66,7 +67,17 @@ const HEAD = arg('--head', execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROO
 
 // Mirrored in dojo-test-kit/checks/run-prompt-gates.mjs. Both sides list the
 // roster so that dropping a check is an edit in two places, in the open.
-const REQUIRED = ['check-cache-prefix', 'check-prompt-inventory', 'check-steer-delivery', 'check-message-prefix'];
+// PHASE-3 T2 added 'check-assembled-context' (the assembled MESSAGE ARRAY against
+// golden-v0, built by T1). The four checks that stood here all read the CACHED half
+// of the prompt — system prompt + tools; research 25 §1.4: "the message array itself
+// has no such guard, and it is mutated on every assembly by six different rewriters."
+// Roadmap #10 names the assembled-array golden as the second of the two gates binding
+// every task that touches prompt assembly; before this it was a file somebody could
+// choose to run.
+const REQUIRED = [
+  'check-cache-prefix', 'check-prompt-inventory', 'check-steer-delivery',
+  'check-message-prefix', 'check-assembled-context',
+];
 
 const HOW = [
   '',
@@ -93,7 +104,7 @@ if (!fs.existsSync(RECORD)) {
   refuse(
     'NO RECORD.',
     `Looked for: ${RECORD}`,
-    'Four prompt gates cannot run inside a release, so the release reads their recorded result.',
+    'Five prompt gates cannot run inside a release, so the release reads their recorded result.',
     'No record means nobody can say whether the cached prefix still holds for the code being shipped.',
   );
 }
