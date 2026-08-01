@@ -609,6 +609,27 @@
       "to": 644,
       "by": "PHASE-3 T3 (2026-07-31)",
       "why": "NEW ENTRY past the 400-line cap, argued rather than noticed later. This is THE ALLOCATOR: the lane table (id, slot, priority, min, max, truncate), the two-pass fit, the allocation report and the generated scaffolding ack. It replaces, in `memory/assembler.ts`, twelve independent admission gates consumed in BUILD order, two adds with no gate at all, an EVENTS push with neither gate nor add, and a hardcoded 576-char ack that told the model the priority order was the exact REVERSE of the one the budget spent (research 06 \u00a72). `memory/assembler.ts` fell 2,590 -> 2,557 in the same change and its 1,500-line hand-rolled budget body became a table of render/truncate pairs. Roughly 45% of this file is comment, and deliberately: the priority ladder's four non-prose rungs each carry the reason they sit where they sit, every declared cap names the \u00a7T0-B site it came from, and every post-budget reserve names the measurement it was derived from (#14 \u2014 a reserve with no derivation is a rumour). It SHRINKS at PHASE-3 T9, when the 76-site cluster's dispositions retire the limits this table currently has to carry verbatim."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2590,
+      "to": 2622,
+      "by": "PHASE-3 T3 (2026-07-31, the second commit)",
+      "why": "TWO DEFECTS THE ALLOCATOR FOUND ON ITS OWN FIRST LIVE RUN, both with the measurement written down. (1) `storedRowCost` \u2014 the tail's cost expression was `msg.tokenCount ?? estimateTokens(msg.content)` and `0 ?? x` is **0**, so a row whose stored `token_count` is 0 was FREE TO CARRY. `memory/budget.ts:estimateStoredTokens` has carried the floor since T2 (\"a row that costs nothing to carry does not exist\") and the READ side never applied it; \u00a7T0-D measured 116 such rows before migration `150`, and the kit's own golden fixture writes six. It surfaced as a whole fresh tail costed at zero and therefore REJECTED. One helper, three call sites, `||` not `??`. (2) The per-turn recall query is per-TURN now instead of per-ASSEMBLY, memoised against `turnBoundary`. Measured: each tool iteration appends two rows, pushing the human row out of the 10-row window, so the query fell through to \"the newest substantive row\" \u2014 different every iteration \u2014 and both relevance-selected lanes re-selected AHEAD of the tail boundary. Message 0 went 20,324 -> 19,914 chars between iterations of one turn before; sha `85ad91c8\u2026` identical across four after. That is the K10 defect `check-message-prefix` has been red on since 2026-07-27. Both are comment-heavy because both are the kind of finding that gets re-broken by the next person who reads `??` as a null check."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9588,
+      "to": 9597,
+      "by": "PHASE-3 T3 (2026-07-31, the second commit)",
+      "why": "+9 for ONE assignment and the paragraph that makes it re-derivable: `volatileFrom`, the index the loop's tail-append begins at, recorded on the context receipt. Without it `check-message-prefix` judged the whole array and therefore called the cache-prefix law's own prescribed shape a defect \u2014 the near-tail volatile lane is RE-EMITTED after each iteration's new rows, so the earlier array is structurally never a whole prefix of the later one. With it the gate judges the CACHEABLE REGION and goes green for the first time since 2026-07-27, and its bite is proven three ways (a byte moved inside the region -> exit 1; a byte moved in the volatile tail -> exit 0; the field absent -> the old whole-array rule and it SAYS the boundary is unknown)."
+    },
+    {
+      "path": "packages/server/src/memory/lanes.ts",
+      "from": 644,
+      "to": 649,
+      "by": "PHASE-3 T3 (2026-07-31, the second commit)",
+      "why": "+5: the allocator must not reject a lane that RENDERED CONTENT merely because the content measured zero cost. Found live, not imagined \u2014 see the assembler's `storedRowCost` entry above: a fresh tail whose rows all carried `token_count = 0` costed 0, and `grant = min(cost, available)` then made 0 a rejection. Two clauses and their reason: the rejection is gated on `cost > 0`, and the emission filter admits `granted > 0 || cost === 0`. Both carry a regression clause in `lanes.test.ts`."
     }
   ],
   "maxNewFileLines": 400,
@@ -649,7 +670,7 @@
     "packages/server/src/agent/tools.ts": 10484,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9588,
+    "packages/server/src/agent/v2/loop.ts": 9597,
     "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/state.ts": 703,
@@ -673,9 +694,9 @@
     "packages/server/src/healer/healer-agent.ts": 1170,
     "packages/server/src/healer/injury-recovery.ts": 810,
     "packages/server/src/index.ts": 1172,
-    "packages/server/src/memory/assembler.ts": 2590,
+    "packages/server/src/memory/assembler.ts": 2622,
     "packages/server/src/memory/compaction.ts": 1267,
-    "packages/server/src/memory/lanes.ts": 644,
+    "packages/server/src/memory/lanes.ts": 649,
     "packages/server/src/memory/message-store.ts": 980,
     "packages/server/src/memory/recall.ts": 510,
     "packages/server/src/memory/retrieval.ts": 591,
