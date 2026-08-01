@@ -85,9 +85,20 @@ const HEAD = arg('--head', execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROO
 // that never contained it. A ruling was then written resting on it as a deterministic guard
 // that ran every time — a claim false in both halves. THE RULE THIS EARNS: a check that
 // encodes an incident is either on a roster or it is not a guard.
+// PHASE-3 T9 (2026-08-01) added 'check-roster-conformance' — the kit-side twin of
+// `check-gate-manifest.mjs`'s rule 1, and the answer to the question STRIP-3 ended on:
+// what stops the NEXT check going dark? The deploy side has refused an undeclared
+// `deploy/checks/*.mjs` since T8G, but a `deploy/` gate cannot reach into the kit repo,
+// so the kit's own `checks/` directory had no such rule — which is precisely how
+// `check-reanswer-ghost.mjs` sat on no roster for a phase. The new check refuses a
+// `checks/check-*.mjs` file that neither the roster nor a REASONED manual declaration
+// names, and it compares this list against the kit's roster from the kit side, which is
+// the only place the two hand-maintained mirrors can be compared at all. It holds itself
+// to its own rule: it is a roster member, so dropping it fails it.
 const REQUIRED = [
   'check-cache-prefix', 'check-prompt-inventory', 'check-steer-delivery',
   'check-message-prefix', 'check-assembled-context', 'check-reanswer-ghost',
+  'check-roster-conformance',
 ];
 
 const HOW = [
