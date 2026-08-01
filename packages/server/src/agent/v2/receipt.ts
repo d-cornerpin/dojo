@@ -87,7 +87,13 @@ export interface ReceiptInput {
   reserveTokens?: number;
 }
 
-const RECEIPTS_ROOT = path.join(os.homedir(), '.dojo', 'receipts');
+/** Resolved per call, never cached at module load: a test that redirects `HOME` gets the
+ *  redirected path, which a constant computed at import time silently ignores. Same rule the
+ *  two durable sinks follow, and the reason this one changed — PHASE-3 T7's receipt clause
+ *  wrote into the real `~/.dojo` until it did. */
+function receiptsRoot(): string {
+  return path.join(os.homedir(), '.dojo', 'receipts');
+}
 const MAX_RECEIPTS_PER_AGENT = 200;
 const MODE_CACHE_MS = 30_000;
 
@@ -238,6 +244,10 @@ function summarizeMessage(msg: LoopMessage, mode: ReceiptMode, laneId: string | 
   return out;
 }
 
+/** The registry entry the deliveries lane emits under. Its tokens belong to `lane.deliveries`,
+ *  which declares its own reserve, and not to the loop tail it sits inside. */
+const DELIVERIES_ENTRY_ID = 'msg.deliveries';
+
 /**
  * `lane.loop-tail` is DECLARED by the assembler and FILLED by the loop, so the assembler's
  * own report can only ever say "did not fire on this turn" about it — which the lane table
@@ -257,18 +267,42 @@ function withMeasuredLoopTail(input: ReceiptInput): AllocationReport['grants'] {
   if (typeof from !== 'number' || from < 0 || from > input.messages.length) return grants;
   const tail = input.messages.slice(from);
   if (tail.length === 0) return grants;
-  const tokens = assemblyTokens(tail);
-  const reserve = POST_BUDGET_LANES.find((l) => l.id === 'lane.loop-tail')?.reserveTokens ?? 0;
-  const ids = [...new Set((input.messageEntryIds ?? []).slice(from).map((x) => x ?? '(untagged)'))];
-  return grants.map((g) => (g.id !== 'lane.loop-tail' ? g : {
-    ...g,
-    requested: tokens,
-    granted: tokens,
-    status: 'admitted' as const,
-    reason: `loop tail-append, MEASURED at the receipt boundary: ${tail.length} message(s) ` +
-      `(${ids.join(', ')}) costing ${tokens} tokens against the ${reserve}-token reserve ` +
-      `lanes.ts declares` + (tokens > reserve ? ' — OVER' : ''),
-  }));
+  const tailIds = (input.messageEntryIds ?? []).slice(from);
+  // PHASE-3 T7: `lane.deliveries` is the SECOND lane declared by the assembler and filled by
+  // the loop, and it has its OWN reserve — so its tokens are attributed to it and taken OUT
+  // of the loop tail's measurement. Counting them in both would report the same tokens twice
+  // against two different reserves, and the receipt's whole job is that a number in it is
+  // the number that happened.
+  const isDeliveries = (i: number) => tailIds[i] === DELIVERIES_ENTRY_ID;
+  const deliveries = tail.filter((_, i) => isDeliveries(i));
+  const rest = tail.filter((_, i) => !isDeliveries(i));
+  const measured = (
+    id: string,
+    msgs: typeof tail,
+    ids: Array<string | null | undefined>,
+    label: string,
+  ) => {
+    const tokens = assemblyTokens(msgs);
+    const reserve = POST_BUDGET_LANES.find((l) => l.id === id)?.reserveTokens ?? 0;
+    const names = [...new Set(ids.map((x) => x ?? '(untagged)'))];
+    return {
+      requested: tokens,
+      granted: tokens,
+      status: 'admitted' as const,
+      reason: `${label}, MEASURED at the receipt boundary: ${msgs.length} message(s) ` +
+        `(${names.join(', ')}) costing ${tokens} tokens against the ${reserve}-token reserve ` +
+        `lanes.ts declares` + (tokens > reserve ? ' — OVER' : ''),
+    };
+  };
+  return grants.map((g) => {
+    if (g.id === 'lane.loop-tail' && rest.length > 0) {
+      return { ...g, ...measured('lane.loop-tail', rest, tailIds.filter((_, i) => !isDeliveries(i)), 'loop tail-append') };
+    }
+    if (g.id === 'lane.deliveries' && deliveries.length > 0) {
+      return { ...g, ...measured('lane.deliveries', deliveries, [DELIVERIES_ENTRY_ID], 'deliveries lane') };
+    }
+    return g;
+  });
 }
 
 /**
@@ -351,7 +385,7 @@ export function writeContextReceipt(input: ReceiptInput): void {
       },
     };
 
-    const dir = path.join(RECEIPTS_ROOT, input.agentId);
+    const dir = path.join(receiptsRoot(), input.agentId);
     const file = path.join(
       dir,
       `${Date.now()}-t${input.turnNumber}-i${input.loopCount}.json`,

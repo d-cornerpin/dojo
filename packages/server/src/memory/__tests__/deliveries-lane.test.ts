@@ -25,6 +25,9 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const mockDb = { current: null as Database.Database | null };
 vi.mock('../../db/connection.js', () => ({
@@ -277,7 +280,74 @@ describe('the declared reserve is a bound the render obeys', () => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════
-// 5. POSITION — the cache-prefix law is the reason this lane is where it is
+// 5. THE RECEIPT TELLS THE TRUTH ABOUT IT
+// ════════════════════════════════════════════════════════════════════════════════════════
+// FOUND LIVE, not imagined: the first real turn that carried this lane produced a receipt
+// whose lane table said `lane.deliveries … post-budget lane did not fire on this turn`
+// while the rendered message sat six rows below it in the same receipt. The assembler
+// declares this lane and the LOOP fills it, so the assembler's own report cannot know —
+// which is exactly the case T6 already solved for `lane.loop-tail`. A dropped section that
+// looks identical to an absent one is the defect this phase exists to delete, and the
+// receipt is the one place that can state it, because it is written after the tail-append.
+describe('the receipt attributes the lane to itself, measured', () => {
+  const REAL_HOME = process.env.HOME;
+  const REAL_MODE = process.env.DOJO_RECEIPT_MODE;
+
+  it('records the lane as ADMITTED with its measured cost, and does not double-count it', async () => {
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'dojo-t7-receipt-'));
+    process.env.HOME = scratch;
+    process.env.DOJO_RECEIPT_MODE = 'meta';
+    // RECEIPTS_ROOT resolves from os.homedir() at module load, so the import comes after.
+    const { writeContextReceipt } = await import('../../agent/v2/receipt.js');
+    const grant = (id: string, slot: number) => ({
+      id, slot, priority: Number.MAX_SAFE_INTEGER, requested: 0, granted: 0,
+      status: 'empty' as const, reason: 'post-budget lane did not fire on this turn',
+    });
+    writeContextReceipt({
+      agentId: AGENT, modelId: 'm', turnNumber: 1, loopCount: 1, useTools: true,
+      systemPrompt: 'sys',
+      messages: [
+        { role: 'user', content: 'the live conversation' },
+        { role: 'user', content: '[Turn context]' },
+        { role: 'user', content: `[Your most recent message to Dave, sent 2 hours ago: "${'q'.repeat(200)}"]` },
+      ],
+      messageEntryIds: ['lane.fresh-tail', 'msg.turn-context', 'msg.deliveries'],
+      volatileFrom: 1,
+      allocation: {
+        budgetTokens: 1000, reservedTokens: 0, spentTokens: 0, offTheTopTokens: 0,
+        admittedIds: [], overBudget: [],
+        grants: [grant('lane.loop-tail', MessageSlot.TurnContext), grant(DELIVERIES_LANE_ID, MessageSlot.Deliveries)],
+      },
+    });
+    // The write is fire-and-forget (`void fs.promises.mkdir(...).then(...)`), so the read
+    // waits for it rather than racing it.
+    const dir = path.join(scratch, '.dojo', 'receipts', AGENT);
+    for (let i = 0; i < 100 && !fs.existsSync(dir); i++) await new Promise((r) => setTimeout(r, 10));
+    for (let i = 0; i < 100 && fs.readdirSync(dir).length === 0; i++) await new Promise((r) => setTimeout(r, 10));
+    const file = fs.readdirSync(dir)[0];
+    const rec = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+    const lanes: Array<{ id: string; status: string; granted: number; reason: string }> = rec.assembly.lanes;
+    const del = lanes.find((l) => l.id === DELIVERIES_LANE_ID)!;
+    const tail = lanes.find((l) => l.id === 'lane.loop-tail')!;
+
+    expect(del.status).toBe('admitted');
+    expect(del.granted).toBeGreaterThan(50);
+    expect(del.reason).toContain('deliveries lane, MEASURED');
+    expect(del.reason).toContain('316-token reserve');
+    // The same tokens must not also be billed to the loop tail's 900.
+    expect(tail.reason).toContain('msg.turn-context');
+    expect(tail.reason).not.toContain('msg.deliveries');
+    expect(tail.granted).toBeLessThan(del.granted);
+
+    process.env.HOME = REAL_HOME;
+    if (REAL_MODE === undefined) delete process.env.DOJO_RECEIPT_MODE;
+    else process.env.DOJO_RECEIPT_MODE = REAL_MODE;
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// 6. POSITION — the cache-prefix law is the reason this lane is where it is
 // ════════════════════════════════════════════════════════════════════════════════════════
 describe('the lane sits past the volatile boundary, in the preserved near-tail order', () => {
   it('declares a slot after turn-context and before peer-status', () => {
