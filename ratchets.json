@@ -854,6 +854,13 @@
       "to": 308,
       "by": "PHASE-3 T4 Step 2b, THE FLIP (2026-08-01)",
       "why": "+7, and every one of them is a fact that CHANGED rather than a fact that was added. This file's TOOL_AND_OUTPUT_RESERVE derivation opened by citing `agent/model.ts`'s `minOutputReserve = 4096` as the transport's own declared floor and the stricter of the two the tree enforced. Step 2b deleted both front-trimmers, so that declaration no longer exists and the sentence had become a pointer into a hole -- the exact shape a later worker re-derives wrongly. The +7 records that this is now the ONLY declaration of the number, that it is therefore not a copy of anything, and that the provenance above it is kept deliberately: 4,096 is not an arbitrary reserve, it is the floor a real transport demanded, and a reader who sees only the literal is one step from re-tuning it on taste."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9613,
+      "to": 9632,
+      "by": "PHASE-3 STRIP-3, the two conv-key/conversation-id class defects (2026-08-01, RULING P3-R3)",
+      "why": "+19, and all 19 are comment. The CODE delta is zero: one argument changed (`recordedAnswerInConversation(agentId, chosenConvKey)` -> `chosenConversationId`, with its gate), and one `.set()` MOVED from beside its conv-key sibling to after the pickup repair that reassigns what it publishes -- moved, not doubled, so the map still has exactly one writer. The 19 lines are the two measurements, kept at the sites rather than only in the report, because both defects are INVISIBLE to every mechanical check this repo owns: both values are `string`, so tsc cannot see them, and the key crosses a function boundary, so the 51-bind-site grep STRIP-2 ran returns zero. A comment is the only thing left that can stop a future worker re-introducing them. THIS PIN COMES BACK DOWN IN THIS SAME TASK: the strip half of T7 Step 2 deletes `persistCrossConvSendEcho` and its three call sites, both SETTLED_HINT branches and the re-answer detector's call site from this file, and the lowering is recorded as its own entry with the measured figure."
     }
   ],
   "maxNewFileLines": 400,
@@ -894,7 +901,7 @@
     "packages/server/src/agent/tools.ts": 10484,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9613,
+    "packages/server/src/agent/v2/loop.ts": 9632,
     "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/state.ts": 703,
