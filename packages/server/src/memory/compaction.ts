@@ -4,7 +4,8 @@ import { withLock } from '../db/with-lock.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
-import { estimateTokens, getFreshTailCount, getMessagesOutsideFreshTail, getRecentMessages } from './store.js';
+import { getMessagesOutsideFreshTail, getRecentMessages } from './store.js';
+import { estimateTokens, getFreshTailCount, contextWindowPolicy, CONTEXT_THRESHOLD, CONTEXT_WARN_THRESHOLD } from './budget.js';
 import { insertMessageIfAbsent } from './message-store.js';
 import {
   createLeafSummary,
@@ -73,14 +74,14 @@ export const NO_CONVERSATION_PLACEHOLDER = '(system/inter-agent activity, no use
 // budgetFreshTail already trims what the model actually sees; the gate
 // just needs to know "is the fresh tail genuinely full of conversation",
 // not "did somebody dump a 30K file into a single tool result".
-const MAX_GATE_MESSAGE_TOKENS = 4000;
+// STRIP (PHASE-3 T2): `MAX_GATE_MESSAGE_TOKENS` (now `policy.gateMessageCap`) and
+// `TOOL_AND_OUTPUT_RESERVE`, which was ALSO a bare literal in `assembler.ts:670`. Both are
+// `memory/budget.ts`'s; the re-export keeps `loop.ts:145`'s import path working.
+export { TOOL_AND_OUTPUT_RESERVE } from './budget.js';
 
-// Tokens the model layer adds outside the assembler's control (tool schemas) plus
-// an output reserve. The assembler reserves the same amount (assembler.ts). Also
-// used by the FA-M1 gate as the fixed, non-compressible part of the overhead when
-// converting the full window into the compressible budget.
-export const TOOL_AND_OUTPUT_RESERVE = 15000;
-
+/** The compaction gate's view of what the assembler will produce — an ALLOCATOR DRY-RUN
+ *  since PHASE-3 T2, not a second model of it. What stood here derived the assembler's
+ *  ceiling from THIS module's threshold (0.96) while the assembler used 0.75. */
 export function estimateAssembledTokens(agentId: string, contextWindow: number): {
   total: number;
   summaryTokens: number;
@@ -89,14 +90,15 @@ export function estimateAssembledTokens(agentId: string, contextWindow: number):
   freshTailCount: number;
   summaryCount: number;
 } {
+  const policy = contextWindowPolicy(contextWindow);
   const summaries = getContextSummaries(agentId);
   const rawSummaryTokens = summaries.reduce((sum, s) => sum + (s.tokenCount ?? 0), 0);
 
-  const freshTail = getRecentMessages(agentId, getFreshTailCount(contextWindow));
+  const freshTail = getRecentMessages(agentId, policy.freshTailCount);
   const freshTailTokens = freshTail.reduce(
     (sum, m) => {
       const raw = m.tokenCount ?? estimateTokens(m.content);
-      return sum + Math.min(raw, MAX_GATE_MESSAGE_TOKENS);
+      return sum + Math.min(raw, policy.gateMessageCap);
     },
     0,
   );
@@ -120,8 +122,8 @@ export function estimateAssembledTokens(agentId: string, contextWindow: number):
   // depth-N summaries any further, and the loop wedges firing the same
   // "memory is too full" message forever. The assembler will trim summaries
   // to fit; the gate must reflect that, not the unbounded raw total.
-  const maxAssemblerTokens = Math.max(0, Math.floor(DEFAULTS.contextThreshold * contextWindow) - TOOL_AND_OUTPUT_RESERVE);
-  const summaryBudget = Math.max(0, Math.floor((maxAssemblerTokens - briefTokens - freshTailTokens) * 0.7));
+  const maxAssemblerTokens = policy.assemblyBudgetTokens;
+  const summaryBudget = Math.max(0, Math.floor((maxAssemblerTokens - briefTokens - freshTailTokens) * policy.summaryShare));
   const summaryTokens = Math.min(rawSummaryTokens, summaryBudget);
 
   return {
@@ -203,10 +205,9 @@ export function scrubTechniqueContentForSummary(messageContent: string): string 
 // keep their original behavior while v2 agents see the new architecture.
 
 const DEFAULTS = {
-  // v2 thresholds, emergency-only compaction (Part V).
-  // The old v1 values (contextThreshold:0.75, leafChunkTokens:20000) were
-  // removed in Phase 9 Stage 2 along with the runtime version flag.
-  contextThreshold: 0.96,
+  // PHASE-3 T2: `contextThreshold` moved to `memory/budget.ts` as CONTEXT_THRESHOLD.
+  // It was one of five declarations of the same number and the assembler's copy said 0.75
+  // (§T0-C). The remaining entries here are summary SHAPES, not budget, and stay.
   leafChunkTokens: 30000,
   leafTargetTokens: 5000,
   condensedTargetTokens: 6000,
@@ -222,7 +223,7 @@ export const SUMMARY_TARGET_TOKENS = {
 } as const;
 
 function getContextThreshold(): number {
-  return DEFAULTS.contextThreshold;
+  return CONTEXT_THRESHOLD;
 }
 
 function getLeafChunkTokens(): number {
@@ -526,7 +527,7 @@ async function runCheckAndCompact(
   // invocation, not per loop iteration.
   if (!force) {
     const warnRatio = totalTokens / contextWindow;
-    if (warnRatio >= 0.90 && warnRatio < 0.96) {
+    if (warnRatio >= CONTEXT_WARN_THRESHOLD && warnRatio < CONTEXT_THRESHOLD) {
       const reason = `Context utilization at ${(warnRatio * 100).toFixed(1)}% (${totalTokens}/${contextWindow}). This should not happen in normal v2 operation, investigate tool result sizes, scaffolding injection, system prompt cost.`;
       logger.warn(reason, { agentId, ratio: warnRatio }, agentId);
       // User-facing toast: plain language, no internal jargon. The technical

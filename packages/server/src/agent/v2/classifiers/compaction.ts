@@ -20,6 +20,7 @@
 // ════════════════════════════════════════
 
 import { createLogger } from '../../../logger.js';
+import { CONTEXT_THRESHOLD, CONTEXT_WARN_THRESHOLD, CONTEXT_BLOCK_THRESHOLD } from '../../../memory/budget.js';
 
 const logger = createLogger('v2-compaction-gate');
 
@@ -34,10 +35,14 @@ export interface CompactionGateResult {
   reason?: string;        // populated when decision !== 'noop'
 }
 
-export const NOOP_THRESHOLD = 0.90;     // <90% → noop
-export const WARN_THRESHOLD = 0.90;     // 90–96% → warn (log + toast, do not compact)
-export const COMPACT_THRESHOLD = 0.96;  // 96–99% → emergency compact
-export const BLOCK_THRESHOLD = 0.99;    // ≥99% → block
+// PHASE-3 T2: the FOURTH declaration of the same three numbers (§T0-C found the other
+// three in memory/assembler.ts:26, memory/compaction.ts:209 and memory/compaction.ts:529).
+// They are re-exported under their existing names so the callers and tests that import them
+// keep working, but there is exactly ONE place they are written down: memory/budget.ts.
+export const NOOP_THRESHOLD = CONTEXT_WARN_THRESHOLD;     // <90% → noop
+export const WARN_THRESHOLD = CONTEXT_WARN_THRESHOLD;     // 90–96% → warn (log + toast, do not compact)
+export const COMPACT_THRESHOLD = CONTEXT_THRESHOLD;       // 96–99% → emergency compact
+export const BLOCK_THRESHOLD = CONTEXT_BLOCK_THRESHOLD;   // ≥99% → block
 
 /**
  * Decide what the pre-call gate should do given current context utilization.

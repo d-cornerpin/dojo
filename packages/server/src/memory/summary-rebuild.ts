@@ -47,7 +47,7 @@ import {
 } from './dag.js';
 import { generateSummary } from './summarize.js';
 import { refreshEmbedding } from './embeddings.js';
-import { estimateTokens } from './store.js';
+import { estimateTokens } from './budget.js';
 import { summaryPartyTag } from './party-label.js';
 import type { Message } from '@dojo/shared';
 

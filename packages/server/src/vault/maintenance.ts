@@ -6,6 +6,7 @@
 // ════════════════════════════════════════
 
 import fs from 'node:fs';
+import { estimateTokens } from '../memory/budget.js';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -215,10 +216,12 @@ function runEngineMaintenance(): { pruned: number; decayed: number; unpinned: nu
   };
 }
 
-// Conservative token estimate: 3 chars/token. The /4 heuristic underestimates
-// for technical content (JSON, code, tool calls), which is most of what Dreamer
-// processes. Underestimating leads to over-budget batches.
-const CHARS_PER_TOKEN = 3;
+// PHASE-3 T2: the private /3 estimator is GONE (§T0-C #5). Its comment claimed "the /4
+// heuristic underestimates for technical content" — measured against this box's own
+// traffic that claim is false for the Dreamer too: its matched receipts read 3.29
+// chars/token, and /3 over-reserved. The Dreamer's real protection was never the divisor,
+// it is DREAMER_CONTEXT_OVERHEAD_TOKENS + the growth factor below, both untouched.
+// Requirement preserved: batches sized so a Dreamer call cannot exceed its window.
 
 // Reserve this much of the context window for system prompt, tool definitions
 // (Dreamer has ~15 tools, ~20K tokens of schemas), vault retrieval injection,
@@ -559,10 +562,6 @@ function classifyTrivial(conv: VaultConversation): string | null {
   if (assistantText < 100 && userText < 100) return 'no substantive prose from either side';
 
   return null;
-}
-
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
 }
 
 /**

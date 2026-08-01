@@ -4,7 +4,7 @@
 // ════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
-import { estimateTokens } from '../memory/store.js';
+import { estimateTokens } from '../memory/budget.js';
 import { getDreamerAgentId } from '../config/platform.js';
 import {
   semanticSearch,

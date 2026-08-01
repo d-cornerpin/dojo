@@ -30,6 +30,7 @@
 import { getDb } from '../db/connection.js';
 import type { Message } from '@dojo/shared';
 import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
+import { estimateTokens } from './budget.js';
 
 // ── Session Boundary ──
 
@@ -40,10 +41,15 @@ function getSessionBoundary(agentId: string): string | null {
 }
 
 // ── Token Estimation ──
-
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
+//
+// STRIP (PHASE-3 T2). `estimateTokens` used to be declared here, `/4`, and it was one of
+// SIX implementations in the tree (§T0-C). It now lives in `memory/budget.ts` with the
+// measurement that chose its divisor, and this module imports it like everybody else.
+// Requirement preserved: one number for "what does this text cost", derived in one place.
+//
+// `getFreshTailCount` moved to the same module for the same reason and unchanged byte for
+// byte — it is a ROW budget, and leaving it here would have made `budget.ts` cyclic with
+// its own consumers (budget → store → budget).
 
 // ════════════════════════════════════════════════════════════════════════════════
 // TIME ON THE SPINE (PHASE-1 T6b, migration 131) — the two vocabularies, and the rule.
@@ -234,17 +240,10 @@ export function getMessagesOutsideFreshTail(agentId: string, freshTailCount: num
   return rows.map(rowToMessage);
 }
 
-// Canonical model-aware fresh-tail window size. Larger models keep more raw
-// conversation. This is the SINGLE source of truth (FA-M3): the assembler's
-// tail-shown count and compaction's inside-tail count MUST be the same number,
-// or the tail-to-summary handoff drops or duplicates messages. Both the
-// assembler and compaction import this; do not re-inline the table anywhere.
-export function getFreshTailCount(contextWindow: number): number {
-  if (contextWindow >= 200000) return 80;   // 200k+ (Sonnet, Opus), ~15-20 turns
-  if (contextWindow >= 128000) return 64;   // 128k (GPT-4o), ~12-15 turns
-  if (contextWindow >= 32000) return 40;    // 32k models, ~8-10 turns
-  return 24;                                 // Small models, ~5 turns
-}
+// Canonical model-aware fresh-tail window size: MOVED to memory/budget.ts at PHASE-3 T2,
+// unchanged. It is a row budget and it belongs with the token budget; keeping it here made
+// budget.ts cyclic with its own consumers. Requirement preserved (FA-M3): the assembler's
+// tail-shown count and compaction's inside-tail count are the SAME number, from one owner.
 
 /** Resolve message ids to rows, in insertion order.
  *

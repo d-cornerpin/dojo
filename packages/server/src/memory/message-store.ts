@@ -33,7 +33,8 @@ import {
 } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { openAsk } from '../work/store.js';
-import { estimateTokens, NOW_MS, createdAtText } from './store.js';
+import { NOW_MS, createdAtText } from './store.js';
+import { estimateStoredTokens } from './budget.js';
 
 export { NOW_MS, createdAtText };
 
@@ -65,7 +66,10 @@ export interface NewMessage {
   a2aThreadId?: string | null;
   a2aIntent?: string | null;
   a2aRequiresResponse?: boolean | null;
-  tokenCount?: number;
+  // `tokenCount` is DELIBERATELY NOT ACCEPTED (PHASE-3 T2 Step 3b): its only three callers
+  // (loop.ts:5381/:5436/:7550) passed the provider's OUTPUT count for the whole turn into a
+  // column the budget spends as INPUT cost — 3.24x on the assistant lane, +36.9% store-wide,
+  // measured. The real numbers live in `cost_records`. This column is DERIVED, always.
   modelId?: string | null;
   cost?: number | null;
   latencyMs?: number | null;
@@ -223,8 +227,9 @@ function bind(m: NewMessage): { lane: Lane; id: string; displayKind: DisplayKind
   const displayTier = m.displayTier ?? display.tier;
   // Estimated at WRITE, from the bytes actually stored — not the pre-strip ones, or every
   // budget arithmetic downstream would be counting characters the model never sees.
-  // Never zero: a row that costs nothing to carry does not exist.
-  const tokenCount = m.tokenCount ?? Math.max(1, estimateTokens(prepared.content));
+  // Never zero: a row that costs nothing to carry does not exist — that floor IS
+  // `estimateStoredTokens`. No `m.tokenCount ??` escape any more (see the type above).
+  const tokenCount = estimateStoredTokens(prepared.content);
   const sentAt = Date.now();
   const channel = m.channel ?? null;
   return {

@@ -5,7 +5,7 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { estimateTokens, rowToMessage, type MessageRow } from '../memory/store.js';
+import { rowToMessage, type MessageRow } from '../memory/store.js'; import { estimateTokens } from '../memory/budget.js';
 import { archiveConversation } from './store.js';
 import { isSystemServiceAgent, getSystemServiceAgentIds } from '../config/platform.js';
 import { summaryPartyTag } from '../memory/party-label.js';

@@ -8,7 +8,7 @@ import { getDb } from '../db/connection.js';
 import { dominantMessageLineage } from '../memory/conversations.js';
 import { createLogger } from '../logger.js';
 import { generateEmbedding } from '../memory/embeddings.js';
-import { estimateTokens } from '../memory/store.js';
+import { estimateTokens } from '../memory/budget.js';
 import { getHouseholdAgentIds, isPMAgent, isHealerAgent } from '../config/platform.js';
 
 const logger = createLogger('vault-store');

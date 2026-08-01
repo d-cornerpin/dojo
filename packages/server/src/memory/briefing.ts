@@ -4,7 +4,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { callModel } from '../agent/model.js';
 import { broadcast } from '../gateway/ws.js';
-import { estimateTokens } from './store.js';
+import { estimateTokens } from './budget.js';
 import { getSummariesByAgent } from './dag.js';
 import { buildAgedWorkBriefSection } from '../work/obligations.js';
 

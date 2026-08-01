@@ -143,7 +143,7 @@ import { isForwardPromiseReply, pickA2AHandoffAck } from './ack-copy.js';
 import { findCrossConvReAnswer } from './re-answer-guard.js';
 import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD, TOOL_AND_OUTPUT_RESERVE } from '../../memory/compaction.js';
-import { estimateTokens } from '../../memory/store.js';
+import { estimateTokens } from '../../memory/budget.js';
 import {
   insertMessageIfAbsent, insertEngineEventIfAbsent, stampConversationIdByRowid, tagTurnOutputConversationId,
   claimEngineEventByRowid, releaseEngineEventByRowid, isRowUnserved,
@@ -5378,7 +5378,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // that NULL position simply disappears.
           insertMessageIfAbsent({
             id: messageId, agentId, role: 'assistant', content: assistantContentJson,
-            attachments: queuedAttachmentsJson, tokenCount: result.outputTokens,
+            attachments: queuedAttachmentsJson,
             modelId: effectiveModelIdForPersist, cost: null, turnNumber,
             reasoningContent: result.reasoningContent ?? null,
           });
@@ -5433,7 +5433,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         } else {
           insertMessageIfAbsent({
             id: messageId, agentId, role: 'assistant', content: persistedContent,
-            attachments: queuedAttachmentsJson, tokenCount: result.outputTokens,
+            attachments: queuedAttachmentsJson,
             modelId: effectiveModelIdForPersist, cost: null, turnNumber,
             reasoningContent: result.reasoningContent ?? null,
           });
@@ -7547,7 +7547,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         } else {
           insertMessageIfAbsent({
             id: messageId, agentId, role: 'assistant', content: collapsedText,
-            tokenCount: result.outputTokens, modelId: effectiveModelIdForPersist, turnNumber,
+            modelId: effectiveModelIdForPersist, turnNumber,
           });
         }
         broadcast(ownOutputBroadcast({

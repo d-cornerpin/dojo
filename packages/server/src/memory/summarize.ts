@@ -1,7 +1,7 @@
 import { callModel } from '../agent/model.js';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { estimateTokens } from './store.js';
+import { estimateTokens } from './budget.js';
 
 const logger = createLogger('memory-summarize');
 

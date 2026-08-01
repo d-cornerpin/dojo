@@ -4,7 +4,7 @@ import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { estimateTokens } from './store.js';
+import { estimateTokens } from './budget.js';
 
 const logger = createLogger('memory-large-files');
 

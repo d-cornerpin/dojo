@@ -21,6 +21,7 @@
 // ════════════════════════════════════════
 
 import fs from 'node:fs';
+import { estimateTokensFromChars } from '../../memory/budget.js';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -84,8 +85,11 @@ export function getReceiptMode(): ReceiptMode {
   return cachedMode;
 }
 
+// PHASE-3 T2: was an independent re-declaration of the /4 estimator (§T0-C #4). The
+// receipt takes a CHAR COUNT rather than the text, so it adapts the one estimator instead
+// of re-implementing it — the receipt must report the number the budget actually spent.
 function estTokens(chars: number): number {
-  return Math.ceil(chars / 4);
+  return estimateTokensFromChars(chars);
 }
 
 function sha256(text: string): string {

@@ -8,6 +8,7 @@ import { AgentError } from './errors.js';
 import { scheduleRateLimitRetry } from './rate-limit-retry.js';
 import { toolDefinitions, getFilteredTools, type ToolDefinition } from './tools.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
+import { estimateTokens } from '../memory/budget.js';
 import { recordCost } from '../costs/tracker.js';
 import { checkBudget } from '../costs/budget.js';
 import { updateRateLimits } from '../router/rate-limits.js';
@@ -1265,11 +1266,12 @@ async function callOpenAIModel(
   const isReasoningModel = modelInfo.apiModelId.match(/^o[1-4]/);
 
   // Estimate input tokens to cap output so we don't exceed context window.
-  // Use ~3 chars/token (conservative) to avoid underestimating.
+  // PHASE-3 T2: the ONE estimator. Was /3 "conservative"; measured over 1,409 real calls
+  // the truth is 3.9 chars/token, so /3 over-costed input ~30%. See memory/budget.ts.
   const inputEstimate = openaiMessages.reduce((sum, m) => {
     const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
-    return sum + Math.ceil(content.length / 3);
-  }, 0) + Math.ceil(JSON.stringify(openaiTools ?? []).length / 3);
+    return sum + estimateTokens(content);
+  }, 0) + estimateTokens(JSON.stringify(openaiTools ?? []));
 
   // Hard guard: if the input alone exceeds the context window (minus a
   // minimum output reservation), trim the oldest messages until it fits.
@@ -1298,8 +1300,8 @@ async function callOpenAIModel(
     let currentEstimate = inputEstimate;
     while (currentEstimate > hardCeiling && openaiMessages.length > 2) {
       const dropped = openaiMessages.splice(1, 1)[0];
-      const droppedTokens = Math.ceil(
-        (typeof dropped.content === 'string' ? dropped.content : JSON.stringify(dropped.content ?? '')).length / 3,
+      const droppedTokens = estimateTokens(
+        (typeof dropped.content === 'string' ? dropped.content : JSON.stringify(dropped.content ?? '')),
       );
       currentEstimate -= droppedTokens;
 
@@ -1311,8 +1313,8 @@ async function callOpenAIModel(
         if (!first) break;
         if (first.role === 'tool') {
           // Orphan tool result, its assistant was just dropped
-          const toolTokens = Math.ceil(
-            (typeof first.content === 'string' ? first.content : JSON.stringify(first.content ?? '')).length / 3,
+          const toolTokens = estimateTokens(
+            (typeof first.content === 'string' ? first.content : JSON.stringify(first.content ?? '')),
           );
           openaiMessages.splice(1, 1);
           currentEstimate -= toolTokens;
@@ -1323,8 +1325,8 @@ async function callOpenAIModel(
           // is the matching tool result. If not, drop this assistant too.
           const next = openaiMessages[2] as unknown as Record<string, unknown> | undefined;
           if (!next || next.role !== 'tool') {
-            const astTokens = Math.ceil(
-              (typeof first.content === 'string' ? first.content : JSON.stringify(first.content ?? '')).length / 3,
+            const astTokens = estimateTokens(
+              (typeof first.content === 'string' ? first.content : JSON.stringify(first.content ?? '')),
             );
             openaiMessages.splice(1, 1);
             currentEstimate -= astTokens;
@@ -1344,8 +1346,8 @@ async function callOpenAIModel(
   // Reserve at most 25% of context for output, or whatever's left after input
   const finalInputEstimate = openaiMessages.reduce((sum, m) => {
     const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
-    return sum + Math.ceil(content.length / 3);
-  }, 0) + Math.ceil(JSON.stringify(openaiTools ?? []).length / 3);
+    return sum + estimateTokens(content);
+  }, 0) + estimateTokens(JSON.stringify(openaiTools ?? []));
   const maxOutputBudget = Math.floor(modelInfo.contextWindow * 0.25);
   const availableForOutput = Math.max(1024, Math.min(maxOutputBudget, modelInfo.contextWindow - finalInputEstimate - 1000));
   const effectiveMaxTokens = Math.min(modelInfo.maxOutputTokens, availableForOutput);
@@ -2286,15 +2288,17 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     filteredTools = filterToolsForApiCall(agentId, allPermitted, alwaysLoaded);
   }
   const toolsJson = tools ? JSON.stringify(filteredTools) : '';
-  const toolTokenEstimate = Math.ceil(toolsJson.length / 3.5);
+  // PHASE-3 T2: the ONE estimator. Was /3.5 here and /3 on the OpenAI path — two answers to
+  // "what does this text cost" in one file.
+  const toolTokenEstimate = estimateTokens(toolsJson);
 
   const estimateMessageTokens = (msgs: Anthropic.MessageParam[]) =>
     msgs.reduce((sum, m) => {
       const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-      return sum + Math.ceil(content.length / 3.5);
+      return sum + estimateTokens(content);
     }, 0);
 
-  const systemTokenEstimate = Math.ceil(systemPrompt.length / 3.5);
+  const systemTokenEstimate = estimateTokens(systemPrompt);
 
   // Hard cap: input (system + messages + tools) must leave room for output
   const minOutputReserve = 4096;

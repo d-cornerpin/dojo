@@ -1,7 +1,7 @@
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { callModel } from '../agent/model.js';
-import { estimateTokens } from './store.js';
+import { estimateTokens } from './budget.js';
 import { getSummary, getDescendantMessages, getSummariesByAgent } from './dag.js';
 import { getLargeFile } from './large-files.js';
 

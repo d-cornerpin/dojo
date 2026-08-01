@@ -7,7 +7,8 @@ import { taskScope, msToText, revertCountExpr, stampColumns } from '../work/trac
 import { type PromptTurnContext } from '../prompt/assembler.js';
 import { conversationKey, type TurnCounterparty } from '../agent/v2/counterparty.js';
 import { getContextWindow } from '../agent/model.js';
-import { estimateTokens, getFreshTailCount, getRecentMessages } from './store.js';
+import { getRecentMessages } from './store.js';
+import { estimateTokens, contextWindowPolicy, assertSystemPromptFits, SUMMARY_SHARE } from './budget.js';
 import { getContextSummaries } from './dag.js';
 import { getLatestBriefing } from './briefing.js';
 import { retrieveForContext } from '../vault/retrieval.js';
@@ -22,9 +23,9 @@ import { parseDivider, NEW_SESSION_DIVIDER_LABEL } from '@dojo/shared';
 
 const logger = createLogger('memory-assembler');
 
-const DEFAULTS = {
-  contextThreshold: 0.75,
-};
+// STRIP (PHASE-3 T2): `DEFAULTS.contextThreshold = 0.75`, one of five declarations of one
+// number (§T0-C) and the one that disagreed. Requirement preserved: ONE threshold, in
+// `memory/budget.ts`, decided by the owner at T0b — 0.96.
 
 // ── Per-tool-result cap (Part V + Part XVIII §A) ──
 // Raw tool results stay capped at assembly time so a single oversized
@@ -665,13 +666,15 @@ async function assembleMessageContext(
   turnContext?: PromptTurnContext,
 ): Promise<AssembledContext> {
   const contextWindow = getContextWindow(modelId);
-  // Reserve 10K tokens for tool definitions (they're added by the model layer, not here)
-  // and output tokens. The assembler only controls system prompt + messages.
-  const toolAndOutputReserve = 15000;
-  const maxTokens = Math.floor(DEFAULTS.contextThreshold * contextWindow) - toolAndOutputReserve;
+  // ONE budget (PHASE-3 T2): threshold, reserve and ceiling from `memory/budget.ts`.
+  const policy = contextWindowPolicy(contextWindow);
+  const maxTokens = policy.assemblyBudgetTokens;
 
   // Budget the message array against the registry-produced system prompt's size.
   let usedTokens = estimateTokens(systemPrompt);
+  // Fail loud rather than assemble a lie: a negative budget used to produce a
+  // single-message context silently (budgetFreshTail's last-group safety, nothing logged).
+  assertSystemPromptFits(usedTokens, policy);
 
   const messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }> = [];
 
@@ -1127,7 +1130,7 @@ async function assembleMessageContext(
   // 4. Fresh tail, exclude user messages that arrived after the current turn
   // started so they get a clean run via the wakeup mechanism instead of being
   // buried mid-context where the LLM might ignore them
-  const freshTailCount = getFreshTailCount(contextWindow);
+  const freshTailCount = policy.freshTailCount;
   const turnCutoff = turnBoundary.get(agentId);
   const freshTailRaw = getRecentMessages(agentId, freshTailCount, turnCutoff);
 
@@ -1592,7 +1595,7 @@ async function selectSummariesByRelevance(
   availableTokens: number,
   agentId: string,
 ): Promise<Summary[]> {
-  const budget = Math.min(Math.floor(availableTokens * 0.7), SUMMARY_RELEVANCE_BUDGET_TOKENS);
+  const budget = Math.min(Math.floor(availableTokens * SUMMARY_SHARE), SUMMARY_RELEVANCE_BUDGET_TOKENS);
 
   // Continuity floor: the newest summaries are the compressed tail of the
   // live thread and always ride along.
@@ -1634,7 +1637,7 @@ async function selectSummariesByRelevance(
   // If even the floor overflows the budget (oversized summaries), fall back
   // to the recency packer under the SAME tight budget, never the full window.
   if (used > budget) {
-    return budgetSummaries(summaries, Math.floor(budget / 0.7));
+    return budgetSummaries(summaries, Math.floor(budget / SUMMARY_SHARE));
   }
 
   // Chronological order in output, same as the recency path.
@@ -1840,7 +1843,7 @@ async function buildRelevantMemoryBlock(agentId: string, includeVault: boolean):
 
 function budgetSummaries(summaries: Summary[], availableTokens: number): Summary[] {
   // Reserve at least 30% of available tokens for fresh tail
-  const summaryBudget = Math.floor(availableTokens * 0.7);
+  const summaryBudget = Math.floor(availableTokens * SUMMARY_SHARE);
   let usedTokens = 0;
 
   // Include from newest to oldest (reverse), since newest summaries are most relevant

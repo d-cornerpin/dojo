@@ -11,6 +11,7 @@
 // ════════════════════════════════════════
 
 import fs from 'node:fs';
+import { CHARS_PER_TOKEN } from '../memory/budget.js'; // PHASE-3 T2: was a private 3 (§T0-C #6)
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -41,7 +42,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // context window. Constants mirror the Dreamer's approach in
 // vault/maintenance.ts. Per-collector caps are enforced in diagnostic.ts;
 // these constants are for the TOTAL cycle-message ceiling.
-const CHARS_PER_TOKEN = 3;             // conservative, same as Dreamer
 const HEALER_CONTEXT_OVERHEAD_TOKENS = 40_000; // sys prompt + tool schemas + vault retrieval
 const HEALER_PROCESSING_GROWTH_FACTOR = 1.3;   // Healer makes fewer tool calls than Dreamer
 const HEALER_BATCH_BUDGET_CAP_RATIO = 0.35;    // hard ceiling: 35% of context for diagnostic payload
