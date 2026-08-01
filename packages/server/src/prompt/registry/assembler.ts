@@ -150,5 +150,7 @@ export function renderMessageEntry(id: string, ctx: AssemblyContext): EngineMess
 export function injectRegistryMessage(id: string, messages: EngineMessage[], ctx: AssemblyContext): boolean {
   const msg = renderMessageEntry(id, ctx);
   if (!msg || typeof msg.content !== 'string') return false;
-  return pushEngineMessage(messages, msg.content);
+  // F23: the registry path already knows the entry id, so every registered injection is
+  // tagged with its REAL id (`msg.turn-context`, `msg.tool-note`, …) for free.
+  return pushEngineMessage(messages, msg.content, id);
 }

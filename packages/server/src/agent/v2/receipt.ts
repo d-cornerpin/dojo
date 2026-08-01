@@ -28,6 +28,9 @@ import crypto from 'node:crypto';
 import type Anthropic from '@anthropic-ai/sdk';
 import { getDb } from '../../db/connection.js';
 import { A2A_INBOUND_RE, NEW_SESSION_BRACKET_RE, SOURCE_ENVELOPE_OPENER } from '@dojo/shared';
+import { PART_JOINER } from '../../prompt/registry/types.js';
+import { assemblyTokens } from '../../memory/assembly-validation.js';
+import type { AllocationReport } from '../../memory/lanes.js';
 import { createLogger } from '../../logger.js';
 
 const logger = createLogger('context-receipt');
@@ -57,21 +60,36 @@ export interface ReceiptInput {
   volatileFrom?: number;
   useTools: boolean;
   /** Registry path only: the entry id that produced each system-prompt part,
-   *  aligned to the parts recovered by splitting on PART_SEPARATOR. Attached to
+   *  aligned to the parts recovered by splitting on PART_JOINER. Attached to
    *  each part only when the count matches (so a misalignment from a later
    *  loop-side mutation is dropped rather than mislabeled). Omitted on the
    *  legacy path → receipt unchanged. */
   systemEntryIds?: (string | null)[];
-  /** Registry path only: the entry id per message, aligned to `messages`. */
+  /**
+   * The LANE that produced each message, aligned to `messages`. PHASE-3 T6 (F21) —
+   * declared since the registry landed and assigned by nothing until now. `null` means no
+   * lane claimed the message, which is a finding, not a hole to pattern-match over.
+   */
   messageEntryIds?: (string | null)[];
+  /**
+   * F20: the allocator's own record — one grant per lane INCLUDING the rejected, the
+   * truncated and the ones that rendered nothing, each with its reason in words. Before
+   * this a section the budget dropped produced a byte-identical receipt to a section that
+   * never existed (research 06 §8's own complaint).
+   */
+  allocation?: AllocationReport;
+  /** F22: how many fresh-tail messages the assembler dropped to fit the window. */
+  freshTailDropped?: number;
+  /** F22: `systemVolatile.length`. The cache law says it stays 0; recording it is how a
+   *  regression becomes visible per assembly instead of only at the next gate run. */
+  systemVolatileChars?: number;
+  /** What the assembly set aside for tool schemas + output (T4's measured reserve). */
+  reserveTokens?: number;
 }
 
 const RECEIPTS_ROOT = path.join(os.homedir(), '.dojo', 'receipts');
 const MAX_RECEIPTS_PER_AGENT = 200;
 const MODE_CACHE_MS = 30_000;
-// The assembler joins its parts[] with this separator (prompt/assembler.ts).
-// Splitting on it recovers the block structure without touching the assembler.
-const PART_SEPARATOR = '\n\n---\n\n';
 
 let cachedMode: ReceiptMode = 'off';
 let cachedModeAt = 0;
@@ -115,7 +133,12 @@ function summarizeSystemPrompt(
   estTokens: number;
   entryId?: string | null;
 }> {
-  const parts = systemPrompt.split(PART_SEPARATOR);
+  // D16: the joiner is IMPORTED from the shared taxonomy (`prompt/registry/types.ts`),
+  // never re-declared. `receipt.ts:63` used to hold a byte-identical private copy called
+  // PART_SEPARATOR, so the receipt could have gone on splitting on a string the assembler
+  // had stopped writing and would have reported one enormous part as though that were the
+  // system prompt's real block structure.
+  const parts = systemPrompt.split(PART_JOINER);
   const aligned = entryIds && entryIds.length === parts.length;
   return parts.map((part, i) => {
     const firstLine = part.split('\n').find((l) => l.trim().length > 0) ?? '';
@@ -158,19 +181,27 @@ const SOURCE_PATTERNS: Array<{ tag: string; test: (s: string) => boolean }> = [
   { tag: 'new-session-marker', test: (s) => NEW_SESSION_BRACKET_RE.test(s) },
 ];
 
-function classifySource(text: string): string {
+// PHASE-3 T6 (F23): THE LANE IS THE ANSWER; THE PATTERNS ARE THE FALLBACK.
+// Every message now carries the lane that emitted it, including the six raw engine
+// injections that had no marker prose to sniff and therefore reported as `organic` —
+// research 06 §8 names four of them (RECENT OUTBOUND, RECENTLY ANSWERED, open-loops, the
+// settled hint) and there are six. A tagged message reports its lane; only a message NO
+// lane claimed falls through to the prose sniffing, and `organic` finally means what it
+// says: content nobody in the engine put there.
+function classifySource(text: string, laneId: string | null): string {
+  if (laneId) return laneId;
   for (const p of SOURCE_PATTERNS) {
     if (p.test(text)) return p.tag;
   }
   return 'organic';
 }
 
-function summarizeMessage(msg: LoopMessage, mode: ReceiptMode): Record<string, unknown> {
+function summarizeMessage(msg: LoopMessage, mode: ReceiptMode, laneId: string | null): Record<string, unknown> {
   if (typeof msg.content === 'string') {
     const out: Record<string, unknown> = {
       role: msg.role,
       kind: 'text',
-      source: msg.role === 'user' ? classifySource(msg.content) : undefined,
+      source: msg.role === 'user' ? classifySource(msg.content, laneId) : undefined,
       chars: msg.content.length,
       estTokens: estTokens(msg.content.length),
       techniqueWrap: msg.content.includes('--- TECHNIQUE:'),
@@ -235,6 +266,33 @@ export function writeContextReceipt(input: ReceiptInput): void {
         parts: summarizeSystemPrompt(input.systemPrompt, input.systemEntryIds),
         ...(mode === 'full' ? { content: input.systemPrompt } : {}),
       },
+      // ── THE ALLOCATOR RECEIPT (F20/F22) ────────────────────────────────────────────────
+      // Every lane's `{requested, granted, status, reason}`, THREADED from the allocator's
+      // own `AllocationReport` (`memory/lanes.ts`) — never recomputed here. A second
+      // derivation of the same decision is how a receipt comes to disagree with the
+      // assembly it is supposed to be evidence of.
+      assembly: {
+        freshTailDropped: input.freshTailDropped ?? null,
+        systemVolatileChars: input.systemVolatileChars ?? null,
+        reserveTokens: input.reserveTokens ?? null,
+        // The array's cost by the ONE estimator, measured through the VALIDATOR's own
+        // function at the last point before the provider call. Between here and the wire
+        // sits only the pairing repair, which never adds a block and logs whenever it
+        // removes one — so this is the post-validation total in `detect` mode, and when
+        // Step 2b flips to `repair` the validator logs its own before → after beside it.
+        tokenTotalAtBoundary: assemblyTokens(input.messages),
+        ...(input.allocation
+          ? {
+              budgetTokens: input.allocation.budgetTokens,
+              reservedTokens: input.allocation.reservedTokens,
+              spentTokens: input.allocation.spentTokens,
+              offTheTopTokens: input.allocation.offTheTopTokens,
+              admittedIds: input.allocation.admittedIds,
+              overBudget: input.allocation.overBudget,
+              lanes: input.allocation.grants,
+            }
+          : { lanes: null }),
+      },
       messages: {
         volatileFrom: input.volatileFrom ?? null,
         count: input.messages.length,
@@ -242,7 +300,8 @@ export function writeContextReceipt(input: ReceiptInput): void {
         estTokens: estTokens(messagesSerialized.length),
         sha256: sha256(messagesSerialized),
         items: input.messages.map((m, i) => {
-          const summary = summarizeMessage(m, mode);
+          const laneId = input.messageEntryIds?.[i] ?? null;
+          const summary = summarizeMessage(m, mode, laneId);
           // KIT-HARDENING K10(a). The whole-array hash above says THAT the
           // array changed; it cannot say WHERE. A hash per message lets the kit
           // diff two consecutive receipts and report the longest identical
@@ -251,9 +310,11 @@ export function writeContextReceipt(input: ReceiptInput): void {
           // Read-only: this observes the array, it never reorders or edits it,
           // so it cannot itself move the prefix it exists to watch.
           summary.sha256 = sha256(JSON.stringify(m));
-          if (input.messageEntryIds && input.messageEntryIds.length === input.messages.length) {
-            summary.entryId = input.messageEntryIds[i];
-          }
+          // The length guard is GONE, and its removal is the point of T6: the ids are now
+          // read off the same array in the same statement (`collectMessageLaneIds`), so a
+          // count disagreement is no longer expressible and dropping the ids on one would
+          // only hide a bug. `null` is a real answer — no lane claimed this message.
+          summary.entryId = laneId;
           return summary;
         }),
       },

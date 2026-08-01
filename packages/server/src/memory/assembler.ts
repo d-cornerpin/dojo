@@ -26,6 +26,7 @@ import {
   type LaneMessage,
   type LaneRender,
 } from './lanes.js';
+import { tagMessageLane, tagMessageLanes, collectMessageLaneIds } from './message-lane-tag.js';
 import { getContextSummaries } from './dag.js';
 import { getLatestBriefing } from './briefing.js';
 import { retrieveForContext } from '../vault/retrieval.js';
@@ -34,7 +35,7 @@ import { buildAssemblyContext, assembleSystemFromRegistry } from '../prompt/regi
 import { MessageSlot, type AssemblyTurnState } from '../prompt/registry/types.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
 import { turnBoundary, currentTurnConversationId } from '../agent/turn-state.js';
-import { currentTurnNumber } from '../agent/v2/turn-record.js';   // G24
+import { currentTurnNumber, readStoredTurnThreshold, CONTINUITY_BRIEF_HORIZON_TURNS } from '../agent/v2/turn-record.js';   // G24
 import type { Summary } from './dag.js';
 import type { Message } from '@dojo/shared';
 // PHASE-3 T5 — the marker taxonomy. Four shapes this file used to spell itself.
@@ -337,13 +338,13 @@ function applyIntegrityPass(messages: LoopMsg[], agentId: string): LoopMsg[] {
   // transcripts 2026-07-07/09/10, reproduced live on dev). Append a neutral
   // engine line instead: the API constraint is satisfied, nothing is deleted.
   if (merged.length > 0 && merged[merged.length - 1].role === 'assistant') {
-    merged.push({
+    merged.push(tagMessageLane({
       role: 'user',
       content:
         '[Engine: end of recorded history. Everything above, including your own final ' +
         'replies, was already delivered to its recipients. Continue from the newest ' +
         'event of THIS turn; do not re-send or re-answer anything above.]',
-    });
+    }, 'lane.engine-end-of-history'));
   }
 
   return merged;
@@ -985,10 +986,13 @@ function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unk
           if (!configRow?.config) return null;
           const agentConfig = JSON.parse(configRow.config) as Record<string, unknown>;
           const continuityBrief = agentConfig.continuityBrief as string | undefined;
-          const validUntil = agentConfig.continuityBriefValidUntilTurn as number | undefined;
-          if (typeof validUntil !== 'number' || validUntil <= 0) return null;
           const currentTurn = currentTurnNumber(ctx.agentId);   // G24: the turns record, not a MAX over messages
-          if (!(currentTurn < validUntil)) return null;
+          // T6: bounded ABOVE by the writer's own horizon — a threshold from an older
+          // numbering era is permanently in the future and never expires on its own.
+          const validUntil = readStoredTurnThreshold(
+            agentConfig.continuityBriefValidUntilTurn, currentTurn, CONTINUITY_BRIEF_HORIZON_TURNS,
+          );
+          if (validUntil === null || !(currentTurn < validUntil)) return null;
           if (!continuityBrief || continuityBrief.length <= 50) return null;
           return textRender(
             `═══ CONTINUITY BRIEF (snapshot from before the last compaction, the live conversation below is more recent and authoritative when in conflict) ═══\n\n${continuityBrief}\n\n═══ END CONTINUITY BRIEF ═══`,
@@ -1168,15 +1172,56 @@ async function assembleMessageContext(
   // declaration like every other (§T0-B C `:681`).
   if (isPMAgent(agentId)) {
     const freshTail = getRecentMessages(agentId, laneLimit('lane.pm-tail', 'rows', 'tail'));
-    const tailMessages = budgetFreshTail(freshTail, maxTokens - systemTokens);
-    const pm = tailRender({ rows: tailMessages, agentId, dropped: 0 });
-    const messages = [...pm.messages];
-    // Ensure starts with user role
-    while (messages.length > 0 && messages[0].role !== 'user') messages.shift();
+    const budgeted = budgetFreshTail(freshTail, maxTokens - systemTokens);
+    const pm = tailRender({ rows: budgeted, agentId, dropped: 0 });
+    tagMessageLanes(pm.messages, 'lane.pm-tail');
+    // ── F22 + T4's day-0 defect (ii): THE PM PATH RETURNS THE SAME SHAPE. ──
+    // It used to end at `while (messages[0].role !== 'user') shift()` and return — role
+    // normalisation WITHOUT the rest of the integrity pass. A first message that is a user
+    // message whose blocks are all `tool_result` satisfies that loop and is exactly what
+    // Anthropic rejects, which is 3 of the detect window's 17 day-0 divergences, all on
+    // `kelly`. `applyIntegrityPass` does the role normalisation AND strips the leading
+    // tool_result AND repairs the pairing AND refuses a trailing assistant — the loop it
+    // replaces was a strictly weaker copy of its first clause, so it is DELETED, not kept
+    // beside it. Requirement C9's "no PM bypass" is now true of the assembler as well as
+    // of the validator.
+    const messages = applyIntegrityPass([...pm.messages], agentId);
+    const freshTailDropped = Math.max(0, freshTail.length - budgeted.length);
+    // The report the PM path never produced. One lane, its real grant, its reason in words:
+    // a receipt that simply lacked the PM's assembly could not tell "the PM has no lanes"
+    // from "nobody wrote this down" (research 06 §8's own complaint about this return).
+    const report: AllocationReport = {
+      budgetTokens: Math.max(0, maxTokens - systemTokens),
+      reservedTokens: 0,
+      spentTokens: renderTokens(messages),
+      offTheTopTokens: 0,
+      grants: [{
+        id: 'lane.pm-tail',
+        slot: MessageSlot.FreshTail,
+        priority: LANE_PRIORITY['lane.fresh-tail'],
+        requested: pm.tokens,
+        granted: renderTokens(messages),
+        status: messages.length > 0 ? 'admitted' : 'empty',
+        reason: `PM lightweight context: the tracker is its memory, so the tail is its only ` +
+          `lane (row cap ${laneLimit('lane.pm-tail', 'rows', 'tail')}, ` +
+          `${freshTailDropped} row(s) dropped to fit)`,
+      }],
+      admittedIds: messages.length > 0 ? ['lane.pm-tail'] : [],
+      overBudget: [],
+    };
     logger.debug('PM agent context assembled (lightweight)', {
       agentId, systemTokens, messageCount: messages.length,
     }, agentId);
-    return { systemPrompt, systemVolatile: '', messages, reserveTokens: policy.toolAndOutputReserve };
+    return {
+      systemPrompt,
+      systemVolatile: '',
+      messages,
+      messageEntryIds: collectMessageLaneIds(messages),
+      freshTailDropped,
+      reserveTokens: policy.toolAndOutputReserve,
+      allocation: report,
+      consumedOneShotFlags: {},
+    };
   }
 
   // ── v2 scaffolding gating (Part V + Part XVIII §C; v2.9.20 post-compaction re-fire) ──
@@ -1190,9 +1235,11 @@ async function assembleMessageContext(
       const configRow = getDb().prepare('SELECT config FROM agents WHERE id = ?').get(agentId) as { config: string } | undefined;
       if (!configRow?.config) return false;
       const cfg = JSON.parse(configRow.config) as Record<string, unknown>;
-      const validUntil = cfg.continuityBriefValidUntilTurn as number | undefined;
-      if (typeof validUntil !== 'number' || validUntil <= 0) return false;
       const currentTurn = currentTurnNumber(agentId);   // G24
+      const validUntil = readStoredTurnThreshold(   // T6: same upper bound as the brief lane
+        cfg.continuityBriefValidUntilTurn, currentTurn, CONTINUITY_BRIEF_HORIZON_TURNS,
+      );
+      if (validUntil === null) return false;
       // The brief itself injects through `validUntil`; the wider scaffolding re-fires for
       // 5 turns past that, giving ~8 turns of full context to re-establish.
       const SCAFFOLDING_EXTRA_TURNS = 5;
@@ -1294,7 +1341,7 @@ async function assembleMessageContext(
     // counts, no ids. It sits AHEAD of the tail boundary, so a single volatile byte here
     // re-bills every message after it on every turn (research 25 H2; `lanes.test.ts` pins
     // the purity, the assembled-array golden pins the bytes).
-    messages.push({ role: 'assistant', content: ackText });
+    messages.push(tagMessageLane({ role: 'assistant', content: ackText }, 'lane.scaffolding-ack'));
     report.grants.push({
       id: 'lane.scaffolding-ack',
       slot: MessageSlot.ScaffoldingAck,
@@ -1307,6 +1354,10 @@ async function assembleMessageContext(
   };
   for (const e of emitted) {
     if (e.slot > MessageSlot.ScaffoldingAck) pushAck();
+    // F21/F23: TAGGED AT EMISSION, at the one place every lane's output passes through.
+    // Tagging here rather than inside each lane's `render` is what makes it impossible for
+    // a new lane to arrive untagged — there is no second door into the array.
+    tagMessageLanes(e.messages, e.id);
     messages.push(...e.messages);
   }
   pushAck();
@@ -1360,7 +1411,7 @@ async function assembleMessageContext(
         logger.error('Context assembly produced 0 messages after filtering, recovering last user message', {
           agentId,
         }, agentId);
-        merged.push({ role: 'user', content: lastUserMsg.content });
+        merged.push(tagMessageLane({ role: 'user', content: lastUserMsg.content }, 'lane.empty-context-fallback'));
       } else if (sessionBoundary) {
         logger.info('Context assembly: post-reset with no user message after boundary, returning empty for clean idle', {
           sessionBoundary, agentId,
@@ -1369,7 +1420,7 @@ async function assembleMessageContext(
         logger.error('Context assembly produced 0 messages after filtering and no recoverable user message', {
           agentId,
         }, agentId);
-        merged.push({ role: 'user', content: 'Continue with your current task.' });
+        merged.push(tagMessageLane({ role: 'user', content: 'Continue with your current task.' }, 'lane.empty-context-fallback'));
       }
     } catch {
       merged.push({ role: 'user', content: 'Continue with your current task.' });
@@ -1540,6 +1591,9 @@ async function assembleMessageContext(
     systemPrompt,
     systemVolatile: '',
     messages: merged,
+    // F21: the dead plumbing ends here. Read OFF the array it describes, after every
+    // mutation above, so it is aligned by construction rather than by maintenance.
+    messageEntryIds: collectMessageLaneIds(merged),
     freshTailDropped,
     reserveTokens: policy.toolAndOutputReserve,
     allocation: report,

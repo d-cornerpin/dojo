@@ -77,6 +77,7 @@ import path from 'node:path';
 import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnConversationId, currentTurnImRecipient, currentModelRequestId, currentTurnNumber, currentTurnRoot, currentTurnServedWork, continuationContext, clearTurnReceipts, clearRecallBudget, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
 import { persistEngineSteer } from './engine-steer.js';
 import { pushEngineMessage } from './engine-message.js';
+import { tagMessageLane, collectMessageLaneIds } from '../../memory/message-lane-tag.js';
 import { findRecentDeliveries, findRecentDeliveriesKeyed, getRecentOutbound, mostRecentDeliveryTo, mostRecentDeliveryToConversation, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
 import { writeToolReceipt } from '../../receipts/store.js';
 import { resolveToolAlias } from '../../tools/aliases.js';
@@ -3192,7 +3193,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         if (tail.role === 'user' && typeof tail.content === 'string') {
           tail.content = `${tail.content}\n\n${SETTLED_HINT}`;
         } else {
-          messages.push({ role: 'user', content: SETTLED_HINT }); // registry-exempt(2026-07-16): settled-hint fallback needs the in-flight messages array; migrate with the volatile-injection registry refactor
+          messages.push(tagMessageLane({ role: 'user', content: SETTLED_HINT }, 'engine.settled-hint')); // registry-exempt(2026-07-16): settled-hint fallback needs the in-flight messages array; migrate with the volatile-injection registry refactor
         }
       }
 
@@ -3537,7 +3538,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   startAckSteerArmedThisTurn = true;
                   startAckSteersInjected = 1;
                   startAckSteerInjectedAtLoop = state.loopCount;
-                  pushEngineMessage(messages, START_ACK_STEER_TEXT); // registry-exempt(2026-07-22): start-ack steer rides the in-flight messages array at the classifier site; migrate with the volatile-injection registry refactor
+                  pushEngineMessage(messages, START_ACK_STEER_TEXT, 'engine.start-ack-steer'); // registry-exempt(2026-07-22): start-ack steer rides the in-flight messages array at the classifier site; migrate with the volatile-injection registry refactor
                 }
               }
             }
@@ -3829,7 +3830,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             const outLines = recentOut.map(
               (d) => `${relativeTimeAgo(d.createdAt)} ${channelLabel(d.channel)} -> ${d.recipient ?? 'unknown'}`,
             );
-            pushEngineMessage(messages, `RECENT OUTBOUND (engine-verified):\n${outLines.join('\n')}`); // registry-exempt(2026-07-16): RC-12 receipts block reads per-iteration ledger state; migrate with the volatile-injection registry refactor
+            pushEngineMessage(messages, `RECENT OUTBOUND (engine-verified):\n${outLines.join('\n')}`, 'engine.recent-outbound'); // registry-exempt(2026-07-16): RC-12 receipts block reads per-iteration ledger state; migrate with the volatile-injection registry refactor
           }
 
           // Pending-question header (RC-1 item 2): quote the agent's own most-recent
@@ -3868,6 +3869,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               pushEngineMessage( // registry-exempt(2026-07-16): RC-1 pending-question header reads per-iteration receipt state; migrate with the volatile-injection registry refactor
                 messages,
                 `[Your most recent message to ${counterparty.name}, sent ${relativeTimeAgo(pend.createdAt)}: "${quoted}"]`,
+                'engine.pending-question',
               );
             }
           }
@@ -3885,7 +3887,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // and the park sigils, so a parked row changed which party its items
           // belonged to.
           const openWorkBlock = buildOpenWorkInjection(agentId, pendConvId);
-          if (openWorkBlock) pushEngineMessage(messages, openWorkBlock); // registry-exempt(2026-07-16): the open-work block reads conv-scoped rows mid-iteration; migrate with the volatile-injection registry refactor
+          if (openWorkBlock) pushEngineMessage(messages, openWorkBlock, 'engine.open-work'); // registry-exempt(2026-07-16): the open-work block reads conv-scoped rows mid-iteration; migrate with the volatile-injection registry refactor
 
           // RECENTLY ANSWERED (ticket-stamps plan A4, owner-approved): the
           // last few asks of THIS conversation that already have answers,
@@ -3905,7 +3907,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   const excerpt = a.content.replace(/^\[[^\]]*\]\s*/g, '').trim().slice(0, 90);
                   return `- answered ${relativeTimeAgo(a.created_at)}: "${excerpt}"`;
                 });
-                pushEngineMessage(messages, `RECENTLY ANSWERED in this conversation (engine record; do NOT re-execute this work. If asked about it again, a brief restatement of the answer's content is fine, or point at the earlier answer; never silence, and never re-run the work itself):\n${lines.join('\n')}`); // registry-exempt(2026-07-22): reads per-iteration conv-scoped answer stamps; migrate with the volatile-injection registry refactor
+                pushEngineMessage(messages, `RECENTLY ANSWERED in this conversation (engine record; do NOT re-execute this work. If asked about it again, a brief restatement of the answer's content is fine, or point at the earlier answer; never silence, and never re-run the work itself):\n${lines.join('\n')}`, 'engine.recently-answered'); // registry-exempt(2026-07-22): reads per-iteration conv-scoped answer stamps; migrate with the volatile-injection registry refactor
               }
             } catch { /* best effort */ }
           }
@@ -3941,12 +3943,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
         systemPrompt,
         messages,
         useTools,
-        // Registry path only (undefined on legacy): which registered entry
-        // produced each system part / message. Receipt drops them if a later
-        // loop-side mutation makes the counts disagree.
         systemEntryIds: ctx.systemEntryIds,
-        messageEntryIds: ctx.messageEntryIds,
+        // PHASE-3 T6 (F21): read OFF THIS ARRAY, not off `ctx.messageEntryIds` — the
+        // assembler's copy stops at `volatileFrom` and would miss every tail-append below.
+        messageEntryIds: collectMessageLaneIds(messages),
         volatileFrom,
+        // F20/F22: the allocator's own record, and the assembly's own numbers.
+        allocation: ctx.allocation,
+        freshTailDropped: ctx.freshTailDropped,
+        systemVolatileChars: (ctx.systemVolatile ?? '').length,
+        reserveTokens: ctx.reserveTokens,
       });
 
       // ── Call model with retry-and-fallback (matches v1 runtime.ts:1028-1116) ──
