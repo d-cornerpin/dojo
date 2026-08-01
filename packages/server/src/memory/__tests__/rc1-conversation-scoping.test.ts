@@ -1,17 +1,16 @@
 // RC-1 no-bleed regression gates.
 //
-// The dual-home echo row (loop.ts persistCrossConvSendEcho) records a cross-recipient
-// send INTO the recipient's conversation so their next turn can bind a bare answer to
-// the question. The mandated regression gates from RC-1's History check encode the OLD
-// conversation-bleed bug the attribution redesign killed, and this fix must not
-// reintroduce it:
+// The dual-home echo row (loop.ts `persistCrossConvSendEcho`) recorded a cross-recipient
+// send INTO the recipient's conversation so their next turn could bind a bare answer to the
+// question. The mandated regression gates from RC-1's History check encode the OLD
+// conversation-bleed bug the attribution redesign killed:
 //
 //   (a) the echo row appears in the RECIPIENT's scoped tail and NOT in the original
-//       counterparty's scoped tail (beyond that counterparty's own conversation);
+//       counterparty's — STRIPPED at PHASE-3 T7 Step 2 with the writer; see the note below;
 //   (b) scopeToHumanConversation still excludes OTHER conversations' user rows
-//       (existing no-bleed behavior, pinned);
+//       (existing no-bleed behavior, pinned) — STAYS, it is the assembler's own law;
 //   (c) the pending-question header only ever contains sends TO the current
-//       counterparty (guaranteed by the ledger recipient filter, recipientMatchesAliases).
+//       counterparty (the ledger recipient filter, recipientMatchesAliases) — STAYS.
 
 import { describe, it, expect } from 'vitest';
 import type { Message, MessageOrigin } from '@dojo/shared';
@@ -55,13 +54,7 @@ const samConv = 'conv-sam';
 // would pass for the wrong reason.
 expect(conversationKey('imessage', 'maya', 'Maya', null)).toBe('imessage:maya');
 
-// The synthetic echo row persistCrossConvSendEcho writes: an assistant row homed to
-// the RECIPIENT's conversation (Sam), carrying the verbatim sent question.
-const echoRow = msg({
-  id: 'echo1', role: 'assistant',
-  content: '[Sent via iMessage to Sam]: whats your Delta SkyMiles number?',
-  conversationId: samConv, origin: selfOrigin,
-});
+// STRIP (T7 Step 2): the synthetic echo-row fixture went with gate (a) below.
 const mayaUserRow = msg({
   id: 'maya-in', role: 'user', content: 'can you ask Sam for his SkyMiles number?',
   conversationId: null, origin: userOrigin('imessage', 'maya', 'Maya'),
@@ -71,22 +64,22 @@ const davidUserRow = msg({
   conversationId: null, origin: userOrigin('imessage', 'sam', 'Sam'),
 });
 
-describe('RC-1 gate (a): the echo row is homed to the RECIPIENT only', () => {
-  it("appears in Sam's (recipient) scoped tail", () => {
-    const scoped = scopeToHumanConversation([mayaUserRow, echoRow, davidUserRow], userCp('imessage', 'sam', 'Sam'), samConv);
-    expect(scoped.map((m) => m.id)).toContain('echo1');
-    // and Sam's own inbound stays, Maya's inbound is gone
-    expect(scoped.map((m) => m.id)).toContain('david-in');
-    expect(scoped.map((m) => m.id)).not.toContain('maya-in');
-  });
-
-  it("does NOT appear in Maya's (original counterparty) scoped tail", () => {
-    const scoped = scopeToHumanConversation([mayaUserRow, echoRow, davidUserRow], userCp('imessage', 'maya', 'Maya'), mayaConv);
-    expect(scoped.map((m) => m.id)).not.toContain('echo1');
-    expect(scoped.map((m) => m.id)).toContain('maya-in');
-    expect(scoped.map((m) => m.id)).not.toContain('david-in');
-  });
-});
+// ── STRIP (PHASE-3 T7 Step 2, 2026-08-01): RC-1 gate (a) is DELETED with its subject. ──
+// It asserted that the ECHO ROW appeared in Sam's scoped tail and not in Maya's. There is no
+// echo row any more: `persistCrossConvSendEcho` is deleted, so these two clauses would be
+// asserting the assembler's handling of a shape production can no longer produce -- a test
+// that passes forever and guards nothing.
+//
+// requirement preserved: the recipient's next turn sees the question it was asked, and the
+// original counterparty does not. That is the DELIVERIES LANE's now, and it is held by
+// `memory/__tests__/deliveries-lane.test.ts` -> "a send into ANOTHER conversation never
+// surfaces on this turn, and DOES on that one", written and green BEFORE the writer was
+// deleted (roadmap #2). It is a structurally stronger home: the lane is scoped by the
+// conversation being served, so it cannot bleed, where the echo row's no-bleed depended on
+// the assembler filtering out a row the engine had deliberately persisted elsewhere.
+//
+// Gates (b) and (c) below are NOT about the echo and stay: (b) is the assembler's own
+// no-bleed law and (c) is the ledger's recipient filter.
 
 describe('RC-1 gate (b): scopeToHumanConversation still excludes other conversations user rows', () => {
   it('a different human conversation never crosses into a turn scoped elsewhere', () => {

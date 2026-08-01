@@ -124,6 +124,22 @@ describe('the lane reads the deliveries rows natively', () => {
     expect(out).not.toContain('[Sent via');
   });
 
+  // THE NO-BLEED HALF, and it is here because the STRIP needs it here. RC-1's gate (a)
+  // (`memory/__tests__/rc1-conversation-scoping.test.ts`) held this requirement over the echo
+  // ROW: the question the agent asked Sam must reach SAM's next turn and must never appear on
+  // Maya's. The row is deleted at PHASE-3 T7 Step 2, so the requirement moves to the mechanism
+  // that now owns it — and it is structurally safer here, because the lane cannot bleed by
+  // construction: `recentDeliveriesToConversation` is scoped by the conversation being served,
+  // where the echo row's scoping depended on the assembler filtering a row it had persisted
+  // into someone else's conversation on purpose.
+  it('a send into ANOTHER conversation never surfaces on this turn, and DOES on that one', () => {
+    seedSend('whats your Delta SkyMiles number?', 2, { conversation_id: 'conv-sam', recipient_display: 'Sam' });
+    // Maya's turn: the agent's question to Sam is not hers to see.
+    expect(text()).toBeNull();
+    // Sam's turn: it is exactly what he needs to bind a bare answer to.
+    expect(text({ conversationId: 'conv-sam', counterpartyName: 'Sam' })).toContain('SkyMiles');
+  });
+
   it('carries MORE THAN ONE question, newest first — the echo rows\' own job', () => {
     seedSend('question ONE about the invoice', 6);
     seedSend('question TWO about the flight', 4);

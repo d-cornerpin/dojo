@@ -1831,59 +1831,28 @@ describe('T1: engine steer delivery (the pendingNudge drain)', () => {
     expect(seenByModel.indexOf(carrying[0])).toBe(2);
   });
 
-  it('settled-context [Engine hint] fires on the FIRST iteration and only the first (loop.ts:2903)', async () => {
-    // The guard is documented in-code against two live incidents (the 2026-07-10
-    // file_read re-verification spiral and the owner's 9:39 PM duplicate answer),
-    // and its condition tested `state.loopCount === 0` — unreachable, because
-    // loopCount is incremented at loop.ts:2280, the first statement of the while
-    // body that contains it. So the hint had never once been injected. Repaired to
-    // the file's own first-iteration idiom (=== 1); the first-iteration-ONLY
-    // guarantee the incidents bought is what this test pins.
-    const toolCall: ToolCall = { id: 'tc1', name: 'file_read', arguments: { path: '/x' } };
-    callModelSpy.mockImplementation(
-      recordingModel((n) =>
-        n === 1
-          ? { content: 'reading', toolCalls: [toolCall], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' }
-          : DONE,
-      ),
-    );
-    executeToolSpy.mockResolvedValue({ toolCallId: 'tc1', name: 'file_read', content: 'file body', isError: false });
-
-    await runV2Turn('primary');
-
-    expect(seenByModel.length).toBeGreaterThanOrEqual(2);
-    const hintCount = (msgs: Array<Record<string, unknown>>): number =>
-      msgs.filter((m) => typeof m.content === 'string' && (m.content as string).includes('[Engine hint: respond only to the newest incoming item')).length;
-    expect(hintCount(seenByModel[0])).toBe(1);
-    expect(hintCount(seenByModel[1])).toBe(0);
-  });
-
-  it('the hint is NEVER folded into a tool-result carrier (it would orphan the paired tool_use)', async () => {
-    // Arming the hint armed its injection path too. Its fold-into-the-tail branch
-    // used to push a {type:'text'} block into an ARRAY tail. When that tail is a
-    // pure tool_result carrier the carrier stops being pure, and callModel's
-    // sanitizeOrphanToolBlocks (model.ts:231) then treats the matching tool_use as
-    // orphaned, strips it, and deletes the assistant message outright — the
-    // "agent repeats itself" regression documented at model.ts:215-223. Measured:
-    // folded → 1 tool_use stripped, assistant message gone; appended → 0 stripped.
-    callModelSpy.mockImplementation(recordingModel(() => DONE));
-
-    await runV2Turn('primary');
-
-    const first = seenByModel[0];
-    const carrier = first.find(
-      (m) => Array.isArray(m.content) && (m.content as Array<{ type?: string }>).some((b) => b.type === 'tool_result'),
-    );
-    expect(carrier).toBeTruthy();
-    // Still a PURE tool-result carrier: nothing was folded into it.
-    expect((carrier!.content as Array<{ type?: string }>).every((b) => b.type === 'tool_result')).toBe(true);
-    // And the hint arrived anyway, as its own string-content user message.
-    const at = first.findIndex(
-      (m) => typeof m.content === 'string' && (m.content as string).includes('[Engine hint: respond only to the newest incoming item'),
-    );
-    expect(at).toBeGreaterThanOrEqual(0);
-    expect(first[at].role).toBe('user');
-  });
+  // ── STRIP (PHASE-3 T7 Step 2, 2026-08-01) — two clauses die with the SETTLED_HINT. ──
+  // They were "the hint fires on the first iteration and only the first" and "the hint is
+  // NEVER folded into a tool-result carrier". Both named `[Engine hint: respond only to the
+  // newest incoming item` literally, and that string no longer exists in the tree: the hint
+  // is deleted (scar-tissue ledger — "STRIP. Requirement: a turn acts only on its root;
+  // assembly scopes by id, so there is nothing to warn about"). Kept, they would fail on a
+  // correct build.
+  //
+  // requirement preserved, both halves, and the second is the one worth naming:
+  //   * the hint's own requirement — see the STRIP note in `loop.ts`: structurally by
+  //     `scopeToHumanConversation`, deterministically by the now-WIRED and green
+  //     `checks/check-reanswer-ghost.mjs`, behaviourally by `settled-work-stays-settled`.
+  //   * THE CARRIER-PURITY LAW — an injection must never push a text block into a tail that
+  //     is a pure `tool_result` carrier, because `model.ts sanitizeOrphanToolBlocks` then
+  //     treats the paired `tool_use` as orphaned, strips it, and deletes the assistant
+  //     message ("agent repeats itself", model.ts:215-223). The hint was the only FOLDER in
+  //     the tree (`grep` for the fold expression at this HEAD: one hit, now zero), so the
+  //     law's live subject is the pendingNudge drain — and the three clauses immediately
+  //     above this note hold it there: "appends the steer as its OWN user-role message,
+  //     never folded into another message", "keeps alternation legal", and "delivers a steer
+  //     mid-turn even though the assembled tail is a tool-result carrier". The law is
+  //     therefore pinned on the mechanism that can still break it, not on one that is gone.
 });
 
 // ════════════════════════════════════════════════════════════════════════════════════════

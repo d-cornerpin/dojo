@@ -196,7 +196,10 @@ describe('PHASE-2 T10H — the rider set is COMPLETE, enforced against the write
     'scheduler', 'tracker', 'reminder', 'a2a_request', 'completion_report', 'spawn_kickoff',
     'pm_review', 'pm_rename', 'validation_check', 'engine_event_expired', 'agent_health',
     'block_validated', 'schedule_run_failed', 'schedule_run_failed_owner', 'learning_loop',
-    'healer', 'cross_conv_send_echo',
+    'healer',
+    // STRIP (PHASE-3 T7 Step 2): 'cross_conv_send_echo' left with its writer. It was never
+    // reachable by this walk in any case (the echo used insertMessageIfAbsent, not
+    // insertEngineEvent*), so it was already a stale entry in this test's own partition.
   ] as const;
 
   it('EVERY events-lane writer in the tree carries a CLASSIFIED intent (rider or deliverable)', () => {

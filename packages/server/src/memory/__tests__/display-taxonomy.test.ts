@@ -141,9 +141,11 @@ const WRITER_LITERALS: Case[] = [
   // say honestly that the ENGINE wrote them, which `origin_intent` already records.
   { site: 'loop.ts deliverEngineUserAck', role: 'assistant', originIntent: 'engine_start_ack',
     content: 'On it — starting the backup now.', kind: 'fallback', tier: 'user-visible' },
-  { site: 'loop.ts cross-conv send echo', role: 'assistant', originIntent: 'cross_conv_send_echo',
-    content: '[Sent via iMessage to Sam]: whats your Delta SkyMiles number?',
-    kind: 'fallback', tier: 'user-visible' },
+  // STRIP (PHASE-3 T7 Step 2): 'loop.ts cross-conv send echo' / origin_intent
+  // 'cross_conv_send_echo' is gone with its writer. A taxonomy row for a site the tree no
+  // longer has classifies nothing; keeping it would make this table describe a build that
+  // does not exist. requirement preserved: the deliveries LANE renders the same fact, and it
+  // is not a persisted message at all, so it has no display classification to carry.
   { site: 'assistant fallback prefix (error text)', role: 'assistant',
     content: "I'm sorry — I'm having trouble reaching the model right now.",
     kind: 'fallback', tier: 'agent-only' },

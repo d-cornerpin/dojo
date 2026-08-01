@@ -315,24 +315,23 @@ describe('T1: the pendingNudge drain is not gated on the assembled tail shape', 
   });
 });
 
-describe('T1: the settled-context [Engine hint] guard is reachable', () => {
-  it('fires on the first iteration (loopCount === 1), not the unreachable === 0', () => {
-    const lines = fs.readFileSync(LOOP_TS, 'utf8').split('\n');
-    const hintIdx = lines.findIndex((l) => l.includes('const SETTLED_HINT ='));
-    expect(hintIdx).toBeGreaterThan(0); // scan must find the guard
-
-    const guard = lines
-      .slice(Math.max(0, hintIdx - 15), hintIdx)
-      .filter((l) => !isCommentLine(l))
-      .join('\n');
-    // The hint is documented in-code against two live incidents (the 2026-07-10
-    // file_read re-verification spiral and the owner's duplicate-answer report) and
-    // must stay FIRST-ITERATION-ONLY: injected mid-turn it lands right after a tool
-    // result, where "respond only to the newest incoming item" reads as verification
-    // pressure on a weak model. First-iteration-only is the requirement; `=== 0` was
-    // the bug, because loopCount is incremented at the top of the enclosing while body.
-    expect(guard).toMatch(/state\.loopCount === 1/);
-  });
+// ── STRIP (PHASE-3 T7 Step 2, 2026-08-01) — the reachability clause dies with its subject. ──
+// It asserted that `const SETTLED_HINT =` was guarded by `state.loopCount === 1` rather than
+// the statically-unreachable `=== 0` that made the block dead for months. There is no
+// SETTLED_HINT any more (scar-tissue ledger: "STRIP. Requirement: a turn acts only on its
+// root; assembly scopes by id, so there is nothing to warn about"), so a clause scanning for
+// its declaration would fail on a CORRECT tree — which is the coin-flip a test must never be.
+//
+// requirement preserved, and note it is TWO requirements, both still held:
+//   * the hint's own requirement — see the STRIP note in loop.ts: structurally by
+//     `scopeToHumanConversation`, deterministically by the now-wired
+//     `checks/check-reanswer-ghost.mjs`, behaviourally by `settled-work-stays-settled`;
+//   * THE UNREACHABLE-GUARD LESSON, which is the more valuable half and is NOT about the
+//     hint at all — the clause immediately below ("no state.loopCount === 0 test survives
+//     anywhere in loop.ts") is the general form and it stays. It would have caught the
+//     original defect without knowing the hint existed, and it still guards every sibling
+//     first-iteration guard in the file.
+describe('T1: no first-iteration guard uses the unreachable loopCount === 0', () => {
 
   it('no state.loopCount === 0 test survives anywhere in loop.ts (statically unreachable inside the turn loop)', () => {
     const src = fs.readFileSync(LOOP_TS, 'utf8');

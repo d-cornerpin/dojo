@@ -39,7 +39,7 @@ import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { broadcast } from '../../gateway/ws.js';
 import { ownOutputBroadcast } from '../interagent-broadcast.js';
-import type { AgentStatus, Message, ToolCall, Channel } from '@dojo/shared';
+import type { AgentStatus, Message, ToolCall } from '@dojo/shared';
 // classifyTool is the canonical effectful/retrieval/bookkeeping classifier
 // (test-covered against the full tool registry); the closeout machinery
 // derives "did this turn do real work" from it instead of a hand list that
@@ -77,7 +77,7 @@ import path from 'node:path';
 import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnConversationId, currentTurnImRecipient, currentModelRequestId, currentTurnNumber, currentTurnRoot, currentTurnServedWork, continuationContext, clearTurnReceipts, clearRecallBudget, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
 import { persistEngineSteer } from './engine-steer.js';
 import { pushEngineMessage } from './engine-message.js';
-import { tagMessageLane, collectMessageLaneIds } from '../../memory/message-lane-tag.js';
+import { collectMessageLaneIds } from '../../memory/message-lane-tag.js';
 import { findRecentDeliveries, findRecentDeliveriesKeyed, getRecentOutbound, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
 import { renderDeliveriesLaneMessage } from '../../memory/deliveries-lane.js';
 import { writeToolReceipt } from '../../receipts/store.js';
@@ -143,8 +143,6 @@ import {
 // ackInjector intentionally NOT imported, engine ack disabled per invariant
 // review (see "Engine-injected ack, DISABLED" comment below).
 import { isForwardPromiseReply, pickA2AHandoffAck } from './ack-copy.js';
-import { findCrossConvReAnswer } from './re-answer-guard.js';
-import { recordReAnswerCheck } from './re-answer-sink.js';
 import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD } from '../../memory/compaction.js';
 import { estimateTokens } from '../../memory/budget.js';
@@ -153,7 +151,7 @@ import {
   claimEngineEventByRowid, releaseEngineEventByRowid, isRowUnserved,
   markServedByRowid, setAnswerMessageId,
 } from '../../memory/message-store.js';
-import { conversationIdentityOf, resolveOrCreateConversation } from '../../memory/conversations.js';
+import { resolveOrCreateConversation } from '../../memory/conversations.js';
 import { buildOpenWorkInjection } from '../../work/obligations.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
 import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, claimAssembledSiblings, getOwedMidTurnArrivals, type TurnCounterparty } from './counterparty.js';
@@ -1917,73 +1915,30 @@ export async function runV2Turn(agentId: string): Promise<void> {
     return rowId;
   };
 
-  // RC-1: dual-home a cross-recipient send. When the agent sends to someone who is
-  // NOT this turn's counterparty (asking the owner for a datum while replying to a
-  // contact), the send's text lives only in the current conversation's tool rows and
-  // is filtered out of the RECIPIENT's next turn by scopeToHumanConversation. So the
-  // recipient answers a question with no visible trace of it ever being asked (the
-  // "easily confused" bug, F-1/F-3/K-1). This persists ONE additive assistant echo
-  // row INTO the recipient's conversation (the recipient's `conversation_id`) carrying the
-  // verbatim sent text, so on the recipient's next turn the model sees its own
-  // question and can bind the bare answer. Additive and side-effect-free: it does NOT
-  // retro-stamp the tool rows (that would destabilise the SENDING turn's own
-  // assembly). origin_intent='cross_conv_send_echo' keeps it OUT of the start-ack
-  // "did I reply" check (which requires origin_intent IS NULL) and lets the dashboard
-  // render it as a routing chip.
+  // ── STRIP (PHASE-3 T7 Step 2, 2026-08-01) — `persistCrossConvSendEcho` and its three call
+  // sites are DELETED. RC-1 dual-homed a cross-recipient send by PERSISTING A SECOND ROW: when
+  // the agent asked Sam a question while replying to Maya, the sent text lived only in Maya's
+  // tool rows, `scopeToHumanConversation` correctly kept it out of Sam's next turn, and Sam
+  // then answered a question with no visible trace of ever being asked. The repair duplicated
+  // the message into Sam's conversation. It worked, and it was a duplicate mechanism: history
+  // the platform had already recorded, written a second time in a different shape, then re-read
+  // as history and re-billed inside the fresh tail on every turn until it aged out — and it
+  // could never be truncated, because it was indistinguishable from a real message.
   //
-  // T9 (research 17 D4): it IS broadcast now. The old comment reasoned "it belongs to a
-  // different conversation than the one on screen" — but the dashboard's chat is scoped
-  // per AGENT, not per conversation, so the reload path has always served this row into
-  // the same feed. Live and reload therefore disagreed, and the row appeared out of
-  // nowhere on the next refresh (research 17 §4 item 5: "[Sent via X to Y] raw envelope
-  // appears only after refresh"). Broadcasting it adds no content the owner was not
-  // already going to be shown; it just stops the appearance being a surprise.
-  // Skipped when the echo would land in this turn's own conversation.
-  const persistCrossConvSendEcho = (
-    channel: Channel,
-    recipientId: string | null,
-    recipientName: string,
-    channelWord: string,
-    sentText: string,
-  ): void => {
-    try {
-      const text = (sentText ?? '').trim();
-      if (!text) return;
-      // PHASE-2 T10I: the echo lands in the recipient's conversation as the FK. It is
-      // resolve-or-CREATE and that is correct rather than convenient — the agent has just
-      // spoken to this recipient through a real door, so the conversation exists as a fact
-      // whether or not a row had been minted for it yet, and the recipient's own next
-      // inbound would resolve the identical row.
-      const echoIdentity = conversationIdentityOf(channel, recipientId, recipientName, null);
-      const echoConversationId = resolveOrCreateConversation(agentId, echoIdentity);
-      // Defensive: never echo into the conversation this turn is already serving
-      // (the toCp guard at the call site already excludes recipient==counterparty).
-      if (!echoConversationId || echoConversationId === chosenConversationId) return;
-      const echoId = uuidv4();
-      const content = `[Sent via ${channelWord} to ${recipientName}]: ${text}`;
-      insertMessageIfAbsent({
-        id: echoId, agentId, role: 'assistant', content, turnNumber,
-        conversationId: echoConversationId, originIntent: 'cross_conv_send_echo',
-      });
-      broadcast({
-        type: 'chat:message',
-        agentId,
-        message: {
-          id: echoId, agentId, role: 'assistant' as const, content,
-          tokenCount: null, modelId: null, cost: null, latencyMs: null,
-          createdAt: new Date().toISOString(),
-          conversationId: echoConversationId,
-        },
-      });
-      logger.info('RC-1: dual-homed cross-recipient send echo into recipient conversation', {
-        agentId, turnNumber, echoConversationId, channel: channelWord,
-      }, agentId);
-    } catch (err) {
-      logger.debug('RC-1 cross-conv echo failed (non-fatal, additive)', {
-        agentId, error: err instanceof Error ? err.message : String(err),
-      }, agentId);
-    }
-  };
+  // requirement preserved: (1) THE RECIPIENT'S NEXT TURN SEES THE QUESTION IT WAS ASKED —
+  // `memory/deliveries-lane.ts` (T7 Step 1), which reads the `deliveries` rows natively for
+  // the conversation being served, carries up to three of them newest-first against a declared
+  // 316-token reserve, and renders the one-row case as RC-1's header byte for byte. Its
+  // no-bleed half — a question asked in another conversation never surfaces here — is pinned by
+  // `deliveries-lane.test.ts` "a send into ANOTHER conversation never surfaces on this turn",
+  // written BEFORE this deletion. (2) THE SEND STAYS VISIBLE IN THE DASHBOARD FEED —
+  // `persistRoutingMarker` (below), persisted and broadcast for exactly the three send families
+  // this echo covered.
+  //
+  // Measured on this body at the strip: `SELECT COUNT(*) FROM messages WHERE
+  // origin_intent='cross_conv_send_echo'` -> 0. That is an ABSENCE, not evidence of death
+  // (#15): the writer was alive and this dev box simply never made a cross-recipient channel
+  // send. The positive evidence is the named replacement above, not the row count.
 
   // ── Engine-enforced human acknowledgment (NEXT-WAVE item 1) ──
   // When the multistep classifier deems a user request tracker-project-worthy,
@@ -2810,11 +2765,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // `agent/v2/__tests__/engine-rider-never-drives-a-turn.test.ts`.
             //
             // The `convKey: 'engine-steer'` writes at all nine sites are RESIDUE for this job
-            // and are kept ONLY because `re-answer-guard.ts` and the dashboard's
+            // and were kept ONLY because `re-answer-guard.ts` and the dashboard's
             // `isBackgroundTurnRow` still read the sentinels for a DIFFERENT job (engine
-            // chatter vs a human conversation). Those two need `conv_key`'s identity half
-            // re-pointed onto `conversation_id`, which T10H did not reach — so they are owed,
-            // named, and not deleted out from under a live reader.
+            // chatter vs a human conversation). Both readers are now settled: T10I re-pointed
+            // them onto `conversation_id` / `lane`, and PHASE-3 T7 Step 2 DELETED
+            // `re-answer-guard.ts` outright, so one of the two named readers no longer exists.
             // The steer still reaches the model (the EVENTS/awareness lane filters on `lane`,
             // not `conv_key`) and still renders in the dashboard.
           } catch { /* best effort */ }
@@ -3167,49 +3122,36 @@ export async function runV2Turn(agentId: string): Promise<void> {
       lastAssembledAtIso = new Date().toISOString(); // F9: see claimAssembledSiblings
       let systemPrompt = ctx.systemPrompt;
       const messages = ctx.messages;
-      // Settled-context hint (see settledContextWakeTurn above). Injected at the
-      // TAIL of the assembled messages on every iteration of a settled-context
-      // turn: assembly rebuilds from persisted rows each round, so an unpersisted
-      // hint must be re-applied per assembly. Tail position keeps the cacheable
-      // prefix untouched. Folded into a trailing user-role message (string or
-      // block-array content) to preserve role alternation; appended as its own
-      // user message when the tail is an assistant turn. Advice framing on
-      // purpose ([Engine hint], never an order): user-authored content wins per
-      // the precedence ladder, and result-delivery turns (a peer's answer coming
-      // back, a reminder firing) must stay free to message the user.
-      if (messages.length > 0 && state.loopCount === 1) {
-        // FIRST ITERATION ONLY: the hint orients the turn at its start. Injected
-        // mid-turn it lands directly after a tool result, where "respond only to
-        // the newest incoming item" reads as verification pressure on a weak
-        // model (battery 2026-07-10: a file_read re-verification spiral surfaced
-        // with the every-iteration version; the engine STOP guard caught it).
-        // Two shapes of the same disease (both reproduced live on dev 2026-07-10):
-        // a background wake with nothing waiting re-answers the last visible
-        // question, AND a turn legitimately serving conversation X re-answers a
-        // settled conversation Y on the side (the owner's 9:39 PM duplicate came
-        // from an ordinary inbound serving turn). So the hint is injected on
-        // EVERY turn, worded for whichever shape this turn is.
-        const SETTLED_HINT = settledContextWakeTurn
-          ? '[Engine hint: no one is waiting on a reply right now. Every user conversation ' +
-            'visible above has already been answered and is closed. Do not re-answer, re-send, ' +
-            'or redo anything from it. Act only on what woke you this turn, and only deliver ' +
-            'information that is genuinely new (a result that just arrived, a reminder firing, ' +
-            'the event itself).]'
-          : '[Engine hint: respond only to the newest incoming item, the one that triggered ' +
-            'this turn. Every OTHER user conversation visible above has already been answered ' +
-            'and is closed; do not re-answer, re-send, or redo any of it, even if it looks ' +
-            'recent or unfinished.]';
-        // Fold into a STRING user tail only. A text block pushed into an array tail
-        // makes a pure tool_result carrier impure, and model.ts:231 then strips the
-        // paired tool_use and deletes the assistant message ("agent repeats itself",
-        // model.ts:215-223). Own message otherwise; consecutive user turns are routine.
-        const tail = messages[messages.length - 1];
-        if (tail.role === 'user' && typeof tail.content === 'string') {
-          tail.content = `${tail.content}\n\n${SETTLED_HINT}`;
-        } else {
-          messages.push(tagMessageLane({ role: 'user', content: SETTLED_HINT }, 'engine.settled-hint')); // registry-exempt(2026-07-16): settled-hint fallback needs the in-flight messages array; migrate with the volatile-injection registry refactor
-        }
-      }
+      // ── STRIP (PHASE-3 T7 Step 2, 2026-08-01) — the SETTLED_HINT is DELETED, both branches.
+      // It was ~65 tokens of prose on every turn that actually fires (260 chars; 341 / 86
+      // tokens on the rarer settled-wake wording) telling the model not to re-answer the OTHER
+      // conversations visible above it. Scar-tissue ledger, verbatim: "STRIP. Requirement: a
+      // turn acts only on its root; assembly scopes by id, so there is nothing to warn about."
+      // That is the whole argument and it is now literally true rather than aspirational —
+      // when the hint was written (`8bc7d7a`, 2026-07-10) the window really did carry other
+      // conversations, so the prose was the only thing standing between the model and them.
+      //
+      // requirement preserved, three deep and every layer verified alive at this HEAD:
+      //   1. STRUCTURAL — `memory/assembler.ts scopeToHumanConversation` keeps only THIS
+      //      conversation's rows plus the agent's own output for it. There is no other
+      //      conversation in the window to be warned about, so the warning has no referent.
+      //   2. DETERMINISTIC, WIRED, RUNNING — `checks/check-reanswer-ghost.mjs` (54 delivered
+      //      messages in, 54 out, no model call) is on the kit's prompt-gate roster AND the
+      //      dojo REQUIRED list as of this same task, and it is green in-roster. Note what it
+      //      guards and what it does not: it proves the window is never MISSING history, which
+      //      is the cause the hint was compensating for. It was wired FIRST, on purpose —
+      //      RULING P3-R3 exists because the earlier ruling deleted against a guard nobody had
+      //      checked was running.
+      //   3. BEHAVIOURAL — `settled-work-stays-settled` (kit battery) drives a real delivery,
+      //      closes it, wakes the agent on something unrelated, and asserts zero re-answers
+      //      and zero new artifacts. That is the user-facing property the prose asked for,
+      //      asserted on a real model instead of requested from one.
+      //
+      // The `tagMessageLane('engine.settled-hint')` emission goes with it, and with it the
+      // last `registry-exempt` marker in this file's assembly path: the hint needed the
+      // in-flight array, which is why it could never move behind the registry.
+      // Savings: -65 tokens on the fresh tail of every turn, measured (T7 sitting 1; T6's
+      // 234-receipt distribution recorded `engine.settled-hint 65/65`).
 
       // FA-M1: record the non-compressible overhead the assembler just produced
       // (system prompt + the tool-schema/output reserve it also reserves) so the
@@ -6214,48 +6156,42 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }
         }
 
-        // Cross-conversation re-answer floor (2026-07-09 disease, structural
-        // stage). The tail [Engine hint] alone did not stop the weakest
-        // supported model from re-answering another conversation's settled
-        // question (verified on dev 2026-07-10), so when the deterministic
-        // content detector (re-answer-guard.ts) flags the final reply as a
-        // near-duplicate of an answer the user already received elsewhere, the
-        // model gets ONE steer to respond only to this turn's trigger. A second
-        // emission is DELIVERED (never suppressed, per house rules) and logged
-        // loudly as the evidence for any harder future stage.
-        if (
-          persistedContent && persistedContent.trim().length >= 160 &&
-          chosenConvKey !== 'engine'
-        ) {
-          const reAnswer = findCrossConvReAnswer(db, agentId, persistedContent, chosenConvKey ?? null);
-          // PHASE-3 T7 Step 2 — THE QUIET WINDOW'S DURABLE EVIDENCE. Every check is
-          // recorded, matched or not, so the file carries a DENOMINATOR and "quiet" is
-          // distinguishable from "never ran" (roadmap #15). The `logger.warn` below stays
-          // for the live-tail reader; it is not the window's evidence, because the file it
-          // writes to retains minutes (see `re-answer-sink.ts`'s header for the measurement).
-          // Behaviour is untouched: this records, it does not decide.
-          recordReAnswerCheck({
-            agentId,
-            turnNumber,
-            convKey: chosenConvKey ?? null,
-            match: reAnswer,
-            replyChars: persistedContent.trim().length,
-          });
-          if (reAnswer) {
-            // LOG-ONLY, deliberately (2026-07-10). The steer version of this
-            // floor false-positived on legitimately similar recurring content
-            // (a reused agent's repeated fixtures in the battery; daily reports
-            // and repeated confirmations in real life) and its escape hatch
-            // ("or nothing at all") licensed the weak model into a SILENT reply
-            // on a basic question, the exact disease this work exists to kill.
-            // The ROOT fix for re-answers lives in memory/assembler.ts (never
-            // delete delivered history); this detector remains as production
-            // telemetry proving that fix holds. It must never alter behavior.
-            logger.warn('v2 re-answer telemetry: final reply resembles a settled answer from another conversation (delivering normally; root fix is the assembler)', {
-              agentId, turnNumber, convKey: chosenConvKey, matchConv: reAnswer.conversationId, similarity: reAnswer.similarity,
-            }, agentId);
-          }
-        }
+        // ── STRIP (PHASE-3 T7 Step 2, 2026-08-01, RULING P3-R3) — the cross-conversation
+        // re-answer DETECTOR is deleted, with `re-answer-guard.ts`, `re-answer-sink.ts` and
+        // the eslint `node:fs` allowance booked against that sink. It was log-only telemetry:
+        // a Jaccard similarity between this turn's reply and answers delivered in OTHER
+        // conversations, recorded and never acted on. The plan's own design had it retiring
+        // here — "keep as the migration's proof instrument, then delete" (scar-tissue ledger).
+        //
+        // IT IS DELETED AS AN ALARM THAT NEVER WORKED, NOT AS ONE THAT WENT QUIET. Its
+        // exclusion argument was `chosenConvKey` — a conv KEY — against a `conversation_id !=
+        // ?` filter on a UUID column, so `conversation_id != 'owner'` never excluded a single
+        // row and the reply's OWN conversation was always in the comparison set. Measured:
+        // 656 of 656 conversation ids are 36-char UUIDs; two of the three fires in the driven
+        // FLIPSTRIP arm matched the reply's own conversation (`616f857b…` on both sides), on
+        // two independent builds. Its whole quiet history was evidence in neither direction.
+        // The third fire is the OTHER known class and is not a defect: the harness asks the
+        // same scripted research question every run, which is verbatim the false positive that
+        // demoted this floor to log-only on 2026-07-10 — and scripted repeats are the only
+        // traffic a box nobody uses can have, so fixing it could not produce clean evidence
+        // here either. Both are in `dojo/DOJO-ISSUES-LOG.md`.
+        //
+        // requirement preserved — DELIVERED HISTORY IS NEVER DELETED FROM THE WINDOW, which is
+        // the CAUSE this heuristic was watching for downstream of:
+        //   * `checks/check-reanswer-ghost.mjs` — 54 delivered messages seeded into an empty
+        //     session, all 54 required back out of the real assembler, no model call. It is
+        //     now on the kit's prompt-gate roster AND `deploy/checks/check-prompt-gate-record`'s
+        //     REQUIRED list, green in-roster, and bite-proven (breaking the assembler's
+        //     own-output rule makes the release reader refuse). It was WIRED AND REPAIRED
+        //     BEFORE this deletion, in this same task, because RULING P3-R2 tried to delete
+        //     against it while it was unwired and red and RULING P3-R3 corrected that order.
+        //   * `settled-work-stays-settled` (kit battery) — the behavioural half: after a real
+        //     delivery is closed, an unrelated wake produces no re-answer and no new artifact.
+        // A deterministic gate on the cause replaces a similarity heuristic on the symptom.
+        //
+        // `~/.dojo/logs/re-answer-detector.jsonl` is LEFT ON DISK deliberately: it is the
+        // historical record of what the instrument saw, and the ledger's disposition is that
+        // it stays as evidence. Nothing reads it now; nothing writes it either.
 
         // Settled-context tripwire: MOVED to the end-of-turn route site (search
         // "Settled-context hold"). The tripwire fires when a wake turn whose visible
@@ -7303,13 +7239,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 explicitSendThisTurn: { ...state.explicitSendThisTurn, imessage: true },
                 repliedToCounterpartyThisTurn: { ...state.repliedToCounterpartyThisTurn, imessage: state.repliedToCounterpartyThisTurn.imessage || toCp },
               });
-              // RC-1: cross-recipient iMessage → dual-home the sent text into the
-              // recipient's conversation so their next turn can see the question.
-              if (!toCp && imArgRecip != null) {
-                const recip = String(imArgRecip).trim();
-                persistCrossConvSendEcho('imessage', recip, resolveRecipientDisplay('imessage', recip), 'iMessage',
-                  String(tc.arguments?.message ?? tc.arguments?.text ?? tc.arguments?.body ?? ''));
-              }
+              // STRIP (T7 Step 2): the cross-recipient iMessage echo. requirement preserved:
+              // the deliveries lane (see the STRIP note on the deleted writer).
             } else if (tc.name === 'teams_send_message') {
               const cpChat = state.inboundContext?.chatId ?? null;
               const teamsArgChat = tc.arguments?.chat_id ?? tc.arguments?.chatId;
@@ -7332,30 +7263,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 explicitSendThisTurn: { ...state.explicitSendThisTurn, sms: true },
                 repliedToCounterpartyThisTurn: { ...state.repliedToCounterpartyThisTurn, sms: state.repliedToCounterpartyThisTurn.sms || toCp },
               });
-              // RC-1: cross-recipient SMS → dual-home the sent text.
-              if (!toCp && smsArgNum != null) {
-                const recip = String(smsArgNum).trim();
-                persistCrossConvSendEcho('sms', recip, resolveRecipientDisplay('sms', recip), 'SMS',
-                  String(tc.arguments?.body ?? tc.arguments?.message ?? tc.arguments?.text ?? ''));
-              }
-            } else if (tc.name === 'gmail_send' || tc.name === 'outlook_send') {
-              // RC-1: an explicit email SEND (not a reply) to someone other than an
-              // email counterparty. Replies (gmail_reply/outlook_reply) inherently
-              // target the inbound thread and are handled above; a fresh send names
-              // its own recipient, so dual-home it when that recipient isn't the
-              // person this turn is answering. Does NOT touch explicitSendThisTurn
-              // (email auto-route is reply-only; a fresh send never triggers it).
-              const cpEmail = counterparty.kind === 'user' && counterparty.channel === 'email' ? counterparty.senderId : null;
-              const emailArgTo = tc.arguments?.to;
-              const toCp = cpEmail == null || emailArgTo == null || String(emailArgTo).trim() === '' || recipientIdsMatch(emailArgTo, cpEmail);
-              if (!toCp && emailArgTo != null) {
-                const recip = String(emailArgTo).trim();
-                const subject = String(tc.arguments?.subject ?? '').trim();
-                const body = String(tc.arguments?.body ?? '').trim();
-                const sentText = subject ? `${subject}: ${body.slice(0, 300)}` : body.slice(0, 300);
-                persistCrossConvSendEcho('email', recip, resolveRecipientDisplay('email', recip), 'email', sentText);
-              }
+              // STRIP (T7 Step 2): the cross-recipient SMS echo. requirement preserved:
+              // the deliveries lane (see the STRIP note on the deleted writer).
             }
+            // STRIP (T7 Step 2): the whole `gmail_send`/`outlook_send` branch went with the
+            // echo. It existed ONLY to dual-home a fresh email to a non-counterparty — it
+            // deliberately did not touch `explicitSendThisTurn` (the email auto-route is
+            // reply-only), so with the echo deleted the branch's entire body was the echo
+            // call. requirement preserved: the deliveries lane, which records email sends
+            // through the same `deliveries` ledger as every other door (PHASE-2 T5).
           }
 
           // Issue 2 (Path A): label an explicit channel send with the recipient's

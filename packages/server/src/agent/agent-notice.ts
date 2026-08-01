@@ -84,8 +84,9 @@ export function postAgentNotice(opts: AgentNoticeOpts): string | null {
     // and survives `conv_key`'s deletion.
     //
     // PHASE-2 T10I: the `convKey: 'engine-notice'` write is GONE, and the two readers T10H
-    // named as keeping it alive were re-pointed in the same change — `re-answer-guard.ts` now
-    // excludes engine chatter with `lane <> 'events'`, and the dashboard's
+    // named as keeping it alive were re-pointed in the same change — `re-answer-guard.ts`
+    // excluded engine chatter with `lane <> 'events'` (that module is itself DELETED at
+    // PHASE-3 T7 Step 2, so this reader is gone entirely), and the dashboard's
     // `isBackgroundTurnRow` reads `conversation_id` (an events-lane row has no conversation, so
     // a sentinel is no longer a value the schema can hold). Nothing about this notice's
     // behaviour changed: it still surfaces in the EVENTS/awareness lane (which filters on

@@ -117,14 +117,15 @@ describe('T10I — the identity readers no longer read messages.conv_key', () =>
     expect(s).toMatch(/m1\.conversation_id = \?/);
   });
 
-  it('the re-answer guard tells "another conversation" apart by FK, and riders by LANE', () => {
-    const s = stripComments(src('packages/server/src/agent/v2/re-answer-guard.ts'));
-    expect(s).not.toMatch(/conv_key/);
-    expect(s).toMatch(/conversation_id/);
-    // The sentinel exclusion was `conv_key NOT IN ('engine','engine-steer')`. An events-lane
-    // row is what that was reaching for, and the lane column says it without a fake key.
-    expect(s).toMatch(/lane <> 'events'/);
-  });
+  // STRIP (PHASE-3 T7 Step 2, 2026-08-01): the re-answer-guard clause is deleted with its
+  // file. It read `re-answer-guard.ts` from disk and asserted the T10I re-point held there;
+  // that module no longer exists, so the clause would throw ENOENT on a correct tree.
+  // requirement preserved: the T10I re-point itself is still pinned by the seven surviving
+  // clauses in this block (recall, the directive pin, the answered edge, the turn-output tag,
+  // the recently-answered block, the party label, the dashboard), and the REQUIREMENT the
+  // deleted guard served — delivered history is never deleted from the window — is now held
+  // by `checks/check-reanswer-ghost.mjs`, wired into the kit roster and the dojo REQUIRED
+  // list in this same task and green there.
 
   it('the turn\'s own output is tagged with the conversation, at turn END (not at insert)', () => {
     const s = stripComments(src('packages/server/src/memory/message-store.ts'));

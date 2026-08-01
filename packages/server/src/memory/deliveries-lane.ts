@@ -12,15 +12,16 @@
 // "easily confused" bug, F-1/F-3/K-1).
 //
 // RC-1 solved that by DUPLICATING THE ROW: `persistCrossConvSendEcho` (`agent/v2/loop.ts`)
-// writes an extra `assistant` message — `[Sent via X to Y]: <verbatim text>` — into the
-// RECIPIENT's conversation, `origin_intent='cross_conv_send_echo'`. The scar-tissue ledger
-// deferred stripping it "until the assembler reads deliveries rows natively", which is this
-// lane. The duplicated rows are NOT stripped here: they die in T7 Step 2, after the
-// detector's 7-day quiet window.
+// wrote an extra `assistant` message — `[Sent via X to Y]: <verbatim text>` — into the
+// RECIPIENT's conversation, `origin_intent='cross_conv_send_echo'`. The ledger deferred
+// stripping it "until the assembler reads deliveries rows natively", which is this lane.
+// **THAT WRITER IS DELETED (PHASE-3 T7 Step 2, 2026-08-01)** and this lane holds its
+// requirement, no-bleed half included (this module's test: "a send into ANOTHER conversation
+// never surfaces on this turn"). Pre-strip rows stay — history is never rewritten (OR7).
 //
 // The other half it replaces is RC-1's pending-question HEADER (`engine.pending-question`,
 // registry-exempt since 2026-07-16): one message, LIMIT 1, quoted at 300 chars, suppressed
-// whenever the echo row was still in the tail. It was the lane in embryo — a read of
+// whenever the echo row was in the tail. It was the lane in embryo — a read of
 // `deliveries` with no declaration, no budget, no truncate and no receipt entry. The echo
 // row was its primary and it was the fallback; this inverts that, which is what makes the
 // strip possible.
@@ -70,12 +71,11 @@ export interface DeliveriesLaneContext {
   counterpartyName: string;
   /** Legacy prong: alias hints for pre-121 history with no `deliveries` row. */
   recipientHints: string[];
-  /**
-   * Is this text ALREADY in the assembled array? During T7's window the echo rows still
-   * exist, and a row whose verbatim text is in the tail must not be quoted a second time.
-   * When the echo writer dies (Step 2) this predicate stops matching anything and the lane
-   * simply carries the whole job — which is the point of inverting the two.
-   */
+  /** Is this text ALREADY in the assembled array? A row whose verbatim text is in the tail
+   *  must not be quoted twice. Step 2 deleted the echo WRITER, so on a fresh body this now
+   *  matches nothing and the lane carries the whole job; it stays because pre-strip echo
+   *  rows are real history on any body that had them (#15 — a writer's death is not its
+   *  rows' death). */
   alreadyVisible: (probe: string) => boolean;
 }
 
