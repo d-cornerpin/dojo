@@ -122,6 +122,59 @@ export function currentTurnNumber(agentId: string): number {
 }
 
 /**
+ * The continuity brief's window, in turns. `memory/compaction.ts` writes
+ * `continuityBriefValidUntilTurn = currentTurn + this` after a compaction; the two readers in
+ * `memory/assembler.ts` compare against it. It lives HERE, beside the clock, because the READ
+ * side needs it to bound the value (see `readStoredTurnThreshold`) and a horizon re-declared
+ * on the read side is precisely the writer/reader pair research 06 §5 catalogues.
+ */
+export const CONTINUITY_BRIEF_HORIZON_TURNS = 3;
+
+/**
+ * Read a stored turn threshold, WITH AN UPPER SANITY BOUND. PHASE-3 T6.
+ *
+ * ── THE CLASS, MEASURED ON THE LIVE DEV BODY (2026-08-01) ────────────────────────────────
+ * A threshold is written as `currentTurn + horizon` and read as `currentTurn < threshold`.
+ * It had no upper bound, so a value from a DIFFERENT numbering era never expires — it is
+ * permanently in the future, and the lane it gates fires on every turn for the rest of the
+ * agent's life. Three of the five agents holding one were in that state:
+ *
+ *     agent      stored   current turn   verdict before      verdict after
+ *     kevin        1598            264   valid for 1,334     expired
+ *     healer        122              9   valid for 113       expired
+ *     imaginer       19              0   valid for 19        expired
+ *     dreamer        24             27   expired             expired
+ *     kelly          11            730   expired             expired
+ *
+ * `kevin` is the agent both prompt goldens are bound to, so its brief and its whole
+ * post-compaction scaffolding block had been permanently admitted.
+ *
+ * ── WHERE "ABSURD" COMES FROM ───────────────────────────────────────────────────────────
+ * NOT invented (#14): from the WRITER'S OWN HORIZON. The writer can only ever store
+ * `currentTurn + horizon`, and `currentTurn` never decreases, so at any later read a value
+ * above `currentTurn + horizon` is one no writer on this clock could have produced. Equality
+ * is deliberately INSIDE the bound: a brief written this instant reads back at exactly
+ * `currentTurn + horizon` and must stay valid.
+ *
+ * Returns `null` — the same answer as "absent" — so both readers treat a fossil as EXPIRED
+ * without either of them learning a new branch.
+ */
+export function readStoredTurnThreshold(
+  raw: unknown,
+  currentTurn: number,
+  horizonTurns: number,
+): number | null {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return null;
+  if (raw > currentTurn + horizonTurns) {
+    logger.warn('stored turn threshold is beyond the writer\'s own horizon; reading it as expired', {
+      stored: raw, currentTurn, horizonTurns,
+    });
+    return null;
+  }
+  return raw;
+}
+
+/**
  * How the turn ended. `answered` is passed explicitly rather than inferred from the exit
  * reason, because "the turn ended in a way that usually means we replied" and "a reply was
  * delivered" are exactly the two facts this platform kept confusing.

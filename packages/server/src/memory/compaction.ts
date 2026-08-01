@@ -20,7 +20,7 @@ import { archiveMessagesBeforeCompaction, isDreamerIgnored, getArchiveHighWaterM
 import { isSystemServiceAgent } from '../config/platform.js';
 import { lastCompactionDividerAt } from '../agent/shared-state.js';
 import { summaryPartyTag } from './party-label.js';
-import { currentTurnNumber } from '../agent/v2/turn-record.js';   // G24
+import { currentTurnNumber, CONTINUITY_BRIEF_HORIZON_TURNS } from '../agent/v2/turn-record.js';   // G24
 import { isPlatformNoise } from './platform-noise.js';
 import type { Message } from '@dojo/shared';
 // PHASE-3 T5 — the marker taxonomy. Both of the latter two were re-declared below.
@@ -1244,7 +1244,7 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
     // `messages` at different moments, so a row landing in between shifted the window by one
     // (research 06 §7).
     const currentTurn = currentTurnNumber(agentId);
-    const validUntilTurn = currentTurn + 3;
+    const validUntilTurn = currentTurn + CONTINUITY_BRIEF_HORIZON_TURNS;
 
     db.prepare(`
       UPDATE agents SET config = json_set(
