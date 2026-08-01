@@ -434,10 +434,16 @@ async function assembleContextViaRegistry(
   // engine message (prompt/registry/entries.ts renderTurnContext), so the system
   // prefix stays byte-stable and cacheable across those changes.
   const systemPrompt = sys.text;
-  const { messages, freshTailDropped } = await assembleMessageContext(agentId, modelId, systemPrompt, turnContext);
+  const built = await assembleMessageContext(agentId, modelId, systemPrompt, turnContext);
   // systemVolatile is empty after P-1 (all per-turn volatile content moved to the
   // msg.turn-context tail); the field is the reserved system-side lane (P-2).
-  return { systemPrompt, systemVolatile: '', messages, systemEntryIds: sys.entryIds, freshTailDropped };
+  //
+  // SPREAD, not a hand-listed set of fields. This wrapper used to destructure
+  // `{ messages, freshTailDropped }` and rebuild the object, which silently DROPPED
+  // PHASE-3 T3's `allocation` and `consumedOneShotFlags` on their first live run — the
+  // second would have left every one-shot A2A-preempt / Stop marker uncleared forever.
+  // A re-listing wrapper is a place for a field to die quietly; the spread cannot do that.
+  return { ...built, systemPrompt, systemVolatile: '', systemEntryIds: sys.entryIds };
 }
 
 /**
@@ -730,9 +736,29 @@ const MIN_LANE_FLOOR_TOKENS = 64;
 
 type TailPayload = { rows: Message[]; agentId: string; dropped: number };
 
+/**
+ * COST OF CARRYING ONE STORED ROW. One owner for the expression `budgetFreshTail` and the
+ * fresh-tail lane both spend, with the floor the write path has always applied.
+ *
+ * PHASE-3 T3, found by the allocator on its first live run: the expression was
+ * `msg.tokenCount ?? estimateTokens(msg.content)`, and `0 ?? x` is **0** — so a row whose
+ * stored `token_count` is 0 was FREE TO CARRY. `memory/budget.ts:estimateStoredTokens`
+ * already carries the floor ("a row that costs nothing to carry does not exist") and the
+ * READ side never applied it. §T0-D measured 116 such rows on this body before T2's
+ * migration `150` re-computed every row to `MAX(1, …)`; the defect is latent on a migrated
+ * body and immediate for any writer that bypasses `memory/message-store.ts` — the kit's own
+ * golden fixture is one, and it is how this surfaced (six rows, all `token_count = 0`, a
+ * whole fresh tail costed at zero).
+ *
+ * `||` not `??`, deliberately: a stored 0 is not a measurement, it is a missing one.
+ */
+function storedRowCost(m: Message): number {
+  return Math.max(1, m.tokenCount || estimateTokens(m.content));
+}
+
 /** Cost of carrying stored rows, the unit `budgetFreshTail` spends (canonical since T2). */
 function rowTokens(rows: Message[]): number {
-  return rows.reduce((t, m) => t + (m.tokenCount ?? estimateTokens(m.content)), 0);
+  return rows.reduce((t, m) => t + storedRowCost(m), 0);
 }
 
 function textRender(content: string | null): LaneRender | null {
@@ -1628,7 +1654,46 @@ function stripRecallEnvelope(content: string): string {
 // envelope stripped. The old derivation read only the last 3 user rows and went
 // EMPTY on A2A/engine turns (zero semantic recall) and whenever tool iterations
 // pushed the user row out of the 3-row window.
+// ── THE PER-TURN RECALL QUERY IS ACTUALLY PER-TURN NOW (PHASE-3 T3) ─────────────────────
+//
+// FOUND BY MEASUREMENT, not by reading: with the generated ack proven byte-stable across
+// four consecutive iterations of one turn (receipts t1607 i2..i5, ack sha `dd83e8ed…`
+// identical throughout), the remaining message-array churn was ISOLATED to message 0 — the
+// summaries lane — changing size mid-turn (20,324 -> 19,914 chars between i4 and i5).
+//
+// The mechanism: this function reads the last N rows and prefers the genuine human user
+// rows among them. Mid-turn, each tool iteration appends an assistant row and a tool row,
+// so the human row is PUSHED OUT of that window and the function falls through to its
+// second branch — "the newest substantive row, envelope-stripped" — which is a DIFFERENT
+// row on every iteration. Both relevance-selected lanes (summaries, relevant-memory) then
+// re-select against a different query, and both sit AHEAD of the tail boundary, so the
+// whole array behind them is re-billed. That is the K10 defect `check-message-prefix` has
+// been red on since 2026-07-27.
+//
+// This function's own name and its D4 docstring already say "ONE per-turn recall query".
+// It was one per ASSEMBLY. Memoising it against `turnBoundary` — the timestamp the turn
+// stamps at pickup and clears at idle — makes the claim true: iteration 1 computes exactly
+// what it computed before (no semantic change to what is recalled), and iterations 2..N
+// reuse it instead of re-deriving a different one. Outside a turn there is no boundary and
+// no memo, which is correct: there is no turn to be stable within.
+//
+// It also makes `relevantMemoryCache` below actually hold across a turn — it is keyed by
+// query text, so a query that changed every iteration invalidated it every iteration and
+// each one paid for a fresh vector search and a fresh embed.
+const perTurnRecallQuery = new Map<string, { boundary: string; query: string }>();
+
 function buildPerTurnRecallQuery(agentId: string): string {
+  const boundary = turnBoundary.get(agentId);
+  if (boundary) {
+    const memo = perTurnRecallQuery.get(agentId);
+    if (memo && memo.boundary === boundary) return memo.query;
+  }
+  const query = deriveRecallQuery(agentId);
+  if (boundary) perTurnRecallQuery.set(agentId, { boundary, query });
+  return query;
+}
+
+function deriveRecallQuery(agentId: string): string {
   let recent: ReturnType<typeof getRecentMessages> = [];
   try { recent = getRecentMessages(agentId, laneLimit('lane.relevant-memory', 'rows', 'recallWindow')); } catch { return ''; }
   const humanUser = recent
@@ -2147,7 +2212,7 @@ function budgetFreshTail(messages: Message[], availableTokens: number): Message[
   let i = 0;
   while (i < messages.length) {
     const msg = messages[i];
-    const tokens = msg.tokenCount ?? estimateTokens(msg.content);
+    const tokens = storedRowCost(msg);
 
     // Check if this assistant message has tool_use and is followed by a tool message
     let hasToolUse = false;
@@ -2160,7 +2225,7 @@ function budgetFreshTail(messages: Message[], availableTokens: number): Message[
 
     if (hasToolUse && msg.role === 'assistant' && i + 1 < messages.length && messages[i + 1].role === 'tool') {
       const nextMsg = messages[i + 1];
-      const nextTokens = nextMsg.tokenCount ?? estimateTokens(nextMsg.content);
+      const nextTokens = storedRowCost(nextMsg);
       groups.push({ messages: [msg, nextMsg], tokens: tokens + nextTokens });
       i += 2;
     } else {

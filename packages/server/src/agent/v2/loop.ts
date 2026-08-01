@@ -3140,6 +3140,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // made any probe, retry or dry-run silently consume a marker the user had earned. The
       // assembler now REPORTS what it consumed and the turn clears it, once, here.
       clearConsumedOneShotFlags(agentId, ctx.consumedOneShotFlags);
+      // PHASE-3 T3: THE VOLATILE BOUNDARY, recorded for the prefix gate. Everything the
+      // ALLOCATOR produced is the cacheable region; everything the LOOP appends below this
+      // point is the tail-append (`lane.loop-tail`) — the technique hints, the context-gap
+      // and delegation hints, the one-shot pending nudge, the tool note, turn-context,
+      // peer-status and the clock. They are volatile BY DESIGN and re-emitted every
+      // iteration, so a gate that judges them as prefix churn reports the prescribed shape
+      // as a defect, which is why `check-message-prefix` could never go green.
+      const volatileFrom = ctx.messages.length;
       lastAssembledAtIso = new Date().toISOString(); // F9: see claimAssembledSiblings
       let systemPrompt = ctx.systemPrompt;
       const messages = ctx.messages;
@@ -3933,6 +3941,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // loop-side mutation makes the counts disagree.
         systemEntryIds: ctx.systemEntryIds,
         messageEntryIds: ctx.messageEntryIds,
+        volatileFrom,
       });
 
       // ── Call model with retry-and-fallback (matches v1 runtime.ts:1028-1116) ──

@@ -414,3 +414,28 @@ describe('the declared numbers (§T0-B clusters C/D/E/F) are lane declarations',
     }
   });
 });
+
+describe('a zero-cost lane with content is never rejected', () => {
+  // FOUND LIVE, not imagined: the kit's golden fixture writes its rows straight to the
+  // table with `token_count = 0`, and `msg.tokenCount ?? estimateTokens(...)` returns 0 for
+  // them — `0 ?? x` is 0. The whole fresh tail costed nothing, and an allocator that treats
+  // "cost 0" as "grant 0" then DROPPED it. Two fixes, both here: `storedRowCost` restores
+  // the write path's floor on the read side, and the allocator admits a rendered lane whose
+  // measured cost is zero rather than rejecting it.
+  it('admits it, with its content intact', () => {
+    const lane = textLane('lane.fresh-tail', LANE_PRIORITY['lane.fresh-tail'], 1100, { minTokens: 64 });
+    const messages = [{ role: 'user' as const, content: 'a real message' }];
+    const c: LaneCandidate = { lane, render: { messages, tokens: 0 } };
+    const { emitted, report } = fitLanes([c], 8000);
+    const g = report.grants.find((x) => x.id === 'lane.fresh-tail')!;
+    expect(g.status).toBe('admitted');
+    expect(emitted.map((e) => e.id)).toContain('lane.fresh-tail');
+    expect(emitted[0].messages).toEqual(messages);
+  });
+
+  it('still rejects a lane that rendered NOTHING — the two are different facts', () => {
+    const lane = textLane('lane.vault', LANE_PRIORITY['lane.vault'], 200);
+    const { report } = fitLanes([{ lane, render: null }], 8000);
+    expect(report.grants[0].status).toBe('empty');
+  });
+});

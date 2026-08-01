@@ -45,6 +45,15 @@ export interface ReceiptInput {
   loopCount: number;
   systemPrompt: string;
   messages: LoopMessage[];
+  /**
+   * PHASE-3 T3: index of the FIRST message of the near-tail volatile lane
+   * (`msg.turn-context` -> `msg.peer-status` -> `msg.current-time` and the one-shot engine
+   * hints beside them). Everything BELOW it is the cacheable region and must be
+   * append-only across calls; everything at or above it is volatile BY DESIGN and is
+   * re-emitted after each turn's new rows. `check-message-prefix.mjs` could not tell the
+   * two apart and therefore reported the designed shape as a broken prefix.
+   */
+  volatileFrom?: number;
   useTools: boolean;
   /** Registry path only: the entry id that produced each system-prompt part,
    *  aligned to the parts recovered by splitting on PART_SEPARATOR. Attached to
@@ -210,6 +219,7 @@ export function writeContextReceipt(input: ReceiptInput): void {
         ...(mode === 'full' ? { content: input.systemPrompt } : {}),
       },
       messages: {
+        volatileFrom: input.volatileFrom ?? null,
         count: input.messages.length,
         chars: messagesSerialized.length,
         estTokens: estTokens(messagesSerialized.length),

@@ -585,7 +585,10 @@ export function fitLanes(
     // A lane never gets less than the floor pass 1 already set aside for it.
     const grant = Math.max(e.reserved, Math.min(ceiling, available));
 
-    if (grant <= 0) {
+    // A lane that RENDERED CONTENT is never rejected for costing nothing. Zero cost with a
+    // non-empty render is a measurement problem, not a reason to drop the section — and it
+    // is exactly what a stored `token_count = 0` used to produce (see `storedRowCost`).
+    if (grant <= 0 && e.cost > 0) {
       e.granted = 0;
       grants.push({
         id: e.c.lane.id, slot: e.c.lane.slot, priority: e.c.lane.priority,
@@ -621,7 +624,9 @@ export function fitLanes(
   }
 
   const admitted = live
-    .filter((e) => e.granted > 0 && e.c.render && e.c.render.messages.length > 0)
+    // `granted > 0 || cost === 0` — a rendered lane that measured zero cost is admitted,
+    // not silently dropped. See the zero-cost clause in `lanes.test.ts`.
+    .filter((e) => (e.granted > 0 || e.cost === 0) && e.c.render && e.c.render.messages.length > 0)
     .sort((a, b) => a.c.lane.slot - b.c.lane.slot);
 
   return {
