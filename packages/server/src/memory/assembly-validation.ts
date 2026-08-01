@@ -42,7 +42,11 @@
 // assistant turn has traded one violation for another.
 // ════════════════════════════════════════════════════════════════════════════════════════
 import type Anthropic from '@anthropic-ai/sdk';
+import { createLogger } from '../logger.js';
 import { messageTokens, LANE_PRIORITY } from './lanes.js';
+import { contextWindowPolicy, estimateTokens } from './budget.js';
+
+const logger = createLogger('assembly-validation');
 
 export type ValidatedMessage = {
   role: 'user' | 'assistant';
@@ -332,14 +336,23 @@ export function repairAssembly(
 
   const sizeViolation = before.violations.some((v) => v.code === 'budget-exceeded');
   if (!sizeViolation) {
-    // Shape-only. This module does not repair shape (see the header): the orphan sanitizer
-    // owns it and has already run, so a survivor here is a real defect upstream.
-    throw new AssemblyValidationError(
-      `assembly is invalid and not repairable by dropping lanes${who}: ` +
-        before.violations.map((v) => `${v.code} — ${v.detail}`).join('; '),
-      before.violations,
-      [],
-    );
+    // ── SHAPE-ONLY: reported, never thrown, and this boundary is exactly where that line
+    // is drawn (PHASE-3 T4, decided ON MEASUREMENT rather than in the abstract) ──
+    //
+    // C11's "fail loud, never warn-and-send" names ONE mechanism: the Anthropic
+    // front-trimmer that, when the array is STILL over the limit after trimming, logs a
+    // warning and sends anyway. Its subject is SIZE. Killing a turn over a SHAPE defect
+    // this validator did not create, and that the provider in front of it tolerates today,
+    // would be a brand-new authority nobody asked for.
+    //
+    // The measurement that settled it, from the first live detect run (2026-07-31, 73 real
+    // calls through the OR8 set): 17 divergences, **0 of them size**, and every one shape —
+    // 14 `tool-result-without-use` each preceded WITHIN THE SAME SECOND by
+    // `sanitizeOrphanToolBlocks`'s own "Stripped orphan tool_use blocks" line, plus 3 on
+    // the PM. Had this thrown, the flip would have killed 23% of turns on day 7 over
+    // defects that pre-date it. Both have named owners and are in the issues log; the flip's
+    // precondition is that they read ZERO, not that this function shouts louder.
+    return { messages: [...messages], droppedLaneIds: [], before, after: before };
   }
 
   const laneIds = opts.laneIds;
@@ -407,4 +420,141 @@ export function repairAssembly(
     after.violations,
     droppedLaneIds,
   );
+}
+
+// ── THE PROVIDER BOUNDARY: one install, every transport ─────────────────────────────────
+//
+// PHASE-3 T4 Step 2. `callModel` calls this ONCE, immediately after the universal orphan
+// sanitizer and above every transport branch (ollama / openai / agent-sdk / anthropic), so
+// there is one validation site rather than one per provider — which is what made the two
+// front-trimmers diverge in estimator, reserve and repair strategy in the first place.
+//
+// ── THE LOG IS THE INSTRUMENT, so it is built to be READ ────────────────────────────────
+// Step 2b's flip decision is taken FROM this log, so "it looked fine" is not an answer it
+// can accept. Two stable tokens, both greppable:
+//
+//   ASSEMBLY_VALIDATION_DIVERGENCE   one per divergent call, carrying the violation codes,
+//                                    the numbers, AND the running checked/diverged counters,
+//                                    so a single line yields a RATE, not just an incident.
+//   ASSEMBLY_VALIDATION_HEARTBEAT    every 200 clean calls. Positive evidence that the
+//                                    validator RAN — because "no divergence lines" is
+//                                    otherwise ambiguous between "clean" and "never
+//                                    installed", and inferring health from absence is the
+//                                    reasoning roadmap #15 exists to forbid.
+//
+// To read the window:
+//   grep -c ASSEMBLY_VALIDATION_DIVERGENCE  <log>     # incidents
+//   grep    ASSEMBLY_VALIDATION_HEARTBEAT   <log> | tail -1   # denominator, per process
+//   grep -o 'codes=[^ ]*' <log> | sort | uniq -c | sort -rn   # what actually diverged
+//
+// Counters are per PROCESS and reset on restart, deliberately: they describe this build's
+// behaviour, and a counter persisted across a deploy would blur two different builds.
+
+let checkedCalls = 0;
+let divergentCalls = 0;
+const HEARTBEAT_EVERY = 200;
+
+/** Reset for tests. Never called in production. */
+export function __resetAssemblyValidationCounters(): void {
+  checkedCalls = 0;
+  divergentCalls = 0;
+}
+
+export function assemblyValidationCounters(): { checked: number; diverged: number } {
+  return { checked: checkedCalls, diverged: divergentCalls };
+}
+
+export interface BoundaryCheckInput {
+  agentId: string;
+  modelId: string;
+  /** MUTATED IN PLACE in repair mode — see `validateAtProviderBoundary`. */
+  messages: ValidatedMessage[];
+  systemPrompt: string;
+  contextWindow: number;
+  maxOutputTokens?: number;
+  /** Lane id per message when the caller can supply one. See `repairAssembly`. */
+  laneIds?: ReadonlyArray<string | null>;
+}
+
+/**
+ * The exit boundary. In `'detect'` mode it LOGS and leaves the array untouched — the
+ * provider front-trimmers are still the ceiling backstop and T4's sequencing rider forbids
+ * removing them while this only watches. In `'repair'` mode it repairs in priority order,
+ * IN PLACE, and THROWS when it cannot; the trimmers are deleted in that same commit.
+ *
+ * IN PLACE is deliberate and it is the same contract `sanitizeOrphanToolBlocks` uses two
+ * lines above the call site: every transport branch below reads the same `messages` array,
+ * so a repair that returned a new array would need threading through four branches and
+ * would be silently ignored by any branch a later task forgot. The returned validation is
+ * the report, not the payload.
+ */
+export async function validateAtProviderBoundary(
+  input: BoundaryCheckInput,
+): Promise<AssemblyValidation> {
+  const { measureAgentToolPayloadTokens } = await import('../tools/tool-docs.js');
+  const policy = contextWindowPolicy(input.contextWindow, {
+    toolPayloadTokens: await measureAgentToolPayloadTokens(input.agentId),
+    maxOutputTokens: input.maxOutputTokens,
+  });
+  // The comparable budget is the assembler's OWN remaining budget: what it was allowed to
+  // spend, minus the system prompt it had to spend it against. A divergence therefore means
+  // "the array grew after the allocator decided", which is the question worth asking.
+  const budgetTokens = Math.max(0, policy.assemblyBudgetTokens - estimateTokens(input.systemPrompt));
+
+  const opts: ValidateOptions = { budgetTokens, laneIds: input.laneIds, agentId: input.agentId };
+  const result = validateAssembly(input.messages, opts);
+  checkedCalls++;
+
+  if (result.ok) {
+    if (checkedCalls % HEARTBEAT_EVERY === 0) {
+      logger.info(
+        `ASSEMBLY_VALIDATION_HEARTBEAT mode=${ASSEMBLY_VALIDATION_MODE} ` +
+        `checked=${checkedCalls} diverged=${divergentCalls}`,
+        { checked: checkedCalls, diverged: divergentCalls, mode: ASSEMBLY_VALIDATION_MODE },
+      );
+    }
+    return result;
+  }
+
+  divergentCalls++;
+  const codes = [...new Set(result.violations.map((v) => v.code))].sort().join(',');
+  logger.warn(
+    `ASSEMBLY_VALIDATION_DIVERGENCE mode=${ASSEMBLY_VALIDATION_MODE} codes=${codes} ` +
+    `overBy=${result.overBy} tokens=${result.tokenTotal} budget=${result.budgetTokens} ` +
+    `messages=${input.messages.length} checked=${checkedCalls} diverged=${divergentCalls}`,
+    {
+      agentId: input.agentId,
+      modelId: input.modelId,
+      mode: ASSEMBLY_VALIDATION_MODE,
+      codes,
+      violations: result.violations.map((v) => `${v.code}: ${v.detail}`),
+      tokenTotal: result.tokenTotal,
+      budgetTokens: result.budgetTokens,
+      overBy: result.overBy,
+      messageCount: input.messages.length,
+      checked: checkedCalls,
+      diverged: divergentCalls,
+    },
+    input.agentId,
+  );
+
+  // DETECT ONLY, for the dated window in T4 Step 2's AS-BUILT note: send anyway. The
+  // deliberate no-op is the whole point of the window — it measures what repair mode WOULD
+  // have done before repair mode is allowed to do it.
+  if (ASSEMBLY_VALIDATION_MODE === 'detect') return result;
+
+  // Repair mode: fix the array the transports are about to read, or throw (C11). The throw
+  // must reach the caller — a boundary that swallows its own loud failure is warn-and-send
+  // with extra steps.
+  const repaired = repairAssembly(input.messages, opts);
+  input.messages.splice(0, input.messages.length, ...repaired.messages);
+  logger.warn(
+    `ASSEMBLY_VALIDATION_REPAIRED mode=${ASSEMBLY_VALIDATION_MODE} ` +
+    `dropped=${repaired.droppedLaneIds.join('|') || 'none'} ` +
+    `tokens=${repaired.before.tokenTotal}->${repaired.after.tokenTotal} ` +
+    `budget=${repaired.after.budgetTokens}`,
+    { agentId: input.agentId, droppedLaneIds: repaired.droppedLaneIds },
+    input.agentId,
+  );
+  return repaired.after;
 }

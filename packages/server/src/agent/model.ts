@@ -9,6 +9,7 @@ import { scheduleRateLimitRetry } from './rate-limit-retry.js';
 import { toolDefinitions, getFilteredTools, type ToolDefinition } from './tools.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { estimateTokens } from '../memory/budget.js';
+import { validateAtProviderBoundary, AssemblyValidationError } from '../memory/assembly-validation.js';
 import { recordCost } from '../costs/tracker.js';
 import { checkBudget } from '../costs/budget.js';
 import { updateRateLimits } from '../router/rate-limits.js';
@@ -2154,6 +2155,46 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
   sanitizeOrphanToolBlocks(messages, agentId);
 
   const modelInfo = getModelInfo(modelId);
+
+  // ── EXIT VALIDATION (PHASE-3 T4 Step 2, requirements C9/C10/C11) ──
+  // ONE call, above every transport branch (ollama :2262, openai :2267, agent-sdk :2273,
+  // anthropic-direct falls through) and after every mutation the assembler and the loop
+  // make — including the tail-append and the orphan sanitize directly above. Research 06
+  // §3: there was no exit boundary at all, and the only size authority was the pair of
+  // oldest-first front-trimmers further down this file.
+  //
+  // DETECT-ONLY for a dated 7-calendar-day window — see the AS-BUILT note on PHASE-3 T4
+  // Step 2 for the literal start date and SHA. It logs divergence and returns the array
+  // UNCHANGED; the front-trimmers below are still the ceiling backstop and T4's sequencing
+  // rider forbids removing them while this only watches. Step 2b flips the mode constant in
+  // `memory/assembly-validation.ts` and deletes both trimmers in the same commit.
+  //
+  // AS-BUILT deviation, +2 lines from the planned insertion point: the plan pinned this
+  // immediately after `sanitizeOrphanToolBlocks`, ABOVE `getModelInfo`. It sits just below
+  // it instead, because the budget it validates against is a function of the model's window
+  // and output cap, both of which `getModelInfo` produces. Everything the pin was for is
+  // preserved: one insertion, all transports, after every mutation.
+  //
+  // The catch is for a defect in the INSTRUMENT — a measurement that throws must not break
+  // a turn it was only watching. `AssemblyValidationError` is re-thrown unconditionally:
+  // that is C11's loud failure, and a boundary that swallows it is warn-and-send with extra
+  // steps. It cannot fire before the Step-2b flip (detect mode never repairs and never
+  // throws), and it must not be neutered by that flip either.
+  try {
+    await validateAtProviderBoundary({
+      agentId,
+      modelId,
+      messages,
+      systemPrompt,
+      contextWindow: modelInfo.contextWindow,
+      maxOutputTokens: modelInfo.maxOutputTokens,
+    });
+  } catch (err) {
+    if (err instanceof AssemblyValidationError) throw err;
+    logger.warn('ASSEMBLY_VALIDATION_INSTRUMENT_FAILED', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
 
   // The 'auto' sentinel (provider '__system__') is a router pointer, not a
   // callable model. On the normal path the router resolves it BEFORE callModel

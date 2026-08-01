@@ -16,12 +16,16 @@
 // oldest-first arithmetic over the same input and asserting it does the opposite. A test
 // that only asserts the new behaviour cannot show that the behaviour changed.
 // ════════════════════════════════════════════════════════════════════════════════════════
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
   validateAssembly,
   repairAssembly,
   AssemblyValidationError,
   ASSEMBLY_VALIDATION_MODE,
+  assemblyValidationCounters,
+  __resetAssemblyValidationCounters,
   type ValidatedMessage,
 } from '../assembly-validation.js';
 import { LANE_PRIORITY } from '../lanes.js';
@@ -333,11 +337,28 @@ describe('C11 — unrepairable fails loud', () => {
     }
   });
 
-  it('NEVER returns a result that is still invalid — the only two exits are ok or throw', () => {
+  it('NEVER returns a SIZE result that is still over budget — ok or throw, nothing between', () => {
     const { messages, laneIds } = unrepairable();
     let returned: unknown = null;
     try { returned = repairAssembly(messages, { budgetTokens: 10, laneIds }); } catch { /* expected */ }
     expect(returned).toBeNull();
+  });
+
+  it('does NOT throw on a SHAPE-only violation — that line is drawn on measurement', () => {
+    // C11's subject is the front-trimmer's warn-and-send, which is about SIZE. The first
+    // live detect run (73 real calls) produced 17 divergences and ZERO of them were size:
+    // 14 orphan tool_results that `sanitizeOrphanToolBlocks` itself had just created by
+    // stripping their tool_use, and 3 on the PM path. Throwing on those would have killed
+    // 23% of turns on flip day over defects this validator did not create. They are
+    // REPORTED — loudly, with their owners — and the flip's precondition is that they read
+    // zero. See the module header and DOJO-ISSUES-LOG.
+    const shapeOnly: ValidatedMessage[] = [user('a'), asst('b'), toolResult('t-missing')];
+    const r = repairAssembly(shapeOnly, { budgetTokens: 1_000_000, laneIds: [null, null, null] });
+    expect(r.droppedLaneIds).toEqual([]);
+    expect(r.messages).toEqual(shapeOnly);
+    // and the violation is still ON the record, not swallowed
+    expect(r.after.ok).toBe(false);
+    expect(r.after.violations.map((v) => v.code)).toContain('tool-result-without-use');
   });
 });
 
@@ -349,5 +370,49 @@ describe('the installed mode', () => {
     // front-trimmers in the same commit. PHASE-3 T9's exit gate asserts 'repair';
     // this clause is what makes the flip a one-line, testable change rather than a hunt.
     expect(ASSEMBLY_VALIDATION_MODE).toBe('detect');
+  });
+});
+
+// ════════ the divergence log is the instrument Step 2b reads, so it is pinned ════════
+
+describe('the detect-only window log', () => {
+  it('keeps its two grep tokens, because the day-7 decision is taken FROM them', () => {
+    const src = fs.readFileSync(
+      path.join(process.cwd(), 'src/memory/assembly-validation.ts'), 'utf8',
+    );
+    // Renaming either of these silently blinds the flip decision. A test is cheaper than
+    // discovering on day 7 that the window measured nothing.
+    expect(src).toContain('ASSEMBLY_VALIDATION_DIVERGENCE');
+    expect(src).toContain('ASSEMBLY_VALIDATION_HEARTBEAT');
+    // The EMITTED line (not the comment above it) must carry its own denominator, or a
+    // count of incidents is not a rate; and its codes, or "something diverged" is not a
+    // finding. Sliced from the emitting statement, so a doc-comment mention cannot pass it.
+    // NB: slice to the metadata object, NOT to the first `{` — `${…}` interpolations are
+    // braces too. The same mis-slice already went green over a planted fault once today,
+    // in one-estimator-conformance's no-default clause.
+    const emit = src.slice(src.lastIndexOf('`ASSEMBLY_VALIDATION_DIVERGENCE'));
+    const line = emit.slice(0, emit.indexOf('\n    {'));
+    expect(line.length).toBeGreaterThan(100);   // vacuity guard on the slice itself
+    expect(line).toContain('checked=${checkedCalls}');
+    expect(line).toContain('diverged=${divergentCalls}');
+    expect(line).toContain('codes=${codes}');
+    expect(line).toContain('overBy=${result.overBy}');
+  });
+
+  it('DETECT mode sends anyway — the deliberate no-op is what the window measures', () => {
+    const src = fs.readFileSync(
+      path.join(process.cwd(), 'src/memory/assembly-validation.ts'), 'utf8',
+    );
+    // The detect branch returns BEFORE the repair, and the repair is what Step 2b enables.
+    const body = src.slice(src.indexOf('export async function validateAtProviderBoundary'));
+    const detectAt = body.indexOf("ASSEMBLY_VALIDATION_MODE === 'detect'");
+    const repairAt = body.indexOf('repairAssembly(input.messages');
+    expect(detectAt).toBeGreaterThan(-1);
+    expect(repairAt).toBeGreaterThan(detectAt);
+  });
+
+  it('counts every checked call, not only the divergent ones', () => {
+    __resetAssemblyValidationCounters();
+    expect(assemblyValidationCounters()).toEqual({ checked: 0, diverged: 0 });
   });
 });
