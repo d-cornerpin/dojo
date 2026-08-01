@@ -674,6 +674,34 @@
       "why": "A NEW file past the 400-line cap, pinned so the addition is argued rather than noticed later \u2014 which is what the cap is for. It is 561 lines of which 169 are comment and 46 blank: 346 lines of code for research 06's whole C section (C9 the five clauses, C10 the priority-ordered repair, C11 the loud failure) plus the provider-boundary entry point and the divergence instrument. SPLITTING IT WAS CONSIDERED AND REFUSED: validate / repair / boundary are one subject \u2014 the repair re-runs the validation after every drop, and the boundary is the only caller of either \u2014 so three files would be three imports of one job, which is the disease this overhaul exists to delete. The comment weight is deliberate and load-bearing: it carries the measurement that decided the shape-vs-size line (73 real calls, 17 divergences, 0 of them size), the derivation of the detect window, and the grep recipes the day-7 flip decision is taken from. IT SHRINKS AT T4 STEP 2B ONLY IN THE SENSE THAT ITS COUNTERPARTS DO: the flip deletes ~118 lines of front-trimmer from `agent/model.ts`, which is what this file replaces."
     },
     {
+      "path": "packages/server/src/memory/compaction.ts",
+      "from": 1291,
+      "to": 1337,
+      "by": "PHASE-3 T5 Steps 1b/1c/2 (2026-08-01)",
+      "why": "+46 across two changes, both of which DELETE a mechanism. (1c) The leaf summariser input is now ONE exported `buildLeafSummaryInput` instead of an inline builder here and a byte-identical `buildLeafInput` in summary-rebuild.ts - and that duplication was the dangerous kind: summary-rebuild's whole job is to REPLAY this exact transformation and ask whether the result is still contaminated, so the moment the two drifted it was measuring a summariser that did not exist. Extracting it costs the function signature plus a docstring recording what each clause is (the noise filter, the party tag, the technique/credential scrubs), each of which is an incident. (2) Three REFUSAL branches, one per generateSummary call site, because the summariser now returns {ok:false, reason} instead of a deterministic truncation of the RAW input. Each branch is four lines of code and four of reasoning, and the reasoning is the load-bearing part: skipping createLeafSummary is what leaves the messages uncompacted, and writing NO_CONVERSATION_PLACEHOLDER there instead would be an IRREVERSIBLE lie about a span the summariser never read."
+    },
+    {
+      "path": "packages/server/src/memory/summary-rebuild.ts",
+      "from": 433,
+      "to": 460,
+      "by": "PHASE-3 T5 Steps 1b/1c/2 (2026-08-01)",
+      "why": "+27. The refusal branch (the summariser can now say no, and a refusal is a skip that leaves the row flagged for the next night), and the two SUMMARY_REBUILD_CLEAN_STOCK log lines that report the streak. The COUNTER itself is a new 69-line module, summary-clean-stock.ts, deliberately not in this file: this file is the thing being measured and the measurer should not live inside it. Note this file also SHRANK by its own buildLeafInput copy in the same change, so the net cost of Step 2 here is smaller than 27."
+    },
+    {
+      "path": "packages/server/src/memory/summary-clean-stock.ts",
+      "from": 0,
+      "to": 69,
+      "by": "PHASE-3 T5 Steps 1b/1c/2 (2026-08-01)",
+      "why": "A NEW file, pinned at birth. It holds the number SWEEP C retires the nightly summary rebuild on, and the reason it needs to be a NUMBER rather than an impression is roadmap #15: one clean night is equally consistent with a clean stock and a broken detector. So it records three facts - how many summaries were actually examined, what was found, and the consecutive-clean streak - persisted in config so a nightly job's evidence survives a restart, and a run that scanned ZERO does not advance the streak."
+    },
+    {
+      "path": "packages/server/src/memory/assembly-validation-sink.ts",
+      "from": 0,
+      "to": 146,
+      "by": "PHASE-3 T5 Steps 1b/1c/2 (2026-08-01)",
+      "why": "A NEW file from this task's opening rider, pinned at birth rather than left to drift toward the 400-line cap. It is the durable evidence store for T4's seven-day detect window, and roughly half of it is the measured retention arithmetic and the day-7 read procedure - the thing whose absence made T4's own 17 day-0 divergence lines unrecoverable within hours."
+    },
+    {
       "path": "packages/shared/src/markers.ts",
       "from": 0,
       "to": 286,
@@ -807,12 +835,14 @@
     "packages/server/src/healer/injury-recovery.ts": 810,
     "packages/server/src/index.ts": 1172,
     "packages/server/src/memory/assembler.ts": 2638,
-    "packages/server/src/memory/compaction.ts": 1291,
+    "packages/server/src/memory/compaction.ts": 1337,
     "packages/server/src/memory/lanes.ts": 649,
     "packages/server/src/memory/message-store.ts": 980,
     "packages/server/src/memory/recall.ts": 510,
     "packages/server/src/memory/retrieval.ts": 591,
-    "packages/server/src/memory/summary-rebuild.ts": 433,
+    "packages/server/src/memory/summary-clean-stock.ts": 69,
+    "packages/server/src/memory/assembly-validation-sink.ts": 146,
+    "packages/server/src/memory/summary-rebuild.ts": 460,
     "packages/server/src/microsoft/auth.ts": 623,
     "packages/server/src/microsoft/tools-office.ts": 3446,
     "packages/server/src/microsoft/tools-read.ts": 1604,
