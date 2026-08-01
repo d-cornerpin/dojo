@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ════════════════════════════════════════
-// Every SQL statement in `watchdog/src` PREPARES against the migrated schema.
+// Every SQL statement in the tree PREPARES against the migrated schema.
 //
 // ── WHY THIS EXISTS, and it is not hypothetical ──
 // PHASE-1 T10 (2026-07-28) found that `watchdog/src/index.ts`'s unanswered-backlog
@@ -22,11 +22,13 @@
 // statement the code actually runs. A dropped column, a renamed table, a typo'd
 // alias — SQLite refuses it here, at build time, instead of at 3am inside a catch.
 //
-// ── SCOPE: `watchdog/src` TODAY; THE PROMOTION IS THE NEXT COMMIT ──
-// PHASE-3 T0 rehearsed widening this gate whole-tree and found four defects in the
-// GUARD ITSELF, all of them invisible at this scope. They are fixed here, before the
-// scope moves, so that the promotion changes one thing. See SQL_SCOPE below, which now
-// carries a per-directory blindness floor and the reason for each.
+// ── SCOPE: THE WHOLE TREE (PHASE-3 T8G, 2026-07-31) ──
+// Born scoped to `watchdog/src` (6 statements). PHASE-3 T0 rehearsed the promotion
+// rather than asserting it and measured the residue first; T8G then landed it. The
+// scope is now `packages/{server,shared,dashboard}/src` + `watchdog/src` — see
+// SQL_SCOPE below, which carries a per-directory blindness floor and the reason for
+// each. The original single-directory scope was itself an instance of the class this
+// gate exists to refuse: a checker whose corpus is narrower than the risk.
 //
 // ── WHAT IT DOES NOT CATCH, said out loud ──
 // 1. Preparing proves the statement is VALID against the schema. It does not prove the
@@ -85,6 +87,21 @@ const MIGRATIONS_DIR = 'packages/server/src/db/migrations';
 // failure this gate exists to prevent. `min` is not a ratchet and never rises with the
 // tree: it is the count below which the only honest reading is "the extractor broke".
 const SQL_SCOPE = [
+  {
+    dir: 'packages/server/src',
+    min: 500,
+    why: 'the platform. ~1,800 runnable statements at T8G; anything under 500 means the extractor broke, not that the SQL left.',
+  },
+  {
+    dir: 'packages/shared/src',
+    min: 0,
+    why: 'no SQL today BY DESIGN — shared holds types and constants, not queries. A floor above 0 would fail on a true fact. It is in scope so that the first query written here is gated on its first day.',
+  },
+  {
+    dir: 'packages/dashboard/src',
+    min: 0,
+    why: 'no SQL today BY DESIGN — the dashboard talks to the gateway, never to the database. Same reasoning as shared: in scope so a future direct read cannot arrive ungated.',
+  },
   {
     dir: 'watchdog/src',
     min: 1,
@@ -508,6 +525,11 @@ control(
   () => mustRefuse("SELECT m.id FROM messages m WHERE m.origin_kind = 'engine'"),
 );
 control(
+  'dropped-column-148',
+  'the whole-tree control (T8G): `conv_key` left `messages` in migration 148, after 147 backfilled `conversation_id` from it. A statement still naming it must be refused.',
+  () => mustRefuse('SELECT conv_key FROM messages LIMIT 1'),
+);
+control(
   'non-select-insert',
   'T8G Step 1a: a valid INSERT must be ACCEPTED. The old `.columns()` call threw on every non-SELECT and the filter meant to swallow it tested for a message better-sqlite3 never emits.',
   () => mustPrepare('INSERT INTO agents (id, name) VALUES (?, ?)'),
@@ -640,4 +662,4 @@ for (const c of SKIP_CLASSES) {
   const n = classed.get(c.id).length;
   if (n) console.log(`  ${n} refusal(s) in declared class "${c.id}" — ${c.why.split('.')[0]}.`);
 }
-console.log(`  ${controls.length} control(s) green, incl. the column migration 129 dropped`);
+console.log(`  ${controls.length} control(s) green, incl. columns migrations 129 and 148 dropped`);
