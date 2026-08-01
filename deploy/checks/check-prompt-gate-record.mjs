@@ -3,10 +3,13 @@
 // PROMPT-GATE RECORD READER (PHASE-0 T13 Step 2). RELEASE-BLOCKING.
 //
 // ── Why this exists ─────────────────────────────────────────────────────
-// Five kit checks read the live server through the dev instruments:
-// check-cache-prefix, check-prompt-inventory, check-steer-delivery,
-// check-message-prefix, check-assembled-context. They cannot run inside a
-// release — the instruments
+// The kit checks on the REQUIRED roster below read the live server through the dev
+// instruments: check-cache-prefix, check-prompt-inventory, check-steer-delivery,
+// check-message-prefix, check-assembled-context, check-reanswer-ghost.
+// (The count is not written in this prose. It was typed as "four" and again as
+// "five" while the arrays held different numbers — the hand-typed-N drift T8G
+// removed from the two gate lists. The REQUIRED array is the count.)
+// They cannot run inside a release — the instruments
 // PATCH the tree a release ships, and the release has a gate that refuses any
 // artifact still carrying them. So a release could never execute them, and
 // "the cache-prefix gate stays blocking" was a sentence people remembered
@@ -74,9 +77,17 @@ const HEAD = arg('--head', execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROO
 // Roadmap #10 names the assembled-array golden as the second of the two gates binding
 // every task that touches prompt assembly; before this it was a file somebody could
 // choose to run.
+// PHASE-3 STRIP-3 (2026-08-01, RULING P3-R3) added 'check-reanswer-ghost' — 54 delivered
+// messages seeded into an empty session, all 54 required back out of the assembled window.
+// It encodes dojo `8bc7d7a`'s months-long re-answer ghost, and it was on NEITHER roster:
+// it ran only when a human typed its name, its last recorded green was PHASE-1 T11, and it
+// had been RED since PHASE-2 T10I while every report of the period cited a 5/5 GREEN roster
+// that never contained it. A ruling was then written resting on it as a deterministic guard
+// that ran every time — a claim false in both halves. THE RULE THIS EARNS: a check that
+// encodes an incident is either on a roster or it is not a guard.
 const REQUIRED = [
   'check-cache-prefix', 'check-prompt-inventory', 'check-steer-delivery',
-  'check-message-prefix', 'check-assembled-context',
+  'check-message-prefix', 'check-assembled-context', 'check-reanswer-ghost',
 ];
 
 const HOW = [
@@ -104,7 +115,7 @@ if (!fs.existsSync(RECORD)) {
   refuse(
     'NO RECORD.',
     `Looked for: ${RECORD}`,
-    'Five prompt gates cannot run inside a release, so the release reads their recorded result.',
+    `The ${REQUIRED.length} prompt gates cannot run inside a release, so the release reads their recorded result.`,
     'No record means nobody can say whether the cached prefix still holds for the code being shipped.',
   );
 }
