@@ -30,7 +30,6 @@
 import { getDb } from '../db/connection.js';
 import type { Message } from '@dojo/shared';
 import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
-import { estimateTokens } from './budget.js';
 
 // ── Session Boundary ──
 
@@ -44,7 +43,8 @@ function getSessionBoundary(agentId: string): string | null {
 //
 // STRIP (PHASE-3 T2). `estimateTokens` used to be declared here, `/4`, and it was one of
 // SIX implementations in the tree (§T0-C). It now lives in `memory/budget.ts` with the
-// measurement that chose its divisor, and this module imports it like everybody else.
+// measurement that chose its divisor. PHASE-3 T9 removed the IMPORT too: the last consumer
+// in this file was `getTotalTokensByAgent`, stripped below.
 // Requirement preserved: one number for "what does this text cost", derived in one place.
 //
 // `getFreshTailCount` moved to the same module for the same reason and unchanged byte for
@@ -269,26 +269,23 @@ export function getMessageCountByAgent(agentId: string): number {
   return row.count;
 }
 
-export function getTotalTokensByAgent(agentId: string): number {
-  const db = getDb();
-  const sessionBoundary = getSessionBoundary(agentId);
-  const boundaryClause = sessionBoundary ? 'AND created_at >= (unixepoch(?) * 1000)' : '';
-  const boundaryParams = sessionBoundary ? [sessionBoundary] : [];
+// ── STRIP (PHASE-3 T9). `getTotalTokensByAgent(agentId)` is DELETED. ──
+//
+// It summed the current session's `messages.token_count`, estimating the NULL rows, and
+// answered "how much context does this agent hold". Enumerated with zero readers by T2 and
+// RE-VERIFIED at this HEAD before removal, not inferred from the earlier count (#15):
+// `git grep -n getTotalTokensByAgent -- .` returns exactly ONE hit tree-wide — the
+// declaration itself — across `packages/server`, `packages/dashboard`, `packages/shared`,
+// `watchdog`, `deploy` and every test.
+//
+// requirement preserved: "the engine can say how many tokens the assembled context costs"
+// — owned, and owned BETTER, by the allocator this phase built. `estimateAssembledTokens`
+// (memory/compaction.ts) is the allocator dry-run the pre-call compaction gate reads, and
+// the per-assembly truth is the T6 receipt's lane table (`requested / granted / admitted`
+// per lane, plus the post-validation total). This function could not have answered the
+// question the budget actually asks: it summed EVERY stored row of the session, while what
+// is spent is the ADMITTED set after the two-pass fit — and, until migration `150`, it was
+// summing dialect 3 (the provider's OUTPUT count) as if it were input cost, 37% high.
+// A second, wrong answer to a question the allocator now owns is the disease this phase
+// deletes.
 
-  // Sum known token counts (current session only)
-  const knownRow = db.prepare(
-    `SELECT COALESCE(SUM(token_count), 0) as total FROM messages WHERE agent_id = ? ${boundaryClause} AND token_count IS NOT NULL`,
-  ).get(agentId, ...boundaryParams) as { total: number };
-
-  // Estimate tokens for messages with null token_count
-  const nullRows = db.prepare(
-    `SELECT content FROM messages WHERE agent_id = ? ${boundaryClause} AND token_count IS NULL`,
-  ).all(agentId, ...boundaryParams) as Array<{ content: string }>;
-
-  const estimatedTotal = nullRows.reduce(
-    (sum, row) => sum + estimateTokens(row.content),
-    0,
-  );
-
-  return knownRow.total + estimatedTotal;
-}

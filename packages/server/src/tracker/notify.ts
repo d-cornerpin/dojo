@@ -34,13 +34,28 @@ export interface AssignmentNotificationParams {
   description?: string | null;
   projectId?: string | null;
   priority?: string | null;
-  /**
-   * Skip the runtime.handleMessage call. Set true when the assignee is
-   * the agent currently processing — calling handleMessage there just
-   * queues a redundant wake-up. Default false.
-   */
-  skipWake?: boolean;
 }
+
+// ── STRIP (PHASE-3 T9). `skipWake?: boolean` is DELETED from these params. ──
+//
+// It suppressed the `runtime.handleMessage` wake below when the assignee was the agent
+// ALREADY running — which was only ever possible because the assembler could push a SECOND,
+// same-turn copy of this notice straight into the in-flight array (`msg.tracker-notif`,
+// slot 1500). T3 stripped that injection on positive evidence: its only consumer, the
+// multistep classifier's auto-create block, was deleted whole by `d00f270`.
+//
+// T3 enumerated the flag for this task rather than deleting it inside its own re-bless
+// window; RE-VERIFIED at this HEAD before removal (#15), not inherited:
+// `git grep -n skipWake -- .` finds it in this file and in prose only — the two live
+// callers (`tracker/tools.ts:891`, `:1214`) pass an object literal without the key, so
+// there is no path on which it was ever true. (`runtime.ts`'s `__skipWakeDrain` is an
+// unrelated throw sentinel and is untouched.)
+//
+// requirement preserved: "an agent that has just been ASSIGNED work learns it was assigned,
+// and how to close it" — owned end to end by `injectTaskAssignmentNotification` below,
+// which PERSISTS the `[SOURCE: TRACKER TASK ASSIGNMENT]` row, BROADCASTS it, and WAKES the
+// assignee. In every surviving path the assignee is a different agent, so the wake is the
+// delivery, and a flag that could switch it off is a way to lose one.
 
 export interface AssignmentNotificationResult {
   ok: boolean;
@@ -100,7 +115,7 @@ export function claimAssignmentNoticeForTerminalTask(assignedAgentId: string, ta
 export function injectTaskAssignmentNotification(
   params: AssignmentNotificationParams,
 ): AssignmentNotificationResult {
-  const { assignedAgentId, creatorAgentId, taskId, title, description, projectId, priority, skipWake } = params;
+  const { assignedAgentId, creatorAgentId, taskId, title, description, projectId, priority } = params;
   if (!assignedAgentId) return { ok: false, content: null };
   if (assignedAgentId === creatorAgentId) return { ok: false, content: null };
 
@@ -190,15 +205,16 @@ export function injectTaskAssignmentNotification(
       },
     });
 
-    if (!skipWake) {
-      const runtime = getAgentRuntime();
-      runtime.handleMessage(assignedAgentId, content).catch((err) => {
-        logger.error('Task assignment notification — handleMessage failed', {
-          taskId, assignedAgentId,
-          error: err instanceof Error ? err.message : String(err),
-        }, creatorAgentId);
-      });
-    }
+    // PHASE-3 T9: unconditional. The `skipWake` opt-out is stripped (see the header above);
+    // the wake IS the delivery for an assignee that is, in every surviving path, a
+    // different agent from the creator.
+    const runtime = getAgentRuntime();
+    runtime.handleMessage(assignedAgentId, content).catch((err) => {
+      logger.error('Task assignment notification — handleMessage failed', {
+        taskId, assignedAgentId,
+        error: err instanceof Error ? err.message : String(err),
+      }, creatorAgentId);
+    });
 
     return { ok: true, content };
   } catch (err) {

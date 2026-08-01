@@ -7,6 +7,9 @@ import { taskScope, msToText, revertCountExpr, stampColumns } from '../work/trac
 import { type PromptTurnContext } from '../prompt/assembler.js';
 import { conversationKey, type TurnCounterparty } from '../agent/v2/counterparty.js';
 import { getContextWindow, getModelOutputCap } from '../agent/model.js';
+// PHASE-3 T9: the ONE tool_use ⇄ tool_result pairing repair. The assembler's own second
+// copy is deleted; see the call site and `__tests__/one-pairing-repair.test.ts`.
+import { repairToolPairing, type PairedMessage } from '../agent/tool-pairing.js';
 import { measureAgentToolPayloadTokens } from '../tools/tool-docs.js';
 import { getRecentMessages } from './store.js';
 import { estimateTokens, contextWindowPolicy, assertSystemPromptFits, SUMMARY_SHARE } from './budget.js';
@@ -298,14 +301,34 @@ function applyIntegrityPass(messages: LoopMsg[], agentId: string): LoopMsg[] {
   }
 
   // Ensure alternating roles.
-  let merged = mergeConsecutiveRoles(messages);
+  const merged = mergeConsecutiveRoles(messages);
 
   // Self-heal: drop orphaned tool blocks so a broken tool_use/tool_result
   // invariant doesn't cause provider errors. Loud warning if >half is dropped.
+  //
+  // PHASE-3 T9 — STRIP, one owner per job. This used to call the assembler's OWN
+  // `sanitizeToolBlocks`, a SECOND implementation of the pairing invariant that T6
+  // enumerated for this task. It validated a `tool_use` only against the SINGLE
+  // immediately-next message, so N parallel calls answered across TWO consecutive
+  // carriers cost a VALID pair — and the only thing that kept that unreachable was
+  // `mergeConsecutiveRoles` running one line above, an UNDECLARED coupling that any
+  // reorder or second caller would have re-opened in silence.
+  // requirement preserved: "no array reaches a provider carrying a `tool_use` nothing
+  // answered or a `tool_result` nothing asked for" — now held once, by
+  // `agent/tool-pairing.ts:repairToolPairing`, which closes BOTH directions and is the
+  // same repair the provider boundary runs. Shown over the divergent input in
+  // `memory/__tests__/one-pairing-repair.test.ts`.
   const preSanitizeCount = merged.length;
-  merged = sanitizeToolBlocks(merged, agentId);
+  const pairingRepair = repairToolPairing(merged as unknown as PairedMessage[]);
+  if (pairingRepair.strippedToolUse > 0 || pairingRepair.strippedToolResult > 0) {
+    logger.warn('Sanitized orphaned tool blocks from context', {
+      droppedToolUse: pairingRepair.strippedToolUse,
+      droppedToolResult: pairingRepair.strippedToolResult,
+      droppedMessages: pairingRepair.droppedMessages,
+    }, agentId);
+  }
   if (merged.length < preSanitizeCount / 2 && preSanitizeCount > 4) {
-    logger.error('sanitizeToolBlocks dropped over half the context, possible bug', {
+    logger.error('tool-pairing repair dropped over half the context, possible bug', {
       before: preSanitizeCount,
       after: merged.length,
       agentId,
@@ -2529,116 +2552,6 @@ function parseMessageContent(
   } catch {
     return msg.content;
   }
-}
-
-/**
- * Drop tool blocks that break the conversation invariant so the next
- * provider call does not fail with a "tool id not found" error.
- *
- * The invariant every chat API enforces:
- *   - Every `tool_use` block on an assistant message must have a matching
- *     `tool_result` block in a following user message (same id).
- *   - Every `tool_result` block on a user message must reference a
- *     `tool_use_id` that appears on a preceding assistant message.
- *
- * This function does two passes:
- *   1. Collect the set of tool_use ids that exist in assistant messages
- *      and the set of tool_result ids that exist in user messages.
- *   2. Filter each message's content blocks:
- *      - On assistant messages, drop tool_use blocks whose id has no
- *        matching tool_result anywhere in the history.
- *      - On user messages, drop tool_result blocks whose tool_use_id
- *        has no matching tool_use.
- *      - Text blocks are always kept.
- *   3. Any message that becomes empty after filtering is dropped
- *      entirely.
- *
- * The function is non-destructive, it returns a sanitized copy and
- * does not touch the messages table. The DB still holds the orphaned
- * rows so history stays intact; the invariant is only enforced on the
- * in-memory list that goes to the provider.
- */
-function sanitizeToolBlocks(
-  messages: Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }>,
-  agentId: string,
-): Array<{ role: 'user' | 'assistant'; content: string | Anthropic.ContentBlockParam[] }> {
-  // Build POSITIONAL pairs: a tool_use is valid only if the NEXT message
-  // (which must be a user message) contains a matching tool_result, and
-  // a tool_result is valid only if the PRECEDING message (which must be
-  // an assistant message) contains a matching tool_use.
-  const validToolUseIds = new Set<string>();
-  const validToolResultIds = new Set<string>();
-
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    if (!Array.isArray(msg.content)) continue;
-    const blocks = msg.content as unknown as Array<Record<string, unknown>>;
-
-    if (msg.role === 'assistant') {
-      // Collect tool_use IDs from this assistant message
-      const useIds = blocks.filter(b => b.type === 'tool_use' && typeof b.id === 'string').map(b => b.id as string);
-      if (useIds.length === 0) continue;
-
-      // Check if the NEXT message is a user message with matching tool_results
-      const next = i + 1 < messages.length ? messages[i + 1] : null;
-      if (next && next.role === 'user' && Array.isArray(next.content)) {
-        const nextBlocks = next.content as unknown as Array<Record<string, unknown>>;
-        const resultIds = new Set(nextBlocks.filter(b => b.type === 'tool_result' && typeof b.tool_use_id === 'string').map(b => b.tool_use_id as string));
-        for (const uid of useIds) {
-          if (resultIds.has(uid)) {
-            validToolUseIds.add(uid);
-            validToolResultIds.add(uid);
-          }
-        }
-      }
-    }
-  }
-
-  // Pass 2: filter blocks that don't have a matching partner
-  let droppedToolUse = 0;
-  let droppedToolResult = 0;
-  let droppedMessages = 0;
-  const sanitized: typeof messages = [];
-
-  for (const msg of messages) {
-    if (!Array.isArray(msg.content)) {
-      sanitized.push(msg);
-      continue;
-    }
-    const blocks = msg.content as unknown as Array<Record<string, unknown>>;
-
-    const kept = blocks.filter(b => {
-      if (msg.role === 'assistant' && b.type === 'tool_use') {
-        if (typeof b.id === 'string' && validToolResultIds.has(b.id)) return true;
-        droppedToolUse++;
-        return false;
-      }
-      if (msg.role === 'user' && b.type === 'tool_result') {
-        if (typeof b.tool_use_id === 'string' && validToolUseIds.has(b.tool_use_id)) return true;
-        droppedToolResult++;
-        return false;
-      }
-      return true; // text blocks and anything else pass through
-    });
-
-    if (kept.length === 0) {
-      droppedMessages++;
-      continue;
-    }
-    sanitized.push({ ...msg, content: kept as unknown as Anthropic.ContentBlockParam[] });
-  }
-
-  if (droppedToolUse > 0 || droppedToolResult > 0 || droppedMessages > 0) {
-    logger.warn('Sanitized orphaned tool blocks from context', {
-      droppedToolUse,
-      droppedToolResult,
-      droppedMessages,
-      validToolUseIds: validToolUseIds.size,
-      validToolResultIds: validToolResultIds.size,
-    }, agentId);
-  }
-
-  return sanitized;
 }
 
 function mergeConsecutiveRoles(

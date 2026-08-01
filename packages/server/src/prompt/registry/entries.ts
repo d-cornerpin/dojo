@@ -413,7 +413,7 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
   //     next assembly. The same-turn duplicate is not merely unused; it is unreachable.
   // A registered entry with no injection site is exactly what the lane table makes
   // impossible, so it is removed rather than left registered and never rendered.
-  // (`AssemblyContext.trackerNotif` goes with it; `skipWake` is enumerated for T9.)
+  // (`AssemblyContext.trackerNotif` went with it; `skipWake` was T9's, and T9 STRIPPED it.)
   {
     id: 'msg.delegation-hint',
     target: 'messages',
