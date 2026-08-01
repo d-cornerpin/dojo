@@ -567,6 +567,48 @@
       "to": 2664,
       "by": "PHASE-3 T2 Step 3 (2026-07-31)",
       "why": "The two transports that compute an input estimate now hand it to recordCost — the Anthropic path's `inputEstimate` (the same sum its own hard cap compares against `hardInputLimit`) and the OpenAI path's post-trim `finalInputEstimate`. Recording the number that DECIDED whether history was trimmed, rather than a fresh guess taken afterwards, is the whole value; +5 lines for a pair of call arguments and the two sentences saying which estimate each is."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1375,
+      "to": 1415,
+      "by": "PHASE-3 T3 / S3 (2026-07-31)",
+      "why": "THE WRITE THAT LEFT THE READ PATH HAD TO LAND SOMEWHERE, AND THIS IS ITS OWNER. `memory/assembler.ts` ran `UPDATE agents SET config` from inside its own assembly READ path to clear the one-shot A2A-preempt and Stop markers it had just rendered (`:1468`, `:1497` pre-repin). Assembly happens MANY times per turn (every tool iteration re-assembles) and in places that are not turns at all \u2014 the dev cache-prefix probe and the assembled-context golden both assemble \u2014 so the marker was consumed by whoever assembled first, not necessarily by the call that showed it to the model. The assembler now REPORTS what it consumed and `clearConsumedOneShotFlags` here writes once, in a transaction, at the turn. This file is the owner because `stopAgent` twelve lines above SETS one of the two flags: one owner per job. The +40 is that function and the paragraph explaining why it is not where it used to be. `memory/assembler.ts` is 33 lines SHORTER in the same change."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 2664,
+      "to": 2682,
+      "by": "PHASE-3 T3 / S1 (2026-07-31)",
+      "why": "THE CACHE BREAKPOINT MOVED, AND THE +18 IS MOSTLY THE MEASUREMENT THAT JUSTIFIES IT. The `cache_control` marker sat on `arr.length - 1` \u2014 the LAST tool, whichever it happened to be \u2014 while the array's membership GROWS mid-session via `load_tool_docs`. So every mid-session tool load re-wrote the cached prefix and the next call re-billed ~24.7K tokens: measured at \u00a7T0-E as roughly 13x the entire prefix growth the owner accepted on 2026-07-30, on ~1.1% of assistant rows (a floor, not a rate \u2014 this is a battery body). It now sits on the last ALWAYS-LOADED tool, which `partitionToolsForApiCall` guarantees is a deterministic head. Six lines are the partition call and the breakpoint expression; the rest is the note recording what was measured, because a reviewer who cannot see the cost cannot check the fix."
+    },
+    {
+      "path": "packages/server/src/prompt/registry/entries.ts",
+      "from": 493,
+      "to": 505,
+      "by": "PHASE-3 T3 / RULING P3-R1 (2026-07-31)",
+      "why": "A DELETION THAT COSTS TWELVE LINES, AND THAT IS THE DEMOLITION RULE WORKING. The `msg.tracker-notif` ENTRY (11 lines) is GONE \u2014 its only injector died in `d00f270`'s sanctioned demolition and `skipWake: true`, the flag that made same-turn injection possible at all, now has zero callers whole-tree. Non-negotiable #9 requires a removal to carry its verdict and a `requirement preserved:` line naming what the mechanism encoded, and #15 requires the evidence to be POSITIVE rather than an absence \u2014 so the 23-line tombstone in its place names the surviving owner (`tracker/notify.ts:injectTaskAssignmentNotification`, which persists, broadcasts and WAKES), the two live call sites, and the grep that proves the same-turn duplicate is unreachable rather than merely unused. The alternative to the twelve lines is a deletion nobody can audit."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9578,
+      "to": 9588,
+      "by": "PHASE-3 T3 (2026-07-31)",
+      "why": "THREE CALL SITES AND THEIR REASONS. (1) RULING P3-R1: `msg.peer-status` is INJECTED, between msg.turn-context and msg.current-time \u2014 the entry has been registered since `5cb1758` with no injection site ever, so the live peer idle/working state that commit relocated out of the cached roster has never reached a model, and the near-tail order 1850 -> 1875 -> 1900 is a preserved contract so the position is not a choice. (2) S3: the turn clears the one-shot markers the assembly reported consuming, instead of the assembler clearing them from a read. (3) S3: restart rehydration of session tool docs, once per agent per process, moved off the assembly path where it re-broke the cached tools prefix for every agent on the first assembly after any restart. Seven of the ten lines are the comments recording (1) and (3); this file is under a pre-committed >3,000-line tripwire in PHASE-6 and every line added to it is meant to hurt."
+    },
+    {
+      "path": "packages/server/src/tools/tool-docs.ts",
+      "from": 0,
+      "to": 523,
+      "by": "PHASE-3 T3 / S1+S3 (2026-07-31)",
+      "why": "NEW ENTRY \u2014 the file crossed the 400-line new-file cap (378 -> 523) and the addition is meant to be argued with. Two things landed. S1: `partitionToolsForApiCall` splits the API tools array into a DECLARED always-loaded head and a session-loaded tail, so the head is a stable cacheable prefix and the `cache_control` breakpoint has a fixed home. The old `filterToolsForApiCall` was one `.filter()` in REGISTRY order, which is how a mid-session `load_tool_docs` could insert a tool at index 0 and invalidate the cached prefix from its first byte. S3: `rehydrateSessionToolsFromHistory`, the restart-recovery requirement lifted OUT of `memory/assembler.ts`'s read path (`:1262-1281` pre-repin) and given to the module that owns the session state, running once per agent per process instead of once per assembly. Roughly two thirds of the growth is the two block comments carrying the \u00a7T0-E measurement and the requirement-preservation record. It SHRINKS when PHASE-5's toolbox work folds the six always-loaded sets into one declaration."
+    },
+    {
+      "path": "packages/server/src/memory/lanes.ts",
+      "from": 0,
+      "to": 644,
+      "by": "PHASE-3 T3 (2026-07-31)",
+      "why": "NEW ENTRY past the 400-line cap, argued rather than noticed later. This is THE ALLOCATOR: the lane table (id, slot, priority, min, max, truncate), the two-pass fit, the allocation report and the generated scaffolding ack. It replaces, in `memory/assembler.ts`, twelve independent admission gates consumed in BUILD order, two adds with no gate at all, an EVENTS push with neither gate nor add, and a hardcoded 576-char ack that told the model the priority order was the exact REVERSE of the one the budget spent (research 06 \u00a72). `memory/assembler.ts` fell 2,590 -> 2,557 in the same change and its 1,500-line hand-rolled budget body became a table of render/truncate pairs. Roughly 45% of this file is comment, and deliberately: the priority ladder's four non-prose rungs each carry the reason they sit where they sit, every declared cap names the \u00a7T0-B site it came from, and every post-budget reserve names the measurement it was derived from (#14 \u2014 a reserve with no derivation is a rumour). It SHRINKS at PHASE-3 T9, when the 76-site cluster's dispositions retire the limits this table currently has to carry verbatim."
     }
   ],
   "maxNewFileLines": 400,
@@ -598,16 +640,16 @@
     "packages/server/src/agent/a2a-transport.ts": 1951,
     "packages/server/src/agent/browser.ts": 412,
     "packages/server/src/agent/destructive-gate.ts": 552,
-    "packages/server/src/agent/model.ts": 2664,
+    "packages/server/src/agent/model.ts": 2682,
     "packages/server/src/agent/pdf-tools.ts": 1007,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 687,
-    "packages/server/src/agent/runtime.ts": 1375,
+    "packages/server/src/agent/runtime.ts": 1415,
     "packages/server/src/agent/spawner.ts": 1382,
     "packages/server/src/agent/tools.ts": 10484,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9578,
+    "packages/server/src/agent/v2/loop.ts": 9588,
     "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/state.ts": 703,
@@ -633,6 +675,7 @@
     "packages/server/src/index.ts": 1172,
     "packages/server/src/memory/assembler.ts": 2590,
     "packages/server/src/memory/compaction.ts": 1267,
+    "packages/server/src/memory/lanes.ts": 644,
     "packages/server/src/memory/message-store.ts": 980,
     "packages/server/src/memory/recall.ts": 510,
     "packages/server/src/memory/retrieval.ts": 591,
@@ -644,7 +687,7 @@
     "packages/server/src/migration/checks.ts": 537,
     "packages/server/src/migration/import.ts": 407,
     "packages/server/src/prompt/assembler.ts": 1404,
-    "packages/server/src/prompt/registry/entries.ts": 493,
+    "packages/server/src/prompt/registry/entries.ts": 505,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/runner.ts": 1699,
     "packages/server/src/services/capabilities.ts": 597,
@@ -655,6 +698,7 @@
     "packages/server/src/services/teams-watcher.ts": 461,
     "packages/server/src/services/transcription.ts": 443,
     "packages/server/src/services/tunnel.ts": 683,
+    "packages/server/src/tools/tool-docs.ts": 523,
     "packages/server/src/techniques/dependencies.ts": 586,
     "packages/server/src/techniques/share-export.ts": 464,
     "packages/server/src/techniques/share-import.ts": 412,
