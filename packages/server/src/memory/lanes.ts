@@ -386,12 +386,12 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       'after `volatileFrom`: min 156 · p50 298 · p90 378 · p99 693 · MAX 742 tokens. ' +
       'Per entry, max/mean: msg.pending-nudge 479/248 · msg.turn-context 227/127 · ' +
       'msg.current-time 87/87 · engine.settled-hint 65/65 · engine.open-work 60/60 · ' +
-      'engine.recent-outbound 41/36 · msg.peer-status 20/20. Plus msg.tool-note, which ' +
+      'engine.recent-outbound 41/36 · msg.peer-status 20/20. (engine.settled-hint was STRIPPED at T7 Step 2, so this ' +
+      'reserve is now 65 looser than its own derivation; left at 900 — a reserve proven not tight is not a defect, and ' +
+      'lowering it is a budget change with its own evidence.) Plus msg.tool-note, which ' +
       'never fired in the sample (the floor model has tools) and is bounded by its own ' +
       'fixed 299-char string at 75. 742 + 75 = 817, declared 900. ' +
-      'THE OLD 1,420 WAS A SUM OF PER-ENTRY MAXIMA over golden-v0\'s nine cells — not a ' +
-      'single turn that ever happened — and its largest term (msg.turn-context at 1,195) ' +
-      'is 5.3x the largest this lane has actually been measured at. ' +
+      'THE OLD 1,420 WAS A SUM OF PER-ENTRY MAXIMA over golden-v0\'s nine cells — not a single turn that ever happened — and its largest term (msg.turn-context at 1,195) is 5.3x the largest this lane has been measured at. ' +
       'WHAT THIS RESERVE DELIBERATELY DOES NOT COVER, stated rather than discovered: ' +
       '`msg.technique-strong` rides this lane and the loop caps it at MAX_INLINE_CHARS = ' +
       '25,000 chars (`agent/v2/loop.ts`), i.e. ~6,250 tokens plus its frame — 7x this ' +
