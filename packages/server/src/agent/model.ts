@@ -10,6 +10,8 @@ import { toolDefinitions, getFilteredTools, type ToolDefinition } from './tools.
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { estimateTokens } from '../memory/budget.js';
 import { validateAtProviderBoundary, AssemblyValidationError } from '../memory/assembly-validation.js';
+import { repairToolPairing } from './tool-pairing.js';
+import { collectMessageLaneIds } from '../memory/message-lane-tag.js';
 import { recordCost } from '../costs/tracker.js';
 import { checkBudget } from '../costs/budget.js';
 import { updateRateLimits } from '../router/rate-limits.js';
@@ -211,79 +213,24 @@ function getMaxOutputTokens(apiModelId: string, providerType: string): number {
 }
 
 // ── Universal orphan tool_use/tool_result sanitization ──
-// Mutates the messages array in place. Strips tool_use blocks from assistant
-// messages whose ids aren't matched by tool_result blocks in the
-// immediately-following tool-result-bearing messages.
+// The repair itself is `agent/tool-pairing.ts` (PHASE-3 T6): extracted so it could be unit
+// tested at all, and FIXED there — the walk's carrier test required a message to be PURELY
+// tool_results, so a carrier the assembler's own `mergeConsecutiveRoles` had folded a user
+// line into stopped it dead and the repair CREATED an orphan `tool_result`, which is 14 of
+// the detect window's 17 day-0 divergences. That module's header carries the derivation.
 //
-// Parallel-call gotcha: when an agent fires N parallel tool_use blocks, the
-// store / assembler often emit N separate consecutive `role:'user'` (or
-// `role:'tool'`) messages, one per result, instead of a single bundled
-// user message. The old version of this function only looked at the SINGLE
-// immediately-next message, so it saw the first tool_result and declared
-// the remaining N-1 tool_use blocks orphaned. Stripping them silently
-// rewrote the assistant message, on the next turn the model thought it
-// had only called one tool, so it re-fired the others. That's the
-// "agent repeats itself" regression the owner caught.
-//
-// Fix: walk forward consuming every consecutive message that looks like a
-// tool-result carrier and union all their tool_use_ids before deciding
-// what's orphaned. A message "looks like a tool-result carrier" when it
-// has role='user' or role='tool' AND every content block is type
-// 'tool_result' (i.e. it's purely a result container, not a normal user
-// message that happens to follow tool calls).
+// This wrapper keeps the log line the correlation was measured against, and now reports
+// BOTH directions, so the same grep still answers the same question.
 function sanitizeOrphanToolBlocks(
   messages: Array<{ role: string; content: unknown }>,
   agentId: string,
 ): void {
-  const isPureToolResultMessage = (m: { role: string; content: unknown }): boolean => {
-    if (m.role !== 'user' && m.role !== 'tool') return false;
-    if (!Array.isArray(m.content)) return false;
-    const blocks = m.content as Array<Record<string, unknown>>;
-    if (blocks.length === 0) return false;
-    return blocks.every(b => b.type === 'tool_result');
-  };
-
-  let stripped = 0;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
-    const blocks = msg.content as Array<Record<string, unknown>>;
-    const useIds = blocks
-      .filter(b => b.type === 'tool_use' && typeof b.id === 'string')
-      .map(b => b.id as string);
-    if (useIds.length === 0) continue;
-
-    // Collect tool_result IDs from ALL consecutive following tool-result
-    // carrier messages, not just messages[i+1]. Parallel tool calls
-    // commonly result in multiple back-to-back tool-result messages.
-    const resultIds = new Set<string>();
-    let j = i + 1;
-    while (j < messages.length && isPureToolResultMessage(messages[j])) {
-      for (const b of messages[j].content as Array<Record<string, unknown>>) {
-        if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') {
-          resultIds.add(b.tool_use_id as string);
-        }
-      }
-      j++;
-    }
-
-    const orphanIds = useIds.filter(id => !resultIds.has(id));
-    if (orphanIds.length === 0) continue;
-
-    const orphanSet = new Set(orphanIds);
-    const kept = blocks.filter(b => !(b.type === 'tool_use' && orphanSet.has(b.id as string)));
-    stripped += orphanIds.length;
-
-    if (kept.length === 0) {
-      messages.splice(i, 1);
-    } else {
-      messages[i] = { ...msg, content: kept };
-    }
-  }
-
-  if (stripped > 0) {
+  const report = repairToolPairing(messages);
+  if (report.strippedToolUse > 0 || report.strippedToolResult > 0) {
     logger.warn('Stripped orphan tool_use blocks from messages', {
-      droppedCount: stripped,
+      droppedCount: report.strippedToolUse,
+      droppedToolResult: report.strippedToolResult,
+      droppedMessages: report.droppedMessages,
       messageCount: messages.length,
     }, agentId);
   }
@@ -2180,6 +2127,12 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
   // that is C11's loud failure, and a boundary that swallows it is warn-and-send with extra
   // steps. It cannot fire before the Step-2b flip (detect mode never repairs and never
   // throws), and it must not be neutered by that flip either.
+  //
+  // PHASE-3 T6: `laneIds` is now SUPPLIED. `repairAssembly`'s priority repair (C10) refuses
+  // without a lane map, so before T6 a Step-2b flip would have turned every size violation
+  // into a throw. The map is read off the messages themselves (`memory/message-lane-tag.ts`)
+  // rather than threaded through `ModelCallParams`, so it is aligned by construction and no
+  // caller can forget to pass it.
   try {
     await validateAtProviderBoundary({
       agentId,
@@ -2188,6 +2141,7 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
       systemPrompt,
       contextWindow: modelInfo.contextWindow,
       maxOutputTokens: modelInfo.maxOutputTokens,
+      laneIds: collectMessageLaneIds(messages),
     });
   } catch (err) {
     if (err instanceof AssemblyValidationError) throw err;
