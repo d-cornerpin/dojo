@@ -266,138 +266,76 @@ RELEASE_RECORD="$(mktemp)"
   echo ""
 } > "$RELEASE_RECORD"
 
-# ── Blocking gate 1/10: byte hygiene (Phase 0 T1) ──
-# NUL and C0 control bytes make a file BINARY to plain grep, which then reports
-# no match and looks clean — that is how the dev-instrument ship gate spent
-# months blind to the two largest files in this tree. Bidi/zero-width characters
-# are the render-time version of the same trick. First in the chain on purpose:
-# every gate after it greps something.
-step "Byte-hygiene gate (no bytes that blind grep or deceive review)"
-node "$SCRIPT_DIR/checks/check-bytes.mjs" \
-  || fail "Byte-hygiene gate: tracked source carries NUL/control/bidi/zero-width bytes. NOT publishing."
+# ── THE BLOCKING GATES — read from deploy/checks/gate-manifest.mjs ──
+# There used to be nine hand-written blocks here plus a tenth further down, each
+# carrying a hand-typed `N/10` in its comment — and that comment was the ONLY thing
+# binding this list to package.json's `gates:block`. It did not hold. PHASE-1 T11
+# added `check-watchdog-sql.mjs` to `npm run gates:block` and NOT to this file, so
+# the one path that publishes to a user's box was the one path that did not run it;
+# it was found two phases later by T13 counting the tiers by hand.
+#
+# The list now lives in ONE place and both consumers read it. The first gate below is
+# `check-gate-manifest.mjs`, which refuses when the two consumers drift, when a
+# `deploy/checks/check-*.mjs` exists that no tier names, or when a release-only gate
+# goes missing from this file. Each gate's reasoning moved into the manifest and now
+# sits beside its declaration instead of beside one of its two invocations.
+#
+# Gate 10/10 (upgrade-header auth bypass) is declared `post-smoke` and runs further
+# down, against the packaged artifact — that difference is DECLARED in the manifest
+# rather than left to be re-derived by counting.
+GATE_ROWS="$(node "$SCRIPT_DIR/checks/gate-manifest.mjs" --emit blocking pre-build)" \
+  || fail "Gate manifest: deploy/checks/gate-manifest.mjs could not be read. NOT publishing."
+GATE_TOTAL="$(printf '%s' "$GATE_ROWS" | grep -c . || true)"
+[ "${GATE_TOTAL:-0}" -ge 8 ] \
+  || fail "Gate manifest: only ${GATE_TOTAL:-0} pre-build blocking gate(s) declared; a gate list that empties itself passes every release. NOT publishing."
+GATE_N=0
+while IFS=$'\x1f' read -r g_id g_script g_args g_title g_fail; do
+  [ -n "$g_id" ] || continue
+  GATE_N=$((GATE_N + 1))
+  step "Blocking gate $GATE_N/$GATE_TOTAL: $g_title"
+  node "$ROOT/$g_script" || fail "$g_fail"
+done <<__GATE_ROWS__
+$GATE_ROWS
+__GATE_ROWS__
+[ "$GATE_N" -eq "$GATE_TOTAL" ] \
+  || fail "Gate manifest: ran $GATE_N of $GATE_TOTAL declared pre-build blocking gates. NOT publishing."
+echo ""
+echo "  ✓ $GATE_N/$GATE_TOTAL pre-build blocking gates green (declared in deploy/checks/gate-manifest.mjs)"
 
-# ── Blocking gate 2/10: size ratchets (Phase 0 T2) ──
-# The overhaul exists to shrink this codebase, and nothing shrinks by itself: the
-# god files got that way one "just five more lines" at a time, over two years, with
-# no gate that could see it. ratchets.json pins every large source file at its
-# measured wc -l; a pinned file may shrink but never exceed its pin, and any
-# unlisted source file above the new-file cap fails too (the decrease-only rule
-# cannot see a brand-new god file). Reads SOURCE, not the packaged dist.
-step "Size-ratchet gate (files may only shrink; new files may not balloon)"
-node "$SCRIPT_DIR/checks/check-ratchets.mjs" \
-  || fail "Size-ratchet gate: a pinned file grew past its ratchet, a pinned file vanished without its manifest entry, or an unlisted new file exceeded the cap. NOT publishing."
-
-# ── Blocking gate 3/10: growth detector (Phase 0 T12d) ──
-# The ratchet governs files it already knows about. This is the other half: a
-# file more than 25% above its recorded baseline, or a NEW unlisted file that
-# crosses 60% of the new-file cap, fails — so a god file is argued about while
-# it is still cheap to argue about, not after it passes 400 lines.
-step "Growth-detector gate (no file balloons past its recorded baseline)"
-node "$SCRIPT_DIR/checks/check-growth.mjs" \
-  || fail "Growth-detector gate: a file grew >25% above its baseline, or an unlisted file crossed 60% of the new-file cap. NOT publishing."
-
-# ── Blocking gate 4/10: lint baseline (Phase 0 T3) ──
-# The eslint rules are all `warn` because the tree has hundreds of pre-existing
-# findings and error-mode would be unshippable — so lint-baseline.json is the
-# enforcement instead: every count is pinned PER RULE and may only fall. Reads
-# SOURCE. Slower than the others (type-aware eslint plus a full tsc pass, tens of
-# seconds) and still never skippable: a gate that only runs on the good days is a
-# habit, not a gate.
-step "Lint-baseline gate (per-rule finding counts are decrease-only)"
-node "$SCRIPT_DIR/checks/check-lint-baseline.mjs" \
-  || fail "Lint-baseline gate: an eslint rule or unused-symbol diagnostic rose above its pinned count in lint-baseline.json. NOT publishing."
-
-# ── Blocking gate 5/10: orphan structures (Phase 0 T4) ──
-# Two rules, one checker. The spine READER rule (a declared spine column/type with
-# no production reader) was log-only through Phases 0 and 1 and BLOCKS from the
-# PHASE-1 exit (2026-07-28, T13). The flip changed the checker's DEFAULT rather
-# than adding `ORPHAN_GATE=block` to this line, and that was the point: this
-# invocation passes no environment, so an env-var-only flip would have left the
-# release path measuring nothing. A zero-reader structure now needs a waiver or a
-# dated zeroReader disposition in the manifest, or it refuses.
-# The WORK-SHAPED TABLE rule blocks from day one: any table carrying an agent link
-# and a state column must be declared in spine-manifest.json, which is the machine
-# check for the plan's own falsifier — "work/tracker unification producing a second
-# system in practice". Reads SOURCE and the migration chain, never the live
-# ~/.dojo database.
-step "Orphan-structure gate (no undeclared work-shaped table; every spine structure read, waived or owed)"
-node "$SCRIPT_DIR/checks/check-orphans.mjs" \
-  || fail "Orphan-structure gate: an undeclared work-shaped table, a manifest entry that stopped describing the schema, or a spine structure with no production reader and no dated disposition. NOT publishing."
-
-# ── Blocking gate 6/10: module wiring walk (Phase 0 T12d Step 2) ──
-# The orphan gate works a column at a time and cannot see a WHOLE MODULE that no
-# longer hangs off any entry point. This walk does: it starts at the four real
-# entry points and reports the production files it never reaches. Warn-only for
-# one phase, BLOCKING from the PHASE-1 exit (2026-07-28, T13) against a dated
-# allowlist — five ghosts, every one older than Phase 1 and already booked to a
-# sweep in writing. It refuses a NEW unreached file, a stale allowlist entry, a
-# missing entry point, and an unresolved relative import (a hole in the walk means
-# the lists cannot be trusted). It never asks anyone to delete anything: the fix is
-# to wire the file or write down why it survives. Reads SOURCE only.
-step "Module wiring walk (no unreached production file without a dated allowlist line)"
-node "$SCRIPT_DIR/checks/check-wiring.mjs" \
-  || fail "Wiring walk: a production file no entry point reaches with no allowlist entry, a stale allowlist entry, a missing entry point, or an unresolved relative import. NOT publishing."
-
-# ── Blocking gate 7/10: watchdog/platform contract (Phase 0 T5) ──
-# The watchdog must keep working while the platform will not boot, so it cannot
-# import platform code — which means the update-state contract (boot-attempt
-# limit, wall clock, rollback cap, phase names, marker shape) is HAND-COPIED into
-# both packages with a comment as the only thing binding them. If the copies
-# drift, nothing fails and nothing warns; the divergence surfaces during a failed
-# self-update, i.e. on a user's box, mid-incident, deciding whether to roll back.
-# This gate is the binding: it compares every declaration copy value-for-value and
-# set-for-set, fails on any NEW copy it was not told about, and asserts nothing in
-# watchdog/src imports packages/server or @dojo/shared.
-step "Watchdog/platform contract gate (hand-synced copies must not drift)"
-node "$SCRIPT_DIR/checks/check-watchdog-contract.mjs" \
-  || fail "Watchdog contract gate: the hand-synced update-state copies disagree, a new undeclared copy appeared, or watchdog/src imported platform code. NOT publishing."
-
-# ── Blocking gate 8/10: watchdog SQL prepares (PHASE-1 T11) ──
-# ADDED AT THE PHASE-1 EXIT AND THE GAP IS THE POINT: T11 built this check and
-# wired it into `npm run gates:block`, but not into this stack — so the one path
-# that publishes to a user's box was the one path that did not run it. Found by
-# T13 counting the tiers (package.json had 9 blocking checks, this file described
-# 8). Every statement in `watchdog/src` is prepared against the schema the
-# migration chain produces; T10 found both halves of watchdog supervision silently
-# dead for a day because `watchdog/` sits outside every `packages/` scan. Repo
-# contained: the live ~/.dojo database is never consulted.
-step "Watchdog SQL gate (every watchdog statement prepares against the migrated schema)"
-node "$SCRIPT_DIR/checks/check-watchdog-sql.mjs" \
-  || fail "Watchdog SQL gate: a statement in watchdog/src does not prepare against the schema the migration chain produces. NOT publishing."
-
-# ── Blocking gate 9/10: waiver budget (Phase 0 T12d) ──
-# The pre-committed consequence for "gates get waived": every waiver is a counted
-# commit trailer, and more than ~5 across an arc means the RULE is wrong. Over
-# budget the finding is a mis-scoped gate to re-aim, never a habit to hide.
-step "Waiver-budget gate (counted Gate-Waiver trailers across the arc)"
-node "$SCRIPT_DIR/checks/check-waivers.mjs" \
-  || fail "Waiver-budget gate: more waivers across this arc than the budget allows. The gate being waived is the thing to fix. NOT publishing."
-
-# ── The report tier (5): never blocks, always recorded ──
-# These measure rather than refuse — mixed timestamp formats, a stale resume
-# pointer, capability the tree lost, and the phase's real
-# added/deleted/net line counts. Non-negotiable #7: no phase passes or fails on a
-# line count, but a net-positive phase owes an accounting, and the accounting
-# starts with the numbers being IN the release record instead of on a terminal
-# nobody kept. `|| true` on each: a report tier that can fail a release is a
-# blocking tier wearing the wrong name.
-step "Report tier (4 instruments — recorded into the release record, never blocking)"
+# ── The report tier — also read from the manifest ──
+# These measure rather than refuse — mixed timestamp formats, a stale resume pointer,
+# capability the tree lost, and the phase's real added/deleted/net line counts.
+# Non-negotiable #7: no phase passes or fails on a line count, but a net-positive phase
+# owes an accounting, and the accounting starts with the numbers being IN the release
+# record instead of on a terminal nobody kept. Nothing here can fail the release: a
+# report tier that can fail a release is a blocking tier wearing the wrong name.
+# The instrument list was hand-typed here too; it now comes from the same manifest, so
+# a new instrument cannot reach one consumer and miss the other.
+REPORT_ROWS="$(node "$SCRIPT_DIR/checks/gate-manifest.mjs" --emit report)" \
+  || fail "Gate manifest: the report tier could not be read. NOT publishing."
+REPORT_TOTAL="$(printf '%s' "$REPORT_ROWS" | grep -c . || true)"
+step "Report tier (${REPORT_TOTAL:-0} instruments — recorded into the release record, never blocking)"
 {
   echo "## Report tier (never blocking — measured, recorded, judged by the exit review)"
   echo ""
   echo '```'
 } >> "$RELEASE_RECORD"
-for reporter in check-iso-writes check-status-fresh check-capability-ledger check-deletion-ratio; do
+REPORT_N=0
+while IFS=$'\x1f' read -r r_id r_script r_args r_title r_fail; do
+  [ -n "$r_id" ] || continue
+  REPORT_N=$((REPORT_N + 1))
   {
-    echo "── $reporter ──"
-    node "$SCRIPT_DIR/checks/$reporter.mjs" 2>&1 || echo "(exit $? — report tier, not blocking)"
+    echo "── $r_id ──"
+    node "$ROOT/$r_script" 2>&1 || echo "(exit $? — report tier, not blocking)"
     echo ""
   } >> "$RELEASE_RECORD"
-  echo "  · $reporter recorded"
-done
+  echo "  · $r_id recorded"
+done <<__REPORT_ROWS__
+$REPORT_ROWS
+__REPORT_ROWS__
 echo '```' >> "$RELEASE_RECORD"
 echo "" >> "$RELEASE_RECORD"
-echo "  ✓ 4 report-tier instruments captured into the release record"
+echo "  ✓ $REPORT_N report-tier instrument(s) captured into the release record"
 
 # ── Bump version ──
 step "Bumping root package.json → $VERSION"
@@ -472,7 +410,7 @@ fi
 }
 echo "  ✓ packaged build boots and answers on :$SMOKE_PORT — import graph resolves, migrations run, listener up"
 
-# ── Blocking gate 10/10: upgrade-header auth bypass (Phase 0 T9 Step 0) ──
+# ── Blocking gate `upgrade-bypass`, declared post-smoke in gate-manifest.mjs ──
 # Until 2026-07-26 the auth middleware returned next() for ANY request whose
 # `Upgrade` header said `websocket`, before reading a token, across the whole
 # /api/* mount — an unauthenticated GET /api/agents came back 200. The exemption
@@ -692,7 +630,7 @@ fi
 echo "  ✓ no dev instruments (sim-outbound / /api/dev) in packaged build"
 
 # ── Land the release record beside the artifacts ──
-# The report tier measured five things and every one of them would otherwise
+# The report tier measured things that would otherwise
 # scroll off a terminal. Non-negotiable #7 is explicit that a net-positive phase
 # owes an accounting, not a number — an accounting needs the numbers written
 # down somewhere a reviewer can open.
