@@ -553,6 +553,20 @@
       "to": 2590,
       "by": "PHASE-3 T2 (2026-07-31)",
       "why": "The assembler stopped deriving its own budget. `DEFAULTS.contextThreshold = 0.75` and the local `toolAndOutputReserve = 15000` are gone (one of five declarations of one number, and the one that disagreed with the compaction gate's 0.96). The +3 is `assertSystemPromptFits` and its two-line reason: a window small enough to make the budget negative used to produce a single-message context SILENTLY, with nothing logged and nothing broadcast. That is a guard being added where an absence was, which is what the ratchet should cost the most to skip."
+    },
+    {
+      "path": "packages/server/src/costs/tracker.ts",
+      "from": 531,
+      "to": 541,
+      "by": "PHASE-3 T2 Step 3 (2026-07-31)",
+      "why": "PHASE-3 T2 Step 3 (research 06 A2). `cost_records` has always carried what the PROVIDER charged for input and never what the platform BELIEVED it would cost, so the estimator error research 06 called \"the 33% systematic error\" was a sentence nobody could re-derive — T2 had to reconstruct it from 1,459 receipt FILES joined to this table by timestamp just to pick a divisor. The +10 is one optional field, one column pair in the INSERT, and the note saying why the DIVISOR is stored beside the estimate (a 4-chars/token row and a 3.5-chars/token row are different measurements). This is a measurement being added where none existed; the ratchet is right that it is growth."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 2659,
+      "to": 2664,
+      "by": "PHASE-3 T2 Step 3 (2026-07-31)",
+      "why": "The two transports that compute an input estimate now hand it to recordCost — the Anthropic path's `inputEstimate` (the same sum its own hard cap compares against `hardInputLimit`) and the OpenAI path's post-trim `finalInputEstimate`. Recording the number that DECIDED whether history was trimmed, rather than a fresh guess taken afterwards, is the whole value; +5 lines for a pair of call arguments and the two sentences saying which estimate each is."
     }
   ],
   "maxNewFileLines": 400,
@@ -584,7 +598,7 @@
     "packages/server/src/agent/a2a-transport.ts": 1951,
     "packages/server/src/agent/browser.ts": 412,
     "packages/server/src/agent/destructive-gate.ts": 552,
-    "packages/server/src/agent/model.ts": 2659,
+    "packages/server/src/agent/model.ts": 2664,
     "packages/server/src/agent/pdf-tools.ts": 1007,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 687,
@@ -597,7 +611,7 @@
     "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/state.ts": 703,
-    "packages/server/src/costs/tracker.ts": 531,
+    "packages/server/src/costs/tracker.ts": 541,
     "packages/server/src/gateway/routes/agents.ts": 820,
     "packages/server/src/gateway/routes/chat.ts": 484,
     "packages/server/src/gateway/routes/config.ts": 2531,
