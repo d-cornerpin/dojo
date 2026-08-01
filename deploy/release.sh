@@ -270,7 +270,8 @@ RELEASE_RECORD="$(mktemp)"
 # There used to be nine hand-written blocks here plus a tenth further down, each
 # carrying a hand-typed `N/10` in its comment — and that comment was the ONLY thing
 # binding this list to package.json's `gates:block`. It did not hold. PHASE-1 T11
-# added `check-watchdog-sql.mjs` to `npm run gates:block` and NOT to this file, so
+# added `check-watchdog-sql.mjs` (renamed `check-sql-prepares.mjs` when PHASE-3 T8G
+# took it whole-tree) to `npm run gates:block` and NOT to this file, so
 # the one path that publishes to a user's box was the one path that did not run it;
 # it was found two phases later by T13 counting the tiers by hand.
 #

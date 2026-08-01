@@ -7,7 +7,8 @@
 // `gates:block` / `gates:report` scripts, and `deploy/release.sh`'s hand-written
 // steps. The ONLY thing binding them was a hand-typed `N/10` in a release.sh comment.
 //
-// That is not a hypothetical: PHASE-1 T11 built `check-watchdog-sql.mjs` and wired it
+// That is not a hypothetical: PHASE-1 T11 built `check-watchdog-sql.mjs` (renamed
+// `check-sql-prepares.mjs` at the T8G merge — see that entry) and wired it
 // into `npm run gates:block` but NOT into release.sh — so the one path that publishes
 // to a user's box was the one path that did not run it. It was found by T13 counting
 // the tiers BY HAND (package.json had 9 blocking checks, release.sh described 8), and
@@ -123,7 +124,7 @@ export const GATES = [
     id: 'sql-prepares',
     tier: 'blocking',
     phase: 'pre-build',
-    script: 'deploy/checks/check-watchdog-sql.mjs',
+    script: 'deploy/checks/check-sql-prepares.mjs',
     args: [],
     title: 'SQL-prepares gate (every statement in the tree prepares against the migrated schema)',
     fail: 'SQL-prepares gate: a statement does not prepare against the schema the migration chain produces. NOT publishing.',

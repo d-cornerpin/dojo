@@ -23,7 +23,10 @@
 // alias — SQLite refuses it here, at build time, instead of at 3am inside a catch.
 //
 // ── SCOPE: THE WHOLE TREE (PHASE-3 T8G, 2026-07-31) ──
-// Born scoped to `watchdog/src` (6 statements). PHASE-3 T0 rehearsed the promotion
+// Born as `check-watchdog-sql.mjs`, scoped to `watchdog/src` (6 statements); renamed
+// at the T8G merge because a file called check-WATCHDOG-sql that reads 581 files across
+// four directories is a name that lies about its own scope, and a lying name is how the
+// next worker re-derives a corpus narrower than the risk. PHASE-3 T0 rehearsed the promotion
 // rather than asserting it and measured the residue first; T8G then landed it. The
 // scope is now `packages/{server,shared,dashboard}/src` + `watchdog/src` — see
 // SQL_SCOPE below, which carries a per-directory blindness floor and the reason for
@@ -70,7 +73,7 @@
 // A gate that cannot demonstrate it bites is decoration.
 //
 // Usage:
-//   node deploy/checks/check-watchdog-sql.mjs     # exit 0 clean, 1 on any violation
+//   node deploy/checks/check-sql-prepares.mjs     # exit 0 clean, 1 on any violation
 // ════════════════════════════════════════
 import fs from 'node:fs';
 import path from 'node:path';
@@ -641,7 +644,7 @@ if (controlFailures.length) {
 if (failed) {
   console.error('✗ SQL prepares: refusing.');
   console.error('  Reproduce by hand:');
-  console.error(`    node deploy/checks/check-watchdog-sql.mjs`);
+  console.error(`    node deploy/checks/check-sql-prepares.mjs`);
   process.exit(1);
 }
 

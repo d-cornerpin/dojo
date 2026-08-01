@@ -3,7 +3,8 @@
 // The two gate lists are ONE list, and both consumers still read it.
 //
 // ── WHY THIS EXISTS, and it is not hypothetical ──
-// PHASE-1 T11 wrote `check-watchdog-sql.mjs` and wired it into `npm run gates:block`
+// PHASE-1 T11 wrote `check-watchdog-sql.mjs` (renamed `check-sql-prepares.mjs` at the
+// T8G merge, once its scope stopped being the watchdog) and wired it into `gates:block`
 // but not into `deploy/release.sh` — so the one path that publishes to a user's box
 // was the one path that did not run it. Nothing failed. It was found by T13 counting
 // the tiers BY HAND: package.json had 9 blocking checks and release.sh's comments
