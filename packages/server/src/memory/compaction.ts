@@ -799,6 +799,38 @@ async function runCheckAndCompact(
 
 // ── Leaf Compaction ──
 
+/**
+ * THE summarizer's leaf input. PHASE-3 T5 Step 1c (research 06 E19: "dedupe buildLeafInput
+ * + fresh-read extractor — one builder, one extractor, both imported").
+ *
+ * This was written twice, byte-identically: inline here and as `buildLeafInput` in
+ * `memory/summary-rebuild.ts`, whose whole job is to REPLAY this exact transformation over
+ * an old summary's source messages and check whether the result is still contaminated. Two
+ * copies of a replay is the one duplication that cannot be tolerated: the moment they drift,
+ * the nightly rebuild is measuring a summariser that does not exist, and it either loops
+ * forever on rows it can never clean or declares clean rows it never fixed.
+ *
+ * Every clause is load-bearing and each one is an incident:
+ *   • the NOISE FILTER — without it the summarizer folded another agent's completion dump
+ *     into the primary's context summary and the model narrated that work back to the user
+ *     (the repeated "Dreamer batch" summaries). The vault already stripped these; this is
+ *     what makes live compaction agree with it.
+ *   • the PARTY TAG — so the summarizer can carry attribution into every fact.
+ *   • the SCRUBS — a technique body or a credential value must never reach a persisted
+ *     summary (`scrubStubFor`), because a summary is re-injected across sessions.
+ */
+export function buildLeafSummaryInput(messages: Message[]): string {
+  return messages
+    .filter(m => !isNonConversationForSummary(m.content))
+    .map(m => {
+      const role = m.role.toUpperCase();
+      const party = summaryPartyTag(m);
+      const tag = party ? `${role} · ${party}` : role;
+      return `[${tag}] ${condenseToolJsonForSummary(scrubTechniqueContentForSummary(m.content))}`;
+    })
+    .join('\n\n---\n\n');
+}
+
 export async function runLeafCompaction(
   agentId: string,
   modelId: string,
@@ -844,22 +876,7 @@ export async function runLeafCompaction(
     // JSON to one-liners: fed verbatim, the summarizer quotes raw JSON into
     // summaries (observed live), wasting tokens on wire format while keeping
     // none of the meaning beyond tool name + outcome, which the one-liner keeps.
-    const content = chunk
-      // Drop inter-agent/lifecycle plumbing (sub-agent completions, PM/scheduler/
-      // healer pokes, inbound A2A, session dividers, synthetic acks) from the summary
-      // input. Without this the summarizer folded another agent's completion dump into
-      // the primary's context summary, and the model then narrated that work back to
-      // the user (the repeated "Dreamer batch" summaries). The vault already strips these;
-      // this makes live compaction agree.
-      .filter(m => !isNonConversationForSummary(m.content))
-      .map(m => {
-        const role = m.role.toUpperCase();
-        // Tag each message with its conversation party so the summarizer can carry
-        // attribution into every fact (see summaryPartyTag above).
-        const party = summaryPartyTag(m);
-        const tag = party ? `${role} · ${party}` : role;
-        return `[${tag}] ${condenseToolJsonForSummary(scrubTechniqueContentForSummary(m.content))}`;
-      }).join('\n\n---\n\n');
+    const content = buildLeafSummaryInput(chunk);
 
     const messageIds = chunk.map(m => m.id);
     const earliestAt = chunk[0].createdAt;
@@ -900,6 +917,18 @@ export async function runLeafCompaction(
         modelId,
         abortSignal: opts?.abortSignal,
       });
+
+      // PHASE-3 T5 Step 2: a REFUSAL leaves the chunk exactly where it is. `createLeafSummary`
+      // is what marks these message ids compacted, so skipping it is what makes the span
+      // survive to be summarised on the next drain. Writing NO_CONVERSATION_PLACEHOLDER here
+      // instead would be a lie about a span the summariser never read — and an irreversible
+      // one, because the rows would then be marked done.
+      if (!summary.ok) {
+        logger.warn('SUMMARY_REFUSED leaf chunk left uncompacted', {
+          messageCount: chunk.length, reason: summary.reason,
+        }, agentId);
+        continue;
+      }
 
       // PHASE-2 T7: the fenced-section ingest is GONE. Compaction used to run the summarizer's
       // output through a parser that upserted rows into the prose-parsed obligation store and
@@ -974,6 +1003,15 @@ export async function runCondensation(
           agentId,
           modelId,
         });
+
+        // PHASE-3 T5 Step 2: same rule one level up. `createCondensedSummary` marks the
+        // child summaries condensed; a refusal must not.
+        if (!summary.ok) {
+          logger.warn('SUMMARY_REFUSED condensation batch left uncondensed', {
+            depth: newDepth, parentCount: batch.length, reason: summary.reason,
+          }, agentId);
+          continue;
+        }
 
         createCondensedSummary(
           agentId,
@@ -1165,6 +1203,14 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
       modelId,
       previousContext: CONTINUITY_BRIEF_PROMPT,
     });
+
+    // PHASE-3 T5 Step 2: a refused brief is simply not written. The brief is advisory —
+    // the assembler injects it when present — so its absence costs a turn of continuity,
+    // while a truncated raw dump in its place would be read by the model as fact.
+    if (!result.ok) {
+      logger.warn('SUMMARY_REFUSED continuity brief not written', { reason: result.reason }, agentId);
+      return;
+    }
 
     // PHASE-2 T7: nothing to strip. The depth-0 contract no longer emits a fenced
     // OPEN-LOOPS section, so the brief is the model's text as written.

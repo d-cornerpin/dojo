@@ -32,10 +32,12 @@ import { NEW_SESSION_DIVIDER, A2A_INBOUND_ANYWHERE_RE, SOURCE_ENVELOPE_ANYWHERE_
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { isPlatformNoise } from './platform-noise.js';
+// PHASE-3 T5 Step 2: the counter SWEEP C reads to retire this file. Its own module —
+// one owner per job, and this file is the thing being measured, not the measurer.
+import { recordCleanStock, countSummaryStock } from './summary-clean-stock.js';
 import {
   isNonConversationForSummary,
-  scrubTechniqueContentForSummary,
-  condenseToolJsonForSummary,
+  buildLeafSummaryInput,
   resolveSummaryWriterModel,
   NO_CONVERSATION_PLACEHOLDER,
   SUMMARY_TARGET_TOKENS,
@@ -49,8 +51,6 @@ import {
 import { generateSummary } from './summarize.js';
 import { refreshEmbedding } from './embeddings.js';
 import { estimateTokens } from './budget.js';
-import { summaryPartyTag } from './party-label.js';
-import type { Message } from '@dojo/shared';
 
 const logger = createLogger('summary-rebuild');
 
@@ -129,19 +129,12 @@ export function isContaminatedSummaryContent(content: string | null | undefined)
   return false;
 }
 
-// ── Summarizer input (same shape as runLeafCompaction / runCondensation) ──
-
-function buildLeafInput(messages: Message[]): string {
-  return messages
-    .filter(m => !isNonConversationForSummary(m.content))
-    .map(m => {
-      const role = m.role.toUpperCase();
-      const party = summaryPartyTag(m);
-      const tag = party ? `${role} · ${party}` : role;
-      return `[${tag}] ${condenseToolJsonForSummary(scrubTechniqueContentForSummary(m.content))}`;
-    })
-    .join('\n\n---\n\n');
-}
+// ── Summarizer input ──
+// PHASE-3 T5 Step 1c (E19): this file's `buildLeafInput` was a byte-identical copy of
+// compaction.ts's inline builder. This module's whole job is to REPLAY the summariser's
+// transformation and ask whether the result is still contaminated — so a second copy means
+// replaying a summariser that does not exist. ONE builder, imported.
+const buildLeafInput = buildLeafSummaryInput;
 
 function buildCondensedInput(children: Summary[]): string {
   return children
@@ -323,6 +316,17 @@ async function rebuildOneSummary(flag: FlaggedSummary, modelId: string): Promise
     modelId,
   });
 
+  // PHASE-3 T5 Step 2: the summariser can now REFUSE, and a refusal is a skip — the row
+  // stays flagged and the next night tries again. Before the contract this arrived as a
+  // truncated copy of the raw input, and `looksLikeSummarizerFallback` below existed to
+  // catch it AFTER the fact by comparing prefixes. That heuristic stays as the belt for
+  // pre-contract rows; this is the braces.
+  if (!result.ok) {
+    logger.warn('Summary rebuild REFUSED by the summarizer; leaving summary for a later night', {
+      summaryId: flag.id, reason: result.reason,
+    }, flag.agentId);
+    return 'skipped';
+  }
   if (!result.text || result.text.trim().length === 0) {
     logger.warn('Summary rebuild produced empty output; leaving summary for a later night', {
       summaryId: flag.id,
@@ -368,9 +372,15 @@ export interface SummaryRebuildStats {
   deferred: number;
   skipped: number;
   remainingAfter: number;
+  /** Total summaries in the store this run looked at. PHASE-3 T5 Step 2 — see below. */
+  stockScanned: number;
+  /** Consecutive runs, INCLUDING this one, that scanned a non-empty stock and found
+   *  nothing contaminated. Reset to 0 the moment anything is flagged. */
+  consecutiveCleanRuns: number;
 }
 
 let rebuildRunning = false;
+
 
 /**
  * Run one bounded rebuild batch. Called nightly from the vault maintenance
@@ -383,7 +393,7 @@ let rebuildRunning = false;
  */
 export async function runSummaryRebuildBatch(opts?: { limit?: number; modelId?: string }): Promise<SummaryRebuildStats> {
   const limit = opts?.limit ?? NIGHTLY_SUMMARY_REBUILD_LIMIT;
-  const empty: SummaryRebuildStats = { flaggedBefore: 0, rebuilt: 0, placeholders: 0, deferred: 0, skipped: 0, remainingAfter: 0 };
+  const empty: SummaryRebuildStats = { flaggedBefore: 0, rebuilt: 0, placeholders: 0, deferred: 0, skipped: 0, remainingAfter: 0, stockScanned: 0, consecutiveCleanRuns: 0 };
 
   if (rebuildRunning) {
     logger.warn('Summary rebuild already running, skipping this invocation');
@@ -392,10 +402,18 @@ export async function runSummaryRebuildBatch(opts?: { limit?: number; modelId?: 
   rebuildRunning = true;
   try {
     const flagged = findContaminatedSummaries();
+    const stockScanned = countSummaryStock();
     if (flagged.length === 0) {
-      logger.info('Summary rebuild complete: no contaminated summaries remain');
-      return empty;
+      const streak = recordCleanStock(0, stockScanned);
+      logger.info(
+        `SUMMARY_REBUILD_CLEAN_STOCK stockScanned=${stockScanned} flagged=0 ` +
+        `consecutiveCleanRuns=${streak}`,
+        { stockScanned, flagged: 0, consecutiveCleanRuns: streak },
+      );
+      return { ...empty, stockScanned, consecutiveCleanRuns: streak };
     }
+    // Anything flagged resets the streak: the write boundary is not yet provably holding.
+    recordCleanStock(flagged.length, stockScanned);
 
     const modelId = opts?.modelId ?? resolveSummaryWriterModel('summary-rebuild');
     if (!modelId) {
@@ -403,7 +421,7 @@ export async function runSummaryRebuildBatch(opts?: { limit?: number; modelId?: 
       return { ...empty, flaggedBefore: flagged.length, remainingAfter: flagged.length };
     }
 
-    const stats: SummaryRebuildStats = { ...empty, flaggedBefore: flagged.length };
+    const stats: SummaryRebuildStats = { ...empty, flaggedBefore: flagged.length, stockScanned };
     for (const flag of flagged) {
       if (stats.rebuilt + stats.placeholders >= limit) break;
       try {
@@ -424,7 +442,14 @@ export async function runSummaryRebuildBatch(opts?: { limit?: number; modelId?: 
     stats.remainingAfter = findContaminatedSummaries().length;
     logger.info('Summary rebuild nightly batch done', { ...stats, limit, modelId });
     if (stats.remainingAfter === 0) {
-      logger.info('Summary rebuild complete: contaminated summary stock fully cleaned');
+      // The streak starts at the FIRST run that both scanned a real stock and found it
+      // clean — this run repaired its way there, so it counts.
+      stats.consecutiveCleanRuns = recordCleanStock(0, stats.stockScanned);
+      logger.info(
+        `SUMMARY_REBUILD_CLEAN_STOCK stockScanned=${stats.stockScanned} flagged=0 ` +
+        `consecutiveCleanRuns=${stats.consecutiveCleanRuns} (repaired this run)`,
+        { ...stats },
+      );
     }
     return stats;
   } finally {

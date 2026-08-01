@@ -209,6 +209,66 @@ export interface AssemblyContext {
   delegationHint?: string | null;
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// D15 (PHASE-3 T5 Step 1b) — the cache-prefix violation becomes a COMPILE ERROR.
+//
+// Research 06 §4 named the leak path exactly: "any registry entry render(ctx)
+// reading per-turn AssemblyContext fields (builder threads turnContext /
+// counterparty / ttsEngine / loopCount / turnNumber / pendingNudge into EVERY
+// entry — nothing type-enforces system entries can't read them)". The system
+// prompt is the cached prefix (roadmap #10); one system render reading one of
+// these fields silently multiplies every agent's token cost and breaks NO test,
+// because the cache-prefix matrix only samples nine turn-states and a field that
+// happens to be constant across those nine passes.
+//
+// So the fields are REMOVED from the type system entries are handed. Reading one
+// is now `Property 'turnContext' does not exist on type 'SystemAssemblyContext'`,
+// at build time, on every build. `registry-system-context.test.ts` proves that by
+// compiling a fixture that tries, and asserting tsc refuses.
+//
+// The call site still passes the FULL context — a wider object satisfies a
+// narrower parameter — so nothing about assembly changes. What changed is what a
+// system render can SEE.
+//
+// Every field below is here because it varies within a turn or between turns for
+// the same agent+model. The inbound-channel five are included: C28 already moved
+// their content to `msg.turn-context`, and all four front system entries render
+// `() => null` today, so this pins that relocation rather than proposing it.
+// ───────────────────────────────────────────────────────────────────────────
+
+export const VOLATILE_TURN_FIELDS = [
+  'turnContext',
+  'ttsEngine',
+  'replyRecipientName',
+  'lastUserContent',
+  'inboundChannel',
+  'smsFromNumber',
+  'phoneFromNumber',
+  'replyDestination',
+  'loopCount',
+  'turnNumber',
+  'lastUserMessageContent',
+  'pendingNudge',
+  'techniqueStrong',
+  'techniqueWeakHint',
+  'delegationHint',
+] as const satisfies readonly (keyof AssemblyContext)[];
+
+export type VolatileTurnField = (typeof VOLATILE_TURN_FIELDS)[number];
+
+/**
+ * What a `target: 'system'` entry may read. `AssemblyContext` minus everything
+ * that changes per turn — so a system render is structurally incapable of
+ * putting a volatile value into the cached prefix.
+ *
+ * NOT covered, and said out loud: an entry that reaches around the context for a
+ * volatile fact (`new Date()`, a direct `ctx.db` query for the latest row) is
+ * still possible. `sys.time` does exactly that with the current DATE, deliberately
+ * and knowingly (research 06 §4's midnight-crossing note). This type closes the
+ * threading path research 06 named; it is not a proof of purity.
+ */
+export type SystemAssemblyContext = Omit<AssemblyContext, VolatileTurnField>;
+
 /**
  * The message-side turn state the loop computes that the assembler needs when
  * the §3c engine injections migrate (R5). Passed into buildAssemblyContext;
@@ -257,22 +317,27 @@ interface BaseInjection {
   /** The REQUIREMENT this entry encodes (preserve-the-reason). Mandatory: no
    *  entry exists without a recorded reason. */
   reason: string;
-  /** Optional fast pre-filter. If omitted, the entry is considered for every
-   *  turn and `render` returning null/'' is how it opts out. Keeping the
-   *  condition inside `render` (return null) is preferred for byte-equivalence
-   *  during migration; `when` is sugar for the common, cheap gate. */
-  when?: (ctx: AssemblyContext) => boolean;
 }
 
+/** D15: `when` is narrowed with `render`. A pre-filter that reads a volatile field
+ *  puts the SAME turn-dependence into the cached prefix — it just does it by
+ *  deciding whether a block appears rather than by what the block says. */
 export interface SystemInjection extends BaseInjection {
   target: 'system';
   slot: SystemSlot;
-  render: (ctx: AssemblyContext) => SystemRenderResult;
+  /** Optional fast pre-filter; see `MessageInjection.when` for the full note. */
+  when?: (ctx: SystemAssemblyContext) => boolean;
+  render: (ctx: SystemAssemblyContext) => SystemRenderResult;
 }
 
 export interface MessageInjection extends BaseInjection {
   target: 'messages';
   slot: MessageSlot;
+  /** Optional fast pre-filter. If omitted, the entry is considered for every
+   *  turn and `render` returning null/'' is how it opts out. Keeping the
+   *  condition inside `render` (return null) is preferred for byte-equivalence
+   *  during migration; `when` is sugar for the common, cheap gate. */
+  when?: (ctx: AssemblyContext) => boolean;
   render: (ctx: AssemblyContext) => MessageRenderResult;
 }
 

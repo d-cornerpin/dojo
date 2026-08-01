@@ -113,7 +113,13 @@ beforeEach(() => {
   generateSummarySpy.mockImplementation(async () => {
     await new Promise(r => setTimeout(r, 5));
     const text = 'A summary of the conversation so far.';
-    return { text, tokenCount: 12 };
+    // PHASE-3 T5 Step 2: `ok: true` is not decoration. `generateSummary` now returns
+    // `{ok:true,…} | {ok:false, reason}` (19 §1e) and compaction SKIPS the chunk on a
+    // refusal, leaving the messages uncompacted. A mock still returning the old shape makes
+    // every chunk read as refused, no summary is written, and this race test measures
+    // nothing — which is exactly what happened when the contract landed, and is the mock
+    // being WRONG rather than the guard being weakened.
+    return { ok: true, text, tokenCount: 12 };
   });
 });
 

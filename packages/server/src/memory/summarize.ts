@@ -158,6 +158,26 @@ export function truncateDeterministic(text: string, targetTokens: number): strin
 
 // ── Main Summarization Function ──
 
+/**
+ * THE SUMMARIZER'S RESULT CONTRACT. PHASE-3 T5 Step 2, per 19 §1e.
+ *
+ * Before this, every path returned `{ text, tokenCount }` and two of them filled `text`
+ * with `truncateDeterministic(content)` — the RAW chunk, role tags and all. Research 06 §6
+ * names that as one of the two reasons contaminated summaries exist at all: the raw body
+ * was persisted, embedded, FTS-indexed and then condensed into depth-1 and depth-2 parents,
+ * and a nightly job re-repaired it forever.
+ *
+ * A refusal is not a placeholder. `NO_CONVERSATION_PLACEHOLDER` is a CLAIM — "this span held
+ * no conversation" — and it is true only when the filtered input really is empty, which the
+ * caller checks before ever getting here. On the no-model and model-threw paths the claim
+ * would be false and the cost of the lie is permanent: marking the sources compacted
+ * destroys the rows. `{ok:false, reason}` leaves the span exactly where it was so the next
+ * drain tries again.
+ */
+export type SummaryResult =
+  | { ok: true; text: string; tokenCount: number }
+  | { ok: false; reason: string };
+
 export async function generateSummary(params: {
   content: string;
   depth: number;
@@ -170,14 +190,16 @@ export async function generateSummary(params: {
   // beyond a sane wall-clock) can actually be cancelled rather than
   // continuing in the background.
   abortSignal?: AbortSignal;
-}): Promise<{ text: string; tokenCount: number }> {
+}): Promise<SummaryResult> {
   const { content, depth, targetTokens, agentId, modelId, previousContext, abortSignal } = params;
 
-  // Need a model to summarize with
+  // Need a model to summarize with.
+  // PHASE-3 T5: this used to return `truncateDeterministic(content)` — the RAW chunk,
+  // persisted as if it were a summary. There is no model, so there is no summary; saying so
+  // is the only honest answer and it costs nothing but a retry.
   if (!modelId) {
-    logger.warn('No model specified for summarization, using deterministic truncation', {}, agentId);
-    const text = truncateDeterministic(content, targetTokens);
-    return { text, tokenCount: estimateTokens(text) };
+    logger.warn('SUMMARY_REFUSED no model specified for summarization', { depth }, agentId);
+    return { ok: false, reason: 'no summarizer model configured for this agent' };
   }
 
   // Level 1: Normal summarization
@@ -208,7 +230,7 @@ export async function generateSummary(params: {
         resultTokens,
         targetTokens,
       }, agentId);
-      return { text: result.content, tokenCount: resultTokens };
+      return { ok: true, text: result.content, tokenCount: resultTokens };
     }
 
     // Level 2: Aggressive retry
@@ -237,7 +259,7 @@ export async function generateSummary(params: {
         resultTokens: aggressiveTokens,
         targetTokens,
       }, agentId);
-      return { text: aggressiveResult.content, tokenCount: aggressiveTokens };
+      return { ok: true, text: aggressiveResult.content, tokenCount: aggressiveTokens };
     }
 
     // Level 3: Deterministic truncation (always succeeds)
@@ -247,18 +269,18 @@ export async function generateSummary(params: {
       targetTokens,
     }, agentId);
 
+    // STILL ok:true, deliberately: this truncates the MODEL'S OWN OUTPUT, which has already
+    // been through the summariser twice and carries no raw rows. It is a shorter summary,
+    // not a raw body wearing a summary's name.
     const truncated = truncateDeterministic(aggressiveResult.content, targetTokens);
-    return { text: truncated, tokenCount: estimateTokens(truncated) };
+    return { ok: true, text: truncated, tokenCount: estimateTokens(truncated) };
   } catch (err) {
-    // If model call fails entirely, fall back to deterministic truncation
+    // PHASE-3 T5: this used to truncate the RAW input and persist it. The model failing is
+    // not a reason to write the conversation back into the summary store verbatim.
     const message = err instanceof Error ? err.message : String(err);
-    logger.error('Summarization model call failed, using deterministic truncation', {
-      error: message,
-      depth,
-      targetTokens,
+    logger.error('SUMMARY_REFUSED summarization model call failed', {
+      error: message, depth, targetTokens,
     }, agentId);
-
-    const truncated = truncateDeterministic(content, targetTokens);
-    return { text: truncated, tokenCount: estimateTokens(truncated) };
+    return { ok: false, reason: `summarizer model call failed: ${message}` };
   }
 }
