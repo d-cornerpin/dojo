@@ -337,12 +337,31 @@ describe('the receipt attributes the lane to itself, measured', () => {
     });
     // The write is fire-and-forget (`void fs.promises.mkdir(...).then(...)`), so the read
     // waits for it rather than racing it.
+    //
+    // PHASE-3 T9: this comment was TRUE of the intent and FALSE of the code, and the
+    // release dry run is what caught it — the clause went red once here having passed
+    // twice in a row minutes earlier (`SyntaxError: Unexpected end of JSON input`). The
+    // old wait polled for the FILE TO EXIST, which is not the same fact as the file
+    // having been written: `fs.promises.writeFile` creates the entry first and fills it
+    // after, so a reader that wakes in that window gets a truncated file. On a busy box
+    // (the dry run had just built a package and smoke-booted it) that window is wide
+    // enough to lose. The condition now waits for the thing the test actually needs —
+    // a receipt that PARSES — and if it never arrives it says so instead of throwing a
+    // JSON error that reads like a product defect.
     const dir = path.join(scratch, '.dojo', 'receipts', AGENT);
-    for (let i = 0; i < 100 && !fs.existsSync(dir); i++) await new Promise((r) => setTimeout(r, 10));
-    for (let i = 0; i < 100 && fs.readdirSync(dir).length === 0; i++) await new Promise((r) => setTimeout(r, 10));
-    const file = fs.readdirSync(dir)[0];
-    const rec = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
-    const lanes: Array<{ id: string; status: string; granted: number; reason: string }> = rec.assembly.lanes;
+    let rec: { assembly: { lanes: Array<{ id: string; status: string; granted: number; reason: string }> } } | null = null;
+    let lastErr = 'never appeared';
+    for (let i = 0; i < 200 && rec === null; i++) {
+      try {
+        const file = fs.readdirSync(dir)[0];
+        if (file) rec = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+      } catch (e) {
+        lastErr = e instanceof Error ? e.message : String(e);
+      }
+      if (rec === null) await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(rec, `no parseable receipt under ${dir} within 2s — last read: ${lastErr}`).not.toBeNull();
+    const lanes = rec!.assembly.lanes;
     const del = lanes.find((l) => l.id === DELIVERIES_LANE_ID)!;
     const tail = lanes.find((l) => l.id === 'lane.loop-tail')!;
 
