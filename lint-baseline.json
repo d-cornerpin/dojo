@@ -8,10 +8,11 @@
       "@typescript-eslint/no-floating-promises": 13,
       "no-constant-binary-expression": 0,
       "no-empty": 5,
-      "no-restricted-imports": 89,
+      "no-restricted-imports": 90,
       "prefer-const": 7
     },
-    "total": 114
+    "$raise-no-restricted-imports": "89 -> 90, PHASE-3 T5 opening rider (2026-08-01), by hand. ONE new `node:fs` site: packages/server/src/memory/assembly-validation-sink.ts, the durable divergence sink T4's detect-only window needs — its evidence had been going to dojo.log, which logger.ts rotates at 10MB keeping one backup, measured at ababf11 as 16m14s of total retained history for a SEVEN-DAY window, with T4's own 17 day-0 lines already unrecoverable. The one alternative that would have kept this count flat was routing the append through logger.ts, which already imports fs — and it was REFUSED on measurement, not taste: logger.ts resolves LOG_DIR from os.homedir() at MODULE LOAD, so a sink built on it could not be tested against a redirected HOME without making a foundational module's path resolution lazy, i.e. changing the logging hot path to hold a lint count flat. This rule is advisory by its own message and exists to measure the surface Phase 5's brokers must route; this entry is that surface growing by one, named, with its file, so Phase 5 inherits a count it can trust rather than one that was gamed.",
+    "total": 115
   },
   "unusedSymbols": {
     "$comment": "Findings by TypeScript diagnostic code, from tsconfig.lint.json (noUnusedLocals + noUnusedParameters). That config is consumed ONLY by `npm run lint:types` — never by the build and never by `npm run typecheck` — so the unused-symbol population is counted without breaking either. TS6133 = declared but never read; TS6192 = all imports in a declaration unused; TS6196 = declared but never used (type position). 116 of the 118 sit in packages/server; the other 2 are in packages/shared, which the server program pulls in through its project reference.",
@@ -26,5 +27,5 @@
   "typeAwareRules": [
     "@typescript-eslint/no-floating-promises"
   ],
-  "grandTotal": 232
+  "grandTotal": 233
 }

@@ -674,6 +674,13 @@
       "why": "A NEW file past the 400-line cap, pinned so the addition is argued rather than noticed later \u2014 which is what the cap is for. It is 561 lines of which 169 are comment and 46 blank: 346 lines of code for research 06's whole C section (C9 the five clauses, C10 the priority-ordered repair, C11 the loud failure) plus the provider-boundary entry point and the divergence instrument. SPLITTING IT WAS CONSIDERED AND REFUSED: validate / repair / boundary are one subject \u2014 the repair re-runs the validation after every drop, and the boundary is the only caller of either \u2014 so three files would be three imports of one job, which is the disease this overhaul exists to delete. The comment weight is deliberate and load-bearing: it carries the measurement that decided the shape-vs-size line (73 real calls, 17 divergences, 0 of them size), the derivation of the detect window, and the grep recipes the day-7 flip decision is taken from. IT SHRINKS AT T4 STEP 2B ONLY IN THE SENSE THAT ITS COUNTERPARTS DO: the flip deletes ~118 lines of front-trimmer from `agent/model.ts`, which is what this file replaces."
     },
     {
+      "path": "packages/server/src/memory/assembly-validation.ts",
+      "from": 561,
+      "to": 576,
+      "by": "PHASE-3 T5 opening rider (2026-08-01)",
+      "why": "+15, and the mechanism itself was moved OUT rather than in. T4's detect-only window is read on day 7 from this validator's own log lines, and those went to ~/.dojo/logs/dojo.log, which logger.ts:48-66 rotates at 10MB keeping ONE backup. Re-derived at ababf11 by command: dojo.log.1 held 19,081,331 bytes spanning 03:56:01Z->04:00:33Z (4m33s) and dojo.log 4,265,426 bytes spanning 04:00:33Z->04:12:15Z, i.e. 16m14s of total retained history for a SEVEN-DAY window — and T4's own 17 day-0 divergence lines already returned 0 hits across both files. The durable sink fixes that. Its whole mechanism (path, record, append, read-back, failure counter, and the day-7 read procedure) is a NEW 146-line module, assembly-validation-sink.ts, well under maxNewFileLines, precisely so this file did not absorb it: the first draft put it here and measured 692. What stays here is one import, the append call on the divergence branch (six lines, reusing the `violations` array the logger line already built), and a header block naming the sink and pointing at it. A validator whose header still told day 7 to grep a file with sixteen minutes of retention would be the defect, not the size. From here this file may only shrink."
+    },
+    {
       "path": "packages/server/src/memory/budget.ts",
       "from": 0,
       "to": 301,
@@ -801,7 +808,7 @@
     "packages/server/src/work/occurrences.ts": 417,
     "packages/server/src/work/override-requests.ts": 246,
     "packages/server/src/work/work-reaper.ts": 528,
-    "packages/server/src/memory/assembly-validation.ts": 561,
+    "packages/server/src/memory/assembly-validation.ts": 576,
     "packages/server/src/memory/budget.ts": 301
   }
 }
