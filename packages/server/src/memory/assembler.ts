@@ -34,6 +34,7 @@ import { buildAssemblyContext, assembleSystemFromRegistry } from '../prompt/regi
 import { MessageSlot, type AssemblyTurnState } from '../prompt/registry/types.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
 import { turnBoundary, currentTurnConversationId } from '../agent/turn-state.js';
+import { currentTurnNumber } from '../agent/v2/turn-record.js';   // G24
 import type { Summary } from './dag.js';
 import type { Message } from '@dojo/shared';
 // PHASE-3 T5 — the marker taxonomy. Four shapes this file used to spell itself.
@@ -986,10 +987,7 @@ function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unk
           const continuityBrief = agentConfig.continuityBrief as string | undefined;
           const validUntil = agentConfig.continuityBriefValidUntilTurn as number | undefined;
           if (typeof validUntil !== 'number' || validUntil <= 0) return null;
-          const turnRow = db
-            .prepare('SELECT MAX(turn_number) AS max_turn FROM messages WHERE agent_id = ?')
-            .get(ctx.agentId) as { max_turn: number | null } | undefined;
-          const currentTurn = (turnRow?.max_turn ?? 0) + 1;
+          const currentTurn = currentTurnNumber(ctx.agentId);   // G24: the turns record, not a MAX over messages
           if (!(currentTurn < validUntil)) return null;
           if (!continuityBrief || continuityBrief.length <= 50) return null;
           return textRender(
@@ -1194,10 +1192,7 @@ async function assembleMessageContext(
       const cfg = JSON.parse(configRow.config) as Record<string, unknown>;
       const validUntil = cfg.continuityBriefValidUntilTurn as number | undefined;
       if (typeof validUntil !== 'number' || validUntil <= 0) return false;
-      const turnRow = getDb()
-        .prepare('SELECT MAX(turn_number) AS max_turn FROM messages WHERE agent_id = ?')
-        .get(agentId) as { max_turn: number | null } | undefined;
-      const currentTurn = (turnRow?.max_turn ?? 0) + 1;
+      const currentTurn = currentTurnNumber(agentId);   // G24
       // The brief itself injects through `validUntil`; the wider scaffolding re-fires for
       // 5 turns past that, giving ~8 turns of full context to re-establish.
       const SCAFFOLDING_EXTRA_TURNS = 5;
@@ -1967,13 +1962,10 @@ function budgetSummaries(summaries: Summary[], availableTokens: number): Summary
  * results, the intended behavior per spec.
  */
 export function stubOldToolResults(messages: Message[], agentId: string): Message[] {
-  const db = getDb();
-  // currentTurn = highest turn_number ever persisted for this agent + 1.
-  // Same logic v2/loop.ts uses to compute its own turn number.
-  const row = db
-    .prepare('SELECT MAX(turn_number) AS max_turn FROM messages WHERE agent_id = ?')
-    .get(agentId) as { max_turn: number | null } | undefined;
-  const currentTurn = (row?.max_turn ?? 0) + 1;
+  // G24: the turn the agent is ON, read from the `turns` record. The comment that used to
+  // stand here — "same logic v2/loop.ts uses" — stopped being true at PHASE-2 T2, when the
+  // loop moved onto the allocator; it is deleted with the query it described.
+  const currentTurn = currentTurnNumber(agentId);
 
   let stubbedCount = 0;
 

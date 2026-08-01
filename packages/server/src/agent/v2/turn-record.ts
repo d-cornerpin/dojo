@@ -80,6 +80,48 @@ export function startTurn(params: TurnStartParams): number {
 }
 
 /**
+ * THE turn number this agent is on. G24 (research 06 requirement 24), PHASE-3 T5 rider (c).
+ *
+ * REPLACES four copies of `SELECT MAX(turn_number) FROM messages WHERE agent_id = ?` + 1:
+ * three readers in `memory/assembler.ts` (continuity-brief window, post-compaction
+ * scaffolding window, tool-result stub age) and the WRITER in `memory/compaction.ts` that
+ * set the value the first two compared against. Research 06 §7's three defects — three DB
+ * round-trips for one number; a value that "only advances when a row persists, so a turn
+ * persisting nothing never advances"; and writer and readers deriving it at different
+ * moments, so "a row landing between shifts the window by one". `turns` allocates the
+ * number at turn START, so it is not derived, cannot race a write, and does not care
+ * whether the turn wrote anything.
+ *
+ * WHY MAX AND NOT "THE OPEN TURN", measured before choosing: 139 of 3,090 live turn rows
+ * have `ended_at IS NULL`, because a turn that dies never reaches `finalizeTurn` — and
+ * `kevin`, the agent both prompt goldens are bound to, held an open row at turn 246 while
+ * 264 had already been allocated. That reader would have answered eighteen turns stale on
+ * the one agent every prompt gate watches.
+ *
+ * THE SHIFT, measured: on 29 of 48 agents the old expression was exactly one HIGHER; on the
+ * other 19 it was LOWER by up to two, those being agents that ran turns persisting nothing.
+ * The brief window keeps its shape (writer and readers move together, so `current + 3`
+ * compares on one scale); the stub age is absolute and shifts 40 of 2,766 live tool rows
+ * (1.4%), all toward keeping content one turn longer — correct, since a result written in
+ * turn N is zero turns old in turn N, not minus one.
+ */
+export function currentTurnNumber(agentId: string): number {
+  try {
+    const row = getDb()
+      .prepare('SELECT MAX(turn_number) AS max_turn FROM turns WHERE agent_id = ?')
+      .get(agentId) as { max_turn: number | null } | undefined;
+    return row?.max_turn ?? 0;
+  } catch (err) {
+    // Never kill an assembly over the clock. A 0 reads as "no turns yet", which closes the
+    // brief and scaffolding windows rather than opening them — the fail-safe direction.
+    logger.warn('currentTurnNumber failed; treating as 0', {
+      agentId, error: err instanceof Error ? err.message : String(err),
+    });
+    return 0;
+  }
+}
+
+/**
  * How the turn ended. `answered` is passed explicitly rather than inferred from the exit
  * reason, because "the turn ended in a way that usually means we replied" and "a reply was
  * delivered" are exactly the two facts this platform kept confusing.

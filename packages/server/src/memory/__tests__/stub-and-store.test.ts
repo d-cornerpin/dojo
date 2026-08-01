@@ -22,10 +22,18 @@ vi.mock('../../db/connection.js', () => ({
 
 import { stubOldToolResults, V2_STUB_AFTER_TURNS } from '../assembler.js';
 
-// currentTurn = MAX(turn_number) + 1, so seed one message at CURRENT_TURN - 1.
+// PHASE-3 T5 (G24): currentTurn is now `MAX(turn_number)` from the `turns` RECORD, not
+// `MAX(turn_number) + 1` over `messages` — the allocator owns the number and a turn that
+// persisted no message used to leave the old derivation frozen (research 06 §7). The
+// fixture therefore ALLOCATES a turn instead of seeding a message to imply one. Every age
+// below, and every assertion, is unchanged: only where the clock is read from moved.
 // Derive the recent/old/boundary turns from the live threshold.
 const CURRENT_TURN = V2_STUB_AFTER_TURNS + 20;
-const SEED_TURN = CURRENT_TURN - 1;
+// Deliberately FIVE behind, so the two clocks disagree: a reader still on
+// `MAX(messages.turn_number) + 1` would compute CURRENT_TURN - 4 and every boundary
+// assertion below would fail. A seed that agreed with the allocator would let the old
+// reader pass silently, which is the whole trap this fixture exists to avoid.
+const SEED_TURN = CURRENT_TURN - 5;
 const RECENT_TURN = CURRENT_TURN - 1;                              // age 1 → keep
 const OLD_TURN = CURRENT_TURN - V2_STUB_AFTER_TURNS - 5;          // well past threshold → stub
 const STUB_BOUNDARY_TURN = CURRENT_TURN - V2_STUB_AFTER_TURNS;     // age == threshold → stub
@@ -43,10 +51,22 @@ beforeEach(() => {
       created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
   `);
-  // Seed one message so MAX(turn_number) + 1 == CURRENT_TURN.
+  db.exec(`
+    CREATE TABLE turns (
+      agent_id TEXT NOT NULL,
+      turn_number INTEGER NOT NULL,
+      ended_at TEXT,
+      PRIMARY KEY (agent_id, turn_number)
+    );
+  `);
+  // The message seed STAYS, five turns behind: it is what the OLD derivation read, and
+  // keeping the two clocks in disagreement is what makes this fixture able to tell them
+  // apart at all.
   db.prepare(
     `INSERT INTO messages (id, agent_id, role, content, turn_number) VALUES ('seed', 'primary', 'assistant', 'x', ?)`,
   ).run(SEED_TURN);
+  db.prepare('INSERT INTO turns (agent_id, turn_number, ended_at) VALUES (?, ?, NULL)')
+    .run('primary', CURRENT_TURN);
   mockDb.current = db;
 });
 

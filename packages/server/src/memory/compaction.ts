@@ -20,6 +20,7 @@ import { archiveMessagesBeforeCompaction, isDreamerIgnored, getArchiveHighWaterM
 import { isSystemServiceAgent } from '../config/platform.js';
 import { lastCompactionDividerAt } from '../agent/shared-state.js';
 import { summaryPartyTag } from './party-label.js';
+import { currentTurnNumber } from '../agent/v2/turn-record.js';   // G24
 import { isPlatformNoise } from './platform-noise.js';
 import type { Message } from '@dojo/shared';
 // PHASE-3 T5 — the marker taxonomy. Both of the latter two were re-declared below.
@@ -1238,14 +1239,11 @@ async function generateContinuityBrief(agentId: string, modelId: string, context
     // (Part XVIII §C: "the fresh tail is authoritative once the agent has
     // had a few turns to re-orient").
     //
-    // currentTurn is computed from MAX(turn_number) on this agent's
-    // messages, same logic v2/loop.ts uses. v1 messages have NULL
-    // turn_number so MAX returns the highest v2 turn or null. v1 path
-    // doesn't read this field, so a NULL/0 default is harmless.
-    const turnRow = db
-      .prepare('SELECT MAX(turn_number) AS max_turn FROM messages WHERE agent_id = ?')
-      .get(agentId) as { max_turn: number | null } | undefined;
-    const currentTurn = (turnRow?.max_turn ?? 0) + 1;
+    // G24: the WRITER of the window the two assembler readers compare against, now on the
+    // same clock they are. Before this, writer and readers each ran their own MAX over
+    // `messages` at different moments, so a row landing in between shifted the window by one
+    // (research 06 §7).
+    const currentTurn = currentTurnNumber(agentId);
     const validUntilTurn = currentTurn + 3;
 
     db.prepare(`
