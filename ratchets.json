@@ -861,6 +861,13 @@
       "to": 9632,
       "by": "PHASE-3 STRIP-3, the two conv-key/conversation-id class defects (2026-08-01, RULING P3-R3)",
       "why": "+19, and all 19 are comment. The CODE delta is zero: one argument changed (`recordedAnswerInConversation(agentId, chosenConvKey)` -> `chosenConversationId`, with its gate), and one `.set()` MOVED from beside its conv-key sibling to after the pickup repair that reassigns what it publishes -- moved, not doubled, so the map still has exactly one writer. The 19 lines are the two measurements, kept at the sites rather than only in the report, because both defects are INVISIBLE to every mechanical check this repo owns: both values are `string`, so tsc cannot see them, and the key crosses a function boundary, so the 51-bind-site grep STRIP-2 ran returns zero. A comment is the only thing left that can stop a future worker re-introducing them. THIS PIN COMES BACK DOWN IN THIS SAME TASK: the strip half of T7 Step 2 deletes `persistCrossConvSendEcho` and its three call sites, both SETTLED_HINT branches and the re-answer detector's call site from this file, and the lowering is recorded as its own entry with the measured figure."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9632,
+      "to": 9548,
+      "by": "PHASE-3 T7 Step 2, THE STRIP (2026-08-01, RULING P3-R3)",
+      "why": "A LOWERING, and it pays the note the raise earlier in this same task wrote (`9613 -> 9632`, the two conv-key measurements). Net from the pre-task 9613: -65. Three mechanisms left this file. (1) The cross-conversation send ECHO: `persistCrossConvSendEcho` and its three call sites, including the whole `gmail_send`/`outlook_send` branch whose entire body was the echo call -- requirement preserved by the deliveries lane (T7 Step 1) and `persistRoutingMarker`. (2) The SETTLED_HINT, both branches -- ~65 tokens of prose per turn telling the model not to re-answer conversations `scopeToHumanConversation` had already removed from the window; requirement preserved structurally there, deterministically by the now-WIRED `check-reanswer-ghost.mjs`, behaviourally by `settled-work-stays-settled`. (3) The cross-conversation re-answer DETECTOR call site and its two imports; `re-answer-guard.ts` (-133) and `re-answer-sink.ts` (-220) are deleted outright and the sink's pin is removed from this manifest with it. As with the trimmers at Step 2b, the deletions are larger than the net: STRIP notes went back in, each carrying its `requirement preserved:` line, the mechanism that now owns that requirement, and the measurement behind it -- and here the measurement matters more than usual, because the detector is being deleted as an alarm PROVEN never to have worked (its exclusion compared a conv key against a UUID column) rather than as one that went quiet."
     }
   ],
   "maxNewFileLines": 400,
@@ -901,7 +908,7 @@
     "packages/server/src/agent/tools.ts": 10484,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9632,
+    "packages/server/src/agent/v2/loop.ts": 9548,
     "packages/server/src/agent/v2/outbound.ts": 455,
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/state.ts": 703,
@@ -935,7 +942,6 @@
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/deliveries-lane.ts": 240,
-    "packages/server/src/agent/v2/re-answer-sink.ts": 220,
     "packages/server/src/agent/v2/receipt.ts": 433,
     "packages/server/src/memory/summary-rebuild.ts": 460,
     "packages/server/src/microsoft/auth.ts": 623,
