@@ -30,7 +30,7 @@ import { getDb } from '../../db/connection.js';
 import { A2A_INBOUND_RE, NEW_SESSION_BRACKET_RE, SOURCE_ENVELOPE_OPENER } from '@dojo/shared';
 import { PART_JOINER } from '../../prompt/registry/types.js';
 import { assemblyTokens } from '../../memory/assembly-validation.js';
-import type { AllocationReport } from '../../memory/lanes.js';
+import { POST_BUDGET_LANES, type AllocationReport } from '../../memory/lanes.js';
 import { createLogger } from '../../logger.js';
 
 const logger = createLogger('context-receipt');
@@ -133,11 +133,9 @@ function summarizeSystemPrompt(
   estTokens: number;
   entryId?: string | null;
 }> {
-  // D16: the joiner is IMPORTED from the shared taxonomy (`prompt/registry/types.ts`),
-  // never re-declared. `receipt.ts:63` used to hold a byte-identical private copy called
-  // PART_SEPARATOR, so the receipt could have gone on splitting on a string the assembler
-  // had stopped writing and would have reported one enormous part as though that were the
-  // system prompt's real block structure.
+  // D16: IMPORTED from the shared taxonomy, never re-declared. `receipt.ts:63` held a
+  // byte-identical private `PART_SEPARATOR`, so the receipt could have gone on splitting on
+  // a string the assembler had stopped writing and reported one part as the whole prompt.
   const parts = systemPrompt.split(PART_JOINER);
   const aligned = entryIds && entryIds.length === parts.length;
   return parts.map((part, i) => {
@@ -241,6 +239,39 @@ function summarizeMessage(msg: LoopMessage, mode: ReceiptMode, laneId: string | 
 }
 
 /**
+ * `lane.loop-tail` is DECLARED by the assembler and FILLED by the loop, so the assembler's
+ * own report can only ever say "did not fire on this turn" about it — which the lane table
+ * printed while three loop-tail entries sat in the same receipt. The receipt is written
+ * after the tail-append and knows where it starts (`volatileFrom`), so it is the one place
+ * that can state the truth. Measured, never estimated; the grants array is COPIED rather
+ * than mutated, because the report belongs to the assembly and recording must not change it.
+ *
+ * The one thing this cannot see is the settled hint when it FOLDS into an existing string
+ * tail instead of pushing its own message: those characters are below `volatileFrom` and
+ * count against the lane that owns that message. Stated because it is a real edge, not
+ * because it is large (65 tokens at its measured maximum).
+ */
+function withMeasuredLoopTail(input: ReceiptInput): AllocationReport['grants'] {
+  const grants = input.allocation?.grants ?? [];
+  const from = input.volatileFrom;
+  if (typeof from !== 'number' || from < 0 || from > input.messages.length) return grants;
+  const tail = input.messages.slice(from);
+  if (tail.length === 0) return grants;
+  const tokens = assemblyTokens(tail);
+  const reserve = POST_BUDGET_LANES.find((l) => l.id === 'lane.loop-tail')?.reserveTokens ?? 0;
+  const ids = [...new Set((input.messageEntryIds ?? []).slice(from).map((x) => x ?? '(untagged)'))];
+  return grants.map((g) => (g.id !== 'lane.loop-tail' ? g : {
+    ...g,
+    requested: tokens,
+    granted: tokens,
+    status: 'admitted' as const,
+    reason: `loop tail-append, MEASURED at the receipt boundary: ${tail.length} message(s) ` +
+      `(${ids.join(', ')}) costing ${tokens} tokens against the ${reserve}-token reserve ` +
+      `lanes.ts declares` + (tokens > reserve ? ' — OVER' : ''),
+  }));
+}
+
+/**
  * Fire-and-forget. Call at the callModel site, after ALL mutations, so the
  * receipt reflects precisely what the provider request will contain.
  */
@@ -289,7 +320,7 @@ export function writeContextReceipt(input: ReceiptInput): void {
               offTheTopTokens: input.allocation.offTheTopTokens,
               admittedIds: input.allocation.admittedIds,
               overBudget: input.allocation.overBudget,
-              lanes: input.allocation.grants,
+              lanes: withMeasuredLoopTail(input),
             }
           : { lanes: null }),
       },

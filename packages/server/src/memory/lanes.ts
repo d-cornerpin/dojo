@@ -366,12 +366,28 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
   {
     id: 'lane.loop-tail',
     slot: MessageSlot.TurnContext,
-    reserveTokens: 1420,
+    reserveTokens: 900,
     measured:
-      'golden-v0 nine-cell matrix: msg.turn-context max 4,780 chars (1,195 tokens) + ' +
-      'msg.current-time 345 (87) + msg.tool-note 299 (75) + msg.peer-status, bounded by ' +
-      'group size, measured at 63 chars for a 2-peer group (16). 1,195+87+75+16 = 1,373, ' +
-      'rounded up to 1,420 for the one-line engine hints that share the lane.',
+      'PHASE-3 T6, re-derived from the RECEIPT\'S REAL DISTRIBUTION (T3 acceptance, ' +
+      'assignment a). 234 live receipts across two builds, summing every message at or ' +
+      'after `volatileFrom`: min 156 · p50 298 · p90 378 · p99 693 · MAX 742 tokens. ' +
+      'Per entry, max/mean: msg.pending-nudge 479/248 · msg.turn-context 227/127 · ' +
+      'msg.current-time 87/87 · engine.settled-hint 65/65 · engine.open-work 60/60 · ' +
+      'engine.recent-outbound 41/36 · msg.peer-status 20/20. Plus msg.tool-note, which ' +
+      'never fired in the sample (the floor model has tools) and is bounded by its own ' +
+      'fixed 299-char string at 75. 742 + 75 = 817, declared 900. ' +
+      'THE OLD 1,420 WAS A SUM OF PER-ENTRY MAXIMA over golden-v0\'s nine cells — not a ' +
+      'single turn that ever happened — and its largest term (msg.turn-context at 1,195) ' +
+      'is 5.3x the largest this lane has actually been measured at. ' +
+      'WHAT THIS RESERVE DELIBERATELY DOES NOT COVER, stated rather than discovered: ' +
+      '`msg.technique-strong` rides this lane and the loop caps it at MAX_INLINE_CHARS = ' +
+      '25,000 chars (`agent/v2/loop.ts`), i.e. ~6,250 tokens plus its frame — 7x this ' +
+      'reserve, and it appeared 0 times in 234 receipts because this box holds three ' +
+      'fixture techniques of 1.3-3.2 KB. Reserving 6,350 off the top of EVERY assembly ' +
+      'for a lane that rare is a permanent tax on history; a strong technique match is ' +
+      'therefore a RECORDED over-budget event at the validator, not a silent one, which ' +
+      'is the same disposition requirement B8 gives the forced last group. Narrowing the ' +
+      '25,000 cap is a product-behaviour change and is enumerated for T9, not taken here.',
   },
 ];
 
