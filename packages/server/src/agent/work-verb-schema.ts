@@ -31,8 +31,8 @@
 // `work-verb-schema.test.ts` proves rather than claims.
 //
 // N1 (collapse the two paraphrases into ONE canonical wording, the only variant that
-// actually saves wire bytes — §T0-E estimates 2,000–2,900) remains NEEDS-OWNER. It is a
-// coaching trim and no worker gets to make it.
+// actually saves wire bytes — §T0-E estimates 2,000–2,900) was NEEDS-OWNER and is now
+// DECIDED: see `WORK_FIELD_TEXT` below.
 //
 // ── THE ONE STRUCTURAL DIVERGENCE, NAMED RATHER THAN HARMONISED ─────────────────────────
 // `priority` is the 17th, and the two verbs declare it differently: `work_open` carries
@@ -95,3 +95,81 @@ export function workProp(name: keyof typeof WORK_SHARED_PROPERTIES | string, des
   if (!shared) throw new Error(`work verb property not declared: ${String(name)}`);
   return { ...shared, ...(extra ?? {}), description };
 }
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// N1 — THE WORDING COLLAPSE. Owner-approved 2026-08-01, post-exit.
+// ════════════════════════════════════════════════════════════════════════════════════════
+//
+// The two verbs described the same 17 fields in two paraphrases: 2,328 + 2,072 = 4,400
+// chars of prose on the wire, every turn, forever (re-measured at `9a995ca` — the exit
+// figure, reproduced). The owner's ruling: say each field's meaning ONCE. Every lesson is
+// KEPT; only the SECOND STATEMENT of it is deleted. The END-OF-TURN DECISION MATRIX and
+// every other coaching block are untouched (N3 unasked), as is `work_close_request` (N2).
+//
+// ── THE OBVIOUS SHAPE GROWS THE WIRE, MEASURED (#14) ─────────────────────────────────────
+// "One canonical wording, BOTH verbs emit it" costs more than today, for the reason T3
+// recorded above: each tool serialises its own `input_schema`, so a string shared in
+// TypeScript is still emitted twice. Lower bound at `9a995ca`: the LARGER of each pair sums
+// to 2,693, and a union is never shorter than the larger of two, so that shape costs AT
+// LEAST 2 × 2,693 = 5,386 against 4,400 — **≥986 chars of GROWTH** before one clause is
+// merged. (§T0-E's naive form of it measured 8,834.) The wire only shrinks if text stops
+// being emitted twice, so:
+//   • `canonical` — the full best-of-both wording, emitted by the verb that OWNS the
+//     field's mechanics. For all seven that is `work_open`: it introduces the field, and
+//     the tracker uptake this coaching protects happens at OPEN time.
+//   • `onUpdate`  — `work_update`'s own line: its `action=` routing (which of that verb's
+//     seven actions consumes the field — that exists nowhere else, so it is never
+//     duplication), its genuinely edit-side clauses (clear/replace), and a POINTER to the
+//     canonical rather than a restatement. Both verbs are always-loaded and adjacent in the
+//     declared array (S1), so the pointer resolves to text already in the prompt.
+//
+// ── WHY SEVEN AND NOT SEVENTEEN ──────────────────────────────────────────────────────────
+// The other ten pairs are not paraphrases and are left exactly as they were; sharing them
+// would grow the wire and blur two different meanings. `title`/`description`/`project_id`/
+// `assigned_to`/`step_number`/`depends_on`/`phase`/`goal`: `work_open` says what the field
+// MEANS, `work_update` says the edit operation (replace, clear, the goalpost-moving
+// caution, UUID-prefix resolution) — different content, both short, under ~25 chars of
+// overlap. `priority`: `work_update` lists the three values because it deliberately carries
+// NO enum (the divergence named above), so that listing compensates for a missing schema
+// constraint rather than restating prose. `repeat_end_type`: `work_update`'s line is
+// already routing-only (39 chars).
+//
+// The realised saving is in `.superpowers/sdd/PHASE-3/task-N1-report.md`, measured with the
+// transport's own expression, and stated beside the exit summary's 500–725-token estimate —
+// which was "4,400 minus one copy" and so carries the same source-vs-wire error T3
+// corrected in the 449. `work-verb-schema.test.ts` pins the post-collapse byte counts.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+export const WORK_FIELD_TEXT: Record<string, { canonical: string; onUpdate: string }> = {
+  assigned_to_group: {
+    canonical: 'Assign to a group instead of a specific agent. The PM picks an available agent at run time.',
+    onUpdate: 'action="reassign": group ID to assign to (see work_open).',
+  },
+  scheduled_start: {
+    // "UTC" is the one clause only `work_update` carried; it survives here, in the canonical.
+    canonical: 'When to run this task. Use ISO 8601 UTC format like "2026-03-20T22:35:00Z". Call get_current_time first to get the current time, then calculate your target time. If omitted, task runs immediately.',
+    onUpdate: 'action="edit": new scheduled start (see work_open). Pass null or empty string to clear and run immediately.',
+  },
+  repeat_interval: {
+    canonical: 'How often to repeat. e.g., 2 means every 2 of the repeat_unit. Requires repeat_unit.',
+    onUpdate: 'action="edit": repeat interval value (see work_open).',
+  },
+  repeat_unit: {
+    // `work_open` already carried the superset: the "every weekday except Friday" example
+    // is here and was absent from `work_update`'s paraphrase.
+    canonical: 'Unit for repeat interval. "weekdays" = Mon–Fri only (skips weekends). "specific_days" = an explicit set of weekdays you provide via repeat_days_of_week (e.g. "every Monday and Wednesday" or "every weekday except Friday"). For specific_days, repeat_interval is ignored, the task fires on each listed day every week.',
+    onUpdate: 'action="edit": repeat unit (see work_open for what each unit means).',
+  },
+  repeat_days_of_week: {
+    canonical: 'Required when repeat_unit="specific_days". List of weekday names: ["mon","wed"] for Mondays and Wednesdays, ["mon","tue","wed","thu"] for weekdays except Friday. Accepted names: sun/mon/tue/wed/thu/fri/sat (case-insensitive). Integers 0-6 (0=Sun..6=Sat) also accepted.',
+    onUpdate: 'action="edit": the weekday list (same format as work_open). Pass [] to clear.',
+  },
+  repeat_end_value: {
+    canonical: 'For after_count: the number of runs (e.g., "5"). For on_date: an ISO8601 date (e.g., "2026-04-01"). Required when repeat_end_type is not "never".',
+    onUpdate: 'action="edit": value for repeat_end_type (see work_open).',
+  },
+  anchor_time: {
+    canonical: 'For recurring work: ISO 8601 timestamp that anchors all future runs (only the time-of-day matters, date components reflect when the anchor was set). DEFAULTS to scheduled_start (or `when` for a reminder); pass explicitly only if you want a different wall-clock time. Use this when it should ALWAYS fire at a specific time-of-day regardless of how long each run takes, e.g. "every Monday at 06:00", not "every Monday whenever the previous run happened to finish." Without this, a 5-minute completion drifts the schedule by 5 minutes every cycle.',
+    onUpdate: 'action="edit": the anchor timestamp (see work_open); use it to change WHEN a recurring task fires without recreating it, e.g. 06:00 instead of 06:05. Pass null or empty string to clear.',
+  },
+};

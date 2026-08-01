@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import {
   WORK_SHARED_PROPERTIES,
   WORK_PRIORITY_ENUM,
+  WORK_FIELD_TEXT,
   workProp,
 } from '../work-verb-schema.js';
 
@@ -42,20 +43,30 @@ function schemaOf(name: string): Record<string, unknown> {
   const body = src.slice(k, e)
     // The rewired sites call workProp(...); evaluate them against the real module.
     .replace(/\bworkProp\(/g, '__workProp(')
-    .replace(/\bWORK_PRIORITY_ENUM\b/g, '__PRIORITY_ENUM');
+    .replace(/\bWORK_PRIORITY_ENUM\b/g, '__PRIORITY_ENUM')
+    // N1: the seven collapsed fields interpolate the canonical wording from the module.
+    .replace(/\bWORK_FIELD_TEXT\b/g, '__FIELD_TEXT');
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
-  const fn = new Function('__workProp', '__PRIORITY_ENUM', `return (${body});`);
-  return fn(workProp, WORK_PRIORITY_ENUM) as Record<string, unknown>;
+  const fn = new Function('__workProp', '__PRIORITY_ENUM', '__FIELD_TEXT', `return (${body});`);
+  return fn(workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT) as Record<string, unknown>;
 }
 
-// Captured at `8f36cdb`, BEFORE the rewire, by serialising both verbs' input_schema.
-const BASELINE_CHARS = { work_open: 5623, work_update: 7008 };
+// Captured at `8f36cdb`, BEFORE the S2 rewire, by serialising both verbs' input_schema.
+// S2 left these UNCHANGED (its whole claim). N1 (post-exit, owner-approved 2026-08-01)
+// moved them ON PURPOSE — it is the wording collapse — and these are the measured
+// post-collapse counts at `9a995ca`+N1:
+//   work_open  5,623 → 5,628  (+5: "UTC", the one clause only work_update carried,
+//                              survives in the canonical)
+//   work_update 7,008 → 6,310 (−698: seven paraphrases replaced by routing + a pointer)
+// Net −693 wire chars on the two verbs' input_schema, on every turn, forever.
+const S2_BASELINE_CHARS = { work_open: 5623, work_update: 7008 };
+const BASELINE_CHARS = { work_open: 5628, work_update: 6310 };
 
-describe('S2 — the shared declaration changes zero wire bytes', () => {
+describe('S2 + N1 — the shared declaration, and the wording said once', () => {
   const open = schemaOf('work_open');
   const upd = schemaOf('work_update');
 
-  it('serialises to exactly the byte count it did before the rewire', () => {
+  it('serialises to exactly the measured byte count — the tools array is cached-prefix bytes', () => {
     expect(JSON.stringify(open).length).toBe(BASELINE_CHARS.work_open);
     expect(JSON.stringify(upd).length).toBe(BASELINE_CHARS.work_update);
   });
@@ -83,7 +94,7 @@ describe('S2 — the shared declaration changes zero wire bytes', () => {
     }
   });
 
-  it('ZERO WORDING TRIMS: every description is non-empty and the two verbs still differ', () => {
+  it('every field is still described on BOTH verbs, and the collapse is the measured 4,400 → 3,733', () => {
     const po = (open as { properties: Record<string, { description?: string }> }).properties;
     const pu = (upd as { properties: Record<string, { description?: string }> }).properties;
     let differing = 0;
@@ -96,10 +107,55 @@ describe('S2 — the shared declaration changes zero wire bytes', () => {
       totalChars += a.length + b.length;
       if (a !== b) differing++;
     }
-    // Measured at `8f36cdb`: 2,328 + 2,072 = 4,400 chars, all 17 pairs differing. Both
-    // survive verbatim — collapsing them into one wording is N1, and N1 is NEEDS-OWNER.
-    expect(totalChars).toBe(4400);
+    // Was 2,328 + 2,072 = 4,400 at `8f36cdb` and still 4,400 at the phase exit `9a995ca`.
+    // N1 collapses the seven paraphrase pairs: 2,333 + 1,400 = 3,733, −667 chars of prose
+    // (−693 once JSON escaping is counted, `BASELINE_CHARS` above).
+    expect(totalChars).toBe(3733);
+    // NOT one description was deleted, and no pair was harmonised into identical bytes:
+    // every field still reads differently on the two verbs because each verb still says
+    // its own thing about it.
     expect(differing).toBe(17);
+    expect(S2_BASELINE_CHARS.work_open + S2_BASELINE_CHARS.work_update
+      - (BASELINE_CHARS.work_open + BASELINE_CHARS.work_update)).toBe(693);
+  });
+
+  it('N1 — the seven collapsed fields say their meaning ONCE across the two verbs', () => {
+    const po = (open as { properties: Record<string, { description: string }> }).properties;
+    const pu = (upd as { properties: Record<string, { description: string }> }).properties;
+    const collapsed = Object.keys(WORK_FIELD_TEXT);
+    expect(collapsed).toHaveLength(7);
+    for (const name of collapsed) {
+      const canonical = WORK_FIELD_TEXT[name].canonical;
+      // work_open emits the canonical verbatim (with its own `Task only.` scope lead where
+      // it has one) — the lesson is PRESENT, not deleted.
+      expect(po[name].description, `work_open.${name} must carry the canonical wording`).toContain(canonical);
+      // work_update emits its own routing line and does NOT restate the canonical. This is
+      // the entire wire saving: said once, not twice.
+      expect(pu[name].description, `work_update.${name} must be the module's onUpdate line`).toBe(WORK_FIELD_TEXT[name].onUpdate);
+      expect(pu[name].description, `work_update.${name} is restating the canonical again`).not.toContain(canonical);
+      // The pointer is what makes the deletion a collapse rather than a trim: it names the
+      // verb whose description holds the wording. Both tools are always-loaded and adjacent
+      // in the declared array (S1), so it resolves to text already in the prompt.
+      expect(pu[name].description, `work_update.${name} must point at where the wording lives`).toContain('work_open');
+    }
+  });
+
+  it('N1 — the ten pairs that are NOT paraphrases were left alone', () => {
+    const po = (open as { properties: Record<string, { description: string }> }).properties;
+    const pu = (upd as { properties: Record<string, { description: string }> }).properties;
+    // Measured at `9a995ca` before the collapse and unchanged by it. A later "tidy-up" that
+    // trims one of these is a coaching trim nobody approved, and this pins it.
+    const UNTOUCHED: Record<string, [number, number]> = {
+      title: [22, 25], description: [154, 75], project_id: [54, 115], assigned_to: [51, 83],
+      priority: [32, 36], step_number: [34, 62], depends_on: [55, 98], phase: [34, 51],
+      goal: [68, 212], repeat_end_type: [165, 39],
+    };
+    expect(Object.keys(UNTOUCHED)).toHaveLength(10);
+    for (const [name, [o, u]] of Object.entries(UNTOUCHED)) {
+      expect(name in WORK_FIELD_TEXT, `${name} is not a collapsed field`).toBe(false);
+      expect(po[name].description.length, `work_open.${name} moved`).toBe(o);
+      expect(pu[name].description.length, `work_update.${name} moved`).toBe(u);
+    }
   });
 
   it('the one structural divergence is DECLARED, not silently harmonised', () => {

@@ -38,8 +38,11 @@ import { checkPermission, getAgentPermissions } from './permissions.js';
 // PHASE-0 T10: sensitive-path list, ~-expansion and the share/read gate.
 import { resolvePath, isSensitivePath, sharePathGuard, pdfInputPaths } from './path-guards.js';
 // S2 (PHASE-3 T3): the 17 property schemas `work_open` and `work_update` both declare,
-// declared ONCE. Each verb keeps its own description verbatim — see work-verb-schema.ts.
-import { workProp, WORK_PRIORITY_ENUM } from './work-verb-schema.js';
+// declared ONCE. N1 (post-exit, owner-approved 2026-08-01): the seven fields whose two
+// descriptions were paraphrases of each other now have ONE canonical wording, said once on
+// the wire — `WORK_FIELD_TEXT`. The other ten pairs are NOT paraphrases and are untouched;
+// work-verb-schema.ts enumerates them and says why.
+import { workProp, WORK_PRIORITY_ENUM, WORK_FIELD_TEXT } from './work-verb-schema.js';
 import { isPrimaryAgent, isPMAgent, isImaginerAgent, getPrimaryAgentId, isDreamerAgent, isHealerAgent } from '../config/platform.js';
 import { spawnAgent, terminateAgent, completeAgent, applySpawnTimeoutDecision } from './spawner.js';
 import { getAgentRuntime } from './runtime.js';
@@ -1830,7 +1833,7 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         project_id: workProp('project_id', 'Task only. Optional project ID to attach this task to.'),
         assigned_to: workProp('assigned_to', 'Task only. Agent ID or name to assign this task to.'),
-        assigned_to_group: workProp('assigned_to_group', 'Task only. Assign to a group instead of a specific agent. The PM picks an available agent at run time.'),
+        assigned_to_group: workProp('assigned_to_group', `Task only. ${WORK_FIELD_TEXT.assigned_to_group.canonical}`),
         // The one structural divergence of the 17 (see work-verb-schema.ts): work_open
         // constrains priority to an enum and work_update does not. Applied HERE, named
         // rather than harmonised — closing it would add a constraint work_update's wire
@@ -1848,13 +1851,13 @@ export const toolDefinitions: ToolDefinition[] = [
           type: 'string',
           description: 'Reminder only. ISO 8601 datetime for when the reminder should fire (e.g. "2026-05-19T14:35:00Z"). Omit if the user did not specify a time, the tool will tell you to ask them. Call get_current_time first to resolve relative phrases like "in 5 minutes".',
         },
-        scheduled_start: workProp('scheduled_start', 'Task only. When to run this task. Use ISO8601 format like "2026-03-20T22:35:00Z". Call get_current_time first to get the current time, then calculate your target time. If omitted, task runs immediately.'),
-        repeat_interval: workProp('repeat_interval', 'How often to repeat. e.g., 2 means every 2 of the repeat_unit. Requires repeat_unit.'),
-        repeat_unit: workProp('repeat_unit', 'Unit for repeat interval. "weekdays" = Mon–Fri only (skips weekends). "specific_days" = an explicit set of weekdays you provide via repeat_days_of_week (e.g. "every Monday and Wednesday" or "every weekday except Friday"). For specific_days, repeat_interval is ignored, the task fires on each listed day every week.'),
-        repeat_days_of_week: workProp('repeat_days_of_week', 'Required when repeat_unit="specific_days". List of weekday names: ["mon","wed"] for Mondays and Wednesdays, ["mon","tue","wed","thu"] for weekdays except Friday. Accepted names: sun/mon/tue/wed/thu/fri/sat (case-insensitive). Integers 0-6 (0=Sun..6=Sat) also accepted.'),
+        scheduled_start: workProp('scheduled_start', `Task only. ${WORK_FIELD_TEXT.scheduled_start.canonical}`),
+        repeat_interval: workProp('repeat_interval', WORK_FIELD_TEXT.repeat_interval.canonical),
+        repeat_unit: workProp('repeat_unit', WORK_FIELD_TEXT.repeat_unit.canonical),
+        repeat_days_of_week: workProp('repeat_days_of_week', WORK_FIELD_TEXT.repeat_days_of_week.canonical),
         repeat_end_type: workProp('repeat_end_type', 'When to stop repeating. For repeating work that should stop after N runs, set repeat_end_type="after_count" and repeat_end_value="N". If omitted, it repeats forever.'),
-        repeat_end_value: workProp('repeat_end_value', 'For after_count: the number of runs (e.g., "5"). For on_date: an ISO8601 date (e.g., "2026-04-01"). Required when repeat_end_type is not "never".'),
-        anchor_time: workProp('anchor_time', 'For recurring work: ISO 8601 timestamp that anchors all future runs (only the time-of-day matters, date components reflect when the anchor was set). DEFAULTS to scheduled_start (or `when` for a reminder); pass explicitly only if you want a different wall-clock time. Use this when it should ALWAYS fire at a specific time-of-day regardless of how long each run takes, e.g. "every Monday at 06:00", not "every Monday whenever the previous run happened to finish." Without this, a 5-minute completion drifts the schedule by 5 minutes every cycle.'),
+        repeat_end_value: workProp('repeat_end_value', WORK_FIELD_TEXT.repeat_end_value.canonical),
+        anchor_time: workProp('anchor_time', WORK_FIELD_TEXT.anchor_time.canonical),
         allow_duplicate: {
           type: 'boolean',
           description: 'Set true to bypass the near-duplicate guard. The engine refuses creation if you already opened a similarly-titled project in the last 60 minutes (task: 5 minutes) — it catches the post-compaction "I forgot I already opened this" failure mode and runaway loops where an error causes duplicates instead of recovery. Only override when the new work is genuinely unrelated work that happens to share keywords.',
@@ -1910,7 +1913,7 @@ export const toolDefinitions: ToolDefinition[] = [
         },
         reason: { type: 'string', description: 'Required for action="close_project". A short sentence on why you are closing the project. Gets appended as a note on every closed task, this is the audit trail for the user.' },
         assigned_to: workProp('assigned_to', 'action="reassign": agent ID to assign to (use this OR assigned_to_group, not both).'),
-        assigned_to_group: workProp('assigned_to_group', 'action="reassign": group ID to assign to, the PM will pick an available agent at run time.'),
+        assigned_to_group: workProp('assigned_to_group', WORK_FIELD_TEXT.assigned_to_group.onUpdate),
         title: workProp('title', 'action="edit": new title.'),
         description: workProp('description', 'action="edit": new description/instructions. Pass an empty string to clear.'),
         goal: workProp('goal', 'action="edit": edit the definition of done. Both the prior and new goal are logged so PM can see the history when validating. Editing the goal narrower after work started will be flagged by PM as goalpost-moving.'),
@@ -1921,13 +1924,13 @@ export const toolDefinitions: ToolDefinition[] = [
         // field and work_update never has; adding the enum would change what the wire
         // carries and what a strict provider accepts, which is not S2's scope.
         priority: workProp('priority', 'Priority: "high" | "normal" | "low".'),
-        scheduled_start: workProp('scheduled_start', 'action="edit": new scheduled start time (ISO 8601 UTC, e.g. 2026-05-10T14:00:00Z). Pass null or empty string to clear and run immediately.'),
-        repeat_interval: workProp('repeat_interval', 'action="edit": repeat interval value (e.g. 1, 2). Pair with repeat_unit.'),
-        repeat_unit: workProp('repeat_unit', 'action="edit": repeat unit. "weekdays" = Mon–Fri only (skips weekends). "specific_days" = an explicit set of weekdays you provide via repeat_days_of_week (e.g. "every Monday and Wednesday"). For specific_days, repeat_interval is ignored, the task fires on each listed day every week.'),
-        repeat_days_of_week: workProp('repeat_days_of_week', 'action="edit": required when repeat_unit="specific_days". List of weekday names: ["mon","wed"] for Mondays and Wednesdays, ["mon","tue","wed","thu"] for weekdays except Friday. Accepted names: sun/mon/tue/wed/thu/fri/sat (case-insensitive). Integers 0-6 (0=Sun..6=Sat) also accepted. Pass [] to clear.'),
+        scheduled_start: workProp('scheduled_start', WORK_FIELD_TEXT.scheduled_start.onUpdate),
+        repeat_interval: workProp('repeat_interval', WORK_FIELD_TEXT.repeat_interval.onUpdate),
+        repeat_unit: workProp('repeat_unit', WORK_FIELD_TEXT.repeat_unit.onUpdate),
+        repeat_days_of_week: workProp('repeat_days_of_week', WORK_FIELD_TEXT.repeat_days_of_week.onUpdate),
         repeat_end_type: workProp('repeat_end_type', 'action="edit": how the recurrence ends.'),
-        repeat_end_value: workProp('repeat_end_value', 'action="edit": value for repeat_end_type ("after_count" → count of runs as string, "on_date" → ISO date).'),
-        anchor_time: workProp('anchor_time', 'action="edit": ISO 8601 timestamp that anchors all future runs (only the time-of-day matters for the drift fix). Use this to change WHEN a recurring task fires without recreating it (e.g. "the weekly Monday task should run at 06:00 instead of 06:05"). Pass null or empty string to clear.'),
+        repeat_end_value: workProp('repeat_end_value', WORK_FIELD_TEXT.repeat_end_value.onUpdate),
+        anchor_time: workProp('anchor_time', WORK_FIELD_TEXT.anchor_time.onUpdate),
         filter: { type: 'string', enum: ['all', 'mine', 'blocked', 'overdue'], description: 'action="list": filter to apply (default: all).' },
         verbose: { type: 'boolean', description: 'action="list": if true, include each task\'s description (truncated to 200 chars). Default false (compact rows).' },
       },
