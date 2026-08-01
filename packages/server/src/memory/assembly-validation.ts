@@ -45,6 +45,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { createLogger } from '../logger.js';
 import { messageTokens, LANE_PRIORITY } from './lanes.js';
 import { contextWindowPolicy, estimateTokens } from './budget.js';
+import { appendDivergenceRecord } from './assembly-validation-sink.js';
 
 const logger = createLogger('assembly-validation');
 
@@ -430,8 +431,8 @@ export function repairAssembly(
 // front-trimmers diverge in estimator, reserve and repair strategy in the first place.
 //
 // ── THE LOG IS THE INSTRUMENT, so it is built to be READ ────────────────────────────────
-// Step 2b's flip decision is taken FROM this log, so "it looked fine" is not an answer it
-// can accept. Two stable tokens, both greppable:
+// Step 2b's flip decision is taken FROM this instrument, so "it looked fine" is not an
+// answer it can accept. Two stable tokens, both greppable:
 //
 //   ASSEMBLY_VALIDATION_DIVERGENCE   one per divergent call, carrying the violation codes,
 //                                    the numbers, AND the running checked/diverged counters,
@@ -442,13 +443,17 @@ export function repairAssembly(
 //                                    installed", and inferring health from absence is the
 //                                    reasoning roadmap #15 exists to forbid.
 //
-// To read the window:
-//   grep -c ASSEMBLY_VALIDATION_DIVERGENCE  <log>     # incidents
-//   grep    ASSEMBLY_VALIDATION_HEARTBEAT   <log> | tail -1   # denominator, per process
-//   grep -o 'codes=[^ ]*' <log> | sort | uniq -c | sort -rn   # what actually diverged
+// ── BUT THE LOG ALONE CANNOT ANSWER DAY 7 (PHASE-3 T5 opening rider) ────────────────────
+// `logger.ts:48-66` rotates `dojo.log` at 10MB keeping ONE backup: measured at T5's HEAD,
+// both files together held 16m14s, and T4's own 17 day-0 lines were already unrecoverable.
+// So each divergence is ALSO appended, beside the logger call below, to a durable
+// append-only sink — `~/.dojo/logs/assembly-validation.jsonl`, divergences only, exempt
+// from rotation by construction. **THE DAY-7 READ INSTRUCTIONS, THE RETENTION ARITHMETIC
+// AND THE FAILURE CONTRACT ARE `assembly-validation-sink.ts`'s HEADER. Read it first.**
 //
 // Counters are per PROCESS and reset on restart, deliberately: they describe this build's
-// behaviour, and a counter persisted across a deploy would blur two different builds.
+// behaviour, and a counter persisted across a deploy would blur two builds. That is why
+// every sink record carries its `pid` — group by it, never sum across it.
 
 let checkedCalls = 0;
 let divergentCalls = 0;
@@ -517,7 +522,18 @@ export async function validateAtProviderBoundary(
   }
 
   divergentCalls++;
-  const codes = [...new Set(result.violations.map((v) => v.code))].sort().join(',');
+  const codeList = [...new Set(result.violations.map((v) => v.code))].sort();
+  const codes = codeList.join(',');
+  const violations = result.violations.map((v) => `${v.code}: ${v.detail}`);
+
+  // The DURABLE half FIRST — the logger's copy can be rotated away in minutes, this cannot.
+  appendDivergenceRecord({
+    at: new Date().toISOString(), pid: process.pid, mode: ASSEMBLY_VALIDATION_MODE,
+    agentId: input.agentId, modelId: input.modelId, codes: codeList, violations,
+    tokenTotal: result.tokenTotal, budgetTokens: result.budgetTokens, overBy: result.overBy,
+    messageCount: input.messages.length, checked: checkedCalls, diverged: divergentCalls,
+  });
+
   logger.warn(
     `ASSEMBLY_VALIDATION_DIVERGENCE mode=${ASSEMBLY_VALIDATION_MODE} codes=${codes} ` +
     `overBy=${result.overBy} tokens=${result.tokenTotal} budget=${result.budgetTokens} ` +
@@ -527,7 +543,7 @@ export async function validateAtProviderBoundary(
       modelId: input.modelId,
       mode: ASSEMBLY_VALIDATION_MODE,
       codes,
-      violations: result.violations.map((v) => `${v.code}: ${v.detail}`),
+      violations,
       tokenTotal: result.tokenTotal,
       budgetTokens: result.budgetTokens,
       overBy: result.overBy,
