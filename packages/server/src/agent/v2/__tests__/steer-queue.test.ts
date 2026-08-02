@@ -20,8 +20,8 @@ import { persistEngineSteer } from '../engine-steer.js';
 import { initState, type AgentTurnState } from '../state.js';
 import {
   clearSteerQueue, emptySteerQueue, enqueueSteer, markSteerAttempted, markSteerDelivered,
-  nextSteer, steerFireCount, steerFired, steerFiredAny, steerFiredAtLoop, steerQueueBlocks,
-  MAX_STEER_DELIVERY_ATTEMPTS, STEER_GROUPS_ENV, STEER_PRECEDENCE, TRACKER_STEER_FLOORS,
+  nextSteer, steerFireCount, steerFired, steerFiredAny, steerFiredAtLoop,
+  MAX_STEER_DELIVERY_ATTEMPTS, STEER_PRECEDENCE, TRACKER_STEER_FLOORS,
   type SteerQueue,
 } from '../steer-queue.js';
 
@@ -44,11 +44,9 @@ const deps = {
   broadcast: (_e: WsEvent) => undefined,
 } as unknown as Parameters<typeof persistEngineSteer>[2];
 
-/** All groups on — the state this task leaves the flag in, and T6 deletes. */
-function enableAll(): void { process.env[STEER_GROUPS_ENV] = 'all'; }
-/** No groups on — the legacy single slot, which the staged default must be identical to. */
-function enableNone(): void { process.env[STEER_GROUPS_ENV] = '0'; }
-afterEach(() => { delete process.env[STEER_GROUPS_ENV]; });
+// PHASE-4 T6: `enableAll()` / `enableNone()` and the `afterEach` that cleared
+// `DOJO_STEER_GROUPS` are DELETED with the flag. Every clause below now runs against the
+// one behaviour the module has — retention — instead of declaring which of two it wanted.
 
 /**
  * Every steer this state can still deliver to the model, in DELIVERY ORDER — one per
@@ -70,7 +68,6 @@ const GUARD_B = '[Engine receipt: you DID send iMessage to Zorbek 2 minutes ago�
 
 describe('THE ONE-SLOT LOSS', () => {
   it('two guards firing in one beat BOTH deliver', () => {
-    enableAll();
     let s = freshState();
     s = persistEngineSteer(s, { agentId: 'a1', content: GUARD_A, turnNumber: 3, floor: 'ungrounded-claim', atLoop: 1 }, deps);
     s = persistEngineSteer(s, { agentId: 'a1', content: GUARD_B, turnNumber: 3, floor: 'delivery-denial', atLoop: 1 }, deps);
@@ -80,7 +77,6 @@ describe('THE ONE-SLOT LOSS', () => {
   });
 
   it('they deliver in DECLARED precedence order, not in the order they fired', () => {
-    enableAll();
     let s = freshState();
     // Advisory first, truth guard second. Precedence, not arrival, decides.
     s = persistEngineSteer(s, { agentId: 'a1', content: 'advice', turnNumber: 3, floor: 'hoarding-advisory', atLoop: 1 }, deps);
@@ -89,7 +85,6 @@ describe('THE ONE-SLOT LOSS', () => {
   });
 
   it('ACROSS ITERATIONS: draining one leaves the rest queued, never dropped', () => {
-    enableAll();
     let q = emptySteerQueue();
     q = enqueueSteer(q, { floor: 'ungrounded-claim', content: 'first', atLoop: 1 });
     q = enqueueSteer(q, { floor: 'silent-closeout', content: 'second', atLoop: 1 });
@@ -110,7 +105,6 @@ describe('THE ONE-SLOT LOSS', () => {
   });
 
   it('FIFO within one priority band (the tiebreak is arrival, and it is deterministic)', () => {
-    enableAll();
     let q = emptySteerQueue();
     // Two keyed entries of the SAME floor share a priority; the earlier one wins.
     q = enqueueSteer(q, { floor: 'thrash-gate', content: 'sig-A', key: 'A', atLoop: 1 });
@@ -120,18 +114,17 @@ describe('THE ONE-SLOT LOSS', () => {
 });
 
 describe('the declared precedence table', () => {
-  it('is a real table: unique ids, unique priorities, every floor in a group', () => {
+  it('is a real table: unique ids, unique priorities, every priority argued', () => {
     const ids = STEER_PRECEDENCE.map((f) => f.id);
     expect(new Set(ids).size).toBe(ids.length);
     const priorities = STEER_PRECEDENCE.map((f) => f.priority);
     expect(new Set(priorities).size).toBe(priorities.length);
     for (const f of STEER_PRECEDENCE) {
-      expect(f.group).toBeGreaterThanOrEqual(1);
       expect(f.why.length).toBeGreaterThan(10); // a priority with no argument is a number
     }
   });
 
-  it('covers the whole re-derived steer surface (26 staged + 1 converted) in groups of 3-5', () => {
+  it('covers the whole re-derived steer surface: 26 staged + 1 converted = 27 floors', () => {
     // §T0-PINS F derived 26 setting sites at `1249866`, re-derived unchanged by T3.
     //
     // PHASE-4 T4 adds the 27th, and the number moved for a reason worth stating rather than
@@ -141,20 +134,12 @@ describe('the declared precedence table', () => {
     // could not see it, exactly as §T0-PINS F could not see the 27th steer DOOR. OR2's
     // conversion turns it into a floor, which is what puts it in this table.
     //
-    // The 3-4 bound became 3-5 with it. The bound's job is that STAGED ENABLEMENT stayed
-    // diagnosable (one group per commit, a red readable against 3-4 floors); all seven groups
-    // have been on since T3's close and T6 deletes the staging, so a converted floor joining
-    // the band it belongs to THEMATICALLY is worth more than a group size that was only ever
-    // about the rollout. Five silence floors is still a diagnosable group.
+    // PHASE-4 T6: the group HISTOGRAM that stood here (seven groups of 3-5) went with the
+    // staged-enablement flag. Its job was that the rollout stayed diagnosable — one group
+    // per commit, a red readable against 3-5 floors — and the rollout is over. What the
+    // clause still owes is the COUNT and the identity of the converted floor, both below.
     expect(STEER_PRECEDENCE.length).toBe(27);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'reminder-silence').length).toBe(1);
-    const groups = new Map<number, number>();
-    for (const f of STEER_PRECEDENCE) groups.set(f.group, (groups.get(f.group) ?? 0) + 1);
-    expect([...groups.keys()].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7]);
-    for (const [, size] of groups) {
-      expect(size).toBeGreaterThanOrEqual(3);
-      expect(size).toBeLessThanOrEqual(5);
-    }
   });
 
   it('the converted reminder floor ranks with the silence floors, above the start-ack band', () => {
@@ -163,7 +148,6 @@ describe('the declared precedence table', () => {
     // "you have been waiting" ack and everything below it, and yields to the truth guards.
     expect(p('ungrounded-claim')).toBeLessThan(p('reminder-silence'));
     expect(p('reminder-silence')).toBeLessThan(p('start-ack'));
-    expect(STEER_PRECEDENCE.find((f) => f.id === 'reminder-silence')!.group).toBe(2);
   });
 
   it('a truth guard outranks a silence floor outranks loop health outranks advice', () => {
@@ -177,7 +161,6 @@ describe('the declared precedence table', () => {
 
 describe('per-floor latches, keyed on QUEUE ENTRIES', () => {
   it('a floor that already fired this turn is a no-op, and the queue comes back unchanged', () => {
-    enableAll();
     let q = enqueueSteer(emptySteerQueue(), { floor: 'promise-floor', content: 'once', atLoop: 1 });
     const again = enqueueSteer(q, { floor: 'promise-floor', content: 'twice', atLoop: 2 });
     expect(again).toBe(q); // identity: nothing was built, nothing was recorded
@@ -185,14 +168,12 @@ describe('per-floor latches, keyed on QUEUE ENTRIES', () => {
   });
 
   it('THE LATCH COUNTS A STEER THAT IS STILL WAITING — this is what a boolean could not do', () => {
-    enableAll();
     const q = enqueueSteer(emptySteerQueue(), { floor: 'silent-closeout', content: 'x', atLoop: 1 });
     expect(steerFired(q, 'silent-closeout')).toBe(true);  // fired…
     expect(q.delivered).toEqual([]);                       // …and not yet delivered
   });
 
   it('a KEYED floor latches per key (the A2A enforcer: one nudge per assign id)', () => {
-    enableAll();
     let q = enqueueSteer(emptySteerQueue(), { floor: 'a2a-missed-reply', content: 'n1', key: 'assign-1', atLoop: 1 });
     q = enqueueSteer(q, { floor: 'a2a-missed-reply', content: 'n2', key: 'assign-2', atLoop: 1 });
     expect(q.pending.length).toBe(2);
@@ -206,7 +187,6 @@ describe('per-floor latches, keyed on QUEUE ENTRIES', () => {
   });
 
   it('a COUNTER latch (spinning) fires more than once and reports its own count', () => {
-    enableAll();
     let q = emptySteerQueue();
     q = enqueueSteer(q, { floor: 'spinning', content: 's1', key: 'loop-1', atLoop: 1 });
     q = enqueueSteer(q, { floor: 'spinning', content: 's2', key: 'loop-2', atLoop: 2 });
@@ -214,7 +194,6 @@ describe('per-floor latches, keyed on QUEUE ENTRIES', () => {
   });
 
   it('TWO FLOORS NEVER SHARE A LATCH — the tracker pair, whose one flag disarmed either', () => {
-    enableAll();
     let q = enqueueSteer(emptySteerQueue(), { floor: 'tracker-scaffold', content: 'scaffolded', atLoop: 1 });
     // The OLD defect: this set `nudgedForTrackerThisTurn`, so the STOP directive below
     // could never fire in the same turn even though it is a different fact.
@@ -227,7 +206,6 @@ describe('per-floor latches, keyed on QUEUE ENTRIES', () => {
   });
 
   it('records the loop the floor fired at (the start-ack reminder reads it off the entry)', () => {
-    enableAll();
     const q = enqueueSteer(emptySteerQueue(), { floor: 'start-ack', content: 'ack', atLoop: 4 });
     expect(steerFiredAtLoop(q, 'start-ack')).toBe(4);
     expect(steerFiredAtLoop(q, 'start-ack-reminder')).toBeNull();
@@ -241,7 +219,6 @@ describe('delivered-to-model is RECORDED, not assumed', () => {
   }
 
   it('a confirmed entry leaves pending and lands in delivered', () => {
-    enableAll();
     const { q, entry } = pushed();
     const after = markSteerDelivered(q, entry!);
     expect(after.pending).toEqual([]);
@@ -249,7 +226,6 @@ describe('delivered-to-model is RECORDED, not assumed', () => {
   });
 
   it('an UNCONFIRMED push stays queued — it rides the next iteration instead of vanishing', () => {
-    enableAll();
     const { q, entry } = pushed();
     const after = markSteerAttempted(q, entry!);
     expect(after.pending.length).toBe(1);
@@ -258,7 +234,6 @@ describe('delivered-to-model is RECORDED, not assumed', () => {
   });
 
   it('after MAX attempts it is ABANDONED — recorded as written-and-never-seen, never silent', () => {
-    enableAll();
     let { q } = pushed();
     for (let i = 0; i < MAX_STEER_DELIVERY_ATTEMPTS; i++) q = markSteerAttempted(q, nextSteer(q)!);
     expect(q.pending).toEqual([]);
@@ -269,7 +244,6 @@ describe('delivered-to-model is RECORDED, not assumed', () => {
   });
 
   it('negative control: marking an entry this queue does not hold changes nothing', () => {
-    enableAll();
     const { q, entry } = pushed();
     const other = { ...entry!, seq: 999 };
     expect(markSteerDelivered(q, other)).toBe(q);
@@ -280,7 +254,6 @@ describe('delivered-to-model is RECORDED, not assumed', () => {
   });
 
   it('giving up on the turn abandons what is waiting, on the record', () => {
-    enableAll();
     let q = enqueueSteer(emptySteerQueue(), { floor: 'repetition', content: 'r', atLoop: 1 });
     q = clearSteerQueue(q);
     expect(q.pending).toEqual([]);
@@ -288,40 +261,14 @@ describe('delivered-to-model is RECORDED, not assumed', () => {
   });
 });
 
-describe('STAGED ENABLEMENT — both branches, until T6 deletes the flag', () => {
-  it('with NO groups enabled the queue IS the single slot: the second write destroys the first', () => {
-    enableNone();
-    let q = enqueueSteer(emptySteerQueue(), { floor: 'ungrounded-claim', content: GUARD_A, atLoop: 1 });
-    q = enqueueSteer(q, { floor: 'delivery-denial', content: GUARD_B, atLoop: 1 });
-    // The legacy behaviour, preserved exactly — and the loss is now VISIBLE (`abandoned`
-    // is empty, `fired` holds two, `pending` holds one), which it never was before.
-    expect(q.pending.map((e) => e.content)).toEqual([GUARD_B]);
-    expect(q.fired.length).toBe(2);
-  });
-
-  it('a DISABLED floor still latches — the one behaviour that is deliberately not staged', () => {
-    enableNone();
-    const q = enqueueSteer(emptySteerQueue(), { floor: 'promise-floor', content: 'p', atLoop: 1 });
-    expect(enqueueSteer(q, { floor: 'promise-floor', content: 'p2', atLoop: 2 })).toBe(q);
-  });
-
-  it('the slot-gate is live for a disabled floor and structurally dead for an enabled one', () => {
-    let q = emptySteerQueue();
-    enableAll();
-    q = enqueueSteer(q, { floor: 'ungrounded-claim', content: 'x', atLoop: 1 });
-    expect(steerQueueBlocks(q, 'compaction-recap')).toBe(false);
-    enableNone();
-    expect(steerQueueBlocks(q, 'compaction-recap')).toBe(true);
-  });
-
-  it('the flag reads groups by number, so one group turns on per commit', () => {
-    process.env[STEER_GROUPS_ENV] = '1';
-    let q = enqueueSteer(emptySteerQueue(), { floor: 'ungrounded-claim', content: 'g1', atLoop: 1 });
-    // group 1 is on → retained beside a peer…
-    q = enqueueSteer(q, { floor: 'delivery-denial', content: 'g1b', atLoop: 1 });
-    expect(q.pending.length).toBe(2);
-    // …a group-2 floor is still legacy, so its write replaces the lot.
-    q = enqueueSteer(q, { floor: 'silent-closeout', content: 'g2', atLoop: 1 });
-    expect(q.pending.map((e) => e.content)).toEqual(['g2']);
-  });
-});
+// ── STRIP (PHASE-4 T6, 2026-08-02): the `STAGED ENABLEMENT — both branches` describe ──
+// Four clauses died with the flag they existed to exercise:
+//   • "with NO groups enabled the queue IS the single slot: the second write destroys the
+//     first" — it asserted the one-slot loss still worked on demand;
+//   • "a DISABLED floor still latches";
+//   • "the slot-gate is live for a disabled floor and structurally dead for an enabled one";
+//   • "the flag reads groups by number, so one group turns on per commit".
+// requirement preserved: the latch is never staged and always on — carried by the
+// `per-floor latches, keyed on QUEUE ENTRIES` describe above, which asserts the same fact
+// on the only branch that now exists. The destroys-the-first clause has no requirement to
+// preserve: it pinned the behaviour this phase was built to delete.

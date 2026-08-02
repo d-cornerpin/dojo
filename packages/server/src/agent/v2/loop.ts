@@ -82,7 +82,7 @@ import { pushEngineMessage } from './engine-message.js';
 import { collectMessageLaneIds } from '../../memory/message-lane-tag.js';
 import {
   clearSteerQueue, enqueueSteer, markSteerAttempted, markSteerDelivered, nextSteer,
-  steerFireCount, steerFired, steerFiredAny, steerFiredAtLoop, steerQueueBlocks,
+  steerFireCount, steerFired, steerFiredAny, steerFiredAtLoop,
   TRACKER_STEER_FLOORS, type SteerEntry,
 } from './steer-queue.js';
 import { findRecentDeliveries, findRecentDeliveriesKeyed, getRecentOutbound, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
@@ -2922,7 +2922,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // not responded", and the model re-acknowledged from scratch each
           // time. The engine holds the receipts of what this turn already
           // did; hand them over so the rebuilt context cannot forget.
-          if (!steerQueueBlocks(state.steerQueue, 'compaction-recap')) {
+          // PHASE-4 T6: the slot-gate that stood here is GONE with the staged-enablement
+          // flag. This is §T0-PINS F's `:2871`, the one-slot loss's NAMED VICTIM — it had
+          // no latch of its own and DROPPED itself whenever another floor held the slot.
+          // The queue holds both, so there is nothing to defer to.
+          {
             const recap =
               `[Engine recap: memory was just compacted MID-TURN. This is still the SAME turn. So far this turn you have made ${state.toolCalls.length} tool call(s)` +
               (state.surfacedReplyThisTurn || deferredDeliveredByAck || engineStartAckDeliveredThisTurn
@@ -3678,9 +3682,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // Start-ack steer checkpoint (owner ruling 2026-07-22): the async timer /
       // first-tool hook only REQUEST the steer; the state write happens here,
       // loop-synchronously. Re-checks startAckRepliedNow so a reply that landed
-      // in flight quietly disarms it. If another nudge occupies the slot this
-      // iteration, the request stays pending and retries next boundary.
-      if (startAckSteerRequested && !startAckSteerArmedThisTurn && !steerQueueBlocks(state.steerQueue, 'start-ack') && !startAckRepliedNow()) {
+      // in flight quietly disarms it. (PHASE-4 T6: the "if another nudge occupies the slot,
+      // defer to the next boundary" gate is deleted with the staged-enablement flag — the
+      // queue retains both steers, so there is no slot to be occupied.)
+      if (startAckSteerRequested && !startAckSteerArmedThisTurn && !startAckRepliedNow()) {
         startAckSteerArmedThisTurn = true;
         startAckSteersInjected = 1;
         startAckSteerInjectedAtLoop = state.loopCount;
@@ -3701,7 +3706,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // The loop the first steer rode is read off the QUEUE ENTRY that recorded it
         // (falling back to the local for the pre-assemble arming path at :3489).
         state.loopCount > (steerFiredAtLoop(state.steerQueue, 'start-ack') ?? startAckSteerInjectedAtLoop) &&
-        !steerQueueBlocks(state.steerQueue, 'start-ack-reminder') &&
         !startAckRepliedNow()
       ) {
         startAckSteersInjected = 2;

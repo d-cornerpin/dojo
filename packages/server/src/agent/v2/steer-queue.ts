@@ -29,18 +29,26 @@
 //     mutated afterwards. `markSteerDelivered` is called only once the receipt layer's own
 //     `collectMessageLaneIds(messages)` shows the lane in the array the provider is handed.
 //
-// ── STAGED ENABLEMENT (research 22, binding) ────────────────────────────────────────────
-// Turning 26 historically-contended behaviours on at once is the change nobody could
-// diagnose. `enabledSteerGroups()` is the flag: a floor in an enabled group gets true queue
-// semantics (RETAINED alongside its peers); a floor not yet enabled keeps the legacy
-// last-writer-wins slot (its enqueue REPLACES the pending list, exactly as the spread did).
-// At 0 groups this module is behaviour-identical to the single slot. One group per commit,
-// the OR8 targeted set between groups. **The flag and BOTH branches are T6's deletion.**
+// ── STRIP: the staged-enablement flag and BOTH of its branches (PHASE-4 T6, 2026-08-02) ──
+// `ENABLED_GROUPS_DEFAULT`, `STEER_GROUPS_ENV`, `enabledSteerGroups()`,
+// `isSteerFloorEnabled()`, `SteerFloorSpec.group`, `steerQueueBlocks()` and the legacy
+// `else` arm of `enqueueSteer` (the one that REPLACED the pending list) are GONE. Research
+// 22 asked for the staging because turning 26 historically-contended behaviours on at once
+// is the change nobody could diagnose; T3 turned them on in seven groups over seven commits
+// and eight runs with ZERO re-tunes, and left the flag at ENABLED-ALL. A flag whose only
+// remaining value is its default is a second mechanism nobody exercises — and its `else`
+// arm is the one-slot loss itself, kept alive behind an env var.
 //
-// The ONE behaviour that is NOT staged, said out loud: the per-floor one-shot LATCH is
-// always on. Twenty-four of the twenty-six floors already had one; without it the queue can
-// accumulate duplicates of the same floor, which is a worse failure than the drop it
-// replaces. The two floors that gain one (`compaction-recap`, which had none, and
+// requirement preserved: "the ~21 historically-dead steer behaviours turn on in groups
+// behind a flag, the OR8 targeted set between groups" (research 22, plan T3 Step 3) — the
+// staging RAN, group by group, and its evidence is the seven AS-BUILT rows under T3 Step 3.
+// The rollback the flag offered is `git revert`; what stays is the queue itself, whose
+// retention is now unconditional and structural rather than a runtime read of `process.env`.
+//
+// The ONE behaviour that was never staged, and is unchanged: the per-floor one-shot LATCH
+// is always on. Twenty-four of the twenty-six floors already had one; without it the queue
+// can accumulate duplicates of the same floor, which is a worse failure than the drop it
+// replaces. The two floors that gained one (`compaction-recap`, which had none, and
 // `a2a-missed-reply`'s no-assign-id branch, which had none) are named here rather than
 // discovered later.
 // ════════════════════════════════════════════════════════════════════════════════════════
@@ -60,8 +68,6 @@ export interface SteerFloorSpec {
   readonly id: SteerFloorId;
   /** Lower delivers first. Ties break on enqueue order (FIFO within a priority). */
   readonly priority: number;
-  /** Staged-enablement group (1-7). T6 deletes the staging, not the priorities. */
-  readonly group: number;
   /** Why this floor outranks the ones below it. */
   readonly why: string;
 }
@@ -77,45 +83,45 @@ export interface SteerFloorSpec {
  *   90s ADVICE         — explicitly non-blocking, and it says so in its own text.
  */
 export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
-  { id: 'ungrounded-claim',      priority: 10, group: 1, why: 'reply claims a delivery no send tool made' },
-  { id: 'delivery-denial',       priority: 11, group: 1, why: 'reply denies a send the receipt ledger recorded' },
-  { id: 'failed-save-claim',     priority: 12, group: 1, why: 'reply claims a save every vault call rejected' },
+  { id: 'ungrounded-claim',      priority: 10, why: 'reply claims a delivery no send tool made' },
+  { id: 'delivery-denial',       priority: 11, why: 'reply denies a send the receipt ledger recorded' },
+  { id: 'failed-save-claim',     priority: 12, why: 'reply claims a save every vault call rejected' },
 
-  { id: 'ghosted-ask',           priority: 20, group: 2, why: 'a direct human ask ended in silence' },
-  { id: 'ghosted-ask-answer',    priority: 21, group: 2, why: 'ghosted twice; hand the model its own recorded answer' },
-  { id: 'silent-closeout',       priority: 22, group: 2, why: 'task completed, the asker heard nothing' },
-  { id: 'delegation-exit',       priority: 23, group: 2, why: 'work handed off, the turn about to end silently' },
+  { id: 'ghosted-ask',           priority: 20, why: 'a direct human ask ended in silence' },
+  { id: 'ghosted-ask-answer',    priority: 21, why: 'ghosted twice; hand the model its own recorded answer' },
+  { id: 'silent-closeout',       priority: 22, why: 'task completed, the asker heard nothing' },
+  { id: 'delegation-exit',       priority: 23, why: 'work handed off, the turn about to end silently' },
   // PHASE-4 T4. The 27th floor, and it is a CONVERSION rather than a new behaviour: this
   // silence used to be answered by the ENGINE delivering `Reminder: <the work row's own
   // description>` as an assistant message on the owner's lane (OR2's exact prohibition, and
   // the kit's own clause scored it green because a regex over the row text matches the
   // engine's copy of it perfectly). The floor now steers the agent instead, and a reminder
   // ranks with the silence floors because a person set an alarm and is owed the words.
-  { id: 'reminder-silence',      priority: 24, group: 2, why: 'a reminder is due and the turn is ending without it being said' },
+  { id: 'reminder-silence',      priority: 24, why: 'a reminder is due and the turn is ending without it being said' },
 
-  { id: 'start-ack',             priority: 25, group: 3, why: 'the user has been waiting with no word this turn' },
-  { id: 'start-ack-reminder',    priority: 26, group: 3, why: 'the first start-ack steer was ignored' },
-  { id: 'owed-interrupt',        priority: 27, group: 3, why: 'a mid-turn human message may go unanswered' },
-  { id: 'promise-floor',         priority: 28, group: 3, why: 'the reply promised work the turn never did' },
+  { id: 'start-ack',             priority: 25, why: 'the user has been waiting with no word this turn' },
+  { id: 'start-ack-reminder',    priority: 26, why: 'the first start-ack steer was ignored' },
+  { id: 'owed-interrupt',        priority: 27, why: 'a mid-turn human message may go unanswered' },
+  { id: 'promise-floor',         priority: 28, why: 'the reply promised work the turn never did' },
 
-  { id: 'a2a-handoff-floor',     priority: 29, group: 4, why: 'user-facing turn ending silently after a handoff' },
-  { id: 'a2a-missed-reply',      priority: 30, group: 4, why: 'a peer asked and got prose instead of a reply' },
-  { id: 'going-idle-in-progress', priority: 31, group: 4, why: 'silent stop with in_progress work dangling' },
+  { id: 'a2a-handoff-floor',     priority: 29, why: 'user-facing turn ending silently after a handoff' },
+  { id: 'a2a-missed-reply',      priority: 30, why: 'a peer asked and got prose instead of a reply' },
+  { id: 'going-idle-in-progress', priority: 31, why: 'silent stop with in_progress work dangling' },
 
-  { id: 'empty-response',        priority: 40, group: 5, why: 'the model returned nothing, twice' },
-  { id: 'thrash-gate',           priority: 41, group: 5, why: 'a tool signature is now refused' },
-  { id: 'thrash-drift',          priority: 42, group: 5, why: 'signature-varying spiral accruing to the hard limit' },
-  { id: 'spinning',              priority: 43, group: 5, why: 'no progress across iterations' },
+  { id: 'empty-response',        priority: 40, why: 'the model returned nothing, twice' },
+  { id: 'thrash-gate',           priority: 41, why: 'a tool signature is now refused' },
+  { id: 'thrash-drift',          priority: 42, why: 'signature-varying spiral accruing to the hard limit' },
+  { id: 'spinning',              priority: 43, why: 'no progress across iterations' },
 
-  { id: 'repetition',            priority: 44, group: 6, why: 'two identical responses in a row' },
-  { id: 'no-results',            priority: 45, group: 6, why: 'consecutive searches returning nothing' },
-  { id: 'compaction-recap',      priority: 60, group: 6, why: 'memory was rebuilt mid-turn under the model' },
-  { id: 'add-notes-stop',        priority: 61, group: 6, why: 'went quiet after a note with the task still open' },
+  { id: 'repetition',            priority: 44, why: 'two identical responses in a row' },
+  { id: 'no-results',            priority: 45, why: 'consecutive searches returning nothing' },
+  { id: 'compaction-recap',      priority: 60, why: 'memory was rebuilt mid-turn under the model' },
+  { id: 'add-notes-stop',        priority: 61, why: 'went quiet after a note with the task still open' },
 
-  { id: 'tracker-stop-directive', priority: 70, group: 7, why: 'multi-step work with no tracker entry' },
-  { id: 'tracker-scaffold',      priority: 71, group: 7, why: 'the engine opened the work row itself' },
-  { id: 'tracker-closeout',      priority: 72, group: 7, why: 'in_progress tasks left open on a non-user turn' },
-  { id: 'hoarding-advisory',     priority: 90, group: 7, why: 'advice only — it never blocks and says so' },
+  { id: 'tracker-stop-directive', priority: 70, why: 'multi-step work with no tracker entry' },
+  { id: 'tracker-scaffold',      priority: 71, why: 'the engine opened the work row itself' },
+  { id: 'tracker-closeout',      priority: 72, why: 'in_progress tasks left open on a non-user turn' },
+  { id: 'hoarding-advisory',     priority: 90, why: 'advice only — it never blocks and says so' },
 ];
 
 const BY_ID = new Map<SteerFloorId, SteerFloorSpec>(STEER_PRECEDENCE.map((f) => [f.id, f]));
@@ -160,30 +166,6 @@ export function emptySteerQueue(): SteerQueue {
   return { pending: [], fired: [], delivered: [], abandoned: [], seq: 0 };
 }
 
-// ── Staged enablement ───────────────────────────────────────────────────────────────────
-
-/** The number of groups turned on. Bumped by ONE per commit; ENABLED-ALL is 7. T6 deletes
- *  this constant, `enabledSteerGroups`, and the `else` branch in `enqueueSteer`. */
-const ENABLED_GROUPS_DEFAULT = 7;
-
-/** Test/ops override: `DOJO_STEER_GROUPS=0|1|…|7|all`. Both branches must stay exercisable
- *  by a test until T6 removes them, and a compile-time constant alone cannot do that. */
-export const STEER_GROUPS_ENV = 'DOJO_STEER_GROUPS';
-
-export function enabledSteerGroups(): number {
-  const raw = process.env[STEER_GROUPS_ENV];
-  if (raw == null || raw === '') return ENABLED_GROUPS_DEFAULT;
-  if (raw.toLowerCase() === 'all') return Number.MAX_SAFE_INTEGER;
-  const n = Number.parseInt(raw, 10);
-  return Number.isFinite(n) && n >= 0 ? n : ENABLED_GROUPS_DEFAULT;
-}
-
-/** True when this floor's steer is RETAINED beside its peers rather than replacing them. */
-export function isSteerFloorEnabled(floor: SteerFloorId): boolean {
-  const spec = BY_ID.get(floor);
-  return spec != null && spec.group <= enabledSteerGroups();
-}
-
 // ── Latch reads (keyed on entries, never on booleans) ────────────────────────────────────
 
 /** Has this floor already produced a steer this turn? A steer still WAITING counts. */
@@ -207,15 +189,14 @@ export function steerFiredAtLoop(q: SteerQueue, floor: SteerFloorId): number | n
   return hit ? hit.atLoop : null;
 }
 
-/**
- * The legacy slot-gate, for floors not yet enabled. Three sites read the slot before
- * writing (`compaction-recap` DROPPED itself when occupied; the two start-ack sites
- * DEFERRED). While a floor is disabled it keeps that behaviour exactly; once enabled the
- * gate is structurally false, because the queue holds both.
- */
-export function steerQueueBlocks(q: SteerQueue, floor: SteerFloorId): boolean {
-  return !isSteerFloorEnabled(floor) && q.pending.length > 0;
-}
+// STRIP (T6): `steerQueueBlocks(q, floor)` — the legacy slot-gate, `!enabled && pending
+// .length > 0`. Its three readers (`compaction-recap`, which DROPPED itself when the slot
+// was occupied, and the two start-ack sites, which DEFERRED) read it before writing. With
+// the flag gone it is `false` at every call, always, because the queue holds both steers —
+// so the three gates are deleted at their sites rather than left computing a constant.
+// requirement preserved: "a steer must not be silently destroyed by a peer firing in the
+// same beat" — carried by the queue's `pending` array itself, and by the clause that
+// proves two guards firing in one beat both deliver.
 
 // ── Writes ──────────────────────────────────────────────────────────────────────────────
 
@@ -227,11 +208,14 @@ export interface SteerRequest {
 }
 
 /**
- * Enqueue a steer. The one-shot latch is checked FIRST and is never staged: a floor that
- * has already fired this turn (same key) is a no-op, and the caller gets its queue back
- * unchanged. Otherwise the entry is recorded in `fired` (the latch) and:
- *   • enabled floor  → APPENDED to `pending`; its peers survive. The point of the queue.
- *   • disabled floor → REPLACES `pending`; the legacy single slot, last writer wins.
+ * Enqueue a steer. The one-shot latch is checked FIRST: a floor that has already fired this
+ * turn (same key) is a no-op, and the caller gets its queue back unchanged. Otherwise the
+ * entry is recorded in `fired` (the latch) and APPENDED to `pending` — its peers survive,
+ * which is the entire point of the queue.
+ *
+ * T6 deleted the second arm this function used to carry. Under the staged-enablement flag a
+ * not-yet-enabled floor's entry REPLACED `pending` — the single slot, last writer wins, kept
+ * alive behind an env var. There is one arm now, and it is the retaining one.
  */
 export function enqueueSteer(q: SteerQueue, req: SteerRequest): SteerQueue {
   const key = req.key ?? '';
@@ -244,7 +228,7 @@ export function enqueueSteer(q: SteerQueue, req: SteerRequest): SteerQueue {
   };
   return {
     ...q,
-    pending: isSteerFloorEnabled(req.floor) ? [...q.pending, entry] : [entry],
+    pending: [...q.pending, entry],
     fired: [...q.fired, entry],
     seq: q.seq + 1,
   };
