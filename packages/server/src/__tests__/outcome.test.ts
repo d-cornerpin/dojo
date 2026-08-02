@@ -16,6 +16,9 @@
 // command and its output.
 
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   OUTCOME_KINDS, PROVENANCES, NON_LIVE_PROVENANCES, TOOL_SEAM_REASONS,
   applied, noChange, refused, failed, unknownOutcome, quarantineUnknown,
@@ -128,6 +131,44 @@ describe('the tool door classifies STRUCTURALLY (PHASE-4 T1 cluster 3)', () => {
 
   it('names the three tool-seam reasons and no others', () => {
     expect([...TOOL_SEAM_REASONS]).toEqual(['blocked', 'crashed', 'cancelled']);
+  });
+});
+
+// ── PHASE-4 T3: `cancelled` STOPS BEING UNREACHABLE ────────────────────────────────
+// T1 declared the arm and left it unpopulated, naming the loop's spin brake as the site
+// that would produce it. T3 opened that site and found TWO arms, only one of which is
+// `cancelled` — the source walk below pins the split so neither half can quietly drift
+// into the other. It is a SOURCE clause because the brake path builds a ToolResult
+// inline inside a 9,000-line loop body; there is no seam to call.
+describe("PHASE-4 T3: the spin brake is `cancelled`'s producer, on ONE arm only", () => {
+  const r = (over: Partial<ToolResult> = {}): ToolResult =>
+    ({ toolCallId: 'tc1', name: 'file_write', content: 'x', isError: false, ...over });
+  const LOOP = fs.readFileSync(
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../agent/v2/loop.ts'), 'utf8',
+  );
+
+  it('the brake routes its refusal through the classifier instead of hand-building a result', () => {
+    // Pre-T3 the site was `toolResult = { toolCallId, name, content: refusal, isError: true }`
+    // — a result that never met the classifier at all, which is WHY the arm had no producer.
+    expect(LOOP).toMatch(/toolResultOf\(classifyToolResult\(\{[\s\S]{0,200}?content: refusal/);
+  });
+
+  it('ONLY the terminal arm is marked, and it is marked TIMEOUT (which reads cancelled)', () => {
+    expect(LOOP).toMatch(/toolPhaseEndedBySpinBrake \? \{ errorCode: 'TIMEOUT' as const \} : \{\}/);
+    // …and the classifier turns exactly that into failed/cancelled, so the site does not
+    // get to name its own arm.
+    const terminal = classifyToolResult(r({ isError: true, errorCode: 'TIMEOUT' }));
+    expect([terminal.kind, terminal.kind === 'failed' && terminal.reason]).toEqual(['failed', 'cancelled']);
+  });
+
+  it('NEGATIVE CONTROL: the per-signature refusal is left unmarked and reads crashed', () => {
+    // Reaching `blocked` here would need PERMISSION_DENIED or RATE_LIMITED, and both would
+    // be false about WHY. An unmarked refusal reads `crashed` — "nobody told us anything
+    // better" — and that is the honest answer until a code exists that means what this is.
+    const perSignature = classifyToolResult(r({ isError: true, content: '[Engine: identical call refused]' }));
+    expect([perSignature.kind, perSignature.kind === 'failed' && perSignature.reason])
+      .toEqual(['failed', 'crashed']);
+    expect(toolWasBlocked(perSignature)).toBe(false);
   });
 });
 

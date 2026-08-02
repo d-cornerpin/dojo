@@ -27,13 +27,27 @@
 // checks. An inner tool that throws its own error text still reads `failed/crashed`,
 // which is honest: nobody has told us anything better.
 //
-// ── `cancelled` HAS NO PRODUCER TODAY, AND THAT IS REPORTED, NOT INVENTED ──
-// Research 22 names the vocabulary `blocked | crashed | cancelled`. `cancelled`
-// maps to `TIMEOUT`, which NOTHING writes at this HEAD. The site that would produce
-// it is the loop's identical-call / spin-brake refusal (`loop.ts:7074`), which
-// builds a `ToolResult` for a call that never ran — and that is T3's file, not
-// T1's. The arm is declared and unreachable, and #15 says so out loud rather than
-// letting a reader infer it does not exist.
+// ── `cancelled` NOW HAS A PRODUCER — and T1's pin is corrected by measurement ──
+// T1 declared the arm unreachable and named the loop's identical-call / spin-brake
+// refusal as the site that would populate it (`loop.ts`, T3's file). PHASE-4 T3 opened
+// that site, and it has TWO arms, only ONE of which is `cancelled`:
+//
+//   • TERMINAL (`toolPhaseEndedBySpinBrake`) — the tool PHASE for the turn is over.
+//     Nothing further will run; this call is abandoned before an answer. That is
+//     `cancelled` literally, and it is marked `TIMEOUT` so the classification below is
+//     what decides, not the call site. **This is the arm that gives `cancelled` its
+//     first producer.**
+//   • PER-SIGNATURE refusal — this ONE call already failed REFUSE_AT times and is not
+//     re-executed. `toolWasBlocked`'s own words fit it exactly ("the door refused:
+//     nothing ran, and retrying the same call is a spin") — but every `errorCode` that
+//     reaches `blocked` (`PERMISSION_DENIED`, `RATE_LIMITED`) would be a LIE about WHY,
+//     and inventing a structured reason to reach a nicer arm is the prose-keyed move
+//     wearing a struct. It stays unmarked and reads `crashed`, which is what "nobody
+//     told us anything better" honestly means. Reaching `blocked` honestly needs a code
+//     that means "the engine refused this call", and adding one to `ToolErrorCode` is a
+//     shared-type change with its own blast radius — named here, not smuggled in.
+//
+// `no_change` is still unpopulated for the reason below.
 // ════════════════════════════════════════
 import type { LiveOutcome, OutcomeApplied, OutcomeFailed, OutcomeRefused, ToolResult, ToolSeamReason } from '@dojo/shared';
 

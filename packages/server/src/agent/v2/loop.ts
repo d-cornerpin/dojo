@@ -59,6 +59,7 @@ import { assembleContext } from '../../memory/assembler.js';
 import { callModel, getContextWindow, STREAM_IDLE_TIMEOUT_ERROR } from '../model.js';
 import { writeContextReceipt } from './receipt.js';
 import { executeTool, agentCanSelfCompleteById, toolResultOf } from '../tools.js';
+import { classifyToolResult } from '../tool-outcome.js';
 import { resolveRecipientDisplay } from '../../contacts/resolve-recipient.js';
 import { hasHandedCredentialValues, redactHandedCredentials } from '../../credentials/tools.js';
 // recordError intentionally NOT imported, handleMessage's catch path calls
@@ -1967,8 +1968,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // boundary, state write is loop-synchronous) -> delivered (the model's own
   // line surfaced via the capture site). The engine never composes the line.
   // PHASE-4 T3: `nudgedForGoingIdleWithInProgressThisTurn` carried TWO jobs — the steer's
-  // one-shot latch (now the queue entry) and "the detector ran", which the recurring-dangler
-  // hardcap reads on the branch that deliberately does not steer. Only the first was a latch.
+  // one-shot latch (now the queue entry) and "the detector ran", read by the recurring-
+  // dangler hardcap on the branch that deliberately does not steer. Only the first latched.
   let goingIdleDetectorRanThisTurn = false;
   let startAckSteerRequested = false;
   let startAckSteerArmedThisTurn = false;
@@ -2789,10 +2790,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
           state = advance(state, {
             thrashGatedSignatures: [...state.thrashGatedSignatures, thrash.signature],
             thrashGateActivatedAtLoopCount: state.thrashGateActivatedAtLoopCount ?? state.loopCount,
-            // Also enqueue the steer so it reaches the model on the very NEXT
-            // iteration even if the assembler hasn't seen the persisted user message
-            // yet. KEYED on the signature: a second signature getting gated is a
-            // second fact the model has not been told, not a repeat of the first.
+            // Also enqueue the steer so it reaches the model on the very NEXT iteration
+            // even if the assembler hasn't seen the persisted user message yet. KEYED on
+            // the signature: a second gated signature is a second fact, not a repeat.
             steerQueue: enqueueSteer(state.steerQueue, {
               floor: 'thrash-gate', content: steerMsg, key: thrash.signature, atLoop: state.loopCount,
             }),
@@ -3508,10 +3508,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   startAckSteerArmedThisTurn = true;
                   startAckSteersInjected = 1;
                   startAckSteerInjectedAtLoop = state.loopCount;
-                  // PHASE-4 T3: the 27th steer site. §T0-PINS F derived the inventory by
-                  // single-slot WRITER and this one pushed straight into the array — the same
-                  // floor through a second door, which "sole steer writer" forbids. The drain
-                  // is still inside THIS assemble phase, so "rides this call" is unchanged.
+                  // PHASE-4 T3: the 27th steer site — §T0-PINS F derived by single-slot
+                  // WRITER and this one pushed straight into the array, the same floor
+                  // through a second door. The drain is still in THIS assemble phase.
                   state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'start-ack', content: START_ACK_STEER_TEXT, atLoop: state.loopCount }) });
                 }
               }
@@ -3672,9 +3671,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // written after a tool call went undelivered 2026-07-10 → 2026-07-27 (r22).
       //
       // PHASE-4 T3: ONE entry per iteration, highest declared precedence first; the rest
-      // wait rather than being overwritten. The entry does NOT leave the queue here — being
-      // PUSHED is not being DELIVERED, and this array is still mutated below. The
-      // confirmation is at the receipt, off the array the provider is actually handed.
+      // wait rather than being overwritten. PUSHED is not DELIVERED (the array is still
+      // mutated below), so the entry leaves the queue at the receipt, not here.
       let steerAwaitingConfirm: SteerEntry | null = null;
       const steerToDeliver = nextSteer(state.steerQueue);
       if (steerToDeliver) {
@@ -3682,9 +3680,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
         if (injectRegistryMessage('msg.pending-nudge', messages, mctx)) {
           steerAwaitingConfirm = steerToDeliver;
         } else {
-          // The push itself was refused (the dedup net saw identical text in the tail).
-          // Count the attempt so a permanently un-injectable entry cannot block the
-          // queue behind it forever; three attempts and it is ABANDONED, on the record.
+          // Push refused (the dedup net saw identical text in the tail). Count the attempt:
+          // three and the entry is ABANDONED, on the record, so it cannot block the queue.
           state = advance(state, { steerQueue: markSteerAttempted(state.steerQueue, steerToDeliver) });
         }
       }
@@ -3915,10 +3912,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // Last touch point before the provider call: every injector and
       // post-assembly mutation has run, so this records exactly what the
       // model receives this iteration.
-      // PHASE-4 T3: DELIVERED-TO-MODEL, RECORDED rather than assumed. Phase 1 made delivery
-      // possible; this makes it a receipt. The lane ids are read off the array the provider
-      // is handed — the same read the receipt makes — so a steer that was pushed and then
-      // dropped is not marked delivered: it stays queued and rides the next iteration.
+      // PHASE-4 T3: DELIVERED-TO-MODEL, RECORDED not assumed — the lane ids are read off the
+      // array the provider is handed, so a steer pushed and then dropped is NOT delivered.
       const laneIdsForThisCall = collectMessageLaneIds(messages);
       if (steerAwaitingConfirm) {
         state = advance(state, {
@@ -6324,8 +6319,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               turnNumber,
               floor: 'a2a-missed-reply',
               atLoop: state.loopCount,
-              // KEYED on the assign id. §T0-PINS F: the no-assign-id branch had NO latch at
-              // all, so it could re-nudge every iteration; it now latches on the empty key.
+              // KEYED on the assign id; §T0-PINS F's no-latch branch latches on the empty key.
               key: a2aReplyAssignMessageId ?? '',
             },
             { broadcast },
@@ -7126,7 +7120,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
             : checkIdenticalCallRefusal(identicalCallState, brakeSig);
           try {
             if (refusal) {
-              toolResult = { toolCallId: tc.id, name: tc.name, content: refusal, isError: true };
+              // PHASE-4 T3: `cancelled` gets its producer on the TERMINAL arm only (the
+              // phase is over, the call abandoned before an answer). The per-signature arm
+              // is deliberately unmarked — argument in `agent/tool-outcome.ts`'s header.
+              toolResult = toolResultOf(classifyToolResult({
+                toolCallId: tc.id, name: tc.name, content: refusal, isError: true,
+                ...(toolPhaseEndedBySpinBrake ? { errorCode: 'TIMEOUT' as const } : {}),
+              }));
               if (!toolPhaseEndedBySpinBrake) {
                 logger.warn('v2: identical-call brake refused re-execution', {
                   agentId, tool: tc.name, sig: brakeSig.slice(0, 120),
