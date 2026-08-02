@@ -29,6 +29,7 @@
 // `store.ts` (`work.state`, via `transition()`), which is the two-clause property the
 // single-writer walk enforces.
 
+import type { WorkEventKind } from './event-kinds.js';
 import type { WorkState } from './store.js';
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -290,7 +291,7 @@ export const WORK_EVENT = {
    *  turn-finalize, replacing SIX denormalized columns. Payload:
    *  `{ turn, outcome, answered, delivery_summary }`. */
   activity: 'activity',
-} as const;
+} as const satisfies Record<string, WorkEventKind>;
 
 const lastEvent = (a: string, kind: string, col = 'created_at'): string =>
   `(SELECT MAX(e.${col}) FROM work_events e WHERE e.work_id = ${a}.id AND e.kind = '${kind}')`;

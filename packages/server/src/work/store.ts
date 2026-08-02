@@ -39,6 +39,7 @@ import { createLogger } from '../logger.js';
 // `TransitionResult` STRIP record); this module is its public surface, exactly as
 // it was for `TransitionResult`, so every caller keeps ONE import path and the
 // split is an implementation detail rather than a second place to look.
+import type { WorkEventKind } from './event-kinds.js';
 import type { TransitionApplied, TransitionGate, WorkOutcome } from './outcome.js';
 export type { TransitionApplied, TransitionGate, WorkOutcome, WorkOutcomeReason } from './outcome.js';
 export { workSettled, isStateConflict, noteUnsettled } from './outcome.js';
@@ -189,8 +190,13 @@ function deliveryExists(id: string): boolean {
  *
  *  PHASE-2 T8b: exported as `appendWorkEvent` for the rest of the `work/` directory. The
  *  directory is the single-writer boundary now (T6 acceptance §3), and `work_events` keeps
- *  ONE writing FUNCTION rather than spreading the INSERT across the modules that need it. */
-function appendEvent(workId: string, kind: string, actor: string, payload: unknown, at?: number): number {
+ *  ONE writing FUNCTION rather than spreading the INSERT across the modules that need it.
+ *
+ *  PHASE-4 T4-SCHEMA: `kind` was a bare `string` beside a column with no CHECK, so `135`'s
+ *  "12-value enum" comment was never true of either side. `work/event-kinds.ts` is the
+ *  declared list now, migration `152` is the same list as the column's CHECK, and an
+ *  undeclared kind fails to COMPILE here — before the database is ever asked. */
+function appendEvent(workId: string, kind: WorkEventKind, actor: string, payload: unknown, at?: number): number {
   const info = getDb().prepare(
     'INSERT INTO work_events (work_id, kind, payload, actor, created_at) VALUES (?, ?, ?, ?, ?)',
   ).run(workId, kind, payload === undefined ? null : JSON.stringify(payload), actor, at ?? now());

@@ -32,14 +32,15 @@
 
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+import type { WorkEventKind } from './event-kinds.js';
 import { appendWorkEvent } from './store.js';
 
 const logger = createLogger('poke-ladder');
 
 /** The two event kinds this ladder owns. Declared once so a writer and a reader cannot
  *  disagree by typo — the failure mode research 03 catalogued. */
-export const POKE_EVENT = 'poke';
-export const REMEDIATION_EVENT = 'poke_remediation';
+export const POKE_EVENT = 'poke' as const satisfies WorkEventKind;
+export const REMEDIATION_EVENT = 'poke_remediation' as const satisfies WorkEventKind;
 
 export interface PokeRecord {
   /** The ladder rung this poke was: 1 nudge, 2 urgent, 3 escalate_primary, 4 auto_reset. */

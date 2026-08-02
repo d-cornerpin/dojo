@@ -14,11 +14,14 @@
 // validated. `kind='audit'` is read here and nowhere else, which is what makes that safe.
 
 import { getDb } from '../db/connection.js';
+import type { WorkEventKind } from './event-kinds.js';
 import { appendWorkEvent } from './store.js';
 import { STATE_TO_STATUS_SQL, msToText } from './tracker-view.js';
 
-/** The spine event kind the trail lives on. Read by this module only — see the header. */
-export const AUDIT_KIND = 'audit';
+/** The spine event kind the trail lives on. Read by this module only — see the header.
+ *  `satisfies` (T4-SCHEMA) binds it to the declared list in `event-kinds.ts` while keeping
+ *  the literal type its readers rely on. */
+export const AUDIT_KIND = 'audit' as const satisfies WorkEventKind;
 
 /** The spine's own verdict events. `upholdClaim`/`rejectClaim` write one of these beside the
  *  `adjudications` row, so the trail renders the event and never a second copy of a verdict. */

@@ -51,6 +51,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { getDb } from '../db/connection.js';
+import type { WorkEventKind } from './event-kinds.js';
 import { appendWorkEvent } from './store.js';
 import { msToText } from './tracker-view.js';
 
@@ -59,7 +60,7 @@ import { msToText } from './tracker-view.js';
 export const OVERRIDE_EVENT = {
   requested: 'override_request',
   resolved: 'override_resolved',
-} as const;
+} as const satisfies Record<string, WorkEventKind>;
 
 export type OverrideOutcome = 'approved' | 'denied' | 'auto_denied';
 export type OverrideStatus = 'pending' | OverrideOutcome;

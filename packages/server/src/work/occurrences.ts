@@ -55,6 +55,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
+import type { WorkEventKind } from './event-kinds.js';
 import { transition, appendWorkEvent, type WorkOutcome } from './store.js';
 
 const logger = createLogger('occurrences');
@@ -64,8 +65,10 @@ const logger = createLogger('occurrences');
  *  has been waiting for a writer. */
 export const OCCURRENCE_KIND = 'occurrence';
 
-/** The event kinds an occurrence carries. `work_events.kind` has no CHECK, so the guard
- *  against a writer/reader typo is that both sides import these. */
+/** The event kinds an occurrence carries. Both sides import these so a writer and a reader
+ *  cannot disagree by typo; `satisfies` (T4-SCHEMA) makes it a VIEW onto `event-kinds.ts`
+ *  rather than a second declaration. This note used to say the column has no CHECK — it has
+ *  one from migration `152`. */
 export const OCCURRENCE_EVENT = {
   /** The claim was won and the run is being started. Payload: `{ sequence, scheduled_for }`. */
   fired: 'occurrence_fired',
@@ -74,7 +77,7 @@ export const OCCURRENCE_EVENT = {
   /** The run closed, carrying ITS OWN outcome word. Payload: `{ run_status, summary }`.
    *  PHASE-2 T10F: the discriminator `work.state` cannot hold — see `settleOccurrence`. */
   settled: 'occurrence_settled',
-} as const;
+} as const satisfies Record<string, WorkEventKind>;
 
 /**
  * The occurrence a due-scan row is pointing at, in the spine's own unit.
