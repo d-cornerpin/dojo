@@ -1218,6 +1218,20 @@
       "to": 145,
       "by": "PHASE-5 T2 Step 2 (2026-08-02) — TIGHTENED, not raised",
       "why": "`checkPermission` became a reader of the brokers rather than a second implementation of them. 542 lines left this file for named owners and NONE of it was deleted: deny lists → `brokers/deny.ts`, glob engine + canonicalizer → `agent/path-resolve.ts`, manifest → `agent/manifest.ts`, squad fallback → `agent/squad-workspace.ts`. Every export this module published is still published from it, so none of its nine callers moved. Pinned at the new measured size so the reduction is decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/agent/tools/gate-eval.ts",
+      "from": 0,
+      "to": 299,
+      "by": "PHASE-5 T2 Step 3 (2026-08-02) — the gate evaluator",
+      "why": "The 15-branch permission ladder in `agent/tools.ts` (224 lines, `:4547-4770` derived at `16bd0b8`) became a DECLARATION (`tools/gates.ts`, 194) and an EVALUATOR (this file, 299). The cap did its job once already here: the two started as one 472-line module and the split landed on a real seam — the declaration is a pure function of (name, args) that a test enumerates without a database, the evaluator is where the brokers, the grant rows and the identity predicates get involved. NET ON THE TOOLBOX IS NEGATIVE: 224 deleted from tools.ts against 493 across two files, but tools.ts also gave up PRIMARY_ONLY_TOOLS and the exec sensitive-file scan to their owners, so its own pin TIGHTENS 10524 → 10341 in this same edit. Most of this file's lines are the per-ROW parity it must preserve: six ladder branches returned PERMISSION_DENIED and six a bare isError, one audited itself as `spawn` rather than `spawn_agent`, and web_fetch's unparseable-URL arm was never a permission refusal — PHASE-4 T1 cluster 3 made errorCode the thing the outcome classifier reads, so each row's answer is written out rather than flattened. Flattening would have been shorter and would have re-classified half the platform's refusals."
+    },
+    {
+      "path": "packages/server/src/agent/tools.ts",
+      "from": 10524,
+      "to": 10340,
+      "by": "PHASE-5 T2 Step 3 (2026-08-02) — TIGHTENED by the ladder deletion",
+      "why": "The permission ladder is gone (224 lines at the bounds derived at this worker's own HEAD), and PRIMARY_ONLY_TOOLS plus the exec sensitive-file scan left for `tools/gates.ts` and `brokers/proc.ts`. Pinned at the measured result so the reduction is decrease-only."
     }
   ],
   "maxNewFileLines": 400,
@@ -1258,7 +1272,8 @@
     "packages/server/src/agent/provider-error.ts": 317,
     "packages/server/src/agent/runtime.ts": 1415,
     "packages/server/src/agent/spawner.ts": 1382,
-    "packages/server/src/agent/tools.ts": 10524,
+    "packages/server/src/agent/tools.ts": 10340,
+    "packages/server/src/agent/tools/gate-eval.ts": 299,
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 921,
