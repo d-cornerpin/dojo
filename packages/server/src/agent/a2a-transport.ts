@@ -23,7 +23,7 @@ import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { answerReceiptForAsk } from './v2/answered-edge.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
 import { type DeliveryInput } from './v2/deliveries.js';
-import { recordAtDoor, withOutboundAsync } from './v2/outbound.js';
+import { recordAtDoor, withOutboundAsync, recordedId } from './v2/outbound.js';
 // PHASE-2 T4: the join lives in `work`. Everything below is transport — it lands pieces and
 // relays answers; it computes no join state and it writes no state of its own.
 import {
@@ -1325,12 +1325,12 @@ async function deliverJoinResultToOwnerInner(
   // is the row `work.done` points at. PINNED §8 lists the park relay among the paths that
   // record nothing; T5 owns the doors and must route this through the same single writer
   // rather than adding a second row beside it.
-  const deliveryId = recordAtDoor({
+  const deliveryId = recordedId(recordAtDoor({
     outcome: 'delivered', channel,
     agentId: join.agentId, tool,
     recipientId, messageId,
     detail: `join ${join.id}`,
-  });
+  }), 'a2a: join relay to the owner', { work: join.id, channel });
   logger.info('join relay: engine delivered to owner', {
     agentId: join.agentId, work: join.id, channel, viaChannel: delivered, deliveryId,
   });
@@ -1395,12 +1395,12 @@ function recordPieceDelivery(p: {
   // PHASE-2 T5: routed through the door recorder, NOT duplicated. Inside a `send_to_agent`
   // scope this folds into that scope's single row (and picks up its receipt link); outside
   // one it stands alone exactly as T4 wrote it.
-  return recordAtDoor({
+  return recordedId(recordAtDoor({
     outcome: 'delivered', channel: 'a2a',
     agentId: p.fromAgent, tool: 'send_to_agent',
     recipientId: p.toAgent, recipientDisplay: resolveAgentDisplayName(p.toAgent),
     messageId: p.messageId, detail: `A2A ${p.intent}`,
-  });
+  }), 'a2a: piece delivery', { from: p.fromAgent, to: p.toAgent });
 }
 
 /**

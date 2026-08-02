@@ -22,7 +22,7 @@ import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { insertMessageIfAbsent, sweepById } from '../memory/message-store.js';
 import { isContentFreeCourtesy } from '../agent/v2/classifiers/inbound-courtesy.js';
 import { appleMessageDateToUnixMs } from './imessage-date.js';
-import { recordAtDoor, withOutboundIfAbsent, PLATFORM_SENDER } from '../agent/v2/outbound.js';
+import { recordAtDoor, withOutboundIfAbsent, PLATFORM_SENDER, recordedId } from '../agent/v2/outbound.js';
 
 // ── iMessage attachment pipeline ────────────────────────────────────────────
 //
@@ -1948,13 +1948,13 @@ export function sendIMessage(recipient: string, rawText: string): boolean {
   // first-run welcome, the healer's approval prompt, the A2A relay's owner hand-back — and
   // before this, only the first two produced a ledger row and only when the caller had
   // already decided it worked. The outcome comes from what the transport actually returned.
-  recordAtDoor({
+  recordedId(recordAtDoor({
     outcome: ok ? 'delivered' : 'failed',
     channel: 'imessage',
     tool: 'imessage-door',
     recipientId: recipient,
     detail: ok ? null : 'every iMessage path failed (imsg CLI and AppleScript)',
-  });
+  }), 'imessage: door crossing', { recipient, ok });
   return ok;
 }
 
@@ -2039,13 +2039,13 @@ export function sendIMessageWithAttachment(
     { agentId: PLATFORM_SENDER, tool: 'imessage-attachment-door', channel: 'imessage', recipientId: recipient },
     () => {
       const ok = sendIMessageWithAttachmentInner(recipient, filePath, caption);
-      recordAtDoor({
+      recordedId(recordAtDoor({
         outcome: ok ? 'delivered' : 'failed',
         channel: 'imessage',
         tool: 'imessage-attachment-door',
         recipientId: recipient,
         detail: ok ? `attachment ${path.basename(filePath)}` : `attachment ${path.basename(filePath)} failed on every path`,
-      });
+      }), 'imessage: attachment door crossing', { recipient, ok });
       return ok;
     },
   );

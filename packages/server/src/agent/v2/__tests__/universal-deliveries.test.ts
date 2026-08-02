@@ -39,7 +39,7 @@ vi.mock('../../../db/connection.js', async () => {
 
 import { runMigrations } from '../../../db/migrations.js';
 import {
-  withOutbound, withOutboundAsync, recordAtDoor, noteReceiptForOutbound,
+  withOutbound, withOutboundAsync, recordAtDoor, noteReceiptForOutbound, deliveryIdOf,
   recordDashboardDelivery, PLATFORM_SENDER,
 } from '../outbound.js';
 import { currentTurnNumber, currentTurnRoot } from '../../turn-state.js';
@@ -81,10 +81,10 @@ beforeEach(() => {
 
 describe('a door inside an outbound scope writes exactly one row', () => {
   it('POSITIVE: one scope, one row, carrying the caller identity and the door outcome', () => {
-    const id = withOutbound(
+    const id = deliveryIdOf(withOutbound(
       { agentId: AGENT, tool: 'imessage_send', channel: 'imessage', recipientId: '+15550000' },
       () => recordAtDoor({ outcome: 'delivered', channel: 'imessage', detail: 'via imsg' }),
-    );
+    ));
     const rows = deliveries();
     expect(rows).toHaveLength(1);
     expect(id).toBe(rows[0].id);
@@ -107,6 +107,50 @@ describe('a door inside an outbound scope writes exactly one row', () => {
       },
     );
     expect(deliveryCount()).toBe(1);
+  });
+
+  // ── PHASE-4 T1: `string | null` meant three things; these name them. ──
+
+  it('T1: the SECOND crossing of one scope says no_change, and points at the same row', () => {
+    // The fold is the designed, correct case, and the old `string | null` could not say so:
+    // a caller reading a non-null id could not tell "I wrote the row" from "somebody else
+    // already did". Both facts matter to a caller deciding whether it owes a link.
+    let first: ReturnType<typeof recordAtDoor> | null = null;
+    let second: ReturnType<typeof recordAtDoor> | null = null;
+    withOutbound(
+      { agentId: AGENT, tool: 'imessage_send', channel: 'imessage', recipientId: '+15550000' },
+      () => {
+        first = recordAtDoor({ outcome: 'delivered', channel: 'imessage', detail: 'file' });
+        second = recordAtDoor({ outcome: 'delivered', channel: 'imessage', detail: 'caption' });
+      },
+    );
+    expect(first!.kind).toBe('applied');
+    expect(second!.kind).toBe('no_change');
+    if (second!.kind === 'no_change') expect(second!.reason).toBe('folded-into-open-scope');
+    // One send, one row — and both outcomes name it.
+    expect(deliveryIdOf(first!)).toBe(deliveryIdOf(second!));
+    expect(deliveryCount()).toBe(1);
+  });
+
+  it('T1: a ledger write that BREAKS says failed — not the same null as a fold', () => {
+    // The honesty defect this closes: `recordDelivery` is best-effort by contract, so a
+    // broken write logged and returned null, and `work.done` needs a delivery to point at.
+    // A caller could not tell an unrecorded outbound from a folded one. Now it can.
+    const db = mockDb.current!;
+    const realPrepare = db.prepare.bind(db);
+    db.prepare = ((sql: string) => {
+      if (/INSERT INTO deliveries/i.test(sql)) throw new Error('planted: ledger is unwritable');
+      return realPrepare(sql);
+    }) as typeof db.prepare;
+    try {
+      const o = recordAtDoor({ outcome: 'delivered', channel: 'imessage', agentId: AGENT });
+      expect(o.kind).toBe('failed');
+      if (o.kind === 'failed') expect(o.reason).toBe('ledger-write-failed');
+      expect(deliveryIdOf(o)).toBeNull();
+    } finally {
+      db.prepare = realPrepare;
+    }
+    expect(deliveryCount()).toBe(0);
   });
 
   it('a FAILURE anywhere in the scope wins: partial success is recorded as failed', () => {
@@ -364,7 +408,7 @@ describe('deliveries.receipt_id is populated when a receipt exists', () => {
     // ZERO of them, because the auto-route wrote its receipt one statement BELOW the scope.
     // Asserting through `writeToolReceipt` is what makes the ordering part of the contract.
     const id = withOutbound({ agentId: AGENT, tool: 'imessage_send', channel: 'imessage', recipientId: '+1555' }, () => {
-      const d = recordAtDoor({ outcome: 'delivered', channel: 'imessage' });
+      const d = deliveryIdOf(recordAtDoor({ outcome: 'delivered', channel: 'imessage' }));
       writeToolReceipt({
         agentId: AGENT, tool: 'imessage_send', tier: 3, verified: false,
         basis: 'exit-code', recipient: '+1555', sentText: 'the roof quote is $4,200',

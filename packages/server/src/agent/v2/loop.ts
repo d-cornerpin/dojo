@@ -171,7 +171,7 @@ import { identicalCallSignature, checkIdenticalCallRefusal, recordIdenticalCallR
 import { SEND_TO_PEOPLE } from '../sensei-policy.js';
 import { getPresence } from '../../services/presence.js';
 import { startTurn, finalizeTurn, bumpEffectfulCalls, type TurnExitReason } from './turn-record.js';
-import { withOutboundAsync, recordHeld } from './outbound.js';
+import { withOutboundAsync, recordHeld, recordedId } from './outbound.js';
 // PHASE-2 T3: the ask's lifecycle. `transition()` is the only writer of `work.state`; these
 // are its named callers for the pickup / re-arm / turn-link steps of one owner ask.
 import {
@@ -8697,13 +8697,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // named entry point rather than by a caller pretending to be a door. This is the
           // 3:32 AM class the `no-outreach-without-inbound` scenario pins: a user-facing
           // outbound on a turn with no inbound and no waiting human is HELD, never delivered.
-          recordHeld(
+          recordedId(recordHeld(
             {
               agentId, tool: 'auto-route', channel: 'dashboard',
               conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
             },
             'no active conversation',
-          );
+          ), 'v2: settled-context hold', { agentId, turnNumber });
           persistRoutingMarker('held in dashboard: no active conversation');
           logger.warn('settled-context hold: withheld auto-route channel push (no active conversation); reply stays visible in dashboard', {
             agentId, turnNumber, destination, presence: presenceNow,

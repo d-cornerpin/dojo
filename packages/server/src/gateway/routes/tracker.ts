@@ -31,7 +31,7 @@ import {
 } from '../../work/tracker-store.js';
 import { statusToState, tsToMs } from '../../work/tracker-view.js';
 import { deleteOccurrencesOf } from '../../work/occurrences.js';
-import { recordOwnerCloseReceipt } from '../../agent/v2/deliveries.js';
+import { recordOwnerCloseReceipt, deliveryIdOf } from '../../agent/v2/deliveries.js';
 import { createLogger } from '../../logger.js';
 import type { TaskLogEntryKind } from '../../tracker/task-log.js';
 import { getPrimaryAgentId, getPMAgentId, getDashboardHiddenAgentIds } from '../../config/platform.js';
@@ -683,7 +683,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
           by: 'owner', actorId: 'user', claim: 'authoritative',
           reason: 'dashboard PUT /tracker/tasks/:id',
           resultDeliveryId: statusUpdate === 'complete'
-            ? (deliveryForTaskClose(id) ?? recordOwnerCloseReceipt(id, 'the dashboard task board'))
+            ? (deliveryForTaskClose(id) ?? deliveryIdOf(recordOwnerCloseReceipt(id, 'the dashboard task board')))
             : null,
         });
         if (!workSettled(result)) {
@@ -838,7 +838,7 @@ trackerRouter.post('/projects/:id/close', async (c) => {
       // Same policy as the task close above, and for the same reason: a project the owner
       // closes by hand whose children delivered nothing is still HIS to close.
       resultDeliveryId: status === 'complete'
-        ? (deliveryForCompletedChildren(id) ?? recordOwnerCloseReceipt(id, 'the dashboard project board'))
+        ? (deliveryForCompletedChildren(id) ?? deliveryIdOf(recordOwnerCloseReceipt(id, 'the dashboard project board')))
         : null,
     });
     return c.json({ ok: true, data: result });

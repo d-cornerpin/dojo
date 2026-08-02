@@ -18,6 +18,8 @@ import { createLogger } from '../../logger.js';
 import { currentTurnNumber, currentTurnRoot } from '../turn-state.js';
 import { resolveOrCreateConversation } from '../../memory/conversations.js';
 import { closeAsksForDelivery } from '../../work/store.js';
+import type { LedgerOutcome } from './delivery-outcome.js';
+export { deliveryIdOf, recordedId, type LedgerOutcome } from './delivery-outcome.js';
 
 const logger = createLogger('deliveries');
 
@@ -51,9 +53,15 @@ export interface DeliveryInput {
   conversationId?: string | null;
 }
 
-/** Record one outbound delivery. Returns the row id, or null on any failure
- *  (best-effort; the delivery itself is never blocked). */
-export function recordDelivery(input: DeliveryInput): string | null {
+/**
+ * Record one outbound delivery.
+ *
+ * PHASE-4 T1: answers `LedgerOutcome`, not `string | null`. Still best-effort by
+ * contract — a delivery record must never break the delivery itself — but "the write
+ * threw" is now a `failed` outcome the caller has to look at, instead of a null
+ * indistinguishable from three other things.
+ */
+export function recordDelivery(input: DeliveryInput): LedgerOutcome {
   try {
     const db = getDb();
     const id = uuidv4();
@@ -120,13 +128,13 @@ export function recordDelivery(input: DeliveryInput): string | null {
       tool: input.tool,
       outcome: input.outcome,
     });
-    return id;
+    return { kind: 'applied', value: { deliveryId: id } };
   } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
     logger.warn('recordDelivery failed (non-fatal; the delivery itself is unaffected)', {
-      agentId: input.agentId, tool: input.tool, channel: input.channel,
-      error: err instanceof Error ? err.message : String(err),
+      agentId: input.agentId, tool: input.tool, channel: input.channel, error: detail,
     }, input.agentId);
-    return null;
+    return { kind: 'failed', reason: 'ledger-write-failed', detail };
   }
 }
 
@@ -164,13 +172,15 @@ export function recordDelivery(input: DeliveryInput): string | null {
  * shape): a close is a distinct event with its own instant, and pointing every
  * owner-closed row at one shared receipt would lose the only fact the receipt carries.
  *
- * Returns null if the work row is unknown — the caller then has no delivery to point at and
- * G7 refuses, which is the correct answer for an id that does not resolve.
+ * REFUSES (`no-such-work`) if the work row is unknown — the caller then has no delivery to
+ * point at and G7 refuses for the same reason, which is the correct answer for an id that
+ * does not resolve. It is a refusal rather than a null so the caller can tell it apart from
+ * a ledger write that broke.
  */
-export function recordOwnerCloseReceipt(workId: string, surface: string): string | null {
+export function recordOwnerCloseReceipt(workId: string, surface: string): LedgerOutcome {
   const w = getDb().prepare('SELECT agent_id FROM work WHERE id = ?')
     .get(workId) as { agent_id: string } | undefined;
-  if (!w) return null;
+  if (!w) return { kind: 'refused', reason: 'no-such-work', detail: `no work row ${workId}` };
   return recordDelivery({
     agentId: w.agent_id,
     tool: 'owner-close',

@@ -34,7 +34,7 @@ vi.mock('../../../memory/conversations.js', () => ({
 }));
 
 import { createWorkTable, seedTrackerTask } from '../../../work/__tests__/work-fixture.js';
-import { recordOwnerCloseReceipt, recordDelivery } from '../deliveries.js';
+import { recordOwnerCloseReceipt, recordDelivery, deliveryIdOf } from '../deliveries.js';
 
 const W = 'task-1';
 const AGENT = 'a1';
@@ -64,7 +64,7 @@ beforeEach(() => {
 
 describe('the receipt is an honest record, not a claimed send', () => {
   it('records one row that says exactly what happened', () => {
-    const id = recordOwnerCloseReceipt(W, 'the dashboard task board');
+    const id = deliveryIdOf(recordOwnerCloseReceipt(W, 'the dashboard task board'));
     expect(id).not.toBeNull();
     const rows = receipts();
     expect(rows).toHaveLength(1);
@@ -87,14 +87,19 @@ describe('the receipt is an honest record, not a claimed send', () => {
 
   it('is one row PER CLOSE, so the instant of each is on the record', () => {
     seedTrackerTask(mockDb.current!, { id: 'task-2', title: 'another', agentId: AGENT });
-    const a = recordOwnerCloseReceipt(W, 'the dashboard task board');
-    const b = recordOwnerCloseReceipt('task-2', 'the dashboard task board');
+    const a = deliveryIdOf(recordOwnerCloseReceipt(W, 'the dashboard task board'));
+    const b = deliveryIdOf(recordOwnerCloseReceipt('task-2', 'the dashboard task board'));
     expect(a).not.toBe(b);
     expect(receipts()).toHaveLength(2);
   });
 
   it('refuses an id that does not resolve, so G7 refuses the close', () => {
-    expect(recordOwnerCloseReceipt('no-such-work', 'the dashboard task board')).toBeNull();
+    // PHASE-4 T1: the refusal has a NAME now. It used to be a null indistinguishable
+    // from "the ledger write threw", which is the other way this returns nothing.
+    const o = recordOwnerCloseReceipt('no-such-work', 'the dashboard task board');
+    expect(o.kind).toBe('refused');
+    if (o.kind === 'refused') expect(o.reason).toBe('no-such-work');
+    expect(deliveryIdOf(o)).toBeNull();
     expect(receipts()).toHaveLength(0);
   });
 });

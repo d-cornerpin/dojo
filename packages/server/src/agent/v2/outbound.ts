@@ -37,6 +37,8 @@ import { createLogger } from '../../logger.js';
 import { currentTurnRoot, currentTurnNumber } from '../turn-state.js';
 import { linkArtifactsToDelivery } from '../pending-attachments.js';
 import { recordDelivery, type DeliveryInput } from './deliveries.js';
+import { deliveryIdOf, type LedgerOutcome } from './delivery-outcome.js';
+export { recordedId, deliveryIdOf } from './delivery-outcome.js';
 
 const logger = createLogger('outbound');
 
@@ -149,7 +151,7 @@ function markFailed(scope: OutboundScope, reason: string): void {
     // The send threw BEFORE reaching any transport. There is still an outbound the platform
     // attempted and did not complete, and a ledger that only records the sends that worked
     // is the exact dishonesty this task exists to remove.
-    scope.deliveryId = recordDelivery({
+    scope.deliveryId = deliveryIdOf(recordDelivery({
       agentId: scope.intent.agentId,
       tool: scope.intent.tool,
       channel: scope.intent.channel,
@@ -162,7 +164,7 @@ function markFailed(scope: OutboundScope, reason: string): void {
       receiptId: scope.receiptId,
       outcome: 'failed',
       detail: mergedDetail(scope),
-    });
+    }));
   }
 }
 
@@ -226,7 +228,7 @@ export function withOutboundAsync<T>(intent: OutboundIntent, fn: () => Promise<T
  * Outside a scope: writes a standalone row from the door's own facts, attributed to
  * `PLATFORM_SENDER` unless the door knows the agent.
  */
-export function recordAtDoor(observed: DoorObservation): string | null {
+export function recordAtDoor(observed: DoorObservation): LedgerOutcome {
   const scope = outboundContext.getStore();
   if (!scope) {
     return recordDelivery({
@@ -266,10 +268,12 @@ export function recordAtDoor(observed: DoorObservation): string | null {
       } catch { /* enrichment is best-effort; the row and its outcome already stand */ }
     }
     settle(scope);
-    return scope.deliveryId;
+    // ONE SEND, ONE ROW: this crossing enriched the row the first wrote. Nothing new
+    // was recorded and nothing is wrong — the fact `string | null` could not carry.
+    return { kind: 'no_change', reason: 'folded-into-open-scope', deliveryId: scope.deliveryId, detail: 'a later crossing of a send already recorded by this scope' };
   }
 
-  scope.deliveryId = recordDelivery({
+  const written = recordDelivery({
     agentId: scope.intent.agentId,
     tool: scope.intent.tool,
     // The scope names the channel it declared; a door that crosses on another channel
@@ -285,7 +289,8 @@ export function recordAtDoor(observed: DoorObservation): string | null {
     outcome: scope.failed ? 'failed' : observed.outcome,
     detail: mergedDetail(scope),
   });
-  return scope.deliveryId;
+  scope.deliveryId = deliveryIdOf(written);
+  return written;
 }
 
 /**
@@ -294,7 +299,7 @@ export function recordAtDoor(observed: DoorObservation): string | null {
  * directly, which is why this is a separate, named entry point rather than a caller
  * pretending to be a door.
  */
-export function recordHeld(intent: OutboundIntent, reason: string): string | null {
+export function recordHeld(intent: OutboundIntent, reason: string): LedgerOutcome {
   return recordDelivery({
     agentId: intent.agentId,
     tool: intent.tool,
@@ -431,7 +436,9 @@ export function recordDashboardDelivery(event: WsEvent): string | null {
     ).get(agentId, msg.id) as { id: string } | undefined;
     if (already) return already.id;
 
-    const deliveryId = recordDelivery({
+    // ENUMERATED REMAINDER (T1): keeps `string | null` — its three early returns answer
+    // "is this ws event a delivery at all?", not "did the ledger record it".
+    const deliveryId = deliveryIdOf(recordDelivery({
       agentId,
       tool: 'dashboard',
       channel: 'dashboard',
@@ -441,7 +448,7 @@ export function recordDashboardDelivery(event: WsEvent): string | null {
       // to the resolver keeps a bubble outside a turn (a boot notice) recordable.
       conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
       outcome: 'delivered',
-    });
+    }));
     // The files, canvas chips and screen chips that rode this bubble now point at the row
     // that carried them (Phase-1 §7 debt: `turn_artifacts.delivery_id`).
     if (deliveryId) linkArtifactsToDelivery(agentId, currentTurnNumber.get(agentId) ?? null, deliveryId);

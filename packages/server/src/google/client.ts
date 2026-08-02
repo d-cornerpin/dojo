@@ -9,7 +9,7 @@ import { getValidAccessTokenForAccount } from './auth.js';
 import { getGoogleAccount } from './accounts.js';
 import { logGoogleActivity } from './activity-log.js';
 import { broadcast } from '../gateway/ws.js';
-import { recordAtDoor, inOutboundScope } from '../agent/v2/outbound.js';
+import { recordAtDoor, inOutboundScope, recordedId } from '../agent/v2/outbound.js';
 
 const logger = createLogger('google-client');
 
@@ -177,13 +177,13 @@ export function googleWrite(
     // A data write is outside any scope and correctly produces no delivery row; inventing a
     // per-action allow-list here would be a second registry drifting against the first.
     if (inOutboundScope()) {
-      recordAtDoor({
+      recordedId(recordAtDoor({
         outcome: result.ok ? 'delivered' : 'failed',
         channel: 'email',
         tool: 'google-door',
         provider: 'gmail',
         detail: result.ok ? action : (result.error ?? 'google write failed'),
-      });
+      }), 'gmail: door crossing', { action });
     }
 
     return result;

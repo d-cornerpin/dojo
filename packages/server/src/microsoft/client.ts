@@ -8,7 +8,7 @@ import { getValidAccessTokenForAccount } from './auth.js';
 import { getMicrosoftAccount } from './accounts.js';
 import { logMicrosoftActivity } from './activity-log.js';
 import { broadcast } from '../gateway/ws.js';
-import { recordAtDoor, inOutboundScope } from '../agent/v2/outbound.js';
+import { recordAtDoor, inOutboundScope, recordedId } from '../agent/v2/outbound.js';
 
 const logger = createLogger('ms-client');
 
@@ -194,13 +194,13 @@ export function msGraphWrite(
     // SCOPE the send tool opened is what tells them apart. The scope also names the CHANNEL,
     // so a Teams send is recorded as Teams and an Outlook send as email.
     if (inOutboundScope()) {
-      recordAtDoor({
+      recordedId(recordAtDoor({
         outcome: result.ok ? 'delivered' : 'failed',
         channel: 'email',
         tool: 'msgraph-door',
         provider: 'outlook',
         detail: result.ok ? action : (result.error ?? 'graph write failed'),
-      });
+      }), 'outlook: door crossing', { action });
     }
 
     return result;
