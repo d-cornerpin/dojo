@@ -69,7 +69,10 @@ import {
 } from '../tracker/tools.js';
 // Single source of truth for the PM overseer allow-list; re-checked at the
 // executor chokepoint (demolition Phase 1.7 PM verb enforcement).
-import { pmMayCall, PM_ONLY_WORK_OPS } from '../tracker/pm-agent.js';
+// `PM_ONLY_WORK_OPS` left with the ladder: the gate that reads it now lives in
+// `tools/gates.ts` (row 8). The `pmMayCall` WALL stays here, above the gate loop
+// and outside the deleted range — RULING P5-R1.
+import { pmMayCall } from '../tracker/pm-agent.js';
 import { webSearch, webFetch } from './web-tools.js';
 import { mouseClick, mouseMove, keyboardType, screenRead, applescriptRun } from './system-control.js';
 import { executeWebBrowse } from './browser.js';
