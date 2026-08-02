@@ -14,10 +14,20 @@
 // Every assertion below has a negative control of the same shape, because a record that
 // fires on everything is not a record.
 //
-// ⚠ THE ENGINE-ACK ROWS ARE OR2-PROVISIONAL. The tests named
-// `engine-ack delivery (OR2-PROVISIONAL)` pin the LEDGER ROW, never the engine's right to
-// speak as the agent. PHASE-4 T4 converts them (steer + verify + system voice) and they are
-// listed by name in PHASE-4 T0's pin list. Keep them findable under that name.
+// ⚠ OR2-PROVISIONAL: CLOSED, PHASE-4 T4 (2026-08-02) — and this comment was itself the
+// finding. It asked the reader to "keep them findable under that name", and PHASE-4 T0 ran
+// the grep: `git grep -n "engine-ack delivery" 1249866` returned EXACTLY ONE HIT — this
+// comment. There were no such tests. A file asserting its own tests exist, with nothing
+// enforcing it, is the same shape as `135`'s "12-value enum" comment that T4-SCHEMA found:
+// a fact stated where nothing can check it.
+//
+// The engine-ack rows here pin the LEDGER, and that has not changed. What changed is what
+// the lane carries: after T4 deleted the five engine-composed user-facing lines,
+// `deliverEngineUserAck` has ONE production caller and it delivers the MODEL'S own opening
+// line (`loop.ts:4582`). The tests that really do pin engine-ack behaviour are five, in
+// three other files, and every one is a NEGATIVE CONTROL asserting a start-ack is not an
+// ANSWER — which is exactly what stays true after the conversion. They are enumerated in
+// PHASE-4.md §T0-PINS D, by file and line, which is a list a grep can check.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';

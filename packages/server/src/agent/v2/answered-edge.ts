@@ -44,9 +44,14 @@ import { setTrackerStatus } from '../../work/tracker-store.js';
 
 const logger = createLogger('answered-edge');
 
-/** Deliveries that are not an ANSWER to anybody. `engine-ack` is the engine saying "on it"
- *  at the START of the work (OR2-PROVISIONAL; PHASE-4 T4 removes the lane), and counting it
- *  would mark a question answered before anybody looked at it. Kept in step with
+/** Deliveries that are not an ANSWER to anybody, and counting one would mark a question
+ *  answered before anybody looked at it.
+ *
+ *  ⚠ OR2-PROVISIONAL: CLOSED, PHASE-4 T4 (2026-08-02). The marker read "the engine saying
+ *  'on it' … T4 removes the lane". T4 removed the ENGINE'S PROSE from it, not the lane: the
+ *  one surviving caller delivers the MODEL'S own opening line early (`loop.ts:4582`,
+ *  `startLine`), which §T0-PINS E names as the shape OR2 wants. The exclusion stands on its
+ *  own footing now — a START-ACK IS NOT AN ANSWER, whoever wrote it. Kept in step with
  *  `work/store.ts`'s `NON_ANSWERING_DELIVERY_TOOLS` by the conformance test beside it. */
 const NON_ANSWERING_TOOLS = ["'engine-ack'"];
 

@@ -677,10 +677,15 @@ export function revertAskClaimOnAbort(
   return r;
 }
 
-/** Tools whose delivery is NOT an answer to the ask that is open. `engine-ack` is the
- *  engine saying "on it" at the START of the work (OR2-PROVISIONAL, PHASE-4 T4 removes the
- *  lane entirely); closing an ask on it would mark a question answered before anybody
- *  looked at it. */
+/** Tools whose delivery is NOT an answer to the ask that is open.
+ *
+ *  ⚠ OR2-PROVISIONAL: CLOSED, PHASE-4 T4 (2026-08-02). The marker said T4 would remove the
+ *  `engine-ack` lane entirely. It removed the ENGINE'S PROSE from it instead: the lane's one
+ *  surviving caller delivers the model's own opening line early, which is the shape OR2
+ *  wants. The exclusion stands for the reason it always really had — a START-ACK IS NOT AN
+ *  ANSWER — and closing an ask on one would mark a question answered before anybody looked
+ *  at it. Kept in step with `answered-edge.ts`'s `NON_ANSWERING_TOOLS` by the conformance
+ *  test beside it. */
 const NON_ANSWERING_DELIVERY_TOOLS = new Set(['engine-ack']);
 
 export interface DeliveryCloseInput {

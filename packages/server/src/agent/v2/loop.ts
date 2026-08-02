@@ -2083,9 +2083,19 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // engine-pushed ack was an unlabeled bubble in the owner's interleaved
     // stream (the observed defect).
     try {
-      // ⚠ OR2-PROVISIONAL. The `engine-ack` rows below pin the LEDGER, never the engine's
-      // right to speak as the agent. PHASE-4 T4 converts this whole lane to steer + verify +
-      // system voice; the rows are named in PHASE-4 T0's pin list under `engine-ack`.
+      // ⚠ OR2-PROVISIONAL: CLOSED, PHASE-4 T4 (2026-08-02), and the disposition is a
+      // CORRECTION rather than a removal. The marker predicted this lane would be converted
+      // to "steer + verify + system voice", because the lane was carrying engine-composed
+      // prose. It no longer is: after T4 deleted E1-E5, `deliverEngineUserAck` has exactly
+      // ONE production caller (`:4582`), and what it delivers there is `startLine` — THE
+      // MODEL'S OWN WORDS, the start-ack steer working as designed (§T0-PINS E names it as
+      // the shape OR2 WANTS and forbids removing it).
+      //
+      // So the `engine-ack` tool value survives, and it means something narrower and true:
+      // this is the model's opening line pushed EARLY, ahead of its answer. That is why the
+      // two `NON_ANSWERING_*` sets still exclude it (`answered-edge.ts`, `work/store.ts`) —
+      // not because the engine spoke, but because a start-ack is not an ANSWER, and closing
+      // an ask on one would mark a question answered before anybody looked at it.
       if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
         const { sendResponseViaIMessage } = await import('../../services/imessage-bridge.js');
         const delivered = await withOutboundAsync(

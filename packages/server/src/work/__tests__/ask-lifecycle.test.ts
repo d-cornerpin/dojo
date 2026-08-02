@@ -285,7 +285,10 @@ describe('quick asks auto-close on their delivery', () => {
         conversationId: 'conv-1', tool: 'auto-route', outcome })).toBe(0);
       stays(`outcome=${outcome} must not close the ask`);
     }
-    // a START-ACK is not an answer (OR2-PROVISIONAL: the engine saying "on it")
+    // A START-ACK IS NOT AN ANSWER. (OR2-PROVISIONAL: CLOSED, PHASE-4 T4 — the marker said
+    // "the engine saying 'on it'"; the lane's one surviving caller delivers the MODEL's own
+    // opening line early, and the exclusion is right either way: an opening line is not the
+    // answer to the question.)
     expect(closeAsksForDelivery({ agentId: AGENT, turnNumber: 4, deliveryId: 'd-1',
       conversationId: 'conv-1', tool: 'engine-ack', outcome: 'delivered' })).toBe(0);
     stays('an engine start-ack must not close the ask');
