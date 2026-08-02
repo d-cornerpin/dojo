@@ -8,6 +8,7 @@ import { getPrimaryAgentId } from '../../config/platform.js';
 import { getAgentRuntime } from '../../agent/runtime.js';
 import { insertEngineEventIfAbsent } from '../../memory/message-store.js';
 import { grantApprovalForSignature } from '../../agent/destructive-gate.js';
+import { routeFailure } from './route-failure.js';
 
 const logger = createLogger('healer-routes');
 
@@ -107,7 +108,7 @@ healerRouter.post('/run', async (c) => {
     const result = await runHealingCycle();
     return c.json({ ok: true, data: result });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 
@@ -127,7 +128,7 @@ healerRouter.post('/report/send', async (c) => {
     }
     return c.json({ ok: true, data: { message: 'Report sent and archived' } });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 

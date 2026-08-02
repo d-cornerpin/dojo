@@ -9,6 +9,10 @@ import { getPrimaryAgentId } from '../../config/platform.js';
 import { assertPublicHttpTarget } from '../../agent/net-guard.js';
 import type { HealthData, LogEntry } from '@dojo/shared';
 import { NEW_SESSION_DIVIDER } from '@dojo/shared';
+import { noteRouteFailure, routeFailure } from './route-failure.js';
+import { createLogger } from '../../logger.js';
+
+const logger = createLogger('system-routes');
 
 const systemRouter = new Hono();
 
@@ -79,10 +83,7 @@ systemRouter.get('/system/watchers', async (c) => {
       },
     });
   } catch (err) {
-    return c.json({
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
-    }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 
@@ -171,7 +172,8 @@ systemRouter.get('/og-preview', async (c) => {
       ok: true,
       data: { url, title, description, image: absoluteImage, siteName },
     });
-  } catch {
+  } catch (err) {
+    noteRouteFailure(c, logger, err);
     return c.json({ ok: true, data: { url, title: null, description: null, image: null } });
   }
 });

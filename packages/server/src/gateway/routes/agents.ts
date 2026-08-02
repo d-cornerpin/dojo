@@ -18,6 +18,7 @@ import { isPrimaryAgent, getPrimaryAgentId, getHealerAgentId, getDreamerAgentId,
 import { sanitizeMessagesOnModelChange } from '../../agent/model-switch.js';
 import type { AgentDetail, Model, Message, AgentMessage } from '@dojo/shared';
 import { deriveOrigin, legacyOriginInputs, NEW_SESSION_DIVIDER} from '@dojo/shared';
+import { noteRouteFailure } from './route-failure.js';
 
 const logger = createLogger('agents-routes');
 const agentsRouter = new Hono();
@@ -233,7 +234,8 @@ agentsRouter.get('/:id/system-prompt', (c) => {
     try {
       const content = fs.readFileSync(soulPath, 'utf-8');
       return c.json({ ok: true, data: { content } });
-    } catch {
+    } catch (err) {
+      noteRouteFailure(c, logger, err);
       return c.json({ ok: true, data: { content: '' } });
     }
   }

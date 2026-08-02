@@ -25,6 +25,7 @@ import { runBackfill, isBackfillRunning, getBackfillProgress } from '../../memor
 import { vectorSearch } from '../../memory/vector-search.js';
 import { taskScope, projectScope, msToText } from '../../work/tracker-view.js';
 import { deleteTrackerRow, detachChildren } from '../../work/tracker-store.js';
+import { routeFailure } from './route-failure.js';
 
 const logger = createLogger('memory-routes');
 export const memoryRouter = new Hono();
@@ -372,8 +373,7 @@ memoryRouter.get('/embeddings/status', (c) => {
       },
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return c.json({ ok: false, error: msg }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 
@@ -393,8 +393,7 @@ memoryRouter.post('/embeddings/backfill', async (c) => {
 
     return c.json({ ok: true, data: { started: true } });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return c.json({ ok: false, error: msg }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 
@@ -405,8 +404,7 @@ memoryRouter.put('/embeddings/config', async (c) => {
     setEmbeddingConfig(body);
     return c.json({ ok: true, data: getEmbeddingStatus() });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return c.json({ ok: false, error: msg }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 
@@ -426,8 +424,7 @@ memoryRouter.get('/vector-search', async (c) => {
     });
     return c.json({ ok: true, data: results });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return c.json({ ok: false, error: msg }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 

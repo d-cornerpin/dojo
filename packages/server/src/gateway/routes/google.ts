@@ -39,6 +39,7 @@ import {
   MAX_ACCOUNTS_PER_KIND,
 } from '../../google/accounts.js';
 import { queryGoogleActivity, getTodayActivityCounts, getLastActivityTimestamp } from '../../google/activity-log.js';
+import { routeFailure } from './route-failure.js';
 
 const logger = createLogger('google-routes');
 
@@ -160,7 +161,7 @@ googleRouter.post('/connect', (c) => {
     logger.info('Google OAuth flow started', { target, redirectUri });
     return c.json({ ok: true, data: { authUrl, kind: target.kind, accountId: target.accountId ?? null } });
   } catch (err) {
-    return c.json({ ok: false, error: `Failed to start auth: ${err instanceof Error ? err.message : String(err)}` }, 500);
+    return routeFailure(c, logger, err, { status: 500, prefix: 'Failed to start auth: ' });
   }
 });
 
@@ -256,8 +257,8 @@ googleRouter.put('/services', async (c) => {
     setEnabledServices(body, slot);
     logger.info('Google Workspace services updated', { slot, ...body });
     return c.json({ ok: true, data: { slot } });
-  } catch {
-    return c.json({ ok: false, error: 'Invalid request body' }, 400);
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 400, message: 'Invalid request body' });
   }
 });
 
@@ -301,8 +302,8 @@ googleRouter.put('/watch-email', async (c) => {
     }
 
     return c.json({ ok: true, data: { accountId: accountId ?? null, slot, enabled: body.enabled } });
-  } catch {
-    return c.json({ ok: false, error: 'Invalid request body' }, 400);
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 400, message: 'Invalid request body' });
   }
 });
 
@@ -326,8 +327,8 @@ googleRouter.put('/send-email', async (c) => {
     }
     logger.info('Gmail email-sending toggled', { accountId: accountId ?? slot, enabled: body.enabled });
     return c.json({ ok: true, data: { accountId: accountId ?? null, slot, enabled: body.enabled } });
-  } catch {
-    return c.json({ ok: false, error: 'Invalid request body' }, 400);
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 400, message: 'Invalid request body' });
   }
 });
 

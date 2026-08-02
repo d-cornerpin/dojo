@@ -37,6 +37,7 @@ import {
 } from '../../microsoft/accounts.js';
 import { queryMicrosoftActivity, getTodayMsActivityCounts, getLastMsActivityTimestamp } from '../../microsoft/activity-log.js';
 import { getInstallStatus, installOfficePackages, checkAndUpdateStatus } from '../../microsoft/office-packages.js';
+import { routeFailure } from './route-failure.js';
 
 const logger = createLogger('ms-routes');
 
@@ -128,7 +129,7 @@ microsoftRouter.post('/connect', async (c) => {
     logger.info('Microsoft auth URL generated', { target, redirectUri });
     return c.json({ ok: true, data: { authUrl, redirectUri, kind: target.kind, accountId: target.accountId ?? null } });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 
@@ -213,7 +214,9 @@ microsoftRouter.put('/services', async (c) => {
     }
     setEnabledMsServices(body, parseSlot(c.req.query('slot')));
     return c.json({ ok: true, data: { slot: parseSlot(c.req.query('slot')) } });
-  } catch { return c.json({ ok: false, error: 'Invalid request body' }, 400); }
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 400, message: 'Invalid request body' });
+  }
 });
 
 // PUT /api/microsoft/watch-email?slot=agent|user  (or ?accountId=)
@@ -251,8 +254,8 @@ microsoftRouter.put('/watch-email', async (c) => {
     }
 
     return c.json({ ok: true, data: { accountId: accountId ?? null, slot, enabled: body.enabled } });
-  } catch {
-    return c.json({ ok: false, error: 'Invalid request body' }, 400);
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 400, message: 'Invalid request body' });
   }
 });
 
@@ -275,8 +278,8 @@ microsoftRouter.put('/send-email', async (c) => {
     }
     logger.info('Outlook email-sending toggled', { accountId: accountId ?? slot, enabled: body.enabled });
     return c.json({ ok: true, data: { accountId: accountId ?? null, slot, enabled: body.enabled } });
-  } catch {
-    return c.json({ ok: false, error: 'Invalid request body' }, 400);
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 400, message: 'Invalid request body' });
   }
 });
 

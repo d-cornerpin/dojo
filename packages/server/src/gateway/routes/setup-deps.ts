@@ -12,6 +12,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { deleteAllForAgent } from '../../memory/message-store.js';
+import { noteRouteFailure, routeFailure } from './route-failure.js';
 
 const logger = createLogger('setup-deps');
 
@@ -128,7 +129,8 @@ setupDepsRouter.post('/deps/install/:dep', async (c) => {
         try {
           const resp = await fetch('http://localhost:11434', { signal: AbortSignal.timeout(5000) });
           return c.json({ ok: true, data: { running: resp.ok || resp.status === 200 } });
-        } catch {
+        } catch (err) {
+          noteRouteFailure(c, logger, err);
           return c.json({ ok: true, data: { running: false, message: 'Starting...' } });
         }
       }
@@ -186,8 +188,8 @@ setupDepsRouter.get('/ollama/models', async (c) => {
     if (!resp.ok) return c.json({ ok: false, error: 'Ollama not responding' }, 502);
     const data = await resp.json() as { models?: Array<{ name: string; size: number; details?: { parameter_size?: string } }> };
     return c.json({ ok: true, data: data.models ?? [] });
-  } catch {
-    return c.json({ ok: false, error: 'Cannot connect to Ollama' }, 502);
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 502, message: 'Cannot connect to Ollama' });
   }
 });
 
@@ -285,8 +287,7 @@ setupDepsRouter.post('/ollama/pull', async (c) => {
     currentPullProgress = null;
     return c.json({ ok: true, data: { model, pulled: true, status: lastStatus } });
   } catch (err) {
-    currentPullProgress = { model, status: 'error', completed: 0, total: 0, layers: 0, error: err instanceof Error ? err.message : String(err) };
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 
@@ -302,7 +303,7 @@ setupDepsRouter.delete('/ollama/models/:name', async (c) => {
     if (!resp.ok) return c.json({ ok: false, error: 'Failed to delete model' }, 500);
     return c.json({ ok: true, data: { deleted: name } });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 
@@ -453,7 +454,7 @@ setupDepsRouter.post('/permissions/request/:perm', (c) => {
     }
     return c.json({ ok: true });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 

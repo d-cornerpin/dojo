@@ -12,6 +12,7 @@ import { createLogger } from '../../logger.js';
 import { DEFAULT_SOUL_MD as DEFAULT_SOUL, DEFAULT_USER_MD as DEFAULT_USER } from '../../prompt/templates.js';
 import { getOllamaModelInfo } from '../../services/ollama.js';
 import type { Provider, Model } from '@dojo/shared';
+import { noteRouteFailure, routeFailure } from './route-failure.js';
 
 // ── Model Usage Helper ──
 
@@ -1264,8 +1265,7 @@ configRouter.get('/providers/:id/browse-models', async (c) => {
 
     return c.json({ ok: true, data: filtered });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return c.json({ ok: false, error: `Failed to browse models: ${msg}` }, 502);
+    return routeFailure(c, logger, err, { status: 502, prefix: 'Failed to browse models: ' });
   }
 });
 
@@ -1685,10 +1685,7 @@ configRouter.post('/models/:id/refresh-capabilities', async (c) => {
     } catch { /* best-effort */ }
     return c.json({ ok: true, data: rowToModel(row), capabilities: caps });
   } catch (err) {
-    return c.json({
-      ok: false,
-      error: `Capability refresh failed: ${err instanceof Error ? err.message : String(err)}`,
-    }, 500);
+    return routeFailure(c, logger, err, { status: 500, prefix: 'Capability refresh failed: ' });
   }
 });
 
@@ -2320,6 +2317,7 @@ configRouter.get('/agent-sdk/status', async (c) => {
       },
     });
   } catch (err) {
+    noteRouteFailure(c, logger, err);
     return c.json({ ok: true, data: { cliInstalled: false, version: null, packageAvailable: false } });
   }
 });
@@ -2331,6 +2329,7 @@ configRouter.post('/agent-sdk/verify', async (c) => {
     const result = await checkSdkAuth();
     return c.json({ ok: true, data: result });
   } catch (err) {
+    noteRouteFailure(c, logger, err);
     return c.json({ ok: true, data: { authenticated: false, error: err instanceof Error ? err.message : String(err) } });
   }
 });
@@ -2397,7 +2396,7 @@ configRouter.get('/openrouter/credits', async (c) => {
 
     return c.json({ ok: true, data: { total_credits: totalCredits, total_usage: totalUsage, balance } });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 
@@ -2487,7 +2486,7 @@ configRouter.get('/deepseek/balance', async (c) => {
       },
     });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 

@@ -17,6 +17,10 @@ import {
   updateCredential,
   deleteCredentialById,
 } from '../../credentials/store.js';
+import { routeFailure } from './route-failure.js';
+import { createLogger } from '../../logger.js';
+
+const logger = createLogger('credentials-routes');
 
 export const credentialsRouter = new Hono<AppEnv>();
 
@@ -52,7 +56,7 @@ credentialsRouter.get('/:id/reveal', (c) => {
       },
     });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 

@@ -22,6 +22,7 @@ import {
 import { runDreamingCycle, getDreamingConfig, setDreamingConfig } from '../../vault/maintenance.js';
 import { extractFromConversation, storeExtractedMemories } from '../../vault/extraction.js';
 import { markConversationProcessed } from '../../vault/store.js';
+import { routeFailure } from './route-failure.js';
 
 const logger = createLogger('vault-routes');
 
@@ -69,7 +70,7 @@ vaultRouter.post('/entries', async (c) => {
     });
     return c.json({ ok: true, data: entry });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 
@@ -167,8 +168,8 @@ vaultRouter.post('/conversations/:id/process', async (c) => {
     let parsedMessages: Array<{ role: string; content: string; createdAt?: string }>;
     try {
       parsedMessages = JSON.parse(conv.messages);
-    } catch {
-      return c.json({ ok: false, error: 'Failed to parse archived messages' }, 500);
+    } catch (err) {
+      return routeFailure(c, logger, err, { status: 500, message: 'Failed to parse archived messages' });
     }
 
     const formatted = parsedMessages.map(m => {
@@ -184,7 +185,7 @@ vaultRouter.post('/conversations/:id/process', async (c) => {
 
     return c.json({ ok: true, data: { memoriesExtracted: stored, techniquesFound: result.techniqueCandidates.length } });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 
@@ -206,7 +207,7 @@ vaultRouter.post('/dream', async (c) => {
       return c.json({ ok: true, data: { dreamerId: null, message: 'No archives to process or dreaming disabled' } });
     }
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 

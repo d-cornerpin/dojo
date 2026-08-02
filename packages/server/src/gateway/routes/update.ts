@@ -12,6 +12,7 @@ import type { AppEnv } from '../server.js';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { markPendingUpdate, markBootingNew } from '../../update-state.js';
+import { routeFailure } from './route-failure.js';
 
 const execAsync = promisify(exec);
 const logger = createLogger('updater');
@@ -758,7 +759,7 @@ updateRouter.get('/releases', async (c) => {
 
     return c.json({ ok: true, data: { currentVersion, releases: data } });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 
@@ -917,7 +918,7 @@ updateRouter.get('/backups', (c) => {
       },
     });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 
