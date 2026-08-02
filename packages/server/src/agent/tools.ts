@@ -1,6 +1,6 @@
 import { exec } from 'node:child_process';
 import { getCurrentToolCallId, runWithToolCallId, currentTurnNumber, currentTurnRoot } from './turn-state.js';
-import { classifyToolResult, type ToolOutcome } from './tool-outcome.js';
+import { classifyToolResult, toolErrorCodeForThrow, type ToolOutcome } from './tool-outcome.js';
 export { toolResultOf, toolWasBlocked, type ToolOutcome } from './tool-outcome.js';
 import { taskScope, projectScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../work/tracker-store.js';
@@ -10279,6 +10279,11 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
   } catch (err) {
     content = `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`;
     isError = true;
+    // PHASE-4 T5: when the throw came from a provider call it carries a status, a structured
+    // error type or a transport code, and the door can say WHY structurally instead of
+    // handing the classifier a bare `crashed`. A verdict reached from the error's WORDS
+    // populates nothing — see `toolErrorCodeForThrow`.
+    errorCode = errorCode ?? toolErrorCodeForThrow(err);
     auditLog(agentId, 'tool_call', name, 'error', content);
   }
 

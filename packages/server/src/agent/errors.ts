@@ -3,6 +3,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 import { isPrimaryAgent } from '../config/platform.js';
+import { providerClassOf, type ProviderErrorFacts } from './provider-error.js';
 
 const logger = createLogger('agent-errors');
 
@@ -17,13 +18,29 @@ export class AgentError extends Error {
   public readonly agentId: string;
   public readonly retryable: boolean;
   public readonly code: string;
+  /**
+   * PHASE-4 T5 — what the PROVIDER said, carried instead of re-derived.
+   *
+   * Every consumer downstream of a failed model call used to re-read this error's PROSE for
+   * digits (`msg.includes('429')`) because the status code died at the throw site. The facts
+   * ride the error now: the status, the provider's own error type, the transport code, and
+   * which of those the verdict came from. Present only on errors raised by the model layer.
+   */
+  public readonly provider: ProviderErrorFacts | null;
 
-  constructor(message: string, agentId: string, options?: { retryable?: boolean; code?: string; cause?: Error }) {
+  constructor(
+    message: string,
+    agentId: string,
+    options?: {
+      retryable?: boolean; code?: string; cause?: Error; provider?: ProviderErrorFacts | null;
+    },
+  ) {
     super(message);
     this.name = 'AgentError';
     this.agentId = agentId;
     this.retryable = options?.retryable ?? false;
     this.code = options?.code ?? 'AGENT_ERROR';
+    this.provider = options?.provider ?? null;
     if (options?.cause) {
       this.cause = options.cause;
     }
@@ -173,10 +190,11 @@ export async function withRetry<T>(
         throw err;
       }
 
-      // Don't inline-retry rate limits — the background retry manager handles those
+      // Don't inline-retry rate limits — the background retry manager handles those.
+      // PHASE-4 T5: asked of the provider's status, not of this error's prose.
       if (err instanceof AgentError && err.code === 'MODEL_CALL_FAILED') {
-        const msg = err.message.toLowerCase();
-        if (msg.includes('rate_limit') || msg.includes('429') || msg.includes('overloaded')) {
+        const cls = providerClassOf(err);
+        if (cls === 'rate_limit' || cls === 'overloaded' || cls === 'quota') {
           throw err; // Let the background retry handle it
         }
       }

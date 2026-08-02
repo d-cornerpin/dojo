@@ -25,6 +25,7 @@ import { insertMessageIfAbsent } from '../../memory/message-store.js';
 import { recordError, AgentError } from '../errors.js';
 import { hasActiveRateLimitRetry } from '../rate-limit-retry.js';
 import { classifyRecoverableProviderError, classifyPlatformError } from './classifiers/provider.js';
+import { classifyProviderError, classifyProviderErrorText, type ProviderErrorFacts } from '../provider-error.js';
 import {
   pendingWakeups,
   recoveryRunStreak,
@@ -87,6 +88,10 @@ export async function recoverFromError(
   const code = error instanceof AgentError ? error.code : undefined;
   const fullErrText = cause ? `${message} ${cause}` : message;
   const agentId = state.agentId;
+  // PHASE-4 T5: what the provider actually said, read ONCE and handed to every step below.
+  // The model layer attaches it when it raises; anything else is classified here.
+  const facts = error instanceof AgentError && error.provider
+    ? error.provider : classifyProviderError(error);
 
   // 0. Rate limit / overloaded that the background decay retry manager already
   //    owns (FA-A1). When the model layer hit a 429/529 on a PINNED model (not
@@ -103,7 +108,7 @@ export async function recoverFromError(
   //    layer did NOT schedule a retry, hasActiveRateLimitRetry is false, and
   //    that case still degrades loudly through the cascade below. Reuses
   //    classifyError's regex so the match stays in one place.
-  const rlKind = classifyError(new Error(fullErrText)).kind;
+  const rlKind = classifyError(new Error(fullErrText), facts).kind;
   if ((rlKind === 'rate_limit' || rlKind === 'overloaded') && hasActiveRateLimitRetry(agentId)) {
     logger.info(
       'v2: rate limit owned by background retry manager, skipping injury cascade',
@@ -134,7 +139,7 @@ export async function recoverFromError(
   //    agent (so when it eventually wakes, it has context) AND set
   //    status='error' AND surface a plain-English banner + iMessage.
   //    error-handling-spec Phase 1 / Phase 2.
-  if (await tryPlatformErrorRecovery(state, fullErrText, message)) {
+  if (await tryPlatformErrorRecovery(state, fullErrText, message, facts)) {
     return;
   }
 
@@ -143,7 +148,7 @@ export async function recoverFromError(
   //    Phase 1: no status change for Tier B. Same-kind cap replaced with
   //    "same kind + same inputs" so the agent has unlimited adaptation
   //    attempts as long as it actually changes its approach.
-  if (await tryProviderRecovery(state, fullErrText, message)) {
+  if (await tryProviderRecovery(state, fullErrText, message, facts)) {
     return;
   }
 
@@ -152,7 +157,7 @@ export async function recoverFromError(
   //    next turn. Only THEN consider injury — and even then, the agent
   //    has something in chat history to read instead of just going
   //    silent.
-  await recordInjury(state, message, cause, code);
+  await recordInjury(state, message, cause, code, facts);
 }
 
 /**
@@ -188,17 +193,20 @@ export function computeInputsFingerprint(state: AgentTurnState): string {
  * report what KIND of failure occurred (e.g. for telemetry) without
  * actually running recovery.
  */
-export function classifyError(error: Error): ClassifiedError {
+export function classifyError(error: Error, facts?: ProviderErrorFacts): ClassifiedError {
   const msg = error.message.toLowerCase();
-  // "usage limit" is the Claude subscription (agent-sdk) phrasing for a rate
-  // limit; treating it as rate_limit keeps the FA-A1 passthrough owning SDK
-  // usage-limit errors on pinned models instead of injuring the agent (FA-PC4).
-  if (/rate.?limit|429|usage limit/.test(msg)) return { kind: 'rate_limit' };
-  if (/overloaded|529/.test(msg)) return { kind: 'overloaded' };
+  // PHASE-4 T5: the two message shapes that CARRY a big number are read FIRST, then the
+  // provider's own verdict. "usage limit" is the Claude subscription (agent-sdk) phrasing for
+  // a rate limit; keeping it here keeps the FA-A1 passthrough owning SDK usage-limit errors
+  // on pinned models instead of injuring the agent (FA-PC4), and no status can express it.
   if (/context.*overflow|prompt.*too.?long/.test(msg)) return { kind: 'context_overflow' };
   if (/output.*token.*(limit|exceed|max)|max_output_tokens|truncat/.test(msg))
     return { kind: 'output_truncated' };
-  if (/network|timeout|econnrefused|socket/.test(msg)) return { kind: 'network' };
+  if (msg.includes('usage limit')) return { kind: 'rate_limit' };
+  const cls = (facts ?? classifyProviderErrorText(msg)).class;
+  if (cls === 'rate_limit' || cls === 'quota') return { kind: 'rate_limit' };
+  if (cls === 'overloaded') return { kind: 'overloaded' };
+  if (cls === 'network' || msg.includes('socket')) return { kind: 'network' };
   return { kind: 'unknown' };
 }
 
@@ -291,11 +299,12 @@ async function tryProviderRecovery(
   state: AgentTurnState,
   fullErrText: string,
   message: string,
+  facts: ProviderErrorFacts,
 ): Promise<boolean> {
   const agentId = state.agentId;
   let recovery;
   try {
-    recovery = classifyRecoverableProviderError(fullErrText);
+    recovery = classifyRecoverableProviderError(fullErrText, facts);
   } catch (err) {
     logger.warn('v2: provider classifier threw', {
       agentId,
@@ -399,11 +408,12 @@ async function tryPlatformErrorRecovery(
   state: AgentTurnState,
   fullErrText: string,
   message: string,
+  facts: ProviderErrorFacts,
 ): Promise<boolean> {
   const agentId = state.agentId;
   let platform;
   try {
-    platform = classifyPlatformError(fullErrText);
+    platform = classifyPlatformError(fullErrText, facts);
   } catch (err) {
     logger.warn('v2: platform classifier threw', {
       agentId,
@@ -485,6 +495,7 @@ async function recordInjury(
   message: string,
   cause: string | undefined,
   code: string | undefined,
+  facts?: ProviderErrorFacts,
 ): Promise<void> {
   const agentId = state.agentId;
   logger.error(`v2 agent loop failed: ${message}`, { agentId, code, cause }, agentId);
@@ -496,12 +507,10 @@ async function recordInjury(
   // agent has context on its next turn. Pre-spec the only path that
   // wrote a note was rate-limit; every other error went silent. The
   // note uses plain language and never contains raw provider JSON.
-  const lower = message.toLowerCase();
+  // PHASE-4 T5: the provider's own verdict, not this message's digits.
+  const injuryClass = (facts ?? classifyProviderErrorText(message)).class;
   const isRateLimit =
-    lower.includes('429') ||
-    lower.includes('rate_limit') ||
-    lower.includes('rate limit') ||
-    lower.includes('overloaded');
+    injuryClass === 'rate_limit' || injuryClass === 'quota' || injuryClass === 'overloaded';
 
   // Persist the unclassified-error note as a system message so the agent
   // sees something it can act on (apologize to user, try a different

@@ -22,6 +22,10 @@
 // ════════════════════════════════════════
 
 import type { ErrorKind, ErrorContext } from '../error-format.js';
+import {
+  classifyProviderErrorText,
+  type ProviderErrorFacts,
+} from '../../provider-error.js';
 
 // The v2.3.19 classifier returns a richer kind. Old call sites that
 // expect the legacy set (vision_mismatch, unsupported_modality, etc.)
@@ -54,36 +58,23 @@ export interface RecoverableProviderError {
 
 export function classifyRecoverableProviderError(
   err: string,
+  facts?: ProviderErrorFacts,
 ): RecoverableProviderError | null {
   if (!err) return null;
   const lower = err.toLowerCase();
 
-  // Don't recover transient or auth errors — those go through the
-  // existing healer / rate-limit retry paths, or now classifyPlatformError.
-  if (
-    lower.includes('429') ||
-    lower.includes('rate_limit') ||
-    lower.includes('rate limit') ||
-    lower.includes('overloaded') ||
-    lower.includes('529') ||
-    lower.includes('econnrefused') ||
-    lower.includes('econnreset') ||
-    lower.includes('etimedout') ||
-    lower.includes('fetch failed') ||
-    lower.includes('socket hang up') ||
-    lower.includes('timeout') ||
-    lower.includes('timed out') ||
-    lower.includes('503') ||
-    lower.includes('502') ||
-    lower.includes('500') ||
-    lower.includes('401') ||
-    lower.includes('403') ||
-    lower.includes('unauthorized') ||
-    lower.includes('invalid_api_key') ||
-    lower.includes('api key')
-  ) {
-    return null;
-  }
+  // PHASE-4 T5: the transient/auth screen was nineteen substring tests, and three of them
+  // (`'401'`, `'503'`, `'500'`) fired on any digit run that happened to contain those three
+  // characters — Anthropic's "prompt is too long: 204015 tokens" was screened out as an auth
+  // error. The screen asks the provider now: its STATUS when it answered, its transport code
+  // when it did not, and only then its words — with every status matched as a token.
+  // Everything except a request-shaped 4xx (and a genuinely unrecognised error) belongs to
+  // another path: rate-limit retry, the healer, or classifyPlatformError below.
+  const f = facts ?? classifyProviderErrorText(err);
+  if (f.class !== 'bad_request' && f.class !== 'unknown') return null;
+  // An unrecognised string that names a credential is still not this classifier's business;
+  // `api key` carries no status and no provider type, so the text classifier cannot see it.
+  if (lower.includes('api key')) return null;
 
   // ── v2.3.19 specific 4xx branches (order matters: most specific first) ──
 
@@ -280,38 +271,42 @@ export interface PlatformError {
   kind: PlatformErrorKind;
 }
 
-export function classifyPlatformError(err: string): PlatformError | null {
-  if (!err) return null;
-  const lower = err.toLowerCase();
+export function classifyPlatformError(
+  err: string,
+  facts?: ProviderErrorFacts,
+): PlatformError | null {
+  if (!err && !facts) return null;
+  const lower = (err ?? '').toLowerCase();
 
-  // 401 unauthorized / invalid API key.
-  if (
-    lower.includes('401') ||
-    lower.includes('unauthorized') ||
-    lower.includes('invalid_api_key') ||
-    lower.includes('invalid api key') ||
-    (lower.includes('api key') && (lower.includes('expired') || lower.includes('revoked') || lower.includes('not valid')))
-  ) {
-    return { kind: 'auth_invalid' };
+  // PHASE-4 T5 — THE DEFECT THIS REPLACES, because it is the worst one in the file: the
+  // auth branch tested `lower.includes('401')`, so Anthropic's HTTP 400
+  // "prompt is too long: 204015 tokens > 200000 maximum" returned `auth_invalid` on the
+  // "401" inside the TOKEN COUNT. `auth_invalid` locks the agent and banners the owner that
+  // his API key is invalid. A long prompt read as a revoked credential.
+  //
+  // The verdict comes from what the provider actually said: the status when it answered, its
+  // structured `error.type` when it named one, the transport code when the call never landed,
+  // and only then its words — with every status matched as a token that cannot occur inside
+  // a number.
+  const f = facts ?? classifyProviderErrorText(err ?? '');
+  switch (f.class) {
+    case 'auth': return { kind: 'auth_invalid' };
+    case 'access_denied': return { kind: 'access_denied' };
+    case 'quota': return { kind: 'quota_exhausted' };
+    case 'network':
+      // Not every transport failure is a name-resolution failure, and only that one is a
+      // condition the owner can act on. The distinction is a CODE, never a digit run.
+      return /enotfound|eai_again|getaddrinfo|\bdns\b/.test(lower)
+        || f.transportCode === 'ENOTFOUND' || f.transportCode === 'EAI_AGAIN'
+        ? { kind: 'dns_failure' }
+        : null;
+    default:
+      // A credential named in prose with no status behind it still means the owner must act,
+      // and no status/type/code can express it.
+      if (lower.includes('api key')
+        && (lower.includes('expired') || lower.includes('revoked') || lower.includes('not valid'))) {
+        return { kind: 'auth_invalid' };
+      }
+      return null;
   }
-
-  // 403 forbidden — usually model access denied (org level).
-  if (lower.includes('403') || lower.includes('forbidden')) {
-    return { kind: 'access_denied' };
-  }
-
-  // Daily/monthly quota explicitly exhausted (distinct from 429 rate limit).
-  if (
-    (lower.includes('quota') && (lower.includes('exceed') || lower.includes('exhaust'))) ||
-    lower.includes('insufficient_quota')
-  ) {
-    return { kind: 'quota_exhausted' };
-  }
-
-  // DNS / fundamental network resolution failure.
-  if (lower.includes('enotfound') || lower.includes('getaddrinfo') || lower.includes('dns')) {
-    return { kind: 'dns_failure' };
-  }
-
-  return null;
 }

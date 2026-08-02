@@ -5,6 +5,7 @@ import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
 import { createLogger } from '../logger.js';
 import { AgentError } from './errors.js';
+import { classifyProviderError, isRetryableProviderClass } from './provider-error.js';
 import { scheduleRateLimitRetry } from './rate-limit-retry.js';
 import { toolDefinitions, getFilteredTools, type ToolDefinition } from './tools.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
@@ -621,10 +622,12 @@ async function callOllamaModel(
     });
 
     if (!response.ok) {
-      const errorText = await response.text().catch(() => '');
+      const errorText = await response.text().catch(() => ''); // raw fetch: the status is exact
+      const facts = classifyProviderError({ status: response.status, message: errorText });
       throw new AgentError(`Ollama call failed: HTTP ${response.status} ${errorText.slice(0, 200)}`, agentId, {
         code: 'MODEL_CALL_FAILED',
-        retryable: response.status >= 500,
+        retryable: isRetryableProviderClass(facts.class),
+        provider: facts,
       });
     }
 
@@ -801,6 +804,7 @@ async function callOllamaModel(
     throw err instanceof AgentError ? err : new AgentError(`Ollama call failed: ${message}`, agentId, {
       code: 'MODEL_CALL_FAILED',
       retryable: true,
+      provider: classifyProviderError(err),
     });
   } finally {
     lock.release(modelInfo.providerId, ollamaModelName);
@@ -1780,8 +1784,11 @@ async function callOpenAIModel(
       bestEffort: params.bestEffort ?? false,
     }, agentId);
 
-    const isRateLimited = message.includes('rate_limit') || message.includes('429');
-    const isOverloaded = message.includes('overloaded') || message.includes('529') || message.includes('503');
+    // PHASE-4 T5 (provider-error.ts): the provider's STATUS, never this message's digits —
+    // `message.includes('503')` was true of "prompt is too long: 250316 tokens".
+    const facts = classifyProviderError(err);
+    const isRateLimited = facts.class === 'rate_limit' || facts.class === 'quota';
+    const isOverloaded = facts.class === 'overloaded';
 
     // FA-R2: record the rate limit in the proactive tracker regardless of routing
     // mode, mirroring the Anthropic path (see callAnthropicSdkModel). This lets
@@ -1836,7 +1843,8 @@ async function callOpenAIModel(
 
     throw new AgentError(`OpenAI call failed: ${message}`, agentId, {
       code: 'MODEL_CALL_FAILED',
-      retryable: isRateLimited || isOverloaded,
+      retryable: isRetryableProviderClass(facts.class),
+      provider: facts,
     });
   }
 }
@@ -2502,10 +2510,11 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     errorDetail.bestEffort = params.bestEffort ?? false;
     logger[params.bestEffort ? 'warn' : 'error'](`Model call failed: ${statusStr}${message}`, errorDetail, agentId);
 
-    // Determine if retryable
-    const isRateLimited = message.includes('rate_limit') || message.includes('429');
-    const isOverloaded = message.includes('overloaded') || message.includes('529');
-    const isServerError = message.includes('500') || message.includes('503');
+    // Determine if retryable — PHASE-4 T5, from `err.status` (which the line above already
+    // read into errorDetail) and the structured body, never the message's digits.
+    const facts = classifyProviderError(err);
+    const isRateLimited = facts.class === 'rate_limit' || facts.class === 'quota';
+    const isOverloaded = facts.class === 'overloaded';
 
     // Record the rate limit in the proactive tracker regardless of routing mode.
     // This lets selectModel skip the rate-limited model on the NEXT turn without
@@ -2560,9 +2569,10 @@ export async function callModel(params: ModelCallParams): Promise<ModelCallResul
     }
 
     throw new AgentError(`Model call failed: ${message}`, agentId, {
-      retryable: isRateLimited || isOverloaded || isServerError,
+      retryable: isRetryableProviderClass(facts.class),
       code: 'MODEL_CALL_FAILED',
       cause: err instanceof Error ? err : undefined,
+      provider: facts,
     });
   }
 }

@@ -49,7 +49,48 @@
 //
 // `no_change` is still unpopulated for the reason below.
 // ════════════════════════════════════════
-import type { LiveOutcome, OutcomeApplied, OutcomeFailed, OutcomeRefused, ToolResult, ToolSeamReason } from '@dojo/shared';
+import type {
+  LiveOutcome, OutcomeApplied, OutcomeFailed, OutcomeRefused, ToolErrorCode, ToolResult,
+  ToolSeamReason,
+} from '@dojo/shared';
+import { providerFactsOf } from './provider-error.js';
+
+/**
+ * PHASE-4 T5 — `ToolErrorCode`'s SECOND real population, and the first one that is not a
+ * permission gate.
+ *
+ * T1 gave the field its first reader (`classifyToolResult` below) and marked the fifteen
+ * refusals the DOOR owns. Everything else a tool threw arrived with no code at all and read
+ * `crashed` — honest, because nobody had told us better. A tool that called a provider HAS
+ * been told better: the throw carries a status, a structured `error.type`, or a transport
+ * code, and `provider-error.ts` has already read them.
+ *
+ * THE LINE THIS WILL NOT CROSS: a verdict reached from the error's WORDS
+ * (`basis: 'text' | 'none'`) populates NOTHING. Guessing "unauthorized" out of a tool's own
+ * prose and stamping `PERMISSION_DENIED` on it would move the call into the `blocked` arm —
+ * "the door refused, nothing ran" — on the strength of a substring. That is the banned class
+ * wearing a struct, and the tool stays `crashed` instead, which is what "nobody told us
+ * anything better" honestly means.
+ */
+export function toolErrorCodeForThrow(err: unknown): ToolErrorCode | undefined {
+  const facts = providerFactsOf(err);
+  if (facts.basis === 'text' || facts.basis === 'none') return undefined;
+  switch (facts.class) {
+    case 'rate_limit':
+    case 'quota':
+      return 'RATE_LIMITED';
+    case 'auth':
+    case 'access_denied':
+      return 'PERMISSION_DENIED';
+    case 'network':
+      return 'NETWORK_ERROR';
+    case 'bad_request':
+      return 'INVALID_ARGS';
+    default:
+      // `server` and `overloaded` are the provider breaking, which is what `crashed` says.
+      return undefined;
+  }
+}
 
 /**
  * What the tool door answers.
@@ -88,10 +129,24 @@ export function toolWasBlocked(o: ToolOutcome): boolean {
  *   TIMEOUT                  -> failed  / cancelled (abandoned before an answer)
  *   anything else, or none   -> failed  / crashed
  *
- * `no_change` is deliberately NOT populated. The tool seam does express it — the
- * tracker's `[NO-OP]` prefix is exactly that fact — but it expresses it in PROSE,
- * and reading that prose here is the banned move. It stays unpopulated until a tool
- * result carries the fact structurally, and this comment is the record of why.
+ * `no_change` is STILL deliberately NOT populated, and PHASE-4 T5 re-derived why rather
+ * than inheriting it. The fact exists and is expressed in prose at exactly four sites, all
+ * of them in ONE file:
+ *
+ *   git grep -n "\[NO-OP\]" -- packages/server/src | grep -v __tests__
+ *     tracker/tools.ts:403   (a status change that was already at that status)
+ *     tracker/tools.ts:1408  (the same, on the work_update path)
+ *     tracker/tools.ts:1687  (complete with no open scheduled run)
+ *     tracker/tools.ts:3805  (validate with no open run)
+ *
+ * `:403` is the sharpest of the four — it is literally `if (r.kind === 'no_change')`, a
+ * `WorkOutcome` arm being RENDERED into prose and then, one layer up, read back out of the
+ * prose by nobody. The channel that would carry it structurally is a field on `ToolResult`,
+ * and giving it one here — with no writer, because all four writers are in a file this task
+ * may not touch — would rebuild the exact defect T1 measured on `ToolErrorCode` (a declared
+ * field, one writer, zero readers). So: NOT taken, recorded with its sites. `tracker/tools.ts`
+ * is T4's file for the whole of Phase 4 (§T0-PARALLELISM's T4∥T5 fence), and the change is
+ * one line at each site plus one field here. Owner: whoever holds `tracker/tools.ts` next.
  */
 export function classifyToolResult(result: ToolResult): ToolOutcome {
   if (result.isError !== true) return { kind: 'applied', value: result };
