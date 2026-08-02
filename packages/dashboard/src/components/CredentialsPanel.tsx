@@ -28,6 +28,21 @@ export const CredentialsPanel = () => {
   };
   useEffect(() => { load(); }, []);
 
+  /** Decrypt into local state unless it is already there. Returns the values. */
+  const ensureRevealed = async (id: string): Promise<Record<string, unknown> | null> => {
+    if (revealed[id]) return revealed[id];
+    setRevealing(id);
+    const result = await api.revealCredential(id);
+    setRevealing(null);
+    if (!result.ok) {
+      toast.error(`Reveal failed: ${result.error}`);
+      return null;
+    }
+    const values = result.data?.credentials ?? {};
+    setRevealed(r => ({ ...r, [id]: values }));
+    return values;
+  };
+
   const handleReveal = async (id: string) => {
     if (revealed[id]) {
       // Toggle off - hide the value.
@@ -38,14 +53,18 @@ export const CredentialsPanel = () => {
       });
       return;
     }
-    setRevealing(id);
-    const result = await api.revealCredential(id);
-    setRevealing(null);
-    if (!result.ok) {
-      toast.error(`Reveal failed: ${result.error}`);
-      return;
-    }
-    setRevealed(r => ({ ...r, [id]: result.data?.credentials ?? {} }));
+    await ensureRevealed(id);
+  };
+
+  // M7 / P362 + P739's class: the edit form is a FULL-DOCUMENT editor, so opening it against
+  // values that were never loaded binds it to an empty initial state and the next save speaks
+  // for fields it never saw. Editing therefore reveals first, always — "never loaded" and
+  // "deliberately emptied" are different facts and the form may only ever express the second.
+  const handleEdit = async (id: string) => {
+    if (editing === id) { setEditing(null); return; }
+    const values = await ensureRevealed(id);
+    if (values === null) return;
+    setEditing(id);
   };
 
   const handleDelete = async (id: string, serviceName: string) => {
@@ -123,8 +142,9 @@ export const CredentialsPanel = () => {
                       {revealing === c.id ? '…' : revealed[c.id] ? 'Hide' : 'Show'}
                     </button>
                     <button
-                      onClick={() => setEditing(isEditing ? null : c.id)}
-                      className="px-2 py-1 text-xs rounded bg-ui/[0.06] hover:bg-ui/[0.12] transition-colors"
+                      onClick={() => handleEdit(c.id)}
+                      disabled={revealing === c.id}
+                      className="px-2 py-1 text-xs rounded bg-ui/[0.06] hover:bg-ui/[0.12] transition-colors disabled:opacity-60"
                     >
                       {isEditing ? 'Cancel' : 'Edit'}
                     </button>
@@ -205,6 +225,15 @@ const CredentialEditForm = ({ mode, initial, credentialId, onSaved, onCancel }: 
       toast.error('At least one credential field is required.');
       setSaving(false);
       return;
+    }
+    // M7's clear protocol, client side: the server now MERGES a credentials patch, so a field
+    // the owner removed here has to say so out loud. `null` is that sentinel and JSON carries
+    // it — `undefined` is what P706 tried and `JSON.stringify` drops it, which is how a
+    // deliberate clear became an empty body and then a no-op.
+    if (mode === 'edit') {
+      for (const k of Object.keys(initial?.credentials ?? {})) {
+        if (!(k in credentials)) credentials[k] = null;
+      }
     }
     const result = mode === 'create'
       ? await api.createCredential({ service_name: serviceName.trim(), credentials, description: description.trim() || null })

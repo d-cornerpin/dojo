@@ -885,7 +885,14 @@ export function updateTask(id: string, updates: Partial<{
   anchorTime: string | null;
 }>): Task | null {
   const patch: WorkPatch = {};
-  if (updates.assignedTo !== undefined) patch.agent_id = updates.assignedTo;
+  // M7 / P706 — the clear protocol at the assignee. `null` means "nobody in particular is
+  // assigned", and that fact does NOT live in `agent_id`: the spine declares it
+  // `TEXT NOT NULL` (`135_work_spine.sql:42`), so writing null there is a constraint abort,
+  // not an unassignment. `assignee_agent` is the nullable column that carries it, and
+  // `openTrackerTask` already sets exactly this pair — an unassigned task belongs to its
+  // creator until someone claims it. So a null CLEARS the assignee and leaves the holder.
+  if (updates.assignedTo === null) patch.assignee_agent = null;
+  else if (updates.assignedTo !== undefined) patch.agent_id = updates.assignedTo;
   if (updates.priority !== undefined) patch.priority = updates.priority;
   if (updates.notes !== undefined) patch.notes = updates.notes;
   if (updates.title !== undefined) patch.title = updates.title;

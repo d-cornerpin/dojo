@@ -23,6 +23,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { patchAssignments } from '../db/patch.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import {
@@ -181,6 +182,10 @@ export type WorkPatch = Partial<Record<TrackerAttr, unknown>>;
 /**
  * Patch a work row's attribute columns.
  *
+ * M7 (PHASE-4 T5): the values obey `db/patch.ts`'s ONE RULE — `undefined` LEAVES a column
+ * alone, `null` CLEARS it. A caller holding a maybe-undefined expression that MEANS clear
+ * says so with `?? null`; a caller that means leave-alone can pass the expression as it is.
+ *
  * `updated_at` moves by default because that is what every legacy writer did
  * (`updated_at = datetime('now')` on the same statement). The opt-out exists for ONE named
  * reason and carries it: requirement #15 says the denormalized activity stamps must never
@@ -188,16 +193,19 @@ export type WorkPatch = Partial<Record<TrackerAttr, unknown>>;
  * MOVE" and a stamp is not a move. `tracker/task-stamps.ts` passes `touch: false`.
  */
 export function patchWork(id: string, patch: WorkPatch, opts?: { touch?: boolean }): number {
-  const keys = Object.keys(patch) as TrackerAttr[];
-  const sets = keys.map((k) => `${k} = ?`);
-  const params: unknown[] = keys.map((k) => patch[k] ?? null);
+  const { sets, values } = patchAssignments(patch);
+  // A patch that mentions no field CHANGED NOTHING, so `updated_at` may not move either:
+  // the PM ladder reads that column as "when did this work last MOVE" and a clock bumped by
+  // an empty patch is a receipt for something that did not happen. (Before M7 this function
+  // did the opposite twice over — an all-`undefined` patch erased every column it named AND
+  // bumped the clock, and an empty `{}` bumped the clock on its own.)
+  if (sets.length === 0) return 0;
   if (opts?.touch !== false) {
     sets.push('updated_at = ?');
-    params.push(now());
+    values.push(now());
   }
-  if (sets.length === 0) return 0;
-  params.push(id);
-  return getDb().prepare(`UPDATE work SET ${sets.join(', ')} WHERE id = ?`).run(...params).changes;
+  values.push(id);
+  return getDb().prepare(`UPDATE work SET ${sets.join(', ')} WHERE id = ?`).run(...values).changes;
 }
 
 /** The same patch applied to every row matching a predicate on ONE column. The only shape
@@ -207,15 +215,13 @@ export function patchWorkWhere(
   where: { column: 'assigned_to_group' | 'group_id' | 'parent_id'; equals: unknown },
   patch: WorkPatch,
 ): number {
-  const keys = Object.keys(patch) as TrackerAttr[];
-  if (keys.length === 0) return 0;
-  const sets = keys.map((k) => `${k} = ?`);
-  const params: unknown[] = keys.map((k) => patch[k] ?? null);
+  const { sets, values } = patchAssignments(patch);
+  if (sets.length === 0) return 0;
   sets.push('updated_at = ?');
-  params.push(now(), where.equals);
+  values.push(now(), where.equals);
   return getDb().prepare(
     `UPDATE work SET ${sets.join(', ')} WHERE ${where.column} = ?`,
-  ).run(...params).changes;
+  ).run(...values).changes;
 }
 
 /** Append a timestamped line to `notes`, preserving `addTaskNotes`'s exact SQL shape (the
