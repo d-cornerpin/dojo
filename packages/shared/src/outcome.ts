@@ -72,12 +72,14 @@ export function isNonLiveProvenance(p: unknown): p is NonLiveProvenance {
 
 /**
  * Why a tool call did not simply work.
- *   blocked    a gate said no (policy, permission, rate limit). Nothing ran.
- *   crashed    it ran and broke. The effect may or may not have landed.
- *   cancelled  it was abandoned before an answer (timeout, abort, spin brake).
+ *   blocked       a gate said no (policy, permission, rate limit). Nothing ran.
+ *   crashed       it ran and broke. The effect may or may not have landed.
+ *   cancelled     it was abandoned before an answer (timeout, abort, spin brake).
+ *   invalid_args  the call was malformed and the door refused it. Nothing ran.
+ *                 Not `blocked`: retry with the arguments CORRECTED, not never.
  */
-export type ToolSeamReason = 'blocked' | 'crashed' | 'cancelled';
-export const TOOL_SEAM_REASONS: readonly ToolSeamReason[] = ['blocked', 'crashed', 'cancelled'] as const;
+export type ToolSeamReason = 'blocked' | 'crashed' | 'cancelled' | 'invalid_args';
+export const TOOL_SEAM_REASONS: readonly ToolSeamReason[] = ['blocked', 'crashed', 'cancelled', 'invalid_args'] as const;
 
 // ── The arms ──
 //

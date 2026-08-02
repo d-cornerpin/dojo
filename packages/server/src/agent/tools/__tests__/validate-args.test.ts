@@ -43,6 +43,7 @@ import { checkRequired, type FieldSpec } from '../../tool-helpers.js';
 import { getAllToolDefinitions, isBoundaryValidated } from '../../tools.js';
 import type { ToolDefinition } from '../types.js';
 import { checkEffectDeclarations } from '../effect-conformance.js';
+import { classifyToolResult, toolResultOf, toolWasBlocked } from '../../tool-outcome.js';
 
 const defsByName = new Map<string, ToolDefinition>(
   getAllToolDefinitions().map((d) => [d.name, d] as const),
@@ -299,6 +300,41 @@ describe('the provider families fold into ONE message family', () => {
     const msg = validateToolArgs(slides!, {});
     expect(msg).toBe(`Error: \`${first}\` is required.`);
     expect(msg).not.toContain(' for slides_create_presentation');
+  });
+});
+
+describe('INVALID_ARGS reads REFUSED, not crashed', () => {
+  // The boundary is this code's first writer. Before it, `INVALID_ARGS` sat in
+  // `ToolErrorCode` with zero writers and a malformed call fell through to
+  // `failed/crashed` — the platform reporting ITSELF broken for a call it had
+  // understood perfectly well and declined.
+  const rejected = {
+    toolCallId: 't1',
+    name: 'file_read',
+    content: 'Error: `path` is required.',
+    isError: true,
+    errorCode: 'INVALID_ARGS' as const,
+  };
+
+  it('classifies as refused/invalid_args', () => {
+    const outcome = classifyToolResult(rejected);
+    expect(outcome.kind).toBe('refused');
+    expect(outcome.kind === 'refused' && outcome.reason).toBe('invalid_args');
+  });
+
+  it('is NOT crashed — the platform did not break, it refused', () => {
+    expect(classifyToolResult(rejected).kind).not.toBe('failed');
+  });
+
+  it('is NOT `blocked` either — retrying with corrected arguments is the right move', () => {
+    // `toolWasBlocked` means "the door will keep saying no, retrying is a spin".
+    // A malformed call is the opposite: the four messages exist precisely to tell
+    // the model what to fix and call again.
+    expect(toolWasBlocked(classifyToolResult(rejected))).toBe(false);
+  });
+
+  it('still hands the model the message — a refusal has content too', () => {
+    expect(toolResultOf(classifyToolResult(rejected)).content).toBe('Error: `path` is required.');
   });
 });
 

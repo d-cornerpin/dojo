@@ -124,9 +124,10 @@ export function toolWasBlocked(o: ToolOutcome): boolean {
  * STRUCTURAL classification. `errorCode` and `isError`, never `content`.
  *
  *   no errorCode + !isError  -> applied
- *   PERMISSION_DENIED        -> refused / blocked   (the platform said no)
- *   RATE_LIMITED             -> refused / blocked   (the provider said no, for now)
- *   TIMEOUT                  -> failed  / cancelled (abandoned before an answer)
+ *   PERMISSION_DENIED        -> refused / blocked      (the platform said no)
+ *   RATE_LIMITED             -> refused / blocked      (the provider said no, for now)
+ *   TIMEOUT                  -> failed  / cancelled    (abandoned before an answer)
+ *   INVALID_ARGS             -> refused / invalid_args (the door refused a malformed call)
  *   anything else, or none   -> failed  / crashed
  *
  * `no_change` is STILL deliberately NOT populated, and PHASE-4 T5 re-derived why rather
@@ -159,6 +160,16 @@ export function classifyToolResult(result: ToolResult): ToolOutcome {
   }
   if (code === 'TIMEOUT') {
     return { kind: 'failed', reason: 'cancelled', result, detail: `${result.name}: timed out` };
+  }
+  // PHASE-5 T3 Step 3: the schema-validation boundary is INVALID_ARGS's first
+  // writer, and this is the arm that makes the writer worth having. A
+  // malformed-shape call used to fall through to `crashed` — the platform
+  // reporting itself broken for a call it understood and refused. It is a
+  // refusal, and a distinct one: `blocked` says retrying is a spin, whereas the
+  // right answer to this is to retry with the arguments corrected, which is
+  // exactly what the four messages tell the model to do.
+  if (code === 'INVALID_ARGS') {
+    return { kind: 'refused', reason: 'invalid_args', result, detail: `${result.name}: invalid arguments` };
   }
   return { kind: 'failed', reason: 'crashed', result, detail: `${result.name}: ${code ?? 'unclassified error'}` };
 }

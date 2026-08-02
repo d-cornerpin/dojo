@@ -84,7 +84,7 @@ describe('Outcome<T>: the five arms', () => {
 
 describe('the tool seam reason (research 22)', () => {
   it('is blocked | crashed | cancelled — three causes a boolean isError cannot tell apart', () => {
-    expect([...TOOL_SEAM_REASONS]).toEqual(['blocked', 'crashed', 'cancelled']);
+    expect([...TOOL_SEAM_REASONS]).toEqual(['blocked', 'crashed', 'cancelled', 'invalid_args']);
   });
 
   it('types a tool-seam outcome with that vocabulary', () => {
@@ -130,7 +130,7 @@ describe('the tool door classifies STRUCTURALLY (PHASE-4 T1 cluster 3)', () => {
   });
 
   it('names the three tool-seam reasons and no others', () => {
-    expect([...TOOL_SEAM_REASONS]).toEqual(['blocked', 'crashed', 'cancelled']);
+    expect([...TOOL_SEAM_REASONS]).toEqual(['blocked', 'crashed', 'cancelled', 'invalid_args']);
   });
 });
 
