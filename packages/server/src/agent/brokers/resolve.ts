@@ -37,6 +37,7 @@ import { execInnerCommands } from '../exec-grammar.js';
 
 declare const PATH_BRAND: unique symbol;
 declare const COMMAND_BRAND: unique symbol;
+declare const ARGV_BRAND: unique symbol;
 declare const URL_BRAND: unique symbol;
 
 /**
@@ -74,6 +75,33 @@ export interface ResolvedCommand {
   readonly trimmed: string;
   readonly inner: readonly string[];
   readonly [COMMAND_BRAND]: true;
+}
+
+/**
+ * AN ARGUMENT VECTOR (PHASE-5 T3) — a program and its literal arguments, with
+ * NO shell anywhere near them.
+ *
+ * The difference from `ResolvedCommand` is the whole point of T3's rebuild. A
+ * `ResolvedCommand` is a line the shell will PARSE: its `|`, `$( )`, `>` and
+ * `for` are syntax, which is why it carries `inner` at all. A `ResolvedArgv` is
+ * a program name plus bytes that are handed to `execFile` untouched — the same
+ * characters are inert text, so there is no substitution to look inside, no
+ * redirect to follow and no construct to unpack.
+ *
+ * `display` exists ONLY for the deny scans and the audit row. It is a
+ * reconstruction for matching and messages and it is never executed; nothing may
+ * ever hand it back to a shell.
+ */
+export interface ResolvedArgv {
+  /** The vector exactly as the caller passed it. */
+  readonly argv: readonly string[];
+  /** `argv[0]` — the program, as spelled. */
+  readonly program: string;
+  /** `path.basename(program)` — what an allowlist entry like `git` matches. */
+  readonly base: string;
+  /** The vector joined with single spaces, FOR MATCHING AND MESSAGES ONLY. */
+  readonly display: string;
+  readonly [ARGV_BRAND]: true;
 }
 
 /** An absolute http(s) URL with its hostname pulled out once. */
@@ -132,6 +160,47 @@ export function resolveCommandArg(raw: unknown): Resolution<ResolvedCommand> {
   return {
     ok: true,
     value: { raw: str.value, trimmed, inner: inner ?? [] } as unknown as ResolvedCommand,
+  };
+}
+
+/**
+ * Mint a `ResolvedArgv`. The ONLY place one comes from.
+ *
+ * A STRING is `not_a_string` here, which reads backwards until you see what it
+ * is for: the old exec entry point took a string, and a caller that still passes
+ * one must be REFUSED rather than quietly re-parsed into a vector. Re-parsing is
+ * how the shell would come back.
+ */
+export function resolveArgvArg(raw: unknown): Resolution<ResolvedArgv> {
+  if (raw === undefined || raw === null) return absent('argv');
+  if (!Array.isArray(raw)) {
+    return {
+      ok: false,
+      code: 'not_a_string',
+      reason: `argv must be an array of strings, got ${typeof raw === 'string' ? 'a string (exec no longer takes a shell command line — pass argv, or use the shell tool)' : typeof raw}`,
+    };
+  }
+  if (raw.length === 0) return absent('argv');
+  for (const element of raw) {
+    if (typeof element !== 'string') {
+      return {
+        ok: false,
+        code: 'not_a_string',
+        reason: `every argv element must be a string, got ${Array.isArray(element) ? 'an array' : element === null ? 'null' : typeof element}`,
+      };
+    }
+  }
+  const argv = raw as string[];
+  const program = argv[0];
+  if (program.trim().length === 0) return absent('argv');
+  return {
+    ok: true,
+    value: {
+      argv,
+      program,
+      base: path.basename(program),
+      display: argv.join(' '),
+    } as unknown as ResolvedArgv,
   };
 }
 

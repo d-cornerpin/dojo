@@ -20,7 +20,8 @@ import { isPrimaryAgent, isHealerAgent, isPMAgent } from '../../config/platform.
 import { effectsFor } from './registry.js';
 import { isGlobalDenyRule } from '../brokers/deny.js';
 import {
-  authorizeFs, authorizeProc, authorizeNet, authorizeSpawn, authorizeSystemControl,
+  authorizeFs, authorizeAppleScript, authorizeNet, authorizeSpawn, authorizeSystemControl,
+  authorizeExecShapedCall,
   resolvePathArg, resolveCommandArg, resolveUrlArg, resolveFixedHost,
   grantFor, type Verdict,
 } from '../brokers/index.js';
@@ -114,8 +115,31 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
       };
     }
 
+    // ── Row 3 / 3s: the two exec doors, through the ONE seam (RULING P5-R3) ──
+    // `authorizeExecShapedCall` is literally the function `destructive-gate.ts`
+    // calls for its pre-hold check, which is what makes its comment — *"the
+    // EXACT call executeTool makes"* — a fact rather than a hope. An absent
+    // argument still SKIPS (the `if (filePath)` parity T2 preserved); a present
+    // but malformed one is REFUSED and never coerced to empty.
+    case 'proc':
     case 'shell': {
-      const from = declaredFrom(name, 'shell');
+      const from = declaredFrom(name, gate.kind);
+      if (!from || !from.startsWith(EFFECT_FROM_ARGS)) return skip(gate);
+      const raw = readArgPath(args, from.slice(EFFECT_FROM_ARGS.length));
+      if (raw === undefined || raw === null) return skip(gate);
+      const verdict = authorizeExecShapedCall(grantFor(agentId), gate.kind, raw);
+      return {
+        gate,
+        verdict,
+        resource: Array.isArray(raw) ? raw.join(' ') : String(raw),
+        errorCode: 'PERMISSION_DENIED',
+        auditAs: name,
+      };
+    }
+
+    // ── Row 15's applescript half: the SCRIPT is what gets authorized ──
+    case 'applescript': {
+      const from = declaredFrom(name, 'applescript');
       if (!from || !from.startsWith(EFFECT_FROM_ARGS)) return skip(gate);
       const raw = readArgPath(args, from.slice(EFFECT_FROM_ARGS.length));
       const resolved = resolveCommandArg(raw);
@@ -123,12 +147,10 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
         if (resolved.code === 'not_present') return skip(gate);
         return { gate, verdict: denied('arg-not-a-string', resolved.reason), resource: null, errorCode: 'PERMISSION_DENIED', auditAs: name };
       }
-      // `true`: the tokenized sensitive-file scan, which used to live in
-      // `executeExec`'s handler body and is now asked at the door instead.
       return {
         gate,
-        verdict: authorizeProc(grantFor(agentId), resolved.value, true),
-        resource: resolved.value.trimmed,
+        verdict: authorizeAppleScript(grantFor(agentId), resolved.value),
+        resource: resolved.value.trimmed.slice(0, 200),
         errorCode: 'PERMISSION_DENIED',
         auditAs: name,
       };

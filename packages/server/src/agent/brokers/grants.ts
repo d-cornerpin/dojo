@@ -40,8 +40,28 @@ import { matchAgentPathGlob, matchAgentGlob } from '../path-resolve.js';
 
 const logger = createLogger('brokers/grants');
 
-/** The effect kinds a `grant_rule` row can speak about. */
-export type GrantEffectKind = 'fs_read' | 'fs_write' | 'fs_delete' | 'shell' | 'net' | 'spawn' | 'system_control';
+/**
+ * The effect kinds a `grant_rule` row can speak about.
+ *
+ * PHASE-5 T3 added `proc` and `applescript`, and both are SPLITS of a kind that
+ * was already here rather than new authority:
+ *   `proc`        `exec({argv})` — a program, no shell. Projected from
+ *                 `exec_allow`/`exec_deny`, the same field that authorized the
+ *                 one exec door before there were two.
+ *   `shell`       `shell({script})` — the /bin/zsh door. Projected from
+ *                 `shell_allow` when the manifest declares it and from
+ *                 `exec_allow` when it does not, which is what makes the split
+ *                 cost no agent any reach it has today.
+ *   `applescript` `applescript_run` — osascript is a second interpreter, so it
+ *                 gets its own row instead of riding inside `system_control`.
+ *                 Projected from `system_control` (a `'*'` grant still covers
+ *                 it, a LIST must name it — which is exactly what the ladder's
+ *                 category derivation already did).
+ */
+export type GrantEffectKind =
+  | 'fs_read' | 'fs_write' | 'fs_delete'
+  | 'proc' | 'shell' | 'applescript'
+  | 'net' | 'spawn' | 'system_control';
 
 export type GrantMode = 'allow' | 'deny';
 
@@ -94,10 +114,24 @@ export function projectManifestToRules(manifest: PermissionManifest): GrantRule[
     for (const p of manifest.file_delete) push('fs_delete', 'allow', p);
   }
 
-  // exec: deny list FIRST in the table's own order for readability, though the
-  // ORDER BY is what actually guarantees precedence.
-  for (const p of manifest.exec_deny ?? []) push('shell', 'deny', p);
-  for (const p of manifest.exec_allow ?? []) push('shell', 'allow', p);
+  // exec / shell: deny list FIRST in the table's own order for readability,
+  // though the ORDER BY is what actually guarantees precedence.
+  //
+  // TWO DOORS, ONE MANIFEST FIELD UNTIL SOMEBODY SAYS OTHERWISE (PHASE-5 T3).
+  // `exec_allow` projects to BOTH kinds, because until T3 there was one exec
+  // door and it WAS a shell: an agent holding `exec_allow:['ls','git *']` could
+  // already run `ls | wc -l` and `for f in …; do git show $f; done`, since the
+  // per-command check only ever looked at the base command of each inner
+  // command. Projecting that field to `proc` alone would delete a capability
+  // every agent on the box has right now, which the phase's posture forbids.
+  // `shell_allow`/`shell_deny`, when the manifest declares them, REPLACE the
+  // shell side — that is how the class is withheld deliberately.
+  const shellAllow = manifest.shell_allow ?? manifest.exec_allow ?? [];
+  const shellDeny = manifest.shell_deny ?? manifest.exec_deny ?? [];
+  for (const p of manifest.exec_deny ?? []) push('proc', 'deny', p);
+  for (const p of manifest.exec_allow ?? []) push('proc', 'allow', p);
+  for (const p of shellDeny) push('shell', 'deny', p);
+  for (const p of shellAllow) push('shell', 'allow', p);
 
   // network_domains: '*' | 'none' | string[]. 'none' produces no allow rows.
   const net = manifest.network_domains;
@@ -114,6 +148,21 @@ export function projectManifestToRules(manifest: PermissionManifest): GrantRule[
   const control = manifest.system_control as string[] | '*' | undefined;
   if (control === '*') push('system_control', 'allow', '*');
   else if (Array.isArray(control)) for (const c of control) push('system_control', 'allow', c);
+
+  // ── `applescript` AS ITS OWN CLASS (PHASE-5 T3 Step 2) ──
+  // osascript is a second interpreter with no allowlist of its own, so it gets
+  // its own rows and its own broker call rather than being one string compare
+  // inside `system_control`. The DERIVATION is deliberately parity-preserving:
+  // a `'*'` grant still covers it (narrowing the primary's own agent is an
+  // OWNER decision, not a worker's), and a LIST must name `applescript` or
+  // `applescript_run` — which is precisely what the ladder's category
+  // derivation already required, so no live manifest changes meaning.
+  if (control === '*') push('applescript', 'allow', '*');
+  else if (Array.isArray(control)) {
+    for (const c of control) {
+      if (c === '*' || c === 'applescript' || c === 'applescript_run') push('applescript', 'allow', c);
+    }
+  }
 
   return rules;
 }

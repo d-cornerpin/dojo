@@ -16,6 +16,7 @@
 // ════════════════════════════════════════
 
 import type { PermissionManifest } from '@dojo/shared';
+import { execCallText } from '../../brokers/exec-seam.js';
 
 export interface PermissionAlternativeInput {
   /** The tool that was denied. */
@@ -66,8 +67,14 @@ export function permissionAlternativeFinder(
       break;
     }
 
-    case 'exec': {
-      const cmd = (toolArgs.command as string | undefined)?.trim().split(/\s+/)[0] ?? 'unknown';
+    case 'exec':
+    case 'shell': {
+      // PHASE-5 T3: read the call's REAL shape through the one owner of that
+      // question. `toolArgs.command` is `undefined` at both rebuilt doors, and a
+      // refusal that says *"`unknown` is not in that list"* is a refusal an
+      // agent cannot act on — the alternative-finder's whole job is to be
+      // actionable, so its input has to follow the shape.
+      const cmd = execCallText(toolName, toolArgs)?.trim().split(/\s+/)[0] ?? 'unknown';
       if (manifest.exec_allow.length > 0 && !manifest.exec_allow.includes('*')) {
         suggestions.push(
           `Your permitted commands are: ${manifest.exec_allow.join(', ')}. ` +

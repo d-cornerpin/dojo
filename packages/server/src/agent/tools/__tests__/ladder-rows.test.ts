@@ -62,9 +62,26 @@ describe('the fifteen rows, one clause each', () => {
     expect(rowsFor('file_patch', { path: '/tmp/x' }).filter((g) => g.kind === 'fs')).toHaveLength(1);
   });
 
-  it('row 3 — exec: allow/deny, and the sensitive-file command scan at the same door', () => {
-    const g = covers('3', rowsFor('exec', { command: 'ls' }));
+  // ── ROW 3 IS TWO DOORS SINCE PHASE-5 T3, AND BOTH CARRY ITS REQUIREMENT ──
+  // The ladder's row 3 was *"exec allow/deny + sensitive-file command scan"* on
+  // ONE tool. T3 split that tool into `exec({argv})` and `shell({script})`, so
+  // the requirement is carried by two gates: `3` (proc) and `3s` (shell). The
+  // covered-set clause below asserts BOTH exist, so losing either fails a test
+  // rather than silently un-gating a door.
+  it('row 3 — exec({argv}): the proc grant, argv-no-shell', () => {
+    const g = covers('3', rowsFor('exec', { argv: ['ls'] }));
+    expect(g.kind).toBe('proc');
+    // The gate exists even for a MALFORMED call — the shape is refused at the
+    // gate, never skipped into the handler. (P5-R3's empty-string class.)
+    expect(rowsFor('exec', {}).map((r) => r.row)).toEqual(['3']);
+  });
+
+  it('row 3s — shell({script}): the shell grant, the /bin/zsh door', () => {
+    const g = covers('3s', rowsFor('shell', { script: 'ls | wc -l' }));
     expect(g.kind).toBe('shell');
+    // The two doors are DISJOINT: neither tool picks up the other's gate.
+    expect(rowsFor('exec', { argv: ['ls'] }).map((r) => r.row)).toEqual(['3']);
+    expect(rowsFor('shell', { script: 'ls' }).map((r) => r.row)).toEqual(['3s']);
   });
 
   it('row 4 — spawn_agent: can_spawn_agents', () => {
@@ -171,10 +188,10 @@ describe('the fifteen rows, one clause each', () => {
     expect(rowsFor('web_browse', { action: 'navigate' }).map((g) => g.row)).toEqual(['14a']);
   });
 
-  it('row 15 — the HID / screen / applescript family, with the CATEGORY derived', () => {
+  it('row 15 — the HID / screen family, with the CATEGORY derived', () => {
     const expected: Record<string, string> = {
       mouse_click: 'mouse', mouse_move: 'mouse', keyboard_type: 'keyboard',
-      screen_screenshot: 'screen', applescript_run: 'applescript',
+      screen_screenshot: 'screen',
     };
     for (const [name, category] of Object.entries(expected)) {
       const g = covers('15', rowsFor(name, {}));
@@ -183,9 +200,21 @@ describe('the fifteen rows, one clause each', () => {
     }
   });
 
-  it('ALL FIFTEEN ROWS ARE ACCOUNTED — no more, no fewer', () => {
+  // ── ROW 15's applescript HALF IS ITS OWN GATE SINCE PHASE-5 T3 ──
+  // osascript is a second interpreter, and what has to be authorized about it is
+  // the SCRIPT — which `system_control`'s category compare never looked at. The
+  // row id is unchanged (this is row 15's requirement, not a sixteenth), the
+  // gate KIND is not.
+  it('row 15 — applescript_run is its OWN class, not a system_control category', () => {
+    const g = covers('15', rowsFor('applescript_run', { script: 'display dialog "hi"' }));
+    expect(g.kind).toBe('applescript');
+    // and it is still exactly one gate, not two
+    expect(rowsFor('applescript_run', { script: 'x' }).map((r) => r.row)).toEqual(['15']);
+  });
+
+  it('ALL FIFTEEN ROWS ARE ACCOUNTED — no more, no fewer (row 3 now has two doors)', () => {
     expect([...covered].sort()).toEqual(
-      ['1', '10', '11', '12', '13', '14a', '14b', '15', '2', '3', '4', '5', '6', '7', '8', '9'],
+      ['1', '10', '11', '12', '13', '14a', '14b', '15', '2', '3', '3s', '4', '5', '6', '7', '8', '9'],
     );
   });
 });
@@ -197,7 +226,7 @@ describe('P5-R5 — what the loop deliberately does NOT gate', () => {
     // Wiring "declared ⇒ granted" would narrow what the owner's agents can do,
     // which the phase's posture makes an owner decision.
     for (const name of ['image_create', 'send_to_agent', 'work_update', 'vault_remember']) {
-      expect(rowsFor(name, { path: '/tmp/x', url: 'https://example.com', command: 'ls' })).toEqual([]);
+      expect(rowsFor(name, { path: '/tmp/x', url: 'https://example.com', command: 'ls', argv: ['ls'], script: 'ls' })).toEqual([]);
     }
   });
 

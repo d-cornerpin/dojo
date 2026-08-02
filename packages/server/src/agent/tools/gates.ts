@@ -64,8 +64,17 @@ export const PRIMARY_ONLY_TOOLS = new Set<string>([
 export type ToolGate =
   /** Branches 1, 2 — the fs broker on the declared `fs_read`/`fs_write` resource. */
   | { readonly kind: 'fs'; readonly effect: 'fs_read' | 'fs_write' | 'fs_delete'; readonly row: string }
-  /** Branch 3 — the proc broker on the declared `shell` resource. */
+  /**
+   * Branch 3, now TWO DOORS (PHASE-5 T3 Step 1). Row 3 encoded one requirement
+   * — *"exec allow/deny + sensitive-file command scan"* — and T3 splits the tool
+   * it guarded into `exec({argv})` and `shell({script})`. Both carry row 3's
+   * requirement; they differ in which grant answers it and in whether the
+   * resource is a vector or a script.
+   */
+  | { readonly kind: 'proc'; readonly row: string }
   | { readonly kind: 'shell'; readonly row: string }
+  /** T3 Step 2 — `applescript` as its own class, out of `system_control`. */
+  | { readonly kind: 'applescript'; readonly row: string }
   /** Branches 5, 6, 14b — the net broker. `subAgentsOnly` is branch 14b exactly. */
   | { readonly kind: 'net'; readonly subAgentsOnly?: true; readonly row: string }
   /** Branch 4 — `can_spawn_agents`. */
@@ -110,8 +119,13 @@ export function gatesForCall(name: string, args: Record<string, unknown>): ToolG
   if (FS_READ_TOOLS.has(name)) gates.push({ kind: 'fs', effect: 'fs_read', row: '1' });
   // 2 — file_write / file_append / file_patch
   if (FS_WRITE_TOOLS.has(name)) gates.push({ kind: 'fs', effect: 'fs_write', row: '2' });
-  // 3 — exec
-  if (name === 'exec') gates.push({ kind: 'shell', row: '3' });
+  // 3 — the exec family, two doors since PHASE-5 T3. `3` is `exec({argv})`
+  // against the `proc` grant; `3s` is `shell({script})` against the `shell`
+  // grant. Both are ladder row 3's requirement; neither is a new refusal class
+  // (an agent's `exec_allow` projects to both kinds unless its manifest
+  // explicitly withholds the shell one — `brokers/grants.ts`).
+  if (name === 'exec') gates.push({ kind: 'proc', row: '3' });
+  if (name === 'shell') gates.push({ kind: 'shell', row: '3s' });
   // 4 — spawn_agent
   if (name === 'spawn_agent') gates.push({ kind: 'spawn', row: '4' });
   // 5 — web_fetch (hostname of args.url) · 6 — web_search (a FIXED host, no arg)
@@ -162,9 +176,17 @@ export function gatesForCall(name: string, args: Record<string, unknown>): ToolG
     gates.push({ kind: 'system_control', category: 'web_browse', row: '14a' });
     if (args.action === 'navigate' && args.url) gates.push({ kind: 'net', subAgentsOnly: true, row: '14b' });
   }
-  // 15 — the HID / screen / applescript family, category-derived
+  // 15 — the HID / screen family, category-derived. PHASE-5 T3 Step 2 lifts
+  // `applescript` OUT of this row into its own gate: osascript is a second
+  // interpreter, and the thing that has to be authorized about it is the SCRIPT,
+  // which `system_control`'s category compare never looked at. The grant
+  // derivation is parity-preserving (a `'*'` manifest still covers it, a LIST
+  // must name it — exactly what the category compare already required), so no
+  // live manifest changes meaning; what is new is that the script text is now
+  // audited, which is the `system_control:'*'` bypass closing.
   const controlCategory = SYSTEM_CONTROL_CATEGORY[name];
-  if (controlCategory) gates.push({ kind: 'system_control', category: controlCategory, row: '15' });
+  if (controlCategory === 'applescript') gates.push({ kind: 'applescript', row: '15' });
+  else if (controlCategory) gates.push({ kind: 'system_control', category: controlCategory, row: '15' });
 
   return gates;
 }
@@ -184,7 +206,9 @@ export function ungatedEffectKinds(name: string, gates: readonly ToolGate[]): Ef
   const gated = new Set<string>();
   for (const g of gates) {
     if (g.kind === 'fs') gated.add(g.effect);
+    else if (g.kind === 'proc') gated.add('proc');
     else if (g.kind === 'shell') gated.add('shell');
+    else if (g.kind === 'applescript') gated.add('applescript');
     else if (g.kind === 'net') gated.add('net');
     else if (g.kind === 'spawn') gated.add('spawn');
   }

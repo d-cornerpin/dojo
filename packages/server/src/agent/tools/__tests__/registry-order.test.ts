@@ -62,16 +62,29 @@ describe('tool registry (PHASE-5 T1 Step 2)', () => {
 
   it('reports effect coverage from the REGISTRY, which is what T7 s exit gate consumes', () => {
     const cov = effectCoverage();
-    expect(cov.total).toBe(437);
-    expect(cov.declared).toBe(437);
-    expect(cov.effectful).toBe(124);
+    expect(cov.total).toBe(438);
+    expect(cov.declared).toBe(438);
+    expect(cov.effectful).toBe(125);
+    // PHASE-5 T3, and this number corrects an assumption rather than confirming
+    // one: `proc` is 18, not 1. T1 already declared `proc` on 17 tools that run
+    // a subprocess with no shell and no resource argument (all eight Plaud verbs
+    // shelling out to `npx`, `tunnel`, `apply_update`, the media generators…);
+    // `exec` joining them makes 18. **Exactly ONE of the eighteen is GATED** —
+    // `gates.ts` gives row 3 to the name `exec` and to nothing else — which is
+    // RULING P5-R5 holding: a declared effect that no ladder row gated gets no
+    // new refusal, it gets recorded. `shell` is 1 (the new door) and
+    // `applescript` is 1 (`applescript_run`).
+    expect(cov.byKind.proc).toBe(18);
     expect(cov.byKind.shell).toBe(1);
     expect(cov.byKind.applescript).toBe(1);
     expect(cov.byKind.spawn).toBe(1);
   });
 
   it('answers effects and declared secret fields by name, including through the user_ twins', () => {
-    expect(effectsFor('exec')).toEqual([{ kind: 'shell', from: 'args.command' }]);
+    // PHASE-5 T3: exec is the argv door, `shell` is the script door. The two
+    // declarations side by side are what a reader should see first.
+    expect(effectsFor('exec')).toEqual([{ kind: 'proc', from: 'args.argv' }]);
+    expect(effectsFor('shell')).toEqual([{ kind: 'shell', from: 'args.script' }]);
     expect(effectsFor('file_read')).toEqual([{ kind: 'fs_read', from: 'args.path' }]);
     expect(effectsFor('get_current_time')).toEqual([]);
     expect(effectsFor('not_a_tool')).toBeUndefined();

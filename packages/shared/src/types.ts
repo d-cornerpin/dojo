@@ -380,8 +380,27 @@ export interface PermissionManifest {
   file_read: string[] | '*';
   file_write: string[] | '*';
   file_delete: string[] | 'none';
+  /** Programs the agent may run through `exec({argv})` — argv, no shell. */
   exec_allow: string[];
   exec_deny: string[];
+  /**
+   * The SHELL class (PHASE-5 T3): what the agent may run through
+   * `shell({script})`, which hands the script to `/bin/zsh -c`.
+   *
+   * OPTIONAL, and its absence is the migration. Before T3 there was ONE exec
+   * door and it was a shell, so an agent's `exec_allow` has always been its
+   * shell reach. A manifest that does not mention `shell_allow` therefore
+   * inherits `exec_allow` verbatim — which is why splitting exec into two doors
+   * takes nothing away from any agent alive today, and why nobody has to edit a
+   * manifest for that to be true (owner ruling 2026-07-28: *"why wouldn't we
+   * allow an agent to do commands if they have shell access?"*).
+   *
+   * Setting it EXPLICITLY is how the shell class is withheld — `shell_allow: []`
+   * is an agent that may run programs but may not run a script. T5 owns whether
+   * new sub-agent defaults take that option; T3 only makes it expressible.
+   */
+  shell_allow?: string[];
+  shell_deny?: string[];
   network_domains: string[] | '*' | 'none';
   max_processes: number;
   can_spawn_agents: boolean;

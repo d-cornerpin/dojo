@@ -99,6 +99,24 @@ function realResolveDeepest(lexicalAbs: string, depth = 0): { path: string; reso
 // resolve symlinks / broken links (realResolveDeepest), the exact pipeline
 // isProtectedIdentityPath uses. { resolved:false } means resolution failed and the
 // caller MUST fail closed (treat the target as out-of-zone / protected).
+/**
+ * Does this tilde-expanded path name an existing DIRECTORY?
+ *
+ * Lives here rather than in its one caller (`tools/process-run.ts`, the exec
+ * doors' `cwd` check) for one reason: this module is already an fs leaf and the
+ * toolbox is not. `no-restricted-imports` is advisory today and T7's exit gate
+ * flips it to ENFORCED once nothing outside the brokers and these leaves reaches
+ * `node:fs`, so a NEW direct `node:fs` import in the toolbox would be a step
+ * away from that gate on the exact task that is meant to move toward it.
+ */
+export function isExistingDirectory(inputPath: string): boolean {
+  try {
+    return fs.statSync(resolveHomePath(inputPath)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 export function resolveRealPathHardened(filePath: string): { path: string; resolved: boolean } {
   return realResolveDeepest(canonicalizeAgentPath(filePath));
 }

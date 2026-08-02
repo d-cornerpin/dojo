@@ -24,7 +24,10 @@ import { insertMessage } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getPrimaryAgentName, isHealerAgent } from '../config/platform.js';
-import { checkPermission, isProtectedIdentityPath } from './permissions.js';
+import { isProtectedIdentityPath } from './permissions.js';
+import { getAgentPermissions } from './manifest.js';
+import { grantForManifest } from './brokers/grants.js';
+import { authorizeExecShapedArgs, execCallText, execDoorFor } from './brokers/exec-seam.js';
 import { OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 
 const logger = createLogger('destructive-gate');
@@ -68,9 +71,22 @@ export function isDestructiveCall(
   // is destructive by definition, so this classifies it the day it exists without
   // another edit here. It does NOT imply a live file_delete tool exists now.
   if (toolName === 'file_delete') return 'file deletion';
-  if (toolName === 'exec') {
-    const cmd = String(args.command ?? '');
-    if (DESTRUCTIVE_EXEC_RE.test(cmd)) return 'destructive shell command';
+  // ── PHASE-5 T3 / RULING P5-R3: read the call's REAL shape, at both doors ──
+  // This branch used to read `String(args.command ?? '')`, which the argv
+  // rebuild turns into the empty string — the regex stops matching and the gate
+  // silently stops holding `rm` for approval. `execCallText` is the one owner of
+  // "what did this call ask to run", and it answers for `exec({argv})`,
+  // `shell({script})` and the legacy `{command}` spelling alike.
+  //
+  // A shape it CANNOT read returns null, and null here means UNKNOWN, not
+  // harmless: an exec-shaped call whose arguments are unreadable is classified
+  // destructive and held, because the alternative is a malformed call walking
+  // past the gate. The manifest pre-check below then refuses it outright, so no
+  // unsatisfiable approval is ever filed for one.
+  if (execDoorFor(toolName)) {
+    const text = execCallText(toolName, args);
+    if (text === null) return 'destructive shell command';
+    if (DESTRUCTIVE_EXEC_RE.test(text)) return 'destructive shell command';
   }
   // FU-4: the Healer now holds full primary-equivalent write ('*'), so a
   // file_write/file_patch/file_append to one of the owner's identity/config files
@@ -107,12 +123,23 @@ export function isDestructiveCall(
  * permissionAlternativeFinder escalation (send_to_agent to a privileged agent,
  * request a grant), with no unsatisfiable approval row filed.
  *
- * The seam is checkPermission({type:'exec'}), the EXACT call executeTool makes,
- * so the pre-check reads the SAME manifest the executor will (getAgentPermissions
- * then checkExecPermission), with zero drift. A manifest-permitted-but-destructive
- * call still returns true and is still held: a destructive git subcommand like
- * `git reset --hard` (base command `git` is on the default allowlist), or an `rm`
- * a privileged worker explicitly lists in exec_allow.
+ * ⚠ THE SEAM IS `authorizeExecShapedArgs`, AND IT IS THE EXACT CALL THE
+ * DISPATCHER'S OWN GATE ROW MAKES — the same function, not a second one that
+ * agrees (PHASE-5 T3, RULING P5-R3). Until T3 both sides spelled out
+ * a `checkPermission` call on the legacy exec action shape, reading the command
+ * out of the arguments with a `?? ''` fallback,
+ * and the identity was a coincidence of typing: the day exec's shape became
+ * `{argv}`, both sides would have kept compiling and both would have started
+ * asking about the EMPTY STRING — an approval seam authorizing a command nobody
+ * typed. Now there is one function and no second implementation to drift.
+ *
+ * A manifest-permitted-but-destructive call still returns true and is still
+ * held: a destructive git subcommand like `git reset --hard` (base command `git`
+ * is on the default allowlist), or an `rm` a privileged worker lists explicitly.
+ *
+ * A SHAPE-MISMATCHED exec call returns FALSE — refused, never authorized as
+ * empty — so the caller lets the executor's own refusal speak and no
+ * unsatisfiable approval row is filed.
  *
  * Non-exec destructive kinds have no manifest command to check (file_delete has
  * no live tool, FA-P4), so they return true and hold exactly as before.
@@ -122,10 +149,14 @@ export function manifestPermitsDestructiveCall(
   toolName: string,
   args: Record<string, unknown>,
 ): boolean {
-  if (toolName === 'exec') {
-    return checkPermission(agentId, { type: 'exec', command: String(args.command ?? '') }).allowed;
+  const verdict = authorizeExecShapedArgs(grantForManifest(agentId, getAgentPermissions(agentId)), toolName, args);
+  if (verdict === null) return true; // not an exec-shaped call
+  if (!verdict.allowed) {
+    logger.warn('destructive-gate: pre-hold check refused the call', {
+      agentId, toolName, rule: verdict.rule, reason: verdict.reason,
+    });
   }
-  return true;
+  return verdict.allowed;
 }
 
 /**

@@ -2,7 +2,7 @@
 // BROKER VOCABULARY (PHASE-5 T2 Step 2) — a leaf with no imports but the brands.
 // ════════════════════════════════════════════════════════════════════════════
 
-import type { ResolvedPath, ResolvedCommand, ResolvedUrl } from './resolve.js';
+import type { ResolvedPath, ResolvedCommand, ResolvedArgv, ResolvedUrl } from './resolve.js';
 
 /**
  * WHY A VERDICT CARRIES A `basis`.
@@ -30,7 +30,13 @@ export type VerdictBasis = 'ladder-parity' | 'bypass-hardening';
 
 export type BrokerEffect =
   | { readonly kind: 'fs_read' | 'fs_write' | 'fs_delete'; readonly resource: ResolvedPath; readonly surface?: 'tool' | 'share' }
-  | { readonly kind: 'shell' | 'proc'; readonly resource: ResolvedCommand }
+  // `shell` and `applescript` carry a SCRIPT (text an interpreter parses);
+  // `proc` carries an argument VECTOR (a program and literal arguments). The
+  // types are different because the things are different — that separation is
+  // what T3's rebuild buys, and letting one BrokerEffect stand for both would
+  // have thrown it away at the door.
+  | { readonly kind: 'shell' | 'applescript'; readonly resource: ResolvedCommand }
+  | { readonly kind: 'proc'; readonly resource: ResolvedArgv }
   | { readonly kind: 'net'; readonly resource: ResolvedUrl }
   | { readonly kind: 'spawn' };
 

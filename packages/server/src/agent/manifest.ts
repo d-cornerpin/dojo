@@ -23,6 +23,10 @@ export const PRIMARY_AGENT_PERMISSIONS: PermissionManifest = {
   file_delete: 'none',
   exec_allow: ['*'],
   exec_deny: [],
+  // PHASE-5 T3: the primary's shell reach, stated rather than inherited. It is
+  // what `exec_allow` already meant for this agent before exec had two doors.
+  shell_allow: ['*'],
+  shell_deny: [],
   network_domains: '*',
   max_processes: 10,
   can_spawn_agents: true,
@@ -36,6 +40,20 @@ export const DEFAULT_SUBAGENT_PERMISSIONS: PermissionManifest = {
   file_delete: 'none',
   exec_allow: ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'echo', 'node', 'npm', 'npx', 'git'],
   exec_deny: ['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *'],
+  // PHASE-5 T3 — SAME LIST, AND THAT IS THE MEASUREMENT, NOT A CHOICE.
+  //
+  // The plan words the shell class as *"explicitly granted, never default"*.
+  // Measured at this HEAD, a default sub-agent's `exec_allow` is this non-empty
+  // list, and the pre-T3 exec check only ever looked at the BASE COMMAND of each
+  // inner command — so a default sub-agent could already run `ls -la | wc -l`
+  // and `for f in *; do cat $f; done` today. Setting `shell_allow: []` here
+  // would therefore REMOVE a working capability from every sub-agent on every
+  // box, which the phase's binding posture makes an OWNER decision and not a
+  // worker's. T3 makes withholding EXPRESSIBLE and preserves the reach; T5 owns
+  // the default-manifest decision (its DECIDED block already covers sub-agent
+  // scope: inherit parent minus danger). Recorded as a hand-up, not silently.
+  shell_allow: ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'echo', 'node', 'npm', 'npx', 'git'],
+  shell_deny: ['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *'],
   network_domains: 'none',
   max_processes: 3,
   can_spawn_agents: false,
@@ -86,6 +104,15 @@ export function getAgentPermissions(agentId: string): PermissionManifest {
         file_delete: parsed.file_delete ?? DEFAULT_SUBAGENT_PERMISSIONS.file_delete,
         exec_allow: parsed.exec_allow ?? DEFAULT_SUBAGENT_PERMISSIONS.exec_allow,
         exec_deny: parsed.exec_deny ?? DEFAULT_SUBAGENT_PERMISSIONS.exec_deny,
+        // ⚠ THE MIGRATION, AND IT IS THIS LINE (PHASE-5 T3).
+        // Every stored manifest on every live box predates the shell class, so
+        // `parsed.shell_allow` is undefined for all of them. Falling back to
+        // `parsed.exec_allow` — the agent's OWN stored list, not the default —
+        // is what makes splitting exec into two doors cost no agent any reach it
+        // has today. `?? undefined` is deliberate: an EXPLICIT `[]` survives and
+        // means "no shell", which is how the class is withheld.
+        shell_allow: parsed.shell_allow ?? parsed.exec_allow ?? DEFAULT_SUBAGENT_PERMISSIONS.shell_allow,
+        shell_deny: parsed.shell_deny ?? parsed.exec_deny ?? DEFAULT_SUBAGENT_PERMISSIONS.shell_deny,
         network_domains: parsed.network_domains ?? DEFAULT_SUBAGENT_PERMISSIONS.network_domains,
         max_processes: parsed.max_processes ?? DEFAULT_SUBAGENT_PERMISSIONS.max_processes,
         can_spawn_agents: parsed.can_spawn_agents ?? DEFAULT_SUBAGENT_PERMISSIONS.can_spawn_agents,

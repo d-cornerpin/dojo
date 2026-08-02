@@ -102,7 +102,8 @@ export const SEND_TO_PEOPLE_NA: Readonly<Record<string, string>> = {
   // ── clearly non-comms families (humane prefix globs) ──
   'load_tool_docs': 'meta: loads a tool schema',
   'file_*': 'local filesystem, not a comms channel',
-  'exec': 'local shell, not a comms channel',
+  'exec': 'runs a local program (argv, no shell), not a comms channel',
+  'shell': 'local shell script, not a comms channel — same decision as exec, whose door it split from at PHASE-5 T3',
   'screen_*': 'local screen capture/broadcast, not a person-to-person channel',
   'keyboard_*': 'local input synthesis',
   'mouse_*': 'local input synthesis',

@@ -1,4 +1,3 @@
-import { exec } from 'node:child_process';
 import type { ToolDefinition } from './tools/types.js';
 import { coerceNumberArg } from './tools/pagination.js';
 import { getCurrentToolCallId, runWithToolCallId, currentTurnNumber, currentTurnRoot } from './turn-state.js';
@@ -7,9 +6,11 @@ export { toolResultOf, toolWasBlocked, type ToolOutcome } from './tool-outcome.j
 import { taskScope, projectScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../work/tracker-store.js';
 import { skipOpenOccurrencesAsComplete } from '../work/occurrences.js';
-import { promisify } from 'node:util';
 
-const execAsync = promisify(exec);
+// PHASE-5 T3: `promisify(exec)` is GONE from this file with the string-exec
+// entry point it served, and so is every process spawn — both doors run through
+// `agent/tools/process-run.ts`, which uses `execFile` (never a shell) and reaches
+// /bin/zsh only with an explicit `-c`.
 import fs from 'node:fs';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
@@ -43,6 +44,10 @@ import { checkPermission, getAgentPermissions } from './permissions.js';
 import { resolvePath, isSensitivePath, sharePathGuard, pdfInputPaths } from './path-guards.js';
 import { gatesForCall, ungatedEffectKinds, PRIMARY_ONLY_TOOLS } from './tools/gates.js';
 import { evaluateGate, logOnly } from './tools/gate-eval.js';
+import { resolveArgvArg } from './brokers/resolve.js';
+import {
+  runProcess, resolveProcessCwd, processTimeout, type ProcessAudit,
+} from './tools/process-run.js';
 // S2 (PHASE-3 T3): the 17 property schemas `work_open` and `work_update` both declare,
 // declared ONCE. N1 (post-exit, owner-approved 2026-08-01): the seven fields whose two
 // descriptions were paraphrases of each other now have ONE canonical wording, said once on
@@ -104,7 +109,6 @@ import { NEW_SESSION_DIVIDER } from '@dojo/shared';
 
 const logger = createLogger('tools');
 
-const EXEC_TIMEOUT_MS = 30000;
 
 // RC-3 item 2: per-turn recall budget. Cumulative recall_recent_thread +
 // history_search EMITTED output tokens are tracked per turn (agent/turn-state.ts);
@@ -1110,21 +1114,26 @@ export const toolDefinitions: ToolDefinition[] = [
   },
   {
     name: 'exec',
-    description: 'Execute a shell command and return its output. Has a 30-second timeout. **Before reaching for exec, scan the tool index for a purpose-built tool**, there are dedicated tools for reading files (file_read), writing files (file_write), patching files (file_patch), web fetch (web_fetch), calendar, drive, forms, office docs, tracker, vault, scheduling, sending messages, and more. Use exec only when no purpose-built tool fits, running scripts, checking system status, installing packages, ad-hoc one-liners. If the task is "look at the chat / recall what was said," call recall_recent_thread instead of digging through files. Example: exec({ command: "ls -la ~/projects" }). Returns stdout and stderr.',
-    effects: [{ kind: 'shell', from: 'args.command' }],
+    description: 'Run ONE program directly and return its output, with NO shell. `argv` is an array: the first element is the program, every other element is one literal argument. Because there is no shell, characters like | > < * $ ` && ; are ordinary text — they do NOT pipe, redirect, glob or substitute. Use the `shell` tool when you need any of those. Has a 30-second default timeout. **Before reaching for exec, scan the tool index for a purpose-built tool**, there are dedicated tools for reading files (file_read), writing files (file_write), patching files (file_patch), web fetch (web_fetch), calendar, drive, forms, office docs, tracker, vault, scheduling, sending messages, and more. Use exec only when no purpose-built tool fits. If the task is "look at the chat / recall what was said," call recall_recent_thread instead of digging through files. Example: exec({ argv: ["ls", "-la", "~/projects"] }). Returns stdout and stderr.',
+    effects: [{ kind: 'proc', from: 'args.argv' }],
     input_schema: {
       type: 'object',
       properties: {
-        command: {
+        argv: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'The program and its arguments, one per element. E.g. ["git","status","--short"]. NOT a shell command line — do not put a whole command in one string, and do not use pipes or redirection here.',
+        },
+        cwd: {
           type: 'string',
-          description: 'The shell command to execute',
+          description: 'Absolute directory to run in (optional; defaults to the agent workspace).',
         },
         timeout: {
           type: 'number',
           description: 'Timeout in milliseconds (default: 30000, max: 120000)',
         },
       },
-      required: ['command'],
+      required: ['argv'],
     },
     concurrency: 'serial',
     // v2.7.2, was 4000. Logs, grep output, and JSON dumps frequently
@@ -1132,6 +1141,31 @@ export const toolDefinitions: ToolDefinition[] = [
     // that mask real signal. Modern models have 100K+ context; a 32K cap
     // is "let the LLM see what actually came out of the command" without
     // letting a pathological 10MB log dump nuke the context.
+    maxResultTokens: 32000,
+  },
+  {
+    name: 'shell',
+    description: 'Run a shell SCRIPT under /bin/zsh and return its output — this is the tool for pipes, redirection, globbing, variables, command substitution, `&&`/`;` chains and for/while/if loops. Requires shell access; if you only need to run one program with plain arguments, use exec({argv:[...]}) instead, which is safer and always available to you if exec is. The whole script text is recorded. Has a 30-second default timeout. Example: shell({ script: "ls -la ~/projects | grep report | wc -l" }). Returns stdout and stderr.',
+    effects: [{ kind: 'shell', from: 'args.script' }],
+    input_schema: {
+      type: 'object',
+      properties: {
+        script: {
+          type: 'string',
+          description: 'The shell script to run under /bin/zsh. May contain pipes, redirects, loops and substitution.',
+        },
+        cwd: {
+          type: 'string',
+          description: 'Absolute directory to run in (optional; defaults to the agent workspace).',
+        },
+        timeout: {
+          type: 'number',
+          description: 'Timeout in milliseconds (default: 30000, max: 120000)',
+        },
+      },
+      required: ['script'],
+    },
+    concurrency: 'serial',
     maxResultTokens: 32000,
   },
   {
@@ -3465,7 +3499,7 @@ for (const def of toolDefinitions) {
 import os from 'node:os';
 
 // The exec sensitive-file scan MOVED to `agent/brokers/proc.ts` at PHASE-5 T2.
-// It answered "may this command run" from inside `executeExec`, i.e. from the
+// It answered "may this command run" from inside the string-exec handler, i.e. from the
 // handler, while the ladder answered the same question at the door — two places,
 // one question, which is the shape this phase exists to delete. The broker now
 // asks it, with the refusal message carried verbatim on the verdict so nothing
@@ -3504,128 +3538,94 @@ function auditLog(agentId: string, actionType: string, target: string | null, re
   }
 }
 
-async function executeExec(agentId: string, args: Record<string, unknown>): Promise<string> {
-  const command = args.command as string;
+// ════════════════════════════════════════════════════════════════════════════
+// THE TWO EXEC DOORS (PHASE-5 T3 Step 1).
+//
+// WHAT STOOD HERE. One function — the string-exec entry point — which took
+// `args.command as string` and handed it to `execAsync(command, { shell:
+// '/bin/zsh' })`. It is DELETED — not flag-disabled, not renamed — and its
+// identifier is grep-zero. Everything that made it dangerous was structural: the
+// tool's schema said *"the shell command to execute"*, so the model composed
+// shell syntax, and the gate in front of it could only ever inspect a program
+// NAME inside a line the shell was about to re-parse.
+//
+// WHAT STANDS HERE INSTEAD:
+//   `executeArgv`        `exec({argv})` — `execFile`, no shell at all. The
+//                        program is argv[0], every other element is one literal
+//                        argument, and the shell's metacharacters are inert.
+//   `executeShellScript` `shell({script})` — `/bin/zsh -c <script>`, the same
+//                        interpreter with the same semantics as before, behind
+//                        its OWN grant class, with the FULL script text audited.
+//
+// ⚠ `executeShellScript` IS NOT THE DELETED ENTRY POINT RENAMED, and the
+// difference is worth stating because a reviewer should be able to check it: the
+// old function read `args.command`, was gated by a check that saw only a base
+// command, and audited `command` as its target with no record of what the shell
+// then did with it. This one reads `args.script`, is gated by the `shell` grant
+// rows through the same seam the approval gate uses, and writes the whole script
+// to the audit row. The owner's EXEC-LOOP ruling (2026-07-28) rides here intact:
+// an agent with shell access runs loops, pipes and redirects as it did yesterday.
+//
+// The RUNNING — the per-stream 16K caps, the `stdout_truncated:true` flags, the
+// `command_failed:` header, the ENOENT/SIGTERM translation — moved verbatim to
+// `agent/tools/process-run.ts` so both doors share one body by construction.
+// ════════════════════════════════════════════════════════════════════════════
 
-  // The sensitive-file refusal that used to stand here is the proc broker's now
-  // (PHASE-5 T2): `authorizeProc(..., scanSensitiveReads = true)` runs it at the
-  // door, before this function is reached, and returns the identical
-  // `[BLOCKED] exec refused: …` message. One question, one place.
+/** Both doors write the same audit shape the deleted entry point wrote. */
+function processAuditFor(agentId: string): ProcessAudit {
+  return (target, result, detail) => auditLog(agentId, 'exec', target, result, detail);
+}
 
-  // Phase 3.5 fix, defensive coerce. DeepSeek emits numeric args as strings
-  // despite the schema; without coerce a string timeout silently falls back to
-  // the default instead of being honored.
-  const timeoutCoerced = coerceNumberArg(args.timeout);
-  const timeout = Math.min(
-    timeoutCoerced !== null ? timeoutCoerced : EXEC_TIMEOUT_MS,
-    120000,
-  );
-
-  logger.info('Executing command', { command, timeout }, agentId);
-
-  try {
-    const { stdout, stderr } = await execAsync(command, {
-      timeout,
-      maxBuffer: 1024 * 1024, // 1MB
-      encoding: 'utf-8',
-      shell: '/bin/zsh',
-    });
-
-    // Phase 3.5 (2026-05-04), per-stream caps. Each of stdout/stderr gets
-    // its own ~4K-token cap (16K chars), tagged with `stdout_truncated:true`
-    // / `stderr_truncated:true` flags so the agent sees structurally that
-    // output was cut. Combined exec output also hits the engine-level
-    // applyMaxResultTokensCap (4K total) as a final safety net.
-    const STREAM_CHAR_CAP = 16_000; // ~4K tokens per stream
-    const stdoutRaw = stdout ?? '';
-    const stderrRaw = stderr ?? '';
-    const stdoutTruncated = stdoutRaw.length > STREAM_CHAR_CAP;
-    const stderrTruncated = stderrRaw.length > STREAM_CHAR_CAP;
-    const stdoutFinal = stdoutTruncated ? stdoutRaw.slice(0, STREAM_CHAR_CAP) : stdoutRaw;
-    const stderrFinal = stderrTruncated ? stderrRaw.slice(0, STREAM_CHAR_CAP) : stderrRaw;
-
-    auditLog(agentId, 'exec', command, 'success',
-      stderrFinal.trim()
-        ? `stdout: ${stdoutFinal.trim().slice(0, 250)} | stderr: ${stderrFinal.trim().slice(0, 250)}`
-        : stdoutFinal.trim().slice(0, 500),
-    );
-
-    // Format: structured-ish per-stream output with explicit truncation flags
-    // so the agent can react (e.g. re-run with a narrower scope, grep, etc.).
-    const parts: string[] = [];
-    if (stdoutFinal.trim() || stdoutTruncated) {
-      parts.push(`stdout${stdoutTruncated ? ' (truncated, stdout_truncated: true)' : ''}:\n${stdoutFinal.trim() || '(empty)'}`);
-    }
-    if (stderrFinal.trim() || stderrTruncated) {
-      parts.push(`stderr${stderrTruncated ? ' (truncated, stderr_truncated: true)' : ''}:\n${stderrFinal.trim() || '(empty)'}`);
-    }
-    if (parts.length === 0) {
-      return '(command completed with no output)';
-    }
-    return parts.join('\n\n');
-  } catch (err: unknown) {
-    // Mirror the success-path structured output: surface BOTH streams with
-    // the same per-stream cap, and translate "no exit code" into the actual
-    // signal/spawn reason so the agent doesn't get "Error (exit unknown)"
-    // when the real cause was a timeout or a missing binary.
-    const error = err as {
-      stderr?: string;
-      stdout?: string;
-      message?: string;
-      code?: number | string;
-      signal?: NodeJS.Signals;
-      killed?: boolean;
-    };
-
-    const STREAM_CHAR_CAP = 16_000;
-    const stdoutRaw = error.stdout ?? '';
-    const stderrRaw = error.stderr ?? '';
-    const stdoutTruncated = stdoutRaw.length > STREAM_CHAR_CAP;
-    const stderrTruncated = stderrRaw.length > STREAM_CHAR_CAP;
-    const stdoutFinal = stdoutTruncated ? stdoutRaw.slice(0, STREAM_CHAR_CAP) : stdoutRaw;
-    const stderrFinal = stderrTruncated ? stderrRaw.slice(0, STREAM_CHAR_CAP) : stderrRaw;
-
-    // Reason header: numeric exit → "exit N", signal kill → "killed by SIGX
-    // (likely timeout after Ns)" for SIGTERM, ENOENT → "command not found",
-    // anything else → fall back to the raw code.
-    let reason: string;
-    if (error.killed && error.signal === 'SIGTERM') {
-      reason = `timed out after ${Math.round(timeout / 1000)}s (killed by SIGTERM)`;
-    } else if (error.signal) {
-      reason = `killed by ${error.signal}`;
-    } else if (error.code === 'ENOENT') {
-      reason = `command not found (ENOENT), check spelling, PATH, or quote your command properly`;
-    } else if (typeof error.code === 'number') {
-      reason = `exit ${error.code}`;
-    } else if (typeof error.code === 'string') {
-      reason = `spawn error ${error.code}`;
-    } else {
-      reason = 'process failed before reporting an exit code';
-    }
-
-    // Node's exec wraps stderr in `"Command failed: <cmd>\n<stderr>"` on the
-    // error.message field, only use it if we'd otherwise show nothing.
-    let messageFallback = '';
-    if (!stdoutFinal.trim() && !stderrFinal.trim() && error.message) {
-      messageFallback = error.message.replace(/^Command failed:[^\n]*\n?/, '').trim();
-    }
-
-    auditLog(agentId, 'exec', command, 'error',
-      `${reason} | stderr: ${stderrFinal.trim().slice(0, 250) || '(empty)'} | stdout: ${stdoutFinal.trim().slice(0, 250) || '(empty)'}`,
-    );
-
-    const parts: string[] = [`command_failed: ${reason}`];
-    if (stdoutFinal.trim() || stdoutTruncated) {
-      parts.push(`stdout${stdoutTruncated ? ' (truncated, stdout_truncated: true)' : ''}:\n${stdoutFinal.trim() || '(empty)'}`);
-    }
-    if (stderrFinal.trim() || stderrTruncated) {
-      parts.push(`stderr${stderrTruncated ? ' (truncated, stderr_truncated: true)' : ''}:\n${stderrFinal.trim() || '(empty)'}`);
-    }
-    if (messageFallback) {
-      parts.push(`node_error:\n${messageFallback}`);
-    }
-    return parts.join('\n\n');
+/**
+ * `exec({argv})` — ONE program, literal arguments, NO shell.
+ *
+ * The authority question was already answered at the door (`gates.ts` row 3 →
+ * `authorizeExecShapedCall` → `authorizeArgv`), including the global denies, the
+ * shell-interpreter refusal and the tokenized sensitive-read scan. What is left
+ * here is running it, which is the shape a handler should have.
+ */
+async function executeArgv(agentId: string, args: Record<string, unknown>): Promise<string> {
+  const resolved = resolveArgvArg(args.argv);
+  if (!resolved.ok) {
+    return `Error: ${resolved.reason}. exec takes an argv ARRAY: exec({argv:["ls","-la","/tmp"]}). For pipes, redirection, globbing or loops use the shell tool instead: shell({script:"..."}).`;
   }
+  const { cwd, note } = resolveProcessCwd(args.cwd);
+  const timeout = processTimeout(args.timeout);
+  logger.info('Executing program', { argv: resolved.value.argv, timeout, cwd }, agentId);
+  return runProcess({
+    auditTarget: resolved.value.display,
+    file: resolved.value.program,
+    argv: [...resolved.value.argv.slice(1)],
+    timeout, cwd, note,
+    audit: processAuditFor(agentId),
+  });
+}
+
+/**
+ * `shell({script})` — `/bin/zsh -c <script>`, the pipe/loop/redirect door.
+ *
+ * `execFile('/bin/zsh', ['-c', script])` is what `execAsync(cmd,{shell:'/bin/zsh'})`
+ * did internally, so the SEMANTICS an agent depends on are unchanged to the byte.
+ * The difference is that the script arrives as one named argument at a door whose
+ * grant is named `shell`, and the audit row carries the whole of it.
+ */
+async function executeShellScript(agentId: string, args: Record<string, unknown>): Promise<string> {
+  const script = typeof args.script === 'string' ? args.script : '';
+  if (script.trim().length === 0) {
+    return 'Error: shell requires a non-empty `script` string, e.g. shell({script:"ls -la | wc -l"}).';
+  }
+  const { cwd, note } = resolveProcessCwd(args.cwd);
+  const timeout = processTimeout(args.timeout);
+  // The FULL script text, not a base command — auditing what the shell was
+  // actually handed is the point of giving it its own door.
+  logger.info('Executing shell script', { script, timeout, cwd }, agentId);
+  return runProcess({
+    auditTarget: script,
+    file: '/bin/zsh',
+    argv: ['-c', script],
+    timeout, cwd, note,
+    audit: processAuditFor(agentId),
+  });
 }
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp']);
@@ -4723,12 +4723,12 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         break;
       }
       case 'exec':
-        {
-          const execErr = checkRequired([{ name: 'command', value: args.command, type: 'string' }]);
-          if (execErr) { content = execErr; isError = true; break; }
-          content = await executeExec(agentId, args);
-          isError = content.startsWith('Error');
-        }
+        content = await executeArgv(agentId, args);
+        isError = content.startsWith('Error');
+        break;
+      case 'shell':
+        content = await executeShellScript(agentId, args);
+        isError = content.startsWith('Error');
         break;
       case 'file_read': {
         const readErr = checkRequired([{ name: 'path', value: args.path, type: 'string' }]);

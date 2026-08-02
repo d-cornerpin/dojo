@@ -13,7 +13,8 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { authorizeFs } from './fs.js';
-import { authorizeProc } from './proc.js';
+import { authorizeProc, authorizeArgv } from './proc.js';
+import { authorizeAppleScript } from './applescript.js';
 import { authorizeNet } from './net.js';
 import { evaluateRules, type Grant } from './grants.js';
 import { allow, deny, type Verdict } from './types.js';
@@ -23,11 +24,19 @@ export type { Verdict, BrokerEffect, VerdictBasis } from './types.js';
 export type { Grant, GrantRule, GrantEffectKind, GrantMode } from './grants.js';
 export { grantFor, grantForManifest, syncGrantRules, forgetGrant, projectManifestToRules } from './grants.js';
 export {
-  resolvePathArg, resolveCommandArg, resolveUrlArg, resolveFixedHost,
-  type ResolvedPath, type ResolvedCommand, type ResolvedUrl, type Resolution,
+  resolvePathArg, resolveCommandArg, resolveArgvArg, resolveUrlArg, resolveFixedHost,
+  type ResolvedPath, type ResolvedCommand, type ResolvedArgv, type ResolvedUrl, type Resolution,
 } from './resolve.js';
 export { authorizeFs, globalDeny, shareDeny } from './fs.js';
-export { authorizeProc, commandReadsSensitiveFile } from './proc.js';
+export {
+  authorizeProc, authorizeArgv, authorizeShellScript,
+  commandReadsSensitiveFile, argvReadsSensitiveFile,
+} from './proc.js';
+export { authorizeAppleScript } from './applescript.js';
+export {
+  authorizeExecShapedCall, authorizeExecShapedArgs, execCallText, execDoorFor,
+  EXEC_DOOR_ARG, type ExecDoor,
+} from './exec-seam.js';
 export { authorizeNet, authorizeNetDomain } from './net.js';
 export {
   DENY_RULES, deniedTiers, denyRuleFor, isDeniedResource, tiersForKind,
@@ -56,6 +65,19 @@ export function authorizeSystemControl(grant: Grant, category: string, toolName:
   return deny('ladder-parity', 'no-system-control-grant', `system_control permission required: ${category}`);
 }
 
+/**
+ * THE FOUR SYSTEM-CONTROL CLASSES (PHASE-5 T3 Step 2), declared rather than
+ * inferred from a string compare scattered across two files.
+ *
+ * The ladder derived the category and so does the gate table; what was missing
+ * was anywhere that says *these are the classes* — so a fifth HID tool could be
+ * added tomorrow with a typo'd category and nothing would notice. This constant
+ * is the enumeration, `applescript` is on it, and `system-control.test.ts`
+ * asserts every gated tool maps onto exactly one member.
+ */
+export const SYSTEM_CONTROL_CLASSES = ['mouse', 'keyboard', 'screen', 'applescript'] as const;
+export type SystemControlClass = (typeof SYSTEM_CONTROL_CLASSES)[number];
+
 /** THE DOOR. */
 export async function authorize(grant: Grant, effect: BrokerEffect): Promise<Verdict> {
   switch (effect.kind) {
@@ -64,8 +86,11 @@ export async function authorize(grant: Grant, effect: BrokerEffect): Promise<Ver
     case 'fs_delete':
       return authorizeFs(grant, effect.kind, effect.resource, effect.surface ?? 'tool');
     case 'shell':
-    case 'proc':
       return authorizeProc(grant, effect.resource, true);
+    case 'proc':
+      return authorizeArgv(grant, effect.resource);
+    case 'applescript':
+      return authorizeAppleScript(grant, effect.resource);
     case 'net':
       return authorizeNet(grant, effect.resource);
     case 'spawn':

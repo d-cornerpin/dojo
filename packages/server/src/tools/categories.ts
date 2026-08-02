@@ -18,7 +18,7 @@ export const TOOL_CATEGORIES: Array<{ label: string; tools: string[] }> = [
   },
   {
     label: 'File & System',
-    tools: ['file_read', 'file_list', 'file_write', 'file_append', 'file_patch', 'exec', 'screen_screenshot', 'keyboard_type', 'mouse_click', 'mouse_move', 'applescript_run', 'scratchpad_set', 'scratchpad_clear', 'get_current_time', 'convert_time'],
+    tools: ['file_read', 'file_list', 'file_write', 'file_append', 'file_patch', 'exec', 'shell', 'screen_screenshot', 'keyboard_type', 'mouse_click', 'mouse_move', 'applescript_run', 'scratchpad_set', 'scratchpad_clear', 'get_current_time', 'convert_time'],
   },
   {
     label: 'Web',

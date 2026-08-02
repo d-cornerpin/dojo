@@ -86,11 +86,17 @@ function format(problems: ConformanceProblem[]): string {
 }
 
 describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
-  it('the census is what T0 pinned: 320 static definitions, 117 user_ twins, 437 at runtime', () => {
-    expect(BASE.length).toBe(320);
+  // PHASE-5 T3 moved these by exactly ONE, and the delta is named rather than
+  // re-baselined: `shell({script})` is a NEW tool definition — the second exec
+  // door — so the static census is T0's 320 + 1 and the runtime census is 437 + 1.
+  // The twin count is untouched, which is the check that the new definition did
+  // not accidentally acquire a `user_` twin.
+  it('the census is T0\'s 320 static definitions + T3\'s `shell`, 117 user_ twins, 438 at runtime', () => {
+    expect(BASE.length).toBe(321);
+    expect(BASE.filter((d) => d.name === 'shell')).toHaveLength(1);
     expect(TWINS.length).toBe(117);
-    expect(ALL.length).toBe(437);
-    expect(new Set(ALL.map((d) => d.name)).size).toBe(437);
+    expect(ALL.length).toBe(438);
+    expect(new Set(ALL.map((d) => d.name)).size).toBe(438);
   });
 
   it('EVERY definition declares its effects, and every declaration is well formed', () => {
@@ -142,20 +148,25 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // Reported, never a gate on a number — but pinned so the next task inherits a
     // measurement rather than a rumour, and so a definition that quietly loses its
     // declaration in a later refactor shows up as an arithmetic change.
-    //   104 of 320 base definitions declare at least one effect
-    //   124 of 437 runtime definitions do (the 20 effectful user_ twins)
+    //   105 of 321 base definitions declare at least one effect
+    //   125 of 438 runtime definitions do (the 20 effectful user_ twins)
     //    14 definitions carry a nonEffects ruling
+    // T3 moved both by exactly ONE: `shell({script})` is the new second exec
+    // door and declares `shell`. `exec` itself did not change COUNT, it changed
+    // KIND — `shell/args.command` became `proc/args.argv` — which is the whole
+    // rebuild visible in one declaration.
     // §T0-PINS P3's "72 effectful defs" was a different unit: definitions carrying
     // an effectful-looking FIELD. Its own enumerated name list reproduces as 64
     // under a recursive scan here; the 104 adds the classes no scan reaches.
     const effectful = BASE.filter((d) => d.effects.length > 0);
-    expect(effectful.length).toBe(104);
-    expect(ALL.filter((d) => d.effects.length > 0).length).toBe(124);
+    expect(effectful.length).toBe(105);
+    expect(ALL.filter((d) => d.effects.length > 0).length).toBe(125);
     expect(BASE.filter((d) => d.nonEffects).length).toBe(14);
 
     const kindsInUse = new Set(BASE.flatMap((d) => d.effects.map((e) => e.kind)));
-    // `fs_delete` and `spawn` are single-member classes today and `shell` is exec
-    // alone — each is named here so a future zero reads as a deletion, not a gap.
+    // `fs_delete` and `spawn` are single-member classes today; since T3 so are
+    // `proc` (exec) and `shell` (the shell tool). Each is named here so a future
+    // zero reads as a deletion, not a gap.
     expect([...kindsInUse].sort()).toEqual(
       ['applescript', 'fs_delete', 'fs_read', 'fs_write', 'net', 'proc', 'secrets', 'send', 'shell', 'spawn'],
     );

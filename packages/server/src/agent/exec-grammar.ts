@@ -9,7 +9,8 @@
 //
 // The exec check classifies a command line by its FIRST WORD, so the shell's
 // own grammar read as a program name. exec runs the line through /bin/zsh
-// (agent/tools.ts executeExec), so the construct was always EXECUTABLE; only
+// (the pre-PHASE-5-T3 string-exec entry point in agent/tools.ts), so the
+// construct was always EXECUTABLE; only
 // the classifier disagreed. This module answers one question for that
 // classifier: which COMMANDS does a control-flow line actually run? The caller
 // then checks each of them exactly as it checks a plain line — grammar widens,

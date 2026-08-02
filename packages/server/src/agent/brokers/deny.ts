@@ -336,6 +336,16 @@ export function isDeniedResource(absPath: string, kind: 'fs_read' | 'fs_write' |
  * database's journal.
  */
 export function isGlobalDenyRule(ruleId: string): boolean {
+  // PHASE-5 T3: the EXEC global denies join this answer, and the omission was
+  // latent rather than harmless. RULING P5-R6's carve-out is *"a global deny is
+  // NEVER staged"*, and `gate-eval.ts:logOnly` asks this function to recognise
+  // one. At T2 every exec refusal carried `basis:'ladder-parity'`, which the
+  // staging window excludes anyway, so no exec deny ever reached this check. T3
+  // adds the first exec refusal with a `bypass-hardening` basis (the
+  // basename-normalised `/bin/rm -rf /` spelling), and without this line a
+  // SUB-AGENT would have run it log-only — the exact shape of the incident that
+  // earned P5-R6 on the filesystem side.
+  if (ruleId.startsWith('global-exec-deny:') || ruleId.startsWith('global-exec-substring:')) return true;
   return DENY_RULES.some((r) => r.id === ruleId);
 }
 
