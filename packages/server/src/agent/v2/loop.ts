@@ -189,6 +189,7 @@ const SEND_TO_PEOPLE_SET: ReadonlySet<string> = new Set(SEND_TO_PEOPLE);
 import { detectDeliveryDenial } from './classifiers/grounding.js';
 import { decideClaimedDelivery, claimedDeliverySteer } from './claimed-delivery.js';
 import { recordFloorGhost, MAX_FLOOR_STEER_ATTEMPTS } from './floor-ghost.js';
+import { outboundRoot, describeOutboundRoot } from './outbound-root.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
 import { permissionAlternativeFinder } from './classifiers/permission.js';
 import { semanticTechniqueMatches, SEMANTIC_STRONG_THRESHOLD, buildTechniqueMatchQuery } from './classifiers/technique.js';
@@ -8810,23 +8811,41 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // turn (a scheduler/reminder the agent must deliver), and an engine completion
         // ack (a real "done" for just-finished work, always-ack hard rule) are never
         // held.
-        const settledContextHold =
-          settledContextWakeTurn &&
-          state.inboundChannel === null &&
-          counterparty.kind !== 'agent' &&
-          !isEngineTurn &&
-          !engineCompletionAckThisTurn &&
+        // PHASE-4 T4 — THE CARVE-OUT PILE IS DISSOLVED (scar-tissue ledger :102, verdict
+        // STRIP, precondition "P4 provides the affirmative-basis read"). What stood here was
+        // six booleans ANDed, five of them negations, whose meaning existed only as a
+        // conjunction — and every new exemption was one more `&& !flag`, which is how a pile
+        // becomes a pile. The rule is stated once and positively now: a user-facing CHANNEL
+        // PUSH requires an AFFIRMATIVE ROOT, and each old negation is one named root
+        // (`agent/v2/outbound-root.ts`). No root -> held. The dissolution is EXACT and it is
+        // proven by exhausting all 64 input combinations against the original expression,
+        // transcribed verbatim into `__tests__/outbound-root.test.ts` as the oracle.
+        //
+        // requirement preserved: "user-facing outbound needs an affirmative root; carve-outs
+        // become root kinds, not boolean flags" — the ledger's own line, discharged here.
+        // Design law untouched: only the PUSH is withheld; the reply stays persisted, broadcast
+        // and visible in the dashboard exactly as it already is.
+        const routeRoot = outboundRoot({
+          inboundChannel: state.inboundChannel,
+          settledContextWakeTurn,
+          counterpartyKind: counterparty.kind,
+          isEngineTurn,
+          engineCompletionAckThisTurn,
           // A steered closeout reply IS the completion ack, in the agent's own
-          // voice (owner ruling 2026-07-22); it keeps the same hold exemption.
-          !steerFired(state.steerQueue, 'silent-closeout');
+          // voice (owner ruling 2026-07-22); it keeps the same standing.
+          steeredForSilentCloseout: steerFired(state.steerQueue, 'silent-closeout'),
+        });
+        const settledContextHold = routeRoot.held;
         // Calibration log (2026-07-09 re-answer class + the phantom outcome), one line
-        // per settled-wake user-facing outbound, carrying the routing outcome.
+        // per settled-wake user-facing outbound, carrying the routing outcome AND the root
+        // that permitted it — "why did this go out" was unanswerable from a conjunction.
         if (settledContextWakeTurn && counterparty.kind !== 'agent') {
           const heldNow = settledContextHold && destination !== 'dashboard';
           logger.warn('settled-context tripwire: user-facing outbound from a wake turn whose visible conversations were all answered; verify it is a genuine delivery and not a re-answer', {
             agentId, turnNumber, convKey: chosenConvKey ?? null,
             inboundChannel: state.inboundChannel, presence: presenceNow, destination,
             outcome: heldNow ? 'held' : (destination === 'dashboard' ? 'dashboard' : `channel:${destination}`),
+            outboundRoot: routeRoot.root, outboundRoots: routeRoot.roots,
             explicitSend: Object.values(state.explicitSendThisTurn).some(Boolean),
             snippet: (state.lastAssistantTextForIM ?? '').replace(/\s+/g, ' ').slice(0, 140),
           }, agentId);
@@ -8866,11 +8885,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
               agentId, tool: 'auto-route', channel: 'dashboard',
               conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
             },
-            'no active conversation',
+            // The held row carries the ROOT READ that produced it, not a restatement of the
+            // symptom: "no affirmative root" is the rule, and a reader of this ledger can now
+            // tell a hold apart from a push that had one.
+            describeOutboundRoot(routeRoot),
           ), 'v2: settled-context hold', { agentId, turnNumber });
           persistRoutingMarker('held in dashboard: no active conversation');
-          logger.warn('settled-context hold: withheld auto-route channel push (no active conversation); reply stays visible in dashboard', {
+          logger.warn('settled-context hold: withheld auto-route channel push (no affirmative root); reply stays visible in dashboard', {
             agentId, turnNumber, destination, presence: presenceNow,
+            outboundRoot: routeRoot.root,
           }, agentId);
         } else if (destination === 'imessage' && !state.repliedToCounterpartyThisTurn.imessage && isImessageConfigured()) {
           // Label the badge with the recipient the bridge ACTUALLY delivered
