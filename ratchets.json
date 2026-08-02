@@ -13,7 +13,7 @@
       "from": 455,
       "to": 462,
       "by": "PHASE-4 T1 cluster 2 (2026-08-02)",
-      "why": "The delivery boundary answers `LedgerOutcome` instead of `string | null`, and that null meant THREE different things at once: this crossing folded into the row the scope already owns (correct), the owner-close work row does not exist (a refusal), or the ledger write THREW and the outbound has no record at all (the failure `work.done` depends on not happening). +7 lines buys the three names: the import, the `no_change` fold return with the two-line argument for why a fold is not a failure, the `written` binding that lets `recordAtDoor` return the outcome AND keep the scope's id, and the note recording why `recordDashboardDelivery` deliberately keeps `string | null` (its early returns answer a different question). Compression was taken first — the file is +7 after folding two comment blocks and re-homing the readers onto `deliveries.ts`, which paid for the import lines in `gateway/routes/tracker.ts` and kept `a2a-transport.ts` at its own ceiling exactly. The alternative that would have held 455 was moving `recordDashboardDelivery` or `recordHeld` out of the scope module, i.e. relocation to satisfy a number, which is the move the gate\u2019s own author warned about. Growth at this boundary is DECLARED by this phase\u2019s Global Constraints: `Outcome<T>` is an addition by design and the phase buys truthfulness, not smallness."
+      "why": "The delivery boundary answers `LedgerOutcome` instead of `string | null`, and that null meant THREE different things at once: this crossing folded into the row the scope already owns (correct), the owner-close work row does not exist (a refusal), or the ledger write THREW and the outbound has no record at all (the failure `work.done` depends on not happening). +7 lines buys the three names: the import, the `no_change` fold return with the two-line argument for why a fold is not a failure, the `written` binding that lets `recordAtDoor` return the outcome AND keep the scope's id, and the note recording why `recordDashboardDelivery` deliberately keeps `string | null` (its early returns answer a different question). Compression was taken first \u2014 the file is +7 after folding two comment blocks and re-homing the readers onto `deliveries.ts`, which paid for the import lines in `gateway/routes/tracker.ts` and kept `a2a-transport.ts` at its own ceiling exactly. The alternative that would have held 455 was moving `recordDashboardDelivery` or `recordHeld` out of the scope module, i.e. relocation to satisfy a number, which is the move the gate\u2019s own author warned about. Growth at this boundary is DECLARED by this phase\u2019s Global Constraints: `Outcome<T>` is an addition by design and the phase buys truthfulness, not smallness."
     },
     {
       "path": "packages/server/src/work/store.ts",
@@ -882,6 +882,41 @@
       "to": 9548,
       "by": "PHASE-3 T7 Step 2, THE STRIP (2026-08-01, RULING P3-R3)",
       "why": "A LOWERING, and it pays the note the raise earlier in this same task wrote (`9613 -> 9632`, the two conv-key measurements). Net from the pre-task 9613: -65. Three mechanisms left this file. (1) The cross-conversation send ECHO: `persistCrossConvSendEcho` and its three call sites, including the whole `gmail_send`/`outlook_send` branch whose entire body was the echo call -- requirement preserved by the deliveries lane (T7 Step 1) and `persistRoutingMarker`. (2) The SETTLED_HINT, both branches -- ~65 tokens of prose per turn telling the model not to re-answer conversations `scopeToHumanConversation` had already removed from the window; requirement preserved structurally there, deterministically by the now-WIRED `check-reanswer-ghost.mjs`, behaviourally by `settled-work-stays-settled`. (3) The cross-conversation re-answer DETECTOR call site and its two imports; `re-answer-guard.ts` (-133) and `re-answer-sink.ts` (-220) are deleted outright and the sink's pin is removed from this manifest with it. As with the trimmers at Step 2b, the deletions are larger than the net: STRIP notes went back in, each carrying its `requirement preserved:` line, the mechanism that now owns that requirement, and the measurement behind it -- and here the measurement matters more than usual, because the detector is being deleted as an alarm PROVEN never to have worked (its exclusion compared a conv key against a UUID column) rather than as one that went quiet."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 1665,
+      "to": 1678,
+      "by": "PHASE-4 T2 Step 2, withUnit adoption + the un-atomic clusters closed (2026-08-02)",
+      "why": "+13 across four functions (`rejectClaim`, `stampClaimingTurn`, `clearJoinCompilePending`, `openCommitment`), and the CODE delta is close to zero: each pair of writes gains a `withUnit(() => {` / `});` and its body is re-indented. Six of the thirteen are the `revertAskClaimOnAbort` correction block \u2014 the pin list calls it un-atomic and it is NOT (one write per path), which is a fact the next reader must be able to find at the site rather than in a report they will not open. The rest buy the property this task exists for: an adjudication with no event, or a claim stamp with no `claim_turn` row, is a silence."
+    },
+    {
+      "path": "packages/server/src/techniques/store.ts",
+      "from": 609,
+      "to": 615,
+      "by": "PHASE-4 T2 Step 2, withUnit adoption + the un-atomic clusters closed (2026-08-02)",
+      "why": "+6 in `deleteTechnique`: one `withUnit` wrapper (2 lines) plus a four-line note stating WHY the four DELETEs need it \u2014 three of the four tables have no FK to `techniques`, so the comment standing above them ('cascading from ON DELETE CASCADE') was describing a cascade that does not cover them. A technique deleted half-way left usage rows, versions and an embedding behind: searchable, and unloadable."
+    },
+    {
+      "path": "packages/server/src/work/occurrences.ts",
+      "from": 417,
+      "to": 423,
+      "by": "PHASE-4 T2 Step 2, withUnit adoption + the un-atomic clusters closed (2026-08-02)",
+      "why": "+6 in `settleOccurrence`: the wrapper (2) plus a four-line note. The event this now commits with is the ONLY carrier of the run's own word \u2014 `abandoned` is the terminal state for BOTH 'finished and reached nobody' and 'never ran', and the owner's run history renders those differently. Losing the event loses the discriminator, which is exactly why it may not be a second transaction."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 1699,
+      "to": 1701,
+      "by": "PHASE-4 T2 Step 2, withUnit adoption + the un-atomic clusters closed (2026-08-02)",
+      "why": "+2 net across FOUR edits, and the smallness is the story: three `withUnit` wrappers in `onTaskRunComplete` (the tracker state and the schedule columns describe ONE event and could disagree) plus a 12-line correction block at `checkScheduledTasks`, minus the lines that fold away. The correction is why the pin does not rise further: the plan's 'schedule advance + occurrence' cluster is ALREADY atomic inside `claimOccurrence`, so the wrap the pin asked for was not owed, and the claim-then-status split that remains is the DESIGN (the claim must be won before anything asserts the row is running)."
+    },
+    {
+      "path": "packages/server/src/memory/message-store.ts",
+      "from": 980,
+      "to": 981,
+      "by": "PHASE-4 T2 Step 2, withUnit adoption + the un-atomic clusters closed (2026-08-02)",
+      "why": "+1, and it is the `import { withUnit }` line. The five already-atomic sites in this file were ADOPTED, not rewritten: `db.transaction(...)()` became `withUnit(...)`, no behaviour change, suite unchanged. The one line buys uniform ownership of the transaction, which is what gives `afterCommit` somewhere to hang."
     }
   ],
   "maxNewFileLines": 400,
@@ -949,7 +984,7 @@
     "packages/server/src/memory/assembler.ts": 2680,
     "packages/server/src/memory/compaction.ts": 1337,
     "packages/server/src/memory/lanes.ts": 711,
-    "packages/server/src/memory/message-store.ts": 980,
+    "packages/server/src/memory/message-store.ts": 981,
     "packages/server/src/memory/recall.ts": 510,
     "packages/server/src/memory/retrieval.ts": 591,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
@@ -967,7 +1002,7 @@
     "packages/server/src/prompt/assembler.ts": 1404,
     "packages/server/src/prompt/registry/entries.ts": 524,
     "packages/server/src/router/scorer.ts": 505,
-    "packages/server/src/scheduler/runner.ts": 1699,
+    "packages/server/src/scheduler/runner.ts": 1701,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/gmail-watcher.ts": 592,
     "packages/server/src/services/image-generation.ts": 483,
@@ -980,7 +1015,7 @@
     "packages/server/src/techniques/dependencies.ts": 586,
     "packages/server/src/techniques/share-export.ts": 464,
     "packages/server/src/techniques/share-import.ts": 412,
-    "packages/server/src/techniques/store.ts": 609,
+    "packages/server/src/techniques/store.ts": 615,
     "packages/server/src/techniques/tools.ts": 892,
     "packages/server/src/tools/unified-read.ts": 753,
     "packages/server/src/tracker/pm-agent.ts": 2090,
@@ -997,7 +1032,7 @@
     "packages/server/src/voice/model-manager.ts": 583,
     "packages/server/src/voice/stt-service.ts": 538,
     "packages/server/src/voice/voice-ws.ts": 2299,
-    "packages/server/src/work/store.ts": 1665,
+    "packages/server/src/work/store.ts": 1678,
     "packages/shared/src/types.ts": 508,
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
@@ -1009,7 +1044,7 @@
     "packages/server/src/work/tracker-store.ts": 505,
     "packages/server/src/tools/work-verbs.ts": 375,
     "packages/server/src/work/tracker-view.ts": 508,
-    "packages/server/src/work/occurrences.ts": 417,
+    "packages/server/src/work/occurrences.ts": 423,
     "packages/server/src/work/override-requests.ts": 246,
     "packages/server/src/work/work-reaper.ts": 528,
     "packages/server/src/memory/assembly-validation.ts": 610,
