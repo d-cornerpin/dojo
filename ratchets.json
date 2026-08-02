@@ -1295,6 +1295,13 @@
       "to": 375,
       "by": "PHASE-5 T3 Step 1 correction (2026-08-02) \u2014 the interpreter rule refuses INLINE script text only",
       "why": "The first draft refused any shell interpreter as argv[0], which would have deleted `exec({argv:['sh','/path/count.sh']})` \u2014 the kit's own coding-task workflow. The rule is now the `-c` form, scanned over every element so an `env` re-point cannot slip it, with shell BUILTINS refused separately. The added lines are the two narrower predicates plus the paragraph recording the capability loss the first draft would have caused, which is the part a later reader must not re-widen."
+    },
+    {
+      "path": "packages/server/src/agent/tools/effect-conformance.ts",
+      "from": 0,
+      "to": 259,
+      "by": "PHASE-5 T3 Step 3 (2026-08-02) \u2014 PINNED, not raised: the declarations walk crossed the growth detector's 60% mark",
+      "why": "The growth detector offers split-or-pin and this is the pin, with the reason stated so it is arguable. Step 3's validation boundary reads `allowEmpty` and `requiredNotEnforced` off the `fields` sibling BY FIELD NAME, so clause 7b was added to make a renamed property fail the build: silently dropping an `allowEmpty` declaration turns `file_write({content: \"\"})` from a working call into a refusal, which is precisely the silent capability loss this phase exists to prevent. Splitting the walk would put clauses 1-7 in one file and 7b in another while both judge the same definition in the same pass \u2014 the opposite of one-owner-per-job, and a reader would have to find two files to answer \"what does a definition have to satisfy?\". Pinned decrease-only at its current count; T4's toolbox split is where it is revisited."
     }
   ],
   "maxNewFileLines": 400,
@@ -1326,6 +1333,7 @@
     "packages/server/src/agent/a2a-transport.ts": 2008,
     "packages/server/src/agent/brokers/deny.ts": 365,
     "packages/server/src/agent/brokers/grants.ts": 333,
+    "packages/server/src/agent/brokers/proc.ts": 375,
     "packages/server/src/agent/browser.ts": 412,
     "packages/server/src/agent/destructive-gate.ts": 583,
     "packages/server/src/agent/model.ts": 2619,
@@ -1336,6 +1344,7 @@
     "packages/server/src/agent/runtime.ts": 1415,
     "packages/server/src/agent/spawner.ts": 1382,
     "packages/server/src/agent/tools.ts": 10343,
+    "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 346,
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
@@ -1432,7 +1441,6 @@
     "packages/shared/src/types.ts": 527,
     "packages/shared/src/visibility.ts": 881,
     "packages/shared/src/ws.ts": 1088,
-    "watchdog/src/index.ts": 1198,
-    "packages/server/src/agent/brokers/proc.ts": 375
+    "watchdog/src/index.ts": 1198
   }
 }
