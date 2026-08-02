@@ -41,6 +41,8 @@ import { checkRequired, friendlyDbError, resolveAgentRef, resolveGroupRef, compa
 import { checkPermission, getAgentPermissions } from './permissions.js';
 // PHASE-0 T10: sensitive-path list, ~-expansion and the share/read gate.
 import { resolvePath, isSensitivePath, sharePathGuard, pdfInputPaths } from './path-guards.js';
+import { gatesForCall, ungatedEffectKinds, PRIMARY_ONLY_TOOLS } from './tools/gates.js';
+import { evaluateGate, logOnly } from './tools/gate-eval.js';
 // S2 (PHASE-3 T3): the 17 property schemas `work_open` and `work_update` both declare,
 // declared ONCE. N1 (post-exit, owner-approved 2026-08-01): the seven fields whose two
 // descriptions were paraphrases of each other now have ONE canonical wording, said once on
@@ -412,17 +414,6 @@ export function agentCanSelfCompleteById(agentId: string): boolean {
  * agent's corrupted context. It stays surface-stripped but stays executable, so
  * it is pushed onto the strip separately below rather than through this set.
  */
-const PRIMARY_ONLY_TOOLS = new Set<string>([
-  // Platform / update control
-  'apply_update', 'check_for_update',
-  // Capability, channel, voice, and presence configuration
-  'set_capability_model', 'set_channel', 'set_voice', 'set_user_presence',
-  // Dashboard drive
-  'open_settings', 'dashboard_navigate',
-  // Agent identity + group management
-  'update_agent', 'get_agent_profile',
-  'create_agent_group', 'update_group', 'assign_to_group', 'delete_group',
-]);
 
 // ── Tool-eligibility memo (FA-TS1) ──
 // callModel calls getFilteredTools once per tool-loop iteration; a 20-tool-call
@@ -3470,45 +3461,12 @@ for (const def of toolDefinitions) {
 
 import os from 'node:os';
 
-// Guard for exec commands. Block any command that would print a sensitive
-// file (`cat ~/.dojo/secrets.yaml`, `less id_rsa`, etc.) before the shell
-// runs it. We can't catch every redirection trick, but blocking the obvious
-// readers (cat/less/more/head/tail/bat/nl/sed/awk/grep/strings) at the
-// tokenized argument level catches the common case without requiring a
-// real shell parser.
-const SENSITIVE_FILE_READING_COMMANDS = new Set<string>([
-  'cat', 'less', 'more', 'head', 'tail', 'bat', 'nl', 'strings',
-  'cp', 'mv', 'rsync', 'scp', // exfiltration shapes
-  'sed', 'awk', 'grep', 'rg', 'ag', 'fgrep', 'egrep',
-  'xxd', 'od', 'hexdump',
-]);
-
-function commandReadsSensitiveFile(command: string): { blocked: true; reason: string } | { blocked: false } {
-  // Tokenize crudely. This isn't a full shell parser, sufficiently
-  // motivated bypass attempts (heredocs, variable expansion, base64-decoded
-  // paths) will get through. The point isn't perfect security; it's keeping
-  // accidental `cat ~/.dojo/secrets.yaml` from leaking into the conversation.
-  const tokens = command.split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return { blocked: false };
-  // Find the program name(s). Could be at start, after `&&`, after `|`, etc.
-  // Just check every token: if it's a sensitive-reading command followed by
-  // a sensitive path, block.
-  for (let i = 0; i < tokens.length; i++) {
-    const cmd = path.basename(tokens[i]);
-    if (!SENSITIVE_FILE_READING_COMMANDS.has(cmd)) continue;
-    // Look at the rest of the tokens up to the next pipe/&&/;/| for paths.
-    for (let j = i + 1; j < tokens.length; j++) {
-      const arg = tokens[j];
-      if (arg === '|' || arg === '||' || arg === '&&' || arg === ';' || arg === '>') break;
-      if (arg.startsWith('-')) continue; // flags
-      const expanded = resolvePath(arg);
-      if (isSensitivePath(path.isAbsolute(expanded) ? expanded : path.resolve(expanded))) {
-        return { blocked: true, reason: `path "${arg}" is on the sensitive-files block list` };
-      }
-    }
-  }
-  return { blocked: false };
-}
+// The exec sensitive-file scan MOVED to `agent/brokers/proc.ts` at PHASE-5 T2.
+// It answered "may this command run" from inside `executeExec`, i.e. from the
+// handler, while the ladder answered the same question at the door — two places,
+// one question, which is the shape this phase exists to delete. The broker now
+// asks it, with the refusal message carried verbatim on the verdict so nothing
+// an agent reads changed.
 
 // ── Tool Execution ──
 
@@ -3546,15 +3504,10 @@ function auditLog(agentId: string, actionType: string, target: string | null, re
 async function executeExec(agentId: string, args: Record<string, unknown>): Promise<string> {
   const command = args.command as string;
 
-  // Refuse commands that would echo a sensitive file (secrets.yaml, .env,
-  // SSH keys, etc.) BEFORE the shell runs. CLAUDE.md is explicit that
-  // secrets must never enter messages or summaries. See isSensitivePath /
-  // commandReadsSensitiveFile up top.
-  const sensitiveCheck = commandReadsSensitiveFile(command);
-  if (sensitiveCheck.blocked) {
-    auditLog(agentId, 'exec', command.slice(0, 200), 'denied', sensitiveCheck.reason);
-    return `[BLOCKED] exec refused: ${sensitiveCheck.reason}. The DOJO never echoes secret files into the conversation. If you need a value from secrets.yaml (API key, OAuth token, etc.), ask the user, those values live in process memory only, not in agent context.`;
-  }
+  // The sensitive-file refusal that used to stand here is the proc broker's now
+  // (PHASE-5 T2): `authorizeProc(..., scanSensitiveReads = true)` runs it at the
+  // door, before this function is reached, and returns the identical
+  // `[BLOCKED] exec refused: …` message. One question, one place.
 
   // Phase 3.5 fix, defensive coerce. DeepSeek emits numeric args as strings
   // despite the schema; without coerce a string timeout silently falls back to
@@ -4544,228 +4497,91 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     return { toolCallId: id, name, content, isError: true, errorCode: 'PARSE_ERROR' as const };
   }
 
-  // ── Permission checks for file/exec tools ──
-  if (name === 'file_read' || name === 'file_list') {
-    const filePath = args.path as string | undefined;
-    if (filePath) {
-      const perm = checkPermission(agentId, { type: 'file_read', path: filePath });
-      if (!perm.allowed) {
-        auditLog(agentId, name, filePath, 'denied', perm.reason);
-        return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true, errorCode: 'PERMISSION_DENIED' };
-      }
-    }
-  }
-
-  if (name === 'file_write' || name === 'file_append' || name === 'file_patch') {
-    const filePath = args.path as string | undefined;
-    if (filePath) {
-      const perm = checkPermission(agentId, { type: 'file_write', path: filePath });
-      if (!perm.allowed) {
-        auditLog(agentId, name, filePath, 'denied', perm.reason);
-        return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true, errorCode: 'PERMISSION_DENIED' };
-      }
-    }
-  }
-
-  if (name === 'exec') {
-    const command = args.command as string | undefined;
-    if (command) {
-      const perm = checkPermission(agentId, { type: 'exec', command });
-      if (!perm.allowed) {
-        auditLog(agentId, 'exec', command, 'denied', perm.reason);
-        return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true, errorCode: 'PERMISSION_DENIED' };
-      }
-    }
-  }
-
-  if (name === 'spawn_agent') {
-    const perm = checkPermission(agentId, { type: 'spawn' });
-    if (!perm.allowed) {
-      auditLog(agentId, 'spawn', null, 'denied', perm.reason);
-      return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true, errorCode: 'PERMISSION_DENIED' };
-    }
-  }
-
-  if (name === 'web_fetch') {
-    const url = args.url as string | undefined;
-    if (url) {
-      try {
-        const domain = new URL(url).hostname;
-        const perm = checkPermission(agentId, { type: 'network', domain });
-        if (!perm.allowed) {
-          auditLog(agentId, 'web_fetch', url, 'denied', perm.reason);
-          return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true, errorCode: 'PERMISSION_DENIED' };
-        }
-      } catch {
-        return { toolCallId: id, name, content: `Invalid URL: ${url}`, isError: true };
-      }
-    }
-  }
-
-  if (name === 'web_search') {
-    const perm = checkPermission(agentId, { type: 'network', domain: 'api.search.brave.com' });
-    if (!perm.allowed) {
-      auditLog(agentId, 'web_search', null, 'denied', perm.reason);
-      return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true, errorCode: 'PERMISSION_DENIED' };
-    }
-  }
-
-  if (name === 'imessage_send' || name === 'imessage_list_contacts') {
-    if (!isPrimaryAgent(agentId)) {
-      auditLog(agentId, name, null, 'denied', `${name} is restricted to the primary agent only`);
-      return { toolCallId: id, name, content: `Permission denied: only the primary agent can call ${name}. Escalate to the primary agent instead.`, isError: true, errorCode: 'PERMISSION_DENIED' };
-    }
-  }
-
-  // PHASE-2 T8V: this gate protected THREE PM-only operations that used to be
-  // three tool names. After the collapse they are three ACTIONS on one verb, so
-  // the gate matches the operation, not the name — otherwise it would either
-  // lock the PM out of nothing (matching `work_validate` alone still works, but
-  // only because every work_validate action happens to be PM-only) or, the day
-  // a non-PM action is added to the verb, silently start refusing it. Deriving
-  // the op keeps the rule stated where the rule actually lives.
+  // ── THE GATE LOOP (PHASE-5 T2 Step 3) ─────────────────────────────────────
+  // What stood here was a run of FIFTEEN `if (name === …)` branches of four
+  // different kinds — six calling `checkPermission`, three testing the caller's
+  // identity, two reading `created_by` out of the database, two reading the
+  // manifest's `system_control` in place, and one (`web_browse`) holding TWO
+  // gates that a single `authorize()` call cannot express. §T0-PINS P1 tabled
+  // all fifteen with the requirement each one encoded; every requirement is now
+  // a DECLARED gate in `agent/tools/gates.ts`, and this loop evaluates them.
+  //
+  // The point is not that it is shorter. It is that the requirement became a
+  // value: `gatesForCall()` can be printed, diffed and tested, whereas fifteen
+  // branches could only be read — and the survey found two the reading had
+  // already lost (`web_browse`'s second gate, and `web_search`'s gate, which has
+  // no argument to key on and is invisible to any scan of the args).
+  //
+  // RULING P5-R5 — ENFORCEMENT PARITY — is what this loop is measured against:
+  // it refuses exactly what the fifteen branches refused, in the same order,
+  // with the same words, the same `errorCode` per row, and the same audit rows.
+  // A declared effect that no ladder row gated gets NO new refusal here; it is
+  // RECORDED (`ungatedEffectKinds`) so the enumeration exists when the owner or
+  // a later task decides one of them should gate.
   {
-    const pmOnlyOp = workOperation(name, args);
-    if (pmOnlyOp !== null && PM_ONLY_WORK_OPS.has(pmOnlyOp) && !isPMAgent(agentId)) {
-      auditLog(agentId, name, null, 'denied', `${pmOnlyOp} is restricted to the PM agent`);
-      return { toolCallId: id, name, content: `Permission denied: only the PM agent can call ${pmOnlyOp}. If you think the engine or PM got it wrong, call work_close_request(action="override") with a justification instead.`, isError: true, errorCode: 'PERMISSION_DENIED' };
-    }
-  }
+    const gates = gatesForCall(name, args);
+    for (const gate of gates) {
+      const outcome = await evaluateGate(gate, {
+        agentId,
+        name,
+        args,
+        // The two `created_by` rows resolve their target through the SAME
+        // resolvers the handlers use; injected rather than imported so the gate
+        // module does not have to reach back into this file.
+        resolveRef: (entity, ref) => {
+          const resolved = entity === 'agent'
+            ? resolveAgentRef(ref, 'kill_agent')
+            : resolveGroupRef(ref, 'delete_group');
+          if (!resolved.ok) return null;
+          const table = entity === 'agent' ? 'agents' : 'agent_groups';
+          const row = getDb()
+            .prepare(`SELECT created_by, name FROM ${table} WHERE id = ?`)
+            .get(resolved.id) as { created_by: string | null; name: string | null } | undefined;
+          if (!row) return null;
+          return { id: resolved.id, createdBy: row.created_by, label: row.name ?? resolved.id };
+        },
+      });
 
-  // FA-TS2: owner-facing platform / session / group controls (PRIMARY_ONLY_TOOLS)
-  // are stripped from a non-primary agent's advertised set by getFilteredTools,
-  // but that strip is only advisory (Architecture Rule 1: the engine enforces,
-  // the model follows). The floor model parses tool calls from free text, so a
-  // non-primary agent (a spawned worker, a role/service agent, an A2A relay, or a
-  // prompt injection) can still emit one of these names and reach here. Re-check
-  // the SAME set before the dispatch switch, this is the actual enforcement.
-  // (reset_session is intentionally absent from the set: the Healer legitimately
-  // executes it to clear a wedged agent, so it stays surface-stripped instead.)
-  if (PRIMARY_ONLY_TOOLS.has(name) && !isPrimaryAgent(agentId)) {
-    auditLog(agentId, name, null, 'denied', `${name} is restricted to the primary agent only`);
-    logger.warn('Blocked primary-only tool from non-primary agent', { tool: name }, agentId);
-    return {
-      toolCallId: id,
-      name,
-      content: `Permission denied: ${name} is an owner-facing control reserved for the primary agent. The request was not performed. Escalate to the primary agent if this needs to happen.`,
-      isError: true,
-    };
-  }
+      const { verdict } = outcome;
+      if (verdict.allowed) continue;
 
-  // FA-TS2 (reset_session): reset_session archives+wipes ANY agent's session,
-  // including the primary's, so it must not be reachable by an arbitrary
-  // non-primary agent via text-mode emission either. It is kept OUT of
-  // PRIMARY_ONLY_TOOLS because the Healer (a non-primary service agent)
-  // legitimately calls this TOOL to clear a wedged agent's corrupted context
-  // (HEALER_TOOLS_POLICY allow-list + Healer prompt), so gate it to the primary
-  // OR the Healer. That closes it for every other agent (spawned workers, PM,
-  // Trainer, Dreamer, Imaginer, A2A relays, injections). Engine-side DIRECT
-  // session-reset function calls never pass through here and are unaffected.
-  if (name === 'reset_session' && !isPrimaryAgent(agentId) && !isHealerAgent(agentId)) {
-    auditLog(agentId, name, null, 'denied', 'reset_session is restricted to the primary agent and the Healer');
-    logger.warn('Blocked reset_session from non-primary non-Healer agent', { tool: name }, agentId);
-    return {
-      toolCallId: id,
-      name,
-      content: `Permission denied: reset_session is reserved for the primary agent and the platform Healer. The request was not performed.`,
-      isError: true,
-    };
-  }
-
-  // ── Dismissal ownership (P4): agents dismiss only what THEY created ──
-  // Owner contract: "only the user dismisses user-created squads/agents." An
-  // agent may kill a sub-agent or delete a squad ONLY when it is the creator
-  // (created_by matches this caller). User/dashboard-created targets refuse with
-  // the rule named; the user dismisses those from the dashboard. Enforced at the
-  // executor per Architecture Rule 1 (the surface strip is advice; the floor
-  // model can still emit these verbs). Engine cascades call terminateAgent /
-  // deleteGroup directly and never pass through here, so they are unaffected.
-  // Only checked when the target resolves; an unresolved ref falls through to the
-  // handler's own friendlier not-found error.
-  if (name === 'kill_agent') {
-    const kaRef = resolveAgentRef(args.agent_id as string, 'kill_agent');
-    if (kaRef.ok) {
-      const owner = getDb().prepare('SELECT created_by, name FROM agents WHERE id = ?').get(kaRef.id) as { created_by: string | null; name: string | null } | undefined;
-      if (owner && owner.created_by !== agentId) {
-        const byUser = owner.created_by === 'dashboard' || owner.created_by === 'user' || owner.created_by === 'system';
-        auditLog(agentId, name, kaRef.id, 'denied', `not the creator (created_by=${owner.created_by})`);
-        logger.warn('Blocked kill_agent of an agent this caller did not create', { tool: name, target: kaRef.id, createdBy: owner.created_by }, agentId);
-        return {
-          toolCallId: id,
-          name,
-          content: `You can only dismiss sub-agents you created. "${owner.name ?? kaRef.id}" was created by ${byUser ? 'the user' : 'a different agent'}, so it is not yours to kill. ${byUser ? 'The user dismisses it from the dashboard.' : 'Ask its creator, or the user can dismiss it from the dashboard.'}`,
-          isError: true,
-        };
+      // ── Step 4's staging, and its ONE deliberate narrowing of itself ──
+      // `logOnly` is true only for the two refusals T2 ADDS (the `-wal`/`-shm`
+      // siblings, the symlink-resolved target on the read tier) and only for a
+      // sub-agent. Every parity refusal enforces for every agent, always —
+      // staging one of those off would be a capability widening in the
+      // dangerous direction, which is the opposite of what a log-only window is
+      // for. T5 fixes the sub-agent manifest; T7 deletes this branch.
+      if (logOnly(agentId, verdict)) {
+        logger.warn('BROKER (log-only, staged for sub-agents): would have refused', {
+          tool: name, gateRow: outcome.gate.row, rule: verdict.rule,
+          resource: outcome.resource, reason: verdict.reason,
+        }, agentId);
+        auditLog(agentId, outcome.auditAs || name, outcome.resource, 'denied', `[log-only] ${verdict.reason}`);
+        continue;
       }
-    }
-  }
-  if (name === 'delete_group') {
-    const dgRef = resolveGroupRef(args.group_id as string, 'delete_group');
-    if (dgRef.ok) {
-      const grp = getDb().prepare('SELECT created_by, name FROM agent_groups WHERE id = ?').get(dgRef.id) as { created_by: string | null; name: string | null } | undefined;
-      if (grp && grp.created_by !== agentId) {
-        const byUser = grp.created_by === 'dashboard' || grp.created_by === 'user' || grp.created_by === 'system';
-        auditLog(agentId, name, dgRef.id, 'denied', `not the creator (created_by=${grp.created_by})`);
-        logger.warn('Blocked delete_group of a group this caller did not create', { tool: name, target: dgRef.id, createdBy: grp.created_by }, agentId);
-        return {
-          toolCallId: id,
-          name,
-          content: `You can only delete squads you created. "${grp.name ?? dgRef.id}" was created by ${byUser ? 'the user' : 'a different agent'}, so it is not yours to delete. ${byUser ? 'The user dismisses it from the dashboard.' : 'Ask its creator, or the user can dismiss it from the dashboard.'}`,
-          isError: true,
-        };
-      }
-    }
-  }
 
-  if (name === 'dreamer_run_now' || name === 'cost_summary') {
-    if (!isPrimaryAgent(agentId)) {
-      auditLog(agentId, name, null, 'denied', `${name} is restricted to the primary agent only`);
-      return { toolCallId: id, name, content: `Permission denied: only the primary agent can call ${name}.`, isError: true, errorCode: 'PERMISSION_DENIED' };
-    }
-  }
-
-  // web_browse: primary agent only by default, sub-agents need explicit permission
-  if (name === 'web_browse') {
-    const manifest = (await import('./permissions.js')).getAgentPermissions(agentId);
-    const controlPerms = manifest.system_control ?? [];
-    const hasAccess = Array.isArray(controlPerms)
-      ? controlPerms.includes('*') || controlPerms.includes('web_browse')
-      : controlPerms === '*';
-    if (!hasAccess) {
-      auditLog(agentId, name, null, 'denied', 'web_browse requires system_control permission');
-      return { toolCallId: id, name, content: 'Permission denied: web_browse requires system_control permission', isError: true, errorCode: 'PERMISSION_DENIED' };
+      auditLog(agentId, outcome.auditAs || name, outcome.resource, 'denied', verdict.reason);
+      logger.warn('Blocked by a registry-declared gate', {
+        tool: name, gateRow: outcome.gate.row, rule: verdict.rule, reason: verdict.reason,
+      }, agentId);
+      return {
+        toolCallId: id,
+        name,
+        content: verdict.blockedMessage ?? permissionDeniedMessage(verdict.reason, agentId),
+        isError: true,
+        ...(outcome.errorCode ? { errorCode: outcome.errorCode as ToolErrorCode } : {}),
+      };
     }
 
-    // For sub-agents with web_browse, enforce network_domains on navigate
-    if (args.action === 'navigate' && args.url && !isPrimaryAgent(agentId)) {
-      try {
-        const domain = new URL(args.url as string).hostname;
-        const perm = checkPermission(agentId, { type: 'network', domain });
-        if (!perm.allowed) {
-          auditLog(agentId, 'web_browse', args.url as string, 'denied', perm.reason);
-          return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true, errorCode: 'PERMISSION_DENIED' };
-        }
-      } catch {
-        return { toolCallId: id, name, content: `Invalid URL: ${args.url}`, isError: true };
-      }
-    }
-  }
-
-  // System control tools: check system_control permission
-  if (['mouse_click', 'mouse_move', 'keyboard_type', 'screen_screenshot', 'applescript_run'].includes(name)) {
-    const manifest = (await import('./permissions.js')).getAgentPermissions(agentId);
-    const controlPerms = manifest.system_control ?? [];
-    const toolCategory = name === 'mouse_click' || name === 'mouse_move' ? 'mouse'
-      : name === 'keyboard_type' ? 'keyboard'
-      : name === 'screen_screenshot' ? 'screen'
-      : name === 'applescript_run' ? 'applescript'
-      : name;
-    const allowed = Array.isArray(controlPerms)
-      ? controlPerms.includes('*') || controlPerms.includes(toolCategory) || controlPerms.includes(name)
-      : controlPerms === '*';
-    if (!allowed) {
-      auditLog(agentId, name, null, 'denied', `system_control permission required: ${toolCategory}`);
-      return { toolCallId: id, name, content: `Permission denied: ${name} requires system_control permission`, isError: true, errorCode: 'PERMISSION_DENIED' };
+    // P5-R5's record-don't-refuse half, at debug so it costs nothing on the hot
+    // path and is there the moment somebody asks "what does this tool do that
+    // nothing checks?".
+    const ungated = ungatedEffectKinds(name, gates);
+    if (ungated.length > 0) {
+      logger.debug('declared effects with no gate today (recorded, not refused)', {
+        tool: name, effects: ungated,
+      }, agentId);
     }
   }
 
