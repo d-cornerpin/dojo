@@ -259,9 +259,25 @@ export function parseWorkingNote(content: string): WorkingNoteMatch | null {
 // (a scheduled item failed for good, an approval request expired, a project fell short).
 //
 // CONTRACT: each server write site prefixes its note with one of these exact strings, and
-// takes the string FROM HERE. Matching contract comments live at the three write sites:
-// scheduler/runner.ts (failed-final-run + skipped-reminder), agent/destructive-gate.ts
-// (approval expiry), tracker/tools.ts (fail-open project_needs_attention).
+// takes the string FROM HERE. Matching contract comments live at the write sites:
+// scheduler/runner.ts (failed-final-run + skipped-reminder) and agent/destructive-gate.ts
+// (approval expiry).
+//
+// PHASE-4 T6 (2026-08-02) — `OWNER_ALERT_PROJECT_ATTENTION_PREFIX` HAS NO WRITER ANY MORE,
+// AND IT STAYS. T4 removed the third site (`tracker/tools.ts`'s fallen-project note) under
+// the owner's 2026-07-30 ruling: the platform does not alert the owner directly about a
+// project that ended with failed pieces — the AGENT is told, with the "if the user should
+// know, please tell the user" nudge, and the agent decides and speaks. Verified at this
+// HEAD: zero server writers (`git grep -n "OWNER_ALERT_PROJECT_ATTENTION_PREFIX\|tracker:
+// project_needs_attention" -- packages/server/src packages/dashboard/src` returns only the
+// dashboard's READERS and one comment recording this measurement).
+//
+// The constant survives because it is a CLASSIFIER KEY for history, not a template: a stable
+// box carries nine of these rows already (measured live — `owner | system | owner-alert |
+// user-visible | 9`), and `packages/dashboard/src/pages/Chat.tsx:145,192` allowlists and then
+// strips the tag so the owner does not read jargon. Deleting the key would not delete the
+// rows; it would make nine existing owner-visible notes render with a raw marker on them.
+// #15: a deletion may not rest on "nobody writes it any more".
 //
 // The "[VALIDATION CHECK]" escalation sweep is intentionally NOT allowlisted: it embeds raw
 // task ids and a "**Primary agent**: call ..." tool instruction, and it currently mis-fires on

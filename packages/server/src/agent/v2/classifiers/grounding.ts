@@ -19,6 +19,22 @@
 // it. The correction is phrased so a cross-turn false positive (it really did
 // send in an EARLIER turn and is just referencing it) is harmless: "if you
 // already did it, confirm and continue."
+//
+// ── CORRECTION (PHASE-4 T6, 2026-08-02) — EVERYTHING ABOVE DESCRIBES A TRIGGER, AND THIS
+//    FILE STOPPED BEING ONE IN T4. Read it as history. ──
+// `detectUngroundedDeliveryClaim` is a NARROWING now, not a floor. It answers one question —
+// *which recipient does this reply name?* — and `agent/v2/claimed-delivery.ts` then asks the
+// LEDGER about that party. Nothing here fires anything: both of that module's arms require a
+// ROW (an owed obligation whose counterparty is the named party, or a delivery on this turn
+// whose own recorded outcome contradicts the claim).
+//
+// The reason the paragraph above is dangerous rather than merely stale is the reason this
+// phase carries the caution at all: the owner watched this exact prose trigger fire three
+// times on the words "told Michael" quoted out of a wedding transcript, each fire ordering
+// "do it NOW", producing double answers and a re-done delivery. A comment still teaching
+// "high precision, cheap to detect" is a live invitation to the next writer to key an
+// honesty floor on prose. Honesty floors are RECEIPT-KEYED, never prose-keyed (research 21,
+// binding). Prose may only ever narrow what the ledger is asked about.
 // ════════════════════════════════════════
 
 // channelOfSendTool is the canonical send-tool -> channel map in @dojo/shared;
