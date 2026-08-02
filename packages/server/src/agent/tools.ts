@@ -43,6 +43,7 @@ import { checkPermission, getAgentPermissions } from './permissions.js';
 // PHASE-0 T10: sensitive-path list, ~-expansion and the share/read gate.
 import { resolvePath, isSensitivePath, sharePathGuard, pdfInputPaths } from './path-guards.js';
 import { gatesForCall, ungatedEffectKinds, PRIMARY_ONLY_TOOLS } from './tools/gates.js';
+import { PER_TOOL_VALIDATED_AT_BOUNDARY } from './tools/validate-args.js';
 import { evaluateGate, logOnly } from './tools/gate-eval.js';
 import { resolveArgvArg } from './brokers/resolve.js';
 import {
@@ -355,6 +356,50 @@ export function getAllToolDefinitions(): ToolDefinition[] {
     ...officeEditToolDefinitions,
     ...unifiedToolDefinitions,
   ];
+}
+
+// ── THE SCHEMA-VALIDATION BOUNDARY'S SCOPE (PHASE-5 T3 Step 3, RULING P5-R8) ──
+// Two lookups, both memoized because `executeToolInner` asks on every call.
+
+let boundaryValidatedNames: Set<string> | null = null;
+
+/**
+ * IS THIS TOOL'S `input_schema.required` ENFORCED AT THE ONE BOUNDARY?
+ *
+ * True for exactly what the two deleted mechanisms already covered:
+ *   • the 57 tools that carried a per-tool `checkRequired([...])` array in
+ *     `executeToolInner`'s dispatch (`PER_TOOL_VALIDATED_AT_BOUNDARY`), and
+ *   • every tool defined in the eight provider modules that ran
+ *     `validateAgainstSchema` at the head of their own dispatcher — taken from
+ *     the definition arrays themselves, so a new provider tool is covered the
+ *     moment it is declared and no list can drift away from them.
+ *
+ * False for the six work verbs, whose requiredness is per-OPERATION and stays
+ * in their own operation cases, and for the tools that have never had a
+ * required-field check on any path — those would be NEW refusals, which RULING
+ * P5-R5 reserves to the owner rather than to a refactor. Exported so the
+ * conformance test can assert both halves.
+ */
+export function isBoundaryValidated(name: string): boolean {
+  if (!boundaryValidatedNames) {
+    boundaryValidatedNames = new Set<string>(PER_TOOL_VALIDATED_AT_BOUNDARY);
+    for (const defs of [
+      formsToolDefinitions,
+      plaudReadToolDefinitions,
+      googleReadToolDefinitions,
+      googleWriteToolDefinitions,
+      slidesToolDefinitions,
+      microsoftReadToolDefinitions,
+      microsoftWriteToolDefinitions,
+      officeCreateToolDefinitions,
+      officeWordEditToolDefinitions,
+      officeExcelEditToolDefinitions,
+      officeEditToolDefinitions,
+    ]) {
+      for (const d of defs) boundaryValidatedNames.add(d.name);
+    }
+  }
+  return boundaryValidatedNames.has(name);
 }
 
 /**
@@ -1219,6 +1264,9 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['path', 'content'],
     },
+    // Writing an EMPTY file is a real thing agents do (truncating a log, laying
+    // down a placeholder). Required, but "" is a legitimate value.
+    fields: { content: { allowEmpty: true } },
   },
   {
     name: 'file_append',
@@ -1233,6 +1281,9 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['path', 'content'],
     },
+    // Same as file_write: an empty append is a no-op the caller may legitimately
+    // ask for, and refusing it would be a new refusal.
+    fields: { content: { allowEmpty: true } },
   },
   {
     name: 'file_patch',
@@ -1274,6 +1325,13 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['path', 'patches'],
     },
+    fields: {
+      patches: {
+        requiredNotEnforced:
+          'the handler rejects a missing/empty patches list with a SHAPE message the generic one would lose ' +
+          '("patches must be a non-empty array of { search, replace } objects.") — see the file_patch case in executeToolInner',
+      },
+    },
     maxResultTokens: 2000,
   },
   {
@@ -1287,6 +1345,8 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['content'],
     },
+    // Setting the pad to "" is how an agent empties it without scratchpad_clear.
+    fields: { content: { allowEmpty: true } },
   },
   {
     name: 'scratchpad_clear',
@@ -1508,6 +1568,13 @@ export const toolDefinitions: ToolDefinition[] = [
         },
       },
       required: ['url', 'prompt'],
+    },
+    fields: {
+      prompt: {
+        requiredNotEnforced:
+          'the handler refuses a missing prompt with the message that TEACHES the parameter (an example call plus the ' +
+          'reason — a prompt keeps the result ~1-2K tokens instead of dumping a 50K page); the generic message would drop it',
+      },
     },
     concurrency: 'safe',
     maxResultTokens: 2000,
@@ -1768,6 +1835,18 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['agent', 'intent', 'payload'],
     },
+    fields: {
+      intent: {
+        requiredNotEnforced:
+          'the handler refuses a missing/invalid intent with the full WAKE-INTENT ENUMERATION and what each one means — ' +
+          'the message exists because a silent FYI default once left wake-needing messages dead on arrival',
+      },
+      payload: {
+        requiredNotEnforced:
+          'the handler accepts `message` as an ALIAS for `payload` (args.payload ?? args.message), which the schema ' +
+          'cannot express — enforcing `payload` here would REFUSE a call that works today',
+      },
+    },
   },
   {
     name: 'broadcast_to_group',
@@ -1791,6 +1870,18 @@ export const toolDefinitions: ToolDefinition[] = [
         },
       },
       required: ['group_id', 'intent', 'message'],
+    },
+    fields: {
+      intent: {
+        requiredNotEnforced:
+          'same as send_to_agent — the handler refuses a missing/invalid intent with the enumeration and the ' +
+          'wake-everyone warning that the generic message would lose',
+      },
+      message: {
+        requiredNotEnforced:
+          'the handler reads args.payload ?? args.message, so a broadcast passing `payload` (the send_to_agent spelling) ' +
+          'works today; enforcing `message` here would REFUSE it — an ALIAS the schema cannot express',
+      },
     },
   },
   {
@@ -2102,6 +2193,13 @@ export const toolDefinitions: ToolDefinition[] = [
         diagnostic_code: { type: 'string', description: 'The diagnostic CODE of the anomaly this proposal addresses, exactly as it appears in the diagnostic (e.g. AGENT_PAUSED, TRACKER_STALE, HIGH_ERROR_RATE, BUDGET_HIGH). Supply it when the fix responds to a specific diagnostic finding. It is how a future cycle knows the underlying issue has (or has not) cleared, without it, and without an agent_id, the proposal can only be closed by an age cap. If you leave it blank but set agent_id, the engine will fill it from the current diagnostic when it can.' },
       },
       required: ['title', 'description', 'proposed_fix', 'evidence', 'confidence', 'severity', 'category'],
+    },
+    fields: {
+      evidence: {
+        requiredNotEnforced:
+          'the EVIDENCE GATE is stricter than "present and non-empty" — it filters the array to non-blank strings and ' +
+          'refuses with worked examples, so a healer can never propose a fix backed by nothing (see migration 055)',
+      },
     },
   },
   {
@@ -2885,6 +2983,13 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['name', 'display_name', 'description', 'instructions'],
     },
+    fields: {
+      display_name: {
+        requiredNotEnforced:
+          'executeSaveTechnique refuses with one message naming all four fields at once ' +
+          '("name, display_name, description, and instructions are all required."), which the per-field message would split',
+      },
+    },
   },
   {
     name: 'use_technique',
@@ -2997,6 +3102,13 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['name', 'change_summary'],
     },
+    fields: {
+      change_summary: {
+        requiredNotEnforced:
+          'executeUpdateTechnique DEFAULTS it (`args.change_summary as string || "Updated by agent"`), so an update ' +
+          'without one succeeds today — enforcing it here would be a new refusal that removes a working call',
+      },
+    },
   },
   {
     name: 'submit_technique_for_review',
@@ -3094,6 +3206,13 @@ export const toolDefinitions: ToolDefinition[] = [
       },
       required: ['content', 'type'],
     },
+    fields: {
+      type: {
+        requiredNotEnforced:
+          'executeVaultRemember refuses a missing type by NAMING the seven valid kinds (fact, preference, decision, ' +
+          'procedure, relationship, event, note) — the generic message would send the model guessing',
+      },
+    },
   },
   {
     name: 'vault_search',
@@ -3150,6 +3269,13 @@ export const toolDefinitions: ToolDefinition[] = [
         reason: { type: 'string', description: 'Why this is no longer accurate' },
       },
       required: ['entry_id', 'reason'],
+    },
+    fields: {
+      reason: {
+        requiredNotEnforced:
+          'executeVaultForget refuses a missing reason with what the reason is FOR ("explain why this is no longer ' +
+          'accurate") — the audit value of the field is in that sentence',
+      },
     },
   },
   {
@@ -4587,6 +4713,29 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
       }, agentId);
     }
   }
+
+  // ── THE ONE SCHEMA-VALIDATION BOUNDARY (PHASE-5 T3 Step 3, RULING P5-R8) ──
+  // What stood here was 57 per-tool `checkRequired([...])` arrays inside the
+  // dispatch cases below and 8 `validateAgainstSchema(...)` calls inside the
+  // provider dispatchers — two mechanisms, one job, each re-stating field names
+  // and types the tool's own `input_schema` declares. They are now one compiled
+  // validator driven by that schema plus the `fields` sibling that carries what
+  // JSON schema cannot say (`allowEmpty`, `requiredNotEnforced`). The four
+  // messages are byte-identical to the ones the model has always retried on.
+  //
+  // POSITION IS DELIBERATE, and it is the ordering the deleted sites had:
+  // AFTER the deny set, the PM allow-list and the gate loop, so a call the
+  // platform REFUSES still answers "permission denied" rather than grading the
+  // arguments of something it was never going to run; and BEFORE dispatch, so a
+  // handler never sees a shape it would have crashed on. Alias resolution and
+  // the weak-model arg repair both run ahead of this (`resolveToolAlias` at the
+  // door, `coerceNumberArg` inside the handlers on OPTIONAL fields) — repair
+  // first, then validation, unchanged.
+  //
+  // SCOPE is RULING P5-R8's: the tools these two mechanisms already covered.
+  // Tools that never had a required-field check gain NO refusal here.
+  // WIRED IN THE NEXT COMMIT, together with the deletion of the 66 hand-rolled
+  // sites — so no commit in this task ever leaves both mechanisms alive (#1).
 
   try {
     // ── PDF tools (creation + manipulation, no external auth) ──

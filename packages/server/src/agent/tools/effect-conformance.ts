@@ -140,6 +140,10 @@ export interface ConformanceProblem {
  * Clause 6  THE TRIPWIRE. Every resource-shaped field is covered by an effect
  *           that names it or by a ruling that explains it.
  * Clause 7  every declared secret field resolves to a real property.
+ * Clause 7b every `fields` key resolves to a real property, and every
+ *           `requiredNotEnforced` carries a reason AND names a genuinely
+ *           required field (PHASE-5 T3 Step 3 — the validation boundary reads
+ *           this map by field name, so a rename must fail the build).
  * Clause 8  the declarations stay OFF the wire: no `effects`, `nonEffects`,
  *           `fields` or `secret` key anywhere inside `input_schema`, because
  *           `input_schema` is passed to the provider verbatim and the
@@ -218,6 +222,29 @@ export function checkEffectDeclarations(def: ToolDefinition): ConformanceProblem
   for (const path of declaredSecretFields(def)) {
     if (!paths.has(path)) {
       push('7 secret resolves', `fields["${path}"] is declared secret but is not a property of this tool's input_schema`);
+    }
+  }
+
+  // Clause 7b, PHASE-5 T3 Step 3: EVERY `fields` key resolves, not only the
+  // secret ones. The validation boundary reads `allowEmpty` and
+  // `requiredNotEnforced` off this map by field name, so a renamed property
+  // would silently drop the declaration — and dropping `allowEmpty` turns a
+  // working call into a refusal (`file_write({content: ""})`), which is the
+  // exact class of silent capability loss this phase exists to prevent. A
+  // `requiredNotEnforced` on a field that is not actually required is dead
+  // paperwork claiming to be a decision, so it is caught here too.
+  for (const [path, decl] of Object.entries(def.fields ?? {})) {
+    if (!paths.has(path)) {
+      push('7b field resolves', `fields["${path}"] is declared but is not a property of this tool's input_schema`);
+      continue;
+    }
+    if (decl?.requiredNotEnforced !== undefined) {
+      if (String(decl.requiredNotEnforced).trim() === '') {
+        push('7b field resolves', `fields["${path}"].requiredNotEnforced has no reason — a ruling with no reason is silence`);
+      }
+      if (!def.input_schema.required.includes(path)) {
+        push('7b field resolves', `fields["${path}"].requiredNotEnforced declares an exemption for a field that is not in input_schema.required`);
+      }
     }
   }
 

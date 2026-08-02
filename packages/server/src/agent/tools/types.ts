@@ -120,6 +120,29 @@ export const EFFECT_FROM_DERIVED = 'derived:';
 export interface ToolFieldDeclaration {
   /** This argument carries credential material; never store, index or broadcast its value. */
   secret?: true;
+  /**
+   * This field is REQUIRED, but an empty string / empty array is a legitimate
+   * value for it. No JSON-schema keyword says that, and the difference is a
+   * real capability: `file_write({path, content: ""})` writes an empty file and
+   * always has, so a validator compiled from `input_schema` alone would refuse
+   * a working call ("`content` cannot be empty."). Consumed by the one
+   * validation boundary in `agent/tools/validate-args.ts`.
+   */
+  allowEmpty?: true;
+  /**
+   * WHY this `input_schema.required` field is NOT enforced at the validation
+   * boundary. `required` is also model-facing guidance, and for a handful of
+   * fields it is stricter than anything the runtime has ever refused — the
+   * handler validates them with a richer, tool-specific message, or accepts an
+   * argument ALIAS the schema cannot express, or supplies a default. Compiling
+   * those into the boundary would be a NEW REFUSAL, i.e. less capability, which
+   * RULING P5-R8 forbids this conversion from inventing.
+   *
+   * The value is the reason, never a bare flag, for the same purpose
+   * `nonEffects` serves: "we looked at this and it is deliberate" and "nobody
+   * looked" must never read the same.
+   */
+  requiredNotEnforced?: string;
 }
 
 // ── Tool Schemas for Anthropic API ──
