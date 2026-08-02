@@ -2,6 +2,13 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit \u2014 that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9548,
+      "to": 9608,
+      "by": "PHASE-4 T3 (2026-08-02) \u2014 the ordered steer queue",
+      "why": "The single `pendingNudge` slot dies and 27 steer sites re-point onto an ordered queue with a declared precedence table. +60 lines, and the shape of the growth is the point: (a) the DELIVERY CONFIRMATION block at the receipt, ~9 lines, which is the whole 'delivered-to-model only on real assembly inclusion' requirement \u2014 it reads `collectMessageLaneIds(messages)` off the array the provider is handed and marks the entry delivered only if the lane is actually there, where the old code cleared a string on `injectRegistryMessage` returning true (pushed, not delivered); (b) the drain's else-branch, which counts a refused push so an un-injectable entry cannot block the queue behind it forever; (c) one-line `advance(state, {flag, pendingNudge})` calls becoming named `enqueueSteer({floor, content, atLoop})` calls the formatter wraps. COMPRESSION WAS TAKEN FIRST: six comment blocks folded (9614 -> 9608), and 22 latch-boolean declarations left `state.ts` in the same change (703 -> 578, a net -125 across the pair). The alternative that would have held 9548 is deleting the confirmation or the per-site floor ids, which are the task."
+    },
+    {
       "path": "packages/server/src/memory/lanes.ts",
       "from": 703,
       "to": 711,
@@ -964,10 +971,10 @@
     "packages/server/src/agent/tools.ts": 10484,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9548,
+    "packages/server/src/agent/v2/loop.ts": 9608,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/recovery.ts": 596,
-    "packages/server/src/agent/v2/state.ts": 703,
+    "packages/server/src/agent/v2/state.ts": 578,
     "packages/server/src/costs/tracker.ts": 541,
     "packages/server/src/gateway/routes/agents.ts": 820,
     "packages/server/src/gateway/routes/chat.ts": 484,
@@ -1055,6 +1062,7 @@
     "packages/server/src/work/override-requests.ts": 246,
     "packages/server/src/work/work-reaper.ts": 528,
     "packages/server/src/memory/assembly-validation.ts": 610,
-    "packages/server/src/memory/budget.ts": 308
+    "packages/server/src/memory/budget.ts": 308,
+    "packages/server/src/agent/v2/steer-queue.ts": 283
   }
 }
