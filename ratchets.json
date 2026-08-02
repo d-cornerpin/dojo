@@ -1232,6 +1232,20 @@
       "to": 10343,
       "by": "PHASE-5 T2 Step 3 (2026-08-02) — TIGHTENED by the ladder deletion",
       "why": "The permission ladder is gone (224 lines at the bounds derived at this worker's own HEAD), and PRIMARY_ONLY_TOOLS plus the exec sensitive-file scan left for `tools/gates.ts` and `brokers/proc.ts`. Pinned at the measured result so the reduction is decrease-only."
+    },
+    {
+      "path": "packages/server/src/agent/tools/gate-eval.ts",
+      "from": 299,
+      "to": 324,
+      "by": "PHASE-5 T2 (2026-08-02) — a global deny is never staged",
+      "why": "PHASE-5 T2 (2026-08-02), the global-deny carve-out. Driving the two hardening refusals on the REAL dev body found that Step 4's staging window covered them: a non-primary agent read `~/.dojo/secrets.yaml` through a planted symlink and got jwt_secret / dashboard_password_hash / credential_master_key back in the clear, and a `file_write` into `dojo.db-wal` CORRUPTED THE DATABASE — both with the broker's own \"would have refused\" line beside them. +25 in gate-eval.ts and +20 in deny.ts is the fix plus the incident written down where the next person to widen the window will meet it. Not one line of it is new mechanism: `logOnly` gained one condition and `isGlobalDenyRule` is a two-line reader of the table it sits in. Deleting the paragraphs to hold the ceiling would be deleting the only reason anybody would keep the condition."
+    },
+    {
+      "path": "packages/server/src/agent/brokers/deny.ts",
+      "from": 335,
+      "to": 355,
+      "by": "PHASE-5 T2 (2026-08-02) — a global deny is never staged",
+      "why": "PHASE-5 T2 (2026-08-02), the global-deny carve-out. Driving the two hardening refusals on the REAL dev body found that Step 4's staging window covered them: a non-primary agent read `~/.dojo/secrets.yaml` through a planted symlink and got jwt_secret / dashboard_password_hash / credential_master_key back in the clear, and a `file_write` into `dojo.db-wal` CORRUPTED THE DATABASE — both with the broker's own \"would have refused\" line beside them. +25 in gate-eval.ts and +20 in deny.ts is the fix plus the incident written down where the next person to widen the window will meet it. Not one line of it is new mechanism: `logOnly` gained one condition and `isGlobalDenyRule` is a two-line reader of the table it sits in. Deleting the paragraphs to hold the ceiling would be deleting the only reason anybody would keep the condition."
     }
   ],
   "maxNewFileLines": 400,
@@ -1261,7 +1275,7 @@
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1381,
     "packages/server/src/agent/a2a-transport.ts": 2008,
-    "packages/server/src/agent/brokers/deny.ts": 335,
+    "packages/server/src/agent/brokers/deny.ts": 355,
     "packages/server/src/agent/brokers/grants.ts": 284,
     "packages/server/src/agent/browser.ts": 412,
     "packages/server/src/agent/destructive-gate.ts": 552,
@@ -1273,7 +1287,7 @@
     "packages/server/src/agent/runtime.ts": 1415,
     "packages/server/src/agent/spawner.ts": 1382,
     "packages/server/src/agent/tools.ts": 10343,
-    "packages/server/src/agent/tools/gate-eval.ts": 299,
+    "packages/server/src/agent/tools/gate-eval.ts": 324,
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 921,
