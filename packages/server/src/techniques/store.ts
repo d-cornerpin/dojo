@@ -548,13 +548,19 @@ export function deleteTechnique(id: string): boolean {
 
 export function recordTechniqueUsage(techniqueId: string, agentId: string, agentName?: string): void {
   const db = getDb();
-  db.prepare(`
-    INSERT INTO technique_usage (id, technique_id, agent_id, agent_name, used_at)
-    VALUES (?, ?, ?, ?, datetime('now'))
-  `).run(uuidv4(), techniqueId, agentId, agentName ?? null);
+  // T2: the usage ROW and the counter that summarises it are ONE unit. Split, the
+  // counter can disagree with the rows it counts — and `usage_count` is a maintained
+  // integer, the shape this overhaul has already had to repair once (`revert_count`).
+  withUnit(() => {
+    db.prepare(`
+      INSERT INTO technique_usage (id, technique_id, agent_id, agent_name, used_at)
+      VALUES (?, ?, ?, ?, datetime('now'))
+    `).run(uuidv4(), techniqueId, agentId, agentName ?? null);
 
-  db.prepare("UPDATE techniques SET usage_count = usage_count + 1, last_used_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(techniqueId);
+    db.prepare("UPDATE techniques SET usage_count = usage_count + 1, last_used_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(techniqueId);
+  });
 
+  // Emitted after the commit by `broadcast` itself — see gateway/ws.ts.
   broadcast({ type: 'technique:used', data: { id: techniqueId, name: '', agentId, agentName: agentName ?? '' } });
 }
 

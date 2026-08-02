@@ -6,6 +6,7 @@ import type { WsEvent } from '@dojo/shared';
 import { deriveOrigin, BATCHABLE_EVENTS } from '@dojo/shared';
 import { readPersistedRow } from '../memory/message-store.js';
 import { recordDashboardDelivery } from '../agent/v2/outbound.js';
+import { afterCommit } from '../db/unit.js';
 
 const logger = createLogger('websocket');
 
@@ -240,29 +241,47 @@ export function broadcast(event: WsEvent): void {
   // reply the owner reads on reload, and the ledger must not depend on a socket being open.
   recordDashboardDelivery(event);
 
-  // In-process listeners fire even with zero connected clients (e.g. voice sessions
-  // that piggyback on chat:chunk events to drive TTS).
-  notifyInternalListeners(event);
+  // ── PHASE-4 T2 Step 3: COMMIT-THEN-EMIT, AND IT LIVES HERE ──────────────────
+  //
+  // Everything above this line is a WRITE or a decoration and stays where it is.
+  // `recordDashboardDelivery` in particular MUST run inside whatever unit the
+  // caller opened: if that unit rolls back, the delivery row has to roll back
+  // with it. Deferring it past the commit would hand the ledger its own separate
+  // transaction again, which is the exact defect T2's flagship cluster closes.
+  //
+  // Everything BELOW is the emission, and it waits. Research 22 measured 137
+  // mutation lines within 15 lines of a `broadcast(` (49 at this HEAD); each is a
+  // place a listener could be told about a write the database had not agreed to,
+  // and a rolled-back unit would leave every one of them believing it. Putting
+  // the rule at the door rather than at ~33 call sites is deliberate: a
+  // convention that many places must remember is one the next place breaks, and
+  // there are 324 call sites. Outside a unit `afterCommit` runs immediately, so
+  // nothing changes for the streaming paths.
+  afterCommit(() => {
+    // In-process listeners fire even with zero connected clients (e.g. voice sessions
+    // that piggyback on chat:chunk events to drive TTS).
+    notifyInternalListeners(event);
 
-  if (clients.size === 0) return; // No browser clients, skip serialization
+    if (clients.size === 0) return; // No browser clients, skip serialization
 
-  // Non-batchable events (errors, completions) send immediately
-  if (!BATCHABLE_EVENTS.has(event.type)) {
-    sendToAll(event);
-    return;
-  }
+    // Non-batchable events (errors, completions) send immediately
+    if (!BATCHABLE_EVENTS.has(event.type)) {
+      sendToAll(event);
+      return;
+    }
 
-  // Batchable events go into the buffer
-  batchBuffer.push(event);
+    // Batchable events go into the buffer
+    batchBuffer.push(event);
 
-  if (!batchTimer) {
-    batchTimer = setTimeout(flushBatch, BATCH_INTERVAL_MS);
-  }
+    if (!batchTimer) {
+      batchTimer = setTimeout(flushBatch, BATCH_INTERVAL_MS);
+    }
 
-  // If buffer is getting large, flush immediately
-  if (batchBuffer.length >= 20) {
-    flushBatch();
-  }
+    // If buffer is getting large, flush immediately
+    if (batchBuffer.length >= 20) {
+      flushBatch();
+    }
+  });
 }
 
 // ── Status ──

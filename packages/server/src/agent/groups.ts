@@ -5,6 +5,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getPMAgentId, getTrainerAgentId, getImaginerAgentId, getHealerAgentId, getDreamerAgentId } from '../config/platform.js';
@@ -147,12 +148,17 @@ export function deleteGroup(id: string): boolean {
   if (id === SYSTEM_GROUP_ID) return false; // System group cannot be deleted
 
   const db = getDb();
-  // Move agents to ungrouped
-  db.prepare("UPDATE agents SET group_id = NULL, updated_at = datetime('now') WHERE group_id = ?").run(id);
-  // Remove group task assignments. PHASE-2 T8b: the tracker's rows are `work` rows, and a
-  // write to `work` lives under `work/` — the single-writer walk's directory clause.
-  patchWorkWhere({ column: 'assigned_to_group', equals: id }, { assigned_to_group: null });
-  const result = db.prepare('DELETE FROM agent_groups WHERE id = ?').run(id);
+  // T2: three tables, ONE unit. A failure part-way through left agents pointing at a
+  // group that had been deleted, or work rows assigned to one — a dangling group id is
+  // the shape a reader cannot distinguish from "never had a group".
+  const result = withUnit(() => {
+    // Move agents to ungrouped
+    db.prepare("UPDATE agents SET group_id = NULL, updated_at = datetime('now') WHERE group_id = ?").run(id);
+    // Remove group task assignments. PHASE-2 T8b: the tracker's rows are `work` rows, and a
+    // write to `work` lives under `work/` — the single-writer walk's directory clause.
+    patchWorkWhere({ column: 'assigned_to_group', equals: id }, { assigned_to_group: null });
+    return db.prepare('DELETE FROM agent_groups WHERE id = ?').run(id);
+  });
 
   if (result.changes > 0) {
     logger.info('Group deleted', { id });
