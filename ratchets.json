@@ -917,6 +917,13 @@
       "to": 981,
       "by": "PHASE-4 T2 Step 2, withUnit adoption + the un-atomic clusters closed (2026-08-02)",
       "why": "+1, and it is the `import { withUnit }` line. The five already-atomic sites in this file were ADOPTED, not rewritten: `db.transaction(...)()` became `withUnit(...)`, no behaviour change, suite unchanged. The one line buys uniform ownership of the transaction, which is what gives `afterCommit` somewhere to hang."
+    },
+    {
+      "path": "packages/server/src/techniques/store.ts",
+      "from": 615,
+      "to": 621,
+      "by": "PHASE-4 T2 Step 3, commit-then-emit (2026-08-02)",
+      "why": "+6 in `recordTechniqueUsage`: the `withUnit` wrapper (2) and a four-line note. The usage ROW and `techniques.usage_count` are one event \u2014 the counter SUMMARISES the rows, and split across two transactions it can disagree with them. That is the maintained-integer shape this overhaul has already had to repair once (`revert_count` on `tasks`, replaced by a COUNT for exactly this reason), so it is worth six lines to stop it happening on a second column. This is the file's SECOND raise in this task and the two are separate on purpose: the first was `deleteTechnique`'s four-table unit, this one is the usage pair, and folding them into one entry would hide that the file gained two independent properties."
     }
   ],
   "maxNewFileLines": 400,
@@ -1015,7 +1022,7 @@
     "packages/server/src/techniques/dependencies.ts": 586,
     "packages/server/src/techniques/share-export.ts": 464,
     "packages/server/src/techniques/share-import.ts": 412,
-    "packages/server/src/techniques/store.ts": 615,
+    "packages/server/src/techniques/store.ts": 621,
     "packages/server/src/techniques/tools.ts": 892,
     "packages/server/src/tools/unified-read.ts": 753,
     "packages/server/src/tracker/pm-agent.ts": 2090,
