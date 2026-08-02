@@ -21,8 +21,9 @@ import {
   applied, noChange, refused, failed, unknownOutcome, quarantineUnknown,
   isApplied, isNoChange, isRefused, isFailed, isUnknown, isSettled,
   isNonLiveProvenance, isOutcomeShaped, outcomeReason, describeOutcome,
-  type Outcome, type ToolSeamReason,
+  type Outcome, type ToolSeamReason, type ToolResult,
 } from '@dojo/shared';
+import { classifyToolResult, toolResultOf, toolWasBlocked } from '../agent/tool-outcome.js';
 
 describe('Outcome<T>: the five arms', () => {
   it('declares exactly five kinds, in the argued order', () => {
@@ -86,6 +87,47 @@ describe('the tool seam reason (research 22)', () => {
   it('types a tool-seam outcome with that vocabulary', () => {
     const o: Outcome<string, ToolSeamReason> = refused('blocked', 'denied by tools_policy');
     expect(outcomeReason(o)).toBe('blocked');
+  });
+});
+
+describe('the tool door classifies STRUCTURALLY (PHASE-4 T1 cluster 3)', () => {
+  const r = (over: Partial<ToolResult> = {}): ToolResult =>
+    ({ toolCallId: 'c1', name: 'file_write', content: 'x', isError: false, ...over });
+
+  it('a clean call is applied, and the result is the proof', () => {
+    const o = classifyToolResult(r());
+    expect(o.kind).toBe('applied');
+    expect(toolResultOf(o).name).toBe('file_write');
+  });
+
+  it('PERMISSION_DENIED and RATE_LIMITED are REFUSED/blocked — nothing ran', () => {
+    const denied = classifyToolResult(r({ isError: true, errorCode: 'PERMISSION_DENIED' }));
+    const limited = classifyToolResult(r({ isError: true, errorCode: 'RATE_LIMITED' }));
+    expect([denied.kind, denied.kind === 'refused' && denied.reason]).toEqual(['refused', 'blocked']);
+    expect([limited.kind, limited.kind === 'refused' && limited.reason]).toEqual(['refused', 'blocked']);
+    // The refusal still hands the model something to read.
+    expect(toolResultOf(denied).content).toBe('x');
+  });
+
+  it('TIMEOUT is FAILED/cancelled — abandoned before an answer', () => {
+    const o = classifyToolResult(r({ isError: true, errorCode: 'TIMEOUT' }));
+    expect([o.kind, o.kind === 'failed' && o.reason]).toEqual(['failed', 'cancelled']);
+  });
+
+  it('an error with NO structured code is FAILED/crashed, never guessed from prose', () => {
+    // 22 of the 23 `isError: true` returns in tools.ts carried no errorCode at the T1 base.
+    // Reading "[BLOCKED by engine]" out of `content` would classify more of them and is the
+    // banned move (receipt-keyed, never prose-keyed). Unclassified means crashed.
+    const blockedLookingProse = classifyToolResult(
+      r({ isError: true, content: '[BLOCKED by engine] file_write is not available to this agent' }),
+    );
+    expect([blockedLookingProse.kind, blockedLookingProse.kind === 'failed' && blockedLookingProse.reason])
+      .toEqual(['failed', 'crashed']);
+    expect(toolWasBlocked(blockedLookingProse)).toBe(false);
+  });
+
+  it('names the three tool-seam reasons and no others', () => {
+    expect([...TOOL_SEAM_REASONS]).toEqual(['blocked', 'crashed', 'cancelled']);
   });
 });
 

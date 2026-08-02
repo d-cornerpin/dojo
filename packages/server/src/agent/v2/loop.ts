@@ -58,7 +58,7 @@ import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 import { assembleContext } from '../../memory/assembler.js';
 import { callModel, getContextWindow, STREAM_IDLE_TIMEOUT_ERROR } from '../model.js';
 import { writeContextReceipt } from './receipt.js';
-import { executeTool, agentCanSelfCompleteById } from '../tools.js';
+import { executeTool, agentCanSelfCompleteById, toolResultOf } from '../tools.js';
 import { resolveRecipientDisplay } from '../../contacts/resolve-recipient.js';
 import { hasHandedCredentialValues, redactHandedCredentials } from '../../credentials/tools.js';
 // recordError intentionally NOT imported, handleMessage's catch path calls
@@ -7088,7 +7088,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 }
               }
             } else {
-              toolResult = await executeTool(agentId, tc);
+              toolResult = toolResultOf(await executeTool(agentId, tc));
             }
             // P3 once-guard, post-result half: a SUCCESSFUL non-idempotent
             // execution registers its signature for the rest of this response.
@@ -8791,8 +8791,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
               },
               () => executeTool(agentId, tc),
             );
-            if (result.isError) {
-              logger.warn('v2.7.24: teams auto-reply failed', { agentId, error: result.content }, agentId);
+            if (result.kind !== 'applied') {
+              logger.warn('v2.7.24: teams auto-reply failed', { agentId, why: result.reason, error: result.result.content }, agentId);
             } else {
               persistRoutingMarker(`Teams to chat ${state.inboundContext.chatId.slice(0, 8)}…`);
               logger.info('v2.7.24: routed reply via Teams', {
@@ -8836,8 +8836,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
               },
               () => executeTool(agentId, tc),
             );
-            if (result.isError) {
-              logger.warn('v2.7.24: email auto-reply failed', { agentId, tool: toolName, error: result.content }, agentId);
+            if (result.kind !== 'applied') {
+              logger.warn('v2.7.24: email auto-reply failed', { agentId, tool: toolName, why: result.reason, error: result.result.content }, agentId);
             } else {
               // Prefer the recipient address (the person we replied to) so the
               // badge reads "to <addr> via email"; fall back to the thread

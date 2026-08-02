@@ -109,26 +109,26 @@ beforeEach(() => {
   embedCounter = 0;
 });
 
-import { executeTool } from '../tools.js';
+import { executeTool, toolResultOf } from '../tools.js';
 
 describe('Phase 7 — squad_share / squad_recall integration', () => {
   it('squad members hand off: alpha-1 shares, alpha-2 recalls', async () => {
-    const shareResult = await executeTool('alpha-1', {
+    const shareResult = toolResultOf(await executeTool('alpha-1', {
       id: 'tc-1',
       name: 'squad_share',
       arguments: {
         content: 'Customer prefers calls before 5pm PT.',
         tags: ['customer', 'comms'],
       },
-    });
+    }));
     expect(shareResult.isError).toBeFalsy();
     expect(shareResult.content).toMatch(/squad:alpha/);
 
-    const recallResult = await executeTool('alpha-2', {
+    const recallResult = toolResultOf(await executeTool('alpha-2', {
       id: 'tc-2',
       name: 'squad_recall',
       arguments: { query: 'customer' },
-    });
+    }));
     expect(recallResult.isError).toBeFalsy();
     expect(recallResult.content).toContain('AlphaOne');
     expect(recallResult.content).toContain('5pm');
@@ -136,46 +136,46 @@ describe('Phase 7 — squad_share / squad_recall integration', () => {
   });
 
   it('squad isolation: bravo-1 cannot recall alpha\'s shares', async () => {
-    await executeTool('alpha-1', {
+    toolResultOf(await executeTool('alpha-1', {
       id: 'tc-1',
       name: 'squad_share',
       arguments: { content: 'alpha-only secret handshake' },
-    });
-    const recallResult = await executeTool('bravo-1', {
+    }));
+    const recallResult = toolResultOf(await executeTool('bravo-1', {
       id: 'tc-2',
       name: 'squad_recall',
       arguments: { query: 'handshake' },
-    });
+    }));
     expect(recallResult.isError).toBeFalsy();
     expect(recallResult.content).toMatch(/no squad memory entries match/i);
   });
 
   it('soloist gets a clear error on squad_share', async () => {
-    const result = await executeTool('solo', {
+    const result = toolResultOf(await executeTool('solo', {
       id: 'tc-1',
       name: 'squad_share',
       arguments: { content: 'should not save' },
-    });
+    }));
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/not a member of any squad/i);
   });
 
   it('soloist gets a clear error on squad_recall', async () => {
-    const result = await executeTool('solo', {
+    const result = toolResultOf(await executeTool('solo', {
       id: 'tc-2',
       name: 'squad_recall',
       arguments: { query: 'anything' },
-    });
+    }));
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/not a member of any squad/i);
   });
 
   it('squad_share rejects empty content', async () => {
-    const result = await executeTool('alpha-1', {
+    const result = toolResultOf(await executeTool('alpha-1', {
       id: 'tc-1',
       name: 'squad_share',
       arguments: { content: '   ' },
-    });
+    }));
     expect(result.isError).toBe(true);
     expect(result.content).toMatch(/content is required/i);
   });

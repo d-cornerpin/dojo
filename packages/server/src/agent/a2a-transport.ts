@@ -1274,7 +1274,7 @@ async function deliverJoinResultToOwnerInner(
       const { executeTool } = await import('./tools.js');
       const tc: ToolCall = { id: uuidv4(), name: 'teams_send_message', arguments: { chat_id: meta.chatId, message: deliveryText } };
       const r = await executeTool(join.agentId, tc);
-      delivered = !r.isError; channel = 'teams'; recipientId = meta.chatId;
+      delivered = r.kind === 'applied'; channel = 'teams'; recipientId = meta.chatId;
     } else if (
       meta.channel === 'email' && meta.emailMessageId &&
       // C18: re-validate the email sender at relay time; a removed sender must not get the
@@ -1290,7 +1290,7 @@ async function deliverJoinResultToOwnerInner(
         arguments: { message_id: meta.emailMessageId, body: deliveryText, ...(meta.emailAccount ? { account: meta.emailAccount } : {}) },
       };
       const r = await executeTool(join.agentId, tc);
-      delivered = !r.isError; channel = 'email'; recipientId = meta.sender ?? null;
+      delivered = r.kind === 'applied'; channel = 'email'; recipientId = meta.sender ?? null;
     } else if (meta.channel === 'sms' && (meta.smsFromNumber || meta.sender)) {
       // BUG-3 (comms-audit): the owner can ask via SMS; route via the sms_send tool (like the
       // teams/email branches) so the same executor, its safe-sender revalidation and the
@@ -1299,7 +1299,7 @@ async function deliverJoinResultToOwnerInner(
       const to = meta.smsFromNumber ?? meta.sender!;
       const tc: ToolCall = { id: uuidv4(), name: 'sms_send', arguments: { to, body: deliveryText } };
       const r = await executeTool(join.agentId, tc);
-      delivered = !r.isError; channel = 'sms'; recipientId = to;
+      delivered = r.kind === 'applied'; channel = 'sms'; recipientId = to;
     }
   } catch (err) {
     logger.warn('join relay: channel delivery failed, falling back to dashboard', {

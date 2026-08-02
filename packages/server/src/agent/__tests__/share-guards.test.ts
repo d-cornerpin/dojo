@@ -68,7 +68,7 @@ vi.mock('../../services/tunnel.js', () => ({
   killTunnelSync: () => { /* no-op */ },
 }));
 
-import { executeTool } from '../tools.js';
+import { executeTool, toolResultOf, toolWasBlocked } from '../tools.js';
 import {
   foldPath,
   isSensitivePath,
@@ -101,13 +101,39 @@ beforeEach(() => {
 });
 
 async function share(p: string): Promise<{ content: string; isError: boolean }> {
-  const r = await executeTool(AGENT, { id: 'call-1', name: 'share_file', arguments: { path: p } });
+  const r = toolResultOf(await executeTool(AGENT, { id: 'call-1', name: 'share_file', arguments: { path: p } }));
   return { content: r.content, isError: !!r.isError };
 }
 
 // ════════════════════════════════════════
 // Step 1 — the five cases the plan names
 // ════════════════════════════════════════
+
+// ════════════════════════════════════════
+// PHASE-4 T1 cluster 3 — the door's refusal is a REFUSAL, structurally
+// ════════════════════════════════════════
+
+describe('the tool door answers Outcome, and a sensitive-path block is refused/blocked', () => {
+  it('a blocked share is `refused` with reason `blocked`, not an indistinguishable isError', () => {
+    // Before T1 this arrived as `isError: true` + English, the same shape as a tool that
+    // crashed. `executeTool` now classifies from `errorCode`, which the guard sets.
+    return executeTool(AGENT, { id: 'c-refused', name: 'share_file', arguments: { path: '~/.dojo/secrets.yaml' } })
+      .then((o) => {
+        expect(o.kind).toBe('refused');
+        if (o.kind === 'refused') expect(o.reason).toBe('blocked');
+        expect(toolWasBlocked(o)).toBe(true);
+        // The reply the model sees is unchanged — a refusal still hands back its text.
+        expect(toolResultOf(o).content).toContain('[BLOCKED]');
+      });
+  });
+
+  it('NEGATIVE CONTROL: an ordinary share is `applied`, never refused', () => {
+    const ok = path.join(scratchDir, 'notes.txt');
+    fs.writeFileSync(ok, 'nothing secret');
+    return executeTool(AGENT, { id: 'c-applied', name: 'share_file', arguments: { path: ok } })
+      .then((o) => { expect(o.kind).toBe('applied'); expect(toolWasBlocked(o)).toBe(false); });
+  });
+});
 
 describe('share_file refuses sensitive paths', () => {
   it('blocks ~/.dojo/secrets.yaml', async () => {
@@ -155,30 +181,30 @@ describe('share_file refuses sensitive paths', () => {
 
 describe('pdf tools refuse sensitive paths', () => {
   it('blocks pdf_read of ~/.dojo/secrets.yaml', async () => {
-    const r = await executeTool(AGENT, {
+    const r = toolResultOf(await executeTool(AGENT, {
       id: 'call-2', name: 'pdf_read', arguments: { path: '~/.dojo/secrets.yaml' },
-    });
+    }));
     expect(r.content).toContain('[BLOCKED]');
     expect(r.isError).toBe(true);
   });
 
   it('blocks pdf_merge when ANY input path is sensitive', async () => {
-    const r = await executeTool(AGENT, {
+    const r = toolResultOf(await executeTool(AGENT, {
       id: 'call-3',
       name: 'pdf_merge',
       arguments: {
         input_paths: [path.join(scratchDir, 'a.pdf'), '~/.ssh/id_ed25519'],
         output_filename: 'merged.pdf',
       },
-    });
+    }));
     expect(r.content).toContain('[BLOCKED]');
     expect(r.isError).toBe(true);
   });
 
   it('lets an ordinary pdf path through the guard (it fails later, on its own merits)', async () => {
-    const r = await executeTool(AGENT, {
+    const r = toolResultOf(await executeTool(AGENT, {
       id: 'call-4', name: 'pdf_read', arguments: { path: path.join(scratchDir, 'nope.pdf') },
-    });
+    }));
     expect(r.content).not.toContain('[BLOCKED]');
     expect(r.content).toMatch(/file not found/i);
   });
@@ -186,9 +212,9 @@ describe('pdf tools refuse sensitive paths', () => {
 
 describe('share_publicly refuses sensitive paths', () => {
   it('blocks ~/.dojo/secrets.yaml before public-share is ever called', async () => {
-    const r = await executeTool(AGENT, {
+    const r = toolResultOf(await executeTool(AGENT, {
       id: 'call-5', name: 'share_publicly', arguments: { source_path: '~/.dojo/secrets.yaml' },
-    });
+    }));
     expect(r.content).toContain('[BLOCKED]');
     expect(r.isError).toBe(true);
     expect(r.content).not.toMatch(/Public URL/);

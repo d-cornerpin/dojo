@@ -84,9 +84,13 @@ vi.mock('../../model.js', async () => {
 
 vi.mock('../../tools.js', async () => {
   const actual = await vi.importActual<typeof import('../../tools.js')>('../../tools.js');
+  const { classifyToolResult } = await vi.importActual<typeof import('../../tool-outcome.js')>('../../tool-outcome.js');
   return {
     ...actual,
-    executeTool: (...args: unknown[]) => executeToolSpy(...args),
+    // PHASE-4 T1 cluster 3: the door answers `ToolOutcome`. The spy keeps returning bare
+    // `ToolResult`s (every `mockResolvedValue` below is unchanged) and the REAL classifier
+    // wraps them, so these tests exercise the classification rather than stubbing past it.
+    executeTool: async (...args: unknown[]) => classifyToolResult(await executeToolSpy(...args)),
     getFilteredTools: () => [],
   };
 });

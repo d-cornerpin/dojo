@@ -1,5 +1,7 @@
 import { exec } from 'node:child_process';
 import { getCurrentToolCallId, runWithToolCallId, currentTurnNumber, currentTurnRoot } from './turn-state.js';
+import { classifyToolResult, type ToolOutcome } from './tool-outcome.js';
+export { toolResultOf, toolWasBlocked, type ToolOutcome } from './tool-outcome.js';
 import { taskScope, projectScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../work/tracker-store.js';
 import { skipOpenOccurrencesAsComplete } from '../work/occurrences.js';
@@ -89,7 +91,7 @@ import { getModelCapabilities } from '../services/capabilities.js';
 import { getEffectiveAudioGenModel } from '../services/audio-gen-model.js';
 import { getToolConfigGeneration } from './tool-config-generation.js';
 import { getModelVoiceCatalog, defaultVoiceCatalogFor, formatVoiceCatalog } from '../services/voice-catalog.js';
-import type { ToolCall, ToolResult } from '@dojo/shared';
+import type { ToolCall, ToolResult, ToolErrorCode } from '@dojo/shared';
 import { TECHNIQUE_FRESH_SENTINEL } from '@dojo/shared';
 import { NEW_SESSION_DIVIDER } from '@dojo/shared';
 
@@ -4255,8 +4257,12 @@ function normalizeRepeatDaysOfWeek(rawDays: unknown): string | null | undefined 
 // serial batches, the loop's auto-delivery sends, and a2a-transport's parked-call
 // resumes), rather than in a shared slot the concurrent batch overwrites. See the
 // AsyncLocalStorage note in turn-state.ts.
-export function executeTool(agentId: string, toolCall: ToolCall): Promise<ToolResult> {
-  return runWithToolCallId(agentId, toolCall.id, () => executeToolInCallContext(agentId, toolCall));
+export async function executeTool(agentId: string, toolCall: ToolCall): Promise<ToolOutcome> {
+  // PHASE-4 T1 cluster 3: the door classifies. Everything below still speaks
+  // `ToolResult`; the five-way is applied HERE, once, from `isError` + `errorCode` and
+  // never from the prose — so a caller can tell "the platform refused" from "the tool
+  // broke" without reading English, and cannot discard the answer (must-consume).
+  return classifyToolResult(await runWithToolCallId(agentId, toolCall.id, () => executeToolInCallContext(agentId, toolCall)));
 }
 
 async function executeToolInCallContext(agentId: string, toolCall: ToolCall): Promise<ToolResult> {
@@ -4326,7 +4332,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
       toolCallId: id,
       name,
       content: `[BLOCKED by engine] ${name} is not available to this agent (denied by policy). The request was not performed. If this needs to happen, escalate to the primary agent with send_to_agent.`,
-      isError: true,
+      isError: true, errorCode: 'PERMISSION_DENIED',
     };
   }
 
@@ -4354,6 +4360,12 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
 
   let content: string = '';
   let isError = false;
+  // PHASE-4 T1 cluster 3: the door's own refusals say so STRUCTURALLY. The guard
+  // branches below assign `content`/`isError` and `break` rather than returning, so
+  // they need a place to record "the platform refused" that survives to the single
+  // result below — otherwise the classifier reads them as `crashed`, which is a lie
+  // about a guard that worked. Prose-matching `[BLOCKED]` is the banned alternative.
+  let errorCode: ToolErrorCode | undefined;
 
   // ── v2.3.19 (Scenario 18 finding), unknown-arg detection ──
   // Pre-spec, an agent could call e.g. work_open(kind="task") with
@@ -4409,7 +4421,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
       const perm = checkPermission(agentId, { type: 'file_read', path: filePath });
       if (!perm.allowed) {
         auditLog(agentId, name, filePath, 'denied', perm.reason);
-        return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true };
+        return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true, errorCode: 'PERMISSION_DENIED' };
       }
     }
   }
@@ -4420,7 +4432,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
       const perm = checkPermission(agentId, { type: 'file_write', path: filePath });
       if (!perm.allowed) {
         auditLog(agentId, name, filePath, 'denied', perm.reason);
-        return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true };
+        return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true, errorCode: 'PERMISSION_DENIED' };
       }
     }
   }
@@ -4431,7 +4443,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
       const perm = checkPermission(agentId, { type: 'exec', command });
       if (!perm.allowed) {
         auditLog(agentId, 'exec', command, 'denied', perm.reason);
-        return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true };
+        return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true, errorCode: 'PERMISSION_DENIED' };
       }
     }
   }
@@ -4440,7 +4452,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     const perm = checkPermission(agentId, { type: 'spawn' });
     if (!perm.allowed) {
       auditLog(agentId, 'spawn', null, 'denied', perm.reason);
-      return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true };
+      return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true, errorCode: 'PERMISSION_DENIED' };
     }
   }
 
@@ -4452,7 +4464,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         const perm = checkPermission(agentId, { type: 'network', domain });
         if (!perm.allowed) {
           auditLog(agentId, 'web_fetch', url, 'denied', perm.reason);
-          return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true };
+          return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true, errorCode: 'PERMISSION_DENIED' };
         }
       } catch {
         return { toolCallId: id, name, content: `Invalid URL: ${url}`, isError: true };
@@ -4464,14 +4476,14 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     const perm = checkPermission(agentId, { type: 'network', domain: 'api.search.brave.com' });
     if (!perm.allowed) {
       auditLog(agentId, 'web_search', null, 'denied', perm.reason);
-      return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true };
+      return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true, errorCode: 'PERMISSION_DENIED' };
     }
   }
 
   if (name === 'imessage_send' || name === 'imessage_list_contacts') {
     if (!isPrimaryAgent(agentId)) {
       auditLog(agentId, name, null, 'denied', `${name} is restricted to the primary agent only`);
-      return { toolCallId: id, name, content: `Permission denied: only the primary agent can call ${name}. Escalate to the primary agent instead.`, isError: true };
+      return { toolCallId: id, name, content: `Permission denied: only the primary agent can call ${name}. Escalate to the primary agent instead.`, isError: true, errorCode: 'PERMISSION_DENIED' };
     }
   }
 
@@ -4486,7 +4498,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     const pmOnlyOp = workOperation(name, args);
     if (pmOnlyOp !== null && PM_ONLY_WORK_OPS.has(pmOnlyOp) && !isPMAgent(agentId)) {
       auditLog(agentId, name, null, 'denied', `${pmOnlyOp} is restricted to the PM agent`);
-      return { toolCallId: id, name, content: `Permission denied: only the PM agent can call ${pmOnlyOp}. If you think the engine or PM got it wrong, call work_close_request(action="override") with a justification instead.`, isError: true };
+      return { toolCallId: id, name, content: `Permission denied: only the PM agent can call ${pmOnlyOp}. If you think the engine or PM got it wrong, call work_close_request(action="override") with a justification instead.`, isError: true, errorCode: 'PERMISSION_DENIED' };
     }
   }
 
@@ -4578,7 +4590,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
   if (name === 'dreamer_run_now' || name === 'cost_summary') {
     if (!isPrimaryAgent(agentId)) {
       auditLog(agentId, name, null, 'denied', `${name} is restricted to the primary agent only`);
-      return { toolCallId: id, name, content: `Permission denied: only the primary agent can call ${name}.`, isError: true };
+      return { toolCallId: id, name, content: `Permission denied: only the primary agent can call ${name}.`, isError: true, errorCode: 'PERMISSION_DENIED' };
     }
   }
 
@@ -4591,7 +4603,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
       : controlPerms === '*';
     if (!hasAccess) {
       auditLog(agentId, name, null, 'denied', 'web_browse requires system_control permission');
-      return { toolCallId: id, name, content: 'Permission denied: web_browse requires system_control permission', isError: true };
+      return { toolCallId: id, name, content: 'Permission denied: web_browse requires system_control permission', isError: true, errorCode: 'PERMISSION_DENIED' };
     }
 
     // For sub-agents with web_browse, enforce network_domains on navigate
@@ -4601,7 +4613,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         const perm = checkPermission(agentId, { type: 'network', domain });
         if (!perm.allowed) {
           auditLog(agentId, 'web_browse', args.url as string, 'denied', perm.reason);
-          return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true };
+          return { toolCallId: id, name, content: permissionDeniedMessage(perm.reason, agentId), isError: true, errorCode: 'PERMISSION_DENIED' };
         }
       } catch {
         return { toolCallId: id, name, content: `Invalid URL: ${args.url}`, isError: true };
@@ -4623,7 +4635,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
       : controlPerms === '*';
     if (!allowed) {
       auditLog(agentId, name, null, 'denied', `system_control permission required: ${toolCategory}`);
-      return { toolCallId: id, name, content: `Permission denied: ${name} requires system_control permission`, isError: true };
+      return { toolCallId: id, name, content: `Permission denied: ${name} requires system_control permission`, isError: true, errorCode: 'PERMISSION_DENIED' };
     }
   }
 
@@ -4636,7 +4648,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         const pdfGuard = await sharePathGuard(agentId, name, rawPdfPath);
         if (!pdfGuard.allowed) {
           auditLog(agentId, name, pdfGuard.absPath, 'denied', pdfGuard.reason);
-          return { toolCallId: id, name, content: pdfGuard.blockedMessage ?? permissionDeniedMessage(pdfGuard.reason, agentId), isError: true };
+          return { toolCallId: id, name, content: pdfGuard.blockedMessage ?? permissionDeniedMessage(pdfGuard.reason, agentId), isError: true, errorCode: 'PERMISSION_DENIED' };
         }
       }
       content = await executePdfTool(name, args, agentId);
@@ -4883,7 +4895,7 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         if (!shareGuard.allowed) {
           auditLog(agentId, 'share_file', shareGuard.absPath, 'denied', shareGuard.reason);
           content = shareGuard.blockedMessage ?? permissionDeniedMessage(shareGuard.reason, agentId);
-          isError = true;
+          isError = true; errorCode = 'PERMISSION_DENIED';
           break;
         }
         const sharePath = shareGuard.absPath;
@@ -10302,6 +10314,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
     name,
     content,
     isError,
+    ...(isError && errorCode ? { errorCode } : {}),
   };
 }
 

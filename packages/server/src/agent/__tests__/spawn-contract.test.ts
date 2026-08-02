@@ -111,15 +111,15 @@ beforeEach(() => {
   mockDb.current = db;
 });
 
-import { executeTool } from '../tools.js';
+import { executeTool, toolResultOf } from '../tools.js';
 
 describe('spawn contract - P3 timeout ownership', () => {
   it('spawn_agent for a non-ronin sub-agent with no timeout_minutes is refused with a teaching error', async () => {
-    const r = await executeTool('primary', {
+    const r = toolResultOf(await executeTool('primary', {
       id: 'tc-1',
       name: 'spawn_agent',
       arguments: { name: 'Dana', system_prompt: 'Do a thing.' },
-    });
+    }));
     expect(r.isError).toBe(true);
     expect(r.content).toMatch(/timeout_minutes/);
     expect(r.content).toMatch(/ronin/);
@@ -128,32 +128,32 @@ describe('spawn contract - P3 timeout ownership', () => {
 
 describe('spawn contract - P4 dismissal ownership', () => {
   it('an agent cannot delete a user-created squad', async () => {
-    const r = await executeTool('primary', {
+    const r = toolResultOf(await executeTool('primary', {
       id: 'tc-2',
       name: 'delete_group',
       arguments: { group_id: 'g-user' },
-    });
+    }));
     expect(r.isError).toBe(true);
     expect(r.content).toMatch(/only delete squads you created/i);
     expect(r.content).toMatch(/dashboard|user/i);
   });
 
   it('an agent cannot kill a user-created agent', async () => {
-    const r = await executeTool('worker', {
+    const r = toolResultOf(await executeTool('worker', {
       id: 'tc-3',
       name: 'kill_agent',
       arguments: { agent_id: 'a-user' },
-    });
+    }));
     expect(r.isError).toBe(true);
     expect(r.content).toMatch(/only dismiss sub-agents you created/i);
   });
 
   it('an agent CAN kill an agent it created (positive control)', async () => {
-    const r = await executeTool('creator', {
+    const r = toolResultOf(await executeTool('creator', {
       id: 'tc-4',
       name: 'kill_agent',
       arguments: { agent_id: 'a-own' },
-    });
+    }));
     expect(r.isError).toBeFalsy();
     expect(r.content).toMatch(/terminated/i);
   });
