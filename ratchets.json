@@ -1229,7 +1229,7 @@
     {
       "path": "packages/server/src/agent/tools.ts",
       "from": 10524,
-      "to": 10340,
+      "to": 10343,
       "by": "PHASE-5 T2 Step 3 (2026-08-02) — TIGHTENED by the ladder deletion",
       "why": "The permission ladder is gone (224 lines at the bounds derived at this worker's own HEAD), and PRIMARY_ONLY_TOOLS plus the exec sensitive-file scan left for `tools/gates.ts` and `brokers/proc.ts`. Pinned at the measured result so the reduction is decrease-only."
     }
@@ -1272,7 +1272,7 @@
     "packages/server/src/agent/provider-error.ts": 317,
     "packages/server/src/agent/runtime.ts": 1415,
     "packages/server/src/agent/spawner.ts": 1382,
-    "packages/server/src/agent/tools.ts": 10340,
+    "packages/server/src/agent/tools.ts": 10343,
     "packages/server/src/agent/tools/gate-eval.ts": 299,
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
