@@ -324,7 +324,6 @@ function toRfc3339WithOffset(value: string): string {
   return isNaN(d.getTime()) ? t : d.toISOString();
 }
 
-const googleReadToolDefByName = new Map(googleReadToolDefinitions.map(t => [t.name, t]));
 
 // ════════════════════════════════════════
 // F4: shared per-account FETCH helpers.
@@ -459,10 +458,6 @@ export async function executeGoogleReadTool(
     canonicalName = name.slice('user_'.length);
   }
 
-  const { validateAgainstSchema } = await import('../agent/tool-helpers.js');
-  const def = googleReadToolDefByName.get(canonicalName);
-  const schemaErr = validateAgainstSchema(canonicalName, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
-  if (schemaErr) return schemaErr;
 
   // READ resolver (Issue 2, 2026-07-08): a narrow read on a multi-account slot
   // defaults to the primary connected account instead of bouncing with an

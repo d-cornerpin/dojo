@@ -18,7 +18,6 @@ import {
   pickArg,
   isTerminalAgentStatus,
   isTerminalTaskStatus,
-  validateAgainstSchema,
   type FieldSpec,
 } from '../tool-helpers.js';
 
@@ -192,94 +191,6 @@ describe('isTerminalAgentStatus', () => {
   });
 });
 
-describe('validateAgainstSchema', () => {
-  const slidesAddSlide = {
-    type: 'object',
-    required: ['presentation_id'],
-    properties: {
-      presentation_id: { type: 'string' },
-      layout: { type: 'string' },
-    },
-  };
-
-  it('returns null when all required fields are present and correctly typed', () => {
-    expect(
-      validateAgainstSchema('slides_add_slide', slidesAddSlide, { presentation_id: 'p123', layout: 'BLANK' }),
-    ).toBeNull();
-  });
-
-  it('flags missing required field with the tool name in the error', () => {
-    const result = validateAgainstSchema('slides_add_slide', slidesAddSlide, { layout: 'BLANK' });
-    expect(result).toContain('presentation_id');
-    expect(result).toContain('slides_add_slide');
-    expect(result).toContain('required');
-  });
-
-  it('flags wrong type for a required field', () => {
-    const result = validateAgainstSchema('slides_add_slide', slidesAddSlide, { presentation_id: 42 });
-    expect(result).toContain('presentation_id');
-    expect(result).toContain('string');
-    expect(result).toContain('number');
-  });
-
-  it('flags empty string for required field', () => {
-    const result = validateAgainstSchema('slides_add_slide', slidesAddSlide, { presentation_id: '   ' });
-    expect(result).toContain('cannot be empty');
-  });
-
-  it('flags empty array for a required array field', () => {
-    const schema = {
-      type: 'object',
-      required: ['items'],
-      properties: { items: { type: 'array' } },
-    };
-    const result = validateAgainstSchema('something', schema, { items: [] });
-    expect(result).toContain('cannot be empty');
-  });
-
-  it('returns null when schema has no required array', () => {
-    const schema = {
-      type: 'object',
-      properties: { x: { type: 'string' } },
-    };
-    expect(validateAgainstSchema('foo', schema, {})).toBeNull();
-  });
-
-  it('returns null when schema is undefined', () => {
-    expect(validateAgainstSchema('foo', undefined, {})).toBeNull();
-  });
-
-  it('skips type validation when no type is declared on a property', () => {
-    const schema = {
-      type: 'object',
-      required: ['blob'],
-      properties: { blob: {} },
-    };
-    expect(validateAgainstSchema('foo', schema, { blob: { anything: 'goes' } })).toBeNull();
-  });
-
-  it('treats null and undefined identically (both = missing)', () => {
-    const r1 = validateAgainstSchema('slides_add_slide', slidesAddSlide, { presentation_id: null });
-    const r2 = validateAgainstSchema('slides_add_slide', slidesAddSlide, { presentation_id: undefined });
-    expect(r1).toContain('required');
-    expect(r2).toContain('required');
-  });
-
-  it('stops at the first failure', () => {
-    const schema = {
-      type: 'object',
-      required: ['a', 'b', 'c'],
-      properties: {
-        a: { type: 'string' },
-        b: { type: 'string' },
-        c: { type: 'string' },
-      },
-    };
-    const result = validateAgainstSchema('foo', schema, {});
-    expect(result).toContain('a');
-    expect(result).not.toContain('b');
-  });
-});
 
 describe('isTerminalTaskStatus', () => {
   it('"complete" and "fallen" are terminal; others are not', () => {

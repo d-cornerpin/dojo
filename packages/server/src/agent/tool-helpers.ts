@@ -176,57 +176,6 @@ export function isTerminalTaskStatus(status: string | null | undefined): boolean
   return status === 'complete' || status === 'fallen';
 }
 
-// ── validateAgainstSchema ────────────────────────────────────────────────
-//
-// Generic validator driven by a tool's existing `input_schema`. Use this for
-// large tool batches (Google Slides ~36, Microsoft 365 ~30, Office ~4) where
-// hand-coding per-tool checkRequired() arrays would be tedious and prone to
-// drift from the schema.
-//
-// Behaviour:
-//  - Walks `schema.required` and verifies each named field is present in args.
-//  - Verifies type when schema.properties[<field>].type is set.
-//  - Returns null on success, a single user-readable error string on failure.
-//
-// Side note: this DOESN'T validate beyond required + type. Min/max, enums,
-// nested object schemas, etc. are still the per-tool implementation's job —
-// but missing-required + wrong-type covers ~90% of the cryptic-crash bugs
-// we've seen this session.
-
-type SimpleSchema = {
-  type?: string;
-  required?: string[];
-  properties?: Record<string, { type?: string }>;
-};
-
-export function validateAgainstSchema(
-  toolName: string,
-  schema: SimpleSchema | undefined,
-  args: Record<string, unknown>,
-): string | null {
-  if (!schema || !Array.isArray(schema.required) || schema.required.length === 0) return null;
-  for (const field of schema.required) {
-    const value = args[field];
-    if (value === undefined || value === null) {
-      return `Error: \`${field}\` is required for ${toolName}.`;
-    }
-    const expectedType = schema.properties?.[field]?.type;
-    if (!expectedType) continue;
-    const actualType = Array.isArray(value) ? 'array' : typeof value;
-    if (expectedType !== actualType) {
-      return `Error: \`${field}\` must be a ${expectedType} for ${toolName} (got ${actualType}).`;
-    }
-    // Refuse empty strings and arrays for required fields. If a tool truly
-    // wants to accept empty values it should mark the field optional.
-    if (expectedType === 'string' && !(value as string).trim()) {
-      return `Error: \`${field}\` cannot be empty for ${toolName}.`;
-    }
-    if (expectedType === 'array' && (value as unknown[]).length === 0) {
-      return `Error: \`${field}\` cannot be empty for ${toolName} (pass at least one item).`;
-    }
-  }
-  return null;
-}
 
 // ── compactListTrailer ───────────────────────────────────────────────────
 //

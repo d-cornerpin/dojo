@@ -438,9 +438,6 @@ export const formsToolDefinitions: ToolDefinition[] = [
 
 export const formsToolNames: string[] = formsToolDefinitions.map((t) => t.name);
 
-const formsToolDefByName: Map<string, ToolDefinition> = new Map(
-  formsToolDefinitions.map((t) => [t.name, t]),
-);
 
 // ─────────────────────────────────────────
 // Executor
@@ -453,11 +450,6 @@ export async function executeGoogleFormsTool(
   agentName: string,
 ): Promise<string> {
   try {
-    // Validate required fields against the tool's own schema
-    const { validateAgainstSchema } = await import('../agent/tool-helpers.js');
-    const def = formsToolDefByName.get(name);
-    const schemaErr = validateAgainstSchema(name, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
-    if (schemaErr) return schemaErr;
 
     switch (name) {
       // ── Create ──

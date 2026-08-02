@@ -1213,9 +1213,6 @@ async function addSlideInternal(
 }
 
 // Main execution dispatcher
-// Index by name for O(1) schema lookup at validation time. Built once at
-// module load instead of scanning the array on every tool call.
-const slidesToolDefByName = new Map(slidesToolDefinitions.map(t => [t.name, t]));
 
 export async function executeGoogleSlidesTool(
   name: string,
@@ -1224,14 +1221,6 @@ export async function executeGoogleSlidesTool(
   agentName: string,
 ): Promise<string> {
   try {
-    // Validate required fields against the tool's own schema before running.
-    // Catches the missing-required-field class for all 36 Slides tools at one
-    // entry point — same pattern the tier-1/tier-2 dispatcher cases use, but
-    // schema-driven so it stays in sync with the tool definitions.
-    const { validateAgainstSchema } = await import('../agent/tool-helpers.js');
-    const def = slidesToolDefByName.get(name);
-    const schemaErr = validateAgainstSchema(name, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
-    if (schemaErr) return schemaErr;
 
     switch (name) {
       // ── Style & deck management ──

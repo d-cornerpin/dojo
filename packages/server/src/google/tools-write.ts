@@ -950,7 +950,6 @@ async function shareCreatedFileWithOwner(
   return ` (Could not auto-share with the owner's account: ${share.error ?? 'unknown error'}. Send them the link above.)`;
 }
 
-const googleWriteToolDefByName = new Map(googleWriteToolDefinitions.map(t => [t.name, t]));
 
 export async function executeGoogleWriteTool(
   name: string,
@@ -969,10 +968,6 @@ export async function executeGoogleWriteTool(
     canonicalName = name.slice('user_'.length);
   }
 
-  const { validateAgainstSchema } = await import('../agent/tool-helpers.js');
-  const def = googleWriteToolDefByName.get(canonicalName);
-  const schemaErr = validateAgainstSchema(canonicalName, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
-  if (schemaErr) return schemaErr;
 
   const { resolveGoogleAccountForTool } = await import('./accounts.js');
   const resolved = resolveGoogleAccountForTool(kind, args.account as string | undefined);

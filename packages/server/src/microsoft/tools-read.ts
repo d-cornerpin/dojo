@@ -563,7 +563,6 @@ for (const def of microsoftReadToolDefinitions) {
 
 // ── Tool Execution ──
 
-const microsoftReadToolDefByName = new Map(microsoftReadToolDefinitions.map(t => [t.name, t]));
 
 // ════════════════════════════════════════
 // F4: shared per-account FETCH helpers (mirror google/tools-read.ts).
@@ -719,12 +718,6 @@ export async function executeMicrosoftReadTool(
     canonicalName = name.slice('user_'.length);
   }
 
-  // Schema-driven required-field validation. Same approach as Slides — keeps
-  // validation co-located with the tool definitions.
-  const { validateAgainstSchema } = await import('../agent/tool-helpers.js');
-  const def = microsoftReadToolDefByName.get(canonicalName);
-  const schemaErr = validateAgainstSchema(canonicalName, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
-  if (schemaErr) return schemaErr;
 
   // READ resolver (Issue 2, 2026-07-08): a narrow read on a multi-account slot
   // defaults to the primary connected account instead of bouncing with an

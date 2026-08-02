@@ -43,7 +43,7 @@ import { checkPermission, getAgentPermissions } from './permissions.js';
 // PHASE-0 T10: sensitive-path list, ~-expansion and the share/read gate.
 import { resolvePath, isSensitivePath, sharePathGuard, pdfInputPaths } from './path-guards.js';
 import { gatesForCall, ungatedEffectKinds, PRIMARY_ONLY_TOOLS } from './tools/gates.js';
-import { PER_TOOL_VALIDATED_AT_BOUNDARY } from './tools/validate-args.js';
+import { validateToolArgs, PER_TOOL_VALIDATED_AT_BOUNDARY } from './tools/validate-args.js';
 import { evaluateGate, logOnly } from './tools/gate-eval.js';
 import { resolveArgvArg } from './brokers/resolve.js';
 import {
@@ -360,6 +360,17 @@ export function getAllToolDefinitions(): ToolDefinition[] {
 
 // ── THE SCHEMA-VALIDATION BOUNDARY'S SCOPE (PHASE-5 T3 Step 3, RULING P5-R8) ──
 // Two lookups, both memoized because `executeToolInner` asks on every call.
+
+let toolDefsByName: Map<string, ToolDefinition> | null = null;
+
+/** Every definition by name, including the `user_` twins. Memoized: the
+ *  validation boundary asks on every tool call. */
+function toolDefinitionsByName(): ReadonlyMap<string, ToolDefinition> {
+  if (!toolDefsByName) {
+    toolDefsByName = new Map(getAllToolDefinitions().map((d) => [d.name, d] as const));
+  }
+  return toolDefsByName;
+}
 
 let boundaryValidatedNames: Set<string> | null = null;
 
@@ -4734,8 +4745,17 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
   //
   // SCOPE is RULING P5-R8's: the tools these two mechanisms already covered.
   // Tools that never had a required-field check gain NO refusal here.
-  // WIRED IN THE NEXT COMMIT, together with the deletion of the 66 hand-rolled
-  // sites — so no commit in this task ever leaves both mechanisms alive (#1).
+  if (isBoundaryValidated(name)) {
+    const argsError = validateToolArgs(toolDefinitionsByName().get(name), args);
+    if (argsError) {
+      logger.warn('Tool call rejected by the schema-validation boundary', { tool: name, error: argsError }, agentId);
+      // INVALID_ARGS had no writer before this boundary: a malformed-shape call
+      // classified `crashed`, which reads as "the platform broke" when in fact
+      // the platform refused a call it understood perfectly well. It says
+      // `refused` now, structurally and not from prose.
+      return { toolCallId: id, name, content: argsError, isError: true, errorCode: 'INVALID_ARGS' };
+    }
+  }
 
   try {
     // ── PDF tools (creation + manipulation, no external auth) ──
@@ -4880,8 +4900,6 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         isError = content.startsWith('Error');
         break;
       case 'file_read': {
-        const readErr = checkRequired([{ name: 'path', value: args.path, type: 'string' }]);
-        if (readErr) { content = readErr; isError = true; break; }
         const fileResult = await executeFileRead(agentId, args);
         if (typeof fileResult === 'string') {
           content = fileResult;
@@ -4896,28 +4914,16 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         break;
       }
       case 'file_write': {
-        const writeErr = checkRequired([
-          { name: 'path', value: args.path, type: 'string' },
-          { name: 'content', value: args.content, type: 'string', allowEmpty: true },
-        ]);
-        if (writeErr) { content = writeErr; isError = true; break; }
         content = await executeFileWrite(agentId, args);
         isError = content.startsWith('Error');
         break;
       }
       case 'file_append': {
-        const appendErr = checkRequired([
-          { name: 'path', value: args.path, type: 'string' },
-          { name: 'content', value: args.content, type: 'string', allowEmpty: true },
-        ]);
-        if (appendErr) { content = appendErr; isError = true; break; }
         content = await executeFileAppend(agentId, args);
         isError = content.startsWith('Error');
         break;
       }
       case 'scratchpad_set': {
-        const spErr = checkRequired([{ name: 'content', value: args.content, type: 'string', allowEmpty: true }]);
-        if (spErr) { content = spErr; isError = true; break; }
         const SCRATCHPAD_MAX_CHARS = 8000;
         const newContent = args.content as string;
         if (newContent.length > SCRATCHPAD_MAX_CHARS) {
@@ -4966,10 +4972,6 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         break;
       }
       case 'file_patch': {
-        const patchErr = checkRequired([
-          { name: 'path', value: args.path, type: 'string' },
-        ]);
-        if (patchErr) { content = patchErr; isError = true; break; }
         if (!Array.isArray(args.patches) || args.patches.length === 0) {
           content = 'Error: patches must be a non-empty array of { search, replace } objects.';
           isError = true;
@@ -4980,8 +4982,6 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         break;
       }
       case 'file_list': {
-        const listErr = checkRequired([{ name: 'path', value: args.path, type: 'string' }]);
-        if (listErr) { content = listErr; isError = true; break; }
         content = await executeFileList(agentId, args);
         isError = content.startsWith('Error');
         break;
@@ -5121,14 +5121,10 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         break;
       }
       case 'history_get': {
-        const mdErr = checkRequired([{ name: 'id', value: args.id, type: 'string' }]);
-        if (mdErr) { content = mdErr; isError = true; break; }
         content = memoryDescribe(agentId, { id: args.id as string });
         break;
       }
       case 'history_expand': {
-        const meErr = checkRequired([{ name: 'prompt', value: args.prompt, type: 'string' }]);
-        if (meErr) { content = meErr; isError = true; break; }
         content = await memoryExpand(agentId, {
           query: args.query as string | undefined,
           summary_ids: args.summary_ids as string[] | undefined,
@@ -5141,8 +5137,6 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
 
       // ── Web Tools ──
       case 'web_search': {
-        const wsErr = checkRequired([{ name: 'query', value: args.query, type: 'string' }]);
-        if (wsErr) { content = wsErr; isError = true; break; }
         content = await webSearch(agentId, {
           query: args.query as string,
           count: args.count as number | undefined,
@@ -5151,10 +5145,6 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         break;
       }
       case 'web_fetch': {
-        const wfErr = checkRequired([
-          { name: 'url', value: args.url, type: 'string' },
-        ]);
-        if (wfErr) { content = wfErr; isError = true; break; }
         if (typeof args.prompt !== 'string' || args.prompt.trim().length === 0) {
           content =
             'Error: web_fetch requires a `prompt` parameter describing what to extract. ' +
@@ -5234,8 +5224,6 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         break;
       }
       case 'open_browser': {
-        const obErr = checkRequired([{ name: 'url', value: args.url, type: 'string' }]);
-        if (obErr) { content = obErr; isError = true; break; }
         const targetUrl = args.url as string;
         const title = typeof args.title === 'string' ? args.title : undefined;
         // Hybrid: many sites refuse iframe embedding (X-Frame-Options / CSP
@@ -5400,8 +5388,6 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         break;
       }
       case 'kill_agent': {
-        const killErr = checkRequired([{ name: 'agent_id', value: args.agent_id, type: 'string' }]);
-        if (killErr) { content = killErr; isError = true; break; }
         // Resolve via the standard helper so names + sensei ids work too.
         const killResolved = resolveAgentRef(args.agent_id as string, 'kill_agent');
         if (!killResolved.ok) { content = killResolved.error; isError = true; break; }
@@ -5429,11 +5415,6 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         break;
       }
       case 'spawn_timeout_decision': {
-        const stdErr = checkRequired([
-          { name: 'agent_id', value: args.agent_id, type: 'string' },
-          { name: 'action', value: args.action, type: 'string' },
-        ]);
-        if (stdErr) { content = stdErr; isError = true; break; }
         const stdAction = args.action as string;
         if (stdAction !== 'extend' && stdAction !== 'terminate') {
           content = 'Error: action must be "extend" or "terminate".';
@@ -5458,10 +5439,6 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         // All agent-to-agent communication goes through the A2A transport
         // which enforces thread tracking, hop limits, semantic dedup, and
         // requires_response routing.
-        const sendErr = checkRequired([
-          { name: 'agent', value: args.agent, type: 'string' },
-        ]);
-        if (sendErr) { content = sendErr; isError = true; break; }
         const agentRef = args.agent as string;
         // Normalize case/whitespace so a valid intent in the wrong case (a
         // weak-model habit) is accepted, not rejected into a re-call loop.
@@ -5744,10 +5721,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'broadcast_to_group': {
-        const bcReqErr = checkRequired([
-          { name: 'group_id', value: args.group_id, type: 'string' },
-        ]);
-        if (bcReqErr) { content = bcReqErr; isError = true; break; }
         const bcResolved = resolveGroupRef(args.group_id as string, 'broadcast_to_group');
         if (!bcResolved.ok) { content = bcResolved.error; isError = true; break; }
         const groupId = bcResolved.id;
@@ -5814,11 +5787,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
       case 'complete_task': {
         const completeStatus = args.status as string | undefined;
         const completeSummary = args.summary as string | undefined;
-        const validationError = checkRequired([
-          { name: 'status', value: completeStatus, type: 'string' },
-          { name: 'summary', value: completeSummary, type: 'string' },
-        ]);
-        if (validationError) { content = validationError; isError = true; break; }
         // Normalize case/synonyms at the tool boundary (mirrors the
         // work_update(action="status") STATUS_SYNONYMS fix). A weak floor model saying
         // "done"/"failed"/"stuck" previously hard-errored here even though the
@@ -6142,11 +6110,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'work_note': {
-        const notesErr = checkRequired([
-          { name: 'task_id', value: args.task_id, type: 'string' },
-          { name: 'notes', value: args.notes, type: 'string' },
-        ]);
-        if (notesErr) { content = notesErr; isError = true; break; }
         content = trackerAddNotes(agentId, {
           taskId: args.task_id as string,
           notes: args.notes as string,
@@ -6519,12 +6482,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
       }
       // ── Healer Tools ──
       case 'healer_log_action': {
-        const hlaErr = checkRequired([
-          { name: 'category', value: args.category, type: 'string' },
-          { name: 'description', value: args.description, type: 'string' },
-          { name: 'result', value: args.result, type: 'string' },
-        ]);
-        if (hlaErr) { content = hlaErr; isError = true; break; }
         const healerDb = getDb();
         const actionId = uuidv4();
         try {
@@ -6540,15 +6497,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'healer_propose': {
-        const hpErr = checkRequired([
-          { name: 'category', value: args.category, type: 'string' },
-          { name: 'severity', value: args.severity, type: 'string' },
-          { name: 'title', value: args.title, type: 'string' },
-          { name: 'description', value: args.description, type: 'string' },
-          { name: 'proposed_fix', value: args.proposed_fix, type: 'string' },
-          { name: 'confidence', value: args.confidence, type: 'number' },
-        ]);
-        if (hpErr) { content = hpErr; isError = true; break; }
 
         // Evidence gate. Each bullet must be a non-empty string and the
         // list itself must be non-empty. The point is to make it
@@ -6830,10 +6778,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'convert_time': {
-        const timeErr = checkRequired([
-          { name: 'input', value: args.input, type: 'string' },
-        ]);
-        if (timeErr) { content = timeErr; isError = true; break; }
         try {
           const { parseFlexibleTime, formatTimeForAgent } = await import('../services/format-time.js');
           const parsed = parseFlexibleTime(args.input as string, args.from_tz as string | undefined);
@@ -6921,8 +6865,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
 
       case 'set_user_presence': {
         try {
-          const supErr = checkRequired([{ name: 'status', value: args.status, type: 'string' }]);
-          if (supErr) { content = supErr; isError = true; break; }
           const status = args.status as string;
           if (status !== 'in_dojo' && status !== 'away') {
             content = 'Error: status must be "in_dojo" or "away"';
@@ -7066,8 +7008,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
       // restores read/write symmetry against get_agent_profile.
       case 'update_agent': {
         try {
-          const uaErr = checkRequired([{ name: 'agent_id', value: args.agent_id, type: 'string' }]);
-          if (uaErr) { content = uaErr; isError = true; break; }
           const newName = args.name as string | undefined;
           const newPrompt = args.system_prompt as string | undefined;
           const newModelId = args.model_id as string | undefined;
@@ -7176,8 +7116,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
       }
       case 'get_agent_profile': {
         try {
-          const gapErr = checkRequired([{ name: 'agent_id', value: args.agent_id, type: 'string' }]);
-          if (gapErr) { content = gapErr; isError = true; break; }
           const db = getDb();
           const gapResolved = resolveAgentRef(args.agent_id as string, 'get_agent_profile');
           if (!gapResolved.ok) { content = gapResolved.error; isError = true; break; }
@@ -7264,11 +7202,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
 
       // ── Group Tools (Phase 6) ──
       case 'create_agent_group': {
-        const cgErr = checkRequired([
-          { name: 'name', value: args.name, type: 'string' },
-          { name: 'description', value: args.description, type: 'string' },
-        ]);
-        if (cgErr) { content = cgErr; isError = true; break; }
         try {
           const group = createGroup(
             args.name as string,
@@ -7283,8 +7216,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'update_group': {
-        const ugErr = checkRequired([{ name: 'group_id', value: args.group_id, type: 'string' }]);
-        if (ugErr) { content = ugErr; isError = true; break; }
         const ugResolved = resolveGroupRef(args.group_id as string, 'update_group');
         if (!ugResolved.ok) { content = ugResolved.error; isError = true; break; }
         const gid = ugResolved.id;
@@ -7338,11 +7269,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'assign_to_group': {
-        const atgErr = checkRequired([
-          { name: 'agent_id', value: args.agent_id, type: 'string' },
-          { name: 'group_id', value: args.group_id, type: 'string' },
-        ]);
-        if (atgErr) { content = atgErr; isError = true; break; }
         const atgAgent = resolveAgentRef(args.agent_id as string, 'assign_to_group');
         if (!atgAgent.ok) { content = atgAgent.error; isError = true; break; }
         const atgGroup = resolveGroupRef(args.group_id as string, 'assign_to_group');
@@ -7506,8 +7432,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'get_group_detail': {
-        const ggdErr = checkRequired([{ name: 'group_id', value: args.group_id, type: 'string' }]);
-        if (ggdErr) { content = ggdErr; isError = true; break; }
         const ggdResolved = resolveGroupRef(args.group_id as string, 'get_group_detail');
         if (!ggdResolved.ok) { content = ggdResolved.error; isError = true; break; }
         const { getGroupDetail } = await import('./groups.js');
@@ -7531,8 +7455,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'delete_group': {
-        const dgErr = checkRequired([{ name: 'group_id', value: args.group_id, type: 'string' }]);
-        if (dgErr) { content = dgErr; isError = true; break; }
         const dgResolved = resolveGroupRef(args.group_id as string, 'delete_group');
         if (!dgResolved.ok) { content = dgResolved.error; isError = true; break; }
         const groupId = dgResolved.id;
@@ -7696,11 +7618,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
 
       // ── System Control Tools (Phase 5A) ──
       case 'mouse_click': {
-        const mcErr = checkRequired([
-          { name: 'x', value: args.x, type: 'number' },
-          { name: 'y', value: args.y, type: 'number' },
-        ]);
-        if (mcErr) { content = mcErr; isError = true; break; }
         content = mouseClick(agentId, {
           x: args.x as number,
           y: args.y as number,
@@ -7710,11 +7627,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'mouse_move': {
-        const mmErr = checkRequired([
-          { name: 'x', value: args.x, type: 'number' },
-          { name: 'y', value: args.y, type: 'number' },
-        ]);
-        if (mmErr) { content = mmErr; isError = true; break; }
         content = mouseMove(agentId, {
           x: args.x as number,
           y: args.y as number,
@@ -7743,8 +7655,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         isError = content.startsWith('Error');
         break;
       case 'applescript_run': {
-        const arErr = checkRequired([{ name: 'script', value: args.script, type: 'string' }]);
-        if (arErr) { content = arErr; isError = true; break; }
         content = applescriptRun(agentId, { script: args.script as string });
         isError = content.startsWith('AppleScript error');
         break;
@@ -7752,8 +7662,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
 
       // ── Headless Browser (Phase 5B) ──
       case 'web_browse': {
-        const wbErr = checkRequired([{ name: 'action', value: args.action, type: 'string' }]);
-        if (wbErr) { content = wbErr; isError = true; break; }
         content = await executeWebBrowse(agentId, {
           action: args.action as string,
           url: args.url as string | undefined,
@@ -8117,8 +8025,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
       }
 
       case 'imessage_send': {
-        const imErr = checkRequired([{ name: 'message', value: args.message, type: 'string' }]);
-        if (imErr) { content = imErr; isError = true; break; }
         let recipient = args.recipient as string | undefined;
         const message = args.message as string;
         const attachmentPaths = Array.isArray(args.attachments)
@@ -8418,11 +8324,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           auditLog(agentId, 'sms_send', null, 'denied', 'sms_send restricted to primary agent');
           break;
         }
-        const smsErr = checkRequired([
-          { name: 'to', value: args.to, type: 'string' },
-          { name: 'body', value: args.body, type: 'string' },
-        ]);
-        if (smsErr) { content = smsErr; isError = true; break; }
         const { executeSmsSend } = await import('../twilio/sms-outbound.js');
         const result = await executeSmsSend({
           to: args.to as string,
@@ -8459,8 +8360,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           auditLog(agentId, 'voice_call', null, 'denied', 'voice_call restricted to primary agent');
           break;
         }
-        const vErr = checkRequired([{ name: 'to', value: args.to, type: 'string' }]);
-        if (vErr) { content = vErr; isError = true; break; }
         const { executeVoiceCall } = await import('../twilio/voice-outbound.js');
         const result = await executeVoiceCall({
           to: args.to as string,
@@ -8491,8 +8390,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           isError = true;
           break;
         }
-        const veErr = checkRequired([{ name: 'call_id', value: args.call_id, type: 'string' }]);
-        if (veErr) { content = veErr; isError = true; break; }
         const { executeVoiceCallEnd } = await import('../twilio/voice-outbound.js');
         const r = executeVoiceCallEnd({ call_id: args.call_id as string, reason: args.reason as string | undefined });
         content = r.message;
@@ -9388,12 +9285,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
 
       // ── Technique Tools ──
       case 'save_technique': {
-        const stErr = checkRequired([
-          { name: 'name', value: args.name, type: 'string' },
-          { name: 'description', value: args.description, type: 'string' },
-          { name: 'instructions', value: args.instructions, type: 'string' },
-        ]);
-        if (stErr) { content = stErr; isError = true; break; }
         const { executeSaveTechnique } = await import('../techniques/tools.js');
         const agentRow = getDb().prepare('SELECT name, classification FROM agents WHERE id = ?').get(agentId) as { name: string; classification: string } | undefined;
         content = executeSaveTechnique(agentId, agentRow?.name ?? agentId, agentRow?.classification ?? 'apprentice', args);
@@ -9407,8 +9298,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         // on huge techniques or fall back to memory. New behavior returns
         // the outline + a hint to call technique_read for specific parts.
         // Existing callers keep working with safer semantics.
-        const utErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
-        if (utErr) { content = utErr; isError = true; break; }
         const { executeTechniqueRead } = await import('../techniques/tools.js');
         const agentRow2 = getDb().prepare('SELECT name, group_id FROM agents WHERE id = ?').get(agentId) as { name: string; group_id: string | null } | undefined;
         content = executeTechniqueRead(
@@ -9421,8 +9310,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'technique_read': {
-        const trErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
-        if (trErr) { content = trErr; isError = true; break; }
         const { executeTechniqueRead } = await import('../techniques/tools.js');
         const trRow = getDb().prepare('SELECT name, group_id FROM agents WHERE id = ?').get(agentId) as { name: string; group_id: string | null } | undefined;
         content = executeTechniqueRead(
@@ -9462,8 +9349,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'publish_technique': {
-        const ptErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
-        if (ptErr) { content = ptErr; isError = true; break; }
         const { executePublishTechnique } = await import('../techniques/tools.js');
         const agentRow4 = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
         content = executePublishTechnique(agentId, agentRow4?.classification ?? 'apprentice', args);
@@ -9471,8 +9356,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'update_technique': {
-        const uptErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
-        if (uptErr) { content = uptErr; isError = true; break; }
         const { executeUpdateTechnique } = await import('../techniques/tools.js');
         const agentRow5 = getDb().prepare('SELECT name, classification FROM agents WHERE id = ?').get(agentId) as { name: string; classification: string } | undefined;
         content = executeUpdateTechnique(agentId, agentRow5?.name ?? agentId, agentRow5?.classification ?? 'apprentice', args);
@@ -9480,8 +9363,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'submit_technique_for_review': {
-        const sfrErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
-        if (sfrErr) { content = sfrErr; isError = true; break; }
         const { executeSubmitForReview } = await import('../techniques/tools.js');
         const sfrRow = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
         content = executeSubmitForReview(agentId, sfrRow?.classification ?? 'apprentice', args);
@@ -9490,8 +9371,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
       }
 
       case 'delete_technique': {
-        const dtErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
-        if (dtErr) { content = dtErr; isError = true; break; }
         // Trainer-only, same ownership rule as save/update/publish.
         // Mirror the executor-side fallback in techniques/tools.ts so a
         // trainer-disabled install doesn't lose delete capability.
@@ -9538,12 +9417,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
       }
 
       case 'technique_set_placeholder': {
-        const tspErr = checkRequired([
-          { name: 'technique', value: args.technique, type: 'string' },
-          { name: 'label', value: args.label, type: 'string' },
-          { name: 'value', value: args.value, type: 'string' },
-        ]);
-        if (tspErr) { content = tspErr; isError = true; break; }
         const { executeTechniqueSetPlaceholder } = await import('../techniques/tools.js');
         const tspRow = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
         content = executeTechniqueSetPlaceholder(agentId, tspRow?.classification ?? 'apprentice', args);
@@ -9551,8 +9424,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'technique_finalize': {
-        const tfErr = checkRequired([{ name: 'technique', value: args.technique, type: 'string' }]);
-        if (tfErr) { content = tfErr; isError = true; break; }
         const { executeTechniqueFinalize } = await import('../techniques/tools.js');
         const tfRow = getDb().prepare('SELECT classification FROM agents WHERE id = ?').get(agentId) as { classification: string } | undefined;
         content = executeTechniqueFinalize(agentId, tfRow?.classification ?? 'apprentice', args);
@@ -9560,8 +9431,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'technique_list_versions': {
-        const tlvErr = checkRequired([{ name: 'name', value: args.name, type: 'string' }]);
-        if (tlvErr) { content = tlvErr; isError = true; break; }
         const techRef = args.name as string;
         const { getTechnique, resolveTechniqueRef: tlvResolve } = await import('../techniques/store.js');
         const tlvResolved = tlvResolve(techRef);
@@ -9594,10 +9463,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
       // ── Vault (Long-Term Memory) ──
 
       case 'vault_remember': {
-        const remErr = checkRequired([
-          { name: 'content', value: args.content, type: 'string' },
-        ]);
-        if (remErr) { content = remErr; isError = true; break; }
         content = await executeVaultRemember(agentId, args);
         // RC-13: vault_remember bounces return plain refusal strings that do NOT
         // start with "Error" ("Too long…", "Reads like narrative prose…",
@@ -9609,17 +9474,11 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'vault_search': {
-        const srchErr = checkRequired([
-          { name: 'query', value: args.query, type: 'string' },
-        ]);
-        if (srchErr) { content = srchErr; isError = true; break; }
         content = await executeVaultSearch(agentId, args);
         isError = content.startsWith('Error');
         break;
       }
       case 'vault_get': {
-        const veErr = checkRequired([{ name: 'entry_id', value: args.entry_id, type: 'string' }]);
-        if (veErr) { content = veErr; isError = true; break; }
         content = executeVaultExpand(agentId, args);
         isError = content.startsWith('Error');
         break;
@@ -9659,19 +9518,11 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'vault_forget': {
-        const vfErr = checkRequired([{ name: 'entry_id', value: args.entry_id, type: 'string' }]);
-        if (vfErr) { content = vfErr; isError = true; break; }
         content = executeVaultForget(agentId, args);
         isError = content.startsWith('Error');
         break;
       }
       case 'vault_update': {
-        const vuErr = checkRequired([
-          { name: 'entry_id', value: args.entry_id, type: 'string' },
-          { name: 'new_content', value: args.new_content, type: 'string' },
-          { name: 'reason', value: args.reason, type: 'string' },
-        ]);
-        if (vuErr) { content = vuErr; isError = true; break; }
         content = await executeVaultUpdate(agentId, args);
         isError = content.startsWith('Error');
         break;
@@ -9726,8 +9577,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'contact_search': {
-        const csErr = checkRequired([{ name: 'query', value: args.query, type: 'string' }]);
-        if (csErr) { content = csErr; isError = true; break; }
         const { executeContactSearch } = await import('../contacts/tools.js');
         content = executeContactSearch(args);
         isError = content.startsWith('Error');
@@ -9740,24 +9589,18 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         break;
       }
       case 'contact_get': {
-        const cgErr = checkRequired([{ name: 'contact_id', value: args.contact_id, type: 'string' }]);
-        if (cgErr) { content = cgErr; isError = true; break; }
         const { executeContactGet } = await import('../contacts/tools.js');
         content = executeContactGet(args);
         isError = content.startsWith('Error');
         break;
       }
       case 'contact_update': {
-        const cuErr = checkRequired([{ name: 'contact_id', value: args.contact_id, type: 'string' }]);
-        if (cuErr) { content = cuErr; isError = true; break; }
         const { executeContactUpdate } = await import('../contacts/tools.js');
         content = executeContactUpdate(agentId, args);
         isError = content.startsWith('Error');
         break;
       }
       case 'contact_forget': {
-        const cfErr = checkRequired([{ name: 'contact_id', value: args.contact_id, type: 'string' }]);
-        if (cfErr) { content = cfErr; isError = true; break; }
         const { executeContactForget } = await import('../contacts/tools.js');
         content = executeContactForget(args);
         isError = content.startsWith('Error');
@@ -9896,11 +9739,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
       }
 
       case 'set_capability_model': {
-        const capModelErr = checkRequired([
-          { name: 'capability', value: args.capability, type: 'string' },
-          { name: 'model_id', value: args.model_id, type: 'string' },
-        ]);
-        if (capModelErr) { content = capModelErr; isError = true; break; }
         const { setCapabilityModel } = await import('../services/agent-controls.js');
         const capResult = setCapabilityModel(
           args.capability as Parameters<typeof setCapabilityModel>[0],
@@ -9962,11 +9800,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
       }
 
       case 'set_channel': {
-        const chanErr = checkRequired([
-          { name: 'channel', value: args.channel, type: 'string' },
-          { name: 'enabled', value: args.enabled, type: 'boolean' },
-        ]);
-        if (chanErr) { content = chanErr; isError = true; break; }
         const { setChannelEnabled } = await import('../services/agent-controls.js');
         const chanResult = await setChannelEnabled(
           args.channel as Parameters<typeof setChannelEnabled>[0],
@@ -10050,12 +9883,12 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
       case 'user_calendar_list':
       case 'user_drive_list':
       case 'user_drive_read': {
-        // Required-field validation lives in executeGoogleReadTool, which runs
-        // validateAgainstSchema against each tool's real input_schema
-        // (google/tools-read.ts). A hand-maintained readReqs map used to sit
-        // here too; it was pure duplication of that check and a drift risk, so
-        // it was removed. The schema is the single source of truth, and base +
-        // user_ variants take the same validated path downstream.
+        // Required-field validation happens at the ONE boundary above, from
+        // each tool's real input_schema. A hand-maintained readReqs map used to
+        // sit here; it was pure duplication of that check and a drift risk, so
+        // it was removed — and PHASE-5 T3 Step 3 finished the same job for the
+        // per-dispatcher copy that replaced it. The schema is the single source
+        // of truth, and base + user_ variants take the same validated path.
         const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
         content = await executeGoogleReadTool(name, args, agentId, agentRow?.name ?? agentId);
         content = prependUserMailboxBanner(content, name);
@@ -10095,10 +9928,10 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           auditLog(agentId, name, null, 'denied', 'Google write tool restricted to primary agent');
           break;
         }
-        // Required-field validation lives in executeGoogleWriteTool, which runs
-        // validateAgainstSchema against each tool's real input_schema
-        // (google/tools-write.ts). A hand-maintained writeReqs map used to sit
-        // here; it duplicated that check and had DRIFTED from the schema (it
+        // Required-field validation happens at the ONE boundary above, from
+        // each tool's real input_schema. THIS IS THE INCIDENT THAT ARGUES FOR
+        // ONE OWNER, so it stays written down: a hand-maintained writeReqs map
+        // used to sit here; it duplicated that check and had DRIFTED (it
         // demanded a non-existent `content` field on drive_upload and an array
         // `values` on sheets_append whose schema and executor actually take a
         // comma-separated string), so every base call died at dispatch while the

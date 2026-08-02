@@ -130,7 +130,6 @@ for (const def of plaudReadToolDefinitions) {
   if (def.maxResultTokens) registerMaxResultTokens(def.name, def.maxResultTokens);
 }
 
-const plaudToolDefByName = new Map(plaudReadToolDefinitions.map(t => [t.name, t]));
 
 // ── Tool Execution ──
 
@@ -138,10 +137,6 @@ export async function executePlaudTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<string> {
-  const { validateAgainstSchema } = await import('../agent/tool-helpers.js');
-  const def = plaudToolDefByName.get(name);
-  const schemaErr = validateAgainstSchema(name, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
-  if (schemaErr) return schemaErr;
 
   switch (name) {
     case 'plaud_list_recordings': {

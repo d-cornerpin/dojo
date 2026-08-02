@@ -2542,7 +2542,6 @@ async function generatePptxBuffer(
 
 // ── Tool Execution ──
 
-const officeToolDefByName = new Map(officeToolDefinitions.map(t => [t.name, t]));
 
 /**
  * Three tiers of gating (see the filter in agent/tools.ts):
@@ -2603,10 +2602,6 @@ export async function executeOfficeTool(
   agentId: string,
   agentName: string,
 ): Promise<string> {
-  const { validateAgainstSchema } = await import('../agent/tool-helpers.js');
-  const def = officeToolDefByName.get(name);
-  const schemaErr = validateAgainstSchema(name, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
-  if (schemaErr) return schemaErr;
 
   switch (name) {
     case 'office_create_word_document': {

@@ -880,7 +880,6 @@ for (const def of microsoftWriteToolDefinitions) {
   }
 }
 
-const microsoftWriteToolDefByName = new Map(microsoftWriteToolDefinitions.map(t => [t.name, t]));
 
 // C26 tier 2: read-only Sent-Items re-fetch to verify an Outlook send.
 // Graph's sendMail returns 202 with no body, so no message id exists at send
@@ -937,10 +936,6 @@ export async function executeMicrosoftWriteTool(
     canonicalName = name.slice('user_'.length);
   }
 
-  const { validateAgainstSchema } = await import('../agent/tool-helpers.js');
-  const def = microsoftWriteToolDefByName.get(canonicalName);
-  const schemaErr = validateAgainstSchema(canonicalName, def?.input_schema as Parameters<typeof validateAgainstSchema>[1], args);
-  if (schemaErr) return schemaErr;
 
   const { resolveMicrosoftAccountForTool } = await import('./accounts.js');
   const resolved = resolveMicrosoftAccountForTool(kind, args.account as string | undefined);
