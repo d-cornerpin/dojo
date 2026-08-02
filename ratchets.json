@@ -1106,6 +1106,20 @@
       "to": 608,
       "by": "PHASE-4 T5 Step 3, R23 - blind route catches record why (2026-08-02)",
       "why": "+1, exactly the `import { routeFailure }` line, for three `catch { … 'Database not available' }` blocks that reported a DB open failure to the browser and to nobody else."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9745,
+      "to": 9749,
+      "by": "PHASE-4 T5b, RULING P4-R2 - credential write-path redaction (2026-08-02)",
+      "why": "+4 net on a file that DELETED 31 lines here: the inline credential value-scrub (24 lines, NEXT-WAVE item 5) moves out to credentials/secret-fields.ts and comes back as one call, and the 35 added lines are the T5b seams that could not live anywhere else - the note-the-declared-secrets call at the point the model result settles (it must run before the embed, the persist and the broadcast, all three of which are in this function), the reasoning-column scrub on both persist branches, and the persist-side arguments for the cross-turn failure signature. Each carries the comment that says WHICH surface it closes, because the finding they answer (a key the owner typed into chat, at rest in the agent's own tool_use arguments and replayed to the provider every later turn) is not visible from the code. The real accounting is elsewhere: credentials/tools.ts -42, and the one owner for `which fields are secret` + `which values are secret` is a new 244-line module."
+    },
+    {
+      "path": "packages/server/src/credentials/secret-fields.ts",
+      "from": "(unlisted, growth detector's 240-line visibility threshold)",
+      "to": 244,
+      "by": "PHASE-4 T5b, RULING P4-R2 - credential write-path redaction (2026-08-02)",
+      "why": "A NEW file four lines past the 240-line visibility threshold, pinned rather than split, and the split is the thing being refused: this module answers ONE question - which characters on this box are a credential - and it answers it in the only way that is not prose-keying, by naming the tool FIELDS that declare secret material (three, on three tools, derived by reading all 437 tool definitions). Splitting `which fields are secret` from `which values are secret` would make two owners for one job and let them drift, which is exactly how a redactor goes quietly blind. Roughly half the file is the doc block and the map's own entries, including the DELIBERATELY-NOT-HERE list with a reason per exclusion, because the next person's temptation is to add a value-shaped regex and the argument against it has to be in the file. It SHRINKS if Phase 5's tool registry lands the declaration on the tool definitions themselves, at which point the map here becomes a reader."
     }
   ],
   "maxNewFileLines": 400,
@@ -1147,7 +1161,8 @@
     "packages/server/src/agent/tools.ts": 10484,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9745,
+    "packages/server/src/credentials/secret-fields.ts": 244,
+    "packages/server/src/agent/v2/loop.ts": 9749,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/recovery.ts": 605,
     "packages/server/src/agent/v2/state.ts": 578,
