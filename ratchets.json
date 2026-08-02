@@ -1288,6 +1288,13 @@
       "to": 347,
       "by": "PHASE-5 T3 Step 1 (2026-08-02) \u2014 PINNED, not raised: a new file crossing the growth detector's 60% mark",
       "why": "The growth detector offers split-or-pin and this is the pin, with the reason stated so it is arguable. `proc.ts` is the exec family's DENY FLOOR (the global denies, the basename-normalised spelling, the sensitive-read scans, the per-command authority) plus its two consumers, the argv door and the shell door. The AppleScript door WAS split out (`brokers/applescript.ts`, 73 lines) because it is a second interpreter with its own grant. Splitting argv from shell would separate the two things that must give identical answers about the same command line and force the shared floor through more exported wrappers \u2014 the opposite of one-owner-per-job. Pinned decrease-only at its current count; T4's toolbox split is where it is revisited."
+    },
+    {
+      "path": "packages/server/src/agent/brokers/proc.ts",
+      "from": 347,
+      "to": 375,
+      "by": "PHASE-5 T3 Step 1 correction (2026-08-02) \u2014 the interpreter rule refuses INLINE script text only",
+      "why": "The first draft refused any shell interpreter as argv[0], which would have deleted `exec({argv:['sh','/path/count.sh']})` \u2014 the kit's own coding-task workflow. The rule is now the `-c` form, scanned over every element so an `env` re-point cannot slip it, with shell BUILTINS refused separately. The added lines are the two narrower predicates plus the paragraph recording the capability loss the first draft would have caused, which is the part a later reader must not re-widen."
     }
   ],
   "maxNewFileLines": 400,
@@ -1426,6 +1433,6 @@
     "packages/shared/src/visibility.ts": 881,
     "packages/shared/src/ws.ts": 1088,
     "watchdog/src/index.ts": 1198,
-    "packages/server/src/agent/brokers/proc.ts": 347
+    "packages/server/src/agent/brokers/proc.ts": 375
   }
 }
