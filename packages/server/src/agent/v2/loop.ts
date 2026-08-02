@@ -62,7 +62,7 @@ import { writeContextReceipt } from './receipt.js';
 import { executeTool, agentCanSelfCompleteById, toolResultOf } from '../tools.js';
 import { classifyToolResult } from '../tool-outcome.js';
 import { resolveRecipientDisplay } from '../../contacts/resolve-recipient.js';
-import { hasHandedCredentialValues, redactHandedCredentials } from '../../credentials/tools.js';
+import { hasHandedCredentialValues, redactHandedCredentials, redactAssistantBlocksForPersist, redactDeclaredSecretArgs, noteDeclaredSecretsFromToolCalls } from '../../credentials/secret-fields.js';
 // recordError intentionally NOT imported, handleMessage's catch path calls
 // it. Calling here would double-count errors and trip the loop-detector
 // pause prematurely.
@@ -4214,6 +4214,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
         throw new AgentError('Model call failed after all attempts', agentId, { code: 'MODEL_CALL_FAILED' });
       }
 
+      // PHASE-4 T5b (P4-R2): learn this result's DECLARED secrets here, once,
+      // before it reaches any persist / index / broadcast seam below. The live
+      // tool call keeps the real value; every stored copy gets the sentinel.
+      noteDeclaredSecretsFromToolCalls(agentId, result.toolCalls);
+
       // ── Low-confidence shadow probe (gated, off by default) ──
       // After the real answer is in hand, optionally re-run this turn at the
       // next-lower tier in the background to learn whether we over-routed. Fully
@@ -4274,7 +4279,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
         isBareNoReplySentinel(result.content);
       if (result.content && result.content.trim().length > 0 && !isNoReplySentinel) {
         try {
-          queueEmbedding('message', messageId, agentId, result.content);
+          // T5b: the semantic index is a persist seam too — a secret in the
+          // preview is reachable by recall and by summarisation. Embed what the
+          // row will hold, not what the model said.
+          queueEmbedding('message', messageId, agentId, redactHandedCredentials(agentId, result.content));
         } catch { /* best effort */ }
       }
 
@@ -5417,30 +5425,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
             input: tc.arguments,
           });
         }
-        // NEXT-WAVE item 5 (rule 6): scrub credential values this agent pulled via
-        // credential_get out of the PERSISTED + BROADCAST copy of its tool calls
-        // (the classic leak is `sshpass -p '<pw>'` landing inline in the exec
-        // tool_use). result.toolCalls is untouched, so the live command still runs
-        // with the real value; only the stored/shown copy is redacted. No-op (same
-        // reference) when the agent has pulled no credentials this process.
-        let assistantContentForStore = assistantContent;
-        if (hasHandedCredentialValues(agentId)) {
-          const scrubValue = (v: unknown): unknown => {
-            if (typeof v === 'string') return redactHandedCredentials(agentId, v);
-            if (Array.isArray(v)) return v.map(scrubValue);
-            if (v && typeof v === 'object') {
-              const o: Record<string, unknown> = {};
-              for (const [k, val] of Object.entries(v as Record<string, unknown>)) o[k] = scrubValue(val);
-              return o;
-            }
-            return v;
-          };
-          assistantContentForStore = assistantContent.map((block) => {
-            if (block.type === 'tool_use') return { ...block, input: scrubValue((block as { input: unknown }).input) };
-            if (block.type === 'text') return { ...block, text: redactHandedCredentials(agentId, (block as { text: string }).text) };
-            return block;
-          });
-        }
+        // THE PERSIST SEAM (rule 6: secrets never in message content). Two
+        // redactions, one owner (credentials/secret-fields.ts): a DECLARED secret
+        // field never enters a stored tool_use argument (PHASE-4 T5b / P4-R2 — the
+        // owner's key was at rest in `credential_add`'s own arguments, in a row
+        // replayed to the provider every later turn), and any secret this agent has
+        // handled is scrubbed from the rest of the row (NEXT-WAVE item 5's classic
+        // `sshpass -p '<pw>'`). result.toolCalls is untouched, so the live call still
+        // runs with the real value; only the stored/broadcast copy is redacted.
+        const assistantContentForStore = redactAssistantBlocksForPersist(agentId, assistantContent);
+        const reasoningForStore = result.reasoningContent
+          ? redactHandedCredentials(agentId, result.reasoningContent) : null;
         const assistantContentJson = JSON.stringify(assistantContentForStore);
         if (interAgentTurn) {
           // D-A step 8: the agent's OWN inter-agent-turn output goes to the physical
@@ -5471,7 +5466,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             id: messageId, agentId, role: 'assistant', content: assistantContentJson,
             attachments: queuedAttachmentsJson,
             modelId: effectiveModelIdForPersist, cost: null, turnNumber,
-            reasoningContent: result.reasoningContent ?? null,
+            reasoningContent: reasoningForStore,
           });
         }
         // T9: the event family follows the SAME `interAgentTurn` flag that just picked the
@@ -5490,7 +5485,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           createdAt: new Date().toISOString(),
           modelId: effectiveModelIdForPersist,
           attachments: queuedAttachments.length > 0 ? queuedAttachments : undefined,
-          reasoningContent: result.reasoningContent ?? undefined,
+          reasoningContent: reasoningForStore ?? undefined,
           conversationId: chosenConversationId,
         }));
         // v2.7.24, also track text-with-tools iterations as deliverable
@@ -5526,7 +5521,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
             id: messageId, agentId, role: 'assistant', content: persistedContent,
             attachments: queuedAttachmentsJson,
             modelId: effectiveModelIdForPersist, cost: null, turnNumber,
-            reasoningContent: result.reasoningContent ?? null,
+            // T5b: the REPLY stands (the phase's second binding caution — the
+            // platform never edits what it said). The model's private reasoning
+            // is not the reply, and it restates the key it was just handed.
+            reasoningContent: result.reasoningContent
+              ? redactHandedCredentials(agentId, result.reasoningContent) : null,
           });
         }
         if (persistedContent.trim().length > 0) {
@@ -7327,7 +7326,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // failing result carries a note so the model stops re-trying it
           // verbatim ("works in circles" had no cross-turn guard at all).
           try {
-            const crossTurnSig = canonicalToolSignature(tc.name, tc.arguments);
+            // T5b: this signature is a DB row under a PRIMARY KEY with no TTL and
+            // it is what diagnostics export, so it is built from the persist-side
+            // arguments. Two credential_add calls that differ only in the secret
+            // now share a signature — which is the right identity for "this call
+            // keeps failing", and the service_name that says WHICH one survives.
+            const crossTurnSig = canonicalToolSignature(tc.name, redactDeclaredSecretArgs(tc.name, tc.arguments));
             const failCount = recordToolOutcome(agentId, tc.name, crossTurnSig, toolResult.isError === true);
             if (toolResult.isError) {
               const note = crossTurnFailureNote(tc.name, failCount);
@@ -7668,7 +7672,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         for (let i = 0; i < result.toolCalls.length; i++) {
           const tc = result.toolCalls[i];
           const tr = turnToolResults[i];
-          const argJson = JSON.stringify(tc.arguments);
+          const argJson = JSON.stringify(redactDeclaredSecretArgs(tc.name, tc.arguments));
           collapsedParts.push(`[Called ${tc.name}: ${argJson}]`);
           if (tr) {
             collapsedParts.push(`[Result${tr.isError ? ' ERROR' : ''}: ${tr.content}]`);
