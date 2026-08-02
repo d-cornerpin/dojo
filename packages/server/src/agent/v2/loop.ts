@@ -185,7 +185,8 @@ import {
   openDelegationJoin, threadHopCount, joinState, JOIN_TTL_MINUTES, type DelegationThread,
 } from '../../work/store.js';
 const SEND_TO_PEOPLE_SET: ReadonlySet<string> = new Set(SEND_TO_PEOPLE);
-import { detectUngroundedDeliveryClaim, detectDeliveryDenial } from './classifiers/grounding.js';
+import { detectDeliveryDenial } from './classifiers/grounding.js';
+import { decideClaimedDelivery, claimedDeliverySteer } from './claimed-delivery.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
 import { permissionAlternativeFinder } from './classifiers/permission.js';
 import { semanticTechniqueMatches, SEMANTIC_STRONG_THRESHOLD, buildTechniqueMatchQuery } from './classifiers/technique.js';
@@ -4597,71 +4598,69 @@ export async function runV2Turn(agentId: string): Promise<void> {
         persistedContent = null;
       }
 
-      // ── Grounding guard (OPEN-14) ── Catch a fabricated completion BEFORE it
-      // is persisted: a terminal, user-facing reply that claims it already
-      // delivered something to a NAMED THIRD PARTY ("Already done. Sent it to
-      // <them>…") when NO send/message tool fired this turn. The third party never
-      // got it; the user is being told something false. This is not suppression, we inject a
-      // one-shot correction and re-enter so the agent ACTUALLY sends (or, if it
-      // genuinely sent in an earlier turn, confirms and continues). One-shot, and
-      // only on user-facing (non-inter-agent) terminal replies.
+      // ── Claimed-delivery floor (OPEN-14, REKEYED PHASE-4 T4) ── Catch a fabricated
+      // completion BEFORE it is persisted: a terminal, user-facing reply that claims it
+      // already delivered something to a NAMED THIRD PARTY when the LEDGER says otherwise.
+      //
+      // ⚠ THE TRIGGER IS NO LONGER THE PROSE, and the owner is why. On 2026-08-01 this floor
+      // fired three times on the words "told Michael" quoted out of a wedding transcript he
+      // had asked about, each fire ordering "do it NOW" — double answers, a re-done delivery,
+      // and a false accusation made by a regex. `agent/v2/claimed-delivery.ts` is the rekey:
+      // the prose only NARROWS (which party does the reply name), and the FIRING is a row —
+      // an owed obligation with no delivery against it, or a delivery this turn whose own
+      // recorded outcome contradicts the claim. Receipt-keyed, never prose-keyed (research 21).
+      //
+      // This is not suppression: nothing is hidden, the steer re-enters so the agent either
+      // ACTUALLY sends or says so plainly. One steer per ROW (the queue entry's latch key is
+      // the obligation / delivery id), so the same claim cannot be hammered.
       if (
         persistedContent &&
         result.toolCalls.length === 0 &&
-        !interAgentTurn &&
-        !steerFired(state.steerQueue, 'ungrounded-claim')
+        !interAgentTurn
       ) {
-        const grounding = detectUngroundedDeliveryClaim({
+        const claim = decideClaimedDelivery({
+          agentId,
+          turnNumber,
           responseText: persistedContent,
-          // C5: pass the CUMULATIVE tool activity across all iterations, not
-          // state.toolCalls (which is overwritten each iteration with the current
-          // response's calls → always [] on this tool-less terminal iteration, so a
-          // real send made in an earlier iteration was invisible and the guard
-          // false-fired into a DUPLICATE send). state.toolResults is the accumulated
-          // record; only successful deliveries ground the claim (an errored send is
-          // not a real delivery, so it should still be able to fire the correction).
+          // C5: the CUMULATIVE tool activity across all iterations, not state.toolCalls
+          // (overwritten each iteration → always [] on this tool-less terminal iteration, so
+          // a real send made earlier in the turn was invisible and the guard false-fired into
+          // a DUPLICATE send). Errored calls are excluded here on purpose — a send the tool
+          // itself refused is not a delivery, and ARM B's ledger read is what judges the ones
+          // that ran and failed at the door.
           toolCallsThisTurn: state.toolResults
             .filter((r) => !r.isError)
             .map((r) => ({ name: r.name })),
           counterpartyName: counterparty.name,
+          // RC-12's durable suppressor, unchanged in meaning: a REAL send to the claimed
+          // recipient (this turn or within 24h) grounds the claim, so the floor never fires
+          // into a duplicate send. P6b-2 keyed consult first, receipts-alias as the legacy
+          // prong while pre-121 history ages out.
+          hasDeliveryReceipt: (recipient) =>
+            findRecentDeliveriesKeyed(agentId, recipient, 24).length > 0 ||
+            findRecentDeliveries(agentId, recipient, 24).length > 0,
         });
-        // RC-12: consult the durable receipt ledger BEFORE firing. A real prior send
-        // to the claimed recipient (this turn OR an earlier one, within 24h) GROUNDS
-        // the claim, so the guard must not fire into a duplicate send. The within-turn
-        // tool check above only sees THIS turn; the ledger closes the cross-turn hole
-        // (the admitted false positive: it really sent in an earlier turn and is just
-        // referencing it). Engine fact, survives conversation scoping.
-        // P6b-2: keyed consult first (deliveries rows, canonical identity),
-        // receipts-alias substring as the legacy prong while pre-121 history
-        // ages out.
-        const groundedByLedger =
-          grounding.ungrounded &&
-          (findRecentDeliveriesKeyed(agentId, grounding.recipient, 24).length > 0 ||
-           findRecentDeliveries(agentId, grounding.recipient, 24).length > 0);
-        if (grounding.ungrounded && groundedByLedger) {
-          logger.info('v2 grounding guard suppressed by receipt ledger (real prior send)', {
-            agentId, recipient: grounding.recipient,
+        if (!claim.fires && claim.recipient) {
+          logger.info('v2 claimed-delivery floor stood down; the ledger answered', {
+            agentId, recipient: claim.recipient, reason: claim.reason,
           }, agentId);
         }
-        if (grounding.ungrounded && !groundedByLedger) {
-          const nudgeText =
-            `[System: your reply says you already delivered something to ${grounding.recipient} ("${grounding.verbHint}…"), ` +
-            `but no send/message tool was called this turn, so that delivery did NOT happen here. ` +
-            `If you ALREADY sent it to ${grounding.recipient} in an earlier turn, just confirm and continue. ` +
-            `If you have NOT actually sent it, do it NOW with the correct tool (send_to_agent for another agent, ` +
-            `imessage_send / the email-send tool for a person) BEFORE telling the user it is done. ` +
-            `Never tell the user something is sent or handled that you have not actually done.]`;
+        if (claim.fires && !steerFired(state.steerQueue, 'ungrounded-claim', claim.latchKey)) {
           // RC-19: deliver the correction via persistEngineSteer so it reaches the
           // model (the steer queue) AND keeps the dashboard row. A bare role='system'
           // row is stripped by the assembler, so pre-fix the agent re-entered without
           // ever seeing the correction and re-posted the same false claim.
           state = persistEngineSteer(
             state,
-            { agentId, content: nudgeText, turnNumber, floor: 'ungrounded-claim', atLoop: state.loopCount },
+            {
+              agentId, content: claimedDeliverySteer(claim), turnNumber,
+              floor: 'ungrounded-claim', atLoop: state.loopCount, key: claim.latchKey,
+            },
             { broadcast },
           );
-          logger.info('v2 grounding guard fired, ungrounded delivery claim, re-entering', {
-            agentId, recipient: grounding.recipient,
+          logger.info('v2 claimed-delivery floor fired on a LEDGER row, re-entering', {
+            agentId, recipient: claim.recipient, basis: claim.basis,
+            obligationId: claim.obligation?.id ?? null, failedDeliveryId: claim.failedDeliveryId,
           }, agentId);
           continue; // re-enter so the agent actually sends or corrects the claim
         }
@@ -8374,24 +8373,26 @@ export async function runV2Turn(agentId: string): Promise<void> {
       const recoveredId = uuidv4();
       try {
         // RC-12 item 6: the recovery path used to route deferred text WITHOUT the
-        // grounding detector (it only runs on tool-LESS terminal replies above), so a
+        // claimed-delivery floor (it only runs on tool-LESS terminal replies above), so a
         // false "sent it" that rode with a tool call slipped straight to the channel.
-        // The loop has exited here (no re-entry to correct), so we run the detector +
-        // receipt ledger and, if the claim is genuinely ungrounded (no receipt), log a
-        // LOUD tripwire. We still deliver: a waiting human must not be left in silence
-        // (the very failure G-SUP-2 exists to prevent), and the tool-less terminal gate
-        // is the model-visible correction path for the common case.
+        // The loop has exited here (no re-entry to correct), so we run the SAME rekeyed
+        // decision (PHASE-4 T4 — a ROW, never the prose) and log a LOUD tripwire naming the
+        // row. We still deliver: a waiting human must not be left in silence (the very
+        // failure G-SUP-2 exists to prevent), and the tool-less terminal gate is the
+        // model-visible correction path for the common case.
         try {
-          const g = detectUngroundedDeliveryClaim({
-            responseText: deferredUserReplyWithTools,
+          const g = decideClaimedDelivery({
+            agentId, turnNumber, responseText: deferredUserReplyWithTools,
             toolCallsThisTurn: state.toolResults.filter((r) => !r.isError).map((r) => ({ name: r.name })),
             counterpartyName: counterparty.name,
+            hasDeliveryReceipt: (recipient) =>
+              findRecentDeliveriesKeyed(agentId, recipient, 24).length > 0 ||
+              findRecentDeliveries(agentId, recipient, 24).length > 0,
           });
-          if (g.ungrounded &&
-              findRecentDeliveriesKeyed(agentId, g.recipient, 24).length === 0 &&
-              findRecentDeliveries(agentId, g.recipient, 24).length === 0) {
-            logger.warn('v2 G-SUP-2 recovery: delivered text asserts an UNGROUNDED delivery (no receipt); no re-entry available at finalize', {
-              agentId, turnNumber, recipient: g.recipient,
+          if (g.fires) {
+            logger.warn('v2 G-SUP-2 recovery: delivered text claims a delivery the LEDGER contradicts; no re-entry available at finalize', {
+              agentId, turnNumber, recipient: g.recipient, basis: g.basis,
+              obligationId: g.obligation?.id ?? null, failedDeliveryId: g.failedDeliveryId,
             }, agentId);
           }
         } catch { /* detection is best-effort; never block the recovery delivery */ }

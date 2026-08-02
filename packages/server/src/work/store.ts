@@ -1665,6 +1665,58 @@ export function agedObligations(agentId: string): Obligation[] {
 }
 
 /**
+ * PHASE-4 T4 — THE OBLIGATION HALF OF THE CLAIMED-DELIVERY FLOOR (the owner's live fixture).
+ *
+ * The floor that steers a model claiming a delivery it never made was keyed on PROSE, and on
+ * 2026-08-01 the owner caught it firing three times on the words "told Michael" in a wedding
+ * transcript he had asked about — each fire ordering the agent to "do it NOW", which produced
+ * double answers and a re-done delivery. Research 21's binding caution names that class
+ * exactly: honesty floors are receipt-keyed, never prose-keyed.
+ *
+ * This is the receipt side of the rekey. An obligation a SEND would discharge is a ROW: a
+ * person's own unanswered ask, or a promise the agent recorded, still owed and with no delivery
+ * to point at. The engine may only assert what it can point at (G6), so a claim about somebody
+ * the platform holds no owed row for is not something the engine gets to contradict.
+ *
+ * `claimed` is EXCLUDED with the rest of `OWED_STATES` and that exclusion is load-bearing here,
+ * not inherited: the ask this turn is serving is claimed BY this turn, and the reply being
+ * written is what discharges it. Counting it would make every turn its own accuser.
+ *
+ * `result_delivery_id IS NULL` is stated even though `state <> 'done'` already implies it by the
+ * DDL's own CHECK — the reader's question is "is there a delivery to point at", and asking it
+ * directly is what stops a later state edit silently changing this floor's meaning.
+ */
+export interface OwedSendObligation {
+  id: string;
+  kind: 'ask' | 'commitment';
+  title: string | null;
+  conversationId: string | null;
+  /** From the CONVERSATION's identity columns — who this obligation is owed TO. */
+  counterpartyName: string | null;
+  counterpartyId: string | null;
+  state: WorkState;
+  openedAt: number;
+}
+
+/**
+ * Every obligation this agent still owes that a delivery would discharge, newest first.
+ *
+ * The caller matches the claimed recipient against `counterpartyName`/`counterpartyId` through
+ * the canonical identity matcher rather than by substring, so "Michael" in a transcript cannot
+ * become an accusation and an ask from Michael cannot be missed because he is stored by address.
+ */
+export function owedSendObligations(agentId: string, limit = 50): OwedSendObligation[] {
+  return getDb().prepare(`
+    SELECT w.id AS id, w.kind AS kind, w.title AS title, w.conversation_id AS conversationId,
+           c.counterparty_name AS counterpartyName, c.counterparty_id AS counterpartyId,
+           w.state AS state, w.opened_at AS openedAt
+      FROM ${OBLIGATION_FROM}
+     WHERE w.agent_id = ? AND w.kind IN ${OBLIGATION_KINDS} AND w.state IN ${OWED_STATES}
+       AND w.result_delivery_id IS NULL
+     ORDER BY w.opened_at DESC LIMIT ?`).all(agentId, Math.max(1, Math.floor(limit))) as OwedSendObligation[];
+}
+
+/**
  * Resolve an obligation id the way a weak model typed it: brackets stripped, any case, with or
  * without the `cmt:` prefix. Carried from the deleted `resolveOpenLoopByPrefix`'s forgiveness
  * (#37/#77 — absorb, do not refuse), minus its ambiguous-prefix branch, which whole-id
