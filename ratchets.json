@@ -987,6 +987,7 @@
     "packages/shared/src/types.ts": 508,
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
+    "packages/shared/src/outcome.ts": 268,
     "packages/shared/src/visibility.ts": 865,
     "packages/shared/src/ws.ts": 1082,
     "watchdog/src/index.ts": 1198,
