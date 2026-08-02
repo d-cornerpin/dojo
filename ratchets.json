@@ -994,6 +994,27 @@
       "to": 1088,
       "by": "PHASE-4 T4, the FLOOR_GHOSTED health code (2026-08-02)",
       "why": "+6: one `ChatErrorEvent` code and the five lines saying what it means. OR2 requires a true ghost to reach the owner as a PLATFORM fault; the dashboard's health surface is the existing door and it is keyed on this union, so the code has to be declared where every other platform-level code is declared."
+    },
+    {
+      "path": "packages/server/src/agent/a2a-transport.ts",
+      "from": 1953,
+      "to": 2008,
+      "by": "PHASE-4 T4, the fail-closed notice converted (2026-08-02)",
+      "why": "+55: the transport door's VOICE parameter and the five lines that route the voiced body through it, `tellAgentTheJoinFailed` (the agent's own copy carrying the 2026-07-30 nudge, ~20 lines), and the argument for the split - a RELAY of a peer's own answer is not the same statement as a NOTICE about what the platform observed, and D13's recorded ask->park->answer->re-ask incident is why the relay half must not move."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9676,
+      "to": 9712,
+      "by": "PHASE-4 T4, the thrash-block notice converted (2026-08-02)",
+      "why": "+36, and 30 of them are the argument. The first-person paragraph came out; a durable platform-voiced owner-alert note went in (8 lines). The rest is the record of WHY this site's ladder has no steer - the loop breaks three statements below, so a steer here would be written and never seen - and why it therefore writes NO `floor_ghosted` row. A conversion that differs from its four siblings and does not say so is how the next reader 'fixes' it back."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 4394,
+      "to": 4410,
+      "by": "PHASE-4 T4, the fallen-project note converted (2026-07-30 owner ruling)",
+      "why": "+16: the owner-facing write is replaced by an agent-facing engine event with the ruling's nudge (about the same size), and the rest is the CORRECTED measurement - the inherited comment claiming this note reached nobody but the model is false, and the query that disproves it (nine owner-lane user-visible rows on the live box) is written at the site so the next reader does not re-inherit the claim that sent this to the wrong phase."
     }
   ],
   "maxNewFileLines": 400,
@@ -1022,7 +1043,7 @@
     "packages/dashboard/src/pages/Setup.tsx": 1995,
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1381,
-    "packages/server/src/agent/a2a-transport.ts": 1953,
+    "packages/server/src/agent/a2a-transport.ts": 2008,
     "packages/server/src/agent/browser.ts": 412,
     "packages/server/src/agent/destructive-gate.ts": 552,
     "packages/server/src/agent/model.ts": 2609,
@@ -1034,7 +1055,7 @@
     "packages/server/src/agent/tools.ts": 10484,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9676,
+    "packages/server/src/agent/v2/loop.ts": 9712,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/state.ts": 578,
@@ -1097,7 +1118,7 @@
     "packages/server/src/tools/unified-read.ts": 753,
     "packages/server/src/tracker/pm-agent.ts": 2090,
     "packages/server/src/tracker/schema.ts": 1155,
-    "packages/server/src/tracker/tools.ts": 4394,
+    "packages/server/src/tracker/tools.ts": 4410,
     "packages/server/src/twilio/call-session.ts": 884,
     "packages/server/src/twilio/sms-inbound.ts": 406,
     "packages/server/src/vault/archive.ts": 304,
