@@ -103,16 +103,25 @@ const WRITER_LITERALS: Case[] = [
   { site: 'agent/destructive-gate.ts approval expiry', role: 'system',
     content: `${OWNER_ALERT_HEADS_UP_PREFIX} "Kevin" asked me to approve a sensitive action.`,
     kind: 'owner-alert', tier: 'user-visible' },
-  { site: 'tracker/tools.ts project_needs_attention', role: 'system',
+  // ⚠ THE PREFIX HAS NO WRITER SINCE PHASE-4 T4, AND THE NOTE BESIDE IT WAS WRONG (#14).
+  // What stood here said this notice arrived as an EVENTS-lane `role='user'` row and therefore
+  // reached nobody but the model — "measured at 2f54de3" — and the whole SWEEP-E deferral on
+  // `tracker/tools.ts` rested on that sentence. Re-derived at PHASE-4 T4's HEAD it is false:
+  // `notifyPrimaryAgent` passes `role: 'system'` with NO lane, the lane defaults to `owner`,
+  // and the live box carries NINE such rows as `owner | system | owner-alert | user-visible`.
+  // The platform had been alerting the owner directly all along, which the 2026-07-30 owner
+  // ruling forbids — so T4 removed the write: the AGENT is told (events lane, rider intent
+  // `project_needs_attention`) and decides whether to speak.
+  //
+  // BOTH ROWS STAY IN THIS TABLE, and #15 is why: this is a CLASSIFIER table, not a writer
+  // inventory. A stable box carries rows written before that change, the dashboard still has
+  // to render them, and deleting the classification would silently reclassify history. The
+  // first row is what those rows are; the second is what the envelope around them was.
+  { site: 'tracker/tools.ts project_needs_attention (NO WRITER since PHASE-4 T4; history only)',
+    role: 'system',
     content: `${OWNER_ALERT_PROJECT_ATTENTION_PREFIX} "Launch" is NOT complete: 2 tasks fell.`,
     kind: 'owner-alert', tier: 'user-visible' },
-  // …and the same notice AS IT ACTUALLY ARRIVES. Measured at 2f54de3: the only writer of
-  // that prefix is `tracker/tools.ts` → `notifyPrimaryAgent` → `insertInterAgentEngineRow`,
-  // which is an EVENTS-lane role='user' row. It is a brief to the model, not a bubble, and
-  // the lane says so — the owner-alert prefix does not override it. (The in-code comment at
-  // tracker/tools.ts claiming this renders in the owner's default chat is stale; recorded in
-  // the T8 report, not silently repaired here, because what the owner sees is Sweep E's.)
-  { site: 'tracker/notify.ts envelope around the above', role: 'user', lane: 'events',
+  { site: 'tracker/notify.ts envelope around the above (history only)', role: 'user', lane: 'events',
     content: `[SOURCE: TRACKER TASK UPDATE - automated] ${OWNER_ALERT_PROJECT_ATTENTION_PREFIX} "Launch" is NOT complete.`,
     kind: 'engine-note', tier: 'agent-only' },
 

@@ -14,7 +14,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
-import { A2A_THREAD_SHORT_LENGTH } from '@dojo/shared';
+import { A2A_THREAD_SHORT_LENGTH, OWNER_ALERT_HEADS_UP_PREFIX } from '@dojo/shared';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
@@ -1224,7 +1224,7 @@ function askRowForJoin(join: JoinState): { content: string; inbound_meta: string
  * multi-account reply-from, because each of those is an incident with a name.)
  */
 async function deliverJoinResultToOwner(
-  join: JoinState, deliveryText: string, opts?: { tool?: string },
+  join: JoinState, deliveryText: string, opts?: { tool?: string; voice?: 'agent' | 'platform' },
 ): Promise<string | null> {
   // PHASE-2 T5 — THE T4 COLLISION, RESOLVED BY ROUTING RATHER THAN DUPLICATING.
   // T4 recorded this relay with its own `recordDelivery` call. T5 puts a recorder on the
@@ -1246,8 +1246,22 @@ async function deliverJoinResultToOwner(
 }
 
 async function deliverJoinResultToOwnerInner(
-  join: JoinState, deliveryText: string, opts?: { tool?: string },
+  join: JoinState, deliveryText: string, opts?: { tool?: string; voice?: 'agent' | 'platform' },
 ): Promise<string | null> {
+  // PHASE-4 T4 (OR2). Two different things travel through this one door and they are not the
+  // same kind of statement, so they no longer wear the same face:
+  //   * `voice: 'agent'`   — a RELAY of a peer agent's own words to the person who asked. The
+  //     content is somebody's actual answer and the engine is the courier; D13 owns this
+  //     relay deliberately (a weak model re-read "ask X" and re-asked, the ask→park→answer→
+  //     re-ask LOOP), and taking it away would re-open that recorded incident.
+  //   * `voice: 'platform'` — a NOTICE about what the platform observed: a delegated piece
+  //     never came back. That is not the agent's sentence and it stops being written as one.
+  //     It carries the owner-alert prefix on every channel, and the dashboard fallback writes
+  //     a `role='system'` row instead of an assistant bubble.
+  const platformVoice = opts?.voice === 'platform';
+  const deliveryBody = platformVoice
+    ? `${OWNER_ALERT_HEADS_UP_PREFIX} ${deliveryText}`
+    : deliveryText;
   const ask = askRowForJoin(join);
   let meta: {
     channel?: string; sender?: string; chatId?: string; chatType?: string; emailMessageId?: string;
@@ -1261,7 +1275,7 @@ async function deliverJoinResultToOwnerInner(
   try {
     if (meta.channel === 'imessage' && meta.sender) {
       const { sendResponseViaIMessage } = await import('../services/imessage-bridge.js');
-      delivered = !!sendResponseViaIMessage(deliveryText, join.agentId, meta.sender);
+      delivered = !!sendResponseViaIMessage(deliveryBody, join.agentId, meta.sender);
       channel = 'imessage'; recipientId = meta.sender;
     } else if (
       meta.channel === 'teams' && meta.chatId &&
@@ -1272,7 +1286,7 @@ async function deliverJoinResultToOwnerInner(
       meta.chatType !== 'group' && isSenderAuthorized('teams', meta.sender ?? '', 'agent')
     ) {
       const { executeTool } = await import('./tools.js');
-      const tc: ToolCall = { id: uuidv4(), name: 'teams_send_message', arguments: { chat_id: meta.chatId, message: deliveryText } };
+      const tc: ToolCall = { id: uuidv4(), name: 'teams_send_message', arguments: { chat_id: meta.chatId, message: deliveryBody } };
       const r = await executeTool(join.agentId, tc);
       delivered = r.kind === 'applied'; channel = 'teams'; recipientId = meta.chatId;
     } else if (
@@ -1287,7 +1301,7 @@ async function deliverJoinResultToOwnerInner(
         id: uuidv4(), name: toolName,
         // B-2 (comms-audit): reply FROM the mailbox that received the owner's original
         // question (multi-account), not an ambiguous default.
-        arguments: { message_id: meta.emailMessageId, body: deliveryText, ...(meta.emailAccount ? { account: meta.emailAccount } : {}) },
+        arguments: { message_id: meta.emailMessageId, body: deliveryBody, ...(meta.emailAccount ? { account: meta.emailAccount } : {}) },
       };
       const r = await executeTool(join.agentId, tc);
       delivered = r.kind === 'applied'; channel = 'email'; recipientId = meta.sender ?? null;
@@ -1297,7 +1311,7 @@ async function deliverJoinResultToOwnerInner(
       // harness capture all apply, and text the original from-number back.
       const { executeTool } = await import('./tools.js');
       const to = meta.smsFromNumber ?? meta.sender!;
-      const tc: ToolCall = { id: uuidv4(), name: 'sms_send', arguments: { to, body: deliveryText } };
+      const tc: ToolCall = { id: uuidv4(), name: 'sms_send', arguments: { to, body: deliveryBody } };
       const r = await executeTool(join.agentId, tc);
       delivered = r.kind === 'applied'; channel = 'sms'; recipientId = to;
     }
@@ -1314,10 +1328,14 @@ async function deliverJoinResultToOwnerInner(
     // it renders in their conversation. Always reaches them, so the text is never lost.
     // Owner lane deliberately: this is the relay TO THE PERSON who asked.
     messageId = uuidv4();
-    insertMessageIfAbsent({ id: messageId, agentId: join.agentId, role: 'assistant', content: deliveryText });
+    // OR2: a platform notice is a `role='system'` row on the owner-alert allowlist, never an
+    // assistant bubble. A relay of a peer's own answer stays an assistant row, because that is
+    // what it is — the agent's delegated work coming back to the person who asked.
+    const role = platformVoice ? 'system' as const : 'assistant' as const;
+    insertMessageIfAbsent({ id: messageId, agentId: join.agentId, role, content: deliveryBody });
     broadcast({
       type: 'chat:message', agentId: join.agentId,
-      message: { id: messageId, agentId: join.agentId, role: 'assistant' as const, content: deliveryText, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
+      message: { id: messageId, agentId: join.agentId, role, content: deliveryBody, tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString() },
     });
     channel = 'dashboard'; recipientId = 'owner';
   }
@@ -1337,11 +1355,17 @@ async function deliverJoinResultToOwnerInner(
   return deliveryId;
 }
 
-/** The honest "I could not get you an answer" notice, composed from the join itself.
+/** The honest "you did not get an answer" notice, composed from the join itself.
  *
- *  OR2-PROVISIONAL: this is an engine-composed user-facing line. It is tolerated ONLY until
- *  PHASE-4 T4 converts it to steer + verify + system-voice, and it is named in PHASE-4 T0's
- *  pin list. What is NOT provisional is the exactly-once property, which is machine-enforced
+ *  ⚠ OR2-PROVISIONAL: CLOSED, PHASE-4 T4 (2026-08-02). This was an engine-composed line in the
+ *  AGENT's first person — *"I asked Ana about this but could not get an answer."* — delivered
+ *  as an assistant message on the owner's lane. It says the same fact in the PLATFORM's voice
+ *  now ("your agent asked…", third person), it travels with the owner-alert prefix, and the
+ *  dashboard fallback writes it as a `role='system'` row (`voice: 'platform'` at every call
+ *  site). The AGENT is told separately and decides what to say in its own words
+ *  (`tellAgentTheJoinFailed`), which is the 2026-07-30 owner ruling's shape.
+ *
+ *  What was never provisional, and is untouched: the exactly-once property is machine-enforced
  *  by the `work` transition that precedes the send, not by this text. */
 function failClosedNotice(join: JoinState, askedNameHint?: string | null): string {
   const ask = askRowForJoin(join);
@@ -1349,13 +1373,40 @@ function failClosedNotice(join: JoinState, askedNameHint?: string | null): strin
   const pieces = joinPieces(join.id);
   const outstanding = pieces.filter((p) => !isTerminal(p.state));
   const body = join.total > 1
-    ? `I split this across several agents but could not get all the pieces back in time to give you a complete answer.`
+    ? `your agent split this across several agents and could not get all the pieces back in time, so there is no complete answer for you.`
     : (() => {
       const name = resolveAgentDisplayName(outstanding[0]?.assigneeAgent ?? pieces[0]?.assigneeAgent)
         ?? askedNameHint ?? 'another agent';
-      return `I asked ${name} about this but could not get an answer.`;
+      return `your agent asked ${name} about this and could not get an answer.`;
     })();
   return body + (snippet ? ` (Your question was: "${snippet}")` : '');
+}
+
+/**
+ * OR2's other half at this seam: THE AGENT IS TOLD, and decides whether to speak.
+ *
+ * The platform states the fact to the person (above) because a person who asked a question is
+ * owed the truth that no answer is coming, and no model call is available here — this runs in a
+ * reaper sweep, not inside a turn, so a steer written now would be exactly the "written, never
+ * seen" shape T3 deleted. What CAN reach the model is the events lane, on its next turn, and it
+ * carries the 2026-07-30 ruling's nudge verbatim: if the user should know more, tell them.
+ */
+function tellAgentTheJoinFailed(join: JoinState, what: string): void {
+  try {
+    insertEngineEventIfAbsent({
+      work: { taskId: join.id, runId: null, rootKind: 'ask', rootId: join.rootId },
+      id: uuidv4(),
+      agentId: join.agentId,
+      content:
+        `[System] A piece of work you delegated never came back: ${what} The platform has told the `
+        + `user that plainly, in its own voice, so they are not left waiting. If the user should `
+        + `know more — what you were after, whether it is worth another try — WRITE it to them in `
+        + `your own words on your next turn, directly in the conversation.`,
+      sourceAgentId: null,
+      originIntent: 'fanout_join',
+      turnNumber: null,
+    });
+  } catch { /* the person has been told; the agent's copy is best-effort */ }
 }
 
 /**
@@ -1523,7 +1574,8 @@ async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): P
       expectedState: join.parentState,
     });
     if (claimed.kind !== 'applied') return;
-    await deliverJoinResultToOwner(join, failClosedNotice(join, senderNameHint), { tool: 'a2a-join-failed' });
+    await deliverJoinResultToOwner(join, failClosedNotice(join, senderNameHint), { tool: 'a2a-join-failed', voice: 'platform' });
+    tellAgentTheJoinFailed(join, 'every delegated piece came back empty, failed or abandoned.');
     return;
   }
   if (join.total === 1) {
@@ -1669,7 +1721,8 @@ async function resolveOpenJoin(
     expectedState: state.parentState,
   });
   if (claimed.kind !== 'applied') return 'already-settled';
-  await deliverJoinResultToOwner(state, failClosedNotice(state, opts.askedNameHint), { tool: 'a2a-join-failed' });
+  await deliverJoinResultToOwner(state, failClosedNotice(state, opts.askedNameHint), { tool: 'a2a-join-failed', voice: 'platform' });
+  tellAgentTheJoinFailed(state, 'the delegated answer never came back inside the deadline.');
   return 'failed-closed';
 }
 
@@ -1692,13 +1745,13 @@ function closedParentNotice(
   if (landed.length === 0) return failClosedNotice(join, askedNameHint);
   const missing = snapshot.filter((p) => !isTerminal(p.state));
   const names = missing.map((p) => resolveAgentDisplayName(p.assigneeAgent) ?? askedNameHint ?? 'another agent');
-  const who = names.length === 1 ? names[0] : `${names.length} of the agents I asked`;
+  const who = names.length === 1 ? names[0] : `${names.length} of the agents it asked`;
   const back = landed
     .map((p) => `From ${resolveAgentDisplayName(p.assigneeAgent) ?? 'a delegated agent'}: ${
       (p.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 600)}`)
     .join('\n');
-  return `Following up on something I answered earlier: ${who} never came back inside the deadline. `
-    + `Here is what did arrive:\n${back}`;
+  return `following up on something your agent answered earlier: ${who} never came back inside the `
+    + `deadline. Here is what did arrive:\n${back}`;
 }
 
 /**
@@ -1779,8 +1832,10 @@ async function resolveJoinUnderClosedParent(
   // bite-proven (`fanout-join.test.ts`, the double-settle clause).
   if (claimed === 0) return 'already-settled';
   await deliverJoinResultToOwner(
-    state, closedParentNotice(state, snapshot, opts.askedNameHint), { tool: 'a2a-join-failed' },
+    state, closedParentNotice(state, snapshot, opts.askedNameHint),
+    { tool: 'a2a-join-failed', voice: 'platform' },
   );
+  tellAgentTheJoinFailed(state, 'a delegated piece under an already-answered question ran out of time.');
   return 'noticed';
 }
 

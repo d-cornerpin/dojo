@@ -51,6 +51,7 @@ import { classifyTool } from '@dojo/shared';
 import {
   NO_REPLY_CLOSED_MARKER, WORKING_NOTE_PREFIX, INTERNAL_WORKING_NOTE_PREFIX,
   NO_REPLY_TAIL_RE, isBareNoReplySentinel, stripMoodMarker, formatRoutingMarker,
+  OWNER_ALERT_HEADS_UP_PREFIX,
 } from '@dojo/shared';
 import { parseTechniqueFreshRead } from '@dojo/shared';
 import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
@@ -2664,6 +2665,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // so the block would never reach the model. No steer: the turn is
           // ending here (break below), so the next turn's EVENTS lane surfaces it.
           // conv_key sentinel keeps it un-selectable as a pending event.
+          //
+          // PHASE-4 T4 (OR2): this note is now the WHOLE of what is said to the person,
+          // through the agent — the engine's own first-person paragraph below it is deleted —
+          // so it carries the 2026-07-30 owner ruling's nudge explicitly: the agent is TOLD,
+          // and the agent decides whether the user should hear it and says it in its own
+          // words. The wording below already asked for that; it now says so as an
+          // instruction rather than as an aside.
           const agentNoteId = uuidv4();
           insertEngineEventIfAbsent({
             work: null,
@@ -2672,6 +2680,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
             content:
               `[System] The engine auto-blocked your current task because ${breakerReasonSecondPerson}. Next turn, either ` +
               `re-state the goal and resume (work_update(action="status")), or tell the user it is blocked and why. ` +
+              `If the user should know this — and if they were waiting on this work, they should — WRITE it to them ` +
+              `in your own words, directly in the conversation (the engine routes your reply; do not call a send tool). ` +
               `If this block looks wrong and is stopping something the user needs, tell them what you were attempting so they can decide.`,
             sourceAgentId: null,
             originIntent: 'thrash_block',
@@ -2680,17 +2690,43 @@ export async function runV2Turn(agentId: string): Promise<void> {
         } catch (err) {
           logger.warn('v2: thrash auto-block failed', { error: err instanceof Error ? err.message : String(err) }, agentId);
         }
-        // F1.1: user-visible notice. The engine speaks for the blocked agent, in
-        // plain layman language, so a person waiting on the ask is not left silent.
-        // This is an engine act (a real assistant reply pushed to their channel),
-        // not a nudge. Not gated by the start-ack flag: a start-ack is different
-        // information; the user needs to hear the work stopped.
+        // ── F1.1, CONVERTED — PHASE-4 T4 (§T0-PINS E3, the line the plan had never listed) ──
+        //
+        // WHAT WAS HERE. A hard-coded first-person paragraph — *"I hit a wall on this: I kept
+        // retrying without making progress, so I've stopped…"* — delivered through
+        // `deliverEngineUserAck` with `originIntent: null`, i.e. an assistant message on the
+        // owner's lane carrying NO stamp of any kind. T4S1 measured that and named it the
+        // blind spot: it is byte-indistinguishable from agent speech on every structural
+        // column the kit's judge can read. The engine wrote "I", and nothing anywhere could
+        // tell it was not the agent.
+        //
+        // WHY THE LADDER IS SHAPED DIFFERENTLY HERE, stated rather than quietly skipped. The
+        // other four conversions steer, re-enter, and give the model a real chance to speak.
+        // THIS site cannot: the loop `break`s three statements below, so there is no further
+        // model call this turn, and a steer enqueued here would be exactly the shape T3
+        // deleted — written, never seen. Two honest halves replace one dishonest sentence:
+        //   * THE AGENT IS TOLD, and decides. The `thrash_block` events-lane note above is
+        //     delivered on its next turn and now carries the 2026-07-30 ruling's own nudge.
+        //   * THE PLATFORM TELLS THE USER, AS THE PLATFORM. A `role='system'` owner-alert
+        //     note (durable, allowlisted into the owner's chat) beside the toast, which was
+        //     always here and was never enough on its own: a toast is a frame, and a frame a
+        //     person did not have the window open for is not a record.
+        //
+        // NO `floor_ghosted` ROW, DELIBERATELY. Its declared meaning is "a floor's steer was
+        // refused twice and the agent truly ghosted". No steer was written here, so a row
+        // would be a receipt for something that did not happen — the forged-completion class
+        // this whole phase exists to remove.
         if (blockedWorkIsUserOrigin) {
           try {
-            await deliverEngineUserAck(
-              `I hit a wall on this: I kept retrying without making progress, so I've stopped rather than keep spinning on it. Tell me to try again, or adjust what you're after, and I'll take another run at it.`,
-            );
-          } catch { /* best effort, the dashboard/toast still show the block */ }
+            insertMessageIfAbsent({
+              id: uuidv4(), agentId, role: 'system',
+              content:
+                `${OWNER_ALERT_HEADS_UP_PREFIX} your agent kept retrying the same step without getting anywhere, `
+                + `so the platform stopped it rather than let it spin. The work is left open and flagged. `
+                + `Ask your agent about it and it can pick the work back up or explain what it was attempting.`,
+              turnNumber,
+            });
+          } catch { /* the toast below still fires; a note is not worth the turn */ }
         }
         try {
           broadcast({

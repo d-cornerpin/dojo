@@ -59,7 +59,7 @@ import { getAgentRuntime } from '../agent/runtime.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { currentTurnNumber, getTurnReceipts, getWorkOriginForAgent, currentTurnRoot } from '../agent/turn-state.js';
 import { getReceiptsByIds, stampReceiptsTask, type ToolReceiptRow } from '../receipts/store.js';
-import { insertMessageIfAbsent } from '../memory/message-store.js';
+import { insertEngineEventIfAbsent, insertMessageIfAbsent } from '../memory/message-store.js';
 import { formatTimeForAgent } from '../services/format-time.js';
 
 const logger = createLogger('tracker-tools');
@@ -68,7 +68,6 @@ const logger = createLogger('tracker-tools');
 // trackerUpdateStatus call sites keep working with their existing usage.
 // The canonical implementation lives in agent/tool-helpers.ts.
 import { resolveAgentRef as resolveAgentName } from '../agent/tool-helpers.js';
-import { OWNER_ALERT_PROJECT_ATTENTION_PREFIX } from '@dojo/shared';
 
 // ── Notify primary agent of task/project completion ──
 
@@ -564,18 +563,47 @@ export function checkProjectCompletion(projectId: string | null, callingAgentId:
     // same v2.7.2 discipline as the success line above).
     updateProject(projectId, { description: newDescription });
 
-    // The prefix is load-bearing: it is what the owner-alert allowlist matches on. PHASE-1 T8
-    // takes it FROM that allowlist (@dojo/shared) instead of re-typing it here, so a rewording
-    // cannot drop it.
+    // ── THE FALLEN-PROJECT NOTE — CONVERTED, PHASE-4 T4 (§T0-PINS E5) ──
     //
-    // ⚠ MEASURED AT 2f54de3, and left alone on purpose: this notice does NOT currently reach
-    // the owner's default chat. `notifyPrimaryAgent` writes it as an EVENTS-lane role='user'
-    // row (a brief to the model), and the dashboard's allowlist check runs only on role='system'
-    // rows — so the sentence this comment used to make is not true of this site. Making it true
-    // would change what the owner sees, which is SWEEP-E's (dashboard chat contract), not T8's.
-    // The taxonomy classifies it honestly today: lane='events' => engine-note / agent-only.
-    const failureLine = `${OWNER_ALERT_PROJECT_ATTENTION_PREFIX} "${project.title}" is NOT complete: ${fallen.length} task${fallen.length === 1 ? '' : 's'} fell (${fallenTitles}). The project is left open and flagged for attention.`;
-    notifyPrimaryAgent(failureLine, callingAgentId);
+    // OWNER RULING, 2026-07-30: *"when a project ends with failed pieces, the platform does NOT
+    // alert the owner directly and does NOT stay silent — the AGENT is told, with an 'if the
+    // user should know, please tell the user' style nudge, and the agent decides and speaks."*
+    //
+    // ⚠ AND THE INHERITED MEASUREMENT THAT SENT THIS TO SWEEP-E IS WRONG AT THIS HEAD (#14).
+    // The comment that stood here said the notice *"does NOT currently reach the owner's
+    // default chat"* because `notifyPrimaryAgent` writes an EVENTS-lane `role='user'` row, and
+    // PHASE-1 T8's own taxonomy fixture repeats that claim. Re-derived here rather than
+    // trusted: `notifyPrimaryAgent` (this file, ~:91) calls `insertMessageIfAbsent` with
+    // `role: 'system'` and NO lane, and the lane defaults to `owner` — and on the live box
+    //   SELECT lane, role, display_kind, display_tier, COUNT(*) FROM messages
+    //    WHERE content LIKE '%tracker:project_needs_attention%' GROUP BY 1,2,3,4;
+    //   -> owner | system | owner-alert | user-visible | 9
+    // Nine rows, owner lane, user-visible, on the dashboard's own allowlist. It HAS been
+    // reaching the owner directly all along, which is exactly what the ruling forbids — so
+    // this is a removal, not a deferral, and SWEEP-E's line is released either way.
+    //
+    // The agent is told on its own lane and decides. Not a wake: `project_needs_attention` is
+    // a declared engine RIDER, and a rider never drives a turn of its own — the note rides the
+    // agent's next turn, which is what "the agent decides" means when nobody is waiting.
+    // The BOARD still shows the truth immediately (the marker + the broadcast above): platform
+    // state is not a voice, and OR2 has never had anything to say about it.
+    const fallenFacts = `"${project.title}" is NOT complete: ${fallen.length} task${fallen.length === 1 ? '' : 's'} fell (${fallenTitles}). The project is left open and flagged for attention.`;
+    try {
+      insertEngineEventIfAbsent({
+        work: { taskId: projectId, runId: null, rootKind: 'tracker', rootId: projectId },
+        id: uuidv4(),
+        agentId: getPrimaryAgentId(),
+        content:
+          `[System] A project you own has ended with failed pieces: ${fallenFacts} `
+          + `Nobody has been told but you. If the user should know — and if they asked for this `
+          + `work, they should — WRITE it to them in your own words on your next turn, directly `
+          + `in the conversation (the engine routes your reply; do not call a send tool). If it `
+          + `is worth another attempt, say what you would try.`,
+        sourceAgentId: null,
+        originIntent: 'project_needs_attention',
+        turnNumber: null,
+      });
+    } catch { /* the board already carries the flag; the agent's copy is best-effort */ }
 
     logger.info('Project left open with fallen tasks', { projectId, title: project.title, fallenCount: fallen.length });
     return 'needs_attention';

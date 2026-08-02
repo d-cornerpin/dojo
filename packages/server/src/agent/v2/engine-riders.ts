@@ -74,6 +74,13 @@ export const ENGINE_RIDER_INTENTS = [
   // a turn of its own — which is exactly right here: the note is the engine asking the agent
   // to say something on THIS turn, not a new turn's worth of work.
   'reminder_silence_floor',
+  // PHASE-4 T4 (the 2026-07-30 owner ruling) — the fallen-project note. It used to be an
+  // OWNER-LANE `role='system'` owner-alert (nine such rows on the dev box, user-visible, on
+  // the dashboard's allowlist — measured, against an inherited claim that it reached nobody).
+  // The ruling is that the platform does not alert the owner directly here: the agent is told
+  // and decides. A rider is exactly the right shape for that — it never drives a turn of its
+  // own, so the note rides the agent's next turn instead of manufacturing one.
+  'project_needs_attention',
   // postAgentNotice: its own default plus every intent its callers pass
   'agent_notice', 'agent_health', 'block_validated', 'engine_event_expired',
   'image_delivery_outcome', 'learning_loop', 'pm_review_failed', 'schedule_run_failed',

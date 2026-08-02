@@ -12,6 +12,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { isOwnerAlertSystemNote } from '@dojo/shared';
 
 const mockDb: { current: Database.Database | null } = { current: null };
 
@@ -54,11 +55,27 @@ const workRow = (id: string): Record<string, unknown> =>
   mockDb.current!.prepare('SELECT * FROM work WHERE id = ?').get(id) as Record<string, unknown>;
 
 /** Messages the owner can actually see: assistant rows on the owner lane. */
-const ownerFacing = (): Array<{ id: string; content: string }> =>
+/** Everything the OWNER can see on their own lane from this sweep, whatever voice it is in.
+ *
+ *  ⚠ PHASE-4 T4 (OR2) — THIS READ USED TO BE `role = 'assistant'`, AND THAT WAS THE DEFECT IT
+ *  COULD NOT SEE. The fail-closed notice was engine-composed prose in the AGENT's first person
+ *  ("I asked Ana about this but could not get an answer"), delivered as an assistant bubble, so
+ *  a clause scoped to assistant rows scored the engine speaking as the agent a clean GREEN.
+ *  The notice is the PLATFORM's now — third person, owner-alert prefixed, `role='system'` — so
+ *  the read follows the requirement (the owner is told) rather than the old mechanism, and the
+ *  clause below asserts the voice separately instead of assuming it. */
+const ownerFacing = (): Array<{ id: string; content: string; role: string }> =>
   mockDb.current!.prepare(
-    `SELECT id, content FROM messages WHERE agent_id = ? AND role = 'assistant' AND lane = 'owner'
-      ORDER BY rowid`,
-  ).all(AGENT) as Array<{ id: string; content: string }>;
+    `SELECT id, content, role FROM messages WHERE agent_id = ? AND role IN ('assistant','system')
+        AND lane = 'owner' ORDER BY rowid`,
+  ).all(AGENT) as Array<{ id: string; content: string; role: string }>;
+
+/** The agent's own copy — the events-lane note that lets it decide whether to say more. */
+const agentToldRows = (): Array<{ content: string }> =>
+  mockDb.current!.prepare(
+    `SELECT content FROM messages WHERE agent_id = ? AND lane = 'events'
+        AND origin_intent = 'fanout_join' ORDER BY rowid`,
+  ).all(AGENT) as Array<{ content: string }>;
 
 function seedDelivery(id: string, over: Record<string, unknown> = {}): string {
   const r = {
@@ -145,6 +162,18 @@ describe('#19: the reaper reaches a join whose parent has already closed', () =>
     expect(msgs).toHaveLength(1);
     expect(msgs[0].content).toMatch(/could not get an answer/i);
     expect(msgs[0].content).toContain('Ana');
+    // OR2, and this is the half the old clause could not express: the owner is told, and the
+    // PLATFORM is what tells them. Not an assistant bubble, not the first person, and it
+    // carries the owner-alert prefix that puts it on the dashboard's allowlist.
+    expect(msgs[0].role).toBe('system');
+    expect(isOwnerAlertSystemNote(msgs[0].content)).toBe(true);
+    expect(msgs[0].content).toContain('your agent');
+    expect(/\bI\b/.test(msgs[0].content.replace(/\(Your question was:[\s\S]*$/, ''))).toBe(false);
+    // …and the AGENT is told too, with the 2026-07-30 ruling's nudge, so it can add whatever
+    // the platform's one-liner cannot say.
+    const told = agentToldRows();
+    expect(told).toHaveLength(1);
+    expect(told[0].content).toMatch(/WRITE it to them in your own words/);
     // The relay is a real outbound and records one — this is what makes it a delivery rather
     // than a log line.
     const rows = mockDb.current!.prepare(
