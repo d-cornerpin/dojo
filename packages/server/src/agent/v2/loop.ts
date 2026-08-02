@@ -2922,10 +2922,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // not responded", and the model re-acknowledged from scratch each
           // time. The engine holds the receipts of what this turn already
           // did; hand them over so the rebuilt context cannot forget.
-          // PHASE-4 T6: the slot-gate that stood here is GONE with the staged-enablement
-          // flag. This is §T0-PINS F's `:2871`, the one-slot loss's NAMED VICTIM — it had
-          // no latch of its own and DROPPED itself whenever another floor held the slot.
-          // The queue holds both, so there is nothing to defer to.
+          // T6: slot-gate dead with the flag. §T0-PINS F's `:2871`, the named victim.
           {
             const recap =
               `[Engine recap: memory was just compacted MID-TURN. This is still the SAME turn. So far this turn you have made ${state.toolCalls.length} tool call(s)` +
@@ -3682,9 +3679,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // Start-ack steer checkpoint (owner ruling 2026-07-22): the async timer /
       // first-tool hook only REQUEST the steer; the state write happens here,
       // loop-synchronously. Re-checks startAckRepliedNow so a reply that landed
-      // in flight quietly disarms it. (PHASE-4 T6: the "if another nudge occupies the slot,
-      // defer to the next boundary" gate is deleted with the staged-enablement flag — the
-      // queue retains both steers, so there is no slot to be occupied.)
+      // in flight quietly disarms it. (T6: the "another nudge occupies the slot, so defer"
+      // half died with the flag — the queue retains both steers.)
       if (startAckSteerRequested && !startAckSteerArmedThisTurn && !startAckRepliedNow()) {
         startAckSteerArmedThisTurn = true;
         startAckSteersInjected = 1;
