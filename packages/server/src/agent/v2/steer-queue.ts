@@ -156,7 +156,7 @@ export function emptySteerQueue(): SteerQueue {
 
 /** The number of groups turned on. Bumped by ONE per commit; ENABLED-ALL is 7. T6 deletes
  *  this constant, `enabledSteerGroups`, and the `else` branch in `enqueueSteer`. */
-const ENABLED_GROUPS_DEFAULT = 4;
+const ENABLED_GROUPS_DEFAULT = 5;
 
 /** Test/ops override: `DOJO_STEER_GROUPS=0|1|…|7|all`. Both branches must stay exercisable
  *  by a test until T6 removes them, and a compile-time constant alone cannot do that. */
