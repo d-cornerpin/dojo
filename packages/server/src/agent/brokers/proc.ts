@@ -199,28 +199,48 @@ function authorizeOneCommand(grant: Grant, command: string, kind: 'proc' | 'shel
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
- * SHELL INTERPRETERS ARE NOT PROGRAMS FOR THIS DOOR'S PURPOSES.
+ * INLINE SCRIPT TEXT IS NOT AN ARGUMENT, AND THAT IS THE ONLY THING THIS
+ * REFUSES.
  *
  * `exec({argv:['sh','-c','<anything>']})` is a shell script wearing argv's
- * clothes, and allowing it would make the whole no-shell rebuild theatre — the
- * allowlist would gate `sh` and then never see what `sh` was told to do. So the
- * argv door refuses them and NAMES the other door in the refusal.
+ * clothes: the allowlist would gate `sh` and then never see what `sh` was told
+ * to do, which would make the whole no-shell rebuild theatre. So the argv door
+ * refuses the `-c` form and NAMES the other door in the refusal.
  *
- * This is a ROUTE, not a removal, and the distinction is the phase's binding
- * posture: the same text runs through `shell({script})` with its full body
- * audited, against a grant the agent already holds (its `exec_allow`, projected
- * to the shell kind — see `grants.ts`). Nothing an agent can run today stops
- * being runnable; it stops being runnable UNAUDITED.
+ * ⚠ AND IT REFUSES NOTHING ELSE, WHICH IS THE PART THAT MATTERS. `sh
+ * count.sh`, `bash build.sh`, `node script.js`, `zsh -l` all still run: they
+ * execute a FILE, the file got there through the fs broker, and refusing them
+ * would delete the ordinary "write a script and run it" workflow — a capability
+ * loss, which the phase's posture makes the owner's decision and not a
+ * worker's. The first draft of this function refused any interpreter as argv[0]
+ * and the kit's own `coding-task` scenario is what showed that up: its entire
+ * premise is *"write a small script … run your script"*.
  *
- * `env` is here because `env FOO=1 sh -c …` re-points the program after the
- * allowlist has already looked at it. `eval`, `source`, `.` and `exec` are shell
- * BUILTINS — there is no such program to execFile — so naming them produces a
- * refusal a model can act on instead of an ENOENT it will retry.
+ * The `-c` scan runs over EVERY element, not just argv[1], because
+ * `env FOO=1 sh -c '…'` re-points the program after the allowlist has already
+ * looked at it.
+ *
+ * `eval`, `source`, `.` and `exec` are shell BUILTINS — there is no such program
+ * to execFile — so naming them produces a refusal a model can act on instead of
+ * an ENOENT it will retry.
  */
 const SHELL_INTERPRETERS: ReadonlySet<string> = new Set<string>([
   'sh', 'bash', 'zsh', 'dash', 'ksh', 'csh', 'tcsh', 'fish', 'ash', 'busybox',
-  'env', 'eval', 'source', '.', 'exec', 'command', 'nohup', 'xargs',
 ]);
+
+/** Programs that are not programs: shell builtins with no binary to run. */
+const SHELL_BUILTINS: ReadonlySet<string> = new Set<string>([
+  'eval', 'source', '.', 'exec', 'command',
+]);
+
+const INLINE_SCRIPT_FLAGS: ReadonlySet<string> = new Set<string>(['-c', '--command', '-lc', '-ic']);
+
+/** Is this vector `<some shell> -c <script text>` in any spelling? */
+function isInlineShellScript(argv: readonly string[]): boolean {
+  const hasInterpreter = argv.some((a) => SHELL_INTERPRETERS.has(path.basename(a)));
+  if (!hasInterpreter) return false;
+  return argv.some((a) => INLINE_SCRIPT_FLAGS.has(a));
+}
 
 /**
  * `authorize(grant, {kind:'proc', resource})` — the rebuilt exec door.
@@ -237,12 +257,20 @@ const SHELL_INTERPRETERS: ReadonlySet<string> = new Set<string>([
  * special case.
  */
 export function authorizeArgv(grant: Grant, resource: ResolvedArgv): Verdict {
-  if (SHELL_INTERPRETERS.has(resource.base) || SHELL_INTERPRETERS.has(resource.program)) {
+  if (SHELL_BUILTINS.has(resource.base)) {
     return deny(
       'ladder-parity',
-      `argv-interpreter:${resource.base}`,
-      `"${resource.base}" is a shell interpreter, and exec runs programs directly without a shell`,
-      `[BLOCKED] exec refused: "${resource.base}" is a shell interpreter. exec({argv:[…]}) runs one program with literal arguments and no shell, so pipes, redirects, loops and substitution do not work there. Use the shell tool instead — shell({script:"…"}) runs the whole line under /bin/zsh — if you have shell access. Otherwise call the program directly, e.g. exec({argv:["ls","-la","/tmp"]}).`,
+      `argv-builtin:${resource.base}`,
+      `"${resource.base}" is a shell builtin, not a program`,
+      `[BLOCKED] exec refused: "${resource.base}" is a shell builtin, not a program, so there is nothing for exec to run. If you need shell behaviour use the shell tool — shell({script:"…"}) runs the whole line under /bin/zsh.`,
+    );
+  }
+  if (isInlineShellScript(resource.argv)) {
+    return deny(
+      'ladder-parity',
+      'argv-inline-script',
+      'exec runs one program with literal arguments; inline shell script text belongs at the shell door',
+      `[BLOCKED] exec refused: this is inline shell script text ("-c"), and exec({argv:[…]}) runs one program with literal arguments and no shell — pipes, redirects, loops and substitution do not work there. Use shell({script:"…"}) instead, which runs the whole line under /bin/zsh. Running a script FILE is fine here: exec({argv:["sh","/path/to/script.sh"]}) works.`,
     );
   }
 

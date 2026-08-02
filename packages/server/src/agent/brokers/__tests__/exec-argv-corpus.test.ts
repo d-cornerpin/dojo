@@ -24,11 +24,17 @@
 // `shell` with byte-identical authority to today's exec, and §D proves the
 // derivation that gets today's agents there without anybody editing a manifest.
 //
-// ── WHY `sh -c` IS REFUSED AT THE ARGV DOOR AND THAT IS NOT A NARROWING ──
+// ── WHY `sh -c` IS REFUSED AT THE ARGV DOOR AND `sh script.sh` IS NOT ──
 // `exec({argv:['sh','-c','<anything>']})` is a shell script wearing argv's
 // clothes; allowing it would make the whole no-shell rebuild theatre. It is
 // ROUTED, not removed: the refusal names `shell`, where the same text runs with
 // its full body audited. Same capability, one door, one audit record.
+//
+// ⚠ `sh count.sh` IS STILL ALLOWED, and the clause that says so is as
+// load-bearing as any refusal here. The first draft refused any interpreter as
+// argv[0]; the kit's own `coding-task` scenario — *"write a small script … run
+// your script"* — is what showed that up as a capability loss. Running a FILE
+// is not running inline text: the file reached disk through the fs broker.
 //
 // ── TEST HYGIENE (binding) ──
 // Nothing here touches the owner's real `~/.ssh`, `~/.dojo` or anything outside
@@ -176,17 +182,34 @@ describe('§A — the argv resolver is the only mint, and it refuses every shape
 
 // ══════════════════════════════════════════════════════════════════════════
 describe('§B — THE CANARY CORPUS at the argv door, every canary REFUSED', () => {
-  it('refuses a shell interpreter as the program — the escape hatch is routed, not opened', () => {
-    for (const sh of ['sh', 'bash', 'zsh', 'dash', 'ksh', 'csh', 'tcsh', 'fish', '/bin/sh', '/bin/zsh', '/usr/bin/env']) {
+  it('refuses INLINE SHELL SCRIPT (`-c`) — the escape hatch is routed, not opened', () => {
+    for (const sh of ['sh', 'bash', 'zsh', 'dash', 'ksh', 'csh', 'tcsh', 'fish', '/bin/sh', '/bin/zsh']) {
       const v = authorizeArgv(wildcard(), mustArgv([sh, '-c', 'echo hi']));
-      expect(v.allowed, `expected refusal for interpreter: ${sh}`).toBe(false);
+      expect(v.allowed, `expected refusal for inline script: ${sh} -c`).toBe(false);
       // The refusal must NAME the other door, or an agent reads it as "you cannot".
       if (!v.allowed) expect(v.reason + String(v.blockedMessage)).toMatch(/shell/);
     }
+    // and through an `env` re-point, which happens AFTER the allowlist looked
+    expect(authorizeArgv(wildcard(), mustArgv(['env', 'FOO=1', 'sh', '-c', 'echo hi'])).allowed).toBe(false);
   });
 
-  it('refuses `eval` and `source` as the program', () => {
-    for (const p of ['eval', 'source', 'exec']) {
+  it('⚠ but RUNNING A SCRIPT FILE still works — refusing it would delete a workflow', () => {
+    // `write a script, then run it` is an ordinary thing an agent does all day
+    // and is the kit's own `coding-task` scenario verbatim. The first draft of
+    // the interpreter rule refused any interpreter as argv[0] and would have
+    // broken it; that is the capability-loss class this phase must not create.
+    for (const argv of [
+      ['sh', `${projects}/count.sh`],
+      ['bash', `${projects}/build.sh`],
+      ['/bin/zsh', `${projects}/run.zsh`],
+      ['node', `${projects}/count.js`],
+    ]) {
+      expect(authorizeArgv(wildcard(), mustArgv(argv)).allowed, `expected ALLOW: ${argv.join(' ')}`).toBe(true);
+    }
+  });
+
+  it('refuses `eval` and `source` — shell builtins, with no program to run', () => {
+    for (const p of ['eval', 'source', 'exec', 'command']) {
       expect(authorizeArgv(wildcard(), mustArgv([p, 'anything'])).allowed, p).toBe(false);
     }
   });
