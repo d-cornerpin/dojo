@@ -53,6 +53,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { transition, appendWorkEvent, type WorkOutcome } from './store.js';
 
@@ -124,7 +125,7 @@ export function claimOccurrence(input: ClaimInput): string | null {
   let won = false;
 
   try {
-    db.transaction(() => {
+    withUnit(() => {
       db.prepare(`
         INSERT INTO work (
           id, kind, parent_id, agent_id, assignee_agent, requester, requester_id,
@@ -156,7 +157,7 @@ export function claimOccurrence(input: ClaimInput): string | null {
         sequence: input.sequence, scheduled_for: input.occurrenceMs,
       });
       won = true;
-    })();
+    });
   } catch (err) {
     if (err instanceof LostClaim) return null;
     // A UNIQUE violation on `ux_work_occurrence` is the OTHER way to lose, and it is the one
@@ -189,7 +190,7 @@ export function releaseOccurrence(
   priorLastRunMs: number | null, reason: string,
 ): void {
   const db = getDb();
-  db.transaction(() => {
+  withUnit(() => {
     // The release is recorded on the SCHEDULE, not on the occurrence: the occurrence row is
     // about to be deleted so its sequence can be claimed again, and an event on a row that
     // no longer exists is a record nobody can find.
@@ -200,7 +201,7 @@ export function releaseOccurrence(
       UPDATE work SET schedule_status = 'waiting', next_run_at = ?, last_run_at = ?, updated_at = ?
        WHERE id = ?
     `).run(occurrenceMs, priorLastRunMs, Date.now(), workId);
-  })();
+  });
   logger.info('occurrence released unfired', { workId, occurrenceId, reason });
 }
 
@@ -393,7 +394,7 @@ export function deleteOccurrencesOf(workIds: string[]): number {
   const db = getDb();
   const ph = workIds.map(() => '?').join(',');
   let removed = 0;
-  db.transaction(() => {
+  withUnit(() => {
     db.prepare(
       `DELETE FROM work_events WHERE work_id IN (
          SELECT id FROM work WHERE kind = ? AND parent_id IN (${ph}))`,
@@ -401,7 +402,7 @@ export function deleteOccurrencesOf(workIds: string[]): number {
     removed = db.prepare(
       `DELETE FROM work WHERE kind = ? AND parent_id IN (${ph})`,
     ).run(OCCURRENCE_KIND, ...workIds).changes;
-  })();
+  });
   return removed;
 }
 

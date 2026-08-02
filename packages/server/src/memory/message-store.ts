@@ -32,6 +32,7 @@ import {
   type BroadcastRow, type DisplayKind, type MessageLane, type VisibilityTier,
 } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
+import { withUnit } from '../db/unit.js';
 import { openAsk } from '../work/store.js';
 import { NOW_MS, createdAtText } from './store.js';
 import { estimateStoredTokens } from './budget.js';
@@ -343,7 +344,7 @@ function persistAndMaybeOpenAsk(m: NewMessage, b: ReturnType<typeof bind>, seq: 
 export function insertMessage(m: NewMessage): Persisted {
   const db = getDb();
   const b = bind(m);
-  return db.transaction((): Persisted => {
+  return withUnit((): Persisted => {
     const info = db.prepare(INSERT_SQL).run(b.params);
     const seq = info.lastInsertRowid as number;
     const createdAt = persistAndMaybeOpenAsk(m, b, seq);
@@ -352,7 +353,7 @@ export function insertMessage(m: NewMessage): Persisted {
       displayKind: b.displayKind, displayTier: b.displayTier,
       tokenCount: b.tokenCount, createdAt, sentAt: b.sentAt,
     };
-  })();
+  });
 }
 
 /** Idempotent insert: returns `null` when the row is already there.
@@ -370,7 +371,7 @@ export function insertMessage(m: NewMessage): Persisted {
 export function insertMessageIfAbsent(m: NewMessage): Persisted | null {
   const db = getDb();
   const b = bind(m);
-  return db.transaction((): Persisted | null => {
+  return withUnit((): Persisted | null => {
     const info = db.prepare(`${INSERT_SQL} ON CONFLICT DO NOTHING`).run(b.params);
     // T3: a designed no-op writes NO ticket. One message, one obligation — a producer
     // retrying an inbound must not mint a second ask for the same question.
@@ -382,7 +383,7 @@ export function insertMessageIfAbsent(m: NewMessage): Persisted | null {
       displayKind: b.displayKind, displayTier: b.displayTier,
       tokenCount: b.tokenCount, createdAt, sentAt: b.sentAt,
     };
-  })();
+  });
 }
 
 /** The WORK an engine row is about, as COLUMNS the serve boundary can read — until the P1
@@ -432,7 +433,7 @@ export function insertEngineEventIfAbsent(e: EngineEventInput): Persisted | null
  *  was claimed. Routing columns only — `content` is untouched (cache law). */
 export function claimForTurn(agentId: string, turnNumber: number): StoredMessage[] {
   const db = getDb();
-  const claim = db.transaction((aid: string, turn: number): StoredMessage[] => {
+  const claim = (aid: string, turn: number): StoredMessage[] => withUnit((): StoredMessage[] => {
     const rows = db.prepare(`
       SELECT ${SELECT_COLS} FROM messages
       WHERE agent_id = ? AND served_by_turn IS NULL AND swept_at IS NULL
@@ -453,7 +454,7 @@ export function markServed(ids: string[], turnNumber: number): void {
   if (ids.length === 0) return;
   const db = getDb();
   const stmt = db.prepare('UPDATE messages SET served_by_turn = ? WHERE id = ?');
-  db.transaction((list: string[]) => { for (const id of list) stmt.run(turnNumber, id); })(ids);
+  withUnit(() => { for (const id of ids) stmt.run(turnNumber, id); });
 }
 
 // ── Sanctioned readers ──
@@ -942,7 +943,7 @@ export function deleteAllForAgent(agentId: string): number {
  *  covered. */
 export function deleteForAgentBefore(agentId: string, cutoffId: string): number {
   const db = getDb();
-  const txn = db.transaction((aid: string, cid: string): number => {
+  const txn = (aid: string, cid: string): number => withUnit((): number => {
     db.prepare(`
       DELETE FROM summary_messages
       WHERE message_id IN (

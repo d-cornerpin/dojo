@@ -23,6 +23,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import {
   transition, rejectClaim, appendWorkEvent,
@@ -238,14 +239,14 @@ export function bumpWorkAttempts(id: string): number {
 export function deleteTrackerRow(id: string): number {
   const db = getDb();
   let changes = 0;
-  db.transaction(() => {
+  withUnit(() => {
     db.prepare('DELETE FROM work_events WHERE work_id IN (SELECT id FROM work WHERE parent_id = ?)').run(id);
     db.prepare('DELETE FROM adjudications WHERE work_id IN (SELECT id FROM work WHERE parent_id = ?)').run(id);
     db.prepare('DELETE FROM work WHERE parent_id = ?').run(id);
     db.prepare('DELETE FROM work_events WHERE work_id = ?').run(id);
     db.prepare('DELETE FROM adjudications WHERE work_id = ?').run(id);
     changes = db.prepare('DELETE FROM work WHERE id = ?').run(id).changes;
-  })();
+  });
   return changes;
 }
 
@@ -307,7 +308,7 @@ export function setTrackerStatus(
     { state: WorkState } | undefined;
 
   let result!: WorkOutcome;
-  db.transaction(() => {
+  withUnit(() => {
     result = transition(id, {
       to,
       by: input.by,
@@ -335,7 +336,7 @@ export function setTrackerStatus(
         status_before_pause: null,
       });
     }
-  })();
+  });
   return result;
 }
 

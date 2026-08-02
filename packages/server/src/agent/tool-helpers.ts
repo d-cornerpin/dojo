@@ -250,14 +250,21 @@ export function compactListTrailer(opts: {
   return `\n\n${opts.count} result${opts.count === 1 ? '' : 's'} shown (compact). For full detail on one: ${opts.expandTool}(${idArg}). For all details on every result: re-call ${opts.listTool} with verbose=true.`;
 }
 
-// ── atomicWrite ──────────────────────────────────────────────────────────
+// ── atomicWrite — STRIPPED, PHASE-4 T2 (2026-08-02) ──────────────────────
 //
-// Wraps a series of DB writes in a transaction so partial failures roll back.
-// Use for tools that touch >1 table — a failure mid-write must NOT leave the
-// system in a half-applied state. `complete_task` is the canonical example
-// (terminate agent + update task + notify parent — all or nothing).
-
-export function atomicWrite<T>(fn: () => T): T {
-  const db = getDb();
-  return db.transaction(fn)();
-}
+// requirement preserved: "a series of DB writes commits together, so a failure
+// mid-write cannot leave the system half-applied" — now `db/unit.ts withUnit`,
+// which is the same idea finished: synchronous BY TYPE (this one accepted
+// `async () => …` and would have handed the connection away mid-transaction),
+// nesting-aware, and carrying `afterCommit` so the broadcast waits for the
+// commit instead of racing it.
+//
+// It is removed on POSITIVE evidence, not on an absence (#15): every reader was
+// enumerated across BOTH repos and the set is its own declaration —
+//   git grep -n "atomicWrite" -- packages/ watchdog/ menubar/ deploy/ scripts/ templates/
+//   (dojo-test-kit) git grep -n "atomicWrite" .
+// → two hits, both in this file: the banner and the declaration. Zero callers
+// in production, in the dashboard, in tests, in the kit. Its doc comment named
+// `complete_task` as "the canonical example"; `complete_task` never called it.
+// A primitive with one writer and no readers, beside the primitive that
+// replaces it, is the duplication this overhaul exists to remove.

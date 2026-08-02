@@ -33,6 +33,7 @@
 
 import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
+import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 // PHASE-4 T1. `work/outcome.ts` DECLARES the boundary's answer (and carries the
 // `TransitionResult` STRIP record); this module is its public surface, exactly as
@@ -376,7 +377,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
   // one-millisecond drift between the two writes reads back as an UNVALIDATED close.
   const at = now();
 
-  db.transaction(() => {
+  withUnit(() => {
     // EFFECT: an authority's verdict is a ROW, not a flag column, and RULING 1 makes the
     // system closers' delivery receipt the same kind of row. Filed FIRST so migration
     // `139`'s BEFORE-UPDATE trigger can see it in this transaction.
@@ -477,7 +478,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     // no 'pending' verdict by design — its CHECK is upheld|rejected — so the REQUEST is the
     // `validation_requested` work_events row and only the ANSWER lands in that table. Revert
     // count is therefore COUNT(verdict='rejected'), a query, never a maintained counter.)
-  })();
+  });
 
   logger.info('work transition applied', { workId, from, to: input.to, by: input.by, eventId });
   const value: TransitionApplied = { workId, from, to: input.to, eventId };
@@ -1009,7 +1010,7 @@ export function openDelegationJoin(p: OpenJoinInput): string[] {
 
   const ids: string[] = [];
   const at = now();
-  db.transaction(() => {
+  withUnit(() => {
     for (const t of threads) {
       const childId = `piece:${p.parentWorkId}:${t.threadId}`;
       db.prepare(`
@@ -1037,7 +1038,7 @@ export function openDelegationJoin(p: OpenJoinInput): string[] {
     appendEvent(p.parentWorkId, 'join_opened', p.agentId, {
       children: ids.length, threads: threads.map((t) => t.threadId), ttl_at: p.ttlAt,
     });
-  })();
+  });
   logger.info('delegation join opened', {
     agentId: p.agentId, parentWorkId: p.parentWorkId, children: ids.length,
   }, p.agentId);
