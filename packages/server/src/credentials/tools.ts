@@ -9,7 +9,7 @@ import { CREDENTIAL_FRESH_SENTINEL } from '../memory/compaction.js';
 // The value set and the declared-secret-field map live together in ONE module
 // (T5b): "which fields are secret" and "which values are secret" are the same
 // job, and a secret is only ever learned from a DECLARED field, never a shape.
-import { noteHandedCredentialValues } from './secret-fields.js';
+import { noteHandedCredentialValues } from './secret-values.js';
 import {
   listCredentials,
   getCredentialByService,

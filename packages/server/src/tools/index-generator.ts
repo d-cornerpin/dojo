@@ -10,6 +10,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createLogger } from '../logger.js';
 import type { ToolDefinition } from '../agent/tools/types.js';
+import { registryToolDefinitions } from '../agent/tools/registry.js';
 
 const logger = createLogger('tool-docs-generator');
 const TOOLS_DIR = path.join(os.homedir(), '.dojo', 'tools');
@@ -72,12 +73,14 @@ export async function generateToolDocs(): Promise<{ count: number }> {
   // Ensure directory exists
   fs.mkdirSync(TOOLS_DIR, { recursive: true });
 
-  // Single source of truth: agent/tools.ts owns the complete family list, so
-  // any tool family agents can be granted is documented here too. (Replaces a
+  // Single source of truth: the REGISTRY owns the complete tool surface, so any
+  // tool family agents can be granted is documented here too. (Replaces a
   // hand-maintained import list that drifted: forms/pdf/credentials/plaud were
-  // loadable but undocumented, so load_tool_docs dead-ended on them.)
-  const { getAllToolDefinitions } = await import('../agent/tools.js');
-  const allTools: ToolDefinition[] = getAllToolDefinitions();
+  // loadable but undocumented, so load_tool_docs dead-ended on them.) PHASE-5
+  // T1: this was `await import('../agent/tools.js')` — the seventh of the seven
+  // dynamic-import hacks §T0-PINS P8 pinned. Nothing here imports this module
+  // from inside the toolbox, so the loop it was breaking did not exist.
+  const allTools: ToolDefinition[] = registryToolDefinitions();
 
   // Deduplicate by name (Google calendar_agenda vs Microsoft calendar_agenda_ms, etc.)
   const seen = new Set<string>();

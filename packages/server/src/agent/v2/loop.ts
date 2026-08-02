@@ -59,7 +59,7 @@ import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 import { assembleContext } from '../../memory/assembler.js';
 import { callModel, getContextWindow, STREAM_IDLE_TIMEOUT_ERROR } from '../model.js';
 import { writeContextReceipt } from './receipt.js';
-import { executeTool, agentCanSelfCompleteById, toolResultOf } from '../tools.js';
+import { executeTool, agentCanSelfCompleteById, toolResultOf, getFilteredTools } from '../tools.js';
 import { classifyToolResult } from '../tool-outcome.js';
 import { resolveRecipientDisplay } from '../../contacts/resolve-recipient.js';
 import { hasHandedCredentialValues, redactHandedCredentials, redactAssistantBlocksForPersist, redactDeclaredSecretArgs, noteDeclaredSecretsFromToolCalls } from '../../credentials/secret-fields.js';
@@ -7580,7 +7580,6 @@ export async function runV2Turn(agentId: string): Promise<void> {
           if (toolResult.isError && toolResult.content.includes('[BLOCKED]')) {
             try {
               const { getAgentPermissions } = await import('../permissions.js');
-              const { getFilteredTools } = await import('../tools.js');
               const manifest = getAgentPermissions(agentId);
               const tools = getFilteredTools(agentId);
               const suggestions = permissionAlternativeFinder({

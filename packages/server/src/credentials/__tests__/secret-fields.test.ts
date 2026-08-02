@@ -18,7 +18,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
-  SECRET_TOOL_FIELDS,
+  getSecretToolFields,
   REDACTED_CREDENTIAL,
   secretFieldsFor,
   redactDeclaredSecretArgs,
@@ -35,13 +35,19 @@ const SECRET = 'sk-live-t5b-0nlyinthisfile-9f2c';
 beforeEach(() => forgetHandedCredentialValues());
 
 describe('the enumeration', () => {
+  // PHASE-5 T1: this used to read a hand-maintained `SECRET_TOOL_FIELDS` map in
+  // this module. It now reads the DECLARATIONS on the tool definitions
+  // themselves, so the same three entries are asserted against a derivation
+  // rather than against a literal — which is the whole point of the change
+  // (PHASE-4 exit §8 item 2: nothing failed when a new tool's line was missing).
   it('is exactly the three declared secret fields on three tools', () => {
-    expect([...SECRET_TOOL_FIELDS.keys()].sort()).toEqual(
+    const declared = getSecretToolFields();
+    expect([...declared.keys()].sort()).toEqual(
       ['credential_add', 'credential_update', 'technique_set_placeholder'],
     );
-    expect(SECRET_TOOL_FIELDS.get('credential_add')).toEqual(['credentials']);
-    expect(SECRET_TOOL_FIELDS.get('credential_update')).toEqual(['credentials']);
-    expect(SECRET_TOOL_FIELDS.get('technique_set_placeholder')).toEqual(['value']);
+    expect(declared.get('credential_add')).toEqual(['credentials']);
+    expect(declared.get('credential_update')).toEqual(['credentials']);
+    expect(declared.get('technique_set_placeholder')).toEqual(['value']);
   });
 
   it('leaves the credential tools that carry no secret INPUT out', () => {

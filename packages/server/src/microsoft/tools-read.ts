@@ -5,6 +5,7 @@
 // ════════════════════════════════════════
 
 import type { ToolDefinition } from '../agent/tools/types.js';
+import { applyTextPagination } from '../agent/tools/pagination.js';
 import { msGraphRead, calendarPrefix, drivePrefix } from './client.js';
 
 // ── Tool Definitions ──
@@ -801,7 +802,6 @@ export async function executeMicrosoftReadTool(
 
       // Phase 3.5 (2026-05-04) — paginated body. Headers always included; the
       // body slices to ~12K chars by default with offset/limit pagination.
-      const { applyTextPagination } = await import('../agent/tools.js');
       const pagedBody = applyTextPagination(
         body,
         'outlook_read',
@@ -1014,7 +1014,6 @@ export async function executeMicrosoftReadTool(
           });
           if (resp.ok) {
             const text = await resp.text();
-            const { applyTextPagination } = await import('../agent/tools.js');
             const paged = applyTextPagination(
               text,
               'onedrive_read',

@@ -5,6 +5,7 @@
 // ════════════════════════════════════════
 
 import type { ToolDefinition } from '../agent/tools/types.js';
+import { applyTextPagination } from '../agent/tools/pagination.js';
 import { googleRead } from './client.js';
 import { formatTimeForAgent, parseFlexibleTime } from '../services/format-time.js';
 
@@ -552,7 +553,6 @@ export async function executeGoogleReadTool(
       );
 
       // Headers are always included in full; pagination only affects the body.
-      const { applyTextPagination } = await import('../agent/tools.js');
       const pagedBody = applyTextPagination(
         body || data?.snippet || '(empty body)',
         'gmail_read',
@@ -803,7 +803,6 @@ export async function executeGoogleReadTool(
         body = typeof result.data === 'string' ? result.data : JSON.stringify(result.data, null, 2);
       }
 
-      const { applyTextPagination } = await import('../agent/tools.js');
       const paged = applyTextPagination(
         body,
         'drive_read',
@@ -835,7 +834,6 @@ export async function executeGoogleReadTool(
           }
         }
       }
-      const { applyTextPagination } = await import('../agent/tools.js');
       const paged = applyTextPagination(
         text || '(empty document)',
         'docs_read',
@@ -861,7 +859,6 @@ export async function executeGoogleReadTool(
         return `Row ${i + 1}: ${cells}`;
       });
       const fullText = rows.join('\n');
-      const { applyTextPagination } = await import('../agent/tools.js');
       const paged = applyTextPagination(
         fullText,
         'sheets_read',

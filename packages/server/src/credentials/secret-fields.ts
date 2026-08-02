@@ -15,11 +15,16 @@
 // chars, "password=". That is prose-keying, the disease this overhaul exists to
 // remove — it fires on a wedding transcript that happens to quote a token, and
 // it stays silent on the credential that does not match the pattern anyone
-// thought of. So the key here is the SCHEMA: a tool declares, in its own
-// `input_schema`, that a field carries credential material, and this module
-// redacts exactly those fields. A field that is not declared is not redacted,
-// which is a limitation with a name rather than a silent hole. (A value-pattern
-// fallback, if it is ever wanted, is Phase 5's registry question.)
+// thought of. So the key here is the SCHEMA: a tool declares, on its own
+// definition, that a field carries credential material, and this module redacts
+// exactly those fields. A field that is not declared is not redacted, which is
+// a limitation with a name rather than a silent hole.
+//
+// PHASE-5 T1 moved that declaration to where it belongs and made this module a
+// READER of it (`fields: { credentials: { secret: true } }` on the definition,
+// read through `agent/tools/registry.ts`). It is a sibling of `input_schema`
+// rather than a property inside it, because `input_schema` is handed to the
+// provider verbatim and the cache-prefix golden hashes it (OR7).
 //
 // ── REDACTION IS AT PERSIST, NOT AT EXECUTION ──
 // Nothing here ever touches the arguments the tool actually runs with. The
@@ -30,8 +35,9 @@
 // contract ("the encrypted credentials store … is the only authoritative copy").
 //
 // ── THE SECOND MECHANISM, AND WHY IT IS THE SAME ONE ──
-// Below the field map is the in-process set of secret VALUES this agent has
-// handled. It predates T5b (NEXT-WAVE item 5: a value handed out by
+// Beside the field reading is the in-process set of secret VALUES this agent
+// has handled — `./secret-values.ts` since T1, and re-exported from here so
+// this module is still the one import surface. It predates T5b (NEXT-WAVE item 5: a value handed out by
 // `credential_get` can be inlined into a shell command, the classic
 // `sshpass -p '<pw>'`), and T5b feeds the same set from the other direction —
 // values the agent handed IN through a declared secret field. One set, one
@@ -41,23 +47,46 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { resolveToolAlias } from '../tools/aliases.js';
+import { declaredSecretFieldsByTool } from '../agent/tools/registry.js';
+// The in-process VALUE set lives in its own leaf so `credentials/tools.ts` can
+// reach it without importing this module (which now reads the registry, which
+// imports `agent/tools.ts`, which imports `credentials/tools.ts`). Re-exported
+// here so this file stays the single import surface T5b made it.
+import {
+  REDACTED_CREDENTIAL,
+  noteHandedCredentialValues,
+  hasHandedCredentialValues,
+  redactHandedCredentials,
+} from './secret-values.js';
+export {
+  REDACTED_CREDENTIAL,
+  noteHandedCredentialValues,
+  hasHandedCredentialValues,
+  redactHandedCredentials,
+  forgetHandedCredentialValues,
+} from './secret-values.js';
 
-/** What replaces a secret in any stored, indexed or broadcast copy. */
-export const REDACTED_CREDENTIAL = '<redacted-credential>';
 
 /**
- * The enumeration, by tool name → the fields of THAT TOOL'S OWN input schema
- * that carry credential material. Derived by reading all 437 tool definitions
- * returned by `getAllToolDefinitions()` (PHASE-4 T5b; the command and the full
- * dump are in that task's report). Three fields on three tools is the whole of
- * it today:
+ * THE ENUMERATION IS NOW A READING, NOT A LIST (PHASE-5 T1, closing PHASE-4
+ * exit §8 item 2).
  *
- *   credential_add.credentials         "The credential payload as an object.
- *   credential_update.credentials       Single-key APIs: {api_key: "..."}"
- *   technique_set_placeholder.value    "The actual value (API key, token, URL,
- *                                       etc.) the user provided"
+ * This used to be a hand-maintained `new Map([...])` of tool name → the fields
+ * of that tool's own input schema that carry credential material, and its own
+ * docstring ended "a new tool with a secret-bearing field adds a line HERE".
+ * That was the defect: **nothing failed when the line was missing.** A new tool
+ * leaked until somebody remembered.
  *
- * DELIBERATELY NOT HERE, each with its reason:
+ * The declaration now lives ON the tool definition —
+ * `fields: { credentials: { secret: true } }` — and this is a reader of it, so
+ * a tool is covered the moment it declares, and a tool that loses its
+ * declaration loses the redaction visibly rather than silently. The three
+ * entries PHASE-4 T5b derived by hand are still the whole of it, and
+ * `agent/tools/__tests__/effects-conformance.test.ts` asserts exactly that set,
+ * so the count is held by a test in both directions.
+ *
+ * DELIBERATELY NOT DECLARED, each with its reason (kept here because the
+ * absences are the part a reader cannot re-derive):
  *   * `credential_get.service_name` / `credential_delete.service_name` — a
  *     service NAME is not secret material, and redacting it would blind the
  *     cross-turn failure ledger to which service kept failing.
@@ -69,14 +98,25 @@ export const REDACTED_CREDENTIAL = '<redacted-credential>';
  *     (`vault/tools.ts:detectCredentialContent`); its field is declared as
  *     knowledge, not as a secret.
  *
- * A new tool with a secret-bearing field adds a line HERE. That is the whole
- * maintenance contract, and it is why this is a map rather than a matcher.
+ * Read through a memo rather than on every call: `redactDeclaredSecretArgs`
+ * runs on every persisted tool call, and the registry build walks 437
+ * definitions.
  */
-export const SECRET_TOOL_FIELDS: ReadonlyMap<string, readonly string[]> = new Map([
-  ['credential_add', ['credentials']],
-  ['credential_update', ['credentials']],
-  ['technique_set_placeholder', ['value']],
-]);
+let secretFieldMemo: ReadonlyMap<string, readonly string[]> | null = null;
+
+function secretToolFields(): ReadonlyMap<string, readonly string[]> {
+  if (!secretFieldMemo) secretFieldMemo = declaredSecretFieldsByTool();
+  return secretFieldMemo;
+}
+
+/**
+ * The declared map, for readers that want the whole surface (diagnostics, the
+ * conformance walk's counterpart, T7's coverage report). Kept as a function
+ * rather than the old `const` because the source is now a reading.
+ */
+export function getSecretToolFields(): ReadonlyMap<string, readonly string[]> {
+  return secretToolFields();
+}
 
 /**
  * The declared secret fields of a tool, by CANONICAL name. Aliases resolve
@@ -84,10 +124,11 @@ export const SECRET_TOOL_FIELDS: ReadonlyMap<string, readonly string[]> = new Ma
  * true by construction rather than by a comment.
  */
 export function secretFieldsFor(toolName: string): readonly string[] | undefined {
-  const direct = SECRET_TOOL_FIELDS.get(toolName);
+  const fields = secretToolFields();
+  const direct = fields.get(toolName);
   if (direct) return direct;
   const resolved = resolveToolAlias(toolName, {});
-  return resolved.tombstone ? undefined : SECRET_TOOL_FIELDS.get(resolved.name);
+  return resolved.tombstone ? undefined : fields.get(resolved.name);
 }
 
 /** Every leaf of a declared secret field becomes the sentinel; structure stays. */
@@ -197,48 +238,4 @@ export function redactAssistantBlocksForPersist<T extends { type: string }>(
     }
     return block;
   });
-}
-
-// ── The in-process value set (moved here from credentials/tools.ts, T5b) ──
-//
-// Length-gated so a trivial value ("1", "on") that happens to sit in a
-// credential field never turns into a scrub rule that rewrites unrelated text.
-// The STRUCTURAL redaction above has no such gate: a one-character secret in a
-// declared field is still replaced in the stored arguments.
-const MIN_REDACTABLE_CREDENTIAL_LEN = 6;
-const handedCredentialValues = new Map<string, Set<string>>();
-
-/** Register secret values this agent has handled, in either direction. */
-export function noteHandedCredentialValues(agentId: string, values: string[]): void {
-  if (values.length === 0) return;
-  let set = handedCredentialValues.get(agentId);
-  if (!set) { set = new Set<string>(); handedCredentialValues.set(agentId, set); }
-  for (const v of values) {
-    if (typeof v === 'string' && v.length >= MIN_REDACTABLE_CREDENTIAL_LEN) set.add(v);
-  }
-}
-
-/** True if this agent has handled any redactable credential value this process. */
-export function hasHandedCredentialValues(agentId: string): boolean {
-  const set = handedCredentialValues.get(agentId);
-  return !!set && set.size > 0;
-}
-
-/** Replace any credential value this agent has handled with the sentinel.
- *  Returns the input unchanged when nothing matches (the common case), so it is
- *  cheap to call on every persisted string. */
-export function redactHandedCredentials(agentId: string, text: string): string {
-  const set = handedCredentialValues.get(agentId);
-  if (!set || set.size === 0 || !text) return text;
-  let out = text;
-  for (const secret of set) {
-    if (out.includes(secret)) out = out.split(secret).join(REDACTED_CREDENTIAL);
-  }
-  return out;
-}
-
-/** Test seam: forget everything known about one agent (or all of them). */
-export function forgetHandedCredentialValues(agentId?: string): void {
-  if (agentId === undefined) handedCredentialValues.clear();
-  else handedCredentialValues.delete(agentId);
 }
