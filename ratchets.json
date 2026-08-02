@@ -1302,6 +1302,13 @@
       "to": 259,
       "by": "PHASE-5 T3 Step 3 (2026-08-02) \u2014 PINNED, not raised: the declarations walk crossed the growth detector's 60% mark",
       "why": "The growth detector offers split-or-pin and this is the pin, with the reason stated so it is arguable. Step 3's validation boundary reads `allowEmpty` and `requiredNotEnforced` off the `fields` sibling BY FIELD NAME, so clause 7b was added to make a renamed property fail the build: silently dropping an `allowEmpty` declaration turns `file_write({content: \"\"})` from a working call into a refusal, which is precisely the silent capability loss this phase exists to prevent. Splitting the walk would put clauses 1-7 in one file and 7b in another while both judge the same definition in the same pass \u2014 the opposite of one-owner-per-job, and a reader would have to find two files to answer \"what does a definition have to satisfy?\". Pinned decrease-only at its current count; T4's toolbox split is where it is revisited."
+    },
+    {
+      "path": "packages/shared/src/outcome.ts",
+      "from": 268,
+      "to": 270,
+      "by": "PHASE-5 T3 Step 3 (2026-08-02) \u2014 +2 lines for a new tool-seam reason and its one line of vocabulary",
+      "why": "`invalid_args` joins blocked/crashed/cancelled because the schema-validation boundary gave `INVALID_ARGS` its first writer, and without the arm a malformed call classified `crashed` \u2014 the platform reporting itself broken for a call it understood and refused. The raise is the enum member, its entry in TOOL_SEAM_REASONS, and TWO lines of doc: what it means, and the one distinction a reader must not get wrong (it is NOT `blocked`; retry with corrected arguments, not never). The longer rationale deliberately lives at the classifier in `agent/tool-outcome.ts` rather than here, which is why this is +2 and not +13 \u2014 the first draft was, and the ratchet is what forced the prose to the file that owns the decision."
     }
   ],
   "maxNewFileLines": 400,
@@ -1437,7 +1444,7 @@
     "packages/server/src/work/work-reaper.ts": 528,
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
-    "packages/shared/src/outcome.ts": 268,
+    "packages/shared/src/outcome.ts": 270,
     "packages/shared/src/types.ts": 527,
     "packages/shared/src/visibility.ts": 881,
     "packages/shared/src/ws.ts": 1088,
