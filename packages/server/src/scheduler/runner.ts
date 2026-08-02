@@ -24,6 +24,7 @@ import {
   recordValidationEscalation, deleteTrackerRow, deliveryForTaskClose,
   deliveryForAgentSince, stopLiveSchedule,
 } from '../work/tracker-store.js';
+import { workSettled, noteUnsettled } from '../work/store.js';
 import {
   claimOccurrence, releaseOccurrence, settleOccurrence, occurrenceOf, inFlightOccurrence,
   assignOccurrence, skipOpenOccurrences, sweepOrphanedOccurrences,
@@ -288,7 +289,7 @@ async function sweepStaleUserVerdictRequests(): Promise<void> {
           by: 'scheduler', actorId: 'scheduler',
           reason: `the owner's verdict was never given within ${STALE_REQUEST_HOURS}h`,
         });
-        if (r.kind === 'applied' || r.kind === 'noop') {
+        if (workSettled(r)) {
           clearUserVerdict(id, 'scheduler', 'verdict request timed out');
           // The scheduler's own timeout IS the validation of this block — the same
           // reasoning the `blocked_validated = 1` assignment carried.
@@ -737,10 +738,10 @@ export async function checkScheduledTasks(): Promise<void> {
       logger.info('Scheduler: occurrence already claimed elsewhere, skipping', { taskId, occurrence: claimedOccurrence, sequence: runNumber });
       continue;
     }
-    setTrackerStatus(taskId, 'in_progress', {
+    noteUnsettled(setTrackerStatus(taskId, 'in_progress', {
       by: 'scheduler', actorId: 'scheduler',
       reason: `scheduled occurrence ${claimedOccurrence} fired`,
-    });
+    }), 'scheduler: occurrence fired', { taskId });
 
     // PHASE-2 T10F — THE OCCURRENCE ID *IS* THE RUN ID, and `task_runs` is gone.
     //
@@ -783,10 +784,10 @@ export async function checkScheduledTasks(): Promise<void> {
         const stillRunning = db.prepare('SELECT schedule_status FROM work WHERE id = ?')
           .get(taskId) as { schedule_status: string } | undefined;
         if (stillRunning?.schedule_status === 'running') {
-          setTrackerStatus(taskId, 'on_deck', {
+          noteUnsettled(setTrackerStatus(taskId, 'on_deck', {
             by: 'scheduler', actorId: 'scheduler',
             reason: 'no agent was available for this occurrence; the claim is released',
-          });
+          }), 'scheduler: no agent available, claim released', { taskId });
           releaseOccurrence(
             occurrenceId, taskId, claimedOccurrenceMs,
             (taskRow.last_run_at_ms as number | null) ?? null,
@@ -933,7 +934,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   if (settled.kind !== 'applied') {
     logger.info('Scheduler: run already closed elsewhere, skipping advance', {
       taskId, runId, result: settled.kind,
-      gate: 'gate' in settled ? settled.gate : undefined,
+      reason: settled.reason,
     });
     return false;
   }
@@ -1027,15 +1028,15 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
 
   if (nextRun) {
     // Recurring: set next run, go back to waiting, reset task status to on_deck
-    setTrackerStatus(taskId, 'on_deck', {
+    noteUnsettled(setTrackerStatus(taskId, 'on_deck', {
       by: 'scheduler', actorId: 'scheduler', reason: 'run finished; waiting for the next occurrence',
-    });
+    }), 'scheduler: run finished, waiting for next occurrence', { taskId });
     patchWork(taskId, { next_run_at: tsToMs(nextRun), schedule_status: 'waiting', last_run_at: tsToMs(now) });
   } else if (failedFinalRun) {
     // D8: final run failed, keep the failure VISIBLE (see block comment above).
-    setTrackerStatus(taskId, 'fallen', {
+    noteUnsettled(setTrackerStatus(taskId, 'fallen', {
       by: 'scheduler', actorId: 'scheduler', reason: 'the final scheduled run failed',
-    });
+    }), 'scheduler: final run failed', { taskId });
     patchWork(taskId, { schedule_status: 'completed', last_run_at: tsToMs(now) });
       retireEngineEventsForTask(taskId, 'task_fallen');
     try {
@@ -1107,7 +1108,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
       resultDeliveryId: finalDelivery,
       reason: 'the schedule ran out of occurrences and the last run succeeded',
     });
-    if (finalRes.kind !== 'applied' && finalRes.kind !== 'noop') {
+    if (!workSettled(finalRes)) {
       logger.warn('Scheduler: final-run close refused by the work gate', { taskId, result: finalRes });
     }
     patchWork(taskId, { schedule_status: 'completed', last_run_at: tsToMs(now) });
@@ -1495,10 +1496,10 @@ function recoverMissingNextRun(taskId: string): void {
   if (nextRun) {
     patchWork(taskId, { next_run_at: tsToMs(nextRun), schedule_status: 'waiting' });
     if (task.status !== 'on_deck' && task.status !== 'in_progress') {
-      setTrackerStatus(taskId, 'on_deck', {
+      noteUnsettled(setTrackerStatus(taskId, 'on_deck', {
         by: 'scheduler', actorId: 'scheduler',
         reason: 'recovered a recurring task whose next run was missing',
-      });
+      }), 'scheduler: recovered a missing next run', { taskId });
     }
     logger.warn('Scheduler: recovered recurring task with missing next_run_at', {
       taskId, title: task.title, nextRun,
@@ -1510,7 +1511,7 @@ function recoverMissingNextRun(taskId: string): void {
       resultDeliveryId: recDelivery,
       reason: 'a recurring task with no recoverable next run is finished',
     });
-    if (recRes.kind !== 'applied' && recRes.kind !== 'noop') {
+    if (!workSettled(recRes)) {
       logger.warn('Scheduler: recovery close refused by the work gate', { taskId, result: recRes });
     }
     patchWork(taskId, { schedule_status: 'completed' });
@@ -1566,10 +1567,10 @@ export function forceResetStuckRecurringTask(taskId: string): void {
 
   const nextRun = calculateNextRun(scheduledTask);
   if (nextRun) {
-    setTrackerStatus(taskId, 'on_deck', {
+    noteUnsettled(setTrackerStatus(taskId, 'on_deck', {
       by: 'scheduler', actorId: 'scheduler',
       reason: 'this run is failed; the schedule rejoins at its next occurrence',
-    });
+    }), 'scheduler: failed run rejoins at next occurrence', { taskId });
     patchWork(taskId, { schedule_status: 'waiting', next_run_at: tsToMs(nextRun) });
     logger.warn('Scheduler: force-reset stuck recurring task to on_deck/waiting', { taskId, title: task.title, nextRun });
   } else {
@@ -1579,7 +1580,7 @@ export function forceResetStuckRecurringTask(taskId: string): void {
       resultDeliveryId: frDelivery,
       reason: 'stuck recurring task has no future runs left',
     });
-    if (frRes.kind !== 'applied' && frRes.kind !== 'noop') {
+    if (!workSettled(frRes)) {
       logger.warn('Scheduler: force-reset close refused by the work gate', { taskId, result: frRes });
     }
     patchWork(taskId, { schedule_status: 'completed' });
@@ -1619,10 +1620,10 @@ function resumeExpiredPauses(): void {
 
   for (const task of expired) {
     const restoreStatus = (task.status_before_pause ?? 'on_deck') as TrackerStatus;
-    setTrackerStatus(task.id, restoreStatus, {
+    noteUnsettled(setTrackerStatus(task.id, restoreStatus, {
       by: 'scheduler', actorId: 'scheduler',
       reason: `the pause expired at ${task.paused_until}`,
-    });
+    }), 'scheduler: pause expired', { taskId: task.id });
 
     logger.info('Auto-resumed paused task (pause expired)', {
       taskId: task.id,

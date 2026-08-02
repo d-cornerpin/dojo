@@ -146,9 +146,9 @@ describe("RULING 1 — the agent's own close stays a Key-1 request", () => {
         to: 'done', by: 'agent', actorId: AGENT,
         reason: 'work_update(action="status") -> complete', resultDeliveryId: 'd-1',
       });
-      expect(r.kind).toBe('rejected');
-      if (r.kind !== 'rejected') return;
-      expect(r.gate).toBe('requires-validation');
+      expect(r.kind).toBe('refused');
+      if (r.kind !== 'refused') return;
+      expect(r.reason).toBe('requires-validation');
       expect(stateOf('w1')).toBe('claimed');
       expect(adjudications('w1')).toEqual([]);
       expect(events('w1').map((e) => e.kind)).toEqual(['validation_requested']);
@@ -159,7 +159,7 @@ describe("RULING 1 — the agent's own close stays a Key-1 request", () => {
     seedWork('w1');
     expect(transition('w1', {
       to: 'done', by: 'agent', reason: 'done', resultDeliveryId: 'd-1',
-    }).kind).toBe('rejected');
+    }).kind).toBe('refused');
     // one detail corrected — the closer — and the identical call applies.
     expect(transition('w1', {
       to: 'done', by: 'owner', claim: 'authoritative', reason: 'done', resultDeliveryId: 'd-1',
@@ -172,16 +172,16 @@ describe("RULING 1 — the agent's own close stays a Key-1 request", () => {
       to: 'done', by: 'agent', claim: 'requests-validation',
       reason: 'sent it', resultDeliveryId: 'd-1',
     });
-    expect(r.kind).toBe('rejected');
+    expect(r.kind).toBe('refused');
     expect(events('w1').map((e) => e.kind)).toEqual(['validation_requested']);
   });
 
   it('the request still runs G7 first: no delivery is refused as no-delivery, not as a request', () => {
     seedWork('w1');
     const r = transition('w1', { to: 'done', by: 'agent', reason: 'trust me' });
-    expect(r.kind).toBe('rejected');
-    if (r.kind !== 'rejected') return;
-    expect(r.gate).toBe('done-requires-delivery');
+    expect(r.kind).toBe('refused');
+    if (r.kind !== 'refused') return;
+    expect(r.reason).toBe('done-requires-delivery');
     expect(events('w1')).toEqual([]);       // a work claim nobody delivered is not a Key-1 filing
   });
 });
@@ -225,7 +225,7 @@ describe('RULING 1 — the other three kinds keep closing by delivery', () => {
       seedWork('w1', { kind: 'task', root_kind: rootKind });
       expect(transition('w1', {
         to: 'done', by: 'agent', reason: 'closing', resultDeliveryId: 'd-1',
-      }).kind).toBe('rejected');
+      }).kind).toBe('refused');
     },
   );
 });
@@ -306,7 +306,7 @@ describe('migration 139 — the two_key_completion trigger', () => {
     const again = transition('w1', {
       to: 'done', by: 'agent', reason: 'closing again', resultDeliveryId: 'd-1',
     });
-    expect(again.kind).toBe('rejected');
+    expect(again.kind).toBe('refused');
     expect(stateOf('w1')).toBe('open');
   });
 
@@ -367,7 +367,7 @@ describe("the trigger's key and the PM's verdict are different questions", () =>
   it('THE KEY-1 FILING IS NOT ERROR-SHAPED — a recorded request must not read as a broken tool', async () => {
     const { closeRefusalTextForTest } = await import('../../tracker/tools.js');
     const filed = closeRefusalTextForTest('abcdef12-0000', {
-      kind: 'rejected', workId: 'abcdef12-0000', gate: 'requires-validation',
+      kind: 'refused', workId: 'abcdef12-0000', reason: 'requires-validation',
       detail: 'close request recorded (event 1)',
     }, 'complete');
     expect(filed.startsWith('Error')).toBe(false);
@@ -375,7 +375,7 @@ describe("the trigger's key and the PM's verdict are different questions", () =>
     // POSITIVE CONTROL of the same shape: a genuine refusal still IS error-shaped, so the
     // clause above is not passing because the function stopped saying "Error" at all.
     const refused = closeRefusalTextForTest('abcdef12-0000', {
-      kind: 'rejected', workId: 'abcdef12-0000', gate: 'done-requires-delivery', detail: 'no delivery',
+      kind: 'refused', workId: 'abcdef12-0000', reason: 'done-requires-delivery', detail: 'no delivery',
     }, 'complete');
     expect(refused.startsWith('Error')).toBe(true);
   });

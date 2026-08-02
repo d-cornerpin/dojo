@@ -34,6 +34,13 @@
 import { createHash } from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
+// PHASE-4 T1. `work/outcome.ts` DECLARES the boundary's answer (and carries the
+// `TransitionResult` STRIP record); this module is its public surface, exactly as
+// it was for `TransitionResult`, so every caller keeps ONE import path and the
+// split is an implementation detail rather than a second place to look.
+import type { TransitionApplied, TransitionGate, WorkOutcome } from './outcome.js';
+export type { TransitionApplied, TransitionGate, WorkOutcome, WorkOutcomeReason } from './outcome.js';
+export { workSettled, isStateConflict, noteUnsettled } from './outcome.js';
 
 const logger = createLogger('work-store');
 
@@ -141,28 +148,9 @@ export interface TransitionInput {
   actorId?: string | null;
 }
 
-export type TransitionResult =
-  | { kind: 'applied'; workId: string; from: WorkState; to: WorkState; eventId: number }
-  | { kind: 'rejected'; workId: string; gate: TransitionGate; detail: string }
-  | { kind: 'noop'; workId: string; state: WorkState; detail: string }
-  | { kind: 'conflict'; workId: string; expected: WorkState; actual: WorkState };
-
-export type TransitionGate =
-  | 'no-such-work'
-  | 'reason-required'
-  | 'illegal-transition'
-  | 'engine-needs-evidence'
-  | 'engine-evidence-unresolved'
-  | 'done-requires-delivery'
-  | 'delivery-unresolved'
-  | 'authoritative-claim-not-permitted'
-  | 'requires-validation'
-  | 'reopen-requires-authority'
-  // PHASE-2 T4: the two refusals the fan-out join owes. Both were caller-side `if`s in the
-  // string machine and both are structural here, so no caller can forget them.
-  | 'not-a-join-child'
-  | 'empty-piece';
-
+// PHASE-4 T1: `TransitionResult` (four private arms) and `TransitionGate` moved to
+// `work/outcome.ts` and became `WorkOutcome`, the shared five-way. The STRIP entry,
+// the arm-for-arm mapping and the requirement it preserves are in that file's header.
 interface WorkRow {
   id: string;
   kind: WorkKind;
@@ -217,7 +205,7 @@ export { appendEvent as appendWorkEvent };
  * gets a value it did not use rather than an exception it swallowed, and the conformance walk
  * plus the type make the ignoring visible.
  */
-export function transition(workId: string, input: TransitionInput): TransitionResult {
+export function transition(workId: string, input: TransitionInput): WorkOutcome {
   const db = getDb();
   const actorId = input.actorId ?? input.by;
 
@@ -229,32 +217,39 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
   ).get(workId) as WorkRow | undefined;
   if (!row) {
     return {
-      kind: 'rejected', workId, gate: 'no-such-work',
+      kind: 'refused', workId, reason: 'no-such-work',
       detail: `No work row ${workId}. It may be from an earlier session; list the open work and use a current id.`,
     };
   }
 
   // ── G2: a state change nobody can explain does not happen. ──
   if (!input.reason || input.reason.trim().length === 0) {
-    return { kind: 'rejected', workId, gate: 'reason-required', detail: 'every transition states its reason' };
+    return { kind: 'refused', workId, reason: 'reason-required', detail: 'every transition states its reason' };
   }
 
   // ── G3: lost race, seen instead of silently overwritten. ──
   if (input.expectedState !== undefined && input.expectedState !== row.state) {
-    return { kind: 'conflict', workId, expected: input.expectedState, actual: row.state };
+    return {
+      kind: 'refused', workId, reason: 'state-conflict',
+      detail: `expected ${input.expectedState}, found ${row.state}`,
+      expected: input.expectedState, actual: row.state,
+    };
   }
 
   // ── G4: already there. Not an error, and NOT a success either — the caller asked for a
   //        change that did not happen, and #40 of the tracker requirements says an explicit
   //        NO-OP is never reported as [OK]. ──
   if (row.state === input.to) {
-    return { kind: 'noop', workId, state: row.state, detail: `already ${row.state}` };
+    return {
+      kind: 'no_change', workId, reason: 'already-in-state',
+      state: row.state, detail: `already ${row.state}`,
+    };
   }
 
   // ── G5: the legal-transition table. ──
   if (!LEGAL[row.state].includes(input.to)) {
     return {
-      kind: 'rejected', workId, gate: 'illegal-transition',
+      kind: 'refused', workId, reason: 'illegal-transition',
       detail: `${row.state} -> ${input.to} is not a legal move`,
     };
   }
@@ -263,13 +258,13 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
   if (input.by === 'engine') {
     if (!input.evidenceRef) {
       return {
-        kind: 'rejected', workId, gate: 'engine-needs-evidence',
+        kind: 'refused', workId, reason: 'engine-needs-evidence',
         detail: 'transition(by:"engine") requires evidence_ref — an occurrence, delivery or artifact id',
       };
     }
     if (!evidenceResolves(input.evidenceRef)) {
       return {
-        kind: 'rejected', workId, gate: 'engine-evidence-unresolved',
+        kind: 'refused', workId, reason: 'engine-evidence-unresolved',
         detail: `evidence_ref ${input.evidenceRef} resolves to no occurrence, delivery or artifact row`,
       };
     }
@@ -281,13 +276,13 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
   if (input.to === 'done') {
     if (!deliveryId) {
       return {
-        kind: 'rejected', workId, gate: 'done-requires-delivery',
+        kind: 'refused', workId, reason: 'done-requires-delivery',
         detail: 'work is done because something was delivered — supply result_delivery_id',
       };
     }
     if (!deliveryExists(deliveryId)) {
       return {
-        kind: 'rejected', workId, gate: 'delivery-unresolved',
+        kind: 'refused', workId, reason: 'delivery-unresolved',
         detail: `result_delivery_id ${deliveryId} is not a delivery row`,
       };
     }
@@ -296,7 +291,7 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
   // ── G8: the two-key contract. ──
   if (input.claim === 'authoritative' && !AUTHORITIES.includes(input.by)) {
     return {
-      kind: 'rejected', workId, gate: 'authoritative-claim-not-permitted',
+      kind: 'refused', workId, reason: 'authoritative-claim-not-permitted',
       detail: `${input.by} may not claim authority; that is the owner's and the PM's`,
     };
   }
@@ -305,7 +300,7 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
   if (isTerminal(row.state) && !isTerminal(input.to)
       && input.claim !== 'authoritative' && input.by !== 'engine') {
     return {
-      kind: 'rejected', workId, gate: 'reopen-requires-authority',
+      kind: 'refused', workId, reason: 'reopen-requires-authority',
       detail: `reopening ${row.state} work needs the owner or the PM`,
     };
   }
@@ -348,7 +343,7 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
     });
     logger.info('work close requested (Key 1 filed)', { workId, kind: row.kind, from: row.state, eventId });
     return {
-      kind: 'rejected', workId, gate: 'requires-validation',
+      kind: 'refused', workId, reason: 'requires-validation',
       detail: `close request recorded (event ${eventId}); a ${row.kind} is closed by an authority or by the engine's own delivery receipt, not by the worker that did it`,
     };
   }
@@ -363,7 +358,7 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
     });
     logger.info('work validation requested', { workId, from: row.state, requested: input.to, eventId });
     return {
-      kind: 'rejected', workId, gate: 'requires-validation',
+      kind: 'refused', workId, reason: 'requires-validation',
       detail: `recorded as a validation request (event ${eventId}); an authority confirms it`,
     };
   }
@@ -485,7 +480,8 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
   })();
 
   logger.info('work transition applied', { workId, from, to: input.to, by: input.by, eventId });
-  return { kind: 'applied', workId, from, to: input.to, eventId };
+  const value: TransitionApplied = { workId, from, to: input.to, eventId };
+  return { kind: 'applied', value };
 }
 
 /** Record an authority's REJECTION of a claim. The uphold path lives inside `transition()`
@@ -495,16 +491,16 @@ export function transition(workId: string, input: TransitionInput): TransitionRe
 export function rejectClaim(
   workId: string,
   params: { claimState: WorkState; by: Actor; byId?: string; note: string; evidenceRef?: string | null },
-): { kind: 'applied'; id: number } | { kind: 'rejected'; gate: TransitionGate; detail: string } {
+): { kind: 'applied'; id: number } | { kind: 'refused'; reason: TransitionGate; detail: string } {
   if (!AUTHORITIES.includes(params.by)) {
     return {
-      kind: 'rejected', gate: 'authoritative-claim-not-permitted',
+      kind: 'refused', reason: 'authoritative-claim-not-permitted',
       detail: `${params.by} may not adjudicate`,
     };
   }
   const db = getDb();
   if (!db.prepare('SELECT 1 FROM work WHERE id = ?').get(workId)) {
-    return { kind: 'rejected', gate: 'no-such-work', detail: `no work row ${workId}` };
+    return { kind: 'refused', reason: 'no-such-work', detail: `no work row ${workId}` };
   }
   const info = db.prepare(
     `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, evidence_ref, note, created_at)
@@ -605,7 +601,7 @@ export function openAsk(p: OpenAskInput): string {
  * `by: 'agent'` is the honest actor: it is this agent's own turn taking its own ask. The
  * engine actor would need evidence it cannot have yet — the turn has not happened.
  */
-export function claimAsk(workId: string, agentId: string): TransitionResult {
+export function claimAsk(workId: string, agentId: string): WorkOutcome {
   return transition(workId, {
     to: 'claimed', by: 'agent', actorId: agentId, expectedState: 'open',
     reason: 'turn pickup',
@@ -648,7 +644,7 @@ export function stampClaimingTurn(workId: string, turnNumber: number): number {
  */
 export function revertAskClaimOnAbort(
   workId: string, effectfulCalls: number, reason: string,
-): TransitionResult | null {
+): WorkOutcome | null {
   if (effectfulCalls > 0) {
     appendEvent(workId, 'rearm_refused', 'engine', { effectful_calls: effectfulCalls, reason });
     logger.info('ask claim held: the turn performed effectful calls, so it must not re-fire (P6b)', {
@@ -1117,7 +1113,7 @@ export function joinPieces(parentWorkId: string): JoinPiece[] {
 }
 
 export interface PieceSettleResult {
-  result: TransitionResult;
+  result: WorkOutcome;
   join: JoinState & { complete: boolean };
 }
 
@@ -1189,7 +1185,7 @@ export function landPiece(
   if (body.length === 0) {
     return {
       result: {
-        kind: 'rejected', workId: childId, gate: 'empty-piece',
+        kind: 'refused', workId: childId, reason: 'empty-piece',
         detail: 'an empty terminal reply is not a deliverable; the piece stays outstanding',
       },
       join: joinAfter(childId),
@@ -1311,7 +1307,7 @@ export function compilePendingJoins(agentId: string, limit = 5): JoinState[] {
  */
 export function failJoinClosed(
   parentWorkId: string, p: { reason: string; expectedState: WorkState },
-): TransitionResult {
+): WorkOutcome {
   return transition(parentWorkId, {
     to: 'failed', by: 'scheduler', actorId: 'work-reaper',
     reason: p.reason, expectedState: p.expectedState,
@@ -1322,7 +1318,7 @@ export function failJoinClosed(
  *  proves it — that gate is `transition()`'s, not this function's. */
 export function settleJoinDelivered(
   parentWorkId: string, deliveryId: string, reason: string,
-): TransitionResult {
+): WorkOutcome {
   return transition(parentWorkId, {
     to: 'done', by: 'engine', actorId: 'a2a-join', reason,
     evidenceRef: deliveryId, resultDeliveryId: deliveryId,
@@ -1339,7 +1335,7 @@ export function settleJoinDelivered(
  */
 export function claimFailedJoinForLateAnswer(
   parentWorkId: string, evidenceDeliveryId: string, reason: string,
-): TransitionResult {
+): WorkOutcome {
   return transition(parentWorkId, {
     to: 'open', by: 'engine', actorId: 'a2a-join', reason: `late answer: ${reason}`,
     evidenceRef: evidenceDeliveryId, expectedState: 'failed',
@@ -1355,7 +1351,7 @@ export function claimFailedJoinForLateAnswer(
  */
 export function reopenJoinForLateAnswer(
   parentWorkId: string, deliveryId: string, reason: string,
-): TransitionResult {
+): WorkOutcome {
   const reopened = claimFailedJoinForLateAnswer(parentWorkId, deliveryId, reason);
   if (reopened.kind !== 'applied') return reopened;
   return settleJoinDelivered(parentWorkId, deliveryId, reason);
@@ -1563,7 +1559,7 @@ export function openCommitment(p: OpenCommitmentInput): string | null {
 export function resolveCommitment(
   workId: string,
   p: { agentId: string; resultDeliveryId: string | null; note?: string | null },
-): TransitionResult {
+): WorkOutcome {
   return transition(workId, {
     to: 'done', by: 'agent', actorId: p.agentId,
     reason: p.note && p.note.trim() ? `commitment kept: ${p.note.trim()}` : 'commitment kept',
@@ -1581,7 +1577,7 @@ export function resolveCommitment(
 export function dismissCommitment(
   workId: string,
   p: { agentId: string; reason: string },
-): TransitionResult {
+): WorkOutcome {
   return transition(workId, {
     to: 'abandoned', by: 'agent', actorId: p.agentId, reason: p.reason,
   });

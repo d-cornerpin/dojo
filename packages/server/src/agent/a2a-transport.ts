@@ -31,7 +31,7 @@ import {
   findJoinChildByThread, findFailedJoinForThread, childrenForThread,
   landPiece, settlePieceWithoutResult, joinState, joinPieces, dueJoins, openJoins,
   dueJoinsUnderClosedParent,
-  compilePendingJoins, failJoinClosed, settleJoinDelivered, clearJoinCompilePending,
+  compilePendingJoins, failJoinClosed, settleJoinDelivered, clearJoinCompilePending, noteUnsettled,
   claimFailedJoinForLateAnswer, threadHopCount, bumpThreadHopCount,
   type JoinState, type JoinPiece,
 } from '../work/store.js';
@@ -1486,10 +1486,10 @@ async function landReplyOnJoin(p: {
       deliveryId, content: p.payload, messageId: p.messageId, actorId: p.fromAgent,
     });
   }
-  if (settle.result.kind === 'rejected' || settle.result.kind === 'conflict') {
+  if (settle.result.kind === 'refused') {
     logger.info('join: piece not advanced', {
       agentId: p.agentId, thread: p.threadShort, result: settle.result.kind,
-      detail: 'gate' in settle.result ? settle.result.gate : undefined,
+      detail: settle.result.reason,
     });
     return true;
   }
@@ -1531,7 +1531,7 @@ async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): P
     const name = resolveAgentDisplayName(piece?.assigneeAgent) ?? senderNameHint ?? 'the other agent';
     const answer = (piece?.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 1200);
     const deliveryId = await deliverJoinResultToOwner(join, `Heard back from ${name}: ${answer}`);
-    if (deliveryId) settleJoinDelivered(join.id, deliveryId, 'the engine relayed the delegated answer');
+    if (deliveryId) noteUnsettled(settleJoinDelivered(join.id, deliveryId, 'the engine relayed the delegated answer'), 'a2a: join settled on relay', { joinId: join.id });
     return;
   }
   steerModelToCompile(join);
@@ -1563,7 +1563,7 @@ async function deliverLateAnswerIfJoinFailedClosed(p: {
   const deliveryId = await deliverJoinResultToOwner(
     join, `Update: ${p.senderName} answered after all. ${answer}`, { tool: 'a2a-join-late' },
   );
-  if (deliveryId) settleJoinDelivered(join.id, deliveryId, 'a late answer reached the owner');
+  if (deliveryId) noteUnsettled(settleJoinDelivered(join.id, deliveryId, 'a late answer reached the owner'), 'a2a: join settled on late answer', { joinId: join.id });
   return true;
 }
 
@@ -1615,7 +1615,7 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<void>
         await deliverJoinResultToOwner(join, text, { tool: 'a2a-join-failed' });
       } else {
         const deliveryId = await deliverJoinResultToOwner(join, text, { tool: 'a2a-join-relay' });
-        if (deliveryId) settleJoinDelivered(join.id, deliveryId, 'the engine relayed the recorded pieces');
+        if (deliveryId) noteUnsettled(settleJoinDelivered(join.id, deliveryId, 'the engine relayed the recorded pieces'), 'a2a: join settled on compile relay', { joinId: join.id });
         else clearJoinCompilePending(join.id, 'relayed the recorded pieces (delivery not recorded)');
       }
       logger.info('compile-pending join resolved: the engine relayed the recorded pieces (the steered compile never answered the owner)', {

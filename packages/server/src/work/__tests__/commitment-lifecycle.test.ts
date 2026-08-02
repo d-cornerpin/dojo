@@ -202,16 +202,16 @@ describe('4b — stale is not closed', () => {
   it('NEGATIVE CONTROL: resolution with NO delivery is REFUSED — a promise is not kept by saying so', () => {
     const id = openCommitment({ agentId: AGENT, description: 'send the summary', conversationId: 'conv-1', turnNumber: 3, sourceMessageId: 'm-3' })!;
     const r = resolveCommitment(id, { agentId: AGENT, resultDeliveryId: null, note: 'trust me' });
-    expect(r.kind).toBe('rejected');
-    if (r.kind === 'rejected') expect(r.gate).toBe('done-requires-delivery');
+    expect(r.kind).toBe('refused');
+    if (r.kind === 'refused') expect(r.reason).toBe('done-requires-delivery');
     expect(rowFor(id)!.state).toBe('open');
   });
 
   it('NEGATIVE CONTROL: resolution against a delivery id that does not exist is REFUSED', () => {
     const id = openCommitment({ agentId: AGENT, description: 'send it', conversationId: 'conv-1', turnNumber: 3, sourceMessageId: 'm-3' })!;
     const r = resolveCommitment(id, { agentId: AGENT, resultDeliveryId: 'dlv-ghost', note: 'sent' });
-    expect(r.kind).toBe('rejected');
-    if (r.kind === 'rejected') expect(r.gate).toBe('delivery-unresolved');
+    expect(r.kind).toBe('refused');
+    if (r.kind === 'refused') expect(r.reason).toBe('delivery-unresolved');
     expect(rowFor(id)!.state).toBe('open');
   });
 
@@ -227,8 +227,8 @@ describe('4b — stale is not closed', () => {
   it('NEGATIVE CONTROL: a dismissal with no reason is refused — a close nobody can explain does not happen', () => {
     const id = openCommitment({ agentId: AGENT, description: 'find the plans', conversationId: 'conv-1', turnNumber: 3, sourceMessageId: 'm-3' })!;
     const r = dismissCommitment(id, { agentId: AGENT, reason: '  ' });
-    expect(r.kind).toBe('rejected');
-    if (r.kind === 'rejected') expect(r.gate).toBe('reason-required');
+    expect(r.kind).toBe('refused');
+    if (r.kind === 'refused') expect(r.reason).toBe('reason-required');
     expect(rowFor(id)!.state).toBe('open');
   });
 

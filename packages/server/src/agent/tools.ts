@@ -6213,7 +6213,7 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         });
         if (rr.kind === 'applied') {
           content = `[OK] Closed: ${crRow.title ?? crRow.id}.`;
-        } else if (rr.kind === 'rejected' && rr.gate === 'done-requires-delivery') {
+        } else if (rr.kind === 'refused' && rr.reason === 'done-requires-delivery') {
           content = `Not closed: nothing was delivered for "${crRow.title ?? crRow.id}" on this turn, so it is still owed. Send it first, then call this again — or use disposition "dropped" if it is no longer owed.`;
           isError = true;
         } else {

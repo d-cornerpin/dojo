@@ -12,6 +12,7 @@ import {
   stampColumns,
 } from '../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../work/tracker-store.js';
+import { noteUnsettled } from '../work/store.js';
 import { listOverrideRequests, PENDING_OVERRIDE_COUNT_SQL } from '../work/override-requests.js';
 import { activeRuns as pmActiveRuns } from '../agent/shared-state.js';
 import { createLogger } from '../logger.js';
@@ -1594,10 +1595,10 @@ export async function runPokeCheck(): Promise<void> {
     if (candidates.length > 0) {
       // Phase B.0: tasks.notes is read-only legacy. Audit trail lives in task_log.
       const closeStmt = {
-        run: (id: string) => setTrackerStatus(id, 'fallen', {
+        run: (id: string) => noteUnsettled(setTrackerStatus(id, 'fallen', {
           by: 'pm', actorId: getPMAgentId(), claim: 'authoritative',
           reason: 'stale A2A assignment: the receiver was active but never moved this ticket',
-        }),
+        }), 'pm: stale A2A assignment swept', { taskId: id }),
       };
       const activeCheck = db.prepare(`
         SELECT 1 FROM messages
@@ -1786,10 +1787,10 @@ export async function runPokeCheck(): Promise<void> {
       const idleMinutes = Math.floor(idleSeconds / 60);
 
       // Move task back to on_deck so it can be retried
-      setTrackerStatus(task.id, 'on_deck', {
+      noteUnsettled(setTrackerStatus(task.id, 'on_deck', {
         by: 'pm', actorId: getPMAgentId(), claim: 'authoritative',
         reason: `auto-reset: the escalation ladder ran out and the agent stayed idle ${idleMinutes} minutes`,
-      });
+      }), 'pm: auto-reset after the ladder ran out', { taskId: task.id });
 
       // If this is a scheduled task, also reset schedule_status so the scheduler retries
       if (task.scheduleStatus === 'running') {
@@ -2053,10 +2054,10 @@ export function checkDependencies(completedTaskId: string): void {
       // land in 'in_progress' so they stay visible. 'on_deck' is reserved
       // for scheduled-for-later. A previously-blocked task whose deps just
       // cleared is ready to be worked on now, not parked.
-      setTrackerStatus(row.id, 'in_progress', {
+      noteUnsettled(setTrackerStatus(row.id, 'in_progress', {
         by: 'pm', actorId: getPMAgentId(),
         reason: `every dependency of this task is complete (last: ${completedTaskId.slice(0, 8)})`,
-      });
+      }), 'pm: dependencies cleared, task unblocked', { taskId: row.id });
 
       logger.info('Task unblocked by dependency completion', {
         taskId: row.id,

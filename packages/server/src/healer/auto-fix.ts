@@ -13,6 +13,7 @@ import { sanitizeMessagesOnModelChange } from '../agent/model-switch.js';
 import type { DiagnosticItem } from './diagnostic.js';
 import { taskScope, projectScope } from '../work/tracker-view.js';
 import { setTrackerStatus, patchWork, deliveryForCompletedChildren } from '../work/tracker-store.js';
+import { workSettled } from '../work/store.js';
 
 const logger = createLogger('healer-autofix');
 
@@ -242,7 +243,7 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
         by: 'healer', actorId: 'healer',
         reason: 'assigned agent no longer exists; returned to the deck for reassignment',
       });
-      if (r.kind !== 'applied' && r.kind !== 'noop') continue;
+      if (!workSettled(r)) continue;
     }
     patchWork(o.id, { agent_id: null, assignee_agent: null });
     changed++;

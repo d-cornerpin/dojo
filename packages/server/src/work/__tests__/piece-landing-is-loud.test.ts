@@ -178,7 +178,7 @@ describe('RULING 7 rider (b): a piece landing that aborts says so at ERROR, nami
 
     const settled = landPiece(child, { deliveryId, content: '   ', actorId: 'ana' });
 
-    expect(settled.result.kind).toBe('rejected');
+    expect(settled.result.kind).toBe('refused');
     expect(logged.filter(l => l.level === 'error')).toEqual([]);
   });
 

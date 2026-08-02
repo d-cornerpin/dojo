@@ -21,6 +21,7 @@ import {
 import {
   upholdClaim, resetRevertCount, recordValidationEscalation, clearUserVerdict,
 } from '../../work/tracker-store.js';
+import { workSettled, isStateConflict } from '../../work/store.js';
 import {
   findOverrideRequest, resolveOverrideRequest, listOverrideRequests,
   overrideRollup as overrideRollupSince, type OverrideStatus,
@@ -685,10 +686,9 @@ trackerRouter.put('/tasks/:id', async (c) => {
             ? (deliveryForTaskClose(id) ?? recordOwnerCloseReceipt(id, 'the dashboard task board'))
             : null,
         });
-        if (result.kind !== 'applied' && result.kind !== 'noop') {
-          const detail = result.kind === 'conflict'
-            ? `the task moved to "${result.actual}" while this request was in flight`
-            : `${result.gate}: ${result.detail}`;
+        if (!workSettled(result)) {
+          const detail = isStateConflict(result)
+            ? `the task moved to "${result.actual}" while this request was in flight` : `${result.reason}: ${result.detail}`;
           return c.json({
             ok: false,
             error: `status change to "${statusUpdate}" was refused — ${detail}`,

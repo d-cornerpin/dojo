@@ -208,8 +208,8 @@ describe('turn pickup = CAS open -> claimed', () => {
   it('the LOSER gets `conflict`, which is the D-2 bail — one winner, never two turns', () => {
     expect(claimAsk(askIdForMessage('m-1'), AGENT).kind).toBe('applied');
     const second = claimAsk(askIdForMessage('m-1'), AGENT);
-    expect(second.kind).toBe('conflict');
-    if (second.kind !== 'conflict') return;
+    expect(second.kind).toBe('refused');
+    if (second.kind !== 'refused') return;
     expect(second.expected).toBe('open');
     expect(second.actual).toBe('claimed');
   });
@@ -419,9 +419,9 @@ describe('an ask obeys the spine it lives in', () => {
     insertMessage(ownerInbound({ id: 'm-1' }) as never);
     claimAsk(askIdForMessage('m-1'), AGENT);
     const r = transition(askIdForMessage('m-1'), { to: 'done', by: 'agent', reason: 'said so' });
-    expect(r.kind).toBe('rejected');
-    if (r.kind !== 'rejected') return;
-    expect(r.gate).toBe('done-requires-delivery');
+    expect(r.kind).toBe('refused');
+    if (r.kind !== 'refused') return;
+    expect(r.reason).toBe('done-requires-delivery');
     expect(workFor('m-1')!.state).toBe('claimed');
   });
 });

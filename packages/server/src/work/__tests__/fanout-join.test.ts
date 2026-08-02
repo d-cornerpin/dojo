@@ -216,7 +216,7 @@ describe('3c: a lost piece is impossible, not unlikely', () => {
     // settled), and forcing the settled child through anyway is a NO-OP, never a decrement.
     expect(findJoinChildByThread(AGENT, T1)).toBeNull();
     const again = landPiece(child, { deliveryId: seedDelivery('d-1b'), content: 'again', messageId: null });
-    expect(again.result.kind).toBe('noop');
+    expect(again.result.kind).toBe('no_change');
     expect(joinState(parent)!.remaining).toBe(1);
   });
 
@@ -253,7 +253,7 @@ describe('3c: a lost piece is impossible, not unlikely', () => {
     const racing = settlePieceWithoutResult(joinPieces(parent)[0].childId, {
       to: 'failed', reason: 'a racing sweep tries to fail an already-landed piece',
     });
-    expect(racing.result.kind).toBe('rejected');
+    expect(racing.result.kind).toBe('refused');
     expect(joinState(parent)!.remaining).toBe(0);
     expect(joinState(parent)!.landed).toBe(1);
   });
@@ -307,7 +307,7 @@ describe('3b: "the pieces landed" and "the owner got the answer" are different f
       deliveryId: seedDelivery('d-1'), content: 'the answer is 42', messageId: null,
     });
     const bogus = settleJoinDelivered(parent, 'no-such-delivery', 'claiming a delivery that does not exist');
-    expect(bogus.kind).toBe('rejected');
+    expect(bogus.kind).toBe('refused');
     expect(row(parent)!.state).not.toBe('done');
   });
 });
@@ -325,7 +325,7 @@ describe('an empty terminal reply is not a deliverable, and a FAIL is', () => {
     });
     const child = findJoinChildByThread(AGENT, T1)!.id;
     const empty = landPiece(child, { deliveryId: seedDelivery('d-1'), content: '   ', messageId: null });
-    expect(empty.result.kind).toBe('rejected');
+    expect(empty.result.kind).toBe('refused');
     expect(joinState(parent)!.remaining).toBe(2);
     // ...and the piece is STILL outstanding, so the real deliverable can land later.
     expect(findJoinChildByThread(AGENT, T1)).not.toBeNull();
@@ -439,7 +439,7 @@ describe('3d: the TTL reaper fails a stuck join closed exactly once', () => {
     expect(applied).toHaveLength(1);
     expect(row(parent)!.state).toBe('failed');
     // The loser must be VISIBLE, not silent: it is a conflict value the caller reads.
-    expect([second.kind, first.kind]).toContain('conflict');
+    expect([second.kind, first.kind]).toContain('refused');
     // ...and a failed-closed join is no longer due, so the 10-minute sweep cannot
     // deliver a second notice on the next pass.
     expect(dueJoins(Date.now()).map((j) => j.id)).not.toContain(parent);
@@ -660,7 +660,7 @@ describe('3f: an answer arriving after the failure notice still reaches the owne
       ttlAt: Date.now() + 60 * 60_000, threads: [{ threadId: T1 }],
     });
     const r = reopenJoinForLateAnswer(parent, seedDelivery('d-x', { channel: 'dashboard', conversation_id: 'conv-1' }), 'not a late answer');
-    expect(r.kind).toBe('conflict');
+    expect(r.kind).toBe('refused');
     expect(row(parent)!.state).toBe('claimed');
   });
 });
@@ -755,7 +755,7 @@ describe('3h + 3i: a piece result is a child field, not a row in a fake namespac
     const r = landPiece(findJoinChildByThread(AGENT, T1)!.id, {
       deliveryId: 'not-a-delivery', content: 'Ana: 42', messageId: null,
     });
-    expect(r.result.kind).toBe('rejected');
+    expect(r.result.kind).toBe('refused');
     expect(joinState(parent)!.remaining).toBe(1);
   });
 });

@@ -668,14 +668,14 @@ describe('2b — `abandoned` is reachable from >= 3 causes with a single-transit
     const first = transition(id, { to: 'abandoned', by: 'agent', actorId: AGENT, reason: 'first', expectedState: 'open' });
     const second = transition(id, { to: 'abandoned', by: 'agent', actorId: AGENT, reason: 'second', expectedState: 'open' });
     expect(first.kind).toBe('applied');
-    expect(second.kind).toBe('conflict');
+    expect(second.kind).toBe('refused');
   });
 
   it('THE REOPEN AUTHORITY covers a quarantine-abandoned ask (T3 adjudication #4)', () => {
     const id = openOne('m-1');
     transition(id, { to: 'abandoned', by: 'agent', actorId: AGENT, reason: 'quarantined' });
     // NEGATIVE first: a worker agent cannot resurrect its own abandonment.
-    expect(transition(id, { to: 'open', by: 'agent', actorId: AGENT, reason: 'try again' }).kind).toBe('rejected');
+    expect(transition(id, { to: 'open', by: 'agent', actorId: AGENT, reason: 'try again' }).kind).toBe('refused');
     // The owner can, and that is the late-answer path.
     expect(transition(id, {
       to: 'open', by: 'owner', actorId: 'owner', claim: 'authoritative',

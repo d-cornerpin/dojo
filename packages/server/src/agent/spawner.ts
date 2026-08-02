@@ -12,6 +12,7 @@ import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import {
   setTrackerStatus, patchWork, appendWorkNotes, deliveryForTaskClose,
 } from '../work/tracker-store.js';
+import { workSettled } from '../work/store.js';
 import { memoryGrep } from '../memory/retrieval.js';
 import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
@@ -764,10 +765,9 @@ export async function completeAgent(
       reason: `apprentice "${agent.name}" called complete_task(status="${status}")`,
       resultDeliveryId: taskStatus === 'complete' ? deliveryForTaskClose(resolvedTaskId) : null,
     });
-    if (closeRes.kind !== 'applied' && closeRes.kind !== 'noop') {
-      logger.warn('completeAgent: task close refused by the work gate', {
-        agentId, taskId: resolvedTaskId, taskStatus, result: closeRes,
-      }, agentId);
+    if (!workSettled(closeRes)) {
+      logger.warn('completeAgent: task close refused by the work gate',
+        { agentId, taskId: resolvedTaskId, taskStatus, result: closeRes }, agentId);
     }
 
     void (await import('../tracker/task-log.js')).writeTaskLog({
@@ -852,7 +852,7 @@ export async function completeAgent(
         evidenceRef: inheritedDelivery,
         resultDeliveryId: inheritedDelivery,
       });
-      if (dRes.kind !== 'applied' && dRes.kind !== 'noop') {
+      if (!workSettled(dRes)) {
         logger.warn('completeAgent: dangler disposition refused', { taskId: dt.id, result: dRes });
       }
       if (disposition === 'fallen' && dt.project_id) fallenProjectIds.add(dt.project_id);

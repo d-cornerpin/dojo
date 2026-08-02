@@ -16,7 +16,7 @@ import {
   stampColumns,
   engineScaffoldScope,
 } from '../work/tracker-view.js';
-import type { TransitionResult } from '../work/store.js';
+import { workSettled, isStateConflict, noteUnsettled, type WorkOutcome } from '../work/store.js';
 import {
   fileOverrideRequest, pendingOverrideForAgent, pendingOverrideForTask,
   findOverrideRequest, resolveOverrideRequest,
@@ -398,10 +398,10 @@ export async function fileAssignDeliverableCloseRequest(
  *  genuine refusal still must be. Both directions, so neither can drift. */
 export { closeRefusalText as closeRefusalTextForTest };
 
-function closeRefusalText(taskId: string, r: TransitionResult, wanted: string): string {
+function closeRefusalText(taskId: string, r: WorkOutcome, wanted: string): string {
   if (r.kind === 'applied') return '';
-  if (r.kind === 'noop') return `[NO-OP] task_id=${taskId} | already ${wanted}, no change made.`;
-  if (r.kind === 'conflict') {
+  if (r.kind === 'no_change') return `[NO-OP] task_id=${taskId} | already ${wanted}, no change made.`;
+  if (isStateConflict(r)) {
     return `Error: task ${taskId.slice(0, 8)} moved to "${stateToStatus(r.actual)}" while you were working on it. Re-read it before changing it again.`;
   }
   // ── PHASE-2 T8T: A FILED KEY-1 REQUEST IS NOT AN ERROR, AND THE BATTERY SAID SO ──
@@ -417,7 +417,7 @@ function closeRefusalText(taskId: string, r: TransitionResult, wanted: string): 
   // weak model is also an invitation to retry the thing that just worked, which is the
   // 189-call spin this tracker's forgiveness rules exist to prevent. So it reads as what it
   // is, and the text names WHO closes it and WHEN so the model stops rather than loops.
-  if (r.gate === 'requires-validation') {
+  if (r.reason === 'requires-validation') {
     return (
       `[FILED] task_id=${taskId.slice(0, 8)} | your close request is recorded — this is the ` +
       `normal way work finishes, not a failure. You do not close your own work: the engine ` +
@@ -427,14 +427,14 @@ function closeRefusalText(taskId: string, r: TransitionResult, wanted: string): 
       `work_note.`
     );
   }
-  if (r.gate === 'done-requires-delivery' || r.gate === 'delivery-unresolved') {
+  if (r.reason === 'done-requires-delivery' || r.reason === 'delivery-unresolved') {
     return (
       `Error: "${wanted}" needs a delivery to point at. Work is done because something reached the person, ` +
       `not because the tracker says so. Send the result first (reply, message, file, or hand it back on the ` +
       `thread that asked), then set status="complete" — the engine records the delivery for you.`
     );
   }
-  return `Error: that status change was refused (${r.gate}): ${r.detail}`;
+  return `Error: that status change was refused (${r.reason}): ${r.detail}`;
 }
 
 const NEEDS_ATTENTION_MARKER = '[needs-attention]';
@@ -499,7 +499,7 @@ export function checkProjectCompletion(projectId: string | null, callingAgentId:
         evidenceRef: rollupDelivery,
         resultDeliveryId: rollupDelivery,
       });
-      if (rollupRes.kind !== 'applied' && rollupRes.kind !== 'noop') {
+      if (!workSettled(rollupRes)) {
         logger.warn('project rollup close refused by the work gate', { projectId, result: rollupRes });
         return 'noop';
       }
@@ -1116,7 +1116,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     const hasFutureSchedule = scheduledStartIsFuture || !!args.repeat_interval;
     if (hasFutureSchedule) {
       try {
-        setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'scheduled for later; the scheduler owns the move to in_progress at fire time' });
+        noteUnsettled(setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'scheduled for later; the scheduler owns the move to in_progress at fire time' }), 'work_open: scheduled for later', { taskId });
       } catch { /* ignore */ }
     }
 
@@ -1792,7 +1792,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         // own rule); the engine's ball-is-with-the-owner pause deliberately does not.
         syncSchedulePause: true,
       });
-      if (sr.result.kind !== 'applied' && sr.result.kind !== 'noop') {
+      if (!workSettled(sr.result)) {
         return closeRefusalText(taskId, sr.result, String(statusUpdate));
       }
       task = sr.task;
@@ -2741,7 +2741,7 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
       reason: 'work_update(action="complete_step"): the step is finished',
       note: notes ? `[Completed] ${notes}` : '[Completed]',
     });
-    if (stepRes.kind !== 'applied' && stepRes.kind !== 'noop') {
+    if (!workSettled(stepRes)) {
       return closeRefusalText(taskId, stepRes, 'complete');
     }
 
@@ -2757,10 +2757,10 @@ export function trackerCompleteStep(agentId: string, args: Record<string, unknow
       `).get(task.projectId, task.stepNumber) as { id: string; title: string; step_number: number } | undefined;
 
       if (nextStep) {
-        setTrackerStatus(nextStep.id, 'in_progress', {
+        noteUnsettled(setTrackerStatus(nextStep.id, 'in_progress', {
           by: 'agent', actorId: agentId,
           reason: 'the previous step finished; this one is now the live step',
-        });
+        }), 'work_update(complete_step): next step goes live', { taskId: nextStep.id });
         nextTaskInfo = `\nNext step started: "${nextStep.title}" (${nextStep.id}), step ${nextStep.step_number}, now in_progress.`;
       }
     }
@@ -3215,7 +3215,7 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
       by: 'agent', actorId: agentId, resultDeliveryId: deliveryForTaskClose(taskId),
       reason: 'schedule stopped and the work marked complete',
     });
-    if (schedDoneRes.kind !== 'applied' && schedDoneRes.kind !== 'noop') {
+    if (!workSettled(schedDoneRes)) {
       return closeRefusalText(taskId, schedDoneRes, 'complete');
     }
     patchWork(taskId, { is_paused: 1, schedule_status: 'completed' });
@@ -3228,7 +3228,7 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
     return `Schedule stopped and task "${task.title}" marked complete.`;
   }
 
-  setTrackerStatus(taskId, 'paused', { by: 'agent', actorId: agentId, reason: 'schedule paused by the assigned agent' });
+  noteUnsettled(setTrackerStatus(taskId, 'paused', { by: 'agent', actorId: agentId, reason: 'schedule paused by the assigned agent' }), 'schedule paused by the assigned agent', { taskId });
   patchWork(taskId, { is_paused: 1, schedule_status: 'paused' });
   const freshSchedPaused = getTask(taskId);
   if (freshSchedPaused) broadcast({ type: 'tracker:task_updated', data: freshSchedPaused });
@@ -3269,7 +3269,7 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
   const nextRun = calculateNextRun(scheduledTask);
   // missed_runs_paused_at = NULL: an explicit resume also disarms the D12
   // engine fallback for a pause the missed-runs detector set.
-  setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'schedule resumed; waiting for the next run' });
+  noteUnsettled(setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'schedule resumed; waiting for the next run' }), 'schedule resumed', { taskId });
   patchWork(taskId, {
     is_paused: 0, schedule_status: 'waiting',
     next_run_at: tsToMs(nextRun), missed_runs_paused_at: null,
@@ -3337,7 +3337,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
       // End conditions reached or anchor unset, leave paused.
       return `Could not compute a next-run for "${title}" (likely past repeat_end_value or anchor missing). Task stays paused; investigate manually.`;
     }
-    setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'missed runs skipped; back on the schedule' });
+    noteUnsettled(setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'missed runs skipped; back on the schedule' }), 'missed runs skipped', { taskId });
     patchWork(taskId, {
       is_paused: 0, schedule_status: 'waiting',
       next_run_at: tsToMs(nextRun), missed_runs_paused_at: null,
@@ -3351,7 +3351,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
   // that run completes, onTaskRunComplete will compute the natural
   // next anchor and the task resumes its normal cadence.
   const nowIso = new Date().toISOString();
-  setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'catch-up run requested; back on the schedule now' });
+  noteUnsettled(setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'catch-up run requested; back on the schedule now' }), 'catch-up run requested', { taskId });
   patchWork(taskId, {
     is_paused: 0, schedule_status: 'waiting',
     next_run_at: tsToMs(nowIso), missed_runs_paused_at: null,
@@ -3736,7 +3736,7 @@ export async function trackerValidateComplete(
         resultDeliveryId: closeDelivery,
         reason: 'PM validated the close against the goal (Key 2 on the worker\'s close request)',
       });
-      if (keyTwo.kind !== 'applied' && keyTwo.kind !== 'noop') {
+      if (!workSettled(keyTwo)) {
         return closeRefusalText(taskId, keyTwo, 'complete');
       }
       writeTaskLog({

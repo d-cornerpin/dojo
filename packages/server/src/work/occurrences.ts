@@ -54,7 +54,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { transition, appendWorkEvent, type TransitionResult } from './store.js';
+import { transition, appendWorkEvent, type WorkOutcome } from './store.js';
 
 const logger = createLogger('occurrences');
 
@@ -223,8 +223,8 @@ export function releaseOccurrence(
  */
 export function settleOccurrence(
   occurrenceId: string, runStatus: string, deliveryId: string | null, summary: string | null,
-): TransitionResult {
-  let result: TransitionResult;
+): WorkOutcome {
+  let result: WorkOutcome;
   if (runStatus === 'failed') {
     result = transition(occurrenceId, {
       to: 'failed', by: 'scheduler', actorId: 'scheduler',

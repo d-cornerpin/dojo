@@ -73,9 +73,9 @@ describe('the discriminated result the caller must read', () => {
     const r = transition('w1', { to: 'claimed', by: 'agent', reason: 'picked it up', claimedByTurn: 7 });
     expect(r.kind).toBe('applied');
     if (r.kind !== 'applied') return;
-    expect(r.from).toBe('open');
-    expect(r.to).toBe('claimed');
-    expect(r.eventId).toBeGreaterThan(0);
+    expect(r.value.from).toBe('open');
+    expect(r.value.to).toBe('claimed');
+    expect(r.value.eventId).toBeGreaterThan(0);
     expect(stateOf('w1')).toBe('claimed');
     expect(rowOf('w1').claimed_by_turn).toBe(7);
   });
@@ -83,15 +83,15 @@ describe('the discriminated result the caller must read', () => {
   it('noop when the row is already there — never reported as a change', () => {
     seedWork('w1', { state: 'paused' });
     const r = transition('w1', { to: 'paused', by: 'agent', reason: 'again' });
-    expect(r.kind).toBe('noop');
+    expect(r.kind).toBe('no_change');
     expect(events('w1')).toHaveLength(0);       // a no-op writes no history
   });
 
   it('conflict when the caller acted on a state that has since moved', () => {
     seedWork('w1', { state: 'claimed' });
     const r = transition('w1', { to: 'done', by: 'agent', reason: 'x', expectedState: 'open' });
-    expect(r.kind).toBe('conflict');
-    if (r.kind !== 'conflict') return;
+    expect(r.kind).toBe('refused');
+    if (r.kind !== 'refused') return;
     expect(r.expected).toBe('open');
     expect(r.actual).toBe('claimed');
     expect(stateOf('w1')).toBe('claimed');      // nothing was overwritten
@@ -110,9 +110,9 @@ describe('the discriminated result the caller must read', () => {
 describe('G1 — a stale id is refused with something steerable, never created', () => {
   it('refuses an id from a previous session and says what to do instead', () => {
     const r = transition('task-from-last-week', { to: 'done', by: 'agent', reason: 'done' });
-    expect(r.kind).toBe('rejected');
-    if (r.kind !== 'rejected') return;
-    expect(r.gate).toBe('no-such-work');
+    expect(r.kind).toBe('refused');
+    if (r.kind !== 'refused') return;
+    expect(r.reason).toBe('no-such-work');
     expect(r.detail).toMatch(/earlier session/);
     expect(mockDb.current!.prepare('SELECT count(*) c FROM work').get()).toEqual({ c: 0 });
   });
@@ -121,7 +121,7 @@ describe('G1 — a stale id is refused with something steerable, never created',
 describe('G2 — every transition states its reason', () => {
   it('refuses an empty reason and accepts a real one', () => {
     seedWork('w1');
-    expect(transition('w1', { to: 'claimed', by: 'agent', reason: '   ' }).kind).toBe('rejected');
+    expect(transition('w1', { to: 'claimed', by: 'agent', reason: '   ' }).kind).toBe('refused');
     expect(transition('w1', { to: 'claimed', by: 'agent', reason: 'because' }).kind).toBe('applied');
   });
 });
@@ -130,8 +130,8 @@ describe('G5 — the legal-transition table', () => {
   it('refuses a move that is not on the table, and allows the neighbouring one that is', () => {
     seedWork('w1', { state: 'on_deck' });
     const bad = transition('w1', { to: 'done', by: 'agent', reason: 'x', resultDeliveryId: 'd-1' });
-    expect(bad.kind).toBe('rejected');
-    if (bad.kind === 'rejected') expect(bad.gate).toBe('illegal-transition');
+    expect(bad.kind).toBe('refused');
+    if (bad.kind === 'refused') expect(bad.reason).toBe('illegal-transition');
     expect(transition('w1', { to: 'claimed', by: 'agent', reason: 'x' }).kind).toBe('applied');
   });
 
@@ -175,8 +175,8 @@ describe('G5 — the legal-transition table', () => {
     for (const state of ['done', 'failed', 'abandoned'] as const) {
       seedWork(`t-${state}`, { state, closed_at: 1700000000001, result_delivery_id: 'd-1' });
       const r = transition(`t-${state}`, { to: 'on_deck', by: 'agent', reason: 'try to requeue' });
-      expect(r.kind).toBe('rejected');
-      if (r.kind === 'rejected') expect(r.gate).toBe('illegal-transition');
+      expect(r.kind).toBe('refused');
+      if (r.kind === 'refused') expect(r.reason).toBe('illegal-transition');
     }
   });
 });
@@ -185,15 +185,15 @@ describe('G6 — the engine may only assert what it can point at (OR2)', () => {
   it('refuses an engine transition with no evidence at all', () => {
     seedWork('w1', { state: 'claimed' });
     const r = transition('w1', { to: 'failed', by: 'engine', reason: 'gave up' });
-    expect(r.kind).toBe('rejected');
-    if (r.kind === 'rejected') expect(r.gate).toBe('engine-needs-evidence');
+    expect(r.kind).toBe('refused');
+    if (r.kind === 'refused') expect(r.reason).toBe('engine-needs-evidence');
   });
 
   it('refuses an engine transition whose evidence resolves to nothing', () => {
     seedWork('w1', { state: 'claimed' });
     const r = transition('w1', { to: 'failed', by: 'engine', reason: 'gave up', evidenceRef: 'made-up-id' });
-    expect(r.kind).toBe('rejected');
-    if (r.kind === 'rejected') expect(r.gate).toBe('engine-evidence-unresolved');
+    expect(r.kind).toBe('refused');
+    if (r.kind === 'refused') expect(r.reason).toBe('engine-evidence-unresolved');
   });
 
   it('accepts evidence that is a real delivery, a real artifact, or a real occurrence', () => {
@@ -210,8 +210,8 @@ describe('G6 — the engine may only assert what it can point at (OR2)', () => {
     seedWork('plain-task');
     seedWork('w1', { state: 'claimed' });
     const r = transition('w1', { to: 'failed', by: 'engine', reason: 'x', evidenceRef: 'plain-task' });
-    expect(r.kind).toBe('rejected');
-    if (r.kind === 'rejected') expect(r.gate).toBe('engine-evidence-unresolved');
+    expect(r.kind).toBe('refused');
+    if (r.kind === 'refused') expect(r.reason).toBe('engine-evidence-unresolved');
   });
 });
 
@@ -219,16 +219,16 @@ describe('G7 — done means DELIVERED', () => {
   it('refuses done with no delivery', () => {
     seedWork('w1', { state: 'claimed' });
     const r = transition('w1', { to: 'done', by: 'agent', reason: 'finished' });
-    expect(r.kind).toBe('rejected');
-    if (r.kind === 'rejected') expect(r.gate).toBe('done-requires-delivery');
+    expect(r.kind).toBe('refused');
+    if (r.kind === 'refused') expect(r.reason).toBe('done-requires-delivery');
     expect(stateOf('w1')).toBe('claimed');
   });
 
   it('refuses done with a delivery id that is not a delivery — a CHECK cannot see this', () => {
     seedWork('w1', { state: 'claimed' });
     const r = transition('w1', { to: 'done', by: 'agent', reason: 'finished', resultDeliveryId: 'd-nope' });
-    expect(r.kind).toBe('rejected');
-    if (r.kind === 'rejected') expect(r.gate).toBe('delivery-unresolved');
+    expect(r.kind).toBe('refused');
+    if (r.kind === 'refused') expect(r.reason).toBe('delivery-unresolved');
   });
 
   it('accepts done with a real delivery, and stamps closed_at with it', () => {
@@ -248,8 +248,8 @@ describe('G8 — two-key is a type, not a source scan', () => {
   it('refuses an authoritative claim from a worker agent and allows it from the PM', () => {
     seedWork('w1', { state: 'claimed' });
     const bad = transition('w1', { to: 'failed', by: 'agent', reason: 'x', claim: 'authoritative' });
-    expect(bad.kind).toBe('rejected');
-    if (bad.kind === 'rejected') expect(bad.gate).toBe('authoritative-claim-not-permitted');
+    expect(bad.kind).toBe('refused');
+    if (bad.kind === 'refused') expect(bad.reason).toBe('authoritative-claim-not-permitted');
     const good = transition('w1', { to: 'failed', by: 'pm', reason: 'x', claim: 'authoritative' });
     expect(good.kind).toBe('applied');
   });
@@ -266,9 +266,9 @@ describe('G8 — two-key is a type, not a source scan', () => {
   it('a worker claiming FAILED is recorded as a validation request, state unchanged', () => {
     seedWork('w1', { state: 'claimed' });
     const r = transition('w1', { to: 'failed', by: 'agent', reason: 'cannot do it', claim: 'requests-validation' });
-    expect(r.kind).toBe('rejected');
-    if (r.kind !== 'rejected') return;
-    expect(r.gate).toBe('requires-validation');
+    expect(r.kind).toBe('refused');
+    if (r.kind !== 'refused') return;
+    expect(r.reason).toBe('requires-validation');
     expect(stateOf('w1')).toBe('claimed');
     expect(events('w1').map((e) => e.kind)).toEqual(['validation_requested']);
   });
@@ -284,8 +284,8 @@ describe('G8 — two-key is a type, not a source scan', () => {
     const r = transition('w1', {
       to: 'done', by: 'agent', reason: 'sent it', claim: 'requests-validation', resultDeliveryId: 'd-1',
     });
-    expect(r.kind).toBe('rejected');
-    if (r.kind === 'rejected') expect(r.gate).toBe('requires-validation');
+    expect(r.kind).toBe('refused');
+    if (r.kind === 'refused') expect(r.reason).toBe('requires-validation');
   });
 
   it('and IS still exempt for an ask — a delivery IS the receipt, which is what OR1 widened', () => {
@@ -306,7 +306,7 @@ describe('G8 — two-key is a type, not a source scan', () => {
     const rej = rejectClaim('w1', { claimState: 'done', by: 'pm', note: 'no delivery, no done' });
     expect(rej.kind).toBe('applied');
     expect(revertCount('w1')).toBe(1);
-    expect(rejectClaim('w1', { claimState: 'done', by: 'agent', note: 'let me' }).kind).toBe('rejected');
+    expect(rejectClaim('w1', { claimState: 'done', by: 'agent', note: 'let me' }).kind).toBe('refused');
   });
 });
 
@@ -314,8 +314,8 @@ describe('reopening settled work needs an authority', () => {
   it('refuses a worker reopening a done row and allows the owner', () => {
     seedWork('w1', { state: 'done', closed_at: T, result_delivery_id: 'd-1' });
     const bad = transition('w1', { to: 'open', by: 'agent', reason: 'late answer arrived' });
-    expect(bad.kind).toBe('rejected');
-    if (bad.kind === 'rejected') expect(bad.gate).toBe('reopen-requires-authority');
+    expect(bad.kind).toBe('refused');
+    if (bad.kind === 'refused') expect(bad.reason).toBe('reopen-requires-authority');
     const good = transition('w1', { to: 'open', by: 'owner', reason: 'late answer arrived', claim: 'authoritative' });
     expect(good.kind).toBe('applied');
     expect(rowOf('w1').closed_at).toBeNull();     // the paired CHECK is satisfied by the writer

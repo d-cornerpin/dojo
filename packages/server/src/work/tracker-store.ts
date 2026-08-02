@@ -26,7 +26,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import {
   transition, rejectClaim, appendWorkEvent,
-  type Actor, type Claim, type TransitionResult, type WorkState,
+  type Actor, type Claim, type WorkOutcome, type WorkState,
 } from './store.js';
 import {
   statusToState, stateToStatus, TRACKER_ROOT_KIND, WORK_EVENT,
@@ -300,13 +300,13 @@ export interface SetStatusInput {
  */
 export function setTrackerStatus(
   id: string, status: TrackerStatus, input: SetStatusInput,
-): TransitionResult {
+): WorkOutcome {
   const db = getDb();
   const to = statusToState(status);
   const before = db.prepare('SELECT state FROM work WHERE id = ?').get(id) as
     { state: WorkState } | undefined;
 
-  let result!: TransitionResult;
+  let result!: WorkOutcome;
   db.transaction(() => {
     result = transition(id, {
       to,
@@ -463,7 +463,7 @@ export function throwBackClaim(
 ): void {
   const r = rejectClaim(id, { claimState, by, byId, note });
   if (r.kind !== 'applied') {
-    logger.warn('claim rejection refused', { workId: id, gate: r.gate, detail: r.detail });
+    logger.warn('claim rejection refused', { workId: id, reason: r.reason, detail: r.detail });
   }
 }
 

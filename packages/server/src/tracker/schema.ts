@@ -26,7 +26,7 @@ import {
   openTrackerProject, openTrackerTask, patchWork, appendWorkNotes,
   setTrackerStatus, type WorkPatch, type SetStatusInput,
 } from '../work/tracker-store.js';
-import type { Actor } from '../work/store.js';
+import { workSettled, type Actor } from '../work/store.js';
 import type { Project, ProjectDetail, Task } from '@dojo/shared';
 
 const logger = createLogger('tracker-schema');
@@ -416,7 +416,7 @@ export function closeProjectAndOpenTasks(params: {
         logger.warn('bulk close refused for task', { taskId: t.id, result: r });
         continue;
       }
-      closedTransitions.push({ taskId: t.id, from: r.from, to: r.to });
+      closedTransitions.push({ taskId: t.id, from: r.value.from, to: r.value.to });
       tasksClosed++;
     }
     const pr = setTrackerStatus(projectId, projectStatus as TrackerStatus, {
@@ -479,7 +479,7 @@ export function updateProject(
       reason: actor?.reason ?? `project status -> ${updates.status}`,
       resultDeliveryId: actor?.resultDeliveryId ?? null,
     });
-    if (r.kind !== 'applied' && r.kind !== 'noop') {
+    if (!workSettled(r)) {
       logger.warn('project status change refused', { projectId: id, result: r });
     }
   }
@@ -940,7 +940,7 @@ export function updateTask(id: string, updates: Partial<{
  */
 export function setTaskStatus(id: string, status: TrackerStatus, input: SetStatusInput): Task | null {
   const r = setTrackerStatus(id, status, input);
-  if (r.kind !== 'applied' && r.kind !== 'noop') {
+  if (!workSettled(r)) {
     logger.warn('task status change refused', { taskId: id, status, result: r });
     return null;
   }

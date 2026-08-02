@@ -175,7 +175,7 @@ import { withOutboundAsync, recordHeld } from './outbound.js';
 // PHASE-2 T3: the ask's lifecycle. `transition()` is the only writer of `work.state`; these
 // are its named callers for the pickup / re-arm / turn-link steps of one owner ask.
 import {
-  claimAsk, stampClaimingTurn, revertAskClaimOnAbort,
+  claimAsk, stampClaimingTurn, revertAskClaimOnAbort, isStateConflict, noteUnsettled,
   openDelegationJoin, threadHopCount, joinState, JOIN_TTL_MINUTES, type DelegationThread,
 } from '../../work/store.js';
 const SEND_TO_PEOPLE_SET: ReadonlySet<string> = new Set(SEND_TO_PEOPLE);
@@ -1108,7 +1108,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
     if (triggerWorkId) {
       const res = claimAsk(triggerWorkId, agentId);
       claimed = res.kind === 'applied';
-      if (!claimed && res.kind !== 'conflict') {
+      if (!claimed && !isStateConflict(res)) {
         logger.warn('v2: pickup claim refused by the work spine', { agentId, workId: triggerWorkId, res }, agentId);
       }
       // PHASE-2 T6 (C3) — THE REOPEN EDGE. The owner has spoken, so work the engine parked
@@ -1218,10 +1218,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
   const revertTriggerStampOnAbort = () => {
     if (triggerWorkId) {
       try {
-        revertAskClaimOnAbort(
+        noteUnsettled(revertAskClaimOnAbort(
           triggerWorkId, state.nonIdempotentCallsThisTurn,
           'turn aborted with no answer; handing the ask back to the waiting set (N-1)',
-        );
+        ), 'v2: ask hand-back on abort', { workId: triggerWorkId });
       } catch { /* best effort, recovery, never block the abort */ }
     }
     // D8: symmetric revert for an ENGINE trigger claim. The engine pickup stamps the
