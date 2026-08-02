@@ -503,12 +503,16 @@ export function rejectClaim(
   if (!db.prepare('SELECT 1 FROM work WHERE id = ?').get(workId)) {
     return { kind: 'refused', reason: 'no-such-work', detail: `no work row ${workId}` };
   }
-  const info = db.prepare(
-    `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, evidence_ref, note, created_at)
-     VALUES (?, ?, 'rejected', ?, ?, ?, ?)`,
-  ).run(workId, params.claimState, params.byId ?? params.by, params.evidenceRef ?? null, params.note, now());
-  appendEvent(workId, 'claim_rejected', params.byId ?? params.by, { claim_state: params.claimState, note: params.note });
-  return { kind: 'applied', id: Number(info.lastInsertRowid) };
+  // T2: the verdict and the event that records it are ONE unit — a rejection nobody
+  // can find in the event log is the silence this phase exists to close.
+  return withUnit((): { kind: 'applied'; id: number } => {
+    const info = db.prepare(
+      `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, evidence_ref, note, created_at)
+       VALUES (?, ?, 'rejected', ?, ?, ?, ?)`,
+    ).run(workId, params.claimState, params.byId ?? params.by, params.evidenceRef ?? null, params.note, now());
+    appendEvent(workId, 'claim_rejected', params.byId ?? params.by, { claim_state: params.claimState, note: params.note });
+    return { kind: 'applied', id: Number(info.lastInsertRowid) };
+  });
 }
 
 /** How many times this work item's claims have been thrown back. A COUNT, never a column —
@@ -622,12 +626,14 @@ export function claimAsk(workId: string, agentId: string): WorkOutcome {
  * somebody else's claim.
  */
 export function stampClaimingTurn(workId: string, turnNumber: number): number {
-  const changed = getDb().prepare(
-    `UPDATE work SET claimed_by_turn = ?, updated_at = ?
-      WHERE id = ? AND state = 'claimed' AND claimed_by_turn IS NULL`,
-  ).run(turnNumber, now(), workId).changes;
-  if (changed === 1) appendEvent(workId, 'claim_turn', 'engine', { turn_number: turnNumber });
-  return changed;
+  return withUnit((): number => {
+    const changed = getDb().prepare(
+      `UPDATE work SET claimed_by_turn = ?, updated_at = ?
+        WHERE id = ? AND state = 'claimed' AND claimed_by_turn IS NULL`,
+    ).run(turnNumber, now(), workId).changes;
+    if (changed === 1) appendEvent(workId, 'claim_turn', 'engine', { turn_number: turnNumber });
+    return changed;
+  });
 }
 
 /**
@@ -643,6 +649,12 @@ export function stampClaimingTurn(workId: string, turnNumber: number): number {
  * held. The refusal is written as an event, so a held ask is a fact somebody can find,
  * rather than the absence of a log line.
  */
+/* PHASE-4 T2, MEASURED AND NOT WRAPPED (#14). §T0-PINS B lists this as un-atomic
+ * ("transition + appendEvent"). Re-derived at 9d3507e: there is no pair. The refusal
+ * branch writes ONE event and returns; the other branch calls `transition`, which is
+ * already one unit. Wrapping a single write in a transaction is the ceremony this step
+ * was told not to add — the point is ownership. Recorded here so the next reader does
+ * not re-open it from the pin list. */
 export function revertAskClaimOnAbort(
   workId: string, effectfulCalls: number, reason: string,
 ): WorkOutcome | null {
@@ -1408,11 +1420,13 @@ export function findFailedJoinForThread(
  * a state reachable is the forgery this spine exists to refuse.
  */
 export function clearJoinCompilePending(parentWorkId: string, reason: string): number {
-  const changed = getDb().prepare(
-    'UPDATE work SET compile_pending = 0, updated_at = ? WHERE id = ? AND compile_pending = 1',
-  ).run(now(), parentWorkId).changes;
-  if (changed === 1) appendEvent(parentWorkId, 'compile_resolved', 'engine', { reason });
-  return changed;
+  return withUnit((): number => {
+    const changed = getDb().prepare(
+      'UPDATE work SET compile_pending = 0, updated_at = ? WHERE id = ? AND compile_pending = 1',
+    ).run(now(), parentWorkId).changes;
+    if (changed === 1) appendEvent(parentWorkId, 'compile_resolved', 'engine', { reason });
+    return changed;
+  });
 }
 
 /**
@@ -1536,15 +1550,17 @@ export function openCommitment(p: OpenCommitmentInput): string | null {
   }
   const at = now();
   const rootId = p.sourceMessageId ?? `turn:${p.turnNumber}`;
-  db.prepare(`
-    INSERT INTO work (
-      id, kind, agent_id, requester, requester_id, conversation_id,
-      root_kind, root_id, state, intent, wakes, closes_thread,
-      title, opened_at, updated_at, provenance
-    ) VALUES (?, 'commitment', ?, 'agent', ?, ?, 'commitment', ?, 'open', 'commitment', 0, 0, ?, ?, ?, 'live')
-  `).run(id, p.agentId, p.agentId, conversationId, rootId, description, at, at);
-  appendEvent(id, 'opened', p.agentId, {
-    turn_number: p.turnNumber, source_message_id: p.sourceMessageId, conversation_id: conversationId,
+  withUnit(() => {
+    db.prepare(`
+      INSERT INTO work (
+        id, kind, agent_id, requester, requester_id, conversation_id,
+        root_kind, root_id, state, intent, wakes, closes_thread,
+        title, opened_at, updated_at, provenance
+      ) VALUES (?, 'commitment', ?, 'agent', ?, ?, 'commitment', ?, 'open', 'commitment', 0, 0, ?, ?, ?, 'live')
+    `).run(id, p.agentId, p.agentId, conversationId, rootId, description, at, at);
+    appendEvent(id, 'opened', p.agentId, {
+      turn_number: p.turnNumber, source_message_id: p.sourceMessageId, conversation_id: conversationId,
+    });
   });
   logger.info('commitment recorded', { agentId: p.agentId, id, turnNumber: p.turnNumber }, p.agentId);
   return id;

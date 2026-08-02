@@ -7,6 +7,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { refreshEmbedding } from '../memory/embeddings.js';
@@ -523,11 +524,16 @@ export function deleteTechnique(id: string): boolean {
 
   const db = getDb();
 
-  // Delete DB records (cascading from ON DELETE CASCADE)
-  db.prepare('DELETE FROM technique_usage WHERE technique_id = ?').run(id);
-  db.prepare('DELETE FROM technique_versions WHERE technique_id = ?').run(id);
-  db.prepare('DELETE FROM techniques WHERE id = ?').run(id);
-  db.prepare("DELETE FROM embeddings WHERE source_type = 'technique' AND source_id = ?").run(id);
+  // T2: four tables, ONE unit. A failure part-way through used to leave a technique that
+  // no longer exists still owning usage rows, versions or an embedding — searchable, and
+  // unloadable. (Cascades do not cover it: three of the four are separate statements
+  // precisely because there is no FK between them.)
+  withUnit(() => {
+    db.prepare('DELETE FROM technique_usage WHERE technique_id = ?').run(id);
+    db.prepare('DELETE FROM technique_versions WHERE technique_id = ?').run(id);
+    db.prepare('DELETE FROM techniques WHERE id = ?').run(id);
+    db.prepare("DELETE FROM embeddings WHERE source_type = 'technique' AND source_id = ?").run(id);
+  });
 
   // Delete directory
   try {

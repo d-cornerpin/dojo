@@ -10,7 +10,9 @@
 // consults) key on these rows.
 //
 // Best-effort by contract: a delivery record must never break the delivery
-// itself, so every failure here logs and returns null.
+// itself, so every failure here logs and answers a `failed` Outcome (PHASE-4 T1).
+//
+// PHASE-4 T2: the row and the CLOSE it causes are ONE unit. See `recordDelivery`.
 // ════════════════════════════════════════
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
@@ -18,6 +20,7 @@ import { createLogger } from '../../logger.js';
 import { currentTurnNumber, currentTurnRoot } from '../turn-state.js';
 import { resolveOrCreateConversation } from '../../memory/conversations.js';
 import { closeAsksForDelivery } from '../../work/store.js';
+import { withUnit } from '../../db/unit.js';
 import type { LedgerOutcome } from './delivery-outcome.js';
 export { deliveryIdOf, recordedId, type LedgerOutcome } from './delivery-outcome.js';
 
@@ -60,75 +63,90 @@ export interface DeliveryInput {
  * contract — a delivery record must never break the delivery itself — but "the write
  * threw" is now a `failed` outcome the caller has to look at, instead of a null
  * indistinguishable from three other things.
+ *
+ * PHASE-4 T2 — THE ROW AND THE CLOSE ARE ONE UNIT, and this is the plan's own flagship
+ * cluster ("deliver + receipt + work.done atomic"). It was TWO transactions: the INSERT
+ * committed on its own, then `closeAsksForDelivery` opened a second one. A failure between
+ * them left a `deliveries` row no work row could ever point at, while the ask it answered
+ * stayed `claimed` — and since `work.state='done'` REQUIRES `result_delivery_id`
+ * (migration `135`'s CHECK plus G7), the whole "done means delivered" law rested on those
+ * two writes agreeing. They commit together now, proven by driving the second one into a
+ * real ABORT and reading the ledger:
+ * `agent/v2/__tests__/delivery-atomicity.test.ts`.
+ *
+ * The unit does NOT make the close a precondition of the record: a delivery that answers
+ * no ask still lands (its own negative control). One unit, not one requirement.
  */
 export function recordDelivery(input: DeliveryInput): LedgerOutcome {
   try {
     const db = getDb();
     const id = uuidv4();
-    // The RECIPIENT's conversation row: same identity the inbound producers
-    // stamp, so a send and the reply it provokes land on one conversation.
-    // Dashboard/voice deliveries belong to the owner's per-agent conversation.
-    let conversationId: string | null = input.conversationId ?? null;
-    if (conversationId !== null) {
-      // explicit identity from the caller; nothing to resolve
-    } else if (input.channel === 'dashboard' || input.channel === 'voice') {
-      conversationId = resolveOrCreateConversation(input.agentId, {
-        channel: input.channel, provider: null, counterpartyId: 'owner', threadRoot: null,
+    return withUnit((): LedgerOutcome => {
+      // The RECIPIENT's conversation row: same identity the inbound producers
+      // stamp, so a send and the reply it provokes land on one conversation.
+      // Dashboard/voice deliveries belong to the owner's per-agent conversation.
+      let conversationId: string | null = input.conversationId ?? null;
+      if (conversationId !== null) {
+        // explicit identity from the caller; nothing to resolve
+      } else if (input.channel === 'dashboard' || input.channel === 'voice') {
+        conversationId = resolveOrCreateConversation(input.agentId, {
+          channel: input.channel, provider: null, counterpartyId: 'owner', threadRoot: null,
+        });
+      } else if (input.channel === 'none' || input.channel === 'a2a') {
+        // The peer lane has no `conversations` row and must not mint one: conversation identity
+        // is a HUMAN counterparty fact (party labels, recall scoping, the waiting set all read
+        // it), and inventing an a2a conversation would put coordination traffic inside it.
+        // `none` is here for the same reason from the other direction: nothing crossed a door,
+        // so there is no counterparty to resolve and minting a conversation would invent one.
+        conversationId = null;
+      } else if (input.recipientId) {
+        conversationId = resolveOrCreateConversation(input.agentId, {
+          channel: input.channel,
+          provider: input.provider ?? (input.channel === 'imessage' ? 'imessage' : null),
+          counterpartyId: input.recipientId,
+          counterpartyName: input.recipientDisplay ?? null,
+          threadRoot: input.threadRoot ?? null,
+        });
+      }
+      const root = currentTurnRoot.get(input.agentId);
+      db.prepare(`
+        INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, recipient_display,
+                                conversation_id, root_kind, root_id, message_id, receipt_id, outcome, detail, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      `).run(
+        id,
+        input.agentId,
+        currentTurnNumber.get(input.agentId) ?? null,
+        input.tool,
+        input.channel,
+        input.recipientId ?? null,
+        input.recipientDisplay ?? null,
+        conversationId,
+        root?.kind ?? null,
+        root?.id ?? null,
+        input.messageId ?? null,
+        input.receiptId ?? null,
+        input.outcome,
+        input.detail ?? null,
+      );
+      // PHASE-2 T3: a quick ask is DONE because something was delivered for it — never
+      // because a model said so. The close happens here, at the one place a delivery becomes
+      // a row, so no send path has to remember to do it and none can claim a close it cannot
+      // point at (`work.state='done'` requires `result_delivery_id`, enforced by the DDL AND
+      // by `transition()`'s own gate).
+      // Narrowed three ways, each a negative control in work/__tests__/ask-lifecycle.test.ts:
+      // the send must have succeeded, it must belong to the turn holding the claim, and it
+      // must have gone to the ask's OWN conversation.
+      closeAsksForDelivery({
+        agentId: input.agentId,
+        turnNumber: currentTurnNumber.get(input.agentId) ?? null,
+        deliveryId: id,
+        conversationId,
+        tool: input.tool,
+        outcome: input.outcome,
       });
-    } else if (input.channel === 'none' || input.channel === 'a2a') {
-      // The peer lane has no `conversations` row and must not mint one: conversation identity
-      // is a HUMAN counterparty fact (party labels, recall scoping, the waiting set all read
-      // it), and inventing an a2a conversation would put coordination traffic inside it.
-      // `none` is here for the same reason from the other direction: nothing crossed a door,
-      // so there is no counterparty to resolve and minting a conversation would invent one.
-      conversationId = null;
-    } else if (input.recipientId) {
-      conversationId = resolveOrCreateConversation(input.agentId, {
-        channel: input.channel,
-        provider: input.provider ?? (input.channel === 'imessage' ? 'imessage' : null),
-        counterpartyId: input.recipientId,
-        counterpartyName: input.recipientDisplay ?? null,
-        threadRoot: input.threadRoot ?? null,
-      });
-    }
-    const root = currentTurnRoot.get(input.agentId);
-    db.prepare(`
-      INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, recipient_display,
-                              conversation_id, root_kind, root_id, message_id, receipt_id, outcome, detail, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-    `).run(
-      id,
-      input.agentId,
-      currentTurnNumber.get(input.agentId) ?? null,
-      input.tool,
-      input.channel,
-      input.recipientId ?? null,
-      input.recipientDisplay ?? null,
-      conversationId,
-      root?.kind ?? null,
-      root?.id ?? null,
-      input.messageId ?? null,
-      input.receiptId ?? null,
-      input.outcome,
-      input.detail ?? null,
-    );
-    // PHASE-2 T3: a quick ask is DONE because something was delivered for it — never
-    // because a model said so. The close happens here, at the one place a delivery becomes
-    // a row, so no send path has to remember to do it and none can claim a close it cannot
-    // point at (`work.state='done'` requires `result_delivery_id`, enforced by the DDL AND
-    // by `transition()`'s own gate).
-    // Narrowed three ways, each a negative control in work/__tests__/ask-lifecycle.test.ts:
-    // the send must have succeeded, it must belong to the turn holding the claim, and it
-    // must have gone to the ask's OWN conversation.
-    closeAsksForDelivery({
-      agentId: input.agentId,
-      turnNumber: currentTurnNumber.get(input.agentId) ?? null,
-      deliveryId: id,
-      conversationId,
-      tool: input.tool,
-      outcome: input.outcome,
+      return { kind: 'applied', value: { deliveryId: id } };
     });
-    return { kind: 'applied', value: { deliveryId: id } };
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     logger.warn('recordDelivery failed (non-fatal; the delivery itself is unaffected)', {

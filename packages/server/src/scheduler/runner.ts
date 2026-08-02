@@ -14,6 +14,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { retireEngineEventsForRun, retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { getDb } from '../db/connection.js';
+import { withUnit } from '../db/unit.js';
 import {
   taskScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
   validatedExpr, awaitingUserVerdictExpr, pendingCloseRequestExpr, statusToState, type TrackerStatus,
@@ -729,6 +730,18 @@ export async function checkScheduledTasks(): Promise<void> {
     // The occurrence id IS the claim token. The state assignment stays outside it — that is
     // `transition()`'s — and runs AFTER the claim is won, so two processes still cannot both
     // fire an occurrence.
+    //
+    // PHASE-4 T2, MEASURED AND DELIBERATELY LEFT SPLIT (#14). §T0-PINS B lists this as the
+    // plan's "schedule advance + occurrence" cluster, un-atomic. Re-derived at 9d3507e: the
+    // ADVANCE IS ALREADY INSIDE THE CLAIM — `work/occurrences.ts claimOccurrence` writes the
+    // occurrence INSERT and `schedule_status='running', last_run_at, next_run_at` in ONE
+    // transaction, and rolls both back on a lost CAS. The `patchWork(next_run_at + 30s)`
+    // the pin points at is a different thing: the 30-second DEFER in the dependency branch
+    // above, a single write followed by `continue`.
+    // What remains split is claim-then-`setTrackerStatus`, and that split is the DESIGN,
+    // stated two lines up: the claim must be won before anything asserts the row is running.
+    // Merging them would fold a concurrency decision into a refactor.
+
     const occurrenceId = claimOccurrence({
       workId: taskId, sequence: runNumber, occurrenceMs: claimedOccurrenceMs,
       nowMs, nextRunMs: tsToMs(nextAtFire),
@@ -1028,16 +1041,24 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
 
   if (nextRun) {
     // Recurring: set next run, go back to waiting, reset task status to on_deck
-    noteUnsettled(setTrackerStatus(taskId, 'on_deck', {
-      by: 'scheduler', actorId: 'scheduler', reason: 'run finished; waiting for the next occurrence',
-    }), 'scheduler: run finished, waiting for next occurrence', { taskId });
-    patchWork(taskId, { next_run_at: tsToMs(nextRun), schedule_status: 'waiting', last_run_at: tsToMs(now) });
+    // T2: the tracker state and the schedule columns describe ONE event — this run
+    // finished and the next one is due at T. Split across two transactions they could
+    // disagree, and a schedule that says `waiting` while the board still says the task is
+    // running is exactly the "sleeping project" class Phase 2 closed from the other side.
+    withUnit(() => {
+      noteUnsettled(setTrackerStatus(taskId, 'on_deck', {
+        by: 'scheduler', actorId: 'scheduler', reason: 'run finished; waiting for the next occurrence',
+      }), 'scheduler: run finished, waiting for the next occurrence', { taskId });
+      patchWork(taskId, { next_run_at: tsToMs(nextRun), schedule_status: 'waiting', last_run_at: tsToMs(now) });
+    });
   } else if (failedFinalRun) {
     // D8: final run failed, keep the failure VISIBLE (see block comment above).
-    noteUnsettled(setTrackerStatus(taskId, 'fallen', {
-      by: 'scheduler', actorId: 'scheduler', reason: 'the final scheduled run failed',
-    }), 'scheduler: final run failed', { taskId });
-    patchWork(taskId, { schedule_status: 'completed', last_run_at: tsToMs(now) });
+    withUnit(() => {
+      noteUnsettled(setTrackerStatus(taskId, 'fallen', {
+        by: 'scheduler', actorId: 'scheduler', reason: 'the final scheduled run failed',
+      }), 'scheduler: final run failed', { taskId });
+      patchWork(taskId, { schedule_status: 'completed', last_run_at: tsToMs(now) });
+    });
       retireEngineEventsForTask(taskId, 'task_fallen');
     try {
       const title = String(task.title ?? 'untitled task');
@@ -1103,15 +1124,18 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
   } else {
     // No more runs: mark everything as completed
     const finalDelivery = deliveryForTaskClose(taskId);
-    const finalRes = setTrackerStatus(taskId, 'complete', {
-      by: finalDelivery ? 'scheduler' : 'agent', actorId: 'scheduler',
-      resultDeliveryId: finalDelivery,
-      reason: 'the schedule ran out of occurrences and the last run succeeded',
+    const finalRes = withUnit(() => {
+      const res = setTrackerStatus(taskId, 'complete', {
+        by: finalDelivery ? 'scheduler' : 'agent', actorId: 'scheduler',
+        resultDeliveryId: finalDelivery,
+        reason: 'the schedule ran out of occurrences and the last run succeeded',
+      });
+      patchWork(taskId, { schedule_status: 'completed', last_run_at: tsToMs(now) });
+      return res;
     });
     if (!workSettled(finalRes)) {
       logger.warn('Scheduler: final-run close refused by the work gate', { taskId, result: finalRes });
     }
-    patchWork(taskId, { schedule_status: 'completed', last_run_at: tsToMs(now) });
   }
 
   // Broadcast the run completion event

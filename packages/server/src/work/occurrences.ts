@@ -225,6 +225,10 @@ export function releaseOccurrence(
 export function settleOccurrence(
   occurrenceId: string, runStatus: string, deliveryId: string | null, summary: string | null,
 ): WorkOutcome {
+  // T2: the settle and the run's own word are ONE unit. The event is the ONLY carrier
+  // of the discriminator between "finished, reached nobody" and "never ran" (both land on
+  // `abandoned`), so losing it loses the fact the owner's run history renders.
+  return withUnit((): WorkOutcome => {
   let result: WorkOutcome;
   if (runStatus === 'failed') {
     result = transition(occurrenceId, {
@@ -264,6 +268,7 @@ export function settleOccurrence(
     });
   }
   return result;
+  });
 }
 
 /**

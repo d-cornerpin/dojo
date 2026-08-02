@@ -20,6 +20,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
+import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
 import { getCurrentToolCallId, currentTurnRoot, noteTurnReceipt, currentTurnConvKey, currentTurnNumber } from '../agent/turn-state.js';
 import { noteReceiptForOutbound } from '../agent/v2/outbound.js';
@@ -170,6 +171,10 @@ export function writeToolReceipt(params: WriteReceiptParams): string {
 
   try {
     const db = getDb();
+    // T2: the audit row and the receipt row are ONE unit. `tool_receipts.audit_id`
+    // POINTS at the audit row, so a half-applied pair is a receipt naming an audit
+    // entry that does not exist — the receipt tier's own provenance, broken.
+    withUnit(() => {
     // Paired audit_log row (uniform tool_call provenance). detail points at the
     // receipt id only (no bodies, no secrets). Skipped when the caller already
     // wrote its own audit row for this send.
@@ -196,6 +201,7 @@ export function writeToolReceipt(params: WriteReceiptParams): string {
       providerId, threadId, recipient, detailJson, auditId, sim ? 1 : 0,
       convKey, turnNumber, boundedSentText, liveCallId, liveRoot?.kind ?? null, liveRoot?.id ?? null,
     );
+    });
 
     noteTurnReceipt(agentId, receiptId);
     // PHASE-2 T5 (Phase-1 §7 debt): the delivery this receipt proves. `deliveries.receipt_id`

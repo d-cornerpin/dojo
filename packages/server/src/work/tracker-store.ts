@@ -96,20 +96,22 @@ export function openTrackerProject(p: OpenTrackerProjectInput): string {
   const db = getDb();
   const id = p.id ?? uuidv4();
   const at = now();
-  db.prepare(`
-    INSERT INTO work (
-      id, kind, parent_id, agent_id, requester, requester_id, root_kind, root_id,
-      state, intent, wakes, closes_thread, title, description, level, phase_count,
-      current_phase, group_id, source_message_id, origin_turn, origin_conv_key, origin_kind,
-      opened_at, updated_at, provenance
-    ) VALUES (?, 'project', NULL, ?, ?, ?, ?, ?, 'open', 'tracker', 0, 0, ?, ?, ?, 1, 1,
-              ?, ?, ?, ?, ?, ?, ?, 'live')
-  `).run(
-    id, p.createdBy, requesterOf(p.createdBy), p.createdBy, TRACKER_ROOT_KIND, id,
-    p.title, p.description ?? null, p.level ?? 1, p.groupId ?? null,
-    p.origin.sourceMessageId, p.origin.turn, p.origin.convKey, p.origin.kind, at, at,
-  );
-  appendWorkEvent(id, 'opened', p.createdBy, { kind: 'project', title: p.title });
+  withUnit(() => {
+    db.prepare(`
+      INSERT INTO work (
+        id, kind, parent_id, agent_id, requester, requester_id, root_kind, root_id,
+        state, intent, wakes, closes_thread, title, description, level, phase_count,
+        current_phase, group_id, source_message_id, origin_turn, origin_conv_key, origin_kind,
+        opened_at, updated_at, provenance
+      ) VALUES (?, 'project', NULL, ?, ?, ?, ?, ?, 'open', 'tracker', 0, 0, ?, ?, ?, 1, 1,
+                ?, ?, ?, ?, ?, ?, ?, 'live')
+    `).run(
+      id, p.createdBy, requesterOf(p.createdBy), p.createdBy, TRACKER_ROOT_KIND, id,
+      p.title, p.description ?? null, p.level ?? 1, p.groupId ?? null,
+      p.origin.sourceMessageId, p.origin.turn, p.origin.convKey, p.origin.kind, at, at,
+    );
+    appendWorkEvent(id, 'opened', p.createdBy, { kind: 'project', title: p.title });
+  });
   return id;
 }
 
@@ -120,27 +122,29 @@ export function openTrackerTask(p: OpenTrackerTaskInput): string {
   // `agent_id` is NOT NULL on the spine and the legacy column was nullable, so an unassigned
   // task belongs to its creator until someone claims it — the same COALESCE migration `135`
   // used (`COALESCE(t.assigned_to, t.created_by)`), not a new rule.
-  db.prepare(`
-    INSERT INTO work (
-      id, kind, parent_id, agent_id, assignee_agent, requester, requester_id,
-      root_kind, root_id, state, intent, wakes, closes_thread,
-      title, description, original_description, goal, priority, step_number, total_steps,
-      phase, depends_on, assigned_to_group, task_kind, a2a_thread_id,
-      source_message_id, origin_turn, origin_conv_key, origin_kind,
-      opened_at, updated_at, provenance
-    ) VALUES (?, 'task', ?, ?, ?, ?, ?, ?, ?, ?, 'tracker', 0, 0,
-              ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'live')
-  `).run(
-    id, p.projectId ?? null, p.assignedTo ?? p.createdBy, p.assignedTo ?? null,
-    requesterOf(p.createdBy), p.createdBy, p.rootKind ?? TRACKER_ROOT_KIND, id,
-    statusToState(p.status ?? 'in_progress'),
-    p.title, p.description ?? null, p.originalDescription ?? null, p.goal ?? null,
-    p.priority ?? 'normal', p.stepNumber ?? null, p.totalSteps ?? null, p.phase ?? 1,
-    JSON.stringify(p.dependsOn ?? []), p.assignedToGroup ?? null, p.taskKind ?? null,
-    p.a2aThreadId ?? null,
-    p.origin.sourceMessageId, p.origin.turn, p.origin.convKey, p.origin.kind, at, at,
-  );
-  appendWorkEvent(id, 'opened', p.createdBy, { kind: 'task', title: p.title, project_id: p.projectId ?? null });
+  withUnit(() => {
+    db.prepare(`
+      INSERT INTO work (
+        id, kind, parent_id, agent_id, assignee_agent, requester, requester_id,
+        root_kind, root_id, state, intent, wakes, closes_thread,
+        title, description, original_description, goal, priority, step_number, total_steps,
+        phase, depends_on, assigned_to_group, task_kind, a2a_thread_id,
+        source_message_id, origin_turn, origin_conv_key, origin_kind,
+        opened_at, updated_at, provenance
+      ) VALUES (?, 'task', ?, ?, ?, ?, ?, ?, ?, ?, 'tracker', 0, 0,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'live')
+    `).run(
+      id, p.projectId ?? null, p.assignedTo ?? p.createdBy, p.assignedTo ?? null,
+      requesterOf(p.createdBy), p.createdBy, p.rootKind ?? TRACKER_ROOT_KIND, id,
+      statusToState(p.status ?? 'in_progress'),
+      p.title, p.description ?? null, p.originalDescription ?? null, p.goal ?? null,
+      p.priority ?? 'normal', p.stepNumber ?? null, p.totalSteps ?? null, p.phase ?? 1,
+      JSON.stringify(p.dependsOn ?? []), p.assignedToGroup ?? null, p.taskKind ?? null,
+      p.a2aThreadId ?? null,
+      p.origin.sourceMessageId, p.origin.turn, p.origin.convKey, p.origin.kind, at, at,
+    );
+    appendWorkEvent(id, 'opened', p.createdBy, { kind: 'task', title: p.title, project_id: p.projectId ?? null });
+  });
   return id;
 }
 
@@ -448,13 +452,16 @@ export function stampTicket(workId: string, f: {
 export function upholdClaim(
   id: string, claimState: WorkState, _by: Actor, byId: string, note: string,
 ): number {
-  const info = getDb().prepare(
-    `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, evidence_ref, note, created_at)
-     VALUES (?, ?, 'upheld', ?, NULL, ?, ?)`,
-  ).run(id, claimState, byId, note, now());
-  appendWorkEvent(id, 'claim_upheld', byId, { claim_state: claimState, note });
+  const rowid = withUnit((): number => {
+    const info = getDb().prepare(
+      `INSERT INTO adjudications (work_id, claim_state, verdict, by_agent, evidence_ref, note, created_at)
+       VALUES (?, ?, 'upheld', ?, NULL, ?, ?)`,
+    ).run(id, claimState, byId, note, now());
+    appendWorkEvent(id, 'claim_upheld', byId, { claim_state: claimState, note });
+    return Number(info.lastInsertRowid);
+  });
   logger.info('claim upheld', { workId: id, claimState, by: byId });
-  return Number(info.lastInsertRowid);
+  return rowid;
 }
 
 /** A thrown-back claim — the write behind `revert_count = revert_count + 1`. Delegates to
