@@ -155,6 +155,17 @@ export const GATES = [
     why: 'Blocking in BOTH consumers, but it cannot run in the opening block: it asks the PACKAGED ARTIFACT just smoke-booted, not the working tree, because the compiled thing being shipped is what a user runs. `--require-live` turns the offline SKIP (correct for `npm run gates`) into a failure, because a release that could not ask the question must not answer it. release.sh therefore invokes it inline after the smoke boot; that is recorded here so the difference is declared rather than discovered.',
   },
 
+  {
+    id: 'must-consume',
+    tier: 'blocking',
+    phase: 'pre-build',
+    script: 'deploy/checks/check-must-consume.mjs',
+    args: [],
+    title: 'Must-consume gate (no discarded Outcome at the three boundaries)',
+    fail: 'Must-consume gate: an Outcome was reported and discarded — a refusal nobody consumed. NOT publishing.',
+    why: 'PHASE-4 T1. It entered this manifest at REPORT tier on purpose and stayed there for the whole compile-fail burn-down — a lint that ships red is a whitelist waiting to happen, and the inventory was 31 across 12 files at the start (20 at the work boundary, 11 at the delivery doors). This is the flip, and it is a ONE-LINE tier change with nothing else in it because the fail line was written at report tier: the population is zero, measured by the gate itself, so from here a single discarded Outcome refuses the build. Its three clauses are the inventory, a planted-fault selftest (four discards must be flagged, six consuming shapes must not), and a conformance check that the rule and `outcome.ts` still declare the same five arms.',
+  },
+
   // ════════ report ════════
   // Never blocks, always recorded. Non-negotiable #7: no phase passes or fails on a
   // line count, but a net-positive phase owes an accounting, and the accounting starts
@@ -185,16 +196,6 @@ export const GATES = [
     args: [],
     title: 'Capability-ledger instrument (capability the tree lost)',
     why: 'The owner\'s standing rule is never less capability. This reports what the ledger says left.',
-  },
-  {
-    id: 'must-consume',
-    tier: 'report',
-    phase: 'pre-build',
-    script: 'deploy/checks/check-must-consume.mjs',
-    args: [],
-    title: 'Must-consume gate (no discarded Outcome at the three boundaries)',
-    fail: 'Must-consume gate: an Outcome was reported and discarded — a refusal nobody consumed. NOT publishing.',
-    why: 'PHASE-4 T1. Enters at REPORT tier on purpose, for the duration of the compile-fail burn-down: a lint that ships red is a whitelist waiting to happen, so the gate measures while the inventory falls and moves to `blocking` in a one-line manifest edit at zero. The `fail` line is written now, at report tier, so the flip is a tier change and nothing else.',
   },
   {
     id: 'deletion-ratio',
