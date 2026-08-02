@@ -200,6 +200,56 @@ describe('the two-pass fit reserves minimums by priority, then distributes the r
     expect(report.grants[0].requested).toBe(0);
   });
 
+  // ════════════════════════════════════════
+  // PHASE-4 T1 Step 2b — A THROWN LANE IS A THIRD FACT
+  //
+  // `lanes.ts:572-574` states the requirement two lines above the defect: "Lanes that
+  // rendered nothing are recorded as `empty`, never omitted: 'the briefing did not
+  // exist' and 'the briefing was dropped' are different facts and the receipt must be
+  // able to tell them apart (research 06 §8)."
+  //
+  // A lane whose `render` THROWS is a THIRD fact, and the receipt asserted the FIRST
+  // one about it: `assembler.ts` caught the throw, logged a warning, and pushed the
+  // candidate with `render: null`, from which `fitLanes` was byte-identical to
+  // "nothing to say". Found by KITFIX-PREFIX's own planted fault, which is why its
+  // shape is the positive control here.
+  // ════════════════════════════════════════
+
+  it('T1 2b POSITIVE: a lane whose render THREW is `failed`, never `empty`', () => {
+    const threw: LaneCandidate = {
+      lane: textLane('lane.briefing', 100, 200),
+      render: null,
+      renderError: 'TypeError: Cannot read properties of undefined (reading \'rows\')',
+    };
+    const { report } = fitLanes([threw], 1000);
+    expect(report.grants[0].status).toBe('failed');
+    // The receipt carries WHY, so the reader does not have to go looking in a log that
+    // rotates. The error text is the grant's reason, not a generic word.
+    expect(report.grants[0].reason).toContain('threw');
+    expect(report.grants[0].reason).toContain('Cannot read properties of undefined');
+    expect(report.grants[0].requested).toBe(0);
+    expect(report.grants[0].granted).toBe(0);
+  });
+
+  it('T1 2b NEGATIVE CONTROL: a genuinely empty lane still reads `empty`', () => {
+    // Without this the fix would be indistinguishable from renaming the arm.
+    const absent: LaneCandidate = { lane: textLane('lane.vault', 100, 200), render: null };
+    const { report } = fitLanes([absent], 1000);
+    expect(report.grants[0].status).toBe('empty');
+    expect(report.grants[0].reason).toBe('lane rendered no content on this turn');
+  });
+
+  it('T1 2b NEGATIVE CONTROL: a lane that rendered ZERO messages is `empty`, not `failed`', () => {
+    // "rendered nothing" has two shapes — a null render and an empty message list — and
+    // BOTH are the first fact, not the third.
+    const nothing: LaneCandidate = {
+      lane: textLane('lane.vault', 100, 200),
+      render: { messages: [], tokens: 0 },
+    };
+    const { report } = fitLanes([nothing], 1000);
+    expect(report.grants[0].status).toBe('empty');
+  });
+
   it('emits in SLOT order while spending in PRIORITY order', () => {
     const lanes = [
       candidate(textLane('lane.directive', LANE_PRIORITY['lane.directive'], 900), 50),

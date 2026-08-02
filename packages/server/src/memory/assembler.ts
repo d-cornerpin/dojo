@@ -1224,6 +1224,8 @@ async function assembleMessageContext(
         priority: LANE_PRIORITY['lane.fresh-tail'],
         requested: pm.tokens,
         granted: renderTokens(messages),
+        // T1 2b checked this derived `empty`: the PM tail is rendered INLINE here, with no
+        // swallowed catch, so a failure throws the assembly rather than reading as silence.
         status: messages.length > 0 ? 'admitted' : 'empty',
         reason: `PM lightweight context: the tracker is its memory, so the tail is its only ` +
           `lane (row cap ${laneLimit('lane.pm-tail', 'rows', 'tail')}, ` +
@@ -1339,16 +1341,19 @@ async function assembleMessageContext(
   const candidates: LaneCandidate[] = [];
   for (const lane of lanes) {
     let render: LaneRender | null = null;
+    let renderError: string | null = null;
     try {
       render = (await lane.render(laneCtx)) as LaneRender | null;
     } catch (err) {
-      // One bad lane may not fail the whole assembly, and a swallowed failure may not read
-      // as "the lane had nothing" — it is recorded as empty with the error in the log.
-      logger.warn('lane render failed', {
-        lane: lane.id, error: err instanceof Error ? err.message : String(err),
-      }, agentId);
+      // One bad lane may not fail the whole assembly — but PHASE-4 T1 Step 2b: it may not
+      // read as "the lane had nothing" either. The old note said "recorded as empty with
+      // the error in the log", and the log is not the receipt: `lanes.ts:572-574` requires
+      // the RECEIPT to tell these facts apart, and until now it recorded a thrown lane
+      // byte-identically to a silent one. The error rides into the grant as `failed`.
+      renderError = err instanceof Error ? err.message : String(err);
+      logger.warn('lane render failed', { lane: lane.id, error: renderError }, agentId);
     }
-    candidates.push({ lane: lane as Lane, render });
+    candidates.push({ lane: lane as Lane, render, renderError });
   }
 
   const { emitted, report } = fitLanes(candidates, contentBudget, { offTheTopTokens: offTheTop });
@@ -1581,6 +1586,8 @@ async function assembleMessageContext(
   }
 
   // Record the post-budget lanes that actually fired, against their declared reserves.
+  // T1 2b checked this derived `empty` too: these lanes are inline pushes onto `postBudget`,
+  // not `lane.render()` calls behind a catch, so "did not fire" is the whole truth here.
   for (const l of POST_BUDGET_LANES) {
     const fired = postBudget.includes(l.id);
     report.grants.push({
@@ -1604,6 +1611,7 @@ async function assembleMessageContext(
     spentTokens: report.spentTokens,
     admittedLanes: report.admittedIds.length,
     rejectedLanes: report.grants.filter((g) => g.status === 'rejected').length,
+    failedLanes: report.grants.filter((g) => g.status === 'failed').length,   // T1 2b
     truncatedLanes: report.grants.filter((g) => g.status === 'truncated').length,
     overBudgetEvents: report.overBudget.length,
     freshTailCount: tailGrant?.granted ?? 0,

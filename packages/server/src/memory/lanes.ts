@@ -78,7 +78,7 @@ export interface LaneRender<P = unknown> {
   payload?: P;
 }
 
-export type LaneStatus = 'admitted' | 'truncated' | 'rejected' | 'empty';
+export type LaneStatus = 'admitted' | 'truncated' | 'rejected' | 'empty' | 'failed';
 
 export interface LaneGrant {
   id: string;
@@ -548,6 +548,9 @@ export function truncateTextLane<P>(render: LaneRender<P>, maxTokens: number): L
 export interface LaneCandidate<C = unknown, P = unknown> {
   lane: Lane<C, P>;
   render: LaneRender<P> | null;
+  /** PHASE-4 T1 2b: set when `render` THREW. `render` is null either way, so without
+   *  this the receipt cannot tell "nothing to say" from "failed to say it". */
+  renderError?: string | null;
 }
 
 export interface FitResult {
@@ -572,13 +575,18 @@ export function fitLanes(
   // Lanes that rendered nothing are recorded as `empty`, never omitted: "the briefing did
   // not exist" and "the briefing was dropped" are different facts and the receipt must be
   // able to tell them apart (research 06 §8).
+  // PHASE-4 T1 2b: a lane whose render THREW is a THIRD fact and this used to assert the
+  // first one about it. `failed` carries the error into the RECEIPT, not just a log.
   const live: Array<{ c: LaneCandidate; cost: number; reserved: number; granted: number }> = [];
   for (const c of candidates) {
     if (!c.render || c.render.messages.length === 0) {
       grants.push({
         id: c.lane.id, slot: c.lane.slot, priority: c.lane.priority,
-        requested: 0, granted: 0, status: 'empty',
-        reason: 'lane rendered no content on this turn',
+        requested: 0, granted: 0,
+        status: c.renderError ? 'failed' : 'empty',
+        reason: c.renderError
+          ? `lane render threw: ${String(c.renderError).slice(0, 300)}`
+          : 'lane rendered no content on this turn',
       });
       continue;
     }
