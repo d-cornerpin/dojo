@@ -1043,6 +1043,69 @@
       "to": 1741,
       "by": "PHASE-4 T4, the OR2-PROVISIONAL burn-down (2026-08-02)",
       "why": "+5 comment lines on `NON_ANSWERING_DELIVERY_TOOLS`, the twin of `answered-edge.ts`'s set. The two are kept in step by a conformance test, so their reasons have to stay in step too."
+    },
+    {
+      "path": "packages/server/src/agent/model.ts",
+      "from": 2609,
+      "to": 2619,
+      "by": "PHASE-4 T5, provider errors classified from status codes (2026-08-02)",
+      "why": "+10 across the two provider catches and the Ollama one. The old classification was three lines of `message.includes('429'|'503'|'529')` immediately below a line that had ALREADY read `err.status` into the log payload - the status was in scope and the verdict ignored it. What replaces them is `classifyProviderError(err)` plus `provider: facts` on each `AgentError`, and the facts travelling on the error are what let five downstream files delete their own copies of the same substring table. The derivation and the adversarial fixtures live in the NEW file `agent/provider-error.ts`, which is why this raise is ten lines and not a hundred."
+    },
+    {
+      "path": "packages/server/src/agent/v2/recovery.ts",
+      "from": 596,
+      "to": 605,
+      "by": "PHASE-4 T5, provider errors classified from status codes (2026-08-02)",
+      "why": "+9: the cascade reads the provider's facts ONCE at its entry and hands them to all four steps (three signatures gain a `facts` parameter, one line each), and `classifyError`'s numeric branches become one call. Net of the comment it is a parameter thread, not new logic - the point of the thread is that `tryPlatformErrorRecovery` can no longer decide `auth_invalid` (agent locked, owner told his API key is dead) from a `401` inside a token count, because the status is now in scope where the verdict is made."
+    },
+    {
+      "path": "packages/server/src/healer/injury-recovery.ts",
+      "from": 810,
+      "to": 822,
+      "by": "PHASE-4 T5, provider errors classified from status codes (2026-08-02)",
+      "why": "+12: `classifyError` here holds a persisted STRING (`agents.last_error`) and nothing else, so it kept the sixth private copy of the substring table. It now calls the ONE shared prose table and keeps only the two dojo-specific buckets that have no HTTP equivalent (context corruption, config), reordered above the generic 4xx bucket that used to swallow `invalid_request`. A `switch` over a typed union is longer than nine `lower.includes()` lines and is the whole reason a digit run inside a token count can no longer read as a 401."
+    },
+    {
+      "path": "packages/server/src/agent/provider-error.ts",
+      "from": 0,
+      "to": 317,
+      "by": "PHASE-4 T5, provider errors classified from status codes (2026-08-02) - NEW FILE, pinned at birth",
+      "why": "The growth detector asked for this decision to be visible, so here it is. 317 lines, of which roughly half are the record: what the five substring tables got wrong in BOTH directions (an over-length 400 read as `auth_invalid` on the `401` inside its token count; a real 429 whose body says only \"quota\" read as unclassified), and why the prose fallback is safe to keep at all (every status matched as a token). It is one module because it REPLACES five private copies of the same table - splitting it would re-create the disease it exists to close - and it is pinned decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/agents.ts",
+      "from": 820,
+      "to": 822,
+      "by": "PHASE-4 T5 Step 3, R23 - blind route catches record why (2026-08-02)",
+      "why": "+2: the `import { noteRouteFailure }` line and the `noteRouteFailure(c, logger, err)` call in the ONE answering catch this file had that recorded nothing - `GET /:id/system-prompt` answered `{ ok: true, data: { content: '' } }` on any read failure, so a soul file that had gone unreadable rendered as an agent with an empty system prompt and left no trace at all."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/setup-deps.ts",
+      "from": 512,
+      "to": 513,
+      "by": "PHASE-4 T5 Step 3, R23 - blind route catches record why (2026-08-02)",
+      "why": "+1, exactly the `import { noteRouteFailure, routeFailure }` line. Its five converted catches each got SHORTER or stayed level; the import is the whole raise."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/tracker.ts",
+      "from": 905,
+      "to": 906,
+      "by": "PHASE-4 T5 Step 3, R23 - blind route catches record why (2026-08-02)",
+      "why": "+1, exactly the `import { routeFailure }` line. Three `catch { return c.json({ ok:false, error:'invalid JSON body' }, 400) }` blocks now bind and record their error while telling the caller the same words as before."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/update.ts",
+      "from": 1022,
+      "to": 1023,
+      "by": "PHASE-4 T5 Step 3, R23 - blind route catches record why (2026-08-02)",
+      "why": "+1, exactly the `import { routeFailure }` line, for two 500 answers that logged nothing on the route that applies releases - the single place on this box where a silent failure costs the most."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/upload.ts",
+      "from": 607,
+      "to": 608,
+      "by": "PHASE-4 T5 Step 3, R23 - blind route catches record why (2026-08-02)",
+      "why": "+1, exactly the `import { routeFailure }` line, for three `catch { … 'Database not available' }` blocks that reported a DB open failure to the browser and to nobody else."
     }
   ],
   "maxNewFileLines": 400,
@@ -1074,10 +1137,11 @@
     "packages/server/src/agent/a2a-transport.ts": 2008,
     "packages/server/src/agent/browser.ts": 412,
     "packages/server/src/agent/destructive-gate.ts": 552,
-    "packages/server/src/agent/model.ts": 2609,
+    "packages/server/src/agent/model.ts": 2619,
     "packages/server/src/agent/pdf-tools.ts": 1007,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 687,
+    "packages/server/src/agent/provider-error.ts": 317,
     "packages/server/src/agent/runtime.ts": 1415,
     "packages/server/src/agent/spawner.ts": 1382,
     "packages/server/src/agent/tools.ts": 10484,
@@ -1085,18 +1149,18 @@
     "packages/server/src/agent/v2/counterparty.ts": 921,
     "packages/server/src/agent/v2/loop.ts": 9745,
     "packages/server/src/agent/v2/outbound.ts": 462,
-    "packages/server/src/agent/v2/recovery.ts": 596,
+    "packages/server/src/agent/v2/recovery.ts": 605,
     "packages/server/src/agent/v2/state.ts": 578,
     "packages/server/src/costs/tracker.ts": 541,
-    "packages/server/src/gateway/routes/agents.ts": 820,
+    "packages/server/src/gateway/routes/agents.ts": 822,
     "packages/server/src/gateway/routes/chat.ts": 484,
     "packages/server/src/gateway/routes/config.ts": 2531,
     "packages/server/src/gateway/routes/memory.ts": 635,
-    "packages/server/src/gateway/routes/setup-deps.ts": 512,
-    "packages/server/src/gateway/routes/tracker.ts": 905,
+    "packages/server/src/gateway/routes/setup-deps.ts": 513,
+    "packages/server/src/gateway/routes/tracker.ts": 906,
     "packages/server/src/gateway/routes/twilio.ts": 501,
-    "packages/server/src/gateway/routes/update.ts": 1022,
-    "packages/server/src/gateway/routes/upload.ts": 607,
+    "packages/server/src/gateway/routes/update.ts": 1023,
+    "packages/server/src/gateway/routes/upload.ts": 608,
     "packages/server/src/google/auth.ts": 771,
     "packages/server/src/google/tools-forms.ts": 817,
     "packages/server/src/google/tools-read.ts": 938,
@@ -1105,7 +1169,7 @@
     "packages/server/src/healer/approval-routing.ts": 496,
     "packages/server/src/healer/diagnostic.ts": 1036,
     "packages/server/src/healer/healer-agent.ts": 1170,
-    "packages/server/src/healer/injury-recovery.ts": 810,
+    "packages/server/src/healer/injury-recovery.ts": 822,
     "packages/server/src/index.ts": 1172,
     "packages/server/src/memory/assembler.ts": 2680,
     "packages/server/src/memory/compaction.ts": 1337,

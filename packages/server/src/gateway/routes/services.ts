@@ -53,6 +53,7 @@ export function recordProviderError(providerId: string): void {
   }
 }
 import { getProviderCredential } from '../../config/loader.js';
+import { routeFailure } from './route-failure.js';
 
 const logger = createLogger('services-routes');
 const servicesRouter = new Hono();
@@ -96,8 +97,7 @@ servicesRouter.get('/watchdog', (c) => {
       },
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return c.json({ ok: false, error: msg }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 

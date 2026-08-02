@@ -17,6 +17,10 @@ import {
   countContacts,
   type ContactInput,
 } from '../../contacts/store.js';
+import { routeFailure } from './route-failure.js';
+import { createLogger } from '../../logger.js';
+
+const logger = createLogger('contacts-routes');
 
 export const contactsRouter = new Hono<AppEnv>();
 
@@ -90,7 +94,7 @@ contactsRouter.post('/', async (c) => {
     const created = createContact(input, null);
     return c.json({ ok: true, data: serialize(created) });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 400);
+    return routeFailure(c, logger, err, { status: 400 });
   }
 });
 

@@ -50,7 +50,7 @@ const TaskDetailPanel = ({
     return () => { cancelled = true; };
   }, [task.id, task.updatedAt]);
 
-  const handleFieldUpdate = async (updates: Record<string, string | undefined>) => {
+  const handleFieldUpdate = async (updates: Record<string, string | null | undefined>) => {
     setSaving(true);
     const result = await api.updateTask(task.id, updates);
     if (result.ok) {
@@ -230,7 +230,7 @@ const TaskDetailPanel = ({
               onChange={(e) => {
                 const newAgent = e.target.value;
                 setAssignedTo(newAgent);
-                handleFieldUpdate({ assignedTo: newAgent || undefined });
+                handleFieldUpdate({ assignedTo: newAgent || null });
               }}
               disabled={saving}
               className="glass-select w-full"

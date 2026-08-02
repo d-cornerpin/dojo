@@ -6,6 +6,7 @@ import os from 'node:os';
 import { createLogger } from '../../logger.js';
 import { inlineHtmlAssets } from '../../services/canvas-html.js';
 import { renderOfficeToHtml, isOfficeRenderable } from '../../services/office-render.js';
+import { routeFailure } from './route-failure.js';
 
 const logger = createLogger('upload');
 
@@ -453,8 +454,8 @@ uploadRouter.get('/download/:fileId', async (c) => {
   let db;
   try {
     db = (await import('../../db/connection.js')).getDb();
-  } catch {
-    return c.json({ ok: false, error: 'Database not available' }, 500);
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 500, message: 'Database not available' });
   }
 
   // Check if the shared_files table exists
@@ -519,8 +520,8 @@ uploadRouter.get('/render/:fileId', async (c) => {
   let db;
   try {
     db = (await import('../../db/connection.js')).getDb();
-  } catch {
-    return c.json({ ok: false, error: 'Database not available' }, 500);
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 500, message: 'Database not available' });
   }
   const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='shared_files'").get();
   if (!tableExists) return c.json({ ok: false, error: 'File sharing not available' }, 500);
@@ -558,8 +559,8 @@ uploadRouter.get('/describe/:fileId', async (c) => {
   let db;
   try {
     db = (await import('../../db/connection.js')).getDb();
-  } catch {
-    return c.json({ ok: false, error: 'Database not available' }, 500);
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 500, message: 'Database not available' });
   }
 
   const tableExists = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='shared_files'").get();

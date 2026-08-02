@@ -35,6 +35,7 @@ import { recordOwnerCloseReceipt, deliveryIdOf } from '../../agent/v2/deliveries
 import { createLogger } from '../../logger.js';
 import type { TaskLogEntryKind } from '../../tracker/task-log.js';
 import { getPrimaryAgentId, getPMAgentId, getDashboardHiddenAgentIds } from '../../config/platform.js';
+import { routeFailure } from './route-failure.js';
 
 const logger = createLogger('tracker-routes');
 const trackerRouter = new Hono();
@@ -220,8 +221,8 @@ trackerRouter.post('/tasks/:id/observation', async (c) => {
   let body: { note?: string };
   try {
     body = await c.req.json();
-  } catch {
-    return c.json({ ok: false, error: 'invalid JSON body' }, 400);
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 400, message: 'invalid JSON body' });
   }
   const note = (body.note ?? '').trim();
   if (!note) return c.json({ ok: false, error: 'note is required' }, 400);
@@ -407,8 +408,8 @@ trackerRouter.post('/override-requests/:id/resolve', async (c) => {
   let body: { approve?: boolean; reason?: string };
   try {
     body = await c.req.json();
-  } catch {
-    return c.json({ ok: false, error: 'invalid JSON body' }, 400);
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 400, message: 'invalid JSON body' });
   }
   const approve = body.approve === true;
   const reason = (body.reason ?? '').trim();
@@ -810,8 +811,8 @@ trackerRouter.post('/projects/:id/close', async (c) => {
   let body: { status?: string; reason?: string } = {};
   try {
     body = await c.req.json();
-  } catch {
-    return c.json({ ok: false, error: 'Body must be JSON: { status?: "complete"|"cancelled", reason: "…" }' }, 400);
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 400, message: 'Body must be JSON: { status?: "complete"|"cancelled", reason: "…" }' });
   }
 
   const status = (body.status ?? 'cancelled').toLowerCase();

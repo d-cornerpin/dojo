@@ -18,6 +18,7 @@
 
 import crypto from 'node:crypto';
 import { getDb } from '../db/connection.js';
+import { patchAssignments } from '../db/patch.js';
 import { createLogger } from '../logger.js';
 import { bumpToolConfigGeneration } from '../agent/tool-config-generation.js';
 
@@ -261,19 +262,27 @@ function nextPosition(kind: GoogleAccountKind): number {
 }
 
 /** Column map for partial updates — keeps updateGoogleAccount honest against
- *  the schema and applies the same boolean encoding everywhere. */
+ *  the schema and applies the same boolean encoding everywhere.
+ *
+ *  M7 (PHASE-4 T5): the eight text encoders used to read `v => v ?? null`, and THAT was
+ *  P495 — a reconnect whose userinfo lookup blipped passes `email: email || undefined`
+ *  meaning "leave the stored address alone", and `?? null` wrote SQL NULL over it. The
+ *  undefined-dropping now happens in `db/patch.ts` BEFORE any encoder runs, so these
+ *  functions are never called with `undefined` and the `?? null` defence is gone rather
+ *  than carried: it can no longer fire, and a defence that cannot fire teaches the next
+ *  writer a rule that is not true. */
 const UPDATABLE: Record<string, (v: unknown) => unknown> = {
-  email: v => v ?? null,
+  email: v => v,
   enabled: v => (v ? 1 : 0),
   connected: v => (v ? 1 : 0),
-  accessToken: v => v ?? null,
-  refreshToken: v => v ?? null,
-  tokenExpiresAt: v => v ?? null,
-  grantedScopes: v => v ?? null,
-  enabledServices: v => v ?? null,
+  accessToken: v => v,
+  refreshToken: v => v,
+  tokenExpiresAt: v => v,
+  grantedScopes: v => v,
+  enabledServices: v => v,
   watchEmail: v => (v ? 1 : 0),
   sendEmail: v => (v ? 1 : 0),
-  lastVerifiedAt: v => v ?? null,
+  lastVerifiedAt: v => v,
 };
 
 const COLUMN: Record<string, string> = {
@@ -285,15 +294,10 @@ const COLUMN: Record<string, string> = {
 };
 
 export function updateGoogleAccount(id: string, patch: Partial<Omit<GoogleAccount, 'id' | 'kind' | 'position'>>): void {
-  const sets: string[] = [];
-  const values: unknown[] = [];
-  for (const [key, raw] of Object.entries(patch)) {
-    const col = COLUMN[key];
-    const enc = UPDATABLE[key];
-    if (!col || !enc) continue;
-    sets.push(`${col} = ?`);
-    values.push(enc(raw));
-  }
+  const { sets, values } = patchAssignments(patch, {
+    column: key => (UPDATABLE[key] ? COLUMN[key] : undefined),
+    encode: (key, value) => UPDATABLE[key](value),
+  });
   if (!sets.length) return;
   sets.push("updated_at = datetime('now')");
   values.push(id);

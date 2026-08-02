@@ -17,6 +17,7 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
+import { classifyProviderErrorText } from '../agent/provider-error.js';
 import { broadcast } from '../gateway/ws.js';
 import { TRANSIENT_PROVIDER_ERROR_SQL } from './diagnostic.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
@@ -270,27 +271,38 @@ const pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // engine-level "are you ok?" poke that fires before the Healer is involved.
 const autoWakeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-// Classify the error for the healer's diagnostic context
+// Classify the error for the healer's diagnostic context.
+//
+// PHASE-4 T5: this reader holds a STRING and nothing else — `agents.last_error` is a persisted
+// message, so the status that produced it is long gone. Hence the ONE shared prose table
+// (`classifyProviderErrorText`) instead of a sixth private copy: every status there is matched
+// as a token, so "prompt is too long: 204015 tokens" can no longer read as a 401. The
+// dojo-specific buckets (context corruption, config) have no HTTP equivalent and stay.
 function classifyError(error: string | null): string {
   if (!error) return 'unknown';
   const lower = error.toLowerCase();
 
-  if (lower.includes('429') || lower.includes('rate_limit') || lower.includes('rate limit') ||
-      lower.includes('overloaded') || lower.includes('529')) return 'rate_limit';
-  if (lower.includes('econnrefused') || lower.includes('econnreset') || lower.includes('etimedout') ||
-      lower.includes('fetch failed') || lower.includes('network') || lower.includes('socket') ||
-      lower.includes('timeout') || lower.includes('timed out') ||
-      lower.includes('503') || lower.includes('502') || lower.includes('500')) return 'network';
+  // Corruption and config first: our OWN vocabulary, no status, and 'invalid_request' would
+  // otherwise be swallowed by the generic 4xx bucket below.
   if (lower.includes('tool_use_id') || lower.includes('tool_result') ||
       lower.includes('invalid_request') || lower.includes('malformed') ||
       lower.includes('messages.0') || lower.includes('content block')) return 'context_corruption';
   if (lower.includes('no model') || lower.includes('agent not found')) return 'config';
-  if (lower.includes('401') || lower.includes('403') || lower.includes('unauthorized') ||
-      lower.includes('invalid_api_key') || lower.includes('api key')) return 'auth';
-  // Phase 8 F1 fix: bucket generic 4xx provider errors instead of falling
-  // through to 'unknown'. The user-facing toast went "(error: unknown)" for
-  // anything not matched above, even when the message was clearly a 400.
-  if (lower.includes('400') || lower.includes('404') || lower.includes('422')) return 'provider_error';
+
+  switch (classifyProviderErrorText(error).class) {
+    case 'rate_limit':
+    case 'quota':
+    case 'overloaded': return 'rate_limit';
+    case 'network':
+    case 'server': return 'network';
+    case 'auth':
+    case 'access_denied': return 'auth';
+    // Phase 8 F1: bucket generic 4xx instead of falling through to 'unknown' (the toast
+    // said "(error: unknown)" for anything unmatched, even a clear 400).
+    case 'bad_request': return 'provider_error';
+    default: break;
+  }
+  if (lower.includes('api key')) return 'auth';
 
   return 'unknown';
 }

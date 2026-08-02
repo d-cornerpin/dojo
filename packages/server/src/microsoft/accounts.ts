@@ -12,6 +12,7 @@
 
 import crypto from 'node:crypto';
 import { getDb } from '../db/connection.js';
+import { patchAssignments } from '../db/patch.js';
 import { createLogger } from '../logger.js';
 import { bumpToolConfigGeneration } from '../agent/tool-config-generation.js';
 
@@ -249,25 +250,26 @@ const COLUMN: Record<string, string> = {
   enabledServices: 'enabled_services', watchEmail: 'watch_email',
   sendEmail: 'send_email', lastVerifiedAt: 'last_verified_at',
 };
+/** M7 (PHASE-4 T5): the `?? null` that used to sit in each text encoder WAS P527 —
+ *  `email: email || undefined` from a reconnect whose /me lookup failed meant "leave it
+ *  alone" and arrived as SQL NULL. `db/patch.ts` drops undefined before any encoder runs,
+ *  so the defence is deleted rather than left standing where it can never fire. P527's own
+ *  text asked for exactly this generalization: "Same mechanism applies to any future
+ *  undefined-valued key in a patch." */
 const ENCODE: Record<string, (v: unknown) => unknown> = {
-  email: v => v ?? null, accountType: v => v ?? null,
+  email: v => v, accountType: v => v,
   enabled: v => (v ? 1 : 0), connected: v => (v ? 1 : 0),
-  accessToken: v => v ?? null, refreshToken: v => v ?? null,
-  tokenExpiresAt: v => v ?? null, grantedScopes: v => v ?? null,
-  enabledServices: v => v ?? null, watchEmail: v => (v ? 1 : 0),
-  sendEmail: v => (v ? 1 : 0), lastVerifiedAt: v => v ?? null,
+  accessToken: v => v, refreshToken: v => v,
+  tokenExpiresAt: v => v, grantedScopes: v => v,
+  enabledServices: v => v, watchEmail: v => (v ? 1 : 0),
+  sendEmail: v => (v ? 1 : 0), lastVerifiedAt: v => v,
 };
 
 export function updateMicrosoftAccount(id: string, patch: Partial<Omit<MicrosoftAccount, 'id' | 'kind' | 'position'>>): void {
-  const sets: string[] = [];
-  const values: unknown[] = [];
-  for (const [key, raw] of Object.entries(patch)) {
-    const col = COLUMN[key];
-    const enc = ENCODE[key];
-    if (!col || !enc) continue;
-    sets.push(`${col} = ?`);
-    values.push(enc(raw));
-  }
+  const { sets, values } = patchAssignments(patch, {
+    column: key => (ENCODE[key] ? COLUMN[key] : undefined),
+    encode: (key, value) => ENCODE[key](value),
+  });
   if (!sets.length) return;
   sets.push("updated_at = datetime('now')");
   values.push(id);

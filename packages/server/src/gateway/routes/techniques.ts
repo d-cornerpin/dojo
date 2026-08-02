@@ -21,6 +21,7 @@ import { getVersions, getVersion, restoreVersion, getUsage } from '../../techniq
 import { clearTrainerSession } from '../../techniques/trainer-agent.js';
 import { exportTechnique } from '../../techniques/share-export.js';
 import { importTechnique } from '../../techniques/share-import.js';
+import { routeFailure } from './route-failure.js';
 
 const logger = createLogger('technique-routes');
 
@@ -70,8 +71,7 @@ techniquesRouter.post('/', async (c) => {
     });
     return c.json({ ok: true, data: technique }, 201);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return c.json({ ok: false, error: msg }, 400);
+    return routeFailure(c, logger, err, { status: 400 });
   }
 });
 
@@ -100,7 +100,7 @@ techniquesRouter.put('/:id', async (c) => {
     });
     return c.json({ ok: true, data: updated });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 400);
+    return routeFailure(c, logger, err, { status: 400 });
   }
 });
 

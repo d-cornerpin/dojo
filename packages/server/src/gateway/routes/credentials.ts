@@ -9,6 +9,7 @@
 
 import { Hono } from 'hono';
 import type { AppEnv } from '../server.js';
+import { mergeObjectPatch } from '../../db/patch.js';
 import {
   listCredentials,
   getCredentialById,
@@ -16,6 +17,10 @@ import {
   updateCredential,
   deleteCredentialById,
 } from '../../credentials/store.js';
+import { routeFailure } from './route-failure.js';
+import { createLogger } from '../../logger.js';
+
+const logger = createLogger('credentials-routes');
 
 export const credentialsRouter = new Hono<AppEnv>();
 
@@ -51,7 +56,7 @@ credentialsRouter.get('/:id/reveal', (c) => {
       },
     });
   } catch (err) {
-    return c.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, 500);
+    return routeFailure(c, logger, err, { status: 500 });
   }
 });
 
@@ -95,7 +100,19 @@ credentialsRouter.patch('/:id', async (c) => {
   if (!credentials || typeof credentials !== 'object' || Array.isArray(credentials)) {
     return c.json({ ok: false, error: 'credentials must be an object.' }, 400);
   }
-  const result = updateCredential(existing.serviceName, credentials, description, null);
+
+  // M7 / P362: this is a PATCH, so `credentials` is a PATCH — a field the caller did not
+  // mention keeps its stored value and an explicit `null` REMOVES that field. The route used
+  // to hand the body straight to `updateCredential`, which stringifies the whole blob over
+  // the old ciphertext: a client sending only the key it rotated destroyed the rest with no
+  // error and nothing to recover from. The agent tool keeps whole-blob replace because its
+  // own schema declares it ("replaces the existing one entirely"); the HTTP verb is the one
+  // that promised partial, so the merge belongs here.
+  const current = getCredentialById(id, null);
+  if (!current) return c.json({ ok: false, error: 'Credential not found.' }, 404);
+  const merged = mergeObjectPatch(current.credentials, credentials);
+
+  const result = updateCredential(existing.serviceName, merged, description, null);
   if (!result.ok) return c.json({ ok: false, error: result.error }, 404);
   return c.json({ ok: true, data: { id: result.record.id, service_name: result.record.serviceName } });
 });

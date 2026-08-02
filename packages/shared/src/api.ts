@@ -151,7 +151,12 @@ export interface CreateTaskRequest {
 }
 export interface UpdateTaskRequest {
   status?: string;
-  assignedTo?: string;
+  /** M7 (PHASE-4 T5) / P706: `null` CLEARS the assignee — absent leaves it alone. The
+   *  dashboard used `undefined` as the clear sentinel and `JSON.stringify` drops it, so
+   *  "Unassigned" sent an empty body and unassigning a task was impossible from the UI.
+   *  The server has always read `null` as clear (`routes/tracker.ts` -> `updateTask`); only
+   *  the sentinel was unsendable. */
+  assignedTo?: string | null;
   priority?: string;
   notes?: string;
   scheduled_start?: string | null;

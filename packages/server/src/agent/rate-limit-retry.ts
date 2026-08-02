@@ -19,6 +19,7 @@ import { getDb } from '../db/connection.js';
 import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { isPrimaryAgent } from '../config/platform.js';
 import { notifyRateLimitHit } from './errors.js';
+import { providerClassOf } from './provider-error.js';
 
 const logger = createLogger('rate-limit-retry');
 
@@ -128,7 +129,9 @@ function scheduleNextAttempt(
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const isStillLimited = msg.includes('rate_limit') || msg.includes('429') || msg.includes('overloaded') || msg.includes('529');
+      // PHASE-4 T5: the retry manager asks the provider's status, not the message's digits.
+      const cls = providerClassOf(err);
+      const isStillLimited = cls === 'rate_limit' || cls === 'overloaded' || cls === 'quota';
 
       if (!isStillLimited) {
         // Different error — not a rate limit anymore, let normal error handling take over
