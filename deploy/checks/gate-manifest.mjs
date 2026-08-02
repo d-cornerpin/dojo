@@ -187,6 +187,16 @@ export const GATES = [
     why: 'The owner\'s standing rule is never less capability. This reports what the ledger says left.',
   },
   {
+    id: 'must-consume',
+    tier: 'report',
+    phase: 'pre-build',
+    script: 'deploy/checks/check-must-consume.mjs',
+    args: [],
+    title: 'Must-consume gate (no discarded Outcome at the three boundaries)',
+    fail: 'Must-consume gate: an Outcome was reported and discarded — a refusal nobody consumed. NOT publishing.',
+    why: 'PHASE-4 T1. Enters at REPORT tier on purpose, for the duration of the compile-fail burn-down: a lint that ships red is a whitelist waiting to happen, so the gate measures while the inventory falls and moves to `blocking` in a one-line manifest edit at zero. The `fail` line is written now, at report tier, so the flip is a tier change and nothing else.',
+  },
+  {
     id: 'deletion-ratio',
     tier: 'report',
     phase: 'pre-build',
