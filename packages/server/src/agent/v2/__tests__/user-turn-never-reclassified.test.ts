@@ -94,8 +94,12 @@ describe('the A2A-handoff floor itself still fires only for a human counterparty
     // The floor exists so a turn that delegates and then says nothing still
     // leaves the WAITING HUMAN with a line. It must never fire at a peer.
     // PHASE-4 T3: the floor's one-shot latch is a QUEUE ENTRY now, not a state boolean.
+    // PHASE-4 T4: the hard arm is no longer the ENGINE speaking a pool line — the floor
+    // steers twice and then records a SYSTEM fault (OR2). The peer exclusion moved onto that
+    // arm unchanged, and it is the exclusion this clause guards: a peer box handles a silent
+    // handoff on its own lane and is owed neither a notice nor a ghost record.
     // The clause follows the mechanism; the requirement it guards is untouched.
-    expect(loop).toMatch(/steerFired\(state\.steerQueue, 'a2a-handoff-floor'\) && !counterpartyIsAgentSender/);
+    expect(loop).toMatch(/handoffAttempts >= MAX_FLOOR_STEER_ATTEMPTS && !counterpartyIsAgentSender/);
     expect(loop).toMatch(/const counterpartyIsAgentSender = counterparty\.kind === 'user' && !!counterparty\.senderIsAgent;/);
   });
 });

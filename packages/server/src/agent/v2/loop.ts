@@ -148,7 +148,7 @@ import {
 } from './classifiers/hoarding.js';
 // ackInjector intentionally NOT imported, engine ack disabled per invariant
 // review (see "Engine-injected ack, DISABLED" comment below).
-import { isForwardPromiseReply, pickA2AHandoffAck } from './ack-copy.js';
+import { isForwardPromiseReply } from './ack-copy.js';
 import { compactionGate } from './classifiers/compaction.js';
 import { checkAndCompact, estimateAssembledTokens, getUncompactedGapCount, UNCOMPACTED_GAP_THRESHOLD } from '../../memory/compaction.js';
 import { estimateTokens } from '../../memory/budget.js';
@@ -181,12 +181,13 @@ import { withOutboundAsync, recordHeld, recordedId } from './outbound.js';
 // PHASE-2 T3: the ask's lifecycle. `transition()` is the only writer of `work.state`; these
 // are its named callers for the pickup / re-arm / turn-link steps of one owner ask.
 import {
-  claimAsk, stampClaimingTurn, revertAskClaimOnAbort, isStateConflict, noteUnsettled,
+  askIdForMessage, claimAsk, stampClaimingTurn, revertAskClaimOnAbort, isStateConflict, noteUnsettled,
   openDelegationJoin, threadHopCount, joinState, JOIN_TTL_MINUTES, type DelegationThread,
 } from '../../work/store.js';
 const SEND_TO_PEOPLE_SET: ReadonlySet<string> = new Set(SEND_TO_PEOPLE);
 import { detectDeliveryDenial } from './classifiers/grounding.js';
 import { decideClaimedDelivery, claimedDeliverySteer } from './claimed-delivery.js';
+import { recordFloorGhost, MAX_FLOOR_STEER_ATTEMPTS } from './floor-ghost.js';
 import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
 import { permissionAlternativeFinder } from './classifiers/permission.js';
 import { semanticTechniqueMatches, SEMANTIC_STRONG_THRESHOLD, buildTechniqueMatchQuery } from './classifiers/technique.js';
@@ -6107,8 +6108,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // transcript 2026-07-09: live device list fetched, then a handoff, then
         // silence). Mutually exclusive with the promise floor above, which
         // requires a non-empty final reply; this one requires an EMPTY one.
-        // Steer once; if the model STILL ends silently, the engine delivers a
-        // short handoff notice itself, so silence stops being a possible outcome.
+        // PHASE-4 T4 (OR2): the engine used to deliver a handoff notice ITSELF here,
+        // picked from `A2A_HANDOFF_ACK_POOL` and persisted on the owner's lane as an
+        // assistant bubble — the engine wearing the agent's face, which is exactly what
+        // OR2 removes. The ladder is now: steer, re-enter, steer ONCE MORE, re-enter, and
+        // if the agent still says nothing, VERIFY against the delivery ledger and record a
+        // SYSTEM fault in the platform's own voice (`recordFloorGhost`). Silence still stops
+        // being a silent outcome; it stops being a sentence the engine puts in the agent's
+        // mouth.
         // A successful explicit channel send this turn (explicitSendThisTurn)
         // means the user already heard something delivered on purpose; stand down.
         if (
@@ -6127,14 +6134,24 @@ export async function runV2Turn(agentId: string): Promise<void> {
           !Object.values(state.explicitSendThisTurn).some(Boolean) &&
           state.toolResults.some((tr) => !tr.isError && tr.name === 'send_to_agent')
         ) {
-          if (!steerFired(state.steerQueue, 'a2a-handoff-floor') && state.loopCount < MAX_TOOL_LOOPS) {
-            const steer = (
-              `[System] You handed work to another agent and are ending this turn without telling ` +
-              `the user anything. The user is waiting. WRITE the user a short reply NOW, directly in ` +
-              `this conversation (do NOT call imessage_send or any send tool; the engine routes your ` +
-              `reply): report any results you already have, and say you have asked another agent for ` +
-              `the rest and will report back when they answer. Do not message the other agent again.`
-            );
+          const handoffAttempts = steerFireCount(state.steerQueue, 'a2a-handoff-floor');
+          if (handoffAttempts < MAX_FLOOR_STEER_ATTEMPTS && state.loopCount < MAX_TOOL_LOOPS) {
+            const again = handoffAttempts === 1;
+            const steer = again
+              ? (
+                `[System] Second time: this turn is STILL about to end with nothing said to the user, ` +
+                `and they are waiting. Nothing else on this turn matters until they hear from you. ` +
+                `WRITE one or two sentences to them now, directly in this conversation (do NOT call ` +
+                `imessage_send or any send tool; the engine routes your reply): what you have, and ` +
+                `that another agent is finishing the rest.`
+              )
+              : (
+                `[System] You handed work to another agent and are ending this turn without telling ` +
+                `the user anything. The user is waiting. WRITE the user a short reply NOW, directly in ` +
+                `this conversation (do NOT call imessage_send or any send tool; the engine routes your ` +
+                `reply): report any results you already have, and say you have asked another agent for ` +
+                `the rest and will report back when they answer. Do not message the other agent again.`
+              );
             const steerId = uuidv4();
             try {
               insertEngineEventIfAbsent({
@@ -6147,36 +6164,52 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 turnNumber,
               });
             } catch { /* best effort */ }
-            state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'a2a-handoff-floor', content: steer, atLoop: state.loopCount }) });
+            state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'a2a-handoff-floor', content: steer, key: again ? 'retry' : '', atLoop: state.loopCount }) });
             logger.info('v2 a2a-handoff floor: user-facing turn ending silently after a handoff; steering the model to report to the user first', {
-              agentId, turnNumber, convKey: chosenConvKey,
+              agentId, turnNumber, convKey: chosenConvKey, attempt: handoffAttempts + 1,
             }, agentId);
             continue; // one more round to report to the user
           }
-          // RC-4.2: the hard-floor handoff notice is a channel-delivered A2A-handoff
-          // ack. Never push it to an agent-flagged counterparty (ack ping-pong); a peer
-          // box handles a silent handoff on its own lane and does not need the notice.
-          if (steerFired(state.steerQueue, 'a2a-handoff-floor') && !counterpartyIsAgentSender) {
-            // Hard floor: the steer did not produce a user-facing send, so the
-            // engine says the honest minimum itself. Deterministic, model-free.
-            try {
-              await deliverEngineUserAck(pickA2AHandoffAck(), 'engine_progress_ack');
-              logger.warn('v2 a2a-handoff floor: model ended silently after the steer; engine delivered the handoff notice itself', {
-                agentId, turnNumber, convKey: chosenConvKey,
-              }, agentId);
-            } catch { /* best effort; never block the turn end */ }
+          // OR2's honest end of the ladder. Both steers are spent. VERIFY against the
+          // delivery ledger before calling it a ghost — the model may have answered on a
+          // channel this loop-local check cannot see, and accusing it of silence on an
+          // absence is the reasoning non-negotiable #15 forbids.
+          // RC-4.2's carve-out is preserved and re-stated as its own condition: a peer box
+          // handles a silent handoff on its own lane, so an agent-flagged counterparty was
+          // never owed the old notice and is not owed a ghost record either.
+          if (handoffAttempts >= MAX_FLOOR_STEER_ATTEMPTS && !counterpartyIsAgentSender
+              && !turnDeliveredToPerson(agentId, turnNumber, chosenConversationId ?? null)) {
+            const root = currentTurnRoot.get(agentId);
+            recordFloorGhost({
+              agentId, turnNumber, floor: 'a2a-handoff-floor',
+              workId: root?.kind === 'ask' ? askIdForMessage(root.id) : null,
+              attempts: handoffAttempts,
+              ownerLine:
+                'your agent handed part of this to another agent and then went quiet without telling you. '
+                + 'The engine asked it twice to report back and it did not, so nothing was delivered on this '
+                + 'turn. The other agent is still working; ask your agent where things stand.',
+              detail: { conv_key: chosenConvKey ?? null },
+            }, { broadcast });
           }
         }
 
-        // ── Reminder-delivery silence floor (P3 wave, 2026-07-21) ──
-        // A turn serving a kind='reminder' occurrence exists to SAY one thing
-        // to the owner. Observed silent-close: the model closed the run
-        // (correct bookkeeping) and ended without replying, so the reminder
-        // never reached the owner at all. The floor is deterministic and
-        // model-free: the task description IS the reminder text, so if the
-        // turn ends with no user-visible reply and no owner-channel send,
-        // the engine delivers the reminder itself. Same pattern as the
-        // A2A-handoff hard floor (engine states a fact; no prose authority).
+        // ── Reminder-delivery silence floor (P3 wave, 2026-07-21; CONVERTED PHASE-4 T4) ──
+        // A turn serving a kind='reminder' occurrence exists to SAY one thing to the owner.
+        // Observed silent-close: the model closed the run (correct bookkeeping) and ended
+        // without replying, so the reminder never reached the owner at all.
+        //
+        // ⚠ WHAT CHANGED, AND WHY IT MATTERS MORE HERE THAN ANYWHERE ELSE. The old floor read
+        // the work row's own `description` and delivered `Reminder: <it>` as an ASSISTANT
+        // message on the owner's lane. It was described as "deterministic and model-free",
+        // and that is true and is the problem: the owner saw their agent remind them, in
+        // their agent's voice, about a thing their agent had said nothing about. The kit's
+        // own reminder clause used to pick its delivery with a regex over the row text, which
+        // that fallback satisfies perfectly — so the engine speaking as the agent scored
+        // GREEN (T4S1 §4.2b measured it). OR2: the AGENT is told, the agent speaks.
+        //
+        // The reminder text is handed to the MODEL as a steer, twice, and the delivery is
+        // verified on the answered edge. If it still says nothing, that is a system fault and
+        // it is recorded as one, in the platform's own voice, against the occurrence row.
         {
           const servedRem = currentTurnServedWork.get(agentId);
           if (
@@ -6190,11 +6223,45 @@ export async function runV2Turn(agentId: string): Promise<void> {
                     .get(servedRem.taskId) as { title: string | null; description: string | null } | undefined)
                 : undefined;
               const remText = (remRow?.description || remRow?.title || '').replace(/^Reminder:?\s*/i, '').trim();
-              if (remText) {
-                await deliverEngineUserAck(`Reminder: ${remText}`, 'engine_reminder_delivery');
-                logger.warn('v2 reminder silence floor: reminder turn ended with no user-visible delivery; engine delivered the reminder text itself', {
-                  agentId, turnNumber, taskId: servedRem.taskId,
+              const remAttempts = steerFireCount(state.steerQueue, 'reminder-silence');
+              if (remText && remAttempts < MAX_FLOOR_STEER_ATTEMPTS && state.loopCount < MAX_TOOL_LOOPS) {
+                const steer = remAttempts === 1
+                  ? (
+                    `[System] Second time: this reminder still has not reached the owner. It is the ` +
+                    `only reason this turn exists. WRITE it to them now, in your own words, directly ` +
+                    `in this conversation (do NOT call imessage_send or any send tool; the engine ` +
+                    `routes your reply). The reminder is: ${remText}`
+                  )
+                  : (
+                    `[System] This turn is delivering a reminder and is about to end with nothing said ` +
+                    `to the owner. WRITE it to them now, in your own words, directly in this ` +
+                    `conversation (do NOT call imessage_send or any send tool; the engine routes your ` +
+                    `reply). The reminder is: ${remText}`
+                  );
+                const steerId = uuidv4();
+                try {
+                  insertEngineEventIfAbsent({
+                    work: null, id: steerId, agentId, content: steer,
+                    sourceAgentId: null, originIntent: 'reminder_silence_floor', turnNumber,
+                  });
+                } catch { /* best effort */ }
+                state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'reminder-silence', content: steer, key: remAttempts === 1 ? 'retry' : '', atLoop: state.loopCount }) });
+                logger.info('v2 reminder silence floor: reminder turn about to end silently; steering the model to say it', {
+                  agentId, turnNumber, taskId: servedRem.taskId, attempt: remAttempts + 1,
                 }, agentId);
+                continue; // one more round for the agent to deliver its own reminder
+              }
+              if (remText && remAttempts >= MAX_FLOOR_STEER_ATTEMPTS
+                  && !turnDeliveredToPerson(agentId, turnNumber, chosenConversationId ?? null)) {
+                recordFloorGhost({
+                  agentId, turnNumber, floor: 'reminder-silence',
+                  workId: servedRem.taskId ?? null,
+                  attempts: remAttempts,
+                  ownerLine:
+                    'a reminder was due and your agent did not deliver it. The engine asked it twice and '
+                    + `it stayed silent, so nothing reached you on this turn. The reminder was: ${remText}`,
+                  detail: { task_id: servedRem.taskId ?? null },
+                }, { broadcast });
               }
             } catch { /* best effort; never block turn end */ }
           }

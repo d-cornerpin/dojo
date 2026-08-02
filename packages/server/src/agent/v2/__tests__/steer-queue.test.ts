@@ -131,16 +131,39 @@ describe('the declared precedence table', () => {
     }
   });
 
-  it('covers the whole re-derived steer surface (26 floors) in staged groups of 3-4', () => {
-    // §T0-PINS F derived 26 setting sites at `1249866`, re-derived unchanged at this HEAD.
-    expect(STEER_PRECEDENCE.length).toBe(26);
+  it('covers the whole re-derived steer surface (26 staged + 1 converted) in groups of 3-5', () => {
+    // §T0-PINS F derived 26 setting sites at `1249866`, re-derived unchanged by T3.
+    //
+    // PHASE-4 T4 adds the 27th, and the number moved for a reason worth stating rather than
+    // just re-pinning: `reminder-silence` was NOT a steer at all when T3 counted. It was an
+    // ENGINE-COMPOSED user-facing line — the engine delivering `Reminder: <the work row's own
+    // description>` on the owner's lane — so a writer-derived inventory of the steer surface
+    // could not see it, exactly as §T0-PINS F could not see the 27th steer DOOR. OR2's
+    // conversion turns it into a floor, which is what puts it in this table.
+    //
+    // The 3-4 bound became 3-5 with it. The bound's job is that STAGED ENABLEMENT stayed
+    // diagnosable (one group per commit, a red readable against 3-4 floors); all seven groups
+    // have been on since T3's close and T6 deletes the staging, so a converted floor joining
+    // the band it belongs to THEMATICALLY is worth more than a group size that was only ever
+    // about the rollout. Five silence floors is still a diagnosable group.
+    expect(STEER_PRECEDENCE.length).toBe(27);
+    expect(STEER_PRECEDENCE.filter((f) => f.id === 'reminder-silence').length).toBe(1);
     const groups = new Map<number, number>();
     for (const f of STEER_PRECEDENCE) groups.set(f.group, (groups.get(f.group) ?? 0) + 1);
     expect([...groups.keys()].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     for (const [, size] of groups) {
       expect(size).toBeGreaterThanOrEqual(3);
-      expect(size).toBeLessThanOrEqual(4);
+      expect(size).toBeLessThanOrEqual(5);
     }
+  });
+
+  it('the converted reminder floor ranks with the silence floors, above the start-ack band', () => {
+    const p = (id: string) => STEER_PRECEDENCE.find((f) => f.id === id)!.priority;
+    // A person set an alarm: the words are the whole point of the turn, so it outranks the
+    // "you have been waiting" ack and everything below it, and yields to the truth guards.
+    expect(p('ungrounded-claim')).toBeLessThan(p('reminder-silence'));
+    expect(p('reminder-silence')).toBeLessThan(p('start-ack'));
+    expect(STEER_PRECEDENCE.find((f) => f.id === 'reminder-silence')!.group).toBe(2);
   });
 
   it('a truth guard outranks a silence floor outranks loop health outranks advice', () => {

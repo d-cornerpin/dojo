@@ -68,6 +68,12 @@ export const ENGINE_RIDER_INTENTS = [
   // the nine steer sites (loop.ts ×8, a2a-transport.ts ×1)
   'thrash_gate', 'thrash_drift', 'thrash_block', 'delegation_hint', 'owed_interrupt',
   'promise_floor', 'a2a_handoff_floor', 'auto_scaffold', 'fanout_join',
+  // PHASE-4 T4 (OR2) — the tenth, and it is a CONVERSION: the reminder-silence floor used to
+  // have no steer at all because the ENGINE delivered the reminder itself, as the agent, on
+  // the owner's lane. It steers now, so it needs a rider intent, and a rider must never drive
+  // a turn of its own — which is exactly right here: the note is the engine asking the agent
+  // to say something on THIS turn, not a new turn's worth of work.
+  'reminder_silence_floor',
   // postAgentNotice: its own default plus every intent its callers pass
   'agent_notice', 'agent_health', 'block_validated', 'engine_event_expired',
   'image_delivery_outcome', 'learning_loop', 'pm_review_failed', 'schedule_run_failed',

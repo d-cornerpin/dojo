@@ -194,10 +194,23 @@ describe('the enumeration the design rests on, re-derived rather than trusted', 
     //       can DISCOVER the receipt through them; a caller has to already hold its id, and
     //       the only resolver that hands ids out (`tracker-store.ts:deliveryForAgentSince`)
     //       filters `outcome='delivered'`.
+    //   (c) PHASE-4 T4 — a POSITIVE enumeration of the attempted-but-undelivered outcomes
+    //       (`outcome IN ('failed','suppressed','held')`), the claimed-delivery floor's
+    //       failed-receipt arm. It is admitted because it is STRONGER than (a) and (b), not
+    //       weaker: `owner_closed` is absent from the enumeration, so that reader cannot see
+    //       this row at all, by construction rather than by a filter it might lose. The
+    //       shape is deliberately not `outcome <> 'delivered'` — a negation would have swept
+    //       the owner's own close in and turned it into "your claim is false".
+    const OUTCOME_IN_LIST = /outcome\s+IN\s*\(([^)]*)\)/i;
+    const positiveEnumWithoutOwnerClose = (stmt: string): boolean => {
+      const m = OUTCOME_IN_LIST.exec(stmt);
+      return m !== null && !/owner_closed/.test(m[1]);
+    };
     const unfiltered = readers()
       .filter((r) => !/outcome\s*=\s*'delivered'/i.test(r.stmt))
       .filter((r) => !/channel\s*=\s*'dashboard'[\s\S]*message_id\s*=/i.test(r.stmt))
       .filter((r) => !/\bid\s*=\s*\?/.test(r.stmt))
+      .filter((r) => !positiveEnumWithoutOwnerClose(r.stmt))
       .map((r) => r.file);
     expect([...new Set(unfiltered)]).toEqual([]);
   });
@@ -209,13 +222,24 @@ describe('the enumeration the design rests on, re-derived rather than trusted', 
   it('PLANTED FAULT: a new reader with no outcome filter is caught', () => {
     // The rule has to bite on a statement, not just on a file list, or the clause above is a
     // spelling check. Both allowed shapes must still pass, and a bare scan must not.
-    const filt = (stmt: string): boolean =>
-      !/outcome\s*=\s*'delivered'/i.test(stmt)
-      && !/channel\s*=\s*'dashboard'[\s\S]*message_id\s*=/i.test(stmt)
-      && !/\bid\s*=\s*\?/.test(stmt);
+    const OUTCOME_IN_LIST2 = /outcome\s+IN\s*\(([^)]*)\)/i;
+    const filt = (stmt: string): boolean => {
+      const m = OUTCOME_IN_LIST2.exec(stmt);
+      return !/outcome\s*=\s*'delivered'/i.test(stmt)
+        && !/channel\s*=\s*'dashboard'[\s\S]*message_id\s*=/i.test(stmt)
+        && !/\bid\s*=\s*\?/.test(stmt)
+        && !(m !== null && !/owner_closed/.test(m[1]));
+    };
     expect(filt(`FROM deliveries WHERE agent_id = ? ORDER BY created_at DESC LIMIT 1`)).toBe(true);
     expect(filt(`FROM deliveries WHERE agent_id = ? AND outcome = 'delivered'`)).toBe(false);
     expect(filt(`FROM deliveries WHERE id = ?`)).toBe(false);
     expect(filt(`FROM deliveries WHERE channel = 'dashboard' AND message_id = ?`)).toBe(false);
+    // PHASE-4 T4's shape (c): a POSITIVE enumeration that omits `owner_closed` passes…
+    expect(filt(`FROM deliveries WHERE outcome IN ('failed','suppressed','held')`)).toBe(false);
+    // …and the same shape with `owner_closed` ADDED to it is exactly the leak this clause
+    // exists to stop, so it must still bite.
+    expect(filt(`FROM deliveries WHERE outcome IN ('failed','owner_closed')`)).toBe(true);
+    // A negated filter is not shape (c) and never was — it sees the row.
+    expect(filt(`FROM deliveries WHERE outcome <> 'delivered'`)).toBe(true);
   });
 });

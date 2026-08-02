@@ -93,7 +93,7 @@ export interface ClaimedDeliveryInput {
 }
 
 /**
- * A `deliveries` row to this recipient on THIS turn whose outcome is not 'delivered'.
+ * A `deliveries` row to this recipient on THIS turn recording an outbound that did not land.
  *
  * Scoped to the turn deliberately. A failure yesterday is history the model may legitimately
  * be narrating; a failure in the same breath as "I sent it" is the claim itself being wrong,
@@ -104,9 +104,16 @@ function failedDeliveryThisTurn(
 ): { id: string; outcome: string } | null {
   if (turnNumber == null) return null;
   try {
+    // The outcome list is ENUMERATED POSITIVELY and written out here rather than negated,
+    // and the difference is load-bearing. `owner_closed` is also not 'delivered' — it is the
+    // receipt the OWNER's own dashboard close writes (`agent/v2/deliveries.ts:204`), whose
+    // whole safety rests on no reader mistaking it for delivery evidence
+    // (`__tests__/owner-close-receipt.test.ts` re-derives that enumeration as a clause). An
+    // `outcome <> 'delivered'` match would have swept it in and turned an owner closing their
+    // own task into "your claim is false". Keyed positively, this reader cannot see it.
     const rows = getDb().prepare(
       `SELECT id, outcome, recipient_id, recipient_display FROM deliveries
-        WHERE agent_id = ? AND turn_number = ? AND outcome <> 'delivered'
+        WHERE agent_id = ? AND turn_number = ? AND outcome IN ('failed','suppressed','held')
         ORDER BY created_at DESC`,
     ).all(agentId, turnNumber) as Array<{
       id: string; outcome: string; recipient_id: string | null; recipient_display: string | null;

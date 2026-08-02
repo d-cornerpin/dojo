@@ -60,10 +60,21 @@ export const PROGRESS_ACK_POOL: readonly string[] = [
   "Making progress on this, I'll report back when it's done.",
 ];
 
-// A2A-handoff floor fallback: a user-triggered turn is ending because work was
-// handed to another agent (whose reply is asynchronous) and the model sent the
-// user nothing at the end. The engine delivers one of these so the user is
-// never left in silence; the model was already steered once and did not send.
+// ⚠ THIS POOL NO LONGER HAS A SENDER — PHASE-4 T4 (OR2). `pickA2AHandoffAck` is DELETED
+// with the line that called it: the engine delivering one of these as an assistant message,
+// on the owner's lane, because the model had gone quiet, is the engine wearing the agent's
+// face. The A2A-handoff floor steers the agent twice and then records a SYSTEM fault
+// (`work_events(kind='floor_ghosted')` + the platform's own owner-alert note) instead.
+//
+// requirement preserved: "a user-triggered turn may never end in silence because work was
+// delegated" (owner law 2026-07-09) is now carried by the floor's two steers, verified on the
+// delivery ledger, and by the ghost record when both are ignored — silence still cannot be a
+// silent outcome, it simply stops being a sentence the engine writes for the agent.
+//
+// THE POOL ITSELF STAYS, and #15 is why: `agent/v2/classifiers/inbound-courtesy.ts:28,38`
+// exact-matches these strings on the way back IN, so a peer box quoting a line we once emitted
+// is still recognised as courtesy rather than as a question. A deletion may not rest on "no
+// senders left". Its final disposition is T6's, per the plan's own note on this file.
 export const A2A_HANDOFF_ACK_POOL: readonly string[] = [
   "I've pulled in another agent on part of this and I'll report back as soon as they answer.",
   "Part of this is now with another agent; I'll follow up the moment I hear back.",
@@ -85,7 +96,6 @@ export const COMPLETION_ACK_POOL: readonly string[] = [
 const startPick = { last: -1 };
 const progressPick = { last: -1 };
 const completionPick = { last: -1 };
-const a2aHandoffPick = { last: -1 };
 
 function pickFromPool(pool: readonly string[], state: { last: number }): string {
   if (pool.length === 0) return '';
@@ -106,11 +116,6 @@ export function pickStartAck(phase: StartAckPhase = 'start'): string {
 /** Pool-only completion line (the guaranteed fallback), exported for direct use. */
 export function pickCompletionAck(): string {
   return pickFromPool(COMPLETION_ACK_POOL, completionPick);
-}
-
-/** Pool-only A2A-handoff notice (the hard-floor fallback), exported for direct use. */
-export function pickA2AHandoffAck(): string {
-  return pickFromPool(A2A_HANDOFF_ACK_POOL, a2aHandoffPick);
 }
 
 // ── Validation ──

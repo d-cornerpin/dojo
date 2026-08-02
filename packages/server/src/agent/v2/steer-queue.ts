@@ -49,6 +49,7 @@
 export type SteerFloorId =
   | 'ungrounded-claim' | 'delivery-denial' | 'failed-save-claim'
   | 'ghosted-ask' | 'ghosted-ask-answer' | 'silent-closeout' | 'delegation-exit'
+  | 'reminder-silence'
   | 'start-ack' | 'start-ack-reminder' | 'owed-interrupt' | 'promise-floor'
   | 'a2a-handoff-floor' | 'a2a-missed-reply' | 'going-idle-in-progress'
   | 'empty-response' | 'thrash-gate' | 'thrash-drift' | 'spinning'
@@ -84,15 +85,22 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
   { id: 'ghosted-ask-answer',    priority: 21, group: 2, why: 'ghosted twice; hand the model its own recorded answer' },
   { id: 'silent-closeout',       priority: 22, group: 2, why: 'task completed, the asker heard nothing' },
   { id: 'delegation-exit',       priority: 23, group: 2, why: 'work handed off, the turn about to end silently' },
+  // PHASE-4 T4. The 27th floor, and it is a CONVERSION rather than a new behaviour: this
+  // silence used to be answered by the ENGINE delivering `Reminder: <the work row's own
+  // description>` as an assistant message on the owner's lane (OR2's exact prohibition, and
+  // the kit's own clause scored it green because a regex over the row text matches the
+  // engine's copy of it perfectly). The floor now steers the agent instead, and a reminder
+  // ranks with the silence floors because a person set an alarm and is owed the words.
+  { id: 'reminder-silence',      priority: 24, group: 2, why: 'a reminder is due and the turn is ending without it being said' },
 
-  { id: 'start-ack',             priority: 24, group: 3, why: 'the user has been waiting with no word this turn' },
-  { id: 'start-ack-reminder',    priority: 25, group: 3, why: 'the first start-ack steer was ignored' },
-  { id: 'owed-interrupt',        priority: 26, group: 3, why: 'a mid-turn human message may go unanswered' },
-  { id: 'promise-floor',         priority: 27, group: 3, why: 'the reply promised work the turn never did' },
+  { id: 'start-ack',             priority: 25, group: 3, why: 'the user has been waiting with no word this turn' },
+  { id: 'start-ack-reminder',    priority: 26, group: 3, why: 'the first start-ack steer was ignored' },
+  { id: 'owed-interrupt',        priority: 27, group: 3, why: 'a mid-turn human message may go unanswered' },
+  { id: 'promise-floor',         priority: 28, group: 3, why: 'the reply promised work the turn never did' },
 
-  { id: 'a2a-handoff-floor',     priority: 28, group: 4, why: 'user-facing turn ending silently after a handoff' },
-  { id: 'a2a-missed-reply',      priority: 29, group: 4, why: 'a peer asked and got prose instead of a reply' },
-  { id: 'going-idle-in-progress', priority: 30, group: 4, why: 'silent stop with in_progress work dangling' },
+  { id: 'a2a-handoff-floor',     priority: 29, group: 4, why: 'user-facing turn ending silently after a handoff' },
+  { id: 'a2a-missed-reply',      priority: 30, group: 4, why: 'a peer asked and got prose instead of a reply' },
+  { id: 'going-idle-in-progress', priority: 31, group: 4, why: 'silent stop with in_progress work dangling' },
 
   { id: 'empty-response',        priority: 40, group: 5, why: 'the model returned nothing, twice' },
   { id: 'thrash-gate',           priority: 41, group: 5, why: 'a tool signature is now refused' },

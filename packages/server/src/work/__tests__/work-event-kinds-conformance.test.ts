@@ -18,11 +18,15 @@
 //   arm 3  DECLARED \ WRITERS     exactly the declared-but-unwritten set, by name
 //
 // Arm 3 is the one that is easy to leave out and is the reason the other two cannot rot.
-// `floor_ghosted` is declared here and has no writer yet — PHASE-4 T4's Step 2 writes its
-// first row. That is a real state of affairs and it is recorded EXACTLY, so a SECOND
-// orphaned kind (the shape a half-finished feature leaves behind) fails this test rather
-// than joining a growing pile nobody counts. Non-negotiable #15's discipline applied to a
-// list: a declared value with no writer is a QUESTION, and the answer is written down.
+// It carried ONE exemption when T4-SCHEMA declared the list: `floor_ghosted`, declared for a
+// named consumer and unwritten until PHASE-4 T4's Step 2 landed the ghost path.
+//
+// ⚠ THAT EXEMPTION IS GONE, DELETED BY THE COMMIT THAT WROTE THE FIRST ROW (PHASE-4 T4,
+// 2026-08-02) — which is exactly what T4-SCHEMA's hand-forward said would happen, and the
+// reason it was pinned by NAME rather than tolerated as "some kinds have no writer yet". The
+// list is EMPTY now, and it staying empty is the standing property: a declared value with no
+// writer is a QUESTION (non-negotiable #15 applied to a list), and the arm fails in BOTH
+// directions — a new orphan, or a stale exemption for a kind that has since grown a writer.
 //
 // The walk reads source with fs.readFileSync rather than grep, for the reason
 // `single-writer-conformance.test.ts` records: two of this tree's largest files carry NUL
@@ -38,9 +42,11 @@ import { WORK_EVENT_KINDS, isWorkEventKind, type WorkEventKind } from '../event-
 const SRC = path.join(__dirname, '..', '..');
 const MIGRATION = path.join(SRC, 'db', 'migrations', '152_work_event_kinds_check.sql');
 
-/** DECLARED-BUT-UNWRITTEN, by name and with its owner. Empties when T4 Step 2 lands the
- *  ghost path; until then this is the honest state, asserted rather than tolerated. */
-const DECLARED_WITHOUT_WRITER: readonly WorkEventKind[] = ['floor_ghosted'];
+/** DECLARED-BUT-UNWRITTEN, by name. EMPTY since PHASE-4 T4 landed `floor_ghosted`'s writer
+ *  (`agent/v2/floor-ghost.ts`). It is kept as a list rather than deleted because the arm's
+ *  value is the EXACT equality: an empty list is the assertion that every declared kind has a
+ *  real writer, and the next person who declares one without a consumer meets this test. */
+const DECLARED_WITHOUT_WRITER: readonly WorkEventKind[] = [];
 
 // ── the source walk ────────────────────────────────────────────────────────────────────
 
@@ -190,7 +196,8 @@ describe('ARM 2 — every kind a writer can pass is DECLARED', () => {
     expect(exprs).toContain("'transition'");            // the literal route
     expect(exprs).toContain('WORK_EVENT.activity');     // the bound-object route
     expect(exprs).toContain('AUDIT_KIND');              // the bound-single route
-    expect(writtenKinds().kinds.size).toBe(24);
+    // 24 at T4-SCHEMA's close; 25 since PHASE-4 T4 landed `floor_ghosted`'s writer.
+    expect(writtenKinds().kinds.size).toBe(25);
   });
 
   it('PLANTED FAULT: an undeclared literal at a call site is caught', () => {
@@ -242,12 +249,17 @@ describe('ARM 3 — the DECLARED list carries no unexplained value', () => {
     expect(sorted(orphans)).toEqual(sorted(DECLARED_WITHOUT_WRITER));
   });
 
-  it('`floor_ghosted` is the only one, and it is declared for a named consumer', () => {
-    expect(DECLARED_WITHOUT_WRITER).toEqual(['floor_ghosted']);
+  it('`floor_ghosted` HAS a writer now, and the exemption that named it is deleted', () => {
+    // T4-SCHEMA's hand-forward, discharged: the commit that writes the first `floor_ghosted`
+    // row deletes the exemption, or this test goes red. Both halves are asserted here so the
+    // discharge is a fact rather than a claim in a report.
+    expect(DECLARED_WITHOUT_WRITER).toEqual([]);
     expect(isWorkEventKind('floor_ghosted')).toBe(true);
-    // PHASE-4 T4 Step 2 is the owner. When it lands, this list empties and the arm above
-    // starts failing until the exemption is removed — which is the point of pinning it.
-    expect(writtenKinds().kinds.has('floor_ghosted')).toBe(false);
+    expect(writtenKinds().kinds.has('floor_ghosted')).toBe(true);
+    // …and it is written from the OR2 ghost path, not from some incidental site.
+    const ghostSites = kindExpressions().calls
+      .filter((c) => c.expr === "'floor_ghosted'").map((c) => c.file);
+    expect(ghostSites).toEqual(['agent/v2/floor-ghost.ts']);
   });
 });
 
