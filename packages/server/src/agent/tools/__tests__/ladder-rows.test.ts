@@ -229,8 +229,27 @@ describe('Step 4 — the staging window, and the regression it refuses to be', (
     expect(logOnly('healer', hardening)).toBe(false);
   });
 
-  it('a HARDENING refusal is LOG-ONLY for a sub-agent until T5 fixes the manifest', () => {
-    expect(logOnly('sub-agent-1', hardening)).toBe(true);
+  it('a HARDENING refusal is LOG-ONLY for a sub-agent — but ONLY when it is not a global deny', () => {
+    // The window covers a refusal decided by an agent's own GRANT, because that
+    // is what T5's manifest fix is about.
+    expect(logOnly('sub-agent-1', { ...hardening, rule: 'some-future-grant-rule' })).toBe(true);
+  });
+
+  it('A GLOBAL DENY IS NEVER STAGED, and this clause was earned by driving it', () => {
+    // Written as the plan words Step 4, the window covered the symlink-resolved
+    // read. On the live dev box a NON-PRIMARY agent then read
+    // `~/.dojo/secrets.yaml` through a link planted in /tmp and got
+    // `jwt_secret` / `dashboard_password_hash` / `credential_master_key` back in
+    // the clear, with the broker's own "would have refused" line beside it; the
+    // same window let a `file_write` land in `dojo.db-wal` and CORRUPT THE
+    // DATABASE. A global deny is not a grant — it is unoverridable and identical
+    // for every agent — so T5's manifest gap cannot be the reason to stage it.
+    for (const rule of ['dojo-secrets-store', 'dojo-database-journal-siblings', 'sensitive-basenames', 'soul-files']) {
+      expect(
+        logOnly('sub-agent-1', { ...hardening, rule }),
+        `${rule} is a GLOBAL deny and must bite immediately for every agent`,
+      ).toBe(false);
+    }
   });
 
   it('an ALLOW is never log-only (there is nothing to stage)', () => {

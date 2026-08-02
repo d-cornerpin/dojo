@@ -18,6 +18,7 @@
 
 import { isPrimaryAgent, isHealerAgent, isPMAgent } from '../../config/platform.js';
 import { effectsFor } from './registry.js';
+import { isGlobalDenyRule } from '../brokers/deny.js';
 import {
   authorizeFs, authorizeProc, authorizeNet, authorizeSpawn, authorizeSystemControl,
   resolvePathArg, resolveCommandArg, resolveUrlArg, resolveFixedHost,
@@ -289,11 +290,35 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
 /**
  * Is this refusal ENFORCED for this agent, or merely recorded?
  *
- * Returns `false` only for the staged hardening delta on a sub-agent. Every
- * parity refusal returns `true` for every agent.
+ * Returns `false` — i.e. ENFORCE — for everything except a hardening refusal,
+ * on a sub-agent, that is NOT a global deny.
+ *
+ * ⚠ THE GLOBAL-DENY CARVE-OUT WAS EARNED BY DRIVING IT, and the first version of
+ * this function did not have it. Written as the plan words Step 4 ("sub-agents
+ * run log-only"), the staging window covered the symlink-resolved read — so on
+ * the live dev box a NON-PRIMARY agent read `~/.dojo/secrets.yaml` through a
+ * symlink planted in `/tmp` and got `jwt_secret`, `dashboard_password_hash` and
+ * `credential_master_key` back in the clear, with the broker's own log line
+ * saying *"would have refused"* beside it. The same window let a `file_write`
+ * land in `~/.dojo/data/dojo.db-wal` and CORRUPTED THE DATABASE.
+ *
+ * The staging rationale does not reach either case. It is about the
+ * DEFAULT_SUBAGENT manifest missing `~/.dojo/uploads/<agentId>`, i.e. about an
+ * agent's own GRANT being too narrow to express a legitimate flow — T5's fix.
+ * A GLOBAL deny is not a grant: it is unoverridable, it is the same for every
+ * agent, and no legitimate flow reads the secret store through a link or writes
+ * the database's journal file. So a global deny bites immediately, for everyone.
+ *
+ * What is left in the window is therefore, today, EMPTY — and that is the honest
+ * answer rather than a disappointing one: T2 adds no refusal that needs staging.
+ * The branch stays because Step 4 asks for it and T7's exit gate deletes it by
+ * name (`logOnly` was grep-zero before this task, §T0-PINS P9, which is the only
+ * reason that check is honest), and because the moment a hardening refusal is
+ * decided by a GRANT rather than by the global list, this is where it is staged.
  */
 export function logOnly(agentId: string, verdict: Verdict): boolean {
   if (verdict.allowed) return false;
   if (verdict.basis === 'ladder-parity') return false;
+  if (isGlobalDenyRule(verdict.rule)) return false;
   return !(isPrimaryAgent(agentId) || isHealerAgent(agentId));
 }

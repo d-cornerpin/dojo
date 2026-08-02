@@ -35,8 +35,13 @@
 //     already matched the resolved target (N3); the read tier never did, so a
 //     link planted in an allowed directory read `secrets.yaml` in the clear.
 // Both reach a resource that is ALREADY denied, which is the carve-out P5-R5
-// states in so many words. Both are labelled, and T2's staging runs the
-// hardening delta log-only for sub-agents.
+// states in so many words. Both are labelled `T2-hardening` so the staging
+// window can SEE them — and both are then deliberately EXCLUDED from it by
+// `isGlobalDenyRule` below, because a global deny is not a grant and no
+// legitimate flow reads the secret store through a link or writes the
+// database's journal. That exclusion was earned on the live box: without it a
+// sub-agent read `secrets.yaml` through a planted symlink and a `file_write`
+// corrupted `dojo.db-wal`. See `gate-eval.ts:logOnly`.
 // ════════════════════════════════════════════════════════════════════════════
 
 import os from 'node:os';
@@ -317,6 +322,21 @@ export function isGlobalDeleteDenied(absPath: string): boolean {
  */
 export function isDeniedResource(absPath: string, kind: 'fs_read' | 'fs_write' | 'fs_delete'): boolean {
   return tiersForKind(kind).some((tier) => denyRuleFor(absPath, tier) !== null);
+}
+
+/**
+ * IS THIS VERDICT A GLOBAL DENY?
+ *
+ * The staging window (T2 Step 4) must never cover one, and this is how it asks.
+ * Every id in the table above names a resource that is protected for EVERY
+ * agent regardless of manifest — `secrets.yaml`, the SSH keys, the platform
+ * database, the sensei souls. A log-only window exists so a NEW refusal does not
+ * break a legitimate flow that a stale sub-agent manifest cannot express; no
+ * legitimate flow reads the secret store through a symlink or writes the
+ * database's journal.
+ */
+export function isGlobalDenyRule(ruleId: string): boolean {
+  return DENY_RULES.some((r) => r.id === ruleId);
 }
 
 /** Which tiers an effect kind consults. Stated once so the brokers cannot drift. */
