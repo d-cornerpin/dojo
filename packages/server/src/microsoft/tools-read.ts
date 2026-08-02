@@ -4,7 +4,7 @@
 // NOT available to: PM agent
 // ════════════════════════════════════════
 
-import type { ToolDefinition } from '../agent/tools.js';
+import type { ToolDefinition } from '../agent/tools/types.js';
 import { msGraphRead, calendarPrefix, drivePrefix } from './client.js';
 
 // ── Tool Definitions ──
@@ -13,6 +13,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_search',
     description: 'Search Outlook email. Default returns one compact line per email (date | sender — subject + ID + unread flag). For previews on every result, pass verbose=true; for the full body of ONE email, use outlook_read(message_id).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -29,6 +30,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
     name: 'outlook_read',
     description:
       'Read a specific Outlook email by message ID. Returns sender, recipients, subject, date, and plain-text body (HTML stripped). Body is paginated: defaults to first ~12K chars (~3K tokens). For long emails, use `offset` + `limit` (in characters) — the pagination trailer tells you the exact next call.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -44,6 +46,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_inbox',
     description: "Show recent Outlook inbox messages. Quick way to see what's new.",
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -58,6 +61,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_agenda_ms',
     description: "Show upcoming Microsoft Calendar events. Defaults to today's agenda on your default calendar. Pass calendar_id to read from a shared calendar (use calendar_list_ms to find IDs). When a user asks about a specific local day (e.g. \"events for Wednesday\"), pass start_date + timezone so the window aligns to local midnight rather than UTC — otherwise late-evening events that have already crossed into the next day in UTC will be missed.",
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -74,6 +78,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_search_ms',
     description: 'Search Microsoft Calendar events by text. Pass calendar_id to search a shared calendar. Pass start_date + timezone when constraining to a specific local day.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -91,6 +96,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_list_ms',
     description: 'List all Microsoft calendars you have access to, including shared calendars. Returns each calendar with its ID, name, owner, and your permissions (canEdit, canShare, canViewPrivateItems). Use the returned IDs with calendar_agenda_ms, calendar_create_ms, etc.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {},
@@ -102,6 +108,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_share_invites_ms',
     description: 'List pending calendar-sharing invitation emails in your inbox (someone shared their calendar with you and you haven\'t accepted yet). Returns each invite\'s message ID, sender, subject, and shared-calendar info. Use calendar_accept_share_ms with a returned message_id to accept programmatically.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -115,6 +122,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'onedrive_list',
     description: 'List files in OneDrive (your personal drive by default). Pass drive_id to list a shared OneDrive item or a SharePoint document library — get drive_ids from onedrive_list_shared, sharepoint_list_drives, or onedrive_list_drives. Default returns one compact line per item.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -131,6 +139,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'onedrive_read',
     description: 'Read the content or metadata of a file. Defaults to your personal OneDrive; pass drive_id to read from a shared drive or SharePoint library. Text content is paginated by character — defaults to first ~16K chars.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -147,6 +156,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'onedrive_list_shared',
     description: 'List files shared with you on OneDrive (other people gave you access). Returns each item with its drive_id and file_id — pass both to onedrive_read / onedrive_list / onedrive_upload / etc. to operate on the shared file.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -160,6 +170,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'onedrive_list_drives',
     description: 'List all drives you can access — your personal OneDrive plus any shared drives surfaced by Microsoft Graph. Returns each drive with its drive_id, name, and owner. For SharePoint document libraries use sharepoint_list_drives instead.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {},
@@ -171,6 +182,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'teams_read_messages',
     description: 'Read recent Teams chat messages (DMs and group chats). Requires a Microsoft work/school account (Entra ID). Not available on personal Microsoft accounts.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -185,6 +197,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_list_attachments',
     description: 'List attachments on an Outlook email. Use outlook_download_attachment to save one to disk.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -198,6 +211,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'teams_list_attachments',
     description: 'List attachments on a Microsoft Teams chat message — name, contentType, and attachment ID for each. Requires a Microsoft work/school account (Entra ID). Use teams_download_attachment with one of these IDs to save to local disk.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -212,6 +226,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'onedrive_search',
     description: 'Search for files and folders by name or content. Defaults to your personal OneDrive; pass drive_id to search a shared drive or SharePoint library.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -227,6 +242,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'sharepoint_list_sites',
     description: 'List or search SharePoint sites you have access to. Pass query to filter; omit for a list of recent/followed sites. Returns each site with its site_id and webUrl. Use sharepoint_list_drives(site_id) to find document libraries inside a site.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -241,6 +257,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'sharepoint_list_drives',
     description: 'List document libraries (drives) inside a SharePoint site. Returns each drive with its drive_id and name. Use the drive_id with onedrive_list / onedrive_read / onedrive_upload / etc. to operate on files in that library.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -254,6 +271,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'online_meeting_get',
     description: 'Get the full details of a Teams online meeting (including the join URL). Use online_meeting_create first or pass an existing meeting_id.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -267,6 +285,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'teams_list_teams',
     description: 'List all Microsoft Teams you are a member of. Requires Entra ID. Use teams_list_channels after to see channels inside a team.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {},
@@ -278,6 +297,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'teams_list_channels',
     description: 'List all channels in a Microsoft Team. Requires Entra ID. Use teams_read_channel_messages or teams_send_channel_message with the channel ID.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -291,6 +311,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'teams_read_channel_messages',
     description: 'Read recent messages from a Microsoft Teams channel. Requires Entra ID and channel membership.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -307,6 +328,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'tasks_list_lists',
     description: 'List all of the user\'s Microsoft To Do task lists. Returns each list\'s ID, display name, and whether it\'s the default list. Most users have a single default list (often called "Tasks") plus any extra lists they created (e.g., "Groceries", "Work").',
+    effects: [],
     input_schema: { type: 'object', properties: {}, required: [] },
     concurrency: 'safe',
     maxResultTokens: 1500,
@@ -314,6 +336,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'tasks_list',
     description: 'List tasks in a Microsoft To Do list. Defaults to the user\'s primary "Tasks" list; pass list_id to target a specific list (get IDs from tasks_list_lists). Filter by status to focus the result (e.g., status="notStarted" to see open tasks only).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -330,6 +353,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'teams_list_chats',
     description: 'List the user\'s Teams chats (1:1 and group). Returns each chat\'s display name (or member list), chat ID, and chat type. Use this to discover chats BEFORE teams_send_message - cleaner than calling teams_read_messages without a chat_id (which works as a workaround but reads weird).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -343,6 +367,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'online_meeting_list',
     description: 'List the user\'s upcoming Teams online meetings (next 7 days by default). Useful when the agent needs to find an existing meeting to share or update. For one-off lookup by ID, use online_meeting_get.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -357,6 +382,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'onedrive_versions_list',
     description: 'List the version history of a OneDrive file. OneDrive auto-versions on every edit and keeps versions indefinitely (subject to admin policy). Returns each version\'s ID, modified time, size, and who modified it.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -371,6 +397,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_freebusy_ms',
     description: 'Check free/busy availability for one or more people across Microsoft Calendars over a time window. Returns busy time blocks per attendee so you can pick a slot when everyone is free. Use this BEFORE proposing a meeting time - much cheaper than calendar_create_ms + retry on conflicts.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -388,6 +415,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_list_folders',
     description: 'List all of the user\'s Outlook mail folders (Inbox, Sent Items, Drafts, plus any custom folders the user created). Returns each folder\'s display name, ID, total message count, and unread count. Use this before outlook_move_to_folder so you target an actual folder.',
+    effects: [],
     input_schema: { type: 'object', properties: {}, required: [] },
     concurrency: 'safe',
     maxResultTokens: 1500,
@@ -396,6 +424,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'contacts_search',
     description: 'Search the user\'s Microsoft contacts (Outlook address book) by name, email, company, job title, or notes. Returns each match\'s display name, primary email, primary phone, company, and contact ID.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -410,6 +439,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'contacts_list',
     description: 'List the user\'s Microsoft contacts, newest-first. Useful when you don\'t have a specific search term. For lookup by name/email/company, prefer contacts_search.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -423,6 +453,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'contacts_get',
     description: 'Get the full record for a single Microsoft contact by ID. Returns all fields the user has set: every email, every phone, addresses, birthday, notes, categories.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -437,6 +468,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'onenote_list_notebooks',
     description: 'List all of the user\'s OneNote notebooks. Returns each notebook\'s display name, ID, and whether it is the default notebook. OneNote organizes content as notebooks > sections > pages; start here to discover what notebooks exist, then onenote_list_sections to drill in.',
+    effects: [],
     input_schema: { type: 'object', properties: {}, required: [] },
     concurrency: 'safe',
     maxResultTokens: 1500,
@@ -444,6 +476,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'onenote_list_sections',
     description: 'List sections in a OneNote notebook. Pass notebook_id (from onenote_list_notebooks). Returns each section\'s display name and ID. Sections contain pages.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -457,6 +490,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'onenote_list_pages',
     description: 'List pages in a OneNote section. Pass section_id (from onenote_list_sections). Returns each page\'s title, ID, and last-modified timestamp, newest-first. Use onenote_read_page to fetch full content.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -471,6 +505,7 @@ export const microsoftReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'onenote_read_page',
     description: 'Read the full HTML content of a OneNote page by ID. OneNote stores pages as HTML; the response is plain HTML with text content visible inside tags. For long pages, the result may be paginated by character offset.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {

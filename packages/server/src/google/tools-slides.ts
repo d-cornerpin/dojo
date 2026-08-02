@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import type { ToolDefinition } from '../agent/tools.js';
+import type { ToolDefinition } from '../agent/tools/types.js';
 import { googleRead, googleWrite } from './client.js';
 
 const SLIDES_BASE = 'https://slides.googleapis.com/v1/presentations';
@@ -411,6 +411,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_create_presentation',
     description: 'Create a new Google Slides presentation with a DeckStyle applied. Default dimensions are 720×405pt (16:9 widescreen, renders at 1920×1080 pixels). Pass width_pt/height_pt to override. The style is persisted per-presentation and used by every subsequent slides_* call automatically. Replaces the old slides_create tool.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -425,6 +426,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_set_style',
     description: 'Set or update the active DeckStyle for an existing presentation. Persists to disk so all later tool calls use the new fonts, colors, and spacing.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -437,6 +439,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_get_style',
     description: 'Return the current active DeckStyle for a presentation as JSON.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -448,6 +451,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_list_presets',
     description: 'List the available DeckStyle preset names and their descriptions.',
+    effects: [],
     input_schema: { type: 'object', properties: {}, required: [] },
   },
 
@@ -455,6 +459,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_add_slide',
     description: 'Add a new slide to a presentation using a predefined layout. Applies the deck style background automatically.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -468,6 +473,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_duplicate_slide',
     description: 'Duplicate an existing slide. Returns the new slide ID.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -480,6 +486,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_delete_slide',
     description: 'Delete a slide from a presentation.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -492,6 +499,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_reorder_slides',
     description: 'Move a set of slides to a new position in the presentation.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -505,6 +513,10 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_set_background',
     description: 'Set a slide background to a solid color or a stretched image URL. Provide exactly one of color or image_url.',
+    effects: [],
+    nonEffects: {
+      'image_url': 'handed to the Google Slides API, which fetches it from Google\'s own network; this platform never dereferences it',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -521,6 +533,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_add_text_box',
     description: 'Place a styled text box on a slide. The role determines which DeckStyle properties are applied (title, heading, body, subtitle, caption).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -537,6 +550,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_add_bullet_list',
     description: 'Create a text box containing a bulleted list. Prefix items with \\t to nest.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -552,6 +566,10 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_style_text_range',
     description: 'Apply formatting to a specific character range within a text box. Only the properties you specify are changed.',
+    effects: [],
+    nonEffects: {
+      'link_url': 'stored as a hyperlink target inside the slide; nothing fetches it',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -575,6 +593,10 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_add_image',
     description: 'Insert an image from a publicly accessible URL.',
+    effects: [],
+    nonEffects: {
+      'image_url': 'handed to the Google Slides API, which fetches it from Google\'s own network; this platform never dereferences it',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -589,6 +611,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_add_image_from_drive',
     description: 'Insert an image from a Google Drive file the agent has access to.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -603,6 +626,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_add_image_from_local_path',
     description: 'Insert an image from a LOCAL file path (e.g., an image just delivered by Imaginer at ~/.dojo/uploads/<agent>/...) into a slide. Uploads the file to Drive internally and embeds it in one call — you don\'t have to chain drive_upload + slides_add_image_from_drive yourself. Returns the slide image_id and the Drive file_id (so you can reuse the same upload across multiple slides without re-uploading).',
+    effects: [{ kind: 'fs_read', from: 'args.file_path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -618,6 +642,10 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_replace_shape_with_image',
     description: 'Find every shape containing placeholder_text and replace it with the image. Useful for template workflows.',
+    effects: [],
+    nonEffects: {
+      'image_url': 'handed to the Google Slides API, which fetches it from Google\'s own network; this platform never dereferences it',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -634,6 +662,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_add_video',
     description: 'Embed a YouTube or Google Drive video on a slide. source must be YOUTUBE or GOOGLE_DRIVE.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -651,6 +680,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_add_shape',
     description: 'Create a shape on a slide. Common shape_types: RECTANGLE, ROUND_RECTANGLE, ELLIPSE, TRIANGLE, DIAMOND, HEXAGON, PENTAGON, ARROW_RIGHT, STAR, CLOUD, CHEVRON, CALLOUT_RECTANGLE, FLOW_CHART_PROCESS, FLOW_CHART_DECISION.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -669,6 +699,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_add_line',
     description: 'Draw a straight line on a slide.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -690,6 +721,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_add_table',
     description: 'Create an empty table on a slide.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -705,6 +737,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_populate_table',
     description: 'Fill an entire table from a 2D array of strings. Optionally styles the first row with bold text and an accent background.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -721,6 +754,10 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_layout_title',
     description: 'Create a fully formatted title slide with centered title and subtitle. Optionally uses an image URL as the background.',
+    effects: [],
+    nonEffects: {
+      'background_image_url': 'handed to the Google Slides API, which fetches it from Google\'s own network; this platform never dereferences it',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -735,6 +772,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_layout_section',
     description: 'Create a section divider slide with a large heading on the accent-colored background.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -748,6 +786,10 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_layout_content',
     description: 'The workhorse slide: title at top, body content below. If both text/bullets and an image are provided, automatically splits into two columns based on image_position (right, left, bottom, full).',
+    effects: [],
+    nonEffects: {
+      'image_url': 'handed to the Google Slides API, which fetches it from Google\'s own network; this platform never dereferences it',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -764,6 +806,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_layout_two_column',
     description: 'Create a two-column slide. Each column object may contain text, bullets, image_url, or image_drive_id.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -778,6 +821,10 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_layout_image',
     description: 'Create a slide dominated by a large image with an optional caption below.',
+    effects: [],
+    nonEffects: {
+      'image_url': 'handed to the Google Slides API, which fetches it from Google\'s own network; this platform never dereferences it',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -793,6 +840,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_layout_comparison',
     description: 'Create a side-by-side comparison slide with 2-4 items. Each item: {heading, points, image_url?}.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -808,6 +856,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_build_slide',
     description: 'Build an entire slide from a freeform list of elements in ONE Slides API call. Much faster than chaining slides_add_text_box / slides_add_shape / slides_add_image / etc., because every element creation, styling, text insert, and the slide background are bundled into a single batchUpdate (one HTTP round trip instead of N). Use this when designing a custom slide that doesn\'t match a layout helper. Omit slide_id to create a new slide; pass slide_id to add elements to an existing slide. Each element kind is fully optional — leave kinds out if you don\'t need them. Returns { slide_id, element_ids: [...] } where element_ids is in the same order as the elements you supplied.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -830,6 +879,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_get_slides',
     description: 'Return the list of all slides in a presentation with their object IDs and indices.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -841,6 +891,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_get_elements',
     description: 'Return every page element on a slide with element_id, type, and position/size in points.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -853,6 +904,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_export_pngs',
     description: 'Export Google Slides as individual PNG files so a vision-capable agent can actually look at how the slides render. Returns a list of {slide_index, page_id, path, width, height}. After this tool returns, call file_read on each path to load the image into context. REQUIRES A VISION-CAPABLE MODEL — if your model lacks vision the tool will refuse rather than waste an export, and you should either ask the user to switch your model or delegate the review to a vision-capable peer. Tip: export only the slides you need (slide_indices) rather than the whole deck, since each loaded image consumes a lot of context tokens.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -877,6 +929,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_delete_element',
     description: 'Delete any page element by object ID.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -889,6 +942,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_move_element',
     description: 'Move a page element to an absolute position (points).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -903,6 +957,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_resize_element',
     description: 'Resize a page element to a target width/height in points.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -917,6 +972,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_update_text',
     description: 'Replace the entire text content of an existing text box or shape on a slide. Deletes whatever was there and inserts the new text. For find/replace within text, use slides_find_replace instead.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -930,6 +986,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_format_text',
     description: 'Apply text formatting (bold/italic/underline/font size/color) to ALL text inside an existing text box or shape. Pass only the properties you want to change. For per-character styling, use the Slides API directly.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -948,6 +1005,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_find_replace',
     description: 'Global find-and-replace text across the entire presentation.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {

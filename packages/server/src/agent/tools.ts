@@ -1,4 +1,5 @@
 import { exec } from 'node:child_process';
+import type { ToolDefinition } from './tools/types.js';
 import { getCurrentToolCallId, runWithToolCallId, currentTurnNumber, currentTurnRoot } from './turn-state.js';
 import { classifyToolResult, toolErrorCodeForThrow, type ToolOutcome } from './tool-outcome.js';
 export { toolResultOf, toolWasBlocked, type ToolOutcome } from './tool-outcome.js';
@@ -1058,51 +1059,15 @@ function computeFilteredTools(agentId: string): ToolDefinition[] {
 
 // ── Tool Schemas for Anthropic API ──
 
-export interface ToolDefinition {
-  name: string;
-  description: string;
-  input_schema: {
-    type: 'object';
-    properties: Record<string, unknown>;
-    required: string[];
-  };
-  /**
-   * Concurrency category. Phase 3 (2026-05-04) made this the canonical
-   * source for the v2 partitioner, `partitionTools` checks this first,
-   * then falls back to `TOOL_CATEGORY` in concurrency.ts. Annotate new
-   * tools here; the fallback map covers existing tools that haven't
-   * been migrated yet.
-   *
-   *   safe, pure read, no side effects, parallelizable
-   *   serial, has side effects, must run in order
-   *   agent, coordinates with other agents, sequential
-   *   special, one-of-a-kind semantics, sequential
-   */
-  concurrency?: 'safe' | 'serial' | 'agent' | 'special';
-  /**
-   * Declared comms-to-people tier (lanes & lineage P7b). True = this tool is a
-   * member of the comms-to-people surface: it reaches a real person on an owner
-   * channel (email / Teams / SMS / iMessage / voice), including the auxiliary
-   * channel tools on those surfaces (contact list, call lifecycle/status). The
-   * runtime deny set stays the leaf list in sensei-policy.ts (module has no
-   * imports by design, so it cannot derive from this registry), but the
-   * DECISION is declared here at the definition site: the tool-list conformance
-   * test and the release gate enforce two-way equality between every
-   * `reachesPeople: true` declaration and SEND_TO_PEOPLE, so drift in either
-   * direction fails the build naming the tool. user_ twins inherit the flag via
-   * the twin-generation spread and are covered by the twin-parity check.
-   */
-  reachesPeople?: true;
-  /**
-   * Per-tool result cap in tokens. When the tool's content output exceeds
-   * this, the tool itself truncates and appends a "[First N tokens of …]"
-   * trailer with re-call guidance. Phase 3 added this so context stays
-   * small structurally, `file_read` of a 50K file spends 8K tokens
-   * instead of 50K. Roughly 1 token ≈ 4 characters; tools may apply
-   * approximate enforcement on character count.
-   */
-  maxResultTokens?: number;
-}
+// ── Tool definitions: the type is the LEAF now (PHASE-5 T1) ──
+//
+// `ToolDefinition` moved to `agent/tools/types.ts`, a module with zero imports,
+// because fifteen modules type-imported it from HERE and this file statically
+// imports eleven of them straight back (§T0-PINS P8). Those eleven cycles are
+// why `applyTextPagination` had to be fetched through `await import()` at
+// runtime from two of them. The re-export below keeps every consumer outside
+// the toolbox working unchanged; new code should import from the leaf.
+export type { ToolDefinition, ToolEffect, EffectKind, ToolFieldDeclaration } from './tools/types.js';
 
 // Membership sets for dispatch routing. The Google/Microsoft definition arrays
 // already include the user_* slot variants (the generators push them at module
@@ -1119,6 +1084,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'approve_destructive_action',
     description: 'Decide a destructive-action approval request (primary agent only). The engine holds non-primary agents\' destructive tool calls (file deletion, destructive shell commands) and sends you a request with a token. Approve only when the action clearly serves the assigned work; use your judgment about checking with the owner first. Approval is one-shot and expires in 60 minutes.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -1131,6 +1097,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'load_tool_docs',
     description: 'Load the full documentation for one or more tools before using them. Call this when you need to review a tool\'s parameters or usage details. After loading, the tools become callable on subsequent turns. Your always-loaded tools are already available without needing this.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -1146,6 +1113,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'exec',
     description: 'Execute a shell command and return its output. Has a 30-second timeout. **Before reaching for exec, scan the tool index for a purpose-built tool**, there are dedicated tools for reading files (file_read), writing files (file_write), patching files (file_patch), web fetch (web_fetch), calendar, drive, forms, office docs, tracker, vault, scheduling, sending messages, and more. Use exec only when no purpose-built tool fits, running scripts, checking system status, installing packages, ad-hoc one-liners. If the task is "look at the chat / recall what was said," call recall_recent_thread instead of digging through files. Example: exec({ command: "ls -la ~/projects" }). Returns stdout and stderr.',
+    effects: [{ kind: 'shell', from: 'args.command' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -1171,6 +1139,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'file_read',
     description: 'Read the contents of a file at the given absolute path. For text files, returns line-numbered content. Use optional offset (line number, 0-indexed) and limit (line count, default 5000) to paginate when a file is genuinely huge, for typical documents (code files, transcripts, briefs, reports) you should not need to paginate at all. Per-call cap is ~60K tokens, which covers ~120 pages of text. For images (PNG, JPEG, GIF, WEBP) and PDFs, returns content for vision (paging not applicable). Example: file_read({ path: "/Users/me/foo.html" }).',
+    effects: [{ kind: 'fs_read', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -1203,6 +1172,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'file_write',
     description: 'Write content to a file at the given absolute path. Creates parent directories if they do not exist. Overwrites existing files. Returns a download URL that works from anywhere (including remote access). Share the download URL with the user so they can access the file from any device. Example: file_write({ path: "/Users/me/output.txt", content: "Hello world" }).',
+    effects: [{ kind: 'fs_write', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -1221,6 +1191,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'file_append',
     description: 'Append content to the end of a file at the given absolute path. Creates the file (and parent directories) if they do not exist. Use this for incremental writes, accumulating output across multiple turns, building a long doc one section at a time, logging progress to a scratchpad, instead of `file_write` (which overwrites everything) or the read-modify-rewrite cycle. The latter fills your context with the file\'s existing contents every time you want to add to it; `file_append` does not. Returns bytes appended, total file size, and a download URL.\n\nExample: file_append({ path: "/Users/me/notes.md", content: "\\n## Section 5\\nNew content here." }).\n\nBy default a leading newline is added if the existing file doesn\'t already end in one (so appended sections don\'t smush into the prior line). Set ensure_newline=false to append the exact bytes verbatim.',
+    effects: [{ kind: 'fs_write', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -1234,6 +1205,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'file_patch',
     description: 'Surgically edit an existing file in place by find-and-replace, without rewriting the whole thing. Use this when you want to change a specific section of a file you have ALREADY read, the agent equivalent of opening a file, ctrl-F replacing a few strings, and saving. Strongly preferred over file_write for edits, because file_write requires you to reconstruct the entire file from memory and routinely drops content the model didn\'t explicitly type back.\n\nEach patch is `{ search, replace, replace_all? }`. The tool reads the file, applies every patch in order against the in-memory copy, and only writes to disk if every search string matched. If any patch\'s search string is not found, the call FAILS with a hard error and the file on disk is not touched, there is no silent no-op. Patches apply sequentially, so a later patch sees the result of earlier patches.\n\nExamples:\n  • Rename a heading: file_patch({ path: "/Users/me/site.html", patches: [{ search: "<h1>Old Title</h1>", replace: "<h1>New Title</h1>" }] })\n  • Replace every occurrence: file_patch({ path: "/Users/me/style.css", patches: [{ search: "color: red", replace: "color: var(--brand)", replace_all: true }] })\n  • Multiple edits at once: file_patch({ path: "...", patches: [{ search: "...", replace: "..." }, { search: "...", replace: "..." }] })\n  • Preview without writing: pass dry_run=true to see what would change without touching disk.\n\nWorks on any text file (encoding stays as-is on disk; the in-memory edit is utf-8). Refuses files that look binary. Refuses empty search strings.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -1275,6 +1247,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'scratchpad_set',
     description: '**Use this INSIDE a tracker step, not instead of one.** Scratchpad is your in-flight working memory for the CURRENT iteration of work, which sources you\'ve read so far, what\'s left, decisions you\'ve made on this step. The engine re-injects it at the top of your context regardless of compaction, so it survives within a session.\n\n**Critical distinction**: scratchpad survives compaction but does NOT survive session reset, and is invisible to the user and PM. Only the tracker survives reset and is visible. **If you\'re using scratchpad without an open tracker project for non-trivial work, you\'ve made the wrong call**, the work will silently vanish on the next reset with no way to resume. For any work involving a deliverable, multiple steps, or more than ~3 tool calls, open `work_open(kind="project")` FIRST, then use scratchpad for the in-flight thinking inside each step.\n\nThe scratchpad is a single string; calling `scratchpad_set` REPLACES the current contents (it does not append). To make a small edit, copy the current scratchpad from the YOUR SCRATCHPAD block in your context, modify, and call this with the full new text. Cap is 8000 characters, if you\'re approaching that, move detail into a real file and keep the scratchpad as a high-level index. Clears automatically on session reset. Use `scratchpad_clear` to empty it mid-session.\n\nExample (in-flight research on step 2 of a tracker project):\n  scratchpad_set({ content: "## Current tracker step: Step 2, Cover sources A-D\\n\\n## Sources covered so far\\n- [x] /Users/me/notes/a.md (covered in §1)\\n- [x] /Users/me/notes/b.md (covered in §2)\\n- [ ] /Users/me/notes/c.md\\n- [ ] /Users/me/notes/d.md\\n\\n## Open questions\\n- Does Y depend on Z or vice-versa? (check c.md)" }).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -1286,6 +1259,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'scratchpad_clear',
     description: 'Empty your scratchpad. Use when the task it was tracking is complete and the outline is no longer relevant. Scratchpad also auto-clears on session reset, so manual clear is mostly for "I finished, but the session keeps going" cases.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {},
@@ -1295,6 +1269,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'file_list',
     description: 'List the contents of a directory at the given absolute path. Returns file names, sizes, and types. Example: file_list({ path: "~/projects" }).',
+    effects: [{ kind: 'fs_read', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -1309,6 +1284,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'share_file',
     description: 'Get a download URL for an existing file so the user can access it from any device. Use this when the user asks for a link to a file, wants to download something, or you need to share a file that already exists on disk. Returns a full clickable URL. IMPORTANT: Give the user the URL exactly ONCE as plain text. Do NOT repeat it, do NOT wrap it in markdown, do NOT add extra formatting.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -1323,6 +1299,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'recall_recent_thread',
     description: '**Call this when you genuinely feel disoriented and the active context is not enough.** Common triggers: you just saw a `── Memory Compacted ──` divider and you\'re mid-task with no clear sense of what was just done; you switched models and lost reasoning state; you\'re about to start something and want to confirm what the user actually asked for; you suspect you might double-process work that was already done.\n\n**v2.7.10 note (IMPORTANT):** the engine no longer auto-runs this for you after compaction. Earlier versions secretly executed recall + injected the result as a system message on your next significant tool call; that caused context spirals (each compaction → auto-recall → bigger fresh tail → faster next compaction → bigger re-injection → ...). Now compaction is silent except for the divider, and YOU decide whether to call this. If you are confidently executing a scheduled task or a clear next step, DON\'T call it, your tracker tasks, equipped techniques, and active directives already carry the state you need. Calling unnecessarily wastes tokens and re-introduces stale content.\n\nReturns a clean transcript of the recent conversation read directly from your messages table (same data shown on the dashboard chat), regardless of what the assembler put in your active context. By default the last 8 user→assistant exchanges with tool *call* lines (file_read path=…, exec command=…). To recover **actual content** the agent saw earlier (file contents, web fetch bodies, search results), set `include_tool_results: true`, that switches on "wordy mode" which includes tool RESULTS up to a per-result char cap (default 1500). User/assistant message text is also capped per message (default 1500 chars, raise via `truncate_message_chars` up to 8000), anything truncated ends with a history_get pointer so you can fetch the full body. For longer lookback, paginate with `before_id` (the response footer tells you which id to pass). Cheap, read-only, safe to call anytime.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -1367,6 +1344,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'history_search',
     description: 'Search through conversation history and memory summaries using full-text search or pattern matching. Returns matching messages and summaries with context. Example: history_search({ pattern: "budget meeting", limit: 10 }).\n\nResult format: each line starts with `[id=<short> <timestamp>] (role) <snippet>`. When a snippet is truncated, the line ends with `[snippet only, call history_get(id="…") for full N-char message]`, DO this rather than retrying history_search with a different pattern. Repeating history_search with variations of the same query when the snippet is already present will be loop-blocked. Use history_get to get the FULL message body once you have a hit.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -1418,6 +1396,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'history_get',
     description: 'Look up the full content of a stored item by its ID. Accepts THREE id types:\n  - Summary IDs (sum_*), returns full summary text + metadata\n  - Large file IDs (file_*), returns the exploration summary + metadata\n  - Raw message UUIDs, returns the full message body\n\nUse this AFTER history_search when a snippet is truncated and you need the full message. history_search emits a ready-to-copy hint at the end of each truncated result line: `[snippet only, call history_get(id="…") for full N-char message]`. Copy the full UUID from inside those quotes, the short `id=<8chars>` shown at the start of the result line is for visual scanning only and is NOT enough.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -1432,6 +1411,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'history_expand',
     description: 'Deep recall: walks the summary DAG to retrieve original source messages, optionally uses an LLM to synthesize an answer from expanded material. Use when summaries lack detail.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -1459,6 +1439,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'web_search',
     description: 'Search the web using Brave Search. Returns up to 10 results with titles, URLs, and snippets. Requires a Brave Search API key to be configured.',
+    effects: [{ kind: 'net', from: 'fixed:api.search.brave.com' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -1480,6 +1461,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'web_fetch',
     description:
       'Fetch a URL and extract focused content matching your prompt. The tool fetches the page and uses a fast model to return ONLY what you asked for (~1-2K tokens), not the raw page (which can be 50K+). The `prompt` is REQUIRED, be specific. Requires network_domains permission.\n\nExamples:\n  web_fetch({ url: "https://...", prompt: "the main argument and 3 supporting points" })\n  web_fetch({ url: "https://...", prompt: "all pricing tiers and their dollar amounts" })\n  web_fetch({ url: "https://...", prompt: "the API endpoint table" })',
+    effects: [{ kind: 'net', from: 'args.url' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -1503,6 +1485,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'canvas_render',
     description:
       'Open a canvas in the user\'s right dock, a side panel where you and the user look at a working document together. The dojo interface slides left to make room and the canvas renders on the right. Use this to show the user something you have produced or have on disk: an HTML page, a Markdown doc, a plain-text/code file, a report, a chart, a mockup, or a Word / Excel / PDF document (these render as a formatted preview).\n\nNOTE: any canvas-renderable file already opens in the canvas automatically the moment you create it, writing one with file_write (HTML, Markdown, text, code, JSON, CSV, SVG, ...) and creating a Word / Excel / PDF document all auto-open. You usually do NOT need to call canvas_render at all. Use canvas_render to (re)show an existing file, or to render inline `html` / a `url`.\n\nThree ways to fill it (use ONE):\n  • `path`, the absolute path to a file on disk you wrote with file_write (e.g. "/Users/.../uploads/<agent-id>/report.md"). BEST for documents you will keep editing: HTML renders, Markdown renders formatted, text/code shows monospaced, and the canvas gets a download button. After you call canvas_render({path}), any later file_write / file_patch / file_append to that SAME path auto-refreshes the canvas, you do NOT need to call canvas_render again. For HTML, relative asset paths resolve against the file\'s own folder, so reference local images as <img src="photo.png"> with the image saved next to the .html file and it will render.\n  • `html`, inline HTML markup to render directly (runs sandboxed); no file needed. Inline markup cannot reference local files, embed images as data: URIs or write a file with the image beside it instead.\n  • `url`, content already hosted at a URL (a file_write download URL also works).\n\nExamples:\n  • canvas_render({ title: "Spec", path: "/Users/me/uploads/<agent-id>/spec.md" })\n  • canvas_render({ title: "Q3", html: "<h1>Q3</h1><p>...</p>" })',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'net', from: 'args.url' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -1531,6 +1514,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'screen_broadcast',
     description:
       "Show the user THIS Mac's screen, live, in their right-dock canvas. Use this whenever the user wants to SEE your screen or control this Mac, phrasings like \"show me your screen\", \"let me see your screen\", \"share your screen\", \"can I see what you're doing\", \"open your screen so I can click something\".\n\nUse it proactively whenever you need a HUMAN to do something on THIS Mac that you can't do yourself: approve a macOS permission/confirmation dialog, hit OK on a prompt, or complete a sign-in / re-authenticate an account (e.g. a Google or Microsoft re-auth, which opens a login window in the browser on this Mac). The flow is: kick off the action that needs them (so the dialog or sign-in window appears on this Mac), then open the screen with this tool so they can take control and finish it. Judge local vs remote first: if the user is sitting AT this Mac, just ask them to do it on their screen directly, no need to share. If they're remote (over the tunnel) and can't reach the Mac, that's exactly when to open the screen. (One caveat to relay if it comes up: a few highly-secured macOS dialogs, like granting Accessibility/Screen Recording permissions, may refuse remote clicks and need someone physically at the Mac.)\n\nIt opens view-only. The user clicks \"Take control\" at the top of the canvas to use the mouse and keyboard, and enters the screen-sharing (VNC) password to connect, that's their second factor, on top of being logged in.\n\nThis only works if the user has turned the feature on in Settings > Integrations > Screen Sharing (it's disabled by default; one-time setup needs approval on the Mac). If it's off, calling this returns step-by-step setup instructions, relay them and offer to walk the user through enabling it. So if the user asks how to set up screen sharing, or you think it would help, just call this tool: when it's off you'll get the exact steps to guide them. Takes no required arguments.",
+    effects: [{ kind: 'proc', from: 'derived:screen-share manager (osascript, admin)' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -1547,6 +1531,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'open_browser',
     description:
       'Open a live website in the user\'s right dock so you and the user can view it together. The dojo interface slides left and the page loads in a resizable frame on the right with refresh and close controls. Use this for showing a real, working website at a URL (not your own generated markup, for that use canvas_render). Note: some sites refuse to load inside a frame; if a page comes up blank the site has blocked embedding. Example: open_browser({ url: "https://example.com", title: "Example" }).',
+    effects: [{ kind: 'net', from: 'args.url' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -1567,6 +1552,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'canvas_read',
     description:
       'Look at what is currently shown in the user\'s right-dock canvas, use this when the user asks you to look at / read / check / review what is on the canvas. It views whatever you most recently opened there (with canvas_render or open_browser): an HTML page or website is screenshotted and described, an image is examined directly, and a markdown/text/code file is returned as text. Works even if your own model cannot see images (it falls back to the configured vision model). Pass an optional `prompt` to ask something specific (e.g. "does the chart axis start at zero?", "summarize the page", "is the header centered?"). To read a specific file/URL/HTML, open it first with canvas_render (or open_browser), then call canvas_read.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -1583,6 +1569,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'spawn_agent',
     description: 'Create a new sub-agent to work on a task. This is THE tool for spawning sub-agents, do NOT try to create agents by writing files or inserting into the database. BEFORE spawning, call list_agents to check whether an agent with that name already exists and is still running; if so, use send_to_agent instead of spawning a duplicate. Returns the new agent ID for tracking.\n\nTIMEOUT (you own it): non-ronin sub-agents REQUIRE `timeout_minutes`, the number of minutes the sub-agent may run before YOU (its creator) are asked to decide. There is no default. When the timeout is reached the engine does NOT kill it, it notifies you and the sub-agent keeps running until you call spawn_timeout_decision(action="extend"|"terminate"). Size timeout_minutes to the task (a quick lookup ~5, a longer build ~30-60). For open-ended/scheduled work that should have no timeout, use classification="ronin" (ronin has no timeout and is dismissed only by the user).\n\nSQUADS (mandatory): every agent you spawn lands in a squad, so the owner can see which spawned agents belong to which work. If you pass a `task_id` linked to a project, the sub-agent joins (or the engine auto-creates) a squad NAMED AFTER THAT PROJECT and stamps the squad on the project; later spawns for the same project auto-join it. With no project link, pass `group_id` for a squad you own, or the engine auto-creates one named after you. The tool result names the squad it landed in. You can only dismiss squads you created (delete_group); user-created squads are dismissed only from the dashboard.\n\nTASK LINKAGE, IMPORTANT: if the apprentice is meant to do work tracked in the tracker, you MUST link the task to the agent OR the agent\'s work won\'t update the task on completion. Two valid patterns:\n  1. Pass `task_id` here at spawn time → the agent.task_id is set AND the task is REASSIGNED to the spawned agent (assigned_to = new agent), because you are delegating the work; complete_task then auto-marks the task complete. Pass keep_assignment=true to keep the task assigned to yourself.\n  2. After spawning, call work_open(kind="task") (or work_update(action="reassign")) with `assigned_to=<this agent_id>` → completeAgent\'s fallback finds the task by assignment.\nIf you create tasks before spawning the apprentices, those tasks default to assigned_to=YOU (the parent); passing task_id at spawn now hands the task off to the apprentice for you. Always one of: assign the task to the apprentice, or pass task_id at spawn.',
+    effects: [{ kind: 'spawn', from: 'derived:sub-agent manifest (args.permissions, args.tools)' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -1677,6 +1664,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'kill_agent',
     description: 'Terminate, kill, delete, or remove a sub-agent immediately. This is THE tool for ending a sub-agent\'s life, do NOT try to delete database rows or kill processes manually. Also terminates any of its children. Use when a sub-agent is stuck, no longer needed, or misbehaving.\n\nOWNERSHIP: you can only kill sub-agents YOU created. Agents created by the user (from the dashboard) are dismissed only by the user; kill_agent refuses them. Ronin and sensei agents are also protected.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -1691,6 +1679,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'spawn_timeout_decision',
     description: 'Decide what happens to a sub-agent YOU spawned that reached its timeout. When a sub-agent hits its timeout the engine does NOT kill it, it notifies you (its creator) and keeps the sub-agent running until you decide here. Only the sub-agent\'s creator may call this (the user decides from the dashboard). Two actions:\n  - action="extend": give the sub-agent more time. Pass extend_minutes (a positive number). The timeout is reset and you will be asked again if it runs out.\n  - action="terminate": let the sub-agent stop. It is torn down cleanly and any in-progress tasks it held are auto-paused for reassignment.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -1714,6 +1703,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'send_to_agent',
     description: '**USE THIS TOOL when responding to any inbound message that starts with `[A2A:` or `[SOURCE: AGENT MESSAGE FROM`.** Other agents CANNOT see your chat, they only see what you send via this tool. If you write a chat reply instead of calling send_to_agent on an inter-agent turn, the originating agent gets nothing and the engine will nudge you to retry. The pattern: do the work, call send_to_agent once with the right intent on the same thread_id, end your turn. Do not also write a chat summary, it\'s invisible to the originator and gets suppressed by the engine.\n\nSend a structured message to another agent. Every message MUST specify an intent, there is no default. The intent controls whether the receiver wakes to act. **Default to a wake intent unless you are certain the receiver has nothing to do with the message.** Wake intents (receiver wakes): QUESTION, ASSIGN, BLOCK (open thread, response expected); ANSWER, DELIVERABLE (close thread but receiver still wakes because they were waiting); COMPLETE, FAIL (close thread and wake, receiver almost always needs to react to your work being done or failed: forward, notify, decide next step). No-wake intents (ambient context only, receiver does NOT wake): FYI, STATUS. Use FYI/STATUS only when the content is genuinely just for awareness and requires no action. Messages are grouped by thread_id, omit to start a new thread, or include the thread_id from the inbound message to reply on that thread. Silence is a valid response. Do not acknowledge acknowledgements.\n\nTracker integration: when you use intent="ASSIGN", the DOJO automatically creates a tracker task assigned to the receiver. You do NOT need to call work_open, the task is structurally created at delivery time. The tool result returns the task ID so you can track progress with work_update(action="get"). The receiver gets the task ID in their incoming message and is told to close it with work_update(action="status") when done. This means PM can spot stalled assignments automatically. Use ASSIGN whenever the work is multi-step; use QUESTION or BLOCK for one-shot exchanges that don\'t need tracking.',
+    effects: [{ kind: 'send', from: 'args.agent' }, { kind: 'fs_read', from: 'args.attach_paths[]' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -1750,6 +1740,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'broadcast_to_group',
     description: 'Send a message to every agent in a group at once. This is THE tool for group-wide announcements, status updates, or coordinating a squad. Each member receives it as if via send_to_agent. Like send_to_agent, intent is REQUIRED, choose carefully because broadcasting a wake intent will wake every member of the group.',
+    effects: [{ kind: 'send', from: 'args.group_id' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -1773,6 +1764,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'complete_task',
     description: 'Signal that the current agent has finished its assigned work. This terminates the agent and delivers the `summary` field to the parent agent for internal consumption. **The summary IS your report, do not write a parallel user-facing chat message announcing completion.** Closeouts are silent. After this call returns, just stop; do not write "Done", "Task complete", "All set" or any similar wrap-up line. Only use when you are a sub-agent that has completed its task.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -1804,6 +1796,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'work_open',
     description: 'Open a new piece of work. `kind` picks what: "project" (multi-step work with tasks), "task" (a single piece of work, optionally scheduled or recurring), "reminder" (something to tell the user at a time), "commitment" (a promise you just made).\n\n**Open a project or task BEFORE starting any work that has a deliverable, requires multiple steps, or takes more than ~3 tool calls.** The work board is your durable plan, it survives compaction, session resets, and agent restarts; your context does not. Source files you read get summarized; work rows do not. For anything beyond a one-shot Q&A, this is your safety net against losing the plan halfway through.\n\nDon\'t try to predict whether you\'ll finish in one push, you usually can\'t, and the failure mode is silent context loss followed by writing the deliverable from your own summarized memory (i.e. confabulating). The cost of opening an entry you didn\'t end up needing is zero. The cost of NOT opening one for work that turns out to be multi-step is 30+ minutes of stalled work, PM pokes, and lost context.\n\n**Cheap to open, just a title and a level is enough.** You don\'t need to know every task upfront. Add tasks incrementally with `work_open(kind="task", project_id=…)` as you discover the shape of the work. If you\'re unsure whether to open one, open one.\n\nASSIGNMENT MATTERS (read once, internalize): nested tasks default `assigned_to=YOU` (the calling agent) when not specified. If apprentices will do the work, either spawn them FIRST and pass their agent_id in each task\'s `assigned_to`, or spawn them with `task_id` pointing at tasks already created here. If neither happens, apprentice work won\'t close out the tasks.\n\n**kind="task"** can run immediately, at a scheduled time, or on a repeating schedule. To schedule: set scheduled_start to an ISO8601 datetime (e.g., "2026-03-20T22:35:00Z"). To repeat: also set repeat_interval and repeat_unit (e.g., repeat_interval=2, repeat_unit="hours" for every 2 hours). Use repeat_end_type="after_count" with repeat_end_value="3" to stop after 3 runs. Use get_current_time to find the current time, then add minutes/hours for the start time. Tasks without scheduled_start run immediately when assigned.\n\n**kind="reminder"** sets a reminder for the user. When the scheduled time arrives, you (the agent) will be woken with the reminder text and should deliver it to the user as a single short chat message in your normal voice, no preamble like "Reminder:" or "Here\'s your reminder", just say the thing. **If the user did not specify a time, call this WITHOUT `when`.** The tool will return an instruction telling you to ask the user. Get their answer, then call `get_current_time` to resolve relative phrases ("in 5 minutes", "tomorrow at 8am"), and re-call with `when` set to the resolved ISO 8601 datetime. Do not invent a time, always ask. Use kind="reminder" whenever the user asks to be reminded of something, NOT kind="task": reminders get a lighter scheduler prompt that produces a natural one-line message instead of the generic "[Scheduled Task, Run #1]" boilerplate.\n\n**kind="commitment"** records a promise you just made, at the moment you make it. When you tell someone "I\'ll do X", "I\'ll send that after Y", or "I\'ll get back to you on this", call this straight away with what you promised in `description`, in your own words. It becomes a tracked item you still owe, shown back to you in the "OPEN WORK" block until it is delivered or dropped. This is bookkeeping, do NOT write a user-facing message about it, and do NOT use it for work you have already finished this turn. Use kind="task" instead when the promise is a piece of project work that belongs on the board.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -1871,6 +1864,10 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'work_update',
     description: 'Update, read, or close existing work. `action` picks what: "status" (change a task\'s status), "edit" (change structural fields on a task or project), "reassign", "complete_step" (finish a step and start the next), "close_project" (close a whole project and its open tasks), "list" (see active work), "get" (full detail on one item).\n\n**action="status" — END-OF-TURN DECISION MATRIX** - before you end any turn with an in_progress task assigned to you, pick exactly one:\n\n  1. **You finished the task** → status="complete" (or use action="complete_step" if multi-step project, auto-advances to the next step).\n  2. **You\'ll take the next action on this same turn** → leave status="in_progress", just call the next tool now. Do not end the turn.\n  3. **You are waiting on the USER to do something they already know about** (you just asked them, e.g., "please reboot the ESP", "send me the file", "approve X") → status="paused" with notes explaining what you\'re waiting for. **Paused tasks are INVISIBLE to the PM agent, no pokes, no nags, ever.** The user resumes the task by replying or by manually flipping the status. This is the right call for ALL "I asked the user and now I\'m waiting" situations.\n  4. **You are blocked by something the user does NOT know about yet** (missing API key, external service down, you need a decision the user hasn\'t been asked about) → status="blocked" with notes. **This escalates**, the PM surfaces it to the primary user as a BLOCKED issue. Use this for "someone needs to know something is wrong."\n  5. **The whole project is no longer relevant** → use action="close_project" with reason. Not a status change.\n\n**Difference between paused and blocked:** paused = "user has the ball, I\'m on standby, no escalation needed." blocked = "this needs attention." When in doubt with a user-facing question already asked, pick paused.\n\n**NEVER leave a task in_progress when you go idle UNLESS option 2 applies.** If you go idle with status=in_progress, the PM will poke you after ~2 minutes assuming you stalled, and you\'ll get nudged to either pause/block or close it out. Skip the noise by transitioning correctly at end of turn.\n\nFor recurring tasks: if you completed ALL iterations in a single run, set `complete_all_runs=true` to stop the schedule entirely.\n\n**For multi-step projects, prefer action="complete_step" over action="status"**, it auto-advances to the next step so you don\'t accidentally leave the project with no task in_progress. Marks this task "complete" and moves the next step (by step_number) to "in_progress", and checks whether the entire project is now complete. Using status=complete to mark a step complete leaves the project with no in_progress task and is the most common cause of "agent finished a batch but the next batch never started." Call it the moment you finish a step, don\'t batch up multiple completions.\n\n**Close-outs are silent, ALWAYS, not just for scheduler-triggered tasks.** After a status change to complete (or paused/blocked/fallen), and after every step completion, do NOT write a trailing user-facing message about it ("Task closed", "All done", "Marked complete", "All set", "Smoke test passed", "All three cleared", "You\'re set", "Step closed", "Moving to next step"). The tool result is the only acknowledgment needed; the board shows the change directly. The user already saw your work above; a closeout line is noise. This applies to every kind of work, assigned by the user, auto-created from a chat message, scheduler-triggered, wakeup-triggered, manually created.\n\n**action="edit"** changes any structural field on a task, title, description, dependencies, step ordering, schedule (including the day-of-week list for "specific_days" recurrence), priority, notes. Pass any subset. Editing any schedule field automatically recomputes next_run_at so the scheduler picks up the change. Pass `project_id` instead of `task_id` to rename a project or change its description — use that when a project was auto-named badly (the engine\'s multi-step classifier names projects with a slice of the user prompt, which often reads poorly on the kanban) or when scope shifts and the title no longer describes the work. Use action="status" for status changes, action="reassign" for assignee changes, and work_schedule for pause/resume, those have side-effects edit intentionally skips.\n\n**action="close_project"** closes an entire project AND every open task on it in one call. Use it when you want to abandon a project, when you discover a duplicate, when scope changed and the work is no longer relevant, or when every remaining task has genuinely been completed but is still showing as open. Pass status="cancelled" for abandoned/duplicate/scope-change cases (the default, leaves a "cancelled" marker on each task) and status="complete" only when all the work was actually done. `reason` is required and gets appended as a note on every task closed, this is the audit trail for whoever sees the kanban next. Far better than looping action="status" one task at a time, and the only correct response when the engine tells you a project of yours is stranded (open tasks left behind on an abandoned project).\n\n**action="list"** lists active projects and tasks with their status, assignee, and priority. Default returns compact rows (no descriptions); pass verbose=true for descriptions on every result. **action="get"** returns the full details of ONE task or project, including description/instructions, notes, dependencies, step number, assigned agent, and timestamps — use it to read the instructions for any task. Accepts a full UUID or an 8+ char prefix from a list, as `id`, `task_id`, or `project_id` (all accepted).',
+    effects: [],
+    nonEffects: {
+      'evidence[].pointer': 'RULING (T1): a polymorphic locator — file path, audit-log timestamp, URL or free text — STORED on the evidence row for a human PM to open, never dereferenced by the platform. Declares no effect today; if a reader is ever added that fetches or opens it, that reader declares the effect here',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -1943,6 +1940,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'work_note',
     description: 'APPEND a timestamped note to a task. Preserves all prior notes - each call adds a new `[ISO timestamp] <your text>` line. Good for progress logs and issue trails. **Does NOT replace the existing notes.** To replace the entire notes field with new content, call work_update({action:"edit", task_id, notes}).\n\n**CRITICAL - this is a checkpoint, NOT a stopping point.** Adding a note does not pause your work. If the task is still in_progress after you write the note, CONTINUE EXECUTING the project on the same turn - call the next tool, do the next step, do not just end the turn. Only end your turn when (a) you have completed a meaningful chunk that needs user acknowledgement, OR (b) you have hit a genuine blocker. In either case, your final assistant message must explicitly say WHY you stopped ("completed step 3, waiting on user input about X", "blocked - can\'t proceed without Y"). A silent stop after a note leaves the user staring at idle progress with no idea what is happening.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -1955,6 +1953,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'work_close_request',
     description: 'Ask for a close you cannot make yourself (Key 1 of the two-key close). `action` picks which ask:\n\n**action="override"** queues an explicit ask for the PM (or the user via dashboard) to force a status change that the engine\'s hard gate refused, OR that you believe the PM\'s last rejection got wrong. Auto-fired by the engine when the hard-gate circuit-breaker trips after 3 consecutive same-task hard-gate rejections by you (in which case you do NOT need to call this yourself, the engine queued it on your behalf). `justification` must be at least 30 characters explaining concretely why the engine/PM was wrong. Rate limit: at most one pending request per (task, you) at a time. Auto-denied after 12 hours if PM does not resolve.\n\n**action="user_verdict"** is only callable on tasks where the engine has flagged a stalemate (after revert_count crossed the per-priority threshold of high=2/normal=3/low=5). It composes a user-facing message describing the stalemate and routes it to the user (direct chat if you are primary, A2A relay through primary otherwise). The user\'s reply becomes the final verdict, applied via work_validate({action:"apply_user_verdict"}).\n\n**action="commitment"** closes an item from the OPEN WORK block once you have actually delivered it, or drops it when it is no longer owed. Call it with the id in [brackets] exactly as shown. Use disposition "kept" the moment you deliver the thing — that only works if the message or file really went out this turn, because a promise is kept by delivering it, not by saying so. Use disposition "dropped" when the person told you to forget it or it no longer applies. If you are unsure whether it is truly done, leave it open — an unfulfilled promise is meant to survive until it is actually fulfilled.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -1983,6 +1982,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'work_validate',
     description: '**PM AGENT ONLY** (the owner reaches these through the dashboard). Key 2 of the two-key close: adjudicate somebody else\'s claim. `action` picks which:\n\n**action="validate"** adjudicates an agent\'s status claim. Pass `kind`:\n  - "pause": is the pause legitimate? valid=true if the reason names a real, specific external trigger the agent actually requested (e.g. "waiting for user to reboot ESP", "waiting for vendor tracking number"); valid=false if vague, complains about the PM, or is really a block. (Call for every UNVALIDATED_PAUSE in the situation report.)\n  - "complete": does the goal match the result + evidence? Read the file/audit-log/output named in evidence first, do NOT validate on prose alone. valid=false when the evidence does not demonstrate the goal.\n  - "blocked": is the block real and external (no workaround the agent could try)? valid=false when the agent has not attempted the work, has not asked a question they could ask, or the "block" is confusion.\nOn valid=true the status stands (per-kind side effects: complete fires the dependency cascade / archives a recurring per-run and resets to on_deck; blocked notifies the primary to investigate). On valid=false the task reverts to target_status (default in_progress) and the assigned agent gets the one-sentence directive in reject_reason.\n\n**action="retask"** sends a task back to its assigned agent with explicit corrective instructions. Use when the agent\'s outcome is wrong (work skipped, wrong channel, evidence doesn\'t match goal, claim doesn\'t match actual artifact) and you want them to redo it, instead of just confirming a pause or rejecting a complete. Works from any non-terminal status. Resets validation flags, increments revert_count, delivers the directive over A2A. `directive` must be at least 30 chars and concrete (what they did wrong + what to do instead). Distinct from validate(kind="pause", valid=false): that\'s reactive (adjudicating an existing pause); retask is proactive (redirecting the agent\'s effort). PROTECTED: if the task\'s work was already delivered to the user (a Key-1 close request is filed awaiting validation, or a legacy delivered flag), retask REFUSES unless you pass allow_regenerate=true, so delivered work is not silently regenerated and overwritten.\n\n**action="override"** resolves a queued OVERRIDE_REQUEST. Approve forces the requested status through (bypassing the engine hard gate); deny notifies the agent the engine was right. Distinct from a bare status change: override is for resolving an explicit pending request.\n\n**action="apply_user_verdict"** — call ONLY when a task is awaiting a user verdict. Apply the user\'s reply to that stalemate. Quote the user\'s exact words in user_quote for the audit log. The status flips immediately with the user as the authority, the validation flag for that status is set, revert_count resets, and the stalemate flag clears. The user\'s authority is supreme, PM is told not to revisit.\n\n**action="apply_user_validation"** — call ONLY when the user replied to a "[VALIDATION CHECK]" message in chat. The engine asks the user about a task that has been sitting unvalidated for 5 minutes. The user\'s reply tells us whether the work was actually done. validated=true confirms it (clears the bug icon). validated=false reverts the task to in_progress and pings the assigned agent with any feedback the user provided. Quote the user\'s exact reply in user_quote for audit.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2012,6 +2012,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'work_schedule',
     description: '**Scheduled/recurring tasks ONLY.** `action` picks what:\n\n**action="pause"** pauses a recurring task\'s schedule so it stops firing. **DO NOT use this to "finish" a non-recurring task**, for a one-shot task you completed, call `work_update({action:"status", status:"complete"})` instead. Pausing a one-shot task strands it forever (it sits in the Paused column, cannot be completed without unpausing, and PM monitoring ignores it). If the recurring task\'s remaining runs are no longer needed, set mark_complete=true to stop the schedule AND mark the task complete in one call.\n\n**action="resume"** resumes a paused recurring task.\n\n**action="resolve_missed"** resolves a "missed runs" alert from the scheduler. When a recurring task is overdue by more than one full interval (typically because the platform was offline or the task was paused longer than expected), the scheduler auto-pauses the task and asks the assigned agent how to proceed. Pass `resolution` as one of three: "run_now" (fire ONE catch-up run now, then resume normal anchor schedule, best when work is cumulative like "summarize what happened since last run"), "skip" (skip all missed slots, resume from the NEXT future anchor, best when each scheduled run is independent and stale, like "post today\'s reminder"), or "pause" (leave paused; the human user will resume via the dashboard). Only valid when the task is currently in the missed-runs paused state.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2035,6 +2036,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'healer_log_action',
     description: 'Log an auto-fix action taken by the Healer agent. Used to record what was fixed and whether it succeeded.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2049,6 +2051,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'healer_propose',
     description: 'Create a proposal for the user to approve or deny in the dashboard. Use this for fixes that change configuration, switch models, or grant permissions, anything you are less than 70% confident about.\n\nEvery proposal MUST include an `evidence` field listing the specific things you actually observed this cycle: tool results, audit_log entries, file contents, vault entries you read. The user sees this proposal in their dashboard and acts on it, if the evidence is invented (vault IDs you didn\'t read, "known bugs" you can\'t cite, file paths you didn\'t open) you will mislead them into approving a fix for a problem that doesn\'t exist. If you can\'t produce concrete evidence, do not propose, log with `healer_log_action` instead.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2072,6 +2075,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'healer_recent_actions',
     description: 'Get a tight summary of recent Healer actions, timestamp, category, agent, and result only. Use BEFORE proposing a fix to check whether you (or a previous cycle) already tried something similar. The full description of any specific action is available via healer_action_detail(action_id). Output is capped, you cannot pull all history; pick a reasonable limit and look-back window.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2084,6 +2088,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'healer_action_detail',
     description: 'Get the full description of ONE specific Healer action by its ID (from healer_recent_actions). Use to drill into the why/what of a past action without pulling the whole log. Description is capped at ~1500 chars.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2095,6 +2100,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'healer_mark_applied',
     description: 'Record that you have actually carried out an approved proposal. Call this AFTER you have executed the proposed fix (model switch, config change, etc.). The proposal then transitions from "approved" to "applied" in the Vitals dashboard so the user sees the work is done. Without this, an approved proposal sits visible forever with no indication of whether the fix actually happened.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2107,6 +2113,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'get_current_time',
     description: 'Get the current date and time in UTC and local. Returns utc (ISO 8601), local (human-readable), and timezone. ALWAYS use the utc value when setting scheduled_start on tasks.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {},
@@ -2116,6 +2123,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'convert_time',
     description: '**Disambiguate a timestamp from any source.** Whenever you encounter a time and the format does NOT include both a timezone abbreviation (PT, ET, UTC, etc.) AND a UTC ISO string, call this tool first instead of guessing. Misreading timezones is the #1 cause of agent errors in emails, briefs, reminders, and scheduled tasks.\n\nUse this for: times from web pages, email bodies, scraped content, calendar tools whose output you find ambiguous, raw unix epoch values, or any timestamp where you want to be 100% sure what moment you\'re talking about.\n\nReturns the dual-format string "<weekday>, <month day, year>, <h:mm AM/PM> <TZ> (<UTC ISO>)". The local part is the time-of-day in `to_tz` (defaults to the agent host\'s system timezone); the UTC ISO is the absolute moment in time. Both refer to the same instant, pick whichever the user needs.\n\nAccepts these input formats:\n  - ISO 8601 with offset/Z: "2026-05-20T19:00:00Z", "2026-05-20T12:00:00-07:00"\n  - ISO 8601 without offset: "2026-05-20T19:00:00" → set `from_tz` so the tool knows how to interpret it (Microsoft Graph returns this format as UTC; many email/web sources are local)\n  - Unix epoch milliseconds: "1747681200000" or 1747681200000 (Plaud uses this)\n  - Unix epoch seconds: 1747681200\n  - RFC 2822: "Wed, 20 May 2026 19:00:00 +0000"\n  - Other formats JS Date can parse',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2140,6 +2148,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'tunnel',
     description: 'Manage the Cloudflare tunnel for remote access. Pass `action`:\n  - "status": get the current tunnel status + public URL (use when the user asks for the dojo URL or whether remote access is running). The `url` field is what to share; `mode` tells you quick (trycloudflare.com) vs named (custom domain).\n  - "start": start the tunnel (only when the user explicitly asks to start/enable it). Optional `mode`: "quick" for a random URL, "named" for the configured persistent tunnel; defaults to the saved config.\n  - "stop": stop the tunnel (only when the user explicitly asks to stop/disable remote access).\n  - "restart": restart it (useful when stuck or the user wants a fresh URL).',
+    effects: [{ kind: 'proc', from: 'derived:cloudflared (spawn; brew install on first use)' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2152,6 +2161,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'set_user_presence',
     description: 'Set whether the user is "in the dojo" (at their computer, using the dashboard) or "away" (not at the computer, route messages via iMessage). Only use this when the user explicitly asks you to mark them as away or back.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2168,6 +2178,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'reset_session',
     description: 'Wipe a sub-agent\'s (or your own) conversation context and start fresh. This is THE tool for clearing an agent\'s memory when it\'s stuck in a loop, confused, or when the user explicitly asks for a clean slate. Archives the existing conversation to the vault first so nothing is lost.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2179,6 +2190,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'update_agent',
     description: 'Change another sub-agent\'s configuration: name, system prompt, model, permissions, and/or tool policy in one call. This is THE tool for editing a sub-agent, do NOT modify files, SOUL.md, or the database directly. Provide agent_id plus at least one field to change; omitted fields are left untouched. Mirrors spawn_agent\'s parameters. Conversation history, tracker tasks, and group membership are always preserved; changes take effect on the agent\'s next turn. Cannot change the identity (name/system_prompt) of the primary agent (edit its SOUL.md via Settings instead). Changing `permissions` or `tools` requires the caller to have can_assign_permissions. Pair with get_agent_profile to read current values before rewriting.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2195,6 +2207,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'get_agent_profile',
     description: 'Read another agent\'s current identity: name, system prompt, model, tools policy, permissions, classification, group, status, and parent. Use this to audit what a sub-agent is currently set up as, or to read the existing system prompt before calling update_agent (which fully REPLACES the prompt, without reading first you can\'t append). Read-only, no side effects.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2209,6 +2222,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'create_agent_group',
     description: 'Create a new group of sub-agents around a shared purpose (a team, a squad, a project crew). This is THE tool for making a new agent group, do NOT try to insert rows into the database. The group description is injected into every member agent\'s system prompt as shared context.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2221,6 +2235,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'update_group',
     description: 'Change an agent group\'s name or description (the shared context all members see). This is THE tool for editing a group, do NOT try to delete and recreate it. Provide at least one of name or description. Description changes appear in every member agent\'s context on their next turn.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2234,6 +2249,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'assign_to_group',
     description: 'Add a sub-agent to a group, or remove a sub-agent from its current group. This is THE tool for moving agents between groups, do NOT try to update the database directly. Pass null as group_id to remove the agent from any group and leave it ungrouped.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2247,6 +2263,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'list_agents',
     description: 'List every active sub-agent, name, ID, status, classification, group. Default returns compact rows. For full detail (activity timestamps, dormant flags, last error snippets) on every result, pass verbose=true; for full detail on ONE agent, use get_agent_profile(agent_id).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2261,6 +2278,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'list_models',
     description: 'List all enabled models with name, ID, provider, cost, capabilities (vision, tools, thinking), context window, and max output tokens. ALWAYS call this before spawn_agent if you need to choose a model, it shows which models support vision, tool use, extended thinking, and their cost/performance trade-offs.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {},
@@ -2272,6 +2290,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'delete_group',
     description: 'Delete an agent group (squad) entirely. This is THE tool for removing a group, do NOT try to update the database directly. By default, member agents are moved to ungrouped (not terminated). Pass terminate_members=true to also kill every member in the group as part of the cleanup. Cannot delete the System group.\n\nOWNERSHIP: you can only delete squads YOU created. Squads created by the user (from the dashboard) are dismissed only by the user; delete_group refuses them.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2284,6 +2303,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'list_groups',
     description: 'List every agent group with its name, ID, and member count. Default returns compact rows. For full detail (description per group) on every result, pass verbose=true; for full detail on ONE group (members, settings, timestamps), use get_group_detail(group_id).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2297,6 +2317,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'get_group_detail',
     description: 'Get full details on one agent group, name, description, member roster (with each member\'s id, name, classification, status), creation metadata. Use this to drill in after list_groups.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2312,6 +2333,13 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'share_publicly',
     description: 'Publish a file (or a small directory of files) to a publicly-accessible URL and return that URL. Use this when the user wants to view or share something outside the DOJO, e.g. an HTML page another agent built, a PDF report, an image, a static website. The DOJO copies the source into ~/.dojo/out/<slug>/ and exposes it at /share/<slug>/<filename> (no auth). If the DOJO has a Cloudflare tunnel running, the URL works from anywhere on the internet; otherwise it falls back to localhost (only viewable on the same machine). Use the returned URL directly, do NOT try to construct one yourself.\n\nHTML asset handling: when sharing a single .html file, the engine automatically scans it for linked local assets (`<img src>`, `<link href>`, `<script src>`, `url(…)` in inline CSS) and copies each one into the share directory so the page renders correctly at the public URL. Refs starting with http(s)://, data:, etc. are left alone. The tool result reports how many assets were copied. For multi-file sites or when you need precise control, point source_path at the directory and pass entry_filename.\n\nExamples:\n  • Share a single HTML page (linked assets auto-copied): share_publicly({ source_path: "/Users/.../uploads/<agent-id>/report.html" })\n  • Share a directory site: share_publicly({ source_path: "/Users/.../uploads/<agent-id>/site/", entry_filename: "index.html" })\n  • Share an image: share_publicly({ source_path: "/Users/.../uploads/<agent-id>/chart.png" })',
+    effects: [
+      { kind: 'fs_read', from: 'args.source_path' },
+      { kind: 'fs_write', from: 'derived:the public share directory ~/.dojo/out/<slug>' },
+    ],
+    nonEffects: {
+      'entry_filename': 'names a file WITHIN args.source_path, which the fs_read above already resolves; it never names a path of its own',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -2331,6 +2359,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'show_to_user',
     description: 'Display one or more IMAGES (and short audio/video clips) to the user IN THE CHAT as inline thumbnails, as part of your reply. Use this for a picture you want the user to actually look at right in the conversation, a slide PNG a sub-agent sent you, a Drive image you downloaded, a photo from your uploads folder. WITHOUT this tool, "take a look at this image" is a lie, the file is on disk but the user sees no thumbnail.\n\nDOCUMENTS GO IN THE CANVAS, NOT HERE. A PDF, Word/Excel/PowerPoint, Markdown, text, or code file passed to show_to_user is REJECTED, those render as a real formatted preview in the canvas. Canvas-renderable files auto-open the moment you write them (file_write, or creating a Word/Excel/PDF); use canvas_render({ path }) to (re)open one. Reserve show_to_user for images/media.\n\nThis tool inserts an assistant-role message into your chat with the files attached and your `caption` as the bubble text. The user sees: your caption + thumbnails. After calling, end your turn (or continue with more tool calls if needed).\n\nExample (forwarding a slide preview a sub-agent sent):\n  show_to_user({ file_paths: ["/Users/.../uploads/<your-agent-id>/draft_slide_preview.png"], caption: "Sub-agent finished a draft of the title slide. Looks good to me, anything you want changed?" })\n\nFile paths must already exist (typically under ~/.dojo/uploads/<your-agent-id>/ or wherever a sub-agent delivered them). Files outside the uploads dir are copied in.',
+    effects: [{ kind: 'fs_read', from: 'args.file_paths[]' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2351,6 +2380,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'add_safe_sender',
     description: 'Add a person to one of the channel safe-sender allowlists so the agent can auto-reply when they message back. **Call this ONLY when the user explicitly asks you to start a conversation with someone (e.g., "email Sarah about Q4", "text Mike a heads-up", "start a Teams chat with Priya"). Do NOT call this preemptively, and do NOT call it because someone happened to email or text you without the user asking.**\n\nThe `user_request_quote` parameter is required and must contain the user\'s actual words asking for this. If you cannot quote a real user request, because no one asked, do NOT call this tool. The quote is audit-logged and reviewed by the user.\n\nThe allowlist controls AUTO-REPLY: once a person is on the channel\'s list, when they reply back (e.g., a Re: email or a Teams DM back), the engine routes the agent\'s response automatically. People NOT on the list can still send the agent messages; the agent just decides whether to surface them to the user instead of auto-replying.\n\nChannels:\n- `imessage`, iMessage contacts (no slot)\n- `gmail`, email senders, PER-SLOT (`agent` or `user`); the slot you add to must have "Allow sending email" enabled on that account, or the call is refused\n- `outlook`, same as gmail, per-slot\n- `teams`, Teams DM senders (Entra accounts only, no slot)\n\nThe `slot` parameter is REQUIRED for `gmail` and `outlook` (decides which mailbox\'s list to add to) and IGNORED for `imessage` and `teams`. If the user doesn\'t specify the slot, infer from context: the agent\'s own account is the `agent` slot; the user\'s personal account is the `user` slot. If unsure, ask the user before calling.\n\nSharing levels:\n- `open_book`, no restrictions, treat like the owner (use for the owner\'s alternate addresses, household members the user trusts fully)\n- `dont_overshare`, default for new contacts; share what is asked, do not volunteer extra details\n- `cautious`, answer only what is asked, briefly, high-level only\n- `project_only`, discuss only the specific project named in description (description is required for this level)\n\nIf the user asks you to start a conversation with someone but does not specify a sharing level, default to `dont_overshare`.\n\nIdempotent: if the address is already on the target list, the call succeeds without modifying anything.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2398,6 +2428,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'imessage_list_contacts',
     reachesPeople: true,
     description: 'List ALL of YOUR iMessage contacts. The DOJO iMessage bridge is YOUR own iMessage account (not the user\'s phone) - these are the people YOU are authorized to text from your account. Call this whenever the user asks you to text, message, iMessage, or shoot a message to someone and you do not already know that person\'s address. Returns every contact with name, address, description (who they are), sharing_level, and whether they are the primary user. Pick the most likely match yourself based on the user\'s phrasing, your memory of who is who, and the description field. If two contacts plausibly fit (e.g. the user said "text Alex" and there are two Alexes), ask the user to clarify before sending.',
+    effects: [{ kind: 'proc', from: 'derived:iMessage bridge (osascript)' }],
     input_schema: {
       type: 'object',
       properties: {},
@@ -2408,6 +2439,11 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'imessage_send',
     reachesPeople: true,
     description: 'Send an iMessage from YOUR OWN iMessage account (the DOJO bridge). **As of v2.7.23, replies to inbound iMessages auto-route via the engine, you do NOT need to call this tool to reply. Just write your reply text; engine delivers it.**\n\n**DEFAULT-CHANNEL RULE, When the primary user is actively talking to you on dashboard, the default is "reply in dashboard."** Do NOT additionally text them on iMessage to "also share on their phone" or "make sure they see it." Their reply belongs in the dashboard they are looking at.\n\n**Exceptions where you SHOULD call imessage_send even though the user is in dashboard:**\n\n- **The user explicitly named iMessage in this turn\'s request.** e.g. "text me the meeting list," "iMessage me when that finishes," "send the summary to my phone." The user choosing the channel overrides the default-channel rule.\n- **A task you are working on explicitly specifies iMessage as the delivery channel.** Tasks frequently encode delivery preferences in their goal or notes ("when this completes, iMessage the owner with the result," "deliver via iMessage, not chat"). The task directive is the authoritative source for that work item; the default-channel rule is for the absence of a task directive, not in addition to it.\n- **The recipient is someone OTHER than the primary user.** Texting the user\'s spouse, a colleague, a third-party contact on the safe-sender list, the default-channel rule is only about the primary user.\n\n**Beyond those exceptions, this tool is for:**\n\n- **PROACTIVE outreach** = the turn was NOT triggered by a user message at all. Examples: a scheduled task fires and you decide to text the user, a watchdog event needs surfacing while the user is offline, a long-running job you started yesterday completes and you let the user know.\n- **RICH actions** = sending with attachments (image, PDF, etc.). The text rides with the first file via the imsg CLI. Use only when an attachment is genuinely needed; sending a link as a "rich action" does not qualify.\n\nVOICE: write like an actual text message. No markdown, no headers, no bullet lists. Short and conversational.\n\nRecipient rule: pass `recipient` explicitly when proactively messaging someone or when sending to a non-default address. The value MUST exactly match a safe-sender address. If you only know the person by name (e.g. user said "text <contact-name>"), call `imessage_list_contacts` first to look up the address. Passing an unknown address is refused. For attachments, pass any local path (e.g. ~/.dojo/uploads/<agent-id>/photo.jpg).',
+    effects: [
+      { kind: 'send', from: 'args.recipient' },
+      { kind: 'fs_read', from: 'args.attachments[]' },
+      { kind: 'proc', from: 'derived:iMessage bridge (osascript)' },
+    ],
     input_schema: {
       type: 'object',
       properties: {
@@ -2432,6 +2468,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'sms_send',
     reachesPeople: true,
     description: 'Send a text message via Twilio SMS. **Replies to inbound SMS auto-route via the engine - you do NOT need to call this tool to reply. Just write your reply text; the engine delivers it.**\n\n**DEFAULT-CHANNEL RULE - When the primary user is actively talking to you on dashboard, the default is "reply in dashboard."** Do NOT also text them via SMS to "make sure they see it."\n\n**Exceptions where you SHOULD call sms_send even when the user is in dashboard:**\n\n- **The user explicitly named SMS / text in this turn\'s request** (e.g. "text Sarah that the meeting moved," "SMS me when that finishes").\n- **A task you are working on explicitly specifies SMS delivery.**\n- **The recipient is someone OTHER than the primary user** (texting a family member, colleague, vendor contact on the safe-sender list).\n\n**Beyond those, this tool is for:**\n\n- **PROACTIVE outreach** = the turn was NOT triggered by a user message at all (scheduled task, watchdog event, long-running job completion).\n\nVOICE: write like an actual text message. No markdown, no headers, no bullet lists. Short and conversational.\n\nRecipient rule: pass `to` as a phone number in E.164 format (e.g. `+15551234567`). The recipient MUST be on the Twilio SMS safe-sender allowlist - sending to an unknown number is refused. Per-number `from` argument is optional; defaults to the configured default Twilio number.\n\nLimits: 1600 character maximum per send (carrier limit). Personal Twilio accounts have throughput caps; high-volume sends may be deferred or rejected by Twilio.',
+    effects: [{ kind: 'send', from: 'args.to' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2455,6 +2492,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'voice_call',
     reachesPeople: true,
     description: 'Place a phone call via Twilio. The agent (you) holds the call: the caller speaks, Twilio streams audio to the dojo, your STT transcribes, you generate a reply, your TTS speaks back over the same call. **Use sparingly**, voice calls are real-time, costly, and demand immediate attention. Prefer SMS or iMessage unless the user asked for a phone call or the situation needs it (urgent, complex back-and-forth, hands-free).\n\nThe recipient MUST be on the Twilio Voice safe-caller allowlist; sending to an unknown number is refused. Personal Twilio accounts only, no robocalls, no campaign sends. The active Cloudflare tunnel must be running so Twilio can connect the audio back to the dojo.\n\n**HOW THE CALL OPENS, IMPORTANT.** When you place an outbound call, the called party answers and speaks FIRST (usually "Hello?"). That is normal human phone etiquette. You wait, hear their hello, and THEN identify yourself and state your purpose on the very next turn (the dojo will give you a turn the moment they speak). **Do NOT pass `opening_message`** in the standard case, it gets spoken the instant the call connects, before they say anything, which makes you sound like a robocall. Leaving silence on the line until they say "Hello?" is the right move. Real people do this on every outbound call.\n\nThe `opening_message` arg is reserved for unusual cases where you really do need audio queued up at connect time, for example, when you know the recipient has asked you to leave a voicemail directly, or when answering machine detection has already resolved to "voicemail" and you are dropping a pre-composed message. In normal person-to-person calling, leave it blank.\n\n`purpose` is a short string describing why you are calling (e.g. "scheduling the Tuesday demo", "following up on the buyer meeting"). It is shown to you in the system prompt on each turn of the call so you can stay on track, and it shapes your opening self-ID once the callee says hello. Provide it for any outbound call with a specific reason.\n\nMax call duration is capped (Settings → Integrations → Twilio → Voice). Calls exceeding the cap are hung up automatically.',
+    effects: [{ kind: 'send', from: 'args.to' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2482,6 +2520,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'voice_call_end',
     reachesPeople: true,
     description: 'Hang up an active phone call you initiated (or are participating in). Use after the conversation has reached a natural conclusion or when the call needs to be terminated (recipient ended verbally but didn\'t hang up, escalating off-topic, etc.). Returns whether the hang-up succeeded.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2501,6 +2540,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'voice_call_status',
     reachesPeople: true,
     description: 'Check the status of an active phone call, or list all active calls when no call_id is given. Useful for orienting if you\'re unsure whether a call you placed is still active.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2516,6 +2556,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'image_create',
     description: 'Generate an image from a text description. The engine handles the ENTIRE delivery flow, DO NOT write any user-facing text around this tool. When you call it, the engine immediately posts a short acknowledgment ("On it.") to the chat. 10-60 s later when the image is ready, the engine posts the image directly with a short caption ("Here you go."). You do NOT need a second turn. Just call this tool and end your turn, anything you write will duplicate what the engine already posted. Do NOT mention the image generation model or any internal system to the user.',
+    effects: [{ kind: 'fs_write', from: 'derived:the calling agent uploads directory' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2544,6 +2585,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'transcribe_audio',
     description: 'Convert speech in an audio file to text. Pass ONE of: attachment_id (the fileId from a recent chat attachment, preferred when the user just shared the file), path (an absolute local path inside ~/.dojo/uploads/), or url (https only). Common input formats: mp3, wav, m4a, opus, webm, ogg, aac. Returns the transcribed text inline (no new attachment is created). The platform posts a short acknowledgment automatically; you do not need to announce that you are transcribing.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'net', from: 'args.url' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2573,6 +2615,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'tts_create',
     description: 'Generate spoken audio from text, text-to-speech (TTS). The engine handles delivery, DO NOT write any user-facing text around this tool. When you call it, the engine posts a short acknowledgment immediately. ~2-10 s later the engine delivers the audio file directly to the chat with an inline player. Just call this tool and end your turn. Do NOT mention the TTS model or any internal system to the user. This tool reads text aloud verbatim, it does NOT compose music or sound effects.',
+    effects: [{ kind: 'fs_write', from: 'derived:the calling agent uploads directory' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2596,6 +2639,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'music_create',
     description: 'Compose original music or a sound piece from a text description. This is NOT text-to-speech (use tts_create to read words aloud). music_create generates an instrumental/musical composition from a creative brief. The engine handles the ENTIRE flow: when you call it, the engine posts a brief acknowledgment to the user and returns immediately. ~10-40 s later when the track is ready, the engine posts the audio file directly to the chat with an inline player. You do NOT get a second turn, just call this tool once and end your turn. Do NOT call it again to check progress. Do NOT mention the music model or any internal system to the user.',
+    effects: [{ kind: 'fs_write', from: 'derived:the calling agent uploads directory' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2615,6 +2659,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'video_create',
     description: 'Generate a short video from a text description. Video generation is SLOW, it runs asynchronously in the background and usually takes 1 to 10 minutes. The engine handles the ENTIRE flow: when you call this tool it posts a brief acknowledgment to the user ("I\'ve started the video, I\'ll send it when it\'s ready") and returns immediately. When the video finishes, the engine posts it directly to the chat with an inline player, you do NOT get a second turn and you do NOT need to write anything. Just call this tool once and end your turn. Do NOT call it again to check progress, the user can watch progress via the indicator next to the chat input. Do NOT mention the video model or any internal system to the user.',
+    effects: [{ kind: 'fs_write', from: 'derived:the calling agent uploads directory' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2652,6 +2697,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'mouse_click',
     description: 'Move the mouse to coordinates and click. Use after screen_screenshot to identify target positions.',
+    effects: [{ kind: 'proc', from: 'derived:cliclick' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2665,6 +2711,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'mouse_move',
     description: 'Move the mouse without clicking. Useful for hovering to reveal tooltips or menus.',
+    effects: [{ kind: 'proc', from: 'derived:cliclick' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2677,6 +2724,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'keyboard_type',
     description: 'Type text or press key combinations. Use for filling forms, entering commands, or keyboard shortcuts.',
+    effects: [{ kind: 'proc', from: 'derived:cliclick' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2689,6 +2737,10 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'screen_screenshot',
     description: 'Take a screenshot and describe what is visible using a vision model, this is for YOU to perceive the screen (then act, e.g. before mouse_click to find targets). Returns a text description with approximate coordinates for interactive elements. Pass `query` to focus the description on what you\'re looking for (recommended).\n\nIMPORTANT, do NOT use this to "show the user the screen." If the user wants to SEE your live screen, watch what you are doing, or take control of this Mac remotely (common when they\'re away and need to click/approve something here), use `screen_broadcast` instead, it opens a live, interactive viewer in their canvas. screen_screenshot only gives YOU a still snapshot; it shows the user nothing.',
+    effects: [
+      { kind: 'proc', from: 'derived:screencapture' },
+      { kind: 'fs_write', from: 'derived:the screenshot temp directory' },
+    ],
     input_schema: {
       type: 'object',
       properties: {
@@ -2712,6 +2764,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'applescript_run',
     description: 'Run an AppleScript command. Use for macOS automation: opening apps, controlling windows, running Shortcuts, interacting with system features.',
+    effects: [{ kind: 'applescript', from: 'args.script' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2727,6 +2780,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'web_browse',
     description:
       'Open a headless browser to interact with web pages. Can navigate, take screenshots, click elements, fill forms, and extract content. Use for pages that require JavaScript rendering or interaction. The browser session persists across calls, navigate first, then interact.\n\nFor the `extract` action, ALWAYS pass a `goal` describing what you\'re looking for, the tool returns a focused extract (~1-2K tokens) instead of the raw page (often 30K+).',
+    effects: [{ kind: 'net', from: 'args.url' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2755,6 +2809,16 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'save_technique',
     description: '**TRAINER AGENT ONLY.** Save a reusable technique to the dojo. Other agents calling this get refused with a redirect to the trainer.\n\nThe trainer owns techniques because techniques are SHAREABLE: when one user exports a technique to another user, every support file, dependency, and external resource has to travel with it. A technique whose TECHNIQUE.md references `~/Documents/random.py` (a file the main agent dropped somewhere arbitrary) is broken on every other machine. Centralizing creation in the trainer is what keeps techniques portable by construction.\n\nWhen you (as another agent) want a technique built, send the trainer a message describing what you want, with the contents of any custom files inline. They\'ll create the technique correctly.\n\n**File-reference validation runs at save time.** Every path TECHNIQUE.md references must EITHER exist inside the technique\'s support directory (pass it in `files`) OR be declared in `dependencies` as a repo / asset / manual step that the importing trainer will fetch. References that don\'t resolve cause a structured refusal.\n\n**Drafts vs publish:** techniques save as DRAFT by default. Drafts can\'t be loaded with `use_technique`. Pass publish=true whenever the user expects it usable right away.',
+    effects: [
+      { kind: 'fs_write', from: 'args.files[].path' },
+      { kind: 'net', from: 'args.dependencies.repos[].url' },
+      { kind: 'fs_write', from: 'args.dependencies.repos[].install_to' },
+      { kind: 'net', from: 'args.dependencies.models_or_assets[].url' },
+      { kind: 'fs_write', from: 'args.dependencies.models_or_assets[].destination' },
+    ],
+    nonEffects: {
+      'dependencies.language_packages[].install_in': 'a package-manager working directory recorded in the manifest for the importing trainer to act on later; this call writes nothing there',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -2793,6 +2857,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'use_technique',
     description: 'Activate and load a technique. Prefer technique_read for browsing/searching, use_technique now returns an outline (sections + supporting files + sizes), and you call technique_read action="section" to read specific parts. Big techniques no longer truncate.\n\nWhen you load a technique, apply its actual steps rather than skipping back to cached memory. You MAY optionally call technique_acknowledge(name, summary) to record that you engaged with it, but it is not required and no tools are blocked either way.',
+    effects: [{ kind: 'fs_read', from: 'derived:the technique directory named by args.name' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2804,6 +2869,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'technique_acknowledge',
     description: 'OPTIONAL. Note that you have engaged with a technique after reading it. This is not required and nothing is blocked without it (the old acknowledgement gate was removed). Pass the technique\'s slug (or display name) and a short paraphrase of its key steps. Use it only when you want to record that you processed the material before applying it; otherwise just go straight to the work.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2816,6 +2882,10 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'technique_read',
     description: 'Read a technique with surgical precision instead of slurping the whole thing. Five actions: (1) outline [default], returns headings, line ranges, char counts, and supporting files; never truncates; ALWAYS your first call when consulting a technique. (2) section, read one section by section_name="<title>" (case-insensitive substring match) or lines="start-end"; oversize sections require explicit line ranges. (3) search, query="<term>" greps TECHNIQUE.md AND all supporting files, returns matches with file + line number + surrounding context; best path through a huge technique. (4) list_files, list the technique\'s supporting files. (5) read_file, read one supporting file by file="<path>", optional lines="start-end".\n\nWhen you read a technique, apply what it says rather than falling back to cached memory (agents used to read techniques and then ignore them). You MAY optionally call technique_acknowledge afterward to record that you engaged, but it is not required and no tools are blocked. Pattern: technique_read (one or more times to load what you need), then do the work.',
+    effects: [
+      { kind: 'fs_read', from: 'args.file' },
+      { kind: 'fs_read', from: 'derived:the technique directory named by args.name' },
+    ],
     input_schema: {
       type: 'object',
       properties: {
@@ -2834,6 +2904,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'list_techniques',
     description: 'List available techniques. Default returns compact rows (name + id + tags + state). For descriptions and usage counts on every result, pass verbose=true; for the full instructions of ONE technique, use use_technique(name).',
+    effects: [{ kind: 'fs_read', from: 'derived:the techniques directory' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2849,6 +2920,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'publish_technique',
     description: 'Publish a draft technique, making it available to all agents. **Trainer agent only**, non-trainer callers get refused with a redirect.',
+    effects: [{ kind: 'fs_write', from: 'derived:the technique directory named by args.name' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2860,6 +2932,16 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'update_technique',
     description: 'Update a technique\'s display name, description, instructions, files, or dependency manifest. Instruction changes create a version snapshot; metadata-only changes (display_name / description / dependencies) do not. **Trainer agent only**, non-trainer callers get refused with a redirect.\n\nFile-reference validation runs the same way as save_technique: if `instructions` references a path that isn\'t in the support dir AND isn\'t declared in dependencies, the update is refused.',
+    effects: [
+      { kind: 'fs_write', from: 'args.files[].path' },
+      { kind: 'net', from: 'args.dependencies.repos[].url' },
+      { kind: 'fs_write', from: 'args.dependencies.repos[].install_to' },
+      { kind: 'net', from: 'args.dependencies.models_or_assets[].url' },
+      { kind: 'fs_write', from: 'args.dependencies.models_or_assets[].destination' },
+    ],
+    nonEffects: {
+      'dependencies.language_packages[].install_in': 'a package-manager working directory recorded in the manifest for the importing trainer to act on later; this call writes nothing there',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -2887,6 +2969,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'submit_technique_for_review',
     description: 'Mark a draft technique as ready for Sensei review.',
+    effects: [{ kind: 'fs_write', from: 'derived:the technique directory named by args.name' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2898,6 +2981,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'delete_technique',
     description: 'Permanently delete a technique and all its files. **Trainer agent only**, non-trainer callers get refused with a redirect. Only use when the user explicitly asks to delete. Cannot be undone.',
+    effects: [{ kind: 'fs_delete', from: 'derived:the technique directory named by args.name' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2909,6 +2993,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'technique_list_versions',
     description: 'List the on-disk version history of a technique. Returns each version\'s number, change summary, who made it, when, and the absolute file path you can `file_read` to inspect the prior content. Use this when you (the Trainer) need to look at how a technique evolved or restore a prior version. The current TECHNIQUE.md is always the latest version; older versions live in <technique-dir>/versions/TECHNIQUE_v{N}.md.',
+    effects: [{ kind: 'fs_read', from: 'derived:the technique version directory named by args.name' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -2922,6 +3007,10 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'technique_set_placeholder',
     description: 'Fill in a {{NEEDS_FROM_USER:LABEL}} placeholder across an imported technique\'s files with a value the user provided. Use this during the setup conversation that follows a technique import: read the IMPORT_MANIFEST.json + README.md in the technique\'s directory, ask the user for each placeholder one at a time, then call this tool with the answer. After every placeholder is filled, call technique_finalize.',
+    effects: [{ kind: 'fs_write', from: 'derived:every file of the technique directory named by args.technique' }],
+    fields: {
+      'value': { secret: true },
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -2935,6 +3024,10 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'technique_finalize',
     description: 'Finalize an imported technique once every placeholder has been filled in. Removes the staged IMPORT_MANIFEST.json and flips the technique\'s state from needs_setup → draft so it can be published. Only valid after every technique_set_placeholder call has been made; will refuse if any markers remain.',
+    effects: [
+      { kind: 'fs_write', from: 'derived:the technique directory named by args.technique' },
+      { kind: 'fs_delete', from: 'derived:the staged IMPORT_MANIFEST.json of that technique directory' },
+    ],
     input_schema: {
       type: 'object',
       properties: {
@@ -2949,6 +3042,10 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'vault_remember',
     description: 'Save an important piece of knowledge to the dojo\'s long-term memory vault. Saved immediately and visible to all agents.\n\n**NEVER store credentials, API keys, tokens, passwords, secrets, or any other authentication material in the vault.** Those go in `credential_add`, they live in a separate encrypted store that never decays, never appears in vault_search or Dreamer summaries, and is read on-demand at API-call time via `credential_get`. The engine will refuse vault entries that look like credentials.\n\nWHEN THE USER EXPLICITLY ASKS YOU TO REMEMBER SOMETHING, phrases like "remember that…", "I want you to remember…", "always do X", "never do Y", "from now on, …", "make sure you always…", call this tool with `verbatim: true` and `pin: true`. Pass the user\'s instruction word-for-word in `content`. Do NOT paraphrase or compress; the user\'s exact wording is the point.\n\nFor everything else (facts you observed, decisions made, preferences inferred), write a tight summary and let the DOJO handle filler-stripping.\n\nExample (user-explicit): vault_remember({ content: "Always confirm with the user before pushing to main.", type: "preference", verbatim: true, pin: true }).\nExample (observed): vault_remember({ content: "Tunnel: Cloudflare named.", type: "fact" }).\n\nWhen a fact came from a URL, a file, or a document, pass its location in source_ref (and source_page / source_section when you know them) so you can cite it and re-open the original later. Example (with source): vault_remember({ content: "Cardiologist cleared patient for surgery.", type: "fact", source_ref: "doctor-report-2026.pdf", source_page: 3 }).',
+    effects: [],
+    nonEffects: {
+      'source_ref': 'RULING (T1): a polymorphic locator — a URL or a file/document reference — STORED as provenance on the vault entry, never dereferenced by the platform. Declares no effect today; a future reader that fetches it declares the effect here',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -2969,6 +3066,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'vault_search',
     description: 'Search the dojo\'s long-term memory vault. Two modes: `semantic` (default) uses embedding similarity, great for conceptual recall like "what does the user prefer about commit messages?". `exact` does substring matching on entry content, use when you need to find a literal string, e.g. debugging memory poisoning, finding entries that mention a specific name/phrase/typo verbatim, or auditing what got saved. Semantic search is blind to exact spelling (a query for "corp erp" returns concepts about email domains, not the literal string), so reach for `exact` whenever the question is "is this specific text anywhere in my memory?". Use vault_get(entry_id) for full content of a match, vault_update to fix incorrect entries in place, vault_forget to mark obsolete.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2985,6 +3083,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'vault_get',
     description: 'Get the full content of a specific vault entry by ID. Pairs with vault_search, search returns short snippets; expand returns the full entry when you need details.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -2999,6 +3098,7 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'vault_refresh',
     description:
       'Re-load the session-start vault snapshot mid-conversation: pinned entries + entries tagged `session_context`. Use when the long-term memory has changed (you or the user just added/edited an important entry) and you want it reflected immediately without waiting for the next session reset. Returns the freshly-loaded entries as a snapshot.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {},
@@ -3010,6 +3110,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'vault_forget',
     description: 'Mark a vault entry as obsolete. Use when information is no longer accurate or relevant. The entry is soft-deleted, not destroyed. Sensei agents only.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -3022,6 +3123,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'vault_update',
     description: 'Replace the content of an existing vault entry in place. Use this instead of vault_forget + vault_remember when you need to CORRECT an entry, the existing entry ID stays stable, embedding gets regenerated, and there is no window where two contradictory versions co-exist. Common case: an entry contains a factual error, an outdated fact, or a self-defeating "DON\'T do X" warning that is now reinforcing the bad behavior. Rewrite it as the positive correct form. Required `reason` is logged for audit.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -3035,6 +3137,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'vault_discard_archives',
     description: 'Permanently delete one or more conversation archives from vault_conversations WITHOUT extracting any vault entries from them. Use when the conversations are junk (test runs, error spam, repetitive nonsense, ephemeral chatter) that does not need to be remembered. Unlike complete_task on a Dreamer batch (which marks archives as processed because real work was done), this tool throws the archives away unread. Returns the number of archives actually deleted. Dreamer-only.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -3060,6 +3163,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'contact_remember',
     description: 'Record or update a contact in the DOJO contacts store. Upserts: if any provided email/phone/imessage handle (or display_name) matches an existing record, the new fields APPEND to that record - emails/phones/handles/tags merge with dedup; notes get timestamped and appended. If no match, a new contact is created (display_name required in that case). Use this whenever you learn something about a person the owner interacts with: "introduced by Marcus 2026-06-05", "prefers iMessage over email", "works at Acme as the buyer", a new email address, etc. Different from vault_remember because contacts is structured person-as-entity storage; use vault_remember for general facts and decisions that aren\'t about a specific person.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -3080,6 +3184,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'contact_search',
     description: 'Search the DOJO contacts store by partial match across name, preferred_name, company, role, emails, phones, imessage_handles, tags, and notes. Returns a compact one-line-per-contact list; call contact_get for the full record. Empty query returns the most recently updated contacts.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -3092,6 +3197,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'contact_list',
     description: 'List contacts in the DOJO store. Sort options: "updated" (default, newest activity first), "name" (display_name A-Z), "company". Useful for browsing rather than targeted lookup; for lookup prefer contact_search.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -3105,6 +3211,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'contact_get',
     description: 'Fetch a single contact\'s full record: all addresses, tags, notes, and provenance. Pass the contact_id from contact_search or contact_list (full UUID or 8-char prefix).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -3116,6 +3223,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'contact_update',
     description: 'Explicit field-level edit of a contact, distinct from the upsert-semantics of contact_remember. Pass mode="replace" (default) to overwrite list fields and notes with the new values, or mode="append" to merge into the existing values (same merge semantics as contact_remember).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -3137,6 +3245,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'contact_forget',
     description: 'Delete a contact from the DOJO store. Irreversible. Use only when the owner has explicitly asked to drop a contact, or for cleanup of a record you mistakenly created.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -3148,6 +3257,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'contacts_overview',
     description: 'Quick orientation: how many contacts the DOJO has on file, the top tags, and the top companies. Cheap, no args.',
+    effects: [],
     input_schema: { type: 'object', properties: {}, required: [] },
   },
 
@@ -3157,6 +3267,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'squad_share',
     description: 'Write a piece of knowledge into your squad\'s shared memory so other members can recall it. Squad-scoped (only visible to agents in the same group_id). Use for handoffs, coordination notes, shared findings, things teammates need that don\'t belong in your personal vault. Example: squad_share({ content: "Customer prefers phone calls before 5pm PT.", tags: ["customer", "comms"] }).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -3169,6 +3280,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'squad_recall',
     description: 'Search your squad\'s shared memory for relevant entries written by you or other members. Returns short snippets, call vault_get(entry_id) for full content if needed. Example: squad_recall({ query: "customer comms" }).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -3184,6 +3296,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'dreamer_run_now',
     description: 'THE tool for running a dream cycle on demand. Do NOT send_to_agent the Dreamer to ask it to dream, the Dreamer agent is reactive, not self-starting; only this tool kicks the actual extraction pipeline (process unprocessed conversation archives → extract memories into the vault → write a dream_reports row). Use whenever the user says "run the dreamer", "process my recent conversations", "consolidate memories", "wind things down", or anything similar. The cycle runs in the background and takes 30s–3min. Returns whether the cycle started + the Dreamer agent ID. Primary agent only.',
+    effects: [],
     input_schema: { type: 'object', properties: {}, required: [] },
     concurrency: 'serial',
     maxResultTokens: 1000,
@@ -3191,6 +3304,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'cost_summary',
     description: 'Get a quick spend report: today\'s total cost across all agents and the top 3 spenders by agent and by model. Use this when the user asks "what has the DOJO cost today" or similar. Primary agent only.',
+    effects: [],
     input_schema: { type: 'object', properties: {}, required: [] },
     concurrency: 'safe',
     maxResultTokens: 1500,
@@ -3198,6 +3312,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'channel_inspect',
     description: 'Snapshot of every communication channel you have active right now: which mailboxes you monitor, which you can send from, which the owner uses personally, iMessage/Teams reachability, safe-sender counts, account types. Call this when you need to answer "what mailbox should I send from?" or "do I have access to <channel>?" or when the per-turn [Channel landscape] block from a non-dashboard trigger isn\'t enough detail. Cheap, no args. On dashboard turns the landscape block is omitted to save tokens, so this is the way to look up the same info on demand.',
+    effects: [],
     input_schema: { type: 'object', properties: {}, required: [] },
     concurrency: 'safe',
     maxResultTokens: 1500,
@@ -3205,6 +3320,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'open_settings',
     description: 'Open the dashboard Settings panel to a specific tab (and optionally scroll to a section) on the user\'s screen. Use when the user asks where a setting lives or asks you to take them to it ("where do I change my voice?", "open my channel settings", "take me to where I add a provider"). This only moves the UI for a user who has the dashboard open; it changes no settings on its own. Pick the tab that holds what they asked about: platform (Dojo capacity, Ollama, system model, remote access, web search, migration, restart), providers (LLM provider API keys), models (enable models, pricing, and the image/video/TTS/music/vision/transcription model pickers), router (model routing + test), profile (your name, about-you), security (dashboard password), sensei (dreamer + healer schedules), channels (iMessage, Twilio/SMS, Google + Microsoft accounts), integrations (Plaud), voice (TTS/STT voice, speed, wake word), update (version + software update). Optionally pass `section` as the heading of the specific card to scroll to (e.g. "Hands-free wake word", "Playback speed", "Twilio", "Remote Access"), it best-effort matches a section title within the tab. To actually CHANGE a capability model yourself, prefer set_capability_model; use this when the user wants to see/change it themselves.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -3226,6 +3342,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'dashboard_navigate',
     description: 'Navigate the user\'s dashboard to a top-level page. Use when the user asks you to take them somewhere ("show me the cost dashboard", "open the tracker", "pull up my agents"). Only moves the UI for a user who has the dashboard open; changes nothing on its own. For the Settings page use open_settings instead. Pages: chat (main conversation), agents (agent roster), techniques (saved workflows), tracker (tasks + projects), memory (vault + memories), costs (spend dashboard), health (system health).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -3243,6 +3360,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'set_capability_model',
     description: 'Change which model the DOJO uses for a media/perception capability, on the user\'s behalf ("use Flux for image generation", "switch the video model to Veo", "use the on-device whisper for transcription"). Do this yourself with this tool when asked, don\'t tell the user to go change it in Settings. The model must already be added and enabled in Settings → Models and actually have that capability, if it isn\'t, this changes nothing and returns the list of valid models so you can pick correctly. Capabilities: image (the image_create tool), video (video_create), tts (tts_create / spoken audio), music (music_create), vision (the fallback model that reads images + screenshots), transcription (speech-to-text; also accepts local:whisper or local:moonshine for the on-device engines). NOTE: this is only for the platform capability models, to change the PRIMARY agent\'s own chat model, use update_agent instead.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -3264,6 +3382,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'check_for_update',
     description: 'Check whether a newer version of the DOJO platform is available, comparing the installed version against the latest release ON THE USER\'S SELECTED UPDATE CHANNEL. The dojo has two channels (set in Settings → Update): "Stable" (normal releases, the default) and "Preflight" (pre-release/test builds, versioned like 3.1.8-preflight.2). This tool reports whichever the user is on, the result states the channel, so relay it: never present a Preflight build as a normal stable release. Read-only: reports the installed version, the latest version, whether an update is available, the release notes (what changed), the channel, and when the check was last run. Reads a snapshot the engine refreshes once a day, so it answers instantly without hitting the network (the timestamp tells you how fresh it is). Use when the user asks "is there an update?", "am I on the latest version?", "what\'s in the new version?", or as a precursor to apply_update so you can tell them what they\'d be getting. If the user has set up a recurring task to check for updates, this is the tool that task calls.',
+    effects: [{ kind: 'net', from: 'fixed:the GitHub release feed for the selected channel' }],
     input_schema: { type: 'object', properties: {}, required: [] },
     concurrency: 'safe',
     maxResultTokens: 1500,
@@ -3271,6 +3390,11 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'apply_update',
     description: 'Download and install the latest DOJO platform update FROM THE USER\'S SELECTED CHANNEL (Stable or Preflight, see check_for_update), then restart the server. If the user is on Preflight this installs a pre-release/test build; if they ask to update but you suspect they want a normal release, confirm the channel first. Do this ONLY when the user explicitly asks you to update ("update the dojo", "install the new version", "go ahead and update"). The DOJO will be briefly unavailable while it restarts (a few seconds under normal supervision), so let the user know it\'s restarting. Only works on production installs, not a dev server. If already up to date it just says so. Prefer calling check_for_update first so you can confirm what\'s changing.',
+    effects: [
+      { kind: 'net', from: 'fixed:the release archive of the selected channel' },
+      { kind: 'proc', from: 'derived:unzip, rsync and npm install over the running install' },
+      { kind: 'fs_write', from: 'derived:the running install directory' },
+    ],
     input_schema: { type: 'object', properties: {}, required: [] },
     concurrency: 'serial',
     maxResultTokens: 1000,
@@ -3278,6 +3402,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'set_voice',
     description: 'Change the voice you speak with and/or its playback speed, on the user\'s behalf ("use the Bella voice", "switch to a British voice", "slow your voice down", "talk a bit faster"). Do this yourself with this tool when asked, don\'t tell the user to change it in Settings. The voice name is matched against the on-device Kokoro voices (built-in + any the user imported) first, then the Hume cloud library if cloud voice is set up; if nothing matches it returns some valid voice names instead of changing anything. Speed is 0.5–2 where 1 is normal. Provide a voice, a speed, or both. Changes take effect the next time voice mode starts.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -3298,6 +3423,7 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'set_channel',
     description: 'Turn a communication channel on or off on the user\'s behalf ("turn on the iMessage bridge", "disable SMS", "enable Twilio voice calls"). This is something you DO for the user with this tool, do NOT tell them to go flip it in the dashboard themselves; that is exactly what this tool is for. Channels: imessage (the iMessage bridge, needs a bridge recipient already configured in Settings → Channels), twilio (the Twilio integration master switch, needs Twilio credentials configured), sms (Twilio text messaging), voice_calls (Twilio phone calls). If a prerequisite is missing it tells you what to set up first rather than half-enabling a broken channel. To add someone to a channel\'s allowed-sender list, use add_safe_sender instead.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {

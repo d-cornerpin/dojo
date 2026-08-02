@@ -6,13 +6,14 @@
 // There is no upload/delete API; those happen in the Plaud app/device.
 // ════════════════════════════════════════
 
-import type { ToolDefinition } from '../agent/tools.js';
+import type { ToolDefinition } from '../agent/tools/types.js';
 import { runPlaudCommand } from './client.js';
 
 export const plaudReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'plaud_list_recordings',
     description: 'List recordings in the connected Plaud account, newest first. Returns each recording\'s id, title, date, duration, and a one-line preview. Use pagination via `page` + `page_size` if there are many recordings. For a targeted lookup by keyword, prefer plaud_search_recordings.',
+    effects: [{ kind: 'proc', from: 'derived:npx -y @plaud-ai/cli@latest (network-fetched package, run per call)' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -27,6 +28,7 @@ export const plaudReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'plaud_recent_recordings',
     description: 'List recordings from the last N days. Convenience wrapper around plaud_list_recordings for "what meetings happened this week?" style asks. Default is 7 days.',
+    effects: [{ kind: 'proc', from: 'derived:npx -y @plaud-ai/cli@latest (network-fetched package, run per call)' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -40,6 +42,7 @@ export const plaudReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'plaud_search_recordings',
     description: 'Search Plaud recordings by keyword across titles and transcript content. Scans the 500 most recent recordings. Use date filters `from` / `to` (ISO date, YYYY-MM-DD) to narrow further.',
+    effects: [{ kind: 'proc', from: 'derived:npx -y @plaud-ai/cli@latest (network-fetched package, run per call)' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -56,6 +59,7 @@ export const plaudReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'plaud_get_recording',
     description: 'Get full metadata for a single Plaud recording by ID. Returns title, date, duration, speakers, file size, and any tags. For the actual content use plaud_get_transcript or plaud_get_summary.',
+    effects: [{ kind: 'proc', from: 'derived:npx -y @plaud-ai/cli@latest (network-fetched package, run per call)' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -69,6 +73,7 @@ export const plaudReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'plaud_get_transcript',
     description: 'Get the full transcript of a Plaud recording. Returns timestamped lines with speaker labels (when available). Transcripts can be long; consider plaud_get_summary first if you only need the gist.',
+    effects: [{ kind: 'proc', from: 'derived:npx -y @plaud-ai/cli@latest (network-fetched package, run per call)' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -82,6 +87,7 @@ export const plaudReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'plaud_get_summary',
     description: 'Get the AI-generated summary for a Plaud recording. The summary is Markdown and typically includes a one-paragraph overview, key topics, and action items (when Plaud detected any). Much shorter than the full transcript - prefer this for "what was the meeting about?" questions.',
+    effects: [{ kind: 'proc', from: 'derived:npx -y @plaud-ai/cli@latest (network-fetched package, run per call)' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -95,6 +101,7 @@ export const plaudReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'plaud_get_audio_url',
     description: 'Get a temporary signed download URL for the raw audio file of a Plaud recording. URL is valid for 24 hours. Use to attach the audio to an email/Drive upload, share with the user, or pass to another tool that needs the actual audio. The URL is not a Plaud-page link - it points directly at the audio file.',
+    effects: [{ kind: 'proc', from: 'derived:npx -y @plaud-ai/cli@latest (network-fetched package, run per call)' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -108,6 +115,7 @@ export const plaudReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'plaud_account_info',
     description: 'Get the connected Plaud account\'s email and basic profile info. Useful for the agent to confirm which account it\'s reading from (e.g., when relaying meeting details to the user).',
+    effects: [{ kind: 'proc', from: 'derived:npx -y @plaud-ai/cli@latest (network-fetched package, run per call)' }],
     input_schema: { type: 'object', properties: {}, required: [] },
     concurrency: 'safe',
     maxResultTokens: 500,

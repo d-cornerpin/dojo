@@ -23,7 +23,7 @@
 // below carry no provider dependency and can be imported in isolation by tests.
 // ════════════════════════════════════════
 
-import type { ToolDefinition } from '../agent/tools.js';
+import type { ToolDefinition } from '../agent/tools/types.js';
 import { registerConcurrency, registerMaxResultTokens } from '../agent/v2/classifiers/concurrency.js';
 
 // ── Pure types (no provider / DB / format-time dependency) ──
@@ -722,6 +722,7 @@ export const EMAIL_SEARCH_TOOL: ToolDefinition = {
   name: 'email_search',
   description:
     "[DEFAULT for any 'my email / check email for X' ask] Search EVERY connected mailbox at once (agent + owner, Gmail + Outlook), results labeled by source and merged most-recent-first. Use gmail_search / outlook_search / user_gmail_search / user_outlook_search only when the user names one specific mailbox. There is no `account` parameter here (the merged view spans every mailbox); the per-mailbox tools take one.",
+  effects: [],
   input_schema: {
     type: 'object',
     properties: {

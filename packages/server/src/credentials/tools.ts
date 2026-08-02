@@ -4,7 +4,7 @@
 // for third-party services the user has them connect to.
 // ════════════════════════════════════════
 
-import type { ToolDefinition } from '../agent/tools.js';
+import type { ToolDefinition } from '../agent/tools/types.js';
 import { CREDENTIAL_FRESH_SENTINEL } from '../memory/compaction.js';
 // The value set and the declared-secret-field map live together in ONE module
 // (T5b): "which fields are secret" and "which values are secret" are the same
@@ -22,11 +22,13 @@ export const credentialsToolDefinitions: ToolDefinition[] = [
   {
     name: 'credential_list',
     description: '**This is the canonical place credentials live in the dojo.** API keys, OAuth tokens, PATs, passwords, secrets, and any other authentication material belong here — NEVER in vault_remember (the engine will refuse credential-shaped vault entries). Lists the names + descriptions of all stored credentials. **Never returns the actual credential values** - use credential_get for that. Useful at the start of a technique that needs a credential, so you know what is already saved and what you may need to ask the user for.',
+    effects: [{ kind: 'secrets', from: 'derived:the encrypted credential store' }],
     input_schema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'credential_get',
     description: 'Retrieve a credential by service name. Returns the credential payload (an object with whatever fields the agent stored - api_key, token, secret, etc.). Use this at API-call time inside a technique; do NOT echo the returned values back into chat or store them elsewhere. Every read is audit-logged with timestamp + which agent accessed it.',
+    effects: [{ kind: 'secrets', from: 'derived:the encrypted credential store' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -38,6 +40,10 @@ export const credentialsToolDefinitions: ToolDefinition[] = [
   {
     name: 'credential_add',
     description: '**This is the ONLY place credentials should be stored in the dojo. Never put API keys, tokens, passwords, or secrets in vault_remember — the engine will refuse those entries.** When the user hands you any value labeled secret/key/token/password/credential (whether for a technique you are building, a placeholder you are filling, or a service the user wants connected), store it here. Pass `credentials` as an OBJECT with whatever fields the service needs (e.g. {api_key: "..."} for a single-key API, or {api_key: "...", workspace_id: "...", secret: "..."} for a multi-field API). Description should be short but specific - what is the credential for, when did the user provide it, what service does it authenticate against. Fails if a credential for that service_name already exists - use credential_update to change an existing one.',
+    effects: [{ kind: 'secrets', from: 'derived:the encrypted credential store' }],
+    fields: {
+      'credentials': { secret: true },
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -51,6 +57,10 @@ export const credentialsToolDefinitions: ToolDefinition[] = [
   {
     name: 'credential_update',
     description: 'Update an existing credential. Pass the same service_name and the new credentials object. Optionally pass a new description; omit to leave the existing description unchanged. Use when the user rotates a token or replaces an API key.',
+    effects: [{ kind: 'secrets', from: 'derived:the encrypted credential store' }],
+    fields: {
+      'credentials': { secret: true },
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -64,6 +74,7 @@ export const credentialsToolDefinitions: ToolDefinition[] = [
   {
     name: 'credential_delete',
     description: 'Permanently delete a credential by service name. Use only when the user explicitly asks to remove it (e.g., they revoked the token, or the technique is no longer needed). Deletion is irreversible - no recycle bin.',
+    effects: [{ kind: 'secrets', from: 'derived:the encrypted credential store' }],
     input_schema: {
       type: 'object',
       properties: {

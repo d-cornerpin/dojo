@@ -9,7 +9,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createLogger } from '../logger.js';
-import type { ToolDefinition } from '../agent/tools.js';
+import type { ToolDefinition } from '../agent/tools/types.js';
 
 const logger = createLogger('tool-docs-generator');
 const TOOLS_DIR = path.join(os.homedir(), '.dojo', 'tools');

@@ -6,7 +6,7 @@
 
 import { createLogger } from '../logger.js';
 import { readToolDoc } from './index-generator.js';
-import type { ToolDefinition } from '../agent/tools.js';
+import type { ToolDefinition } from '../agent/tools/types.js';
 
 const logger = createLogger('tool-docs');
 

@@ -4,7 +4,7 @@
 // NOT available to: PM agent
 // ════════════════════════════════════════
 
-import type { ToolDefinition } from '../agent/tools.js';
+import type { ToolDefinition } from '../agent/tools/types.js';
 import { googleRead } from './client.js';
 import { formatTimeForAgent, parseFlexibleTime } from '../services/format-time.js';
 
@@ -33,6 +33,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'gmail_search',
     description: 'Search Gmail. Default returns one compact line per email (date | sender — subject + 200-char snippet + ID). For To/CC + full snippet on every result, pass verbose=true; for the full body of ONE email, use gmail_read(message_id).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -49,6 +50,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
     name: 'gmail_read',
     description:
       'Read a specific email by message ID. Returns sender, recipients, subject, date, plain-text body, and attachment list (name + ID). The body is paginated: defaults to first ~12K chars (~3K tokens). For long emails, use `offset` + `limit`. To download an attachment, use gmail_read_attachment with the attachment ID.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -65,6 +67,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
     name: 'gmail_list_attachments',
     description:
       'List attachments on a Gmail message — name, MIME type, size, and attachment ID for each. Use gmail_read_attachment with one of these IDs to download to local disk.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -78,6 +81,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'gmail_inbox',
     description: "Show recent inbox messages. Quick way to see what's new without a specific search.",
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -92,6 +96,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_agenda',
     description: "[DEFAULT for any 'my day / my schedule / what's coming up' ask] Merged agenda across EVERY connected calendar (agent + owner, Google + Microsoft), each item labeled with its source. Use calendar_agenda_ms / user_calendar_agenda / user_calendar_agenda_ms only when the user names one specific account. When a user asks about a specific local day (e.g. \"events for Wednesday\"), pass start_date + timezone so the window aligns to local midnight rather than UTC. The `account` parameter is IGNORED on this merged view (the provider-specific variants take it).",
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -108,6 +113,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_search',
     description: 'Search calendar events by text query. Defaults to your primary calendar; pass calendar_id to search a shared one. Pass start_date + timezone when constraining to a specific local day.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -125,6 +131,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_list',
     description: 'List all Google calendars you have access to, including shared calendars. Returns each calendar with its ID, name, and your access level (owner / writer / reader / freeBusyReader). Use the returned IDs with calendar_agenda, calendar_search, calendar_create, etc., to operate on a specific calendar.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {},
@@ -136,6 +143,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'drive_list',
     description: 'List files in Google Drive. Default returns one compact line per file (name + size + short type + id + date). For full mime types and timestamps on every result, pass verbose=true; for the content of ONE file, use drive_read(file_id).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -152,6 +160,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'drive_read',
     description: 'Read the content of a Google Drive file (Docs, Sheets, or text files). Returns text content paginated by character — defaults to first ~16K chars (~4K tokens). For long files, use `offset` + `limit` per the pagination trailer.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -167,6 +176,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'docs_read',
     description: 'Read the content of a Google Doc. Defaults to first ~16K chars (~4K tokens). For long docs, use `offset` + `limit` per the pagination trailer to read the rest.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -182,6 +192,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'sheets_read',
     description: 'Read data from a Google Sheets spreadsheet. Defaults to first ~16K chars (~4K tokens) of the rendered rows. For large sheets prefer narrowing via `range`; for very wide rendered output also use `offset` + `limit` per the pagination trailer.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -198,6 +209,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'gmail_list_labels',
     description: 'List all of the user\'s Gmail labels (system + custom). Use this before calling gmail_label so you know which labels actually exist on this account. Returns each label\'s ID and name; system labels (INBOX, STARRED, SPAM, etc.) are flagged.',
+    effects: [],
     input_schema: { type: 'object', properties: {}, required: [] },
     concurrency: 'safe',
     maxResultTokens: 1500,
@@ -205,6 +217,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'drive_versions_list',
     description: 'List the version history of a Google Drive file. Drive keeps automatic versions for ~30 days; pinned versions are kept indefinitely. Returns each version\'s ID, modified time, size, and whether it\'s pinned (keepForever).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -218,6 +231,7 @@ export const googleReadToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_freebusy',
     description: 'Check free/busy availability for one or more people across Google Calendars over a time window. Returns busy time blocks per attendee so you can pick a slot when everyone is free. Use this BEFORE proposing a meeting time - much cheaper than calendar_create + retry on conflicts.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {

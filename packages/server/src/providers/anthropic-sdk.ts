@@ -5,7 +5,7 @@
 // ════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
-import type { ToolDefinition } from '../agent/tools.js';
+import type { ToolDefinition } from '../agent/tools/types.js';
 
 const logger = createLogger('agent-sdk');
 

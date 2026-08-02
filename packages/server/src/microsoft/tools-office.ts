@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { ToolDefinition } from '../agent/tools.js';
+import type { ToolDefinition } from '../agent/tools/types.js';
 import { getValidAccessToken } from './auth.js';
 import { logMicrosoftActivity } from './activity-log.js';
 import { broadcast } from '../gateway/ws.js';
@@ -475,6 +475,10 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_create_word_document',
     description: 'Create a Word document (.docx) with formatted content. When Microsoft is connected, the file uploads to OneDrive and you get back a file ID + share link (and the file_id-driven edit tools — append, insert, replace, etc. — become usable). When Microsoft is NOT connected, the file is saved locally under your agent uploads dir and the result tells you the absolute path — and the Word edit tools (replace / insert / delete / append) work on that LOCAL path directly (pass path="..."), so you NEVER need to regenerate a document just to make a small change.\n\nThe document is composed of `content` blocks (paragraphs, headings, tables, lists, images, page breaks, table of contents). Optional top-level fields control page setup, default font, headers, footers, footnotes, and multi-column layouts.\n\nDefaults: US Letter, 1" margins, Arial 12pt, full-width tables with light-blue header row and grey borders. You only need to specify these if you want to override the default.\n\n**For long documents — use chunked create + append.** Everything you write into the `content` array counts against your model\'s output token budget (typically 8K-32K tokens depending on which model is in play). A single multi-page document with rich blocks (paragraphs, tables, lists, formatting) can blow that budget mid-tool-call and the call will truncate / fail. The correct pattern for anything longer than ~3-5 dense pages: open the doc with this tool carrying the first section (title page, intro, opening section), then use **office_append_to_word_document** for each subsequent chunk. The file_id and share link stay alive across appends; the doc grows in place. Plan for this upfront — don\'t try to cram a whole report into one call.\n\nKey rules the renderer follows for you (no manual handling needed):\n- Tables get proper widths and cell margins automatically — no more 1-character-wide columns.\n- Bullet/numbered lists use real Word list semantics, not unicode bullet characters.\n- Headings include outlineLevel so Word\'s navigation pane and Table of Contents work.\n- Page breaks are wrapped in valid paragraphs.\n- Cell text can be a plain string; only wrap it in a cell object when you actually need per-cell formatting. Plain strings save a lot of output budget.',
+    effects: [{ kind: 'fs_write', from: 'args.filename' }, { kind: 'fs_read', from: 'args.content[].path' }],
+    nonEffects: {
+      'content[].runs[].url': 'stored as a hyperlink target inside the document; nothing fetches it',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -632,6 +636,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_append_to_word_document',
     description: 'Append content to the END of an existing Word document — a LOCAL .docx (pass path="...") or one on OneDrive (pass file_id). The original content is preserved. For inserting at a specific position, use office_insert_in_word_document instead.\n\n**This is the natural continuation tool for long documents.** Because every block you pass to office_create_word_document counts against your model\'s per-call output token budget, multi-page docs (anything past ~3-5 dense pages of content) reliably overflow a single tool call. The shipping pattern: open the doc with office_create_word_document carrying the first chunk (title, intro, opening section), then call this tool once per subsequent chunk until the doc is complete. Each append is an independent tool call with its own output budget, so a 30-page report becomes ~5-10 sequential append calls, each well within budget. No content limit per call from us — only the model\'s output cap, which resets per call.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -649,6 +654,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_get_word_document_outline',
     description: 'Read the structure of an existing Word document: a list of blocks (paragraphs, headings, tables) with zero-based index numbers and a short text preview of each. Use this BEFORE office_insert_in_word_document or office_delete_block_in_word_document to know which index to target. For the actual content of the document, use office_read_word_document instead.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -661,6 +667,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_read_word_document',
     description: 'Read the FULL text content of a Word document (.docx). Returns headings, paragraphs, and table contents in document order — this is the read-equivalent of file_read for .docx files. Supports pagination via offset+limit (block-indexed) for large documents. Use this when the user asks you to read, summarize, quote, or extract content from a Word doc; use office_get_word_document_outline only when you need to know block indexes for an edit operation.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -678,6 +685,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_replace_in_word_document',
     description: 'Find and replace text throughout an existing Word document. Preserves formatting. Limitation: the find string must be contained within a single formatted run — works for unformatted text or text in one consistent style; cannot match text that spans bold/italic boundaries.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -692,6 +700,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_insert_in_word_document',
     description: 'Insert content blocks at a specific position in an existing Word document. The position is a zero-based index — call office_get_word_document_outline first to know which index to target. To insert at the very beginning use position 0; to insert before the third block use position 2.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -710,6 +719,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_delete_block_in_word_document',
     description: 'Delete one or more blocks from an existing Word document by zero-based index. Use office_get_word_document_outline first to know which indexes to target. Can delete a single block or a range. Indexes refer to the document BEFORE the delete — to delete blocks 5, 6, and 7, pass start=5, count=3.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -724,6 +734,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_get_spreadsheet_range',
     description: 'Read a range of cells from an existing Excel spreadsheet. Works on a LOCAL .xlsx (pass path="...") or one on OneDrive (pass file_id). Returns the cell values as a 2D array. Use this to inspect data before editing.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -738,6 +749,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_write_spreadsheet_range',
     description: 'Write values to a specific range in an existing Excel spreadsheet — true in-place edit. Works on a LOCAL .xlsx (pass path="...") or one on OneDrive (pass file_id). Do NOT recreate the whole workbook to change a few cells.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -753,6 +765,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_append_spreadsheet_rows',
     description: 'Append rows to the end of an existing worksheet (after the last used row). True in-place edit. Works on a LOCAL .xlsx (pass path="...") or one on OneDrive (pass file_id).',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -767,6 +780,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_add_sheet',
     description: 'Add a new worksheet to an existing Excel workbook. True in-place edit. Works on a LOCAL .xlsx (pass path="...") or one on OneDrive (pass file_id).',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -780,6 +794,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_delete_sheet',
     description: 'Delete a worksheet from an existing Excel workbook. Cannot delete the only sheet. Works on a LOCAL .xlsx (pass path="...") or one on OneDrive (pass file_id).',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -793,6 +808,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_create_spreadsheet',
     description: 'Create an Excel spreadsheet (.xlsx). When Microsoft is connected, the file uploads to OneDrive (file_id + share link returned, file_id-driven workbook edit tools usable). When Microsoft is NOT connected, the file is saved locally under your agent uploads dir and the result tells you the absolute path; the Graph workbook tools aren\'t available against that path.\n\n**Cells, not columns.** Everything — values, formulas, styling, widths — goes through the `sheets[].rows` 2D array. There is NO sheet-level `formulas`, `columns`, `header_row`, or `currency_format` field — if you pass any of those, the call will be REJECTED with a corrective error. Column widths live on `sheets[].column_widths`; per-row / per-cell style lives inside the row cells.\n\nEach cell is either a plain primitive (string / number / boolean) OR an object with rich properties. Example: a formula cell looks like `{ formula: "=SUM(B2:B9)", number_format: "$#,##0" }`. A currency input looks like `{ value: 150000, number_format: "$#,##0", font: { color: "0070C0" } }` (blue inputs by financial-model convention). A percent looks like `{ formula: "=B4/B2", number_format: "0.0%" }`.\n\nCell object full surface: `{ value, formula, number_format, font: { name, size, bold, italic, underline, color }, fill_hex, align: "left"|"center"|"right"|"justified", v_align, border: "all"|"top"|"bottom"|"left"|"right"|"none", wrap_text, comment, hyperlink }`. Leading "=" on `formula` is optional.\n\nPer-sheet you can also set `column_widths` (array of numbers in Excel character units, e.g. [22, 14, 14, 14]), `freeze_rows`, `freeze_cols`, `default_header_row` (auto-styles row 1 with bold + light-blue fill — true by default), `zoom_pct`, `hidden`.\n\nKey defaults the renderer applies:\n- The first row gets bold + light-blue fill automatically unless `default_header_row: false` is passed.\n- Numbers stay numeric (SUM etc. work); strings stay text.\n- Common financial-model color convention: blue inputs (color "0070C0"), black formulas (default), green cross-sheet refs (color "00B050"), red external refs (color "C00000"), yellow assumption fill ("FFF2CC").\n- Number formats: "$#,##0;($#,##0);-" for currency, "0.0%" for percentages, "0.00x" for multiples, "yyyy-mm-dd" for dates.',
+    effects: [{ kind: 'fs_write', from: 'args.filename' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -831,6 +847,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_get_presentation_outline',
     description: 'Read the structure of an existing PowerPoint: a list of slides with index numbers and the title text of each. Use this BEFORE office_insert_slide or office_delete_slide. For the actual slide content, use office_read_presentation instead.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -842,6 +859,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_read_presentation',
     description: 'Read the FULL text content of a PowerPoint deck (.pptx) on OneDrive — title and body text per slide. This is the read-equivalent of file_read for .pptx files. Supports pagination via offset+limit (slide-indexed) for large decks. Use this when the user asks you to read, summarize, quote, or extract content from a PowerPoint; use office_get_presentation_outline only when you need slide indexes for an edit operation.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -858,6 +876,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_replace_in_presentation',
     description: 'Find and replace text across all slides in an existing PowerPoint. Same limitation as the Word equivalent: matches text contained within a single formatted run. File ID and share links preserved.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -871,6 +890,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_insert_slide',
     description: 'Insert a new slide at a specific position (zero-based) in an existing PowerPoint. Existing slides shift down. New slide uses a simple title + body layout.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -885,6 +905,7 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_delete_slide',
     description: 'Delete a slide from an existing PowerPoint by zero-based index. Remaining slides shift up.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -897,6 +918,15 @@ export const officeToolDefinitions: ToolDefinition[] = [
   {
     name: 'office_create_presentation',
     description: 'Create a PowerPoint presentation (.pptx). When Microsoft is connected, the file uploads to OneDrive (file_id + share link returned, file_id-driven slide edit tools usable). When Microsoft is NOT connected, the file is saved locally under your agent uploads dir and the result tells you the absolute path; the file_id-driven edit tools aren\'t available against that path.\n\nThe deck has an optional `theme` (colors, fonts, slide size) and an array of `slides`. Each slide picks a `layout` preset (title / content / two_column / comparison / big_stat / image / blank) that auto-places common content (title, body, bullets), OR provides explicit `elements[]` (text boxes, shapes, images, tables) at exact x/y/w/h positions. Both can be mixed on the same slide — layout-driven content renders first, free-form elements go on top.\n\nLayouts:\n- `title`: centered hero title + subtitle. Use for the opening slide.\n- `content`: title at top + body underneath. If `body` is a string[], renders as bullets.\n- `two_column`: title + two side-by-side bodies (`body_left`, `body_right`). Both can be string[] for bullets.\n- `comparison`: like two_column but adds a vertical accent divider between columns. Use for pros/cons, before/after, option A vs B.\n- `big_stat`: huge centered statistic (`stat_value`, e.g. "$2.4M") with optional small `title` above and `stat_label` below.\n- `image`: title + centered image (path or URL) + optional caption (body).\n- `blank`: no auto-placed content; use `elements[]` exclusively for fully custom slides.\n\nText content fields (`title`, `body`, `body_left`, etc., and the `text` field of a text-element) accept three shapes: a plain string, an array of strings (renders as bullets / multiple lines depending on context), or an array of run objects `{text, bold, italic, underline, color, size, font, break, url}` for mixed formatting.\n\nSpeaker notes go on `notes` per slide. Slide background can be overridden via `background_hex`.',
+    effects: [
+      { kind: 'fs_write', from: 'args.filename' },
+      { kind: 'fs_read', from: 'args.slides[].image_path' },
+      { kind: 'fs_read', from: 'args.slides[].elements[].path' },
+    ],
+    nonEffects: {
+      'slides[].image_url': 'handed to the deck builder as a remote image reference recorded in the generated file; this call does not fetch it',
+      'slides[].elements[].url': 'handed to the deck builder as a remote image reference recorded in the generated file; this call does not fetch it',
+    },
     input_schema: {
       type: 'object',
       properties: {

@@ -3,7 +3,7 @@
 // Available to: primary agent ONLY
 // ════════════════════════════════════════
 
-import type { ToolDefinition } from '../agent/tools.js';
+import type { ToolDefinition } from '../agent/tools/types.js';
 import { msGraphRead, msGraphWrite, calendarPrefix, drivePrefix } from './client.js';
 import { writeToolReceipt } from '../receipts/store.js';
 import { getPrimaryAgentName } from '../config/platform.js';
@@ -24,6 +24,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     name: 'outlook_send',
     reachesPeople: true,
     description: 'Send an email from the connected Microsoft account (Outlook). Supports attachments, pass an array of absolute local file paths. Files ≤3MB attach inline; anything larger auto-uploads to OneDrive (folder "DOJO Email Attachments/<YYYY-MM>") and the recipient gets a shareable link appended to the body.',
+    effects: [{ kind: 'send', from: 'args.to' }, { kind: 'fs_read', from: 'args.attachments[]' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -40,6 +41,10 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     name: 'outlook_reply',
     reachesPeople: true,
     description: 'Reply to an existing Outlook email thread. **As of v2.7.24, in-thread replies to "Re:" messages from known correspondents auto-route via the engine, you do NOT need to call this tool for those.** Just write your reply text; the engine sends it on the same thread. Call this tool when: replying to a DIFFERENT thread than the inbound, replying to a notification that the engine did NOT auto-route (e.g., a new email rather than a "Re:"), or when you need attachments / reply_all behavior. Supports attachments, same rules as outlook_send (3MB inline threshold per file, overflow to OneDrive link).',
+    effects: [
+      { kind: 'send', from: 'derived:the sender of args.message_id' },
+      { kind: 'fs_read', from: 'args.attachments[]' },
+    ],
     input_schema: {
       type: 'object',
       properties: {
@@ -55,6 +60,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     name: 'outlook_forward',
     reachesPeople: true,
     description: 'Forward an Outlook email to new recipients. The original message\'s attachments are preserved automatically by Graph. You can also add NEW attachments via the `attachments` parameter; same 3MB per-file threshold applies (overflow → OneDrive link).',
+    effects: [{ kind: 'send', from: 'args.to' }, { kind: 'fs_read', from: 'args.attachments[]' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -69,6 +75,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_create_ms',
     description: 'Create a new Microsoft Calendar event. Defaults to your default calendar; pass calendar_id to add to a shared calendar where you have write access (use calendar_list_ms to find IDs and check canEdit). Pass the event name as `title` (preferred) - `subject` (Microsoft API field name) and `summary` (Google API field name) are also accepted as aliases.',
+    effects: [{ kind: 'send', from: 'args.attendees[]' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -88,6 +95,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_update_ms',
     description: 'Update an existing Microsoft Calendar event. Pass calendar_id if the event lives on a shared calendar. Pass the new event name as `title` (preferred); `subject` and `summary` are accepted aliases.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -106,6 +114,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_delete_ms',
     description: 'Delete a Microsoft Calendar event. Pass calendar_id if the event lives on a shared calendar.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -118,6 +127,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'onedrive_create_folder',
     description: 'Create a new folder. Defaults to your personal OneDrive root; pass drive_id to create in a shared OneDrive item or SharePoint document library.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -131,6 +141,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'onedrive_upload',
     description: 'Upload a file. Defaults to your personal OneDrive; pass drive_id to upload to a shared drive or SharePoint library. Handles files of any size using resumable upload sessions.',
+    effects: [{ kind: 'fs_read', from: 'args.file_path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -145,6 +156,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'teams_create_chat',
     description: 'Create a new Teams 1:1 or group chat. Returns the chat_id so you can immediately send a message with teams_send_message. Use this when you need to message someone for the first time and do not have a chat_id yet. Requires a Microsoft work/school account (Entra ID).',
+    effects: [{ kind: 'send', from: 'args.members[]' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -165,6 +177,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     name: 'teams_send_message',
     reachesPeople: true,
     description: 'Send a message to a Teams chat. **As of v2.7.24, replies to inbound Teams DMs auto-route via the engine, you do NOT need to call this tool to reply.** Just write your reply text; the engine sends it back to the inbound chat.\n\n**HARD RULE, When the primary user is actively talking to you on dashboard, DO NOT call this tool to message them.** Their reply belongs in the dashboard. Calling teams_send_message to "also share this on Teams" while they\'re in dashboard is wrong; the engine will refuse.\n\nCall this tool only when:\n\n- **Starting a new chat** with someone (use teams_create_chat first if you don\'t have a chat_id)\n- **Replying to a DIFFERENT chat** than the inbound that triggered this turn\n- **Sending in a group chat** where you\'ve decided to participate proactively\n- **PROACTIVE outreach** where the turn was NOT triggered by a user message at all (scheduled task, watchdog event, etc.), "proactive" does NOT mean "I am choosing to additionally send via another channel"\n\nRequires a Microsoft work/school account (Entra ID). Not available on personal Microsoft accounts.',
+    effects: [{ kind: 'send', from: 'derived:the members of args.chat_id' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -177,6 +190,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'onedrive_share',
     description: 'Share a file or folder with someone via a sharing link or direct permission. Defaults to your personal OneDrive; pass drive_id to share an item on a shared drive or SharePoint library (subject to your permissions there).',
+    effects: [{ kind: 'send', from: 'args.email' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -192,6 +206,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_mark_read',
     description: 'Mark an Outlook email as read or unread.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -204,6 +219,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_delete',
     description: 'Delete an Outlook email (moves to Deleted Items, not permanent).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -215,6 +231,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_download_attachment',
     description: 'Download an email attachment to local disk. Use outlook_list_attachments first to get the attachment ID.',
+    effects: [{ kind: 'fs_write', from: 'args.save_path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -228,6 +245,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'teams_download_attachment',
     description: 'Download a Teams chat-message attachment to local disk. Most Teams attachments are SharePoint-backed file references; this tool resolves the share link and saves the bytes. Use teams_list_attachments first to discover the attachment ID. Returns the saved path plus a follow-up hint based on file type.',
+    effects: [{ kind: 'fs_write', from: 'args.save_path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -242,6 +260,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_respond_invite_ms',
     description: 'Accept, decline, or tentatively accept a Microsoft Calendar meeting invite (RSVP to an event you were invited to). For accepting access to someone else\'s SHARED CALENDAR, use calendar_accept_share_ms instead.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -255,6 +274,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_accept_share_ms',
     description: "Accept a pending calendar-sharing invitation email (someone shared their calendar with you). Use calendar_share_invites_ms first to find the message_id of the pending invite. After accepting, the shared calendar appears in calendar_list_ms and can be operated on via the calendar_id parameter on the other Microsoft calendar tools. Microsoft Graph's programmatic acceptance support is limited, if this tool returns an unsupported error, the user will need to accept via the Outlook web/desktop UI; once accepted there, the calendar is accessible via the same tools.",
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -266,6 +286,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'onedrive_delete',
     description: 'Delete a file or folder. Defaults to your personal OneDrive; pass drive_id for a shared drive or SharePoint library.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -278,6 +299,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'onedrive_move',
     description: 'Move or rename a file or folder. Provide new_name to rename, new_parent_id to move, or both. Defaults to your personal OneDrive.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -292,6 +314,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'onedrive_upload_batch',
     description: 'Upload multiple files in a single tool call. Defaults to your personal OneDrive; pass drive_id to upload to a shared drive or SharePoint library. Handles files of any size. Returns a summary of successes and failures.',
+    effects: [{ kind: 'fs_read', from: 'args.file_paths[]' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -309,6 +332,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'online_meeting_create',
     description: "Create a Teams online meeting and get a join URL. Use this when you need to give someone a Teams link, typically right before calendar_create_ms so the meeting URL can be added to the event description. Subject, start, and end are required.",
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -322,6 +346,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'online_meeting_update',
     description: 'Update a Teams online meeting (subject, start, end). The join URL stays the same.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -336,6 +361,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'online_meeting_delete',
     description: 'Delete a Teams online meeting. The join URL becomes invalid. Use this when canceling a meeting you previously created with online_meeting_create.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -348,6 +374,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
     name: 'teams_send_channel_message',
     reachesPeople: true,
     description: 'Post a message to a Microsoft Teams channel. Requires Entra ID. Use teams_list_teams then teams_list_channels to get the IDs.',
+    effects: [{ kind: 'send', from: 'derived:the members of args.channel_id' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -362,6 +389,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_categories_set',
     description: 'Set the Outlook color categories on an email. Replaces all existing categories on the message with the list you provide; pass an empty array to clear all categories. Category names are user-defined; common defaults include "Red Category", "Yellow Category", etc. Categories work cross-Outlook (web, desktop, mobile).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -375,6 +403,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'onedrive_versions_restore',
     description: 'Restore an old version of a OneDrive file. The current version is preserved as a new version, so this is non-destructive. Use onedrive_versions_list to find version IDs.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -388,6 +417,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_create_folder',
     description: 'Create a new mail folder in Outlook. Pass `name` for the display name; optionally pass `parent_folder_id` to nest it inside an existing folder (otherwise it lives at the top level). Use outlook_list_folders to find parent IDs.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -400,6 +430,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'outlook_move_to_folder',
     description: 'Move an Outlook email into a specific folder. Get folder IDs from outlook_list_folders. The original email ID becomes invalid; the response contains the new ID under the destination folder.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -413,6 +444,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'tasks_create_list',
     description: 'Create a new Microsoft To Do task list (e.g., "Groceries", "Project Foo"). Returns the new list ID for immediate use with tasks_create. Use sparingly: most users only need their default list plus a small number of named lists.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -424,6 +456,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'tasks_create',
     description: 'Create a Microsoft To Do task. Defaults to the user\'s primary "Tasks" list; pass list_id to target a specific list (get IDs from tasks_list_lists). Title accepts aliases `title`, `summary`, `subject`. Optionally set body (description), due date (ISO 8601), and importance (low/normal/high).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -441,6 +474,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'tasks_update',
     description: 'Update a Microsoft To Do task. Pass list_id (or omit to use the default list) plus task_id, then any fields you want to change. Title accepts aliases `title`/`summary`/`subject`. To set a status (notStarted/inProgress/completed/waitingOnOthers/deferred), use the `status` field; to mark complete from "open", tasks_complete is shorter.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -460,6 +494,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'tasks_complete',
     description: 'Mark a Microsoft To Do task as completed. Pass task_id and (optionally) list_id. Convenience wrapper around tasks_update with status="completed".',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -472,6 +507,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'tasks_delete',
     description: 'Delete a Microsoft To Do task. Pass task_id and (optionally) list_id. Deletion is permanent; if you might want it back, use tasks_complete instead.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -485,6 +521,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'contacts_create',
     description: 'Create a contact in the user\'s Microsoft Outlook address book. Provide at minimum a name (use `name`, `display_name`, or first_name + last_name). Email and phone accept either a single string (most common - sets the primary entry) or an array for multiples. Company, job title, and notes optional.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -506,6 +543,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'contacts_update',
     description: 'Update an existing Microsoft contact by ID. Same field rules as contacts_create. Only pass the fields you want to change; everything else is left alone. Pass `email=""` (or similar empty) to CLEAR a field.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -528,6 +566,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'contacts_delete',
     description: 'Delete a contact from the user\'s Microsoft Outlook address book. Permanent.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -540,6 +579,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'onenote_create_page',
     description: 'Create a new page in a OneNote section. Pass section_id (from onenote_list_sections) plus a title and the body. Body can be either plain text (auto-wrapped as a paragraph) or raw HTML (use html=true to skip wrapping). OneNote stores pages as HTML; the title shows up as the page heading.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -554,6 +594,7 @@ export const microsoftWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'onenote_append_page',
     description: 'Append content to an existing OneNote page. OneNote uses a PATCH command pattern: pass the page_id and the content to append (plain text or HTML). Useful for journals, ongoing notes, status logs. Pass html=true to append raw HTML, otherwise body is wrapped as a plain-text paragraph.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {

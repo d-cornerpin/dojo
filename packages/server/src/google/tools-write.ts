@@ -3,7 +3,7 @@
 // Available to: primary agent ONLY
 // ════════════════════════════════════════
 
-import type { ToolDefinition } from '../agent/tools.js';
+import type { ToolDefinition } from '../agent/tools/types.js';
 import { googleRead, googleWrite } from './client.js';
 import { writeToolReceipt } from '../receipts/store.js';
 import {
@@ -30,6 +30,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
     name: 'gmail_send',
     reachesPeople: true,
     description: 'Send an email from the connected Google account. Supports attachments, pass an array of absolute local file paths. Files totalling up to 25MB go inline; anything over auto-uploads to your Google Drive (folder "DOJO Email Attachments/<YYYY-MM>") and the recipient gets a shareable link appended to the body.',
+    effects: [{ kind: 'send', from: 'args.to' }, { kind: 'fs_read', from: 'args.attachments[]' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -47,6 +48,10 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
     name: 'gmail_reply',
     reachesPeople: true,
     description: 'Reply to an existing email thread. **As of v2.7.24, in-thread replies to "Re:" messages from known correspondents auto-route via the engine, you do NOT need to call this tool for those.** Just write your reply text; the engine sends it on the same thread. Call this tool when: replying to a DIFFERENT thread than the inbound, replying to a notification that the engine did NOT auto-route, or when you need attachments / reply_all behavior. Supports attachments, same rules as gmail_send (25MB inline cap, overflow to Drive link).',
+    effects: [
+      { kind: 'send', from: 'derived:the sender of args.message_id' },
+      { kind: 'fs_read', from: 'args.attachments[]' },
+    ],
     input_schema: {
       type: 'object',
       properties: {
@@ -62,6 +67,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
     name: 'gmail_forward',
     reachesPeople: true,
     description: 'Forward an email to new recipients. The original message\'s attachments are preserved automatically. You can also add NEW attachments via the `attachments` parameter; same 25MB inline cap applies to the combined total (original + new), with Drive spillover for any overflow.',
+    effects: [{ kind: 'send', from: 'args.to' }, { kind: 'fs_read', from: 'args.attachments[]' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -77,6 +83,10 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
     name: 'gmail_read_attachment',
     description:
       'Download an attachment from a Gmail message to local disk. Use gmail_list_attachments (or gmail_read, which lists them) to find the attachment_id first. Saves to ~/.dojo/uploads/<your-agent-id>/ by default; override with save_path. Returns the absolute path so you can pass it to file_read, show_to_user, etc.',
+    effects: [
+      { kind: 'fs_write', from: 'args.save_path' },
+      { kind: 'fs_write', from: 'args.filename' },
+    ],
     input_schema: {
       type: 'object',
       properties: {
@@ -93,6 +103,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'gmail_label',
     description: 'Add or remove labels from an email (move to folders, archive, etc.). Call gmail_list_labels first if you do not know what custom labels exist on the account.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -106,6 +117,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'gmail_create_label',
     description: 'Create a new Gmail label (the agent-equivalent of "make a new folder"). Returns the label\'s ID so you can pin further work to it. Use sparingly; check gmail_list_labels first to avoid duplicates.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -117,6 +129,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'gmail_delete_label',
     description: 'Delete a Gmail label. Removes the label from every email that has it (the emails themselves are NOT deleted). Permanent. Use gmail_list_labels to find the label ID first.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -128,6 +141,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_create',
     description: 'Create a new calendar event. Defaults to your primary calendar; pass calendar_id to add to a shared calendar where you have write access (use calendar_list to find IDs and check accessRole). Pass the event name as `title` (preferred) - `summary` (Google API name) and `subject` (Microsoft API name) are also accepted as aliases.',
+    effects: [{ kind: 'send', from: 'args.attendees[]' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -152,6 +166,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_update',
     description: 'Update an existing calendar event. Pass calendar_id if the event lives on a shared calendar. Pass the new event name as `title` (preferred); `summary` and `subject` are accepted aliases.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -171,6 +186,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_delete',
     description: 'Delete a calendar event. Pass calendar_id if the event lives on a shared calendar.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -183,6 +199,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_respond_invite',
     description: 'Accept, decline, or tentatively accept a Google Calendar meeting invite (RSVP to an event you were invited to). For accepting access to someone else\'s SHARED CALENDAR, use calendar_subscribe instead.',
+    effects: [{ kind: 'send', from: 'derived:the organizer of args.event_id' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -198,6 +215,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_subscribe',
     description: "Subscribe to a Google calendar that's been shared with you (adds it to your calendar list so calendar_list shows it and read/write tools can target it). The owner must have already shared the calendar with this account; this tool just accepts/registers that share. To find the calendar_id, look in the share-invitation email, it's typically the owner's email address or a specific calendar ID. For RSVPing to meeting invites use calendar_respond_invite instead.",
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -209,6 +227,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'calendar_unsubscribe',
     description: 'Remove a calendar from your calendar list (you stop seeing/syncing it). Does NOT delete the calendar, only removes the subscription. Re-subscribe later with calendar_subscribe.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -220,6 +239,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'drive_upload',
     description: 'Upload a file from the local machine to Google Drive. If this file is a deliverable meant for the user/owner, prefer user_drive_upload so it lands directly in their Drive where they can see it.',
+    effects: [{ kind: 'fs_read', from: 'args.file_path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -233,6 +253,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'drive_create_folder',
     description: 'Create a folder in Google Drive (get-or-create: if a folder with the same name already exists under the same parent, that existing folder is returned instead of making a duplicate). Returns the folder ID and its shareable URL.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -245,6 +266,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'drive_share',
     description: 'Share a Google Drive file or folder.\n\nFor "anyone with the link" sharing: pass audience: "anyone", DO NOT pass "anyone" as the email value, that will fail. Email-share is only used when audience is "user" (the default).\n\nExamples:\n  • Share with a specific person:  { file_id, email: "alice@example.com", role: "reader" }\n  • Share via link (no email):     { file_id, audience: "anyone", role: "reader" }',
+    effects: [{ kind: 'send', from: 'args.email' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -264,6 +286,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'drive_delete',
     description: 'Delete a Google Drive file (or folder). Works for any Drive file: docs, sheets, slides, forms, uploads. Defaults to TRASH (recoverable for 30 days from the Drive trash UI). Pass permanent: true to skip trash and delete immediately, irreversible.\n\nNote: Forms are stored as Drive files. To delete a form, pass its form_id as file_id here. The Forms API itself has no delete endpoint.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -276,6 +299,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'drive_rename',
     description: 'Rename a Google Drive file or folder. Pass file_id and new_name. Cosmetic - does not change the file ID or path. Use drive_move to relocate.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -288,6 +312,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'drive_move',
     description: 'Move a Google Drive file or folder to a different parent folder. Pass file_id plus new_parent_id (the destination folder ID). Optionally pass old_parent_id to remove from a specific folder (if not provided, Drive removes from all current parents - simpler in 99% of cases).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -301,6 +326,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'docs_create',
     description: 'Create a new Google Doc with optional initial content. If the doc is a deliverable meant for the user/owner, prefer user_docs_create so it lands directly in their Drive where they can see it.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -313,6 +339,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'docs_find_replace',
     description: 'Find and replace text in a Google Doc, globally. All occurrences of `find` are replaced with `replace`. Optional match_case (default false = case-insensitive). Returns the number of replacements made.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -327,6 +354,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'docs_insert_text',
     description: 'Insert text into a Google Doc at a specific character index. Index 1 is the very start of the body. To append, use docs_edit (simpler) or pass a high index. Get current document length by reading the doc first.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -340,6 +368,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'docs_delete_range',
     description: 'Delete a range of content from a Google Doc by character indices. The body starts at index 1. Inclusive of start, exclusive of end (matches Google Docs convention).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -353,6 +382,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'docs_edit',
     description: 'Append text to an existing Google Doc.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -365,6 +395,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'sheets_create',
     description: 'Create a new Google Sheets spreadsheet. If the sheet is a deliverable meant for the user/owner, prefer user_sheets_create so it lands directly in their Drive where they can see it.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -377,6 +408,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'sheets_add_sheet',
     description: 'Add a new sheet (tab) to an existing Google Sheets spreadsheet. Returns the new sheet ID, which you need for sheets_delete_sheet or sheets_format calls that target this tab.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -389,6 +421,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'sheets_delete_sheet',
     description: 'Delete a sheet (tab) from a Google Sheets spreadsheet. Pass the numeric sheet_id (NOT the tab name). To find sheet IDs, read the spreadsheet metadata via sheets_read or sheets_add_sheet (which returns IDs).',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -401,6 +434,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'sheets_format',
     description: 'Apply formatting to a range of cells in Google Sheets. Supports bold/italic/underline, text color, background color (hex strings like "#FF0000"), horizontal alignment, and number format. Pass only the properties you want to change; others are left alone.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -420,6 +454,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'sheets_append',
     description: 'Append a row of data to a Google Sheets spreadsheet.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {
@@ -433,6 +468,7 @@ export const googleWriteToolDefinitions: ToolDefinition[] = [
   {
     name: 'sheets_write',
     description: 'Write data to specific cells in a Google Sheets spreadsheet.',
+    effects: [],
     input_schema: {
       type: 'object',
       properties: {

@@ -25,7 +25,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 import { createLogger } from '../logger.js';
-import type { ToolDefinition } from './tools.js';
+import type { ToolDefinition } from './tools/types.js';
 
 const logger = createLogger('pdf-tools');
 
@@ -699,6 +699,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_create',
     description: 'Create a new PDF (.pdf) from a content-blocks schema and save it under your agent uploads dir. Returns the absolute output path. Mirrors the docx schema where possible — paragraph / heading / table / bullet_list / numbered_list / image / page_break / horizontal_rule — so an outline that worked for a Word doc can be re-used here.\n\nKey defaults applied automatically: US Letter, 1" margins, Helvetica 11pt, tables get borders + light-blue header shading, page numbers in the footer only when explicitly requested.',
+    effects: [{ kind: 'fs_write', from: 'args.filename' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -722,6 +723,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_get_info',
     description: 'Read structural and metadata info from a PDF on disk — page count, per-page dimensions (in points and inches), title/author/subject/creator/producer/dates, and AcroForm field names. Use this before pdf_extract_pages / pdf_reorder_pages / pdf_fill_form to know what you have.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -733,6 +735,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_read',
     description: 'Extract and return the TEXT CONTENT of a PDF on disk. This is the tool for actually READING what a PDF says — e.g. an attached document the user wants you to look at. (pdf_get_info returns only metadata like page count and title, not the words.) Returns the text with per-page markers; very large PDFs are truncated. If the PDF is scanned / image-only with no text layer, little or no text comes back — say so rather than guessing. When a PDF is attached and your model already shows you its contents inline, you do not need this; reach for it when the inline contents are absent or you want the raw text on demand.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -744,6 +747,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_merge',
     description: 'Combine multiple PDFs (in the given order) into a single new PDF. Returns the absolute output path. Original files are not modified.',
+    effects: [{ kind: 'fs_read', from: 'args.input_paths[]' }, { kind: 'fs_write', from: 'args.output_filename' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -756,6 +760,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_extract_pages',
     description: 'Pull a list of pages from an existing PDF into a new file (useful for splits, single-page extracts, or "give me just the first chapter"). Returns the absolute output path.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.output_filename' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -769,6 +774,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_rotate_pages',
     description: 'Rotate specific pages of an existing PDF and save the result. Returns the output path.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.output_filename' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -793,6 +799,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_reorder_pages',
     description: 'Rearrange the pages of an existing PDF. Returns the output path. The `new_order` list must include every page exactly once.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.output_filename' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -806,6 +813,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_delete_pages',
     description: 'Remove pages from an existing PDF and save the result. Returns the output path.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.output_filename' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -819,6 +827,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_watermark',
     description: 'Stamp a text watermark diagonally across pages of an existing PDF. Returns the output path. Useful for "DRAFT", "CONFIDENTIAL", or per-recipient marks.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.output_filename' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -837,6 +846,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_fill_form',
     description: 'Fill AcroForm fields in an existing PDF and save the result. Use pdf_get_info first to discover field names. Returns the output path and counts of filled vs unmatched fields. Pass `flatten: true` to make the filled fields non-editable.',
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.output_filename' }],
     input_schema: {
       type: 'object',
       properties: {

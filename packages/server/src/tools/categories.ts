@@ -3,7 +3,7 @@
 // Produces the lightweight text index that goes into system prompts.
 // ════════════════════════════════════════
 
-import type { ToolDefinition } from '../agent/tools.js';
+import type { ToolDefinition } from '../agent/tools/types.js';
 
 // Tool-index representation (remediation C / tool-index slimming): the index
 // lists tool NAMES grouped by category, dropping per-tool descriptions. The
