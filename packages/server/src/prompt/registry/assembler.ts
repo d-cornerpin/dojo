@@ -71,7 +71,7 @@ export function buildAssemblyContext(
     loopCount: turnState?.loopCount ?? 1,
     turnNumber: turnState?.turnNumber ?? 0,
     lastUserMessageContent: turnState?.lastUserMessageContent ?? '',
-    pendingNudge: turnState?.pendingNudge ?? null,
+    pendingSteer: turnState?.pendingSteer ?? null,
   };
 }
 

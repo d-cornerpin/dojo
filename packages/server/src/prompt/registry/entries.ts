@@ -375,7 +375,7 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     reason:
       'Single-shot engine steering for the next iteration (set by the loop, e.g. ' +
       'a stop/redirect). The loop owns the alternation gate; the entry renders the nudge text.',
-    render: (ctx) => (ctx.pendingNudge ? { role: 'user', content: ctx.pendingNudge } : null),
+    render: (ctx) => (ctx.pendingSteer ? { role: 'user', content: ctx.pendingSteer } : null),
   },
   {
     id: 'msg.context-gap',

@@ -78,6 +78,11 @@ import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTur
 import { persistEngineSteer } from './engine-steer.js';
 import { pushEngineMessage } from './engine-message.js';
 import { collectMessageLaneIds } from '../../memory/message-lane-tag.js';
+import {
+  clearSteerQueue, enqueueSteer, markSteerAttempted, markSteerDelivered, nextSteer,
+  steerFireCount, steerFired, steerFiredAny, steerFiredAtLoop, steerQueueBlocks,
+  TRACKER_STEER_FLOORS, type SteerEntry,
+} from './steer-queue.js';
 import { findRecentDeliveries, findRecentDeliveriesKeyed, getRecentOutbound, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
 import { renderDeliveriesLaneMessage } from '../../memory/deliveries-lane.js';
 import { writeToolReceipt } from '../../receipts/store.js';
@@ -1961,6 +1966,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // intent set by the timer/first-tool hook) -> armed (steer injected at a loop
   // boundary, state write is loop-synchronous) -> delivered (the model's own
   // line surfaced via the capture site). The engine never composes the line.
+  // PHASE-4 T3: `nudgedForGoingIdleWithInProgressThisTurn` carried TWO jobs — the steer's
+  // one-shot latch (now the queue entry) and "the detector ran", which the recurring-dangler
+  // hardcap reads on the branch that deliberately does not steer. Only the first was a latch.
+  let goingIdleDetectorRanThisTurn = false;
   let startAckSteerRequested = false;
   let startAckSteerArmedThisTurn = false;
   let startAckSteersInjected = 0;      // bounded at 2: first steer, one reminder
@@ -2382,7 +2391,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // the tool-execution layer (the engine REFUSES non-tracker tool calls until
           // a tracker call lands), so its behavior does not depend on the model seeing
           // this row. It also runs in the pre-turn setup, outside the loop's per-turn
-          // pendingNudge scope. Guidance-only text; not dashboard-only theater.
+          // steer-queue scope. Guidance-only text; not dashboard-only theater.
           insertMessageIfAbsent({ id: gateMsgId, agentId, role: 'system', content: gateMsg });
           broadcast({
             type: 'chat:message',
@@ -2537,7 +2546,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // drift keep accumulating means a genuine spiral eventually hits the HARD limit
       // below and terminates deterministically.
       if (!isPMAgent(agentId) && driftSoftTrip && !driftHardTrip && !refusalTrip) {
-        if (!state.nudgedForThrashDriftThisTurn) {
+        if (!steerFired(state.steerQueue, 'thrash-drift')) {
           const driftNudge =
             `[Engine hint] The engine thrash gate has been active for ${drift} iterations and you keep ` +
             `varying your tool calls without recording progress. If you ARE making progress, record it with ` +
@@ -2548,7 +2557,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // Model-visible steer channel. A role='system' row would be stripped
             // by the assembler (dashboard-only theater), so this ladder rung would
             // never reach the model. Persist on the EVENTS lane (it surfaces next
-            // turn) AND set pendingNudge so
+            // turn) AND enqueue the steer so
             // the model receives it on the very next iteration. conv_key sentinel
             // 'engine-steer' keeps it un-selectable as a pending event (see the
             // thrash-steer C6 note below).
@@ -2564,7 +2573,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           } catch { /* best effort */ }
           // One-shot nudge only, the drift window is deliberately NOT reset (a
           // signature-varying spiral must keep accruing drift to the hard limit).
-          state = advance(state, { nudgedForThrashDriftThisTurn: true, pendingNudge: driftNudge });
+          state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'thrash-drift', content: driftNudge, atLoop: state.loopCount }) });
           logger.info('v2: thrash drift nudge (one-shot; drift keeps accruing to the hard limit)', {
             agentId, drift, loopCount: state.loopCount,
           }, agentId);
@@ -2649,7 +2658,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }
           // F1.3: agent-facing block note on the model-visible steer channel. A
           // role='system' row is stripped by the assembler (dashboard-only theater),
-          // so the block would never reach the model. No pendingNudge: the turn is
+          // so the block would never reach the model. No steer: the turn is
           // ending here (break below), so the next turn's EVENTS lane surfaces it.
           // conv_key sentinel keeps it un-selectable as a pending event.
           const agentNoteId = uuidv4();
@@ -2716,12 +2725,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
             : '{}';
           // The steer MUST reach the model. assembler.ts strips role='system'
           // messages from history, so writing one as `system` would be
-          // invisible to the model (dashboard-only theater). pendingNudge
+          // invisible to the model (dashboard-only theater). The queue entry
           // gets injected at the top of the next model call as a synthetic
           // `role: 'user'` message, that's the engine's waking-style
           // delivery channel. We also persist as `role: 'user'` so the
           // dashboard renders it AND any next assemble cycle keeps seeing
-          // it (pendingNudge is single-shot).
+          // it (the floor's queue latch is one-shot per turn).
           const steerMsg =
             `[Engine thrash gate] You've called \`${thrash.toolName}(${argsPart})\` ${thrash.count}× on this turn (and its continuation). ` +
             `You already have the result from the first call; further calls with these exact args are refused.\n\n` +
@@ -2780,10 +2789,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
           state = advance(state, {
             thrashGatedSignatures: [...state.thrashGatedSignatures, thrash.signature],
             thrashGateActivatedAtLoopCount: state.thrashGateActivatedAtLoopCount ?? state.loopCount,
-            // Also set pendingNudge so the steer reaches the model on the
-            // very NEXT iteration even if the assembler hasn't seen the
-            // persisted user message yet.
-            pendingNudge: steerMsg,
+            // Also enqueue the steer so it reaches the model on the very NEXT
+            // iteration even if the assembler hasn't seen the persisted user message
+            // yet. KEYED on the signature: a second signature getting gated is a
+            // second fact the model has not been told, not a repeat of the first.
+            steerQueue: enqueueSteer(state.steerQueue, {
+              floor: 'thrash-gate', content: steerMsg, key: thrash.signature, atLoop: state.loopCount,
+            }),
           });
           try {
             broadcast({
@@ -2861,14 +2873,14 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // not responded", and the model re-acknowledged from scratch each
           // time. The engine holds the receipts of what this turn already
           // did; hand them over so the rebuilt context cannot forget.
-          if (!state.pendingNudge) {
+          if (!steerQueueBlocks(state.steerQueue, 'compaction-recap')) {
             const recap =
               `[Engine recap: memory was just compacted MID-TURN. This is still the SAME turn. So far this turn you have made ${state.toolCalls.length} tool call(s)` +
               (state.surfacedReplyThisTurn || deferredDeliveredByAck || engineStartAckDeliveredThisTurn
                 ? ' and the user has ALREADY heard your acknowledgment'
                 : '') +
               '. Continue the work exactly where it stands. Do NOT re-introduce yourself, re-acknowledge, or re-apologize; pick up from the last tool result.]';
-            state = advance(state, { pendingNudge: recap });
+            state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'compaction-recap', content: recap, atLoop: state.loopCount }) });
             logger.info('v2 mid-turn compaction recap injected (turn continuity across the rebuild)', {
               agentId, turnNumber, toolCallsSoFar: state.toolCalls.length,
             }, agentId);
@@ -3188,14 +3200,16 @@ export async function runV2Turn(agentId: string): Promise<void> {
 
       // One message-injection context for this iteration's §3c entries
       // (technique, context-gap, tracker-notif, nudge, tool-note, turn-context). The
-      // loop sets mutable fields (pendingNudge, technique payload) at each site and
+      // loop sets mutable fields (the drained steer, technique payload) at each site and
       // calls injectRegistryMessage, so injection is registry-owned (R8). The
       // registry is the only assembler path (R7), so this is always built.
       const mctx: AssemblyContext = buildAssemblyContext(
         agentId,
         contextModelId,
         sharedTurnContext,
-        { loopCount: state.loopCount, turnNumber, lastUserMessageContent: lastUserMessageContent ?? '', pendingNudge: state.pendingNudge },
+        // The steer starts null: which entry (if any) rides this iteration is the DRAIN's
+        // decision, taken below against the declared precedence table.
+        { loopCount: state.loopCount, turnNumber, lastUserMessageContent: lastUserMessageContent ?? '', pendingSteer: null },
       );
 
       // ── Technique matcher (Part VI #5, Phase 5) ──
@@ -3494,7 +3508,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   startAckSteerArmedThisTurn = true;
                   startAckSteersInjected = 1;
                   startAckSteerInjectedAtLoop = state.loopCount;
-                  pushEngineMessage(messages, START_ACK_STEER_TEXT, 'engine.start-ack-steer'); // registry-exempt(2026-07-22): start-ack steer rides the in-flight messages array at the classifier site; migrate with the volatile-injection registry refactor
+                  // PHASE-4 T3: the 27th steer site. §T0-PINS F derived the inventory by
+                  // single-slot WRITER and this one pushed straight into the array — the same
+                  // floor through a second door, which "sole steer writer" forbids. The drain
+                  // is still inside THIS assemble phase, so "rides this call" is unchanged.
+                  state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'start-ack', content: START_ACK_STEER_TEXT, atLoop: state.loopCount }) });
                 }
               }
             }
@@ -3614,11 +3632,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // loop-synchronously. Re-checks startAckRepliedNow so a reply that landed
       // in flight quietly disarms it. If another nudge occupies the slot this
       // iteration, the request stays pending and retries next boundary.
-      if (startAckSteerRequested && !startAckSteerArmedThisTurn && !state.pendingNudge && !startAckRepliedNow()) {
+      if (startAckSteerRequested && !startAckSteerArmedThisTurn && !steerQueueBlocks(state.steerQueue, 'start-ack') && !startAckRepliedNow()) {
         startAckSteerArmedThisTurn = true;
         startAckSteersInjected = 1;
         startAckSteerInjectedAtLoop = state.loopCount;
-        state = advance(state, { pendingNudge: START_ACK_STEER_TEXT });
+        state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'start-ack', content: START_ACK_STEER_TEXT, atLoop: state.loopCount }) });
         logger.info('v2 start-ack steer injected; the model speaks the start line itself', {
           agentId, turnNumber,
         }, agentId);
@@ -3632,26 +3650,43 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // that the terminal reply is the only remaining voice (never spin).
         startAckSteersInjected === 1 &&
         !engineStartAckDeliveredThisTurn &&
-        state.loopCount > startAckSteerInjectedAtLoop &&
-        !state.pendingNudge &&
+        // The loop the first steer rode is read off the QUEUE ENTRY that recorded it
+        // (falling back to the local for the pre-assemble arming path at :3489).
+        state.loopCount > (steerFiredAtLoop(state.steerQueue, 'start-ack') ?? startAckSteerInjectedAtLoop) &&
+        !steerQueueBlocks(state.steerQueue, 'start-ack-reminder') &&
         !startAckRepliedNow()
       ) {
         startAckSteersInjected = 2;
-        state = advance(state, { pendingNudge:
-          '[Engine hint: reminder, the user has STILL heard nothing from you this turn. Before your next tool call, say one short line to them that you are on it. This is the last reminder.]',
-        });
+        state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, {
+          floor: 'start-ack-reminder', atLoop: state.loopCount,
+          content: '[Engine hint: reminder, the user has STILL heard nothing from you this turn. Before your next tool call, say one short line to them that you are on it. This is the last reminder.]',
+        }) });
         logger.info('v2 start-ack steer reminder injected (first steer ignored, user still waiting)', {
           agentId, turnNumber,
         }, agentId);
       }
 
-      // Drain pendingNudge (synthetic user message, never persisted). NO tail-shape
+      // Drain the steer queue (synthetic user message, never persisted). NO tail-shape
       // gate: assembler.ts:301 appends a user-role engine line after an assistant
       // tail, so the old assistant-tail test could never be true and every steer
       // written after a tool call went undelivered 2026-07-10 → 2026-07-27 (r22).
-      if (state.pendingNudge) {
-        mctx.pendingNudge = state.pendingNudge;
-        if (injectRegistryMessage('msg.pending-nudge', messages, mctx)) state = advance(state, { pendingNudge: null });
+      //
+      // PHASE-4 T3: ONE entry per iteration, highest declared precedence first; the rest
+      // wait rather than being overwritten. The entry does NOT leave the queue here — being
+      // PUSHED is not being DELIVERED, and this array is still mutated below. The
+      // confirmation is at the receipt, off the array the provider is actually handed.
+      let steerAwaitingConfirm: SteerEntry | null = null;
+      const steerToDeliver = nextSteer(state.steerQueue);
+      if (steerToDeliver) {
+        mctx.pendingSteer = steerToDeliver.content;
+        if (injectRegistryMessage('msg.pending-nudge', messages, mctx)) {
+          steerAwaitingConfirm = steerToDeliver;
+        } else {
+          // The push itself was refused (the dedup net saw identical text in the tail).
+          // Count the attempt so a permanently un-injectable entry cannot block the
+          // queue behind it forever; three attempts and it is ABANDONED, on the record.
+          state = advance(state, { steerQueue: markSteerAttempted(state.steerQueue, steerToDeliver) });
+        }
       }
 
       // Empty-messages guard (preserve v1 behavior at runtime.ts:1014-1020)
@@ -3880,6 +3915,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // Last touch point before the provider call: every injector and
       // post-assembly mutation has run, so this records exactly what the
       // model receives this iteration.
+      // PHASE-4 T3: DELIVERED-TO-MODEL, RECORDED rather than assumed. Phase 1 made delivery
+      // possible; this makes it a receipt. The lane ids are read off the array the provider
+      // is handed — the same read the receipt makes — so a steer that was pushed and then
+      // dropped is not marked delivered: it stays queued and rides the next iteration.
+      const laneIdsForThisCall = collectMessageLaneIds(messages);
+      if (steerAwaitingConfirm) {
+        state = advance(state, {
+          steerQueue: laneIdsForThisCall.includes('msg.pending-nudge')
+            ? markSteerDelivered(state.steerQueue, steerAwaitingConfirm)
+            : markSteerAttempted(state.steerQueue, steerAwaitingConfirm),
+        });
+      }
       writeContextReceipt({
         agentId,
         modelId,
@@ -3891,7 +3938,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         systemEntryIds: ctx.systemEntryIds,
         // PHASE-3 T6 (F21): read OFF THIS ARRAY, not off `ctx.messageEntryIds` — the
         // assembler's copy stops at `volatileFrom` and would miss every tail-append below.
-        messageEntryIds: collectMessageLaneIds(messages),
+        messageEntryIds: laneIdsForThisCall,
         volatileFrom,
         // F20/F22: the allocator's own record, and the assembly's own numbers.
         allocation: ctx.allocation,
@@ -4246,16 +4293,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
           state = advance(state, { retriedEmptyResponse: true });
           continue;
         }
-        // Phase 2: explicit nudge, inject a [System: ...] note via pendingNudge
+        // Phase 2: explicit nudge, enqueue a [System: ...] note
         // so the assemble phase wraps it as a synthetic user message next turn.
-        if (!state.nudgedForEmptyResponse) {
+        if (!steerFired(state.steerQueue, 'empty-response')) {
           logger.warn('v2: model returned empty after silent retry, nudging', {
             loopCount: state.loopCount, stopReason: result.stopReason,
           }, agentId);
           state = advance(state, {
-            nudgedForEmptyResponse: true,
-            pendingNudge:
-              "[System: You returned an empty response. Please respond to the user's last message or call a tool to continue your task. If you are finished, say so clearly.]",
+            steerQueue: enqueueSteer(state.steerQueue, {
+              floor: 'empty-response', atLoop: state.loopCount,
+              content: "[System: You returned an empty response. Please respond to the user's last message or call a tool to continue your task. If you are finished, say so clearly.]",
+            }),
           });
           continue;
         }
@@ -4263,7 +4311,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
         logger.warn('v2: model returned empty after nudge, breaking', {
           loopCount: state.loopCount, stopReason: result.stopReason,
         }, agentId);
-        state = advance(state, { pendingNudge: null });
+        // The turn is giving up: nothing still waiting can be delivered, so drop the
+        // queue. The entries are recorded as abandoned, never silently forgotten.
+        state = advance(state, { steerQueue: clearSteerQueue(state.steerQueue) });
         broadcast({
           type: 'chat:error',
           agentId,
@@ -4564,7 +4614,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         persistedContent &&
         result.toolCalls.length === 0 &&
         !interAgentTurn &&
-        !state.nudgedForUngroundedClaimThisTurn
+        !steerFired(state.steerQueue, 'ungrounded-claim')
       ) {
         const grounding = detectUngroundedDeliveryClaim({
           responseText: persistedContent,
@@ -4607,12 +4657,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
             `imessage_send / the email-send tool for a person) BEFORE telling the user it is done. ` +
             `Never tell the user something is sent or handled that you have not actually done.]`;
           // RC-19: deliver the correction via persistEngineSteer so it reaches the
-          // model (pendingNudge) AND keeps the dashboard row. A bare role='system'
+          // model (the steer queue) AND keeps the dashboard row. A bare role='system'
           // row is stripped by the assembler, so pre-fix the agent re-entered without
           // ever seeing the correction and re-posted the same false claim.
           state = persistEngineSteer(
             state,
-            { agentId, content: nudgeText, turnNumber, extra: { nudgedForUngroundedClaimThisTurn: true } },
+            { agentId, content: nudgeText, turnNumber, floor: 'ungrounded-claim', atLoop: state.loopCount },
             { broadcast },
           );
           logger.info('v2 grounding guard fired, ungrounded delivery claim, re-entering', {
@@ -4640,7 +4690,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         persistedContent &&
         result.toolCalls.length === 0 &&
         !interAgentTurn &&
-        !state.nudgedForDeliveryDenialThisTurn
+        !steerFired(state.steerQueue, 'delivery-denial')
       ) {
         const denial = detectDeliveryDenial({ responseText: persistedContent });
         if (denial.denied) {
@@ -4663,7 +4713,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               `Answer truthfully; do not re-send.]`;
             state = persistEngineSteer(
               state,
-              { agentId, content: nudgeText, turnNumber, extra: { nudgedForDeliveryDenialThisTurn: true } },
+              { agentId, content: nudgeText, turnNumber, floor: 'delivery-denial', atLoop: state.loopCount },
               { broadcast },
             );
             logger.info('v2 delivery-denial guard fired, receipt contradicts denial, re-entering', {
@@ -4684,7 +4734,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         persistedContent &&
         result.toolCalls.length === 0 &&
         !interAgentTurn &&
-        !state.nudgedForFailedSaveClaimThisTurn &&
+        !steerFired(state.steerQueue, 'failed-save-claim') &&
         /\b(saved|stored|remembered|noted it|added (it|that) to (memory|the vault)|put it in (memory|the vault))\b/i.test(persistedContent)
       ) {
         const vaultRemembers = state.toolResults.filter((r) => r.name === 'vault_remember');
@@ -4697,7 +4747,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             `gave you, or tell the counterpart truthfully that it is not saved yet. Do not claim it was saved.`;
           state = persistEngineSteer(
             state,
-            { agentId, content: nudgeText, turnNumber, extra: { nudgedForFailedSaveClaimThisTurn: true } },
+            { agentId, content: nudgeText, turnNumber, floor: 'failed-save-claim', atLoop: state.loopCount },
             { broadcast },
           );
           logger.info('v2 RC-13.2 save-claim floor fired, all vault saves rejected this turn, re-entering', {
@@ -4935,7 +4985,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         const ghostedWorkAsk =
           isBareNoReply && !!triggerRow && inboundClassifiedAsWork &&
           !state.surfacedReplyThisTurn && !deferredDeliveredByAck;
-        if (ghostedWorkAsk && !state.steeredForGhostedAskThisTurn) {
+        if (ghostedWorkAsk && !steerFired(state.steerQueue, 'ghosted-ask')) {
           broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
           // T9: was an EMPTY chat:message meaning "drop this bubble" — an event named
           // "here is a message" carrying its own opposite, and the one shape that made
@@ -4948,13 +4998,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
           try {
             persistAndBroadcastSystemRow(steerText);
           } catch { /* dashboard row is best effort */ }
-          state = advance(state, { pendingNudge: steerText, steeredForGhostedAskThisTurn: true });
+          state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'ghosted-ask', content: steerText, atLoop: state.loopCount }) });
           logger.info('v2 ghosted-work-ask floor: bare [no-reply] on a work-classified human ask with nothing surfaced; steering once (answer-or-point, never silence)', {
             agentId, turnNumber, classifierKeyed: true,
           }, agentId);
           continue;
         }
-        if (ghostedWorkAsk && state.steeredForGhostedAskThisTurn && !state.ghostedAskSecondSteerThisTurn && chosenConversationId) {
+        if (ghostedWorkAsk && steerFired(state.steerQueue, 'ghosted-ask') && !steerFired(state.steerQueue, 'ghosted-ask-answer') && chosenConversationId) {
           // Second (last) steer, owner ruling 2026-07-22: the engine never
           // speaks as the agent, so instead of re-serving the recorded answer
           // itself, hand the model its own recorded words to restate. If this
@@ -4977,7 +5027,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 persistAndBroadcastSystemRow(steer2);
               } catch { /* dashboard row is best effort */ }
               broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
-              state = advance(state, { pendingNudge: steer2, ghostedAskSecondSteerThisTurn: true });
+              state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'ghosted-ask-answer', content: steer2, atLoop: state.loopCount }) });
               logger.info('v2 ghosted-work-ask floor: model ghosted the first steer; second steer hands it its own recorded answer to restate', {
                 agentId, turnNumber,
               }, agentId);
@@ -4985,9 +5035,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
             }
           } catch { /* best effort; silence falls through to the marker below */ }
         }
-        if (ghostedWorkAsk && state.steeredForGhostedAskThisTurn) {
+        if (ghostedWorkAsk && steerFired(state.steerQueue, 'ghosted-ask')) {
           logger.warn('v2 ghosted-work-ask floor: model ghosted the steer(s) on a work-classified human ask; engine does not speak for the agent, silence stands with the marker row', {
-            agentId, turnNumber, secondSteerFired: state.ghostedAskSecondSteerThisTurn,
+            agentId, turnNumber, secondSteerFired: steerFired(state.steerQueue, 'ghosted-ask-answer'),
           }, agentId);
         }
         {
@@ -5512,7 +5562,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // let the model say it in its own words. The engine-record facts ride
         // in the steer so the weakest model only has to phrase, not remember.
         if (
-          !state.steeredForSilentCloseoutThisTurn &&
+          !steerFired(state.steerQueue, 'silent-closeout') &&
           !isA2ATurn &&
           counterparty.kind === 'user' &&
           !counterpartyIsAgentSender &&
@@ -5593,7 +5643,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   persistAndBroadcastSystemRow(steerText);
                 } catch { /* dashboard row is best effort */ }
                 broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
-                state = advance(state, { pendingNudge: steerText, steeredForSilentCloseoutThisTurn: true });
+                state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'silent-closeout', content: steerText, atLoop: state.loopCount }) });
                 logger.info('v2 silent-closeout steer: turn completed task(s) whose origin ask is unanswered; handing the mic to the model for the completion message', {
                   agentId, turnNumber, taskCount: owedTasks.length, firstTask: first.title.slice(0, 60),
                 }, agentId);
@@ -5615,7 +5665,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         //   - the target task is still in_progress
         //   - not already nudged this turn (one-shot, no loop)
         if (
-          !state.nudgedForAddNotesStopThisTurn &&
+          !steerFired(state.steerQueue, 'add-notes-stop') &&
           state.toolResults.length > 0
         ) {
           const lastTool = state.toolResults[state.toolResults.length - 1];
@@ -5643,12 +5693,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   `Silently going idle after a work_note leaves the user with no idea what is happening.]`
                 );
                 // RC-19: via persistEngineSteer so the nudge reaches the model
-                // (pendingNudge) AND keeps its dashboard row. The prior bare
+                // (the steer queue) AND keeps its dashboard row. The prior bare
                 // role='system' row was stripped by the assembler, so the re-entered
                 // model never saw "keep going / say what you are waiting for".
                 state = persistEngineSteer(
                   state,
-                  { agentId, content: nudgeText, turnNumber, extra: { nudgedForAddNotesStopThisTurn: true } },
+                  { agentId, content: nudgeText, turnNumber, floor: 'add-notes-stop', atLoop: state.loopCount },
                   { broadcast },
                 );
                 logger.info('v2 add-notes-stop nudge fired', { agentId, taskId: nudgedTaskId }, agentId);
@@ -5671,8 +5721,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // (the gate's own message + dispatcher already covers the case)
         // or the add-notes-stop nudge just fired (we just told them).
         if (
-          !state.nudgedForGoingIdleWithInProgressThisTurn &&
-          !state.nudgedForAddNotesStopThisTurn &&
+          !goingIdleDetectorRanThisTurn &&
+          !steerFired(state.steerQueue, 'add-notes-stop') &&
           !state.nudgedForCloseOutThisTurn
         ) {
           // Find in_progress tasks assigned to this agent. Use the same
@@ -5802,7 +5852,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // safely get the agent to continue or formally close the task. Build
             // to the weak-model floor: never rely on a re-prompt doing the right
             // thing.
-            state = advance(state, { nudgedForGoingIdleWithInProgressThisTurn: true });
+            goingIdleDetectorRanThisTurn = true;
             const alreadyRepliedThisTurn = !!(persistedContent && persistedContent.trim().length > 0);
             if (alreadyRepliedThisTurn) {
               logger.info('v2 going-idle-with-in_progress: agent already replied this turn, skipping re-prompt, engine reconciles the dangling task', {
@@ -5825,11 +5875,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
               });
               // F2.6: the persisted row above is a role='system' message, which the
               // assembler strips, so the re-entered round would carry NO new info and
-              // burn a model call for nothing. Deliver the menu via pendingNudge (a
+              // burn a model call for nothing. Deliver the menu via the steer queue (a
               // synthetic user message injected next iteration) so the extra round
               // actually shows the model the 4-option decision. Row kept for the
               // dashboard. Gating is unchanged.
-              state = advance(state, { pendingNudge: nudgeText });
+              state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'going-idle-in-progress', content: nudgeText, atLoop: state.loopCount }) });
               logger.info('v2 going-idle-with-in_progress nudge fired', {
                 agentId, openTaskCount: openTasks.length, taskIds: openTasks.map(t => t.id),
               }, agentId);
@@ -5856,7 +5906,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // schedule is never terminally completed by a missed close-out; fail
         // THIS run and keep the schedule alive.
         if (
-          state.nudgedForGoingIdleWithInProgressThisTurn &&
+          goingIdleDetectorRanThisTurn &&
           persistedContent && persistedContent.trim().length > 0
         ) {
           const recurringDanglers = db.prepare(`
@@ -5916,12 +5966,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // iteration's reply (it must not be deferred into a possible [no-reply] extra
         // round), and it yields to the going-idle hardcap above (which breaks first on
         // a worked-task-with-danglers turn) so this never fights that reconciliation.
-        // One-shot (nudgedForOwedInterruptThisTurn) and skipped at the loop cap, so it
+        // One-shot (the queue's own latch for `owed-interrupt`) and skipped at the loop cap, so it
         // can neither spin the loop nor push past MAX_TOOL_LOOPS.
         if (
           counterparty.kind === 'user' &&
           !isEngineTurn &&
-          !state.nudgedForOwedInterruptThisTurn &&
+          !steerFired(state.steerQueue, 'owed-interrupt') &&
           persistedContent && persistedContent.trim().length > 0 &&
           state.loopCount < MAX_TOOL_LOOPS &&
           lastAssembledAtIso &&
@@ -5955,7 +6005,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               // Model-visible engine channel, same pattern as the thrash steer and the
               // auto-scaffold note: an origin_kind='engine' row (EVENTS lane surfaces
               // it) with the 'engine-steer' conv_key sentinel so it can never be picked
-              // as a pending engine event, PLUS pendingNudge so the steer reaches the
+              // as a pending engine event, PLUS a queue entry so the steer reaches the
               // model on the very next iteration. Label form ([System] body) so the
               // events-lane leading-bracket strip keeps the body.
               insertEngineEventIfAbsent({
@@ -5968,7 +6018,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 turnNumber,
               });
             } catch { /* best effort */ }
-            state = advance(state, { nudgedForOwedInterruptThisTurn: true, pendingNudge: rePrompt });
+            state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'owed-interrupt', content: rePrompt, atLoop: state.loopCount }) });
             logger.info('v2 owed-interrupt re-prompt: a mid-turn user message was assembled but may be unanswered; giving the model one more round before the teardown claim marks it served', {
               agentId, turnNumber, owedCount: owed.length, convKey: chosenConvKey,
             }, agentId);
@@ -6015,7 +6065,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           );
           if (!didEffectfulWorkThisTurn && !transitionedATaskThisTurn) {
             const quoted = persistedContent.replace(/\s+/g, ' ').trim().slice(0, 200);
-            if (state.nudgedForPromiseFloorThisTurn) {
+            if (steerFired(state.steerQueue, 'promise-floor')) {
               // Steered once already this turn and the model STILL ended on a promise.
               // Don't spin, let the turn end. This warn is the tripwire that a harder
               // floor is needed if the weak model can't be talked past it.
@@ -6032,7 +6082,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               try {
                 // Model-visible engine channel, same pattern as the owed-interrupt
                 // re-prompt: an origin_kind='engine' row on the 'engine-steer' conv_key
-                // sentinel (never pickable as a pending event), PLUS pendingNudge so the
+                // sentinel (never pickable as a pending event), PLUS a queue entry so the
                 // steer reaches the model on the next iteration. The promise text row the
                 // user already saw is KEPT visible (never delete a user-visible row); the
                 // follow-through lands after it.
@@ -6046,7 +6096,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   turnNumber,
                 });
               } catch { /* best effort */ }
-              state = advance(state, { nudgedForPromiseFloorThisTurn: true, pendingNudge: steer });
+              state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'promise-floor', content: steer, atLoop: state.loopCount }) });
               logger.info('v2 promise floor: reply was a forward promise with negligible work this turn; steering the model to do the work now', {
                 agentId, turnNumber, convKey: chosenConvKey,
               }, agentId);
@@ -6083,7 +6133,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           !Object.values(state.explicitSendThisTurn).some(Boolean) &&
           state.toolResults.some((tr) => !tr.isError && tr.name === 'send_to_agent')
         ) {
-          if (!state.nudgedForA2AHandoffFloorThisTurn && state.loopCount < MAX_TOOL_LOOPS) {
+          if (!steerFired(state.steerQueue, 'a2a-handoff-floor') && state.loopCount < MAX_TOOL_LOOPS) {
             const steer = (
               `[System] You handed work to another agent and are ending this turn without telling ` +
               `the user anything. The user is waiting. WRITE the user a short reply NOW, directly in ` +
@@ -6103,7 +6153,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 turnNumber,
               });
             } catch { /* best effort */ }
-            state = advance(state, { nudgedForA2AHandoffFloorThisTurn: true, pendingNudge: steer });
+            state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'a2a-handoff-floor', content: steer, atLoop: state.loopCount }) });
             logger.info('v2 a2a-handoff floor: user-facing turn ending silently after a handoff; steering the model to report to the user first', {
               agentId, turnNumber, convKey: chosenConvKey,
             }, agentId);
@@ -6112,7 +6162,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // RC-4.2: the hard-floor handoff notice is a channel-delivered A2A-handoff
           // ack. Never push it to an agent-flagged counterparty (ack ping-pong); a peer
           // box handles a silent handoff on its own lane and does not need the notice.
-          if (state.nudgedForA2AHandoffFloorThisTurn && !counterpartyIsAgentSender) {
+          if (steerFired(state.steerQueue, 'a2a-handoff-floor') && !counterpartyIsAgentSender) {
             // Hard floor: the steer did not produce a user-facing send, so the
             // engine says the honest minimum itself. Deterministic, model-free.
             try {
@@ -6211,7 +6261,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // the time/token budget killed it (loop.txt 2026-05-13).
         if (
           a2aReplyAssignMessageId &&
-          state.nudgedForMissedReplyOnAssignId === a2aReplyAssignMessageId &&
+          steerFired(state.steerQueue, 'a2a-missed-reply', a2aReplyAssignMessageId ?? '') &&
           !state.sentToAgentThisTurn &&
           persistedContent && persistedContent.trim().length > 0
         ) {
@@ -6242,7 +6292,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           triggeredByReplyNeededIntent: a2aReplyContext !== null,
           sentToAgentThisTurn: state.sentToAgentThisTurn,
           alreadyNudgedForMissedReply:
-            !!a2aReplyAssignMessageId && state.nudgedForMissedReplyOnAssignId === a2aReplyAssignMessageId,
+            !!a2aReplyAssignMessageId && steerFired(state.steerQueue, 'a2a-missed-reply', a2aReplyAssignMessageId),
           // Raw model text, NOT persistedContent, on an inter-agent turn the
           // text is display-suppressed (persistedContent nulled) but the enforcer
           // still needs to know the agent wrote a reply as chat instead of calling
@@ -6260,7 +6310,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         });
         if (replyDecision.decision === 'nudge') {
           // RC-19: via persistEngineSteer so the retry nudge reaches the model
-          // (pendingNudge) AND keeps its dashboard row. The bare role='system' row
+          // (the steer queue) AND keeps its dashboard row. The bare role='system' row
           // was stripped by the assembler, so the "you wrote text instead of
           // send_to_agent, retry" steer never reached the model it addressed; only
           // the hardcap above actually bounded the loop. Mark the nudge fired for
@@ -6272,7 +6322,11 @@ export async function runV2Turn(agentId: string): Promise<void> {
               agentId,
               content: replyDecision.nudgeText,
               turnNumber,
-              extra: a2aReplyAssignMessageId ? { nudgedForMissedReplyOnAssignId: a2aReplyAssignMessageId } : undefined,
+              floor: 'a2a-missed-reply',
+              atLoop: state.loopCount,
+              // KEYED on the assign id. §T0-PINS F: the no-assign-id branch had NO latch at
+              // all, so it could re-nudge every iteration; it now latches on the empty key.
+              key: a2aReplyAssignMessageId ?? '',
             },
             { broadcast },
           );
@@ -6413,7 +6467,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           }
 
           if (
-            state.nudgedForTrackerCloseThisTurn &&
+            steerFired(state.steerQueue, 'tracker-closeout') &&
             !state.trackerStatusUpdatedThisTurn
           ) {
             // Hardcap: nudge fired once and was ignored. End the turn.
@@ -6440,7 +6494,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // agent-internal lane and never surfaces to the user.
           if (
             counterparty.kind !== 'user' &&
-            !state.nudgedForTrackerCloseThisTurn &&
+            !steerFired(state.steerQueue, 'tracker-closeout') &&
             !state.trackerStatusUpdatedThisTurn &&
             state.nonTrackerToolCalls > 0
           ) {
@@ -6473,13 +6527,13 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 `If a task is genuinely still in progress, end your turn now with NO text output (no tool call, no message); the engine will continue you on the next user turn.]`
               );
               // RC-19: via persistEngineSteer so the close-out directive reaches the
-              // model (pendingNudge) AND keeps its dashboard row. This branch is
+              // model (the steer queue) AND keeps its dashboard row. This branch is
               // non-user turns only (any resulting text is routed to the agent-internal
               // lane, see the lane note above), so the bare role='system' row the
               // assembler strips meant the re-prompt never actually reached the model.
               state = persistEngineSteer(
                 state,
-                { agentId, content: nudgeText, turnNumber, extra: { nudgedForTrackerCloseThisTurn: true } },
+                { agentId, content: nudgeText, turnNumber, floor: 'tracker-closeout', atLoop: state.loopCount },
                 { broadcast },
               );
               logger.info('v2: tracker close-out nudge fired', {
@@ -6778,7 +6832,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // noise; !structuringToolCalledThisTurn already covers "already structured".
           if (
             !state.structuringToolCalledThisTurn &&
-            !state.nudgedForHoardingThisTurn &&
+            !steerFired(state.steerQueue, 'hoarding-advisory') &&
             !isStructuringTool(tc.name, tc.arguments) &&
             state.heavyLoadsThisTurn >= LOADING_GATE_THRESHOLD &&
             state.lastContextRatio >= 0.85
@@ -6791,17 +6845,17 @@ export async function runV2Turn(agentId: string): Promise<void> {
               `they survive. This is advice, not a block, keep going.]`
             );
             // Phase 0.4: route the [Engine hint] through persistEngineSteer so the
-            // advice reaches the model (pendingNudge, injected as a synthetic user
+            // advice reaches the model (the steer queue, drained as a synthetic user
             // message next iteration) AND keeps the dashboard row. The old bare
             // role='system' INSERT was stripped by the assembler, so the advisory
             // never reached the model at all (INVISIBLE by choice, but the model
             // could not act on advice it never saw). This stays ADVICE, not a block:
             // the tool still executes below (no refusal, no `continue`), the nudge
             // just rides along to the next iteration. Already gated once per turn by
-            // nudgedForHoardingThisTurn.
+            // the queue's own `hoarding-advisory` latch.
             state = persistEngineSteer(
               state,
-              { agentId, content: nudge, turnNumber, extra: { nudgedForHoardingThisTurn: true } },
+              { agentId, content: nudge, turnNumber, floor: 'hoarding-advisory', atLoop: state.loopCount },
               { broadcast },
             );
             logger.info('v2: hoarding advisory nudged (non-blocking)', {
@@ -7742,7 +7796,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // so keyed on existence it is satisfied by whichever tier produced the row — and
         // "a work row exists at turn end" is true either way, which is what the scenario
         // now asserts.
-        ((!state.trackerWriteThisTurn && !state.nudgedForTrackerThisTurn && state.nonTrackerToolCalls > TRACKER_NUDGE_THRESHOLD) ||
+        ((!state.trackerWriteThisTurn && !steerFiredAny(state.steerQueue, TRACKER_STEER_FLOORS) && state.nonTrackerToolCalls > TRACKER_NUDGE_THRESHOLD) ||
           (!state.workRowOpenedThisTurn && effectiveUntracked >= TRACKER_AUTO_SCAFFOLD_AT))
       ) {
         // Secondary check: the agent may have a RECENTLY-TENDED task from a
@@ -7850,7 +7904,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // role='system' row was stripped by the assembler, so a continuing
             // agent never learned the engine had opened the task (it then drifted
             // and the PM later re-delivered the old answer). Persist as an
-            // origin_kind='engine' row (EVENTS lane surfaces it) AND pendingNudge
+            // origin_kind='engine' row (EVENTS lane surfaces it) AND a queue entry
             // so the continuing agent sees the task id + how to close it THIS turn.
             // Label form ([System] body) so the events-lane leading-bracket strip
             // keeps the body. conv_key sentinel keeps it un-selectable as an event.
@@ -7875,7 +7929,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             // above and stop it re-entering on later iterations —
             // `workRowOpenedThisTurn` is the one the floor tier itself reads now (D4).
             // trackerToolCalledThisTurn is kept for parity with the agent-engaged-tracker
-            // signal. pendingNudge
+            // signal. The queue entry
             // delivers the scaffold note to a continuing agent this turn (F2.2);
             // autoScaffoldedTaskIdThisTurn lets natural turn-end close JUST this
             // task if the turn was read-only and nothing else closed it (F2.1).
@@ -7883,9 +7937,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
               trackerToolCalledThisTurn: true,
               trackerWriteThisTurn: true,
               workRowOpenedThisTurn: true,
-              nudgedForTrackerThisTurn: true,
-              pendingNudge: autoNoteText,
               autoScaffoldedTaskIdThisTurn: scaffoldTaskId,
+              steerQueue: enqueueSteer(state.steerQueue, { floor: 'tracker-scaffold', content: autoNoteText, atLoop: state.loopCount }),
             });
             // RC-19 item 3: the floor just tracked the work, so reset
             // the cross-turn untracked-work total. This is an engine-side tracker
@@ -7920,7 +7973,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               agentId, err: err instanceof Error ? err.message : String(err),
             }, agentId);
           }
-        } else if (!hasRecentlyTendedTask && !state.nudgedForTrackerThisTurn) {
+        } else if (!hasRecentlyTendedTask && !steerFiredAny(state.steerQueue, TRACKER_STEER_FLOORS)) {
           // v3.1.11 (FN-9): two wordings. When the agent has a STALE open task
           // (assigned but not recently tended), name it and give a fork: update
           // that task if this is the same work, otherwise open a project for
@@ -7942,12 +7995,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
               `Resume the work after the project is opened.]`
             );
           // RC-19 (F-18): via persistEngineSteer so the STOP/open-a-project directive
-          // reaches the model (pendingNudge) AND keeps its dashboard row. This is the
+          // reaches the model (the steer queue) AND keeps its dashboard row. This is the
           // site the owner remembered "ignoring the STOP": the bare role='system' row was
           // stripped by the assembler, so the model was never actually told to stop.
           state = persistEngineSteer(
             state,
-            { agentId, content: nudgeText, turnNumber, extra: { nudgedForTrackerThisTurn: true } },
+            { agentId, content: nudgeText, turnNumber, floor: 'tracker-stop-directive', atLoop: state.loopCount },
             { broadcast },
           );
           logger.info('v2: tracker nudge fired', {
@@ -8088,12 +8141,12 @@ export async function runV2Turn(agentId: string): Promise<void> {
           !state.lastAssistantTextForIM &&
           (!persistedContent || persistedContent.trim().length === 0) &&
           !Object.values(state.explicitSendThisTurn).some(Boolean) &&
-          !state.steeredForDelegationExitThisTurn &&
+          !steerFired(state.steerQueue, 'delegation-exit') &&
           state.loopCount < MAX_TOOL_LOOPS
         ) {
           const exitSteer =
             '[Engine hint: you delegated work on the user\'s request and are about to end your turn without telling them anything. WRITE ONE short line to them first, directly in this conversation: if you already have their answer, give it now; otherwise say you have handed the pieces off and will report back when they return. Do NOT call imessage_send or any send tool (the engine routes your reply), and do not message any agent again this turn.]';
-          state = advance(state, { pendingNudge: exitSteer, steeredForDelegationExitThisTurn: true });
+          state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'delegation-exit', content: exitSteer, atLoop: state.loopCount }) });
           logger.info('v2 delegation-exit steer: user-triggered hand-off ending silently; one steer for the status line before the async exit', {
             agentId, turnNumber,
           }, agentId);
@@ -8120,19 +8173,21 @@ export async function runV2Turn(agentId: string): Promise<void> {
           .sort()
           .join(',');
       if (state.lastResponseSig === currentResponseSig) {
-        if (!state.nudgedForRepetition) {
+        if (!steerFired(state.steerQueue, 'repetition')) {
           logger.warn('v2: agent repeating itself, nudging on next iteration', {
             loopCount: state.loopCount,
           }, agentId);
           state = advance(state, {
-            nudgedForRepetition: true,
-            pendingNudge:
+            steerQueue: enqueueSteer(state.steerQueue, {
+              floor: 'repetition', atLoop: state.loopCount,
               // FN-8: complete_task is not available to every agent, so don't
               // name it here where the filtered tool list isn't in scope. Point
               // at work_update(action="status") (universally available) instead.
-              '[System: You are repeating yourself, your last two responses were identical. ' +
-              'Try a different approach. If the task is complete, mark it done (e.g. work_update(action="status")) and stop. ' +
-              'If you need help, explain what you are stuck on.]',
+              content:
+                '[System: You are repeating yourself, your last two responses were identical. ' +
+                'Try a different approach. If the task is complete, mark it done (e.g. work_update(action="status")) and stop. ' +
+                'If you need help, explain what you are stuck on.]',
+            }),
           });
           continue;
         }
@@ -8176,16 +8231,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
       if (allNoResults && turnToolResults.every((tr) => !tr.isError)) {
         const nextNoResultsCount = state.consecutiveNoResultTools + 1;
         if (nextNoResultsCount >= 2) {
-          if (!state.nudgedForNoResults) {
+          if (!steerFired(state.steerQueue, 'no-results')) {
             logger.warn('v2: consecutive empty search results, nudging on next iteration', {
               loopCount: state.loopCount,
               consecutiveNoResultTools: nextNoResultsCount,
             }, agentId);
             state = advance(state, {
-              nudgedForNoResults: true,
-              pendingNudge:
-                '[System: Multiple searches returned no results. The information may not exist in memory. ' +
-                'Try responding based on what you already know, or ask the user for clarification.]',
+              steerQueue: enqueueSteer(state.steerQueue, {
+                floor: 'no-results', atLoop: state.loopCount,
+                content:
+                  '[System: Multiple searches returned no results. The information may not exist in memory. ' +
+                  'Try responding based on what you already know, or ask the user for clarification.]',
+              }),
               consecutiveNoResultTools: 0,
             });
             continue;
@@ -8215,7 +8272,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
         consecutiveSmallDeltas: 0, // Phase 4 will track this
         consecutivePermissionDenials: state.consecutivePermissionDenials,
         consecutiveNoResultTools: 0, // Phase 4 will track this
-        spinningNudgeCount: state.spinningNudgeCount,
+        // PHASE-4 T3: the counter IS the latch, and it is now read off the queue's own
+        // entries rather than a state field only this floor ever wrote.
+        spinningNudgeCount: steerFireCount(state.steerQueue, 'spinning'),
         loopCount: state.loopCount,
       });
       if (!progressDecision.progressing) {
@@ -8233,17 +8292,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
           consecutiveSmallDeltas: 0,
           consecutivePermissionDenials: state.consecutivePermissionDenials,
           consecutiveNoResultTools: 0,
-          spinningNudgeCount: state.spinningNudgeCount,
+          spinningNudgeCount: steerFireCount(state.steerQueue, 'spinning'),
           loopCount: state.loopCount,
         }, agentCanSelfCompleteById(agentId));
         // RC-19: via persistEngineSteer so the "you seem stuck, here is what to do"
-        // question reaches the model (pendingNudge) AND keeps its dashboard row. The
+        // question reaches the model (the steer queue) AND keeps its dashboard row. The
         // comment above ("engine asks model before breaking") only works if the model
         // actually hears the question; the bare role='system' row the assembler strips
-        // meant it never did. Bump the ignored-nudge count via extra.
+        // meant it never did. The ignored-nudge count is the queue's own fire count, keyed
+        // per loop: this floor is deliberately NOT one-shot (cap MAX_SPINNING_NUDGES).
         state = persistEngineSteer(
           state,
-          { agentId, content: nudgeText, turnNumber, extra: { spinningNudgeCount: state.spinningNudgeCount + 1 } },
+          { agentId, content: nudgeText, turnNumber, floor: 'spinning', key: `loop-${state.loopCount}`, atLoop: state.loopCount },
           { broadcast },
         );
       }
@@ -8459,7 +8519,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // drive the agent to say it in its own voice on the next pass.
           logger.warn('v2: scaffolded work completed with NO user-facing reply and the closeout steer did not produce one; engine does not speak for the agent, ladder owns the follow-up', {
             agentId, turnNumber, taskCount: justCompletedScaffold.length,
-            steered: state.steeredForSilentCloseoutThisTurn,
+            steered: steerFired(state.steerQueue, 'silent-closeout'),
           }, agentId);
         }
       } catch (err) {
@@ -8654,7 +8714,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           !engineCompletionAckThisTurn &&
           // A steered closeout reply IS the completion ack, in the agent's own
           // voice (owner ruling 2026-07-22); it keeps the same hold exemption.
-          !state.steeredForSilentCloseoutThisTurn;
+          !steerFired(state.steerQueue, 'silent-closeout');
         // Calibration log (2026-07-09 re-answer class + the phantom outcome), one line
         // per settled-wake user-facing outbound, carrying the routing outcome.
         if (settledContextWakeTurn && counterparty.kind !== 'agent') {

@@ -4,7 +4,7 @@
 // The memory assembler strips role='system' rows from model context, so a bare
 // system row is "dashboard-only theater": it shows up in logs and the dashboard
 // while the model never sees it. Every such steer must reach the model via
-// `pendingNudge` (injected next iteration as a synthetic user message, the same
+// the steer queue (drained next iteration into a synthetic user message, the same
 // mechanism the thrash gate documents at loop.ts). The recurring failure (F-18,
 // the recurrence half of F-7) was that this rule lived as a comment and a list of
 // corrected sites, so a new bare-system steer could always be written again. This
@@ -12,15 +12,23 @@
 // here, and the paired conformance test (engine-steer.test.ts) fails the build if a
 // new bare-system imperative steer is added without it.
 //
-// Keep the persisted row + broadcast for dashboard visibility; the pendingNudge is
-// the load-bearing, model-visible delivery. Single-pending-nudge semantics match
-// the thrash gate / going-idle sites: the most recent steer wins (advance overwrites
-// the field), which is correct because these steers are one-shot per turn.
+// Keep the persisted row + broadcast for dashboard visibility; the QUEUE ENTRY is the
+// load-bearing, model-visible delivery.
+//
+// PHASE-4 T3: the paragraph that stood here taught the rule this task deleted — that the
+// newest steer overwriting the field was CORRECT because every steer was one-shot per
+// turn. It was false four ways at the HEAD that carried it (§T0-PINS F: two floors were
+// not one-shot, one had no latch, two shared a flag), and a comment teaching a deleted
+// rule is a live instruction to the next writer. The sentence is GONE, not amended, so
+// the phase-exit grep finds nothing to find. Steers now go
+// into an ORDERED QUEUE with a declared precedence table (`steer-queue.ts`): two guards
+// firing in one beat both deliver, highest precedence first, across iterations.
 
 import { v4 as uuidv4 } from 'uuid';
 import type { Message, WsEvent } from '@dojo/shared';
 import { insertMessageIfAbsent, type NewMessage, type Persisted } from '../../memory/message-store.js';
 import { advance, type AgentTurnState } from './state.js';
+import { enqueueSteer, type SteerFloorId } from './steer-queue.js';
 
 export interface EngineSteerDeps {
   broadcast: (event: WsEvent) => void;
@@ -36,21 +44,23 @@ export interface EngineSteerParams {
   agentId: string;
   content: string;
   turnNumber: number;
-  /**
-   * Extra one-shot turn flags to set alongside `pendingNudge` (e.g. the site's
-   * `nudgedForXThisTurn` guard). Merged into the same atomic `advance`.
-   */
-  extra?: Partial<AgentTurnState>;
+  /** Which floor is speaking. Its priority and its one-shot latch both come from the
+   *  declared table in `steer-queue.ts` — the site no longer carries a boolean of its own. */
+  floor: SteerFloorId;
+  /** `state.loopCount` at the moment the floor fired (the entry records it). */
+  atLoop: number;
+  /** Latch key for a KEYED floor (the A2A enforcer latches per assign id). Absent = one-shot. */
+  key?: string;
 }
 
 /**
  * Persist an engine steer as BOTH a dashboard-visible role='system' row AND a
- * model-visible `pendingNudge`. Returns the advanced state with `pendingNudge`
- * (and any `extra` flags) set.
+ * model-visible QUEUE ENTRY. Returns the advanced state with the steer enqueued.
  *
- * The row + broadcast are best-effort (a DB hiccup must not drop the turn); the
- * `pendingNudge` in the returned state is the delivery that actually reaches the
- * model, so it is always set regardless of whether the row write succeeded.
+ * The row + broadcast are best-effort (a DB hiccup must not drop the turn); the queue
+ * entry in the returned state is the delivery that actually reaches the model, so it is
+ * always enqueued regardless of whether the row write succeeded. A floor that has already
+ * fired this turn gets its queue back unchanged — the latch lives on the entry.
  */
 export function persistEngineSteer(
   state: AgentTurnState,
@@ -74,7 +84,11 @@ export function persistEngineSteer(
     };
     deps.broadcast({ type: 'chat:message', agentId, message });
   } catch {
-    /* dashboard visibility is best-effort; pendingNudge below is the real delivery */
+    /* dashboard visibility is best-effort; the queue entry below is the real delivery */
   }
-  return advance(state, { ...(params.extra ?? {}), pendingNudge: content });
+  return advance(state, {
+    steerQueue: enqueueSteer(state.steerQueue, {
+      floor: params.floor, content, key: params.key, atLoop: params.atLoop,
+    }),
+  });
 }

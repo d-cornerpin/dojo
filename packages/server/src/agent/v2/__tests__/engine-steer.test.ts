@@ -11,10 +11,10 @@
 // steer. This test converts the lesson into a build-enforced invariant.
 //
 // Two assertions:
-//   1. persistEngineSteer does BOTH writes (the role='system' row AND pendingNudge).
+//   1. persistEngineSteer does BOTH writes (the role='system' row AND the queue entry).
 //   2. Source-scan of loop.ts: no raw role='system' INSERT whose surrounding block
 //      carries imperative-to-agent text may exist without a paired delivery
-//      (pendingNudge / persistEngineSteer) or an explicit `engine-steer-exempt`
+//      (the steer queue / persistEngineSteer) or an explicit `engine-steer-exempt`
 //      sentinel documenting why it is not a model-visible steer (an enforced gate,
 //      a terminal note, an informational marker). A NEW bare imperative steer that
 //      copies the old raw-INSERT pattern fails CI here.
@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import type { WsEvent } from '@dojo/shared';
 import { persistEngineSteer } from '../engine-steer.js';
 import { initState, type AgentTurnState } from '../state.js';
+import { nextSteer, steerFired, STEER_PRECEDENCE } from '../steer-queue.js';
 
 function freshState(): AgentTurnState {
   return initState({
@@ -42,11 +43,11 @@ function freshState(): AgentTurnState {
 }
 
 describe('persistEngineSteer: does both writes', () => {
-  it('inserts a role=system row AND sets pendingNudge on the returned state', () => {
+  it('inserts a role=system row AND enqueues the steer on the returned state', () => {
     // PHASE-1 T4: the row is written through the single writer module, not a raw
     // statement on an injected connection, so the seam moved from `deps.db` to
     // `deps.insertRow`. The REQUIREMENT is unchanged and is what is asserted below:
-    // a persisted role='system' row carrying the steer's content, AND pendingNudge.
+    // a persisted role='system' row carrying the steer's content, AND the queue entry.
     // Asserting on SQL text would now only prove which string literal we typed.
     let written: { role?: string; content?: string; agentId?: string; turnNumber?: number | null } | null = null;
     const events: WsEvent[] = [];
@@ -62,7 +63,9 @@ describe('persistEngineSteer: does both writes', () => {
 
     const before = freshState();
     const content = '[System: STOP and call tracker_create_project.]';
-    const after = persistEngineSteer(before, { agentId: 'a1', content, turnNumber: 7 }, deps);
+    const after = persistEngineSteer(
+      before, { agentId: 'a1', content, turnNumber: 7, floor: 'tracker-stop-directive', atLoop: 1 }, deps,
+    );
 
     // Dashboard row: a role='system' message carrying the content, for this turn.
     expect(written).not.toBeNull();
@@ -79,34 +82,43 @@ describe('persistEngineSteer: does both writes', () => {
       expect(chatMsg.message.content).toBe(content);
     }
 
-    // Model-visible delivery: pendingNudge set on the returned state.
-    expect(after.pendingNudge).toBe(content);
-    expect(before.pendingNudge).toBeNull(); // input not mutated
+    // Model-visible delivery: the steer is queued on the returned state, and it is the
+    // next one out. PHASE-4 T3: queued is not delivered — the loop's receipt read decides
+    // that — so what is asserted here is the CHANNEL, which is what this guard owns.
+    expect(nextSteer(after.steerQueue)?.content).toBe(content);
+    expect(after.steerQueue.pending.length).toBe(1);
+    expect(before.steerQueue.pending).toEqual([]); // input not mutated
   });
 
-  it('merges extra one-shot flags into the same advance', () => {
+  it("sets the floor's one-shot latch in the same advance as the steer", () => {
+    // PHASE-4 T3: the `extra` bag this clause used to check is GONE. Every one of its nine
+    // production uses was a per-site latch boolean, and the latch is the queue ENTRY now —
+    // so the requirement ("the steer and its guard land atomically") is asserted against
+    // the mechanism that carries it, and a site can no longer forget to pass its flag.
     const deps = {
       insertRow: () => null,
       broadcast: () => undefined,
     } as unknown as Parameters<typeof persistEngineSteer>[2];
     const after = persistEngineSteer(
       freshState(),
-      { agentId: 'a1', content: 'x', turnNumber: 1, extra: { nudgedForTrackerThisTurn: true } },
+      { agentId: 'a1', content: 'x', turnNumber: 1, floor: 'tracker-stop-directive', atLoop: 1 },
       deps,
     );
-    expect(after.nudgedForTrackerThisTurn).toBe(true);
-    expect(after.pendingNudge).toBe('x');
+    expect(steerFired(after.steerQueue, 'tracker-stop-directive')).toBe(true);
+    expect(nextSteer(after.steerQueue)?.content).toBe('x');
   });
 
-  it('still sets pendingNudge even if the dashboard row write throws (delivery is load-bearing)', () => {
+  it('still enqueues the steer even if the dashboard row write throws (delivery is load-bearing)', () => {
     const deps = {
       insertRow: () => {
         throw new Error('db down');
       },
       broadcast: () => undefined,
     } as unknown as Parameters<typeof persistEngineSteer>[2];
-    const after = persistEngineSteer(freshState(), { agentId: 'a1', content: 'y', turnNumber: 1 }, deps);
-    expect(after.pendingNudge).toBe('y');
+    const after = persistEngineSteer(
+      freshState(), { agentId: 'a1', content: 'y', turnNumber: 1, floor: 'hoarding-advisory', atLoop: 1 }, deps,
+    );
+    expect(nextSteer(after.steerQueue)?.content).toBe('y');
   });
 });
 
@@ -148,7 +160,7 @@ const IMPERATIVE = /\bSTOP\b|\bMUST\b|\bDo NOT\b|call tracker_|KEEP GOING|Never 
 
 // A site is compliant if its block pairs the row with a real delivery or is an
 // explicitly documented non-steer.
-const PAIRED = /pendingNudge|persistEngineSteer|engine-steer-exempt/;
+const PAIRED = /enqueueSteer|persistEngineSteer|engine-steer-exempt/;
 
 function isCommentLine(line: string): boolean {
   const t = line.trim();
@@ -178,11 +190,11 @@ describe('RC-19: no bare-system imperative steer in loop.ts (build-enforced inva
       // the raw window.
       if (PAIRED.test(window.join('\n'))) return;
 
-      violations.push(`loop.ts:${i + 1} | bare role='system' imperative steer (no pendingNudge / persistEngineSteer / engine-steer-exempt in block)`);
+      violations.push(`loop.ts:${i + 1} | bare role='system' imperative steer (no enqueueSteer / persistEngineSteer / engine-steer-exempt in block)`);
     });
 
     // If this fails: route the steer through persistEngineSteer (so it reaches the
-    // model via pendingNudge, not just the dashboard), or, if the row is genuinely
+    // model via the steer queue, not just the dashboard), or, if the row is genuinely
     // NOT a model-visible directive (an enforced gate, a terminal status note, an
     // informational marker), add an `engine-steer-exempt: <reason>` comment in the
     // block documenting why. See engine-steer.ts and RC-19.
@@ -211,7 +223,7 @@ const SERVER_SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 
 // For these subsystems the sanctioned model-visible channel is the awareness NOTICE
 // (postAgentNotice), in addition to the loop-level steer helpers / exempt sentinel.
-const SUBSYSTEM_PAIRED = /postAgentNotice|persistEngineSteer|pendingNudge|engine-steer-exempt/;
+const SUBSYSTEM_PAIRED = /postAgentNotice|persistEngineSteer|enqueueSteer|engine-steer-exempt/;
 
 function subsystemFiles(dir: string): string[] {
   const abs = path.join(SERVER_SRC, dir);
@@ -235,7 +247,7 @@ function scanBareImperativeSystemInserts(file: string, paired: RegExp): string[]
     const codeText = window.filter((l) => !isCommentLine(l)).join('\n');
     if (!IMPERATIVE.test(codeText)) return;
     if (paired.test(window.join('\n'))) return;
-    found.push(`${rel}:${i + 1} | bare role='system' imperative steer (no postAgentNotice / persistEngineSteer / pendingNudge / engine-steer-exempt in block)`);
+    found.push(`${rel}:${i + 1} | bare role='system' imperative steer (no postAgentNotice / persistEngineSteer / enqueueSteer / engine-steer-exempt in block)`);
   });
   return found;
 }
@@ -285,33 +297,121 @@ describe('RC-19: no bare-system imperative steer in tracker/ + scheduler/ (build
 // asserts on what callModel actually received. These are the build-enforced source
 // invariants that stop the shape gate being reintroduced.
 
-describe('T1: the pendingNudge drain is not gated on the assembled tail shape', () => {
+describe('T1: the steer drain is not gated on the assembled tail shape', () => {
   it('the drain injects msg.pending-nudge with no test on the last message role', () => {
     const lines = fs.readFileSync(LOOP_TS, 'utf8').split('\n');
     const drainIdx = lines.findIndex((l) => l.includes("injectRegistryMessage('msg.pending-nudge'"));
     // Guards against the scan silently matching nothing if the site is renamed.
     expect(drainIdx).toBeGreaterThan(0);
 
-    // The enclosing gate sits just above the injection.
+    // The enclosing gate sits just above the injection. PHASE-4 T3: the gate is now
+    // "the queue offered an entry", which is the same requirement — a steer is drained
+    // when one exists — expressed against the mechanism that replaced the single slot.
     const gate = lines
-      .slice(Math.max(0, drainIdx - 4), drainIdx + 1)
+      .slice(Math.max(0, drainIdx - 5), drainIdx + 1)
       .filter((l) => !isCommentLine(l))
       .join('\n');
-    expect(gate).toMatch(/if \(state\.pendingNudge/);
+    expect(gate).toMatch(/if \(steerToDeliver\)/);
     // If this fails: a tail-shape condition has been put back on the drain. It
     // cannot ever be true — assembler.ts:301 guarantees the assembled tail is a
     // user-role message — so it silently kills every post-tool-call steer.
     expect(gate).not.toMatch(/messages\[messages\.length - 1\]\.role/);
   });
 
-  it('the drain clears pendingNudge ONLY when the injection actually landed', () => {
+  it('a steer leaves the queue ONLY on a receipt-confirmed assembly inclusion', () => {
     const src = fs.readFileSync(LOOP_TS, 'utf8');
-    // The clear must be guarded by the injection's own return value, so a steer
-    // that did not reach the outgoing array survives to the next boundary instead
-    // of being silently dropped.
+    // PHASE-4 T3, the requirement T1 landed and this task strengthened. T1's version
+    // cleared the slot on `injectRegistryMessage` returning true — which proves the steer
+    // was PUSHED, not that it survived to the provider. The array is mutated afterwards
+    // (capability enforcement, five more injections, the merge/sanitise passes), so the
+    // mark now reads the RECEIPT LAYER's own lane ids off the array the provider is
+    // handed. A steer that was pushed and then dropped stays queued.
     expect(src).toMatch(
-      /if \(injectRegistryMessage\('msg\.pending-nudge'[^\n]*\)[\s\S]{0,120}?pendingNudge: null/,
+      /markSteerDelivered[\s\S]{0,200}?laneIdsForThisCall\.includes\('msg\.pending-nudge'\)|laneIdsForThisCall\.includes\('msg\.pending-nudge'\)[\s\S]{0,200}?markSteerDelivered/,
     );
+    // …and the lane ids are read off the SAME array, in the same statement that feeds the
+    // receipt — not off a copy that could disagree with what was sent.
+    expect(src).toMatch(/const laneIdsForThisCall = collectMessageLaneIds\(messages\);/);
+    expect(src).toMatch(/messageEntryIds: laneIdsForThisCall,/);
+  });
+});
+
+// ── PHASE-4 T3: THE QUEUE IS THE SOLE STEER WRITER ────────────────────────────────────
+//
+// The plan's T6 exit gate says "the conformance walk proves the steer queue is the SOLE
+// steer writer". It lands HERE, in the task that builds the queue, because a walk written
+// three tasks later would be scanning a file nobody can still remember the shape of.
+//
+// Four clauses, and each one has something to find (a walk that matches nothing passes).
+
+describe('the steer queue is the SOLE steer writer (T6 exit clause, landed early)', () => {
+  const loopSrc = () => fs.readFileSync(LOOP_TS, 'utf8');
+  const codeLines = (src: string) => src.split('\n').filter((l) => !isCommentLine(l));
+
+  it('ONE DOOR: exactly one drain site in loop.ts', () => {
+    const hits = codeLines(loopSrc()).filter((l) => l.includes("injectRegistryMessage('msg.pending-nudge'"));
+    expect(hits.length).toBe(1);
+  });
+
+  it('EVERY steerQueue write goes through the module — no raw literal, no spread', () => {
+    // A site that builds a queue by hand would bypass the latch AND the precedence table,
+    // which is exactly how 26 sites came to own one string between them.
+    const SANCTIONED = /(enqueueSteer|markSteerDelivered|markSteerAttempted|clearSteerQueue|emptySteerQueue)\(/;
+    const src = loopSrc() + '\n' + fs.readFileSync(path.join(SERVER_SRC, 'agent/v2/engine-steer.ts'), 'utf8');
+    // A `steerQueue:` line either NAMES a module function on the same line, or opens a
+    // multi-line call whose function is the line above it (`steerQueue: enqueueSteer({`
+    // wrapped by the formatter). Both shapes are accepted; a raw object or spread is not.
+    const lines = src.split('\n');
+    const writes: string[] = [];
+    lines.forEach((l, i) => {
+      if (isCommentLine(l) || !/steerQueue:\s*/.test(l)) return;
+      const window = [l, lines[i + 1] ?? '', lines[i + 2] ?? ''].join('\n');
+      if (!SANCTIONED.test(window)) writes.push(`${i + 1}: ${l.trim()}`);
+    });
+    const total = lines.filter((l) => !isCommentLine(l) && /steerQueue:\s*/.test(l)).length;
+    expect(total).toBeGreaterThanOrEqual(20); // the scan finds the real population
+    expect(writes).toEqual([]);
+  });
+
+  it('the single slot is GONE from the server tree as an IDENTIFIER', () => {
+    // #15: this is a POSITIVE enumeration of the replacement, not an argument from absence
+    // — the queue above is live and tested; this clause only stops the old channel being
+    // resurrected beside it. It is T6's grep-zero, landed early and kept honest by the
+    // clause above it.
+    //
+    // SCOPE, stated: the field, not the WORD. `state.ts` and `steer-queue.ts` carry the
+    // demolition's own `requirement preserved:` prose, which names what died — a tombstone
+    // is the one place the old name must survive (roadmap #9). What may never come back is
+    // a live read or write, so the scan is for a property access or a declaration, in code.
+    const IDENT = /\.pendingNudge\b|\bpendingNudge\s*[:=?]/;
+    // PRODUCT source: a test file may quote the dead name (this one does, right above).
+    const roots = [path.resolve(SERVER_SRC), path.resolve(SERVER_SRC, '../../shared/src')];
+    const offenders: string[] = [];
+    let scanned = 0;
+    const walk = (dir: string) => {
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const abs = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== '__tests__' && e.name !== 'node_modules') walk(abs); continue; }
+        if (!/\.tsx?$/.test(e.name) || /\.(test|spec)\.tsx?$/.test(e.name)) continue;
+        scanned++;
+        fs.readFileSync(abs, 'utf8').split('\n').forEach((l, i) => {
+          if (!isCommentLine(l) && IDENT.test(l)) offenders.push(`${path.relative(SERVER_SRC, abs)}:${i + 1}`);
+        });
+      }
+    };
+    for (const r of roots) if (fs.existsSync(r)) walk(r);
+    expect(scanned).toBeGreaterThan(200); // the walk actually read the tree
+    expect(offenders).toEqual([]);
+  });
+
+  it('every DECLARED floor has a real site, and every site names a declared floor', () => {
+    // The vacuity guard that matters most: a precedence table full of ids nobody enqueues
+    // is a table that documents nothing. The compiler already refuses an UNDECLARED id
+    // (the union is the table's own keys), so what needs proving is the other direction.
+    const src = loopSrc() + fs.readFileSync(path.join(SERVER_SRC, 'agent/v2/engine-steer.ts'), 'utf8');
+    const used = new Set([...src.matchAll(/floor: '([a-z0-9-]+)'/g)].map((m) => m[1]));
+    const declared = STEER_PRECEDENCE.map((f) => f.id);
+    expect(declared.filter((id) => !used.has(id))).toEqual([]);
   });
 });
 

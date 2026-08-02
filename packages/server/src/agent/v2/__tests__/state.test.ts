@@ -53,7 +53,12 @@ describe('initState', () => {
     expect(s.toolCallsExecutedThisTurn).toBe(0);
     expect(s.outputTokensEscalated).toBe(0);
     expect(s.consecutivePermissionDenials).toBe(0);
-    expect(s.spinningNudgeCount).toBe(0);
+    // PHASE-4 T3: `spinningNudgeCount` is a queue fire count now, so the counter that
+    // starts at zero is the queue itself — no entries, no latches, nothing delivered.
+    expect(s.steerQueue.pending.length).toBe(0);
+    expect(s.steerQueue.fired.length).toBe(0);
+    expect(s.steerQueue.delivered.length).toBe(0);
+    expect(s.steerQueue.seq).toBe(0);
   });
 });
 

@@ -110,7 +110,7 @@ describe('D15 — target:"system" renders cannot see per-turn fields', () => {
     // A vacuity guard on everything below: a gutted list would make the negative fixture
     // read nothing and "pass" by not testing.
     expect(VOLATILE_TURN_FIELDS.length).toBeGreaterThanOrEqual(10);
-    for (const named of ['turnContext', 'ttsEngine', 'loopCount', 'turnNumber', 'pendingNudge']) {
+    for (const named of ['turnContext', 'ttsEngine', 'loopCount', 'turnNumber', 'pendingSteer']) {
       expect(VOLATILE_TURN_FIELDS as readonly string[]).toContain(named);
     }
   });

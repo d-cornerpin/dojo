@@ -93,7 +93,9 @@ describe('the A2A-handoff floor itself still fires only for a human counterparty
   it("the floor's hard arm excludes an agent sender (counterpartyIsAgentSender)", () => {
     // The floor exists so a turn that delegates and then says nothing still
     // leaves the WAITING HUMAN with a line. It must never fire at a peer.
-    expect(loop).toMatch(/nudgedForA2AHandoffFloorThisTurn && !counterpartyIsAgentSender/);
+    // PHASE-4 T3: the floor's one-shot latch is a QUEUE ENTRY now, not a state boolean.
+    // The clause follows the mechanism; the requirement it guards is untouched.
+    expect(loop).toMatch(/steerFired\(state\.steerQueue, 'a2a-handoff-floor'\) && !counterpartyIsAgentSender/);
     expect(loop).toMatch(/const counterpartyIsAgentSender = counterparty\.kind === 'user' && !!counterparty\.senderIsAgent;/);
   });
 });

@@ -198,8 +198,9 @@ export interface AssemblyContext {
    *  technique matcher + context-gap detector. Attachment-aware sharpening is
    *  applied downstream via buildTechniqueMatchQuery. */
   lastUserMessageContent: string;
-  /** Single-shot steering nudge from loop state (state.pendingNudge). */
-  pendingNudge: string | null;
+  /** The ONE steer this iteration's drain chose from the ordered queue (PHASE-4 T3).
+   *  Null until the drain picks it; the queue, not this field, is what holds the rest. */
+  pendingSteer: string | null;
 
   // ── Loop-computed injection payloads (set by the loop at each §3c site) ──
   // These injections' CONTENT is computed by interleaved loop logic (the
@@ -228,7 +229,7 @@ export interface AssemblyContext {
 //
 // Research 06 §4 named the leak path exactly: "any registry entry render(ctx)
 // reading per-turn AssemblyContext fields (builder threads turnContext /
-// counterparty / ttsEngine / loopCount / turnNumber / pendingNudge into EVERY
+// counterparty / ttsEngine / loopCount / turnNumber / pendingSteer into EVERY
 // entry — nothing type-enforces system entries can't read them)". The system
 // prompt is the cached prefix (roadmap #10); one system render reading one of
 // these fields silently multiplies every agent's token cost and breaks NO test,
@@ -262,7 +263,7 @@ export const VOLATILE_TURN_FIELDS = [
   'loopCount',
   'turnNumber',
   'lastUserMessageContent',
-  'pendingNudge',
+  'pendingSteer',
   'techniqueStrong',
   'techniqueWeakHint',
   'delegationHint',
@@ -293,7 +294,7 @@ export interface AssemblyTurnState {
   loopCount: number;
   turnNumber: number;
   lastUserMessageContent: string;
-  pendingNudge: string | null;
+  pendingSteer: string | null;
 }
 
 // ───────────────────────────────────────────────────────────────────────────

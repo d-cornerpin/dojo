@@ -10,6 +10,7 @@
 
 import type Anthropic from '@anthropic-ai/sdk';
 import type { ToolCall } from '@dojo/shared';
+import { emptySteerQueue, type SteerQueue } from './steer-queue.js';
 
 // ── Types ──
 
@@ -129,7 +130,17 @@ export interface AgentTurnState {
   lastResponse: ModelCallResult | null;
   toolCalls: ToolCall[];
   toolResults: ToolResultRecord[];
-  pendingNudge: string | null;            // injected as synthetic user msg next assemble; never persisted
+  /**
+   * PHASE-4 T3: the ORDERED STEER QUEUE replaces the single `pendingNudge` slot.
+   *
+   * requirement preserved: an engine directive that expects the model to ACT must reach
+   * the model — drained into the assembled array as a synthetic user message, never
+   * persisted. What is GONE is the single slot's "last writer wins", which destroyed
+   * every other steer written in the same beat (23 of the 26 setting sites overwrote it
+   * unconditionally), and the ~20 scattered per-site `nudgedForX` booleans that latched
+   * those sites — the latch is the queue ENTRY now, one per floor, never shared.
+   */
+  steerQueue: SteerQueue;
 
   // ── Loop break / repetition ──
   recentToolSignatures: string[];
@@ -139,13 +150,9 @@ export interface AgentTurnState {
   outputTokensEscalated: number;          // 8000, 16000, 32000, 64000
   consecutivePermissionDenials: number;
   truncationRetryCount: number;
-  spinningNudgeCount: number;             // Part XVIII §F, consecutive ignored spinning nudges
   consecutiveNoResultTools: number;       // tracks "No results found" / "not in memory" returns
-  nudgedForNoResults: boolean;            // fire-once per turn for the no-results nudge
   lastResponseSig: string | null;         // canonical signature of last model response (for repetition detection)
-  nudgedForRepetition: boolean;           // fire-once per turn for the repetition nudge
   retriedEmptyResponse: boolean;          // v1 phase 1, silent retry has fired this turn (#38)
-  nudgedForEmptyResponse: boolean;        // v1 phase 2, explicit nudge has fired this turn (#38)
 
   // ── Per-signature thrash gate ──
   // When the task-thrash detector trips on a specific canonical tool
@@ -257,21 +264,6 @@ export interface AgentTurnState {
    */
   nonTrackerToolCalls: number;
   /**
-   * v2.5.31, message id of the most recent inbound ASSIGN/QUESTION/BLOCK
-   * the missed-reply enforcer has already nudged about this handleMessage
-   * invocation. Real fire-once: if the next iteration produces text-no-tool
-   * for the same assign id, the loop hard-stops instead of nudging again.
-   * Set to null at turn start; updated when the enforcer fires.
-   */
-  nudgedForMissedReplyOnAssignId: string | null;
-  /**
-   * v2.5.40, fire-once flag for the tracker nudge. Set to true after the
-   * runtime nudge ("you've made N tool calls without an active tracker
-   * task") is injected so it doesn't fire again in the same turn even if
-   * the agent keeps adding tool calls without creating a project.
-   */
-  nudgedForTrackerThisTurn: boolean;
-  /**
    * v2.5.40, set when the agent calls work_update(action="status") or
    * work_update(action="complete_step") in this turn. Different from
    * trackerToolCalledThisTurn (which fires on ANY tracker-family call,
@@ -280,13 +272,6 @@ export interface AgentTurnState {
    * "agent advanced or closed a task in this turn" (specific).
    */
   trackerStatusUpdatedThisTurn: boolean;
-  /**
-   * v2.5.40, fire-once flag for the end-of-turn close-out nudge ("you
-   * have in_progress tasks but didn't update any status this turn"). The
-   * nudge fires when the agent is about to end the turn with dangling
-   * tasks; the hardcap ends the turn cleanly if the agent ignores it.
-   */
-  nudgedForTrackerCloseThisTurn: boolean;
   /**
    * Running count of HEAVY LOADS this turn: successful tool results whose text
    * payload was at least LOADING_RESULT_MIN_TOKENS (2026-07-08 rewrite, was a
@@ -314,13 +299,6 @@ export interface AgentTurnState {
    * in-flight helper inside tracker steps.
    */
   structuringToolCalledThisTurn: boolean;
-  /**
-   * v2.5.43, fire-once flag for the loud system message that
-   * accompanies the first hoarding-gate refusal in a turn. The
-   * synthetic tool-result refusal happens on every blocked call; the
-   * system message only fires once per turn.
-   */
-  nudgedForHoardingThisTurn: boolean;
   /**
    * D3, the assembled-context utilization ratio (0..1) from the most recent
    * per-iteration compaction gate. The anti-hoarding advisory reads this so it
@@ -350,61 +328,7 @@ export interface AgentTurnState {
    * tell "gate is armed for this turn" from "no danglers."
    */
   nudgedForCloseOutThisTurn: boolean;
-  /**
-   * Set true the first time the "added a note then stopped" detector fires
-   * in a turn. Pattern: agent's last tool call was work_note, the
-   * task is still in_progress, and the model produced text without further
-   * tool calls. Without the flag the nudge would re-fire every loop
-   * iteration if the model insists on stopping. One-shot: after the nudge,
-   * if the model still ends with no tools, the turn ends normally.
-   */
-  nudgedForAddNotesStopThisTurn: boolean;
-  /**
-   * Set true the first time the grounding guard (OPEN-14) fires in a turn, the
-   * terminal reply claimed a completed delivery to a named third party but no
-   * delivery tool fired this turn. One-shot: the agent gets one correction to
-   * actually send (or confirm a prior send), then the turn ends normally so a
-   * model that keeps re-asserting can't spin the loop.
-   */
-  nudgedForUngroundedClaimThisTurn: boolean;
-  /**
-   * RC-12 denial direction. Set true the first time the delivery-DENIAL guard fires
-   * this turn: the terminal reply denies having sent something ("Not yet", "sending
-   * now") but the engine receipt ledger proves it already did. One-shot correction
-   * (steer with the receipt fact), then the turn ends normally, so a model that keeps
-   * denying can't spin the loop. Mirrors nudgedForUngroundedClaimThisTurn.
-   */
-  nudgedForDeliveryDenialThisTurn: boolean;
 
-  /**
-   * RC-13.2 save-claim floor. Set true the first time the failed-save-claim guard
-   * fires this turn: the reply claims something was saved/stored/remembered but every
-   * vault_remember this turn was REJECTED and nothing was stored. One-shot steer, then
-   * the turn ends normally.
-   */
-  nudgedForFailedSaveClaimThisTurn: boolean;
-  /**
-   * Set true the first time the thrash-gate DRIFT path nudges this turn
-   * (comms-audit G-BLK-1). Drift (gate on while the agent varies call signatures)
-   * is a false-positive-prone signal, legitimate progress also varies signatures, 
-   * so it must NOT terminally block a task. Instead it injects one visible nudge
-   * (with the escape-hatch) and resets the drift window; MAX_TOOL_LOOPS bounds any
-   * real spiral. Only the explicit-refusal-count path terminally blocks. One-shot.
-   */
-  nudgedForThrashDriftThisTurn: boolean;
-  /**
-   * Set true the first time the "going idle with in_progress task" detector
-   * fires in a turn. Pattern: the agent is ending the turn (no more tool
-   * calls) with at least one in_progress task assigned to them AND did NOT
-   * transition that task to complete/paused/blocked this turn. The nudge
-   * walks the agent through the decision matrix (paused vs blocked vs
-   * keep-going). One-shot so the model can't loop on it.
-   */
-  nudgedForGoingIdleWithInProgressThisTurn: boolean;
-  steeredForGhostedAskThisTurn: boolean;  // ghosted-work-ask floor fired once (bare [no-reply] on a work-classified human ask)
-  ghostedAskSecondSteerThisTurn: boolean; // second ghosted-ask steer fired (carries the recorded answer for the model to restate)
-  steeredForSilentCloseoutThisTurn: boolean; // silent-closeout steer fired (task completed this turn, nothing surfaced; the AGENT must say it)
-  steeredForDelegationExitThisTurn: boolean; // delegation-exit steer fired (user-triggered turn about to exit silently on an async hand-off)
   /**
    * The task id of a project the ENGINE itself auto-scaffolded THIS turn
    * (mid-turn floor at 6+ work calls), or null. The engine owns the
@@ -417,35 +341,6 @@ export interface AgentTurnState {
    * bulk-closing unrelated danglers.
    */
   autoScaffoldedTaskIdThisTurn: string | null;
-  /**
-   * F3: fire-once guard for the owed mid-turn interrupt re-prompt. A user message
-   * that arrives WHILE a turn is running is not an interrupt; its wakeup row rides
-   * into the running turn's per-iteration reassembled tail, so at teardown the
-   * batch-claim (claimAssembledSiblings) marks it served because it was "in context
-   * when we answered", even if the model never actually addressed it. When the
-   * natural turn-end path finds such an owed arrival, it re-prompts the model ONCE
-   * (the message quoted verbatim, with a [no-reply] escape) and sets this flag so
-   * the re-prompt can never re-fire and spin the loop.
-   */
-  nudgedForOwedInterruptThisTurn: boolean;
-  /**
-   * Promise floor fire-once guard. The last member of the fall-asleep family: a
-   * user turn whose ENTIRE deliverable is a forward promise to start ("On it. Let
-   * me pull up all your calendars.") with no tool call and nothing actually done.
-   * When the natural turn-end path detects that shape on a negligible-work turn,
-   * it steers the model ONCE to do the work now and sets this flag; a second
-   * promise ending after the steer logs a tripwire and lets the turn end rather
-   * than spin the loop.
-   */
-  nudgedForPromiseFloorThisTurn: boolean;
-  /**
-   * A user-triggered turn tried to end via the asynchronous agent-to-agent
-   * handoff contract without sending the user anything at the end. The floor
-   * steers the model ONCE to report to the user first and sets this flag; if
-   * the model ends silently AGAIN, the engine delivers a handoff notice itself
-   * (pickA2AHandoffAck) so the user is never left in silence.
-   */
-  nudgedForA2AHandoffFloorThisTurn: boolean;
   /**
    * Set true at preflight when there is an unacknowledged compaction
    * recall nudge in the message log (i.e. compaction fired and the
@@ -540,7 +435,7 @@ export function initState(params: InitStateParams): AgentTurnState {
     lastResponse: null,
     toolCalls: [],
     toolResults: [],
-    pendingNudge: null,
+    steerQueue: emptySteerQueue(),
 
     recentToolSignatures: [],
 
@@ -548,13 +443,9 @@ export function initState(params: InitStateParams): AgentTurnState {
     outputTokensEscalated: 0,
     consecutivePermissionDenials: 0,
     truncationRetryCount: 0,
-    spinningNudgeCount: 0,
     consecutiveNoResultTools: 0,
-    nudgedForNoResults: false,
     lastResponseSig: null,
-    nudgedForRepetition: false,
     retriedEmptyResponse: false,
-    nudgedForEmptyResponse: false,
 
     thrashGatedSignatures: [],
     thrashGateRefusalCount: 0,
@@ -577,32 +468,15 @@ export function initState(params: InitStateParams): AgentTurnState {
     trackerWriteThisTurn: false,
     workRowOpenedThisTurn: false,
     nonTrackerToolCalls: 0,
-    nudgedForMissedReplyOnAssignId: null,
-    nudgedForTrackerThisTurn: false,
     trackerStatusUpdatedThisTurn: false,
-    nudgedForTrackerCloseThisTurn: false,
     heavyLoadsThisTurn: 0,
     structuringToolCalledThisTurn: false,
-    nudgedForHoardingThisTurn: false,
     lastContextRatio: 0,
     danglingTaskIds: [],
     closeOutGateSatisfied: false,
     nudgedForCloseOutThisTurn: false,
-    nudgedForAddNotesStopThisTurn: false,
-    nudgedForUngroundedClaimThisTurn: false,
-    nudgedForDeliveryDenialThisTurn: false,
 
-    nudgedForFailedSaveClaimThisTurn: false,
-    nudgedForThrashDriftThisTurn: false,
-    nudgedForGoingIdleWithInProgressThisTurn: false,
-    steeredForGhostedAskThisTurn: false,
-    ghostedAskSecondSteerThisTurn: false,
-    steeredForSilentCloseoutThisTurn: false,
-    steeredForDelegationExitThisTurn: false,
     autoScaffoldedTaskIdThisTurn: null,
-    nudgedForOwedInterruptThisTurn: false,
-    nudgedForPromiseFloorThisTurn: false,
-    nudgedForA2AHandoffFloorThisTurn: false,
     awaitingPostCompactRecall: false,
     nudgedForPostCompactRecall: false,
     taskClosedWithTextThisTurn: false,
@@ -650,8 +524,11 @@ export function validate(state: AgentTurnState): void {
   if (state.recoveryStreak && state.recoveryStreak.count > 10) {
     throw new StateValidationError(`recovery streak runaway: ${state.recoveryStreak.kind} count=${state.recoveryStreak.count}`);
   }
-  if (state.spinningNudgeCount > 10) {
-    throw new StateValidationError(`spinning nudge runaway: ${state.spinningNudgeCount}`);
+  // PHASE-4 T3: the spinning nudge's own counter became a queue-keyed latch
+  // (`steerFireCount(q, 'spinning')`), so the runaway invariant now guards the QUEUE —
+  // wider than the field it replaces, because it catches any floor storming, not one.
+  if (state.steerQueue.fired.length > 40) {
+    throw new StateValidationError(`steer runaway: ${state.steerQueue.fired.length} steers this turn`);
   }
   if (state.toolCalls.length > 100) {
     throw new StateValidationError(`unreasonable tool call batch: ${state.toolCalls.length}`);

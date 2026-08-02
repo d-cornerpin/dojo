@@ -839,7 +839,7 @@ describe('runV2Turn integration', () => {
   it('PRESERVATION #38: empty response triggers silent retry, then nudge, then toast', async () => {
     // v1 behavior: 3-phase recovery from empty model responses.
     //   phase 1, silent retry (no nudge, no toast)
-    //   phase 2, explicit pendingNudge injection
+    //   phase 2, explicit steer injection
     //   phase 3, chat:error toast
     // v2 used to skip straight to phase 3. This test enforces the full chain.
     let modelCallCount = 0;
@@ -981,7 +981,7 @@ describe('runV2Turn integration', () => {
   it('PRESERVATION: no-results detector nudges after 2 consecutive empty turns, breaks after a 3rd', async () => {
     // v2/loop.ts:1194-1232, when every tool result in a turn contains
     // "No results found" / "not in memory" for two consecutive iterations,
-    // a pendingNudge fires telling the model to switch tactics. If the
+    // a steer fires telling the model to switch tactics. If the
     // third iteration is STILL all-no-results, the loop breaks with a
     // NO_RESULTS chat:error. This pins both transitions.
     let modelCallCount = 0;
@@ -1705,7 +1705,7 @@ describe('runV2Turn integration', () => {
 //
 // Every engine steer written after a tool call was structurally undeliverable
 // from 2026-07-10 until this fix. The drain at loop.ts:3518 injected
-// `pendingNudge` only when the assembled tail was role='assistant' — and
+// the steer only when the assembled tail was role='assistant' — and
 // memory/assembler.ts:301 APPENDS a user-role engine line whenever the tail is an
 // assistant message, precisely so a trailing assistant turn is never handed to a
 // provider. So the tail the drain inspected structurally never was 'assistant':
@@ -1730,7 +1730,7 @@ function toolResultTail(): Array<Record<string, unknown>> {
   ];
 }
 
-describe('T1: engine steer delivery (the pendingNudge drain)', () => {
+describe('T1: engine steer delivery (the steer-queue drain)', () => {
   /** Deep snapshots of every messages array handed to callModel, in call order. */
   let seenByModel: Array<Array<Record<string, unknown>>>;
 
@@ -1763,7 +1763,7 @@ describe('T1: engine steer delivery (the pendingNudge drain)', () => {
 
   it('delivers a steer set mid-turn to the NEXT model call even though the assembled tail is a tool-result carrier', async () => {
     // Drive the empty-response recovery chain, which is a real in-loop steer
-    // writer: call 1 empty → silent retry; call 2 empty → sets pendingNudge;
+    // writer: call 1 empty → silent retry; call 2 empty → enqueues the steer;
     // call 3 must CARRY that steer. Before the fix call 3 is byte-for-byte the
     // same array as calls 1 and 2 — the exact "logged as sent, never received"
     // signature the kit instrument measured live.
@@ -1812,7 +1812,7 @@ describe('T1: engine steer delivery (the pendingNudge drain)', () => {
     expect(steerAt).toBeGreaterThan(resultAt);
   });
 
-  it('clears pendingNudge on a successful drain: the steer rides exactly ONE model call, never repeats', async () => {
+  it('marks the entry delivered on a confirmed drain: the steer rides exactly ONE model call, never repeats', async () => {
     // Call 3 carries the steer and then calls a tool, so the loop assembles a
     // FOURTH time. A steer that is delivered but never cleared would ride call 4
     // as well (the engine repeating itself at the model); a steer cleared without
@@ -1852,7 +1852,7 @@ describe('T1: engine steer delivery (the pendingNudge drain)', () => {
   //     treats the paired `tool_use` as orphaned, strips it, and deletes the assistant
   //     message ("agent repeats itself", model.ts:215-223). The hint was the only FOLDER in
   //     the tree (`grep` for the fold expression at this HEAD: one hit, now zero), so the
-  //     law's live subject is the pendingNudge drain — and the three clauses immediately
+  //     law's live subject is the steer drain — and the three clauses immediately
   //     above this note hold it there: "appends the steer as its OWN user-role message,
   //     never folded into another message", "keeps alternation legal", and "delivers a steer
   //     mid-turn even though the assembled tail is a tool-result carrier". The law is
