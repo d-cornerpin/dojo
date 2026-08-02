@@ -1,9 +1,22 @@
-// ════════════════════════════════════════
-// System Control Tools (Phase 5A)
-// Mouse, Keyboard, Screenshot, AppleScript
-// ════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════════════
+// System Control Tools (Phase 5A) — Mouse, Keyboard, Screenshot, AppleScript
+//
+// ⚠ NO SHELL LIVES IN THIS FILE (PHASE-5 T3 Step 2). Every call here used to
+// build a command STRING and hand it to `execSync`, which is `/bin/sh -c`. Five
+// of the six interpolated a value the model chose, and `keyboard_type` did it
+// with a hand-rolled single-quote escape on text an agent composed — gated by
+// nothing but `system_control`, so an agent granted *"control the mouse and
+// keyboard"* held a shell. §T0-PINS P7 records `osascript -` as the same class.
+//
+// `execFileSync(program, argv)` is what stands here now: a program and an
+// argument VECTOR, so the bytes never reach a parser. The vectors are built by
+// `system-control-argv.ts`, which is PURE — the splitting that `/bin/sh` used to
+// do (a key combo is FOUR arguments, not one string) is explicit there, where a
+// test can read it, and `system-control-argv.test.ts` asserts an injection
+// payload comes back as one inert element.
+// ════════════════════════════════════════════════════════════════════════════
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -11,6 +24,9 @@ import { createLogger } from '../logger.js';
 import { callModel } from './model.js';
 import { getDb } from '../db/connection.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
+import {
+  clickArgv, moveArgv, keyComboArgv, typeTextArgv, screencaptureArgv,
+} from './system-control-argv.js';
 
 const logger = createLogger('system-control');
 
@@ -21,7 +37,7 @@ let cliclickAvailable: boolean | null = null;
 function checkCliclick(): boolean {
   if (cliclickAvailable !== null) return cliclickAvailable;
   try {
-    execSync('which cliclick', { encoding: 'utf-8', timeout: 5000 });
+    execFileSync('which', ['cliclick'], { encoding: 'utf-8', timeout: 5000 });
     cliclickAvailable = true;
   } catch {
     cliclickAvailable = false;
@@ -41,22 +57,10 @@ export function mouseClick(
 
   const { x, y, click_type = 'left' } = args;
 
-  let cmd: string;
-  switch (click_type) {
-    case 'right':
-      cmd = `cliclick rc:${Math.round(x)},${Math.round(y)}`;
-      break;
-    case 'double':
-      cmd = `cliclick dc:${Math.round(x)},${Math.round(y)}`;
-      break;
-    default:
-      cmd = `cliclick c:${Math.round(x)},${Math.round(y)}`;
-  }
-
   logger.info('Mouse click', { x, y, click_type }, agentId);
 
   try {
-    execSync(cmd, { timeout: 5000, encoding: 'utf-8' });
+    execFileSync('cliclick', clickArgv(x, y, click_type), { timeout: 5000, encoding: 'utf-8' });
     return `Clicked ${click_type} at (${x}, ${y})`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -80,10 +84,7 @@ export function mouseMove(
   logger.info('Mouse move', { x, y }, agentId);
 
   try {
-    execSync(`cliclick m:${Math.round(x)},${Math.round(y)}`, {
-      timeout: 5000,
-      encoding: 'utf-8',
-    });
+    execFileSync('cliclick', moveArgv(x, y), { timeout: 5000, encoding: 'utf-8' });
     return `Mouse moved to (${x}, ${y})`;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -94,52 +95,10 @@ export function mouseMove(
 
 // ── Keyboard Type ──
 
-const KEY_COMBO_MAP: Record<string, string> = {
-  'cmd+c': 'kd:cmd t:c ku:cmd',
-  'cmd+v': 'kd:cmd t:v ku:cmd',
-  'cmd+a': 'kd:cmd t:a ku:cmd',
-  'cmd+z': 'kd:cmd t:z ku:cmd',
-  'cmd+s': 'kd:cmd t:s ku:cmd',
-  'cmd+x': 'kd:cmd t:x ku:cmd',
-  'cmd+w': 'kd:cmd t:w ku:cmd',
-  'cmd+q': 'kd:cmd t:q ku:cmd',
-  'cmd+n': 'kd:cmd t:n ku:cmd',
-  'cmd+t': 'kd:cmd t:t ku:cmd',
-  'cmd+f': 'kd:cmd t:f ku:cmd',
-  'cmd+tab': 'kd:cmd kp:tab ku:cmd',
-  'cmd+space': 'kd:cmd kp:space ku:cmd',
-  'cmd+shift+3': 'kd:cmd kd:shift kp:3 ku:shift ku:cmd',
-  'cmd+shift+4': 'kd:cmd kd:shift kp:4 ku:shift ku:cmd',
-  'cmd+shift+z': 'kd:cmd kd:shift t:z ku:shift ku:cmd',
-  'cmd+shift+t': 'kd:cmd kd:shift t:t ku:shift ku:cmd',
-  'cmd+option+esc': 'kd:cmd kd:alt kp:escape ku:alt ku:cmd',
-  'ctrl+c': 'kd:ctrl t:c ku:ctrl',
-  'return': 'kp:return',
-  'enter': 'kp:return',
-  'escape': 'kp:escape',
-  'esc': 'kp:escape',
-  'tab': 'kp:tab',
-  'delete': 'kp:delete',
-  'backspace': 'kp:delete',
-  'space': 'kp:space',
-  'arrow-up': 'kp:arrow-up',
-  'arrow-down': 'kp:arrow-down',
-  'arrow-left': 'kp:arrow-left',
-  'arrow-right': 'kp:arrow-right',
-  'up': 'kp:arrow-up',
-  'down': 'kp:arrow-down',
-  'left': 'kp:arrow-left',
-  'right': 'kp:arrow-right',
-  'home': 'kp:home',
-  'end': 'kp:end',
-  'pageup': 'kp:page-up',
-  'pagedown': 'kp:page-down',
-  'f1': 'kp:f1',
-  'f2': 'kp:f2',
-  'f3': 'kp:f3',
-  'f4': 'kp:f4',
-  'f5': 'kp:f5',
-};
+// The combo table moved to `system-control-argv.ts` PRE-SPLIT. It had to: the
+// space-splitting inside `cliclick kd:cmd t:c ku:cmd` was the SHELL's work, so
+// dropping the shell without moving the splitting would hand cliclick one
+// argument it does not understand and the keyboard would silently stop working.
 
 export function keyboardType(
   agentId: string,
@@ -159,37 +118,20 @@ export function keyboardType(
 
   try {
     if (key_combo) {
-      const combo = key_combo.toLowerCase();
-      const mapped = KEY_COMBO_MAP[combo];
-      if (mapped) {
-        execSync(`cliclick ${mapped}`, { timeout: 5000, encoding: 'utf-8' });
-        return `Key combo pressed: ${key_combo}`;
-      }
-      // Try to parse generic combos like "cmd+shift+k"
-      const parts = combo.split('+');
-      const modifiers: string[] = [];
-      let finalKey = '';
-      for (const part of parts) {
-        if (['cmd', 'command'].includes(part)) modifiers.push('cmd');
-        else if (['ctrl', 'control'].includes(part)) modifiers.push('ctrl');
-        else if (['alt', 'option', 'opt'].includes(part)) modifiers.push('alt');
-        else if (['shift'].includes(part)) modifiers.push('shift');
-        else finalKey = part;
-      }
-      if (finalKey && modifiers.length > 0) {
-        const kd = modifiers.map(m => `kd:${m}`).join(' ');
-        const ku = modifiers.reverse().map(m => `ku:${m}`).join(' ');
-        const keyCmd = finalKey.length === 1 ? `t:${finalKey}` : `kp:${finalKey}`;
-        execSync(`cliclick ${kd} ${keyCmd} ${ku}`, { timeout: 5000, encoding: 'utf-8' });
-        return `Key combo pressed: ${key_combo}`;
-      }
-      return `Error: Unknown key combo: ${key_combo}`;
+      const argv = keyComboArgv(key_combo);
+      if (!argv) return `Error: Unknown key combo: ${key_combo}`;
+      execFileSync('cliclick', argv, { timeout: 5000, encoding: 'utf-8' });
+      return `Key combo pressed: ${key_combo}`;
     }
 
     if (text) {
-      // Escape single quotes for shell
-      const escaped = text.replace(/'/g, "'\\''");
-      execSync(`cliclick t:'${escaped}'`, { timeout: 10000, encoding: 'utf-8' });
+      // ⚠ NO ESCAPING, AND THAT IS THE FIX. The old line was
+      //     const escaped = text.replace(<single quotes>, "'\\''");
+      //     <the string form of exec>(`cliclick t:'${escaped}'`)
+      // — a hand-rolled quote escape in front of /bin/sh, on model-authored
+      // text. As one argv element the text is bytes cliclick receives; there is
+      // no quote to close and no shell to close it into.
+      execFileSync('cliclick', typeTextArgv(text), { timeout: 10000, encoding: 'utf-8' });
       return `Typed: "${text.length > 100 ? text.slice(0, 100) + '...' : text}"`;
     }
 
@@ -227,15 +169,12 @@ export async function screenRead(
   logger.info('Taking screenshot', { region, query }, agentId);
 
   try {
-    // Capture screenshot
-    let cmd: string;
-    if (region) {
-      cmd = `screencapture -x -R${region.x},${region.y},${region.width},${region.height} "${screenshotPath}"`;
-    } else {
-      cmd = `screencapture -x "${screenshotPath}"`;
-    }
-
-    execSync(cmd, { timeout: 10000, encoding: 'utf-8' });
+    // Capture screenshot. The output path is ONE argv element, so a directory
+    // with a space in it works by construction rather than by the quoting the
+    // string form got right only by accident.
+    execFileSync('screencapture', screencaptureArgv(screenshotPath, region ?? null), {
+      timeout: 10000, encoding: 'utf-8',
+    });
 
     if (!fs.existsSync(screenshotPath)) {
       return 'Error: Screenshot capture failed, file was not created. Ensure screen recording permission is granted in System Settings > Privacy & Security > Screen Recording.';
@@ -326,8 +265,13 @@ export function applescriptRun(
   logger.info('Running AppleScript', { scriptLength: script.length }, agentId);
 
   try {
-    // Use osascript with heredoc-style input to avoid quote escaping issues
-    const result = execSync('osascript -', {
+    // `osascript -` reads the script from STDIN, so the script text never
+    // appears on a command line at all. It was ALREADY the safest of the six
+    // sites in that respect; what T3 adds is (a) `execFileSync`, so the program
+    // name stops going through /bin/sh either, and (b) the AUTHORIZATION —
+    // `brokers/applescript.ts` now reads this script before the dispatcher lets
+    // the call reach here, including any `do shell script` payload inside it.
+    const result = execFileSync('osascript', ['-'], {
       timeout: 30000,
       encoding: 'utf-8',
       input: script,
