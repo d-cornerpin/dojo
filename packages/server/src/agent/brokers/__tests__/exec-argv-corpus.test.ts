@@ -3,7 +3,7 @@
 // one door, an explicitly-granted `shell` class at the other, both proven.
 //
 // WHAT THIS FILE IS FOR, in one sentence: T3 replaces the string-to-shell exec
-// entry point (`executeExec`, which handed the model's line to `/bin/zsh`) with
+// entry point — the one that handed the model's line to `/bin/zsh` — with
 // two doors, and the phase's binding posture is *less code, NEVER less
 // capability* — so every canary lands here BEFORE the entry point that carries
 // them today dies, and the ALLOW half of the corpus is as load-bearing as the
