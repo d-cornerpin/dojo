@@ -973,6 +973,27 @@
       "to": 9609,
       "by": "PHASE-4 T4, the claimed-delivery rekey (2026-08-02)",
       "why": "+1 net across two call sites. The prose detector's inline nudge text and its ledger-suppression branch came OUT of this file into `agent/v2/claimed-delivery.ts`, the decision came back in as one call, and the finalize tripwire was re-pointed at the same decision so the two readers cannot drift. One line, for a floor that stops accusing people."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9609,
+      "to": 9676,
+      "by": "PHASE-4 T4, the E1/E2 conversions (2026-08-02)",
+      "why": "+67. Two engine-composed user-facing lines came out (a pool pick and a template literal, four lines between them) and the OR2 ladder went in twice: a second bounded steer with its own text, the delivery-ledger verification that must happen before silence may be called a ghost, and the ghost call itself. The ladder is the requirement OR2 states - detect, steer, VERIFY, retry bounded, then surface as the system - and none of its five steps can be inlined away. The ghost's own machinery (row, platform note, health frame) is in `agent/v2/floor-ghost.ts`, not here."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steer-queue.ts",
+      "from": 283,
+      "to": 291,
+      "by": "PHASE-4 T4, the reminder-silence floor (2026-08-02)",
+      "why": "+8: one union member, one table row, and the six-line argument for why the 27th floor exists at all - it was an ENGINE-COMPOSED LINE when T3 derived the surface by writer, so no writer-derived inventory could have found it. A floor with no written `why` is a number, which this table's own integrity clause refuses."
+    },
+    {
+      "path": "packages/shared/src/ws.ts",
+      "from": 1082,
+      "to": 1088,
+      "by": "PHASE-4 T4, the FLOOR_GHOSTED health code (2026-08-02)",
+      "why": "+6: one `ChatErrorEvent` code and the five lines saying what it means. OR2 requires a true ghost to reach the owner as a PLATFORM fault; the dashboard's health surface is the existing door and it is keyed on this union, so the code has to be declared where every other platform-level code is declared."
     }
   ],
   "maxNewFileLines": 400,
@@ -1013,7 +1034,7 @@
     "packages/server/src/agent/tools.ts": 10484,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9609,
+    "packages/server/src/agent/v2/loop.ts": 9676,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/state.ts": 578,
@@ -1094,7 +1115,7 @@
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 268,
     "packages/shared/src/visibility.ts": 865,
-    "packages/shared/src/ws.ts": 1082,
+    "packages/shared/src/ws.ts": 1088,
     "watchdog/src/index.ts": 1198,
     "packages/server/src/agent/v2/answered-edge.ts": 520,
     "packages/server/src/work/tracker-store.ts": 505,
@@ -1105,6 +1126,6 @@
     "packages/server/src/work/work-reaper.ts": 528,
     "packages/server/src/memory/assembly-validation.ts": 610,
     "packages/server/src/memory/budget.ts": 308,
-    "packages/server/src/agent/v2/steer-queue.ts": 283
+    "packages/server/src/agent/v2/steer-queue.ts": 291
   }
 }
