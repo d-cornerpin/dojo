@@ -931,6 +931,34 @@
       "to": 621,
       "by": "PHASE-4 T2 Step 3, commit-then-emit (2026-08-02)",
       "why": "+6 in `recordTechniqueUsage`: the `withUnit` wrapper (2) and a four-line note. The usage ROW and `techniques.usage_count` are one event \u2014 the counter SUMMARISES the rows, and split across two transactions it can disagree with them. That is the maintained-integer shape this overhaul has already had to repair once (`revert_count` on `tasks`, replaced by a COUNT for exactly this reason), so it is worth six lines to stop it happening on a second column. This is the file's SECOND raise in this task and the two are separate on purpose: the first was `deleteTechnique`'s four-table unit, this one is the usage pair, and folding them into one entry would hide that the file gained two independent properties."
+    },
+    {
+      "path": "packages/server/src/work/store.ts",
+      "from": 1678,
+      "to": 1684,
+      "by": "PHASE-4 T4-SCHEMA, the `work_events.kind` union (2026-08-02)",
+      "why": "+6 on the ONE writer of `work_events`, and every line of it is the guard or its reason: `import type { WorkEventKind }` (1), the narrowed parameter (0 - in place), and a four-line note saying what `135`'s \"12-value enum\" comment actually was. The mechanism did not grow, it SHRANK in kind: `kind: string` became a 25-member union, so the 29 call sites in this directory are now checked by the compiler and the file can no longer write a value the column will refuse. The full derivation (11 literals + 5 constant objects, swept over all 178 commits since `work_events` was born) lives in the NEW file `work/event-kinds.ts` rather than here, which is why this raise is six lines and not sixty."
+    },
+    {
+      "path": "packages/server/src/work/occurrences.ts",
+      "from": 423,
+      "to": 426,
+      "by": "PHASE-4 T4-SCHEMA, the `work_events.kind` union (2026-08-02)",
+      "why": "+3: `import type { WorkEventKind }` (1) and two lines of the docblock over `OCCURRENCE_EVENT`, which now says what it IS - a view onto the declared list, `satisfies`-bound - instead of what it used to be. The old wording was load-bearing and is now FALSE (\"`work_events.kind` has no CHECK, so the guard against a writer/reader typo is that both sides import these\"); migration `152` gives it a CHECK, and leaving a stale reason beside a live constant is how the next reader concludes the constant is the only guard there is."
+    },
+    {
+      "path": "packages/server/src/work/tracker-view.ts",
+      "from": 508,
+      "to": 509,
+      "by": "PHASE-4 T4-SCHEMA, the `work_events.kind` union (2026-08-02)",
+      "why": "+1, exactly the `import type { WorkEventKind }` line. `WORK_EVENT`'s five values are `satisfies`-bound to `work/event-kinds.ts` now, so this file can no longer declare a kind the CHECK does not admit - one line for a compile-time binding on the file that holds five of the twenty-four."
+    },
+    {
+      "path": "packages/server/src/work/override-requests.ts",
+      "from": 246,
+      "to": 247,
+      "by": "PHASE-4 T4-SCHEMA, the `work_events.kind` union (2026-08-02)",
+      "why": "+1, exactly the `import type { WorkEventKind }` line, binding `OVERRIDE_EVENT`'s two values to the declared list. Same one-line shape as `tracker-view.ts` in this commit."
     }
   ],
   "maxNewFileLines": 400,
@@ -1046,7 +1074,7 @@
     "packages/server/src/voice/model-manager.ts": 583,
     "packages/server/src/voice/stt-service.ts": 538,
     "packages/server/src/voice/voice-ws.ts": 2299,
-    "packages/server/src/work/store.ts": 1678,
+    "packages/server/src/work/store.ts": 1684,
     "packages/shared/src/types.ts": 508,
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
@@ -1057,9 +1085,9 @@
     "packages/server/src/agent/v2/answered-edge.ts": 520,
     "packages/server/src/work/tracker-store.ts": 505,
     "packages/server/src/tools/work-verbs.ts": 375,
-    "packages/server/src/work/tracker-view.ts": 508,
-    "packages/server/src/work/occurrences.ts": 423,
-    "packages/server/src/work/override-requests.ts": 246,
+    "packages/server/src/work/tracker-view.ts": 509,
+    "packages/server/src/work/occurrences.ts": 426,
+    "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/work-reaper.ts": 528,
     "packages/server/src/memory/assembly-validation.ts": 610,
     "packages/server/src/memory/budget.ts": 308,
