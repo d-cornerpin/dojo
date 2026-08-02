@@ -1015,6 +1015,13 @@
       "to": 4410,
       "by": "PHASE-4 T4, the fallen-project note converted (2026-07-30 owner ruling)",
       "why": "+16: the owner-facing write is replaced by an agent-facing engine event with the ruling's nudge (about the same size), and the rest is the CORRECTED measurement - the inherited comment claiming this note reached nobody but the model is false, and the query that disproves it (nine owner-lane user-visible rows on the live box) is written at the site so the next reader does not re-inherit the claim that sent this to the wrong phase."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9712,
+      "to": 9735,
+      "by": "PHASE-4 T4, the settled-hold dissolution (2026-08-02)",
+      "why": "+23. The six-term conjunction became a call plus its six named inputs (about even), and the rest is the record: the scar-ledger verdict this discharges, its `requirement preserved:` line, and the reason the design law is unchanged (only the PUSH is withheld). The rule itself moved OUT to `agent/v2/outbound-root.ts` where it can be exhausted against an oracle; what stays here is the call and why."
     }
   ],
   "maxNewFileLines": 400,
@@ -1055,7 +1062,7 @@
     "packages/server/src/agent/tools.ts": 10484,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9712,
+    "packages/server/src/agent/v2/loop.ts": 9735,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/state.ts": 578,
