@@ -987,6 +987,41 @@
       "to": 317,
       "by": "PHASE-4 T5, provider errors classified from status codes (2026-08-02) - NEW FILE, pinned at birth",
       "why": "The growth detector asked for this decision to be visible, so here it is. 317 lines, of which roughly half are the record: what the five substring tables got wrong in BOTH directions (an over-length 400 read as `auth_invalid` on the `401` inside its token count; a real 429 whose body says only \"quota\" read as unclassified), and why the prose fallback is safe to keep at all (every status matched as a token). It is one module because it REPLACES five private copies of the same table - splitting it would re-create the disease it exists to close - and it is pinned decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/agents.ts",
+      "from": 820,
+      "to": 822,
+      "by": "PHASE-4 T5 Step 3, R23 - blind route catches record why (2026-08-02)",
+      "why": "+2: the `import { noteRouteFailure }` line and the `noteRouteFailure(c, logger, err)` call in the ONE answering catch this file had that recorded nothing - `GET /:id/system-prompt` answered `{ ok: true, data: { content: '' } }` on any read failure, so a soul file that had gone unreadable rendered as an agent with an empty system prompt and left no trace at all."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/setup-deps.ts",
+      "from": 512,
+      "to": 513,
+      "by": "PHASE-4 T5 Step 3, R23 - blind route catches record why (2026-08-02)",
+      "why": "+1, exactly the `import { noteRouteFailure, routeFailure }` line. Its five converted catches each got SHORTER or stayed level; the import is the whole raise."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/tracker.ts",
+      "from": 905,
+      "to": 906,
+      "by": "PHASE-4 T5 Step 3, R23 - blind route catches record why (2026-08-02)",
+      "why": "+1, exactly the `import { routeFailure }` line. Three `catch { return c.json({ ok:false, error:'invalid JSON body' }, 400) }` blocks now bind and record their error while telling the caller the same words as before."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/update.ts",
+      "from": 1022,
+      "to": 1023,
+      "by": "PHASE-4 T5 Step 3, R23 - blind route catches record why (2026-08-02)",
+      "why": "+1, exactly the `import { routeFailure }` line, for two 500 answers that logged nothing on the route that applies releases - the single place on this box where a silent failure costs the most."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/upload.ts",
+      "from": 607,
+      "to": 608,
+      "by": "PHASE-4 T5 Step 3, R23 - blind route catches record why (2026-08-02)",
+      "why": "+1, exactly the `import { routeFailure }` line, for three `catch { \u2026 'Database not available' }` blocks that reported a DB open failure to the browser and to nobody else."
     }
   ],
   "maxNewFileLines": 400,
@@ -1033,15 +1068,15 @@
     "packages/server/src/agent/v2/recovery.ts": 605,
     "packages/server/src/agent/v2/state.ts": 578,
     "packages/server/src/costs/tracker.ts": 541,
-    "packages/server/src/gateway/routes/agents.ts": 820,
+    "packages/server/src/gateway/routes/agents.ts": 822,
     "packages/server/src/gateway/routes/chat.ts": 484,
     "packages/server/src/gateway/routes/config.ts": 2531,
     "packages/server/src/gateway/routes/memory.ts": 635,
-    "packages/server/src/gateway/routes/setup-deps.ts": 512,
-    "packages/server/src/gateway/routes/tracker.ts": 905,
+    "packages/server/src/gateway/routes/setup-deps.ts": 513,
+    "packages/server/src/gateway/routes/tracker.ts": 906,
     "packages/server/src/gateway/routes/twilio.ts": 501,
-    "packages/server/src/gateway/routes/update.ts": 1022,
-    "packages/server/src/gateway/routes/upload.ts": 607,
+    "packages/server/src/gateway/routes/update.ts": 1023,
+    "packages/server/src/gateway/routes/upload.ts": 608,
     "packages/server/src/google/auth.ts": 771,
     "packages/server/src/google/tools-forms.ts": 817,
     "packages/server/src/google/tools-read.ts": 938,
