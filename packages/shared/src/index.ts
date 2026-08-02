@@ -5,3 +5,4 @@ export * from './a2a-protocol.js';
 export * from './visibility.js';
 export * from './origin.js';
 export * from './markers.js';
+export * from './outcome.js';
