@@ -1,9 +1,9 @@
 // ════════════════════════════════════════════════════════════════════════════
 // THE STAGED SET, RE-DERIVED FROM THE BROKERS THEMSELVES (PHASE-5 T5, P5-R6).
 //
-// `ladder-rows.test.ts` already holds `logOnly`'s SHAPE, using synthetic
-// verdicts it builds itself. That is necessary and it is not sufficient: it can
-// only prove the predicate answers correctly about a verdict handed to it, never
+// `ladder-rows.test.ts` held the staging predicate's SHAPE, using synthetic
+// verdicts it built itself. That was necessary and not sufficient: it could only
+// prove the predicate answered correctly about a verdict handed to it, never
 // that the verdicts the brokers ACTUALLY produce stay out of the window. T2
 // recorded the staged set as EMPTY; nothing held it empty.
 //
@@ -36,15 +36,28 @@ import { DEFAULT_SUBAGENT_PERMISSIONS, PRIMARY_AGENT_PERMISSIONS } from '../../m
 import type { Verdict } from '../types.js';
 
 /**
- * `logOnly`'s predicate for a SUB-AGENT, restated here from its three parts.
+ * ⚰ THE DELETED PREDICATE, KEPT AS THE MEASUREMENT (PHASE-5 T7).
  *
- * Deliberately not imported: `gate-eval.js` pulls the registry and with it the
- * whole handler graph, and this file is about the brokers. The identity half
- * (`isPrimaryAgent || isHealerAgent`) is false for a sub-agent by definition, so
- * what is left is exactly these three terms. `ladder-rows.test.ts` holds the
- * imported function's own shape; this holds what the brokers feed it.
+ * The staging window is gone: every refusal the brokers compute now applies to
+ * every agent, structurally, and `ladder-rows.test.ts` holds that. This function
+ * is the predicate that window used, restated from its three parts, and it is
+ * kept for two reasons that are still live.
+ *
+ * 1. **It says the deletion changed no behaviour.** Every clause below asks a
+ *    real broker for a real refusal and asserts this answers `false` — i.e. on
+ *    the day the branch died there was nothing in the window, so nothing started
+ *    being refused that was not already refused.
+ * 2. **It is the tripwire on the next hardening refusal.** A future
+ *    `bypass-hardening` verdict whose rule is not a global deny would, before
+ *    T7, have been recorded for sub-agents; after T7 it bites them immediately.
+ *    That is a NARROWING under RULING P5-R5 and therefore a decision, not a side
+ *    effect — so the census at the bottom of this file fails and makes whoever
+ *    adds it say so out loud.
+ *
+ * It is deliberately not imported from production: there is nothing to import
+ * any more, and there must not be.
  */
-function stagedForSubAgent(v: Verdict): boolean {
+function wouldHaveBeenStaged(v: Verdict): boolean {
   if (v.allowed) return false;
   if (v.basis === 'ladder-parity') return false;
   return !isGlobalDenyRule(v.rule);
@@ -87,8 +100,8 @@ describe('P5-R6 — the staged set, derived from the brokers rather than declare
       const verdict = applescript(subAgent, `do shell script "${payload}"`);
       expect(verdict.allowed, `${label}: must be refused`).toBe(false);
       expect(
-        stagedForSubAgent(verdict),
-        `${label}: refusal ${verdict.rule} must be ENFORCED for a sub-agent, never staged`,
+        wouldHaveBeenStaged(verdict),
+        `${label}: refusal ${verdict.rule} was already ENFORCED for a sub-agent before the window died`,
       ).toBe(false);
     }
   });
@@ -101,9 +114,9 @@ describe('P5-R6 — the staged set, derived from the brokers rather than declare
       const shellVerdict = shell(subAgent, payload);
       const scriptVerdict = applescript(subAgent, `do shell script "${payload}"`);
       expect(shellVerdict.allowed, `${label}: shell door must refuse`).toBe(false);
-      expect(stagedForSubAgent(shellVerdict), `${label}: shell door must enforce`).toBe(false);
+      expect(wouldHaveBeenStaged(shellVerdict), `${label}: shell door must enforce`).toBe(false);
       expect(scriptVerdict.allowed, `${label}: applescript door must refuse`).toBe(false);
-      expect(stagedForSubAgent(scriptVerdict), `${label}: applescript door must enforce`).toBe(false);
+      expect(wouldHaveBeenStaged(scriptVerdict), `${label}: applescript door must enforce`).toBe(false);
     }
   });
 
@@ -115,7 +128,7 @@ describe('P5-R6 — the staged set, derived from the brokers rather than declare
     for (const [label, payload] of SENSITIVE_PAYLOADS) {
       const verdict = applescript(wildcard, `do shell script "${payload}"`);
       expect(verdict.allowed, `${label}: a '*' holder is still refused`).toBe(false);
-      expect(stagedForSubAgent(verdict), `${label}: and still enforced`).toBe(false);
+      expect(wouldHaveBeenStaged(verdict), `${label}: and still enforced`).toBe(false);
     }
   });
 
@@ -127,7 +140,7 @@ describe('P5-R6 — the staged set, derived from the brokers rather than declare
     const verdict = applescript(subAgent, 'do shell script "cat ~/.dojo/secrets.yaml"');
     expect(verdict.allowed).toBe(false);
     expect(verdict.basis).toBe('ladder-parity');
-    expect(stagedForSubAgent(verdict)).toBe(false);
+    expect(wouldHaveBeenStaged(verdict)).toBe(false);
   });
 
   it('an ordinary grant refusal still reads as the GRANT refusing, not the block list', () => {
@@ -147,10 +160,17 @@ describe('P5-R6 — the staged set, derived from the brokers rather than declare
     expect(verdict.allowed, 'a wildcard holder keeps its AppleScript reach').toBe(true);
   });
 
-  it('⚠ THE STAGED SET IS EMPTY, BY CENSUS — and cannot widen without this failing', () => {
+  it('⚠ THE STAGED SET WAS EMPTY WHEN THE WINDOW DIED, BY CENSUS — and this is the tripwire on the next one', () => {
     // THE GUARD THAT WAS MISSING. T2 measured the set empty and RECORDED it;
     // nothing held it, so when T3 added a refusal with an unrecognised rule id
-    // the set widened silently and stayed widened until this task re-derived it.
+    // the set widened silently and stayed widened until T5 re-derived it.
+    //
+    // PHASE-5 T7 deleted the window. This census keeps its job with the meaning
+    // one step along: a `bypass-hardening` refusal that is not a global deny no
+    // longer gets recorded-instead-of-applied for a sub-agent — it is APPLIED,
+    // immediately, which for that agent is a refusal that did not exist before.
+    // Under RULING P5-R5 that is the owner's decision or a later task's, never a
+    // side effect, so this clause fails until whoever adds it names it here.
     //
     // The census: every `deny('bypass-hardening', '<rule>', …)` site in the
     // broker sources, read from the SOURCE TEXT so a new one cannot hide, and
@@ -177,15 +197,16 @@ describe('P5-R6 — the staged set, derived from the brokers rather than declare
     }
     expect(found.length, 'the census found no bypass-hardening sites at all — the regex has rotted').toBeGreaterThan(0);
 
-    const EXPECTED_STAGED: readonly string[] = [];
-    const staged = [...new Set(found)]
+    const EXPECTED_NON_GLOBAL: readonly string[] = [];
+    const nonGlobal = [...new Set(found)]
       .filter((rule) => rule !== '<deny-table-id>' && !isGlobalDenyRule(rule));
     expect(
-      staged.sort(),
-      `these refusals are LOG-ONLY for sub-agents. P5-R6: a global deny is never staged. ` +
-      `If one of these is deliberately staged (a refusal decided by an agent's own GRANT), ` +
-      `add it to EXPECTED_STAGED with its reason.`,
-    ).toEqual([...EXPECTED_STAGED]);
+      nonGlobal.sort(),
+      `these hardening refusals are NOT global denies. Before PHASE-5 T7 they would have ` +
+      `been recorded and not applied for sub-agents; now they bite immediately, which for a ` +
+      `sub-agent is a new refusal. Name it here with its reason, and say in the commit whose ` +
+      `decision it was — RULING P5-R5.`,
+    ).toEqual([...EXPECTED_NON_GLOBAL]);
   });
 
   it('the argv door’s sensitive-read refusal is enforced too', () => {
@@ -196,6 +217,6 @@ describe('P5-R6 — the staged set, derived from the brokers rather than declare
     if (!resolved.ok) return;
     const verdict = authorizeArgv(subAgent, resolved.value);
     expect(verdict.allowed).toBe(false);
-    expect(stagedForSubAgent(verdict)).toBe(false);
+    expect(wouldHaveBeenStaged(verdict)).toBe(false);
   });
 });

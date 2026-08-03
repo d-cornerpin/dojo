@@ -18,7 +18,6 @@
 
 import { isPrimaryAgent, isHealerAgent, isPMAgent } from '../../config/platform.js';
 import { effectsFor } from './registry.js';
-import { isGlobalDenyRule } from '../brokers/deny.js';
 import {
   authorizeFs, authorizeAppleScript, authorizeNet, authorizeSpawn, authorizeSystemControl,
   authorizeExecShapedCall,
@@ -279,68 +278,27 @@ export async function evaluateGate(gate: ToolGate, ctx: GateContext): Promise<Ga
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// ENFORCEMENT STAGING (PHASE-5 T2 Step 4) — and what it deliberately does NOT
-// stage.
+// ⚰ ENFORCEMENT STAGING — DELETED (PHASE-5 T7). The predicate this file
+// carried is gone by NAME, so its identifier greps to zero across production
+// source and the exit gate is a command anyone can re-run.
 //
-// Research 22 §2.1 asks for a log-only window so a new lock does not break live
-// flows on the day it lands. The plan names the reason precisely:
-// `~/.dojo/uploads/<agentId>` is missing from DEFAULT_SUBAGENT's file paths, so
-// enforcing a brand-new refusal against sub-agents today would break every
-// artifact flow. T5 fixes the manifest; T7 deletes this branch.
+// T2 Step 4 shipped a staged-enablement branch: for a sub-agent, a refusal whose
+// basis was `bypass-hardening` and whose rule was not a global deny could be
+// RECORDED instead of APPLIED. RULING P5-R6 narrowed it twice after the live box
+// showed what the literal wording cost, and what was left was a window that was
+// EMPTY — held empty, not merely believed empty, by
+// `brokers/__tests__/staged-set.test.ts`'s census over the broker sources.
 //
-// ⚠ WHAT WOULD HAVE BEEN A SECURITY REGRESSION, AND IS NOT.
-// The obvious reading — "sub-agents run the whole dispatcher log-only" — would
-// mean deleting the ladder and then not enforcing it for the very agents it was
-// written to contain. Sub-agents are the untrusted side of this platform. So the
-// window is scoped by the verdict's own BASIS:
+// T7 deletes the branch by name because that is this phase's own exit gate: a
+// staging flag that survives its stage is the band-aid this phase exists to
+// kill, and the check is honest in both directions only because the identifier
+// was grep-zero before T2 created it (§T0-PINS P9).
 //
-//   `ladder-parity`     ENFORCED for everyone, always. These are the refusals
-//                       the tree produced yesterday; staging one off would be a
-//                       capability WIDENING in the dangerous direction.
-//   `bypass-hardening`  the two refusals T2 adds (the `-wal`/`-shm` siblings,
-//                       and the symlink-resolved target on the READ tier).
-//                       Enforced immediately for the primary agent and the
-//                       Healer — both carry `'*'` manifests, so only the global
-//                       denies bite them and there is nothing to break —
-//                       and LOGGED, not enforced, for sub-agents.
-//
-// `logOnly` is grep-zero before this task by design (§T0-PINS P9 measured it at
-// 0 hits) and T7's exit gate kills it. Both halves of that check are only honest
-// because it starts at zero.
+// **requirement preserved:** every refusal the brokers compute is APPLIED, to
+// every agent, and none is recorded-but-not-applied. It is now STRUCTURAL rather
+// than predicated — the executor has one refusal path and it does not ask who
+// the agent is (`tools/__tests__/ladder-rows.test.ts`, three clauses). The other
+// half — that no refusal the brokers actually produce would have been staged on
+// the day this died, i.e. that the deletion changed no behaviour — stays with
+// the census in `staged-set.test.ts`.
 // ════════════════════════════════════════════════════════════════════════════
-
-/**
- * Is this refusal ENFORCED for this agent, or merely recorded?
- *
- * Returns `false` — i.e. ENFORCE — for everything except a hardening refusal,
- * on a sub-agent, that is NOT a global deny.
- *
- * ⚠ THE GLOBAL-DENY CARVE-OUT WAS EARNED BY DRIVING IT, and the first version of
- * this function did not have it. Written as the plan words Step 4 ("sub-agents
- * run log-only"), the staging window covered the symlink-resolved read — so on
- * the live dev box a NON-PRIMARY agent read `~/.dojo/secrets.yaml` through a
- * symlink planted in `/tmp` and got `jwt_secret`, `dashboard_password_hash` and
- * `credential_master_key` back in the clear, with the broker's own log line
- * saying *"would have refused"* beside it. The same window let a `file_write`
- * land in `~/.dojo/data/dojo.db-wal` and CORRUPTED THE DATABASE.
- *
- * The staging rationale does not reach either case. It is about the
- * DEFAULT_SUBAGENT manifest missing `~/.dojo/uploads/<agentId>`, i.e. about an
- * agent's own GRANT being too narrow to express a legitimate flow — T5's fix.
- * A GLOBAL deny is not a grant: it is unoverridable, it is the same for every
- * agent, and no legitimate flow reads the secret store through a link or writes
- * the database's journal file. So a global deny bites immediately, for everyone.
- *
- * What is left in the window is therefore, today, EMPTY — and that is the honest
- * answer rather than a disappointing one: T2 adds no refusal that needs staging.
- * The branch stays because Step 4 asks for it and T7's exit gate deletes it by
- * name (`logOnly` was grep-zero before this task, §T0-PINS P9, which is the only
- * reason that check is honest), and because the moment a hardening refusal is
- * decided by a GRANT rather than by the global list, this is where it is staged.
- */
-export function logOnly(agentId: string, verdict: Verdict): boolean {
-  if (verdict.allowed) return false;
-  if (verdict.basis === 'ladder-parity') return false;
-  if (isGlobalDenyRule(verdict.rule)) return false;
-  return !(isPrimaryAgent(agentId) || isHealerAgent(agentId));
-}

@@ -35,13 +35,12 @@
 //     already matched the resolved target (N3); the read tier never did, so a
 //     link planted in an allowed directory read `secrets.yaml` in the clear.
 // Both reach a resource that is ALREADY denied, which is the carve-out P5-R5
-// states in so many words. Both are labelled `T2-hardening` so the staging
-// window can SEE them — and both are then deliberately EXCLUDED from it by
-// `isGlobalDenyRule` below, because a global deny is not a grant and no
-// legitimate flow reads the secret store through a link or writes the
-// database's journal. That exclusion was earned on the live box: without it a
-// sub-agent read `secrets.yaml` through a planted symlink and a `file_write`
-// corrupted `dojo.db-wal`. See `gate-eval.ts:logOnly`.
+// states in so many words. Both are labelled `T2-hardening` because a staging
+// window once existed that could record a refusal instead of applying it, and
+// `isGlobalDenyRule` below is what excluded these from it — earned on the live
+// box, where without it a sub-agent read `secrets.yaml` through a planted
+// symlink and a `file_write` corrupted `dojo.db-wal`. PHASE-5 T7 deleted the
+// window; every refusal here now applies to every agent by construction.
 // ════════════════════════════════════════════════════════════════════════════
 
 import os from 'node:os';
@@ -325,21 +324,22 @@ export function isDeniedResource(absPath: string, kind: 'fs_read' | 'fs_write' |
 }
 
 /**
- * IS THIS VERDICT A GLOBAL DENY?
+ * IS THIS VERDICT A GLOBAL DENY? Every id in the table above names a resource
+ * protected for EVERY agent regardless of manifest — `secrets.yaml`, the SSH
+ * keys, the platform database, the sensei souls.
  *
- * The staging window (T2 Step 4) must never cover one, and this is how it asks.
- * Every id in the table above names a resource that is protected for EVERY
- * agent regardless of manifest — `secrets.yaml`, the SSH keys, the platform
- * database, the sensei souls. A log-only window exists so a NEW refusal does not
- * break a legitimate flow that a stale sub-agent manifest cannot express; no
- * legitimate flow reads the secret store through a symlink or writes the
- * database's journal.
+ * ⚰ ITS FIRST JOB IS GONE AND ITS SECOND IS WHY IT STAYS (PHASE-5 T7). T2's
+ * staging window asked this to decide whether a refusal was applied or merely
+ * recorded; the window is deleted, so this has no production caller. It survives
+ * as the classifier the census in `__tests__/staged-set.test.ts` uses: a new
+ * `bypass-hardening` refusal that is NOT one of these bites sub-agents the moment
+ * it lands — under RULING P5-R5 a narrowing somebody must decide, not discover.
  */
 export function isGlobalDenyRule(ruleId: string): boolean {
   // PHASE-5 T3: the EXEC global denies join this answer, and the omission was
   // latent rather than harmless. RULING P5-R6's carve-out is *"a global deny is
-  // NEVER staged"*, and `gate-eval.ts:logOnly` asks this function to recognise
-  // one. At T2 every exec refusal carried `basis:'ladder-parity'`, which the
+  // NEVER staged"*, and while the staging window existed (T2 → T7) this function
+  // is what it asked. At T2 every exec refusal carried `basis:'ladder-parity'`, which the
   // staging window excludes anyway, so no exec deny ever reached this check. T3
   // adds the first exec refusal with a `bypass-hardening` basis (the
   // basename-normalised `/bin/rm -rf /` spelling), and without this line a

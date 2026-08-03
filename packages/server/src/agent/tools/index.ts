@@ -79,7 +79,7 @@ import { handlerFor } from './handlers.js';
 import { getRegisteredMaxResultTokens } from '../v2/classifiers/concurrency.js';
 import { prependUserMailboxBanner } from './provider/mailbox-banner.js';
 import { auditLog, agentCanSelfCompleteById, permissionDeniedMessage, openFileInCanvas } from './util.js';
-import { evaluateGate, logOnly } from './gate-eval.js';
+import { evaluateGate } from './gate-eval.js';
 import { isPrimaryAgent, isPMAgent } from '../../config/platform.js';
 // Single source of truth for the PM overseer allow-list; re-checked at the
 // executor chokepoint (demolition Phase 1.7 PM verb enforcement).
@@ -324,22 +324,16 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
       const { verdict } = outcome;
       if (verdict.allowed) continue;
 
-      // ── Step 4's staging, and its ONE deliberate narrowing of itself ──
-      // `logOnly` is true only for the two refusals T2 ADDS (the `-wal`/`-shm`
-      // siblings, the symlink-resolved target on the read tier) and only for a
-      // sub-agent. Every parity refusal enforces for every agent, always —
-      // staging one of those off would be a capability widening in the
-      // dangerous direction, which is the opposite of what a log-only window is
-      // for. T5 fixes the sub-agent manifest; T7 deletes this branch.
-      if (logOnly(agentId, verdict)) {
-        logger.warn('BROKER (log-only, staged for sub-agents): would have refused', {
-          tool: name, gateRow: outcome.gate.row, rule: verdict.rule,
-          resource: outcome.resource, reason: verdict.reason,
-        }, agentId);
-        auditLog(agentId, outcome.auditAs || name, outcome.resource, 'denied', `[log-only] ${verdict.reason}`);
-        continue;
-      }
-
+      // ⚰ T2 Step 4's staged-enablement branch stood here and is DELETED
+      // (PHASE-5 T7). It could record a refusal instead of applying it, for a
+      // sub-agent, when the refusal was a hardening rule rather than a global
+      // deny — a window RULING P5-R6 narrowed to empty after the live box showed
+      // what the literal wording cost. What is left is one refusal path that
+      // does not ask who the agent is: a computed refusal is an applied refusal,
+      // for every agent, by construction. `tools/__tests__/ladder-rows.test.ts`
+      // holds that structurally; `brokers/__tests__/staged-set.test.ts` holds
+      // the other half — that nothing the brokers produce would have been staged
+      // on the day it died, so this deletion changed no behaviour.
       auditLog(agentId, outcome.auditAs || name, outcome.resource, 'denied', verdict.reason);
       logger.warn('Blocked by a registry-declared gate', {
         tool: name, gateRow: outcome.gate.row, rule: verdict.rule, reason: verdict.reason,
