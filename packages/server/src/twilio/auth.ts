@@ -5,15 +5,11 @@
 // handling, no recording.
 // ════════════════════════════════════════
 
-import crypto from 'node:crypto';
 import { getDb } from '../db/connection.js';
-import { getCredentialMasterKey } from '../config/loader.js';
+import { sealSecret, openSecret } from '../credentials/at-rest.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('twilio');
-
-const ALGORITHM = 'aes-256-gcm';
-const IV_LENGTH = 12;
 
 export interface TwilioConfig {
   configured: boolean;
@@ -58,24 +54,12 @@ interface NumberRow {
   voice_enabled: number;
 }
 
-// ── Crypto helpers (same shape as credentials/store.ts) ──
-
-function encrypt(plaintext: string): { ciphertext: Buffer; iv: Buffer; authTag: Buffer } {
-  const key = getCredentialMasterKey();
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
-  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
-  const authTag = cipher.getAuthTag();
-  return { ciphertext, iv, authTag };
-}
-
-function decrypt(ciphertext: Buffer, iv: Buffer, authTag: Buffer): string {
-  const key = getCredentialMasterKey();
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
-  decipher.setAuthTag(authTag);
-  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-  return plaintext.toString('utf8');
-}
+// ── Crypto ──
+// PHASE-5 T6C: this file used to carry its own AES-256-GCM pair, byte-identical
+// to the one in `credentials/store.ts` and saying so in its own header. Both are
+// now readers of `credentials/at-rest.ts` — one owner for "how the dojo encrypts
+// a secret at rest". The auth token still lives in `twilio_config`, NOT in the
+// agent-reachable `agent_credentials` table, and that separation is the point.
 
 // ── Reads ──
 
@@ -146,7 +130,7 @@ export function getTwilioCreds(): { sid: string; token: string } | null {
     return cachedAuthToken;
   }
   try {
-    const token = decrypt(row.auth_token_ciphertext, row.auth_token_iv, row.auth_token_tag);
+    const token = openSecret(row.auth_token_ciphertext, row.auth_token_iv, row.auth_token_tag);
     cachedAuthToken = { sid: row.account_sid, token };
     return cachedAuthToken;
   } catch (err) {
@@ -198,7 +182,7 @@ function ensureConfigRow(): void {
 
 export function setTwilioCredentials(accountSid: string, authToken: string): void {
   ensureConfigRow();
-  const enc = encrypt(authToken);
+  const enc = sealSecret(authToken);
   getDb().prepare(`
     UPDATE twilio_config
     SET account_sid = ?,

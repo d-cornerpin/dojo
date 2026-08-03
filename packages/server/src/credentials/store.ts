@@ -9,16 +9,12 @@
 // vault listings, or Dreamer extraction.
 // ════════════════════════════════════════
 
-import crypto from 'node:crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
-import { getCredentialMasterKey } from '../config/loader.js';
+import { sealSecret, openSecret } from './at-rest.js';
 import { createLogger } from '../logger.js';
 
 const logger = createLogger('credentials');
-
-const ALGORITHM = 'aes-256-gcm';
-const IV_LENGTH = 12; // 96 bits, recommended for GCM
 
 export interface CredentialRecord {
   id: string;
@@ -38,24 +34,11 @@ export interface CredentialRecordWithValue extends CredentialRecord {
   credentials: Record<string, unknown>;
 }
 
-// ── Crypto helpers ──
-
-function encrypt(plaintext: string): { ciphertext: Buffer; iv: Buffer; authTag: Buffer } {
-  const key = getCredentialMasterKey();
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
-  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
-  const authTag = cipher.getAuthTag();
-  return { ciphertext, iv, authTag };
-}
-
-function decrypt(ciphertext: Buffer, iv: Buffer, authTag: Buffer): string {
-  const key = getCredentialMasterKey();
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
-  decipher.setAuthTag(authTag);
-  const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-  return plaintext.toString('utf8');
-}
+// ── Crypto ──
+// PHASE-5 T6C: the AES-256-GCM pair that used to live here is now
+// `credentials/at-rest.ts`, shared with `twilio/auth.ts`. Same algorithm, same
+// key, same wire shape — the extraction was proven value-preserving against
+// every live row before it landed.
 
 // ── CRUD ──
 
@@ -116,7 +99,7 @@ export function getCredentialByService(
 
   let plaintext: string;
   try {
-    plaintext = decrypt(row.encrypted_credentials, row.iv, row.auth_tag);
+    plaintext = openSecret(row.encrypted_credentials, row.iv, row.auth_tag);
   } catch (err) {
     logger.error('Failed to decrypt credential - master key likely rotated', {
       serviceName, error: err instanceof Error ? err.message : String(err),
@@ -175,7 +158,7 @@ export function addCredential(
   }
 
   const plaintext = JSON.stringify(credentials);
-  const { ciphertext, iv, authTag } = encrypt(plaintext);
+  const { ciphertext, iv, authTag } = sealSecret(plaintext);
   const id = uuidv4();
 
   getDb().prepare(
@@ -207,7 +190,7 @@ export function updateCredential(
   if (!row) return { ok: false, error: `No credential found for service "${serviceName}".` };
 
   const plaintext = JSON.stringify(credentials);
-  const { ciphertext, iv, authTag } = encrypt(plaintext);
+  const { ciphertext, iv, authTag } = sealSecret(plaintext);
 
   if (description === undefined) {
     getDb().prepare(
