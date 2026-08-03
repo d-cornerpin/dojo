@@ -1443,6 +1443,13 @@
       "to": 359,
       "by": "PHASE-5 T6 (2026-08-03) — +21, a SECURITY CLOSURE found by driving the owner's own requirement",
       "why": "THE AUDIT ROW WAS THE ONE COPY THE CREDENTIAL SEAM DID NOT COVER. `auditLog` now runs the DECLARED-value scrub (`redactHandedCredentials`, from the leaf `credentials/secret-values.ts`) over both `target` and `detail` before the INSERT. MEASURED ON THE DEV BOX BEFORE THE FIX, not reasoned about: an agent that fetched a credential with `credential_get` and used it in three `exec` calls — the supported capability the owner's binding requirement demands — wrote the plaintext key into `audit_log.target` THREE TIMES, once per call, because `process-run.ts` audits the argv line verbatim and the argv line is exactly where the value HAS to be for the command to work at all. `audit_log` has no TTL and rides the diagnostics export, so it was the longest-lived plaintext copy the flow produced, and no clause anywhere gated the column. AFTER: the same drive writes `sh /tmp/t6-capture.sh <redacted-credential> solo1` while the SPAWNED PROCESS still received the real key — proven by comparing the sha256 of what the process was handed against the sha256 of the real secret, so neither value is ever printed. That is the twin obligation satisfied inside one row: refused at rest, still usable. THE KEY IS THE DECLARED VALUE SET, NEVER A SHAPE — an undeclared secret-shaped string is deliberately left alone, pinned by clause 4 of `agent/tools/__tests__/audit-credential-redaction.test.ts` (6 clauses, RED-first at 3 failed / 3 passed, the two negative controls green in both states by design). Most of the +21 is the two `why` blocks and the import note; the mechanism is two assignments and two bind-parameter swaps. Decrease-only from here; T7 re-derives it. Detail: `.superpowers/sdd/PHASE-5/task-T6-report.md`."
+    },
+    {
+      "path": "packages/server/src/agent/tools/index.ts",
+      "from": 632,
+      "to": 642,
+      "by": "PHASE-5 T8 Step 2 (2026-08-03) — the executor's gate loop mints the per-call effect capability",
+      "why": "PHASE-5 T8 Step 2 (RULING P5-R14). +10 lines: ONE import and ONE call, plus the seven-line comment that names the ruling and points at the module. THE MECHANISM ITSELF IS NOT HERE, deliberately — the gate's own instruction is 'move the new code elsewhere', and that is what was done: the capability, the resolver from declaration to resource, the branch-(A) scope templates and the branch-(B) carried list all live in the new `agent/effects/` module, and the executor gains a STEP rather than a mechanism. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Mint inline (the first draft): +32, refused — the interpretation of what a declaration MEANS belongs with the declarations, not in the dispatcher. (b) Wrap the dispatch in a callback to close the capability's window in a `finally`: +4 more and REFUSED for a better reason than lines — the window now expires off the platform's OWN per-call identity (`turn-state.ts`), so 'per call' is derived rather than remembered, and a fire-and-forget continuation cannot hold a live capability even if somebody forgets a `finally`. (c) Put the call anywhere other than immediately after the gate loop: refused, because the capability must carry resources the gates just authorized, and a mint before the refusals would exist for a call the platform declined. WHAT THE TEN LINES BUY: the residual this phase's exit gate is un-ticked over — a handler acting on a resource the gate loop never authorized, seen by no check. Held permanently by `agent/effects/__tests__/facade-contract.test.ts`, planted-fault proven in both directions (the facade stopped asking → 2 clauses fail; a second minting site → the unforgeability census fails naming the file)."
     }
   ],
   "maxNewFileLines": 400,
@@ -1477,6 +1484,7 @@
     "packages/server/src/agent/brokers/proc.ts": 375,
     "packages/server/src/agent/browser.ts": 412,
     "packages/server/src/agent/destructive-gate.ts": 583,
+    "packages/server/src/agent/effects/capability.ts": 286,
     "packages/server/src/agent/model.ts": 2621,
     "packages/server/src/agent/pdf-tools.ts": 1017,
     "packages/server/src/agent/pending-attachments.ts": 267,
@@ -1494,8 +1502,9 @@
     "packages/server/src/agent/tools/definitions.ts": 2632,
     "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
-    "packages/server/src/agent/tools/index.ts": 632,
+    "packages/server/src/agent/tools/index.ts": 642,
     "packages/server/src/agent/tools/surface.ts": 657,
+    "packages/server/src/agent/tools/types.ts": 259,
     "packages/server/src/agent/tools/util.ts": 359,
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 482,
