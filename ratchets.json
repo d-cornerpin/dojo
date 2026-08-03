@@ -1422,6 +1422,13 @@
       "to": 344,
       "by": "PHASE-5 T5 (2026-08-02) — scope: validated, subset-of-parent, readable",
       "why": "+11 net (+20/-9), of which 18 of the additions are prose. `system_control:'*'` stops meaning AppleScript (the plan's own direction at T3 Step 2, executed here). The BRANCH SHRANK — a two-arm if/else over the scalar and list spellings becomes one arm over the list — and the comment grew, because the preserving ORDER is the load-bearing fact: the explicit grants land first (PRIMARY_AGENT_PERMISSIONS in code, migration 155 in the stored rows) and only then does the blanket stop covering it. A reader who reverses that order strips AppleScript off live agents."
+    },
+    {
+      "path": "packages/server/src/agent/tools/util.ts",
+      "from": 338,
+      "to": 359,
+      "by": "PHASE-5 T6 (2026-08-03) — +21, a SECURITY CLOSURE found by driving the owner's own requirement",
+      "why": "THE AUDIT ROW WAS THE ONE COPY THE CREDENTIAL SEAM DID NOT COVER. `auditLog` now runs the DECLARED-value scrub (`redactHandedCredentials`, from the leaf `credentials/secret-values.ts`) over both `target` and `detail` before the INSERT. MEASURED ON THE DEV BOX BEFORE THE FIX, not reasoned about: an agent that fetched a credential with `credential_get` and used it in three `exec` calls — the supported capability the owner's binding requirement demands — wrote the plaintext key into `audit_log.target` THREE TIMES, once per call, because `process-run.ts` audits the argv line verbatim and the argv line is exactly where the value HAS to be for the command to work at all. `audit_log` has no TTL and rides the diagnostics export, so it was the longest-lived plaintext copy the flow produced, and no clause anywhere gated the column. AFTER: the same drive writes `sh /tmp/t6-capture.sh <redacted-credential> solo1` while the SPAWNED PROCESS still received the real key — proven by comparing the sha256 of what the process was handed against the sha256 of the real secret, so neither value is ever printed. That is the twin obligation satisfied inside one row: refused at rest, still usable. THE KEY IS THE DECLARED VALUE SET, NEVER A SHAPE — an undeclared secret-shaped string is deliberately left alone, pinned by clause 4 of `agent/tools/__tests__/audit-credential-redaction.test.ts` (6 clauses, RED-first at 3 failed / 3 passed, the two negative controls green in both states by design). Most of the +21 is the two `why` blocks and the import note; the mechanism is two assignments and two bind-parameter swaps. Decrease-only from here; T7 re-derives it. Detail: `.superpowers/sdd/PHASE-5/task-T6-report.md`."
     }
   ],
   "maxNewFileLines": 400,
@@ -1475,7 +1482,7 @@
     "packages/server/src/agent/tools/gate-eval.ts": 346,
     "packages/server/src/agent/tools/index.ts": 640,
     "packages/server/src/agent/tools/surface.ts": 657,
-    "packages/server/src/agent/tools/util.ts": 338,
+    "packages/server/src/agent/tools/util.ts": 359,
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 921,
