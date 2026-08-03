@@ -1513,6 +1513,27 @@
       "to": 2706,
       "by": "PHASE-5 T8 Step 3 category 8 (2026-08-03, T8E) — tts_create and music_create declare the WHOLE async delivery path",
       "why": "PHASE-5 T8 Step 3, RULING P5-R14. +20 lines: two declarations grow 1 line to 10 each, six of those ten being the shared reason. THE DEFECT IT FIXES: both tools declared ONE of their three writes, and that one was prose with no machine-checkable scope. The provider bytes land in the shared generated-assets directory, are READ BACK from there, and are copied into the CALLING agent's uploads dir; only the last was declared at all. A declaration can be honest and still be a third of the truth. Neither correction adds a refusal: gate rows are declared in tools/gates.ts and are never derived from effects[] (RULING P5-R5). THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) One tree covering both directories, saving 6 lines: REFUSED — the only tree containing both is the whole uploads root, which covers every OTHER agent's uploads directory; the same widening categories 5, 6 and 7 each refused on this same file. (b) Share one reason comment between the two tools by putting it above the pair, saving 6 lines: REFUSED — the two definitions are 24 lines apart in the array and a reason that is not beside its declaration is a reason the next editor will not see. (c) Drop the reasons entirely, saving 12: REFUSED for the reason every category before this one recorded. WHAT IT BUYS: two more files leave the agent-named class, and they leave it because a RE-READ under the ADDENDUM's sharpened criterion found them convertible after all — not because anything was moved between classes. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2706."
+    },
+    {
+      "path": "packages/server/src/agent/tools/types.ts",
+      "from": 287,
+      "to": 303,
+      "by": "PHASE-5 T8 Step 3 category 9 (2026-08-03, T8E) — EffectScope gains argTree, the file_list tree resolver",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R15 part 1. +16 lines, 15 of them COMMENT: one new EffectScope variant, `{ at: 'argTree' }`, meaning \"the argument names a DIRECTORY and the effect covers what is inside it\". THE DEFECT IT FIXES IS A SILENT NARROWING, which is the failure mode this whole task exists to prevent: file_list is handed a directory and stats every entry IN it, its grant was at:'path' on the directory alone, and the handler's own catch turns a per-entry refusal into a dash — so converting the call site without this would have made every size column read \"-\" with nothing failing anywhere. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Work around it at the call site by not stat-ing entries, or by treating a refusal as a dash deliberately: REFUSED — that IS the narrowing, written down; §5d names a call-site workaround as the thing not to do. (b) Give file_list a derived: tree template instead: REFUSED — the directory is the AGENT ARGUMENT, so a template would have to interpolate it, and expandScopeTemplate deliberately refuses a hole carrying a path separator (that refusal is the traversal guard). (c) Widen every args. fs_read to a tree so no new variant is needed, +0: REFUSED outright — that would give file_read a tree over the directory of any file it is asked to read, which is a real widening of every read tool in the toolbox; a clause now asserts file_read does NOT get a tree from the identical from:. THE ROOT CAN NEVER BE WIDER THAN WHAT THE GATE ALLOWED: it is the argument the brokers just resolved and authorized. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 303."
+    },
+    {
+      "path": "packages/server/src/agent/effects/scopes.ts",
+      "from": 270,
+      "to": 285,
+      "by": "PHASE-5 T8 Step 3 category 9 (2026-08-03, T8E) — the argTree resolver clause, and its fail-closed twin",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R15 part 1. +15 lines: the clause that turns `scope: { at: 'argTree' }` on an args. effect into a TREE grant rooted at the resolved argument, plus the four-line fail-closed twin that yields NO grant when the same variant is written on a derived: effect (it has no template, so it names nothing there). The file was pinned at 270 by this same task one commit earlier, and this is the first raise against that pin. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Handle argTree inside the derived: branch only, saving the fail-closed twin: REFUSED — the whole point is that it qualifies an ARGUMENT, and a variant that silently does nothing in one branch is how a declaration comes to mean two things. (b) Mint one tree grant on the lexical root only, saving 3 lines: REFUSED ON THE PROJECT'S OWN EVIDENCE — every fs grant in this layer carries BOTH spellings because a match on the lexical name alone is walked around with a symlink and a match on the real name alone refuses a legitimate path under a linked parent; a tree grant is no different, so both roots are minted when they differ. (c) Split the args. branch into its own module to keep this file at 270: REFUSED for the reason the FIRST PIN entry above already recorded — the three from shapes are one decision read in one loop. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 285."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2706,
+      "to": 2714,
+      "by": "PHASE-5 T8 Step 3 category 9 (2026-08-03, T8E) — file_list declares the TREE it lists",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R15 part 1. +8 lines: file_list's effect gains `scope: { at: 'argTree' }` and an eight-line reason. THE DEFECT IT FIXES: the tool stats every entry inside the directory it is given, and declared only the directory. Converting it without this would have silently blanked the size column for every entry — the handler's catch swallows the refusal — which is precisely the silent narrowing this task exists to prevent, and it would have been invisible in every gate. It adds NO refusal: gate rows are declared in tools/gates.ts and are never derived from effects[] (RULING P5-R5). THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Drop the reason (+6 saved): REFUSED — the next reader has to know why file_list carries a scope that file_read, with the identical from:, deliberately does not, or the two will be \"made consistent\" and every read tool will quietly gain a tree. (b) Leave the declaration alone and accept the dashes: REFUSED — that is a capability narrowing, STOP condition 4, and it would have shipped invisibly. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2714."
     }
   ],
   "maxNewFileLines": 400,
@@ -1562,13 +1583,13 @@
     "packages/server/src/agent/tools/cat/media.ts": 896,
     "packages/server/src/agent/tools/cat/session.ts": 241,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
-    "packages/server/src/agent/effects/scopes.ts": 270,
-    "packages/server/src/agent/tools/definitions.ts": 2706,
+    "packages/server/src/agent/effects/scopes.ts": 285,
+    "packages/server/src/agent/tools/definitions.ts": 2714,
     "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/index.ts": 642,
     "packages/server/src/agent/tools/surface.ts": 657,
-    "packages/server/src/agent/tools/types.ts": 287,
+    "packages/server/src/agent/tools/types.ts": 303,
     "packages/server/src/agent/tools/util.ts": 359,
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 482,
