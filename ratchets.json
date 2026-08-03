@@ -72,6 +72,13 @@
       "why": "PHASE-5 T1 (2026-08-02) — the effects declaration on every tool definition. Each of the ten files below grows by EXACTLY one `effects: [...]` line per definition it declares (plus a multi-line form where a tool has several effects, and a `nonEffects` block where a resource-shaped field is ruled inert with its reason). The count is arithmetic, not an estimate: 320 definitions, 111 of them in agent/tools.ts, and the per-file split is §T0-PINS P4's exactly. THERE IS NO WHERE ELSE TO PUT IT — that is the whole content of the task. The plan's Step 1 asked for a scan of six field names; §T0-PINS P3 measured that list at 39 of 320, missing `file_paths` (show_to_user's own field) and blind to effects with no resource argument at all (web_search's fixed host, spawn_agent's child, cliclick, `npx @plaud-ai/cli`), so the DECLARATION on the definition is the source of truth and a declaration lives where the thing it describes lives. It cannot live inside `input_schema`: that object is handed to the provider verbatim and the cache-prefix golden hashes it, so a key inside it would move the cached prefix (OR7 / roadmap #10). COMPRESSION WAS TAKEN WHERE IT EXISTED: `agent/tools.ts` is +40 and not +123, because `applyTextPagination`, `stringifyArgs` and `coerceNumberArg` (88 lines) left for `agent/tools/pagination.ts` in the same task — which is what kills six of the seven pinned dynamic-import hacks. The alternative that would have held these ceilings is not declaring the effects, which is the task."
     },
     {
+      "path": "packages/server/src/gateway/routes/update.ts",
+      "from": 1023,
+      "to": 1097,
+      "by": "PHASE-5 T6B (2026-08-03) — integrity before the swap + the rollback ordering check",
+      "why": "+74 into the file that owns version ordering and both download paths. THE ARTIFACT MACHINERY IS NOT HERE: hashing, manifest fetching, the verdict type and the whole what-this-buys/transition-case argument are a NEW 137-line module, update/artifact-integrity.ts, deliberately, so this file absorbs only the two call sites (5 lines each). What is left is `authorizeRollbackTarget` (~40 with its reason) and it CANNOT move without a cycle: it is defined in terms of `isValidVersionTag` and `compareVersions`, which live here and are imported from here, so a sibling module holding the gate would import update.ts while update.ts imports the gate. Version ordering is this file's job and the gate is version ordering. WHAT THE COMMENT BUYS is that neither arm reads as gratuitous: the SHAPE arm looks like belt-and-braces until you know the tag was interpolated into a GitHub API URL unvalidated, and the ORDER arm looks like a plain refusal until you know it redirects to `applyUpdate` and that the watchdog's automatic rollback does not come through this route at all — a reader who did not know the second could 'simplify' the gate away believing it blocks recovery. The alternative that would have held 1023 is not verifying the bytes before rsync --delete over a running install, which is the task."
+    },
+    {
       "path": "packages/server/src/agent/v2/loop.ts",
       "from": 9750,
       "to": 9774,
@@ -1509,7 +1516,7 @@
     "packages/server/src/gateway/routes/setup-deps.ts": 513,
     "packages/server/src/gateway/routes/tracker.ts": 906,
     "packages/server/src/gateway/routes/twilio.ts": 501,
-    "packages/server/src/gateway/routes/update.ts": 1023,
+    "packages/server/src/gateway/routes/update.ts": 1097,
     "packages/server/src/gateway/routes/upload.ts": 608,
     "packages/server/src/google/auth.ts": 771,
     "packages/server/src/google/tools-forms.ts": 829,

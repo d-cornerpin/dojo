@@ -24,6 +24,12 @@ set -euo pipefail
 REPO="d-cornerpin/dojo"
 ZIP_NAME="dojo-platform.zip"
 PKG_NAME="Agent-DOJO-Installer.pkg"
+# PHASE-5 T6B: the sha256 manifest the self-updater verifies the zip against
+# before it rsyncs anything over a running install. It is published BESIDE its
+# own artifact, so it proves the bytes arrived intact — it is NOT proof of who
+# made them; that needs a signature checked against a key the platform holds.
+# Read by packages/server/src/update/artifact-integrity.ts.
+SHA_NAME="dojo-platform.zip.sha256"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -348,6 +354,15 @@ step "Building deploy package (this compiles everything)"
 npm run build:package
 [ -f "$DIST/$ZIP_NAME" ] || fail "Build did not produce $ZIP_NAME"
 [ -f "$DIST/$PKG_NAME" ] || fail "Build did not produce $PKG_NAME"
+
+# ── The integrity manifest (PHASE-5 T6B) ──
+# Computed here, on the bytes that will be uploaded, and re-checked below so a
+# dry run proves the manifest is real rather than merely written.
+step "Writing $SHA_NAME"
+( cd "$DIST" && shasum -a 256 "$ZIP_NAME" > "$SHA_NAME" )
+[ -s "$DIST/$SHA_NAME" ] || fail "Failed to write $SHA_NAME"
+( cd "$DIST" && shasum -a 256 -c "$SHA_NAME" >/dev/null ) || fail "$SHA_NAME does not match $ZIP_NAME"
+echo "  ✓ $SHA_NAME written and self-checked"
 
 # ── Verify the embedded version (the self-updater reads this) ──
 step "Verifying embedded version inside $ZIP_NAME"
@@ -706,9 +721,9 @@ if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
   # the asset upload failed). Ensure BOTH assets are present via an idempotent
   # --clobber upload instead of erroring on the existing release.
   echo "  ↪ release $TAG already exists, re-uploading both assets (--clobber)"
-  gh release upload "$TAG" "$DIST/$ZIP_NAME" "$DIST/$PKG_NAME" --repo "$REPO" --clobber
+  gh release upload "$TAG" "$DIST/$ZIP_NAME" "$DIST/$SHA_NAME" "$DIST/$PKG_NAME" --repo "$REPO" --clobber
 else
-  gh release create "$TAG" "$DIST/$ZIP_NAME" "$DIST/$PKG_NAME" --repo "$REPO" --title "$TAG" ${PRERELEASE_ARGS[@]+"${PRERELEASE_ARGS[@]}"} ${NOTES_ARGS[@]+"${NOTES_ARGS[@]}"}
+  gh release create "$TAG" "$DIST/$ZIP_NAME" "$DIST/$SHA_NAME" "$DIST/$PKG_NAME" --repo "$REPO" --title "$TAG" ${PRERELEASE_ARGS[@]+"${PRERELEASE_ARGS[@]}"} ${NOTES_ARGS[@]+"${NOTES_ARGS[@]}"}
 fi
 
 # ── The guard rail: do not declare victory until the release is verified ──
