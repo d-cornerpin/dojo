@@ -1457,6 +1457,13 @@
       "to": 2640,
       "by": "PHASE-5 T8 Step 3 category 2 (2026-08-03) — open_browser DECLARES the directory it has always written",
       "why": "PHASE-5 T8 Step 3, RULING P5-R14. +8 lines: the corrected `effects[]` declaration (1 line → 4) plus the five-line reason. THE DEFECT IT FIXES: `open_browser`'s screenshot fallback has always written a PNG into `~/.dojo/data/canvas-shots` and the tool declared NO fs effect at all, so the converted call site was REFUSED until the declaration was corrected — which is the branch-(A) loop working exactly as P5-R14 designed it (the refusal is the signal that a declaration is owed). It adds NO refusal of its own: gate rows are declared in `tools/gates.ts` and are never derived from `effects[]` (RULING P5-R5), so this widens what the facade will carry and gates nothing new. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Drop the reason comment and keep the declaration alone (+3): REFUSED — 'we looked and this is what it does' and 'nobody looked' must never read the same, and the next reader has to know the correction adds no refusal or they will re-litigate it. (b) Reformat the effect onto fewer physical lines to hold the count flat: REFUSED outright — contorting a source layout to move a line count is the trade this project forbids, and no line count passes or fails anything (roadmap #7). (c) Move the declaration out of the registry: REFUSED — the definition IS the declaration's home (T1); a second home for what a tool does is the disease this overhaul removes. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2640, and T8's remaining categories each correct their own declarations at this same site."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2640,
+      "to": 2647,
+      "by": "PHASE-5 T8 Step 3 category 3 (2026-08-03) — history_get DECLARES the large-file store it has always read",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R14. +7 lines: the corrected `effects[]` declaration (1 line -> 3) plus the five-line reason. THE DEFECT IT FIXES: `history_get` has always served a `file_*` id by reading the stored body off disk and it declared `effects: []`, so the converted recall door was REFUSED until the declaration was corrected at the site — branch (A) working as P5-R14 designed it, the refusal being the signal that a declaration is owed. It adds NO refusal of its own: gate rows are declared in `tools/gates.ts` and are never derived from `effects[]` (RULING P5-R5). THE SCOPE IS THE STORE TREE AND THE NARROWER ONE WAS REFUSED ON EVIDENCE, not preference: `<store>/<agentId>` would have made a cross-agent id fail the READ, and the ownership check that produces the message the owner sees (`File X does not belong to this agent`) runs AFTER the read in `memory/retrieval.ts` — the message would have silently become `Large file not found`. A behaviour change during a byte-faithful move is exactly what this step forbids. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Drop the reason comment and keep the declaration alone (+2): REFUSED for the reason category 2 recorded — `we looked and this is what it does` and `nobody looked` must never read the same. (b) Reformat onto fewer physical lines to hold the count flat: REFUSED outright — no line count passes or fails anything (roadmap #7) and contorting layout to move one is the trade this project forbids. (c) Move the declaration out of the registry: REFUSED — the definition IS the declarations home (T1). THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2647, and T8s remaining categories each correct their own declarations at this same site."
     }
   ],
   "maxNewFileLines": 400,
@@ -1506,7 +1513,7 @@
     "packages/server/src/agent/tools/cat/media.ts": 896,
     "packages/server/src/agent/tools/cat/session.ts": 241,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
-    "packages/server/src/agent/tools/definitions.ts": 2640,
+    "packages/server/src/agent/tools/definitions.ts": 2647,
     "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/index.ts": 642,
