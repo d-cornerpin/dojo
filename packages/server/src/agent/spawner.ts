@@ -146,7 +146,33 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
 
   const db = getDb();
 
-  // Check parent's permission to spawn
+  // ── THE AUTHORITATIVE SPAWN GATE (PHASE-5 T5, RULING P5-R2) ──
+  // Spawn permission is asked in two places and the ruling required T5 to say
+  // which one is the authority rather than leave both standing unexplained.
+  //
+  // THIS ONE IS IT, for a structural reason: `spawnAgent()` is the function that
+  // writes the row, and it has callers that never enter the executor at all
+  // (`vault/maintenance.ts` spawns with no model in the loop). A gate that is
+  // not on every path cannot be the authority; this one is on every path by
+  // construction.
+  //
+  // The executor's gate (`tools/gates.ts` row 4 → `tools/gate-eval.ts`) is NOT
+  // redundant and is NOT dead. It does a different job: it turns this same
+  // answer into something a MODEL can read and the audit can count — the
+  // ladder's `PERMISSION_DENIED` code, its row-4 wording, an audit row filed as
+  // `spawn` — at the tool boundary, before any handler runs. Delete it and the
+  // protection still holds here, but the model receives a raw thrown Error
+  // instead of a classified refusal.
+  //
+  // They cannot disagree: both answer from `authorizeSpawn` against the same
+  // manifest. This path reaches it through `grantForManifest` (the pure
+  // projection), the executor through `grantFor` (the `grant_rule` rows), and
+  // `grantFor` re-projects the moment a stored fingerprint stops matching — so
+  // the two are equal by construction, not by anybody remembering.
+  //
+  // Held end to end by `__tests__/spawn-gate-reconciliation.test.ts`, whose
+  // refusal clauses were proven load-bearing by removing this block and watching
+  // exactly those three go red.
   const spawnCheck = checkPermission(parentId, { type: 'spawn' });
   if (!spawnCheck.allowed) {
     throw new Error(`Spawn denied: ${spawnCheck.reason}`);
