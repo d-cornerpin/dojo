@@ -71,32 +71,13 @@ export interface TranscribeAudioError {
 
 export type TranscribeAudioResult = TranscribeAudioSuccess | TranscribeAudioError;
 
-// Resolve an attachment id to the absolute file path on disk. Audio
-// attachments land in ~/.dojo/uploads/<agentId>/<timestamp>_<filename>
-// the same as every other chat upload, so we walk the message table
-// looking for a matching attachment row.
-export function resolveAttachmentPath(fileId: string): { path: string; filename: string; mimeType: string } | null {
-  const db = getDb();
-  const rows = db.prepare(`
-    SELECT attachments FROM messages
-    WHERE attachments IS NOT NULL AND attachments != '' AND attachments != '[]'
-    ORDER BY created_at DESC
-    LIMIT 500
-  `).all() as Array<{ attachments: string }>;
-  for (const row of rows) {
-    try {
-      const arr = JSON.parse(row.attachments) as Array<{ fileId: string; filename: string; mimeType: string; path: string }>;
-      for (const a of arr) {
-        if (a.fileId === fileId) {
-          if (fs.existsSync(a.path)) {
-            return { path: a.path, filename: a.filename, mimeType: a.mimeType };
-          }
-        }
-      }
-    } catch { /* skip malformed row */ }
-  }
-  return null;
-}
+// Resolve an attachment id to the absolute file path on disk. MOVED VERBATIM to
+// `services/attachment-resolve.ts` (PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM
+// mechanic 5) so the executor's gate loop can resolve an id BEFORE it mints the
+// call's capability without importing this module's STT engines and subprocess
+// spawn. Re-exported here so no consumer moved: ONE resolution point, shared by
+// the gate loop and the handler, is what keeps their two answers the same fact.
+export { resolveAttachmentPath } from './attachment-resolve.js';
 
 // Fetch an https URL into a buffer with a hard byte cap and timeout.
 // Non-https URLs and file:// are rejected. Used when the agent passes

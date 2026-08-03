@@ -38,7 +38,7 @@ import { broadcast } from '../../../gateway/ws.js';
 import { insertMessageIfAbsent } from '../../../memory/message-store.js';
 import { getModelCapabilities } from '../../../services/capabilities.js';
 import { auditLog, toolsLogger as logger } from '../util.js';
-import fs from 'node:fs';
+import * as effectFs from '../../effects/fs.js';
 import os from 'node:os';
 import pathModule from 'node:path';
 import { createGenerationJob as createImgJob, setRunning as setImgRunning, setSucceeded as setImgSucceeded, setFailed as setImgFailed, createGenerationJob, enqueueAudioOrMusicJob } from '../../../services/generation-jobs.js';
@@ -288,7 +288,7 @@ const handlers = {
         // one-line reply ("Here you go!") lands with the image
         // thumbnail, and we're done.
         const recipientDir = path.join(os.homedir(), '.dojo', 'uploads', agentId);
-        if (!fs.existsSync(recipientDir)) fs.mkdirSync(recipientDir, { recursive: true });
+        if (!effectFs.existsSync(recipientDir)) effectFs.mkdirSync(recipientDir, { recursive: true });
         // Build a human-friendly on-disk filename. Prefer the agent-
         // provided slug (e.g. "coffee-shop-sunset") and append a short
         // id chunk for uniqueness. Falls back to the legacy
@@ -301,7 +301,7 @@ const handlers = {
         const stablePath = path.join(recipientDir, stableFilename);
         let deliveredPath = result.filePath;
         try {
-          fs.copyFileSync(result.filePath, stablePath);
+          effectFs.copyFileSync(result.filePath, stablePath);
           deliveredPath = stablePath;
         } catch (copyErr) {
           logger.warn('image_create: pre-copy to caller uploads dir failed, falling back to original path', {
@@ -327,7 +327,7 @@ const handlers = {
           // with a short delivery caption and the image inline,
           // no model call. The user sees ONE clean bubble with
           // "Here you go." and the image thumbnail. Loop killed.
-          const stat = fs.statSync(deliveredPath);
+          const stat = effectFs.statSync(deliveredPath);
           const filename = path.basename(deliveredPath);
           const ext = path.extname(filename).toLowerCase();
           const mimeType =
@@ -768,7 +768,7 @@ const handlers = {
         return { content, isError };
       }
       try {
-        audio = fs.readFileSync(resolved.path);
+        audio = effectFs.readFileSync(resolved.path);
       } catch (err) {
         content = `Error: failed to read attachment from disk: ${err instanceof Error ? err.message : String(err)}`;
         isError = true;
@@ -787,13 +787,13 @@ const handlers = {
         isError = true;
         return { content, isError };
       }
-      if (!fs.existsSync(resolvedPath)) {
+      if (!effectFs.existsSync(resolvedPath)) {
         content = `Error: no file at ${resolvedPath}.`;
         isError = true;
         return { content, isError };
       }
       try {
-        audio = fs.readFileSync(resolvedPath);
+        audio = effectFs.readFileSync(resolvedPath);
       } catch (err) {
         content = `Error: failed to read file: ${err instanceof Error ? err.message : String(err)}`;
         isError = true;

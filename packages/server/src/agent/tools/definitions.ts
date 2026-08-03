@@ -1732,9 +1732,16 @@ export const toolDefinitions: ToolDefinition[] = [
     // at the site; it adds no refusal (gate rows are declared in
     // `tools/gates.ts`, never derived from `effects[]` — P5-R5). The prose
     // declaration keeps its line: the delivery copy is a second, later write.
+    // PHASE-5 T8 Step 3 (T8E) — THE DELIVERY COPY, DECLARED IN BOTH DIRECTIONS.
+    // The media door copies the generated file into the CALLER's uploads dir so
+    // the chat has a stable path for it. That is a READ of the generated
+    // directory (which declared only the write) and a WRITE of the caller's own
+    // uploads tree (which had prose and no machine-checkable scope). Both
+    // corrected at the site; neither adds a refusal (P5-R5).
     effects: [
-      { kind: 'fs_write', from: 'derived:the calling agent uploads directory' },
+      { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } },
       { kind: 'fs_write', from: 'derived:the generated-images directory the provider bytes land in', scope: { at: 'tree', template: '~/.dojo/uploads/generated' } },
+      { kind: 'fs_read', from: 'derived:the generated image read back for the delivery copy', scope: { at: 'tree', template: '~/.dojo/uploads/generated' } },
     ],
     input_schema: {
       type: 'object',
@@ -1764,7 +1771,19 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'transcribe_audio',
     description: 'Convert speech in an audio file to text. Pass ONE of: attachment_id (the fileId from a recent chat attachment, preferred when the user just shared the file), path (an absolute local path inside ~/.dojo/uploads/), or url (https only). Common input formats: mp3, wav, m4a, opus, webm, ogg, aac. Returns the transcribed text inline (no new attachment is created). The platform posts a short acknowledgment automatically; you do not need to announce that you are transcribing.',
-    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'net', from: 'args.url' }],
+    // PHASE-5 T8 Step 3 — THE THIRD SOURCE, DECLARED (RULING P5-R15 ADDENDUM
+    // mechanic 5). The tool takes ONE of `attachment_id`, `path` or `url` and
+    // only two of the three were declared. `attachment_id` names its file
+    // INDIRECTLY: the resource is whatever path the platform recorded for that
+    // id, and those sit under several distinct roots, so there is no tree to
+    // declare. `via` names the indirection instead, and the gate loop resolves
+    // it with the same reader the handler uses. A stale id resolves to nothing,
+    // grants nothing, and the handler keeps its own error.
+    effects: [
+      { kind: 'fs_read', from: 'args.attachment_id', via: 'attachment_row' },
+      { kind: 'fs_read', from: 'args.path' },
+      { kind: 'net', from: 'args.url' },
+    ],
     input_schema: {
       type: 'object',
       properties: {

@@ -37,8 +37,9 @@ import { effectsFor } from '../tools/registry.js';
 import { resolvePathArg, resolveArgvArg, resolveUrlArg } from '../brokers/resolve.js';
 import {
   EFFECT_FROM_ARGS, EFFECT_FROM_FIXED, EFFECT_FROM_DERIVED,
-  type ToolEffect, type EffectScope,
+  type ToolEffect, type EffectScope, type EffectIndirection,
 } from '../tools/types.js';
+import { resolveAttachmentPath } from '../../services/attachment-resolve.js';
 import { attachCallCapability, mintCallCapability, type ResourceGrant } from './capability.js';
 
 /**
@@ -62,6 +63,26 @@ import { attachCallCapability, mintCallCapability, type ResourceGrant } from './
  * `services/tunnel.ts`'s `cloudflared`, `services/transcription.ts`'s spawn).
  */
 export const CARRIED_PROGRAMS: Readonly<Record<string, string>> = {};
+
+/**
+ * HOW AN IDENTIFIER ARGUMENT BECOMES A RESOURCE — RULING P5-R15 ADDENDUM
+ * mechanic 5, as an explicit named table.
+ *
+ * `ToolEffect.via` may only point at a key of this object, so a declaration
+ * cannot invent an indirection; it can only name one the platform already owns.
+ * Each entry is the SAME function the handler resolves with, which is what makes
+ * "one resolution point" true rather than hoped: the gate loop and the handler
+ * ask the same question of the same reader and get the same answer.
+ *
+ * This is resolution, not policy. Nothing here decides whether a resource may be
+ * touched — the brokers already did, and the facade matches what this returned.
+ */
+export type IndirectResolver = (id: string) => { path: string } | null;
+
+export const INDIRECT_RESOLVERS: Readonly<Record<EffectIndirection, IndirectResolver>> = {
+  /** `transcribe_audio`'s `attachment_id` → the path `messages.attachments` records for it. */
+  attachment_row: resolveAttachmentPath,
+};
 
 // `EffectScope` is declared on the registry leaf (`tools/types.ts`) beside the
 // effect it qualifies, so a definition can carry one without importing anything.
@@ -120,6 +141,7 @@ export function grantsForCall(
   agentId: string,
   effects: readonly ToolEffect[] | undefined,
   args: Record<string, unknown>,
+  resolvers: Readonly<Record<EffectIndirection, IndirectResolver>> = INDIRECT_RESOLVERS,
 ): ResourceGrant[] {
   const grants: ResourceGrant[] = [];
   if (!effects) return grants;
@@ -130,6 +152,30 @@ export function grantsForCall(
     // ── args.<dotted> ──
     if (effect.from.startsWith(EFFECT_FROM_ARGS)) {
       const dotted = effect.from.slice(EFFECT_FROM_ARGS.length);
+
+      // `via:` — the argument is an IDENTIFIER, and the resource is the path the
+      // platform recorded against it (RULING P5-R15 ADDENDUM mechanic 5). The
+      // resolver is the same function the handler uses, so the two cannot
+      // disagree; an id that resolves to nothing yields NO grant, which leaves
+      // the handler's own "no attachment found" message intact rather than
+      // turning a stale id into a bare refusal.
+      if (effect.via && fsKind) {
+        const id = readArgPath(args, dotted);
+        if (typeof id !== 'string' || id.trim().length === 0) continue;
+        // A `via` the table does not name grants NOTHING rather than throwing.
+        // The type already refuses one at compile time; this is the runtime half,
+        // and it fails closed — the gate loop must never crash a dispatch over a
+        // declaration it cannot interpret.
+        const resolve = resolvers[effect.via] as IndirectResolver | undefined;
+        if (!resolve) continue;
+        const row = resolve(id);
+        if (!row) continue;
+        const recorded = resolvePathArg(row.path);
+        if (recorded.ok) {
+          grants.push({ kind: fsKind, at: 'path', lexical: recorded.value.lexical, real: recorded.value.real });
+        }
+        continue;
+      }
 
       // `args.<name>[]` — EVERY ELEMENT of an array argument, one grant each.
       // Read as a literal key this found no argument called `attachments[]` and

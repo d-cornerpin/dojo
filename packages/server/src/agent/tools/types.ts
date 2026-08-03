@@ -116,7 +116,35 @@ export interface ToolEffect {
    * traffic is the signal that a declaration is owed.
    */
   scope?: EffectScope;
+  /**
+   * THE ARGUMENT NAMES THE RESOURCE INDIRECTLY (PHASE-5 T8, RULING P5-R15
+   * ADDENDUM mechanic 5).
+   *
+   * Some arguments are not a path but an IDENTIFIER the platform recorded a
+   * path against — `transcribe_audio`'s `attachment_id` is the whole class.
+   * There is no tree to declare for those (the recorded paths sit under several
+   * distinct roots), and prose is not a scope, so the declaration names the
+   * INDIRECTION instead: the gate loop resolves the identifier with the SAME
+   * function the handler resolves it with and mints the grant for the one path
+   * that row records.
+   *
+   * It is a NAMED indirection out of a fixed table, never a callback or a
+   * predicate: a declaration cannot invent a way to turn an argument into a
+   * resource, it can only point at one the platform already owns. An identifier
+   * that resolves to nothing yields NO grant, so the handler keeps its own error
+   * shape — a stale id must never become a bare refusal.
+   */
+  via?: EffectIndirection;
 }
+
+/**
+ * The named indirections a declaration may point at. One entry today.
+ *
+ * A LIST rather than a shape, for the reason `CARRIED_PROGRAMS` is a list: a
+ * new way to turn an argument into a resource has to be written here by hand to
+ * exist at all, so the set cannot grow by declaration.
+ */
+export type EffectIndirection = 'attachment_row';
 
 /**
  * WHERE A DERIVED EFFECT ACTS, declared so it can be checked.

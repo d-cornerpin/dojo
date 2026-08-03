@@ -33,7 +33,7 @@ import {
   grantsCover, EffectNotAuthorized, type ResourceGrant,
 } from '../capability.js';
 import { runWithToolCallId } from '../../turn-state.js';
-import { grantsForCall, expandScopeTemplate, CARRIED_PROGRAMS } from '../scopes.js';
+import { grantsForCall, expandScopeTemplate, CARRIED_PROGRAMS, INDIRECT_RESOLVERS } from '../scopes.js';
 import { effectsFor } from '../../tools/registry.js';
 import { execFileAuthorized } from '../proc.js';
 import * as effectFs from '../fs.js';
@@ -343,6 +343,33 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
       filesContaining('openCallCapability(').filter((f) => f !== 'agent/effects/scopes.ts'),
       'the capability is opened at the executor gate loop and nowhere else',
     ).toEqual(['agent/tools/index.ts']);
+    // `grantsForCall` takes an OVERRIDABLE resolver table (mechanic 5, so the
+    // indirection is drivable by a test without a database). Nothing in
+    // production may pass its own — a caller that did would decide what an
+    // argument resolves to, which is the interpretation this module owns.
+    expect(
+      filesContaining('grantsForCall(').filter((f) => f !== 'agent/effects/scopes.ts'),
+      'grantsForCall has one production caller: the mint, in this module',
+    ).toEqual([]);
+  });
+
+  it('the indirection table is a NAMED list, and a declaration cannot add to it', () => {
+    // Mechanic 5's equivalent of `CARRIED_PROGRAMS`'s census: a new way to turn
+    // an argument into a resource has to be written into the table by hand to
+    // exist at all, so the set cannot grow by declaration.
+    expect(Object.keys(INDIRECT_RESOLVERS)).toEqual(['attachment_row']);
+    for (const resolve of Object.values(INDIRECT_RESOLVERS)) {
+      expect(typeof resolve, 'every indirection resolves through a real reader').toBe('function');
+    }
+    // A `via` an effect declares that the table does not hold cannot resolve:
+    // the type refuses it at compile time, and at runtime it grants nothing.
+    const rogue = grantsForCall(
+      AGENT,
+      [{ kind: 'fs_read', from: 'args.id', via: 'not_a_real_indirection' } as unknown as ToolEffect],
+      { id: 'x' },
+      INDIRECT_RESOLVERS,
+    );
+    expect(rogue).toEqual([]);
   });
 
   it('NO facade entry takes a capability as a parameter — a handler has nothing to hand it', () => {
@@ -452,6 +479,70 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(grantsCover(grants, { op: 'fs_read', path: sibling, real: sibling }), 'the scope is the store alone').toBe(false);
     // A read declaration is not a write one.
     expect(grantsCover(grants, { op: 'fs_write', path: stored, real: stored })).toBe(false);
+  });
+
+  it('CATEGORY CONVERTED: the media door reads and delivers through the facade', () => {
+    const src = fs.readFileSync(path.join(SRC, 'agent/tools/cat/media.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(src), 'the media door must not hold node:fs').toBe(false);
+    expect(src.includes('effectFs.'), 'it reads and writes through the facade').toBe(true);
+  });
+
+  it('image_create may read BACK what it generated and copy it into the caller uploads dir', () => {
+    // The delivery copy is a READ of the generated file and a WRITE of the
+    // caller's own uploads directory. The first was never declared (the
+    // generated-directory effect declared only the write) and the second had
+    // prose with no machine-checkable scope, so both were corrected at the site.
+    const grants = grantsForCall(AGENT, effectsFor('image_create'), { description: 'a cat' });
+    const generated = path.join(os.homedir(), '.dojo', 'uploads', 'generated', 'x.png');
+    const uploads = path.join(os.homedir(), '.dojo', 'uploads', AGENT);
+    const stable = path.join(uploads, 'a-cat-1234.png');
+    expect(grantsCover(grants, { op: 'fs_read', path: generated, real: generated }), 'it may read back its own output').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_mkdir', path: uploads, real: uploads }), 'it may create the caller uploads dir').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_write', path: stable, real: stable }), 'it may place the stable copy there').toBe(true);
+    const other = path.join(os.homedir(), '.dojo', 'uploads', 'someone-else', 'x.png');
+    expect(grantsCover(grants, { op: 'fs_write', path: other, real: other }), 'and never another agent uploads dir').toBe(false);
+  });
+
+  it('MECHANIC 5: an attachment id resolves to the EXACT recorded path, and to nothing else', () => {
+    // RULING P5-R15 ADDENDUM. `transcribe_audio` takes an `attachment_id`, not a
+    // path — the resource is named INDIRECTLY, through a recorded row. There is
+    // no tree to declare (attachment paths sit under several roots), so the
+    // resolver performs the SAME read the handler performs, at gate-loop time,
+    // and mints the grant for the one path that row records.
+    const recorded = path.join(scratch, 'voice-note.m4a');
+    fs.writeFileSync(recorded, 'audio');
+    const grants = grantsForCall(
+      AGENT,
+      [{ kind: 'fs_read', from: 'args.attachment_id', via: 'attachment_row' } as ToolEffect],
+      { attachment_id: 'file_known' },
+      { attachment_row: (id) => (id === 'file_known' ? { path: recorded } : null) },
+    );
+    expect(grants).toHaveLength(1);
+    expect(grantsCover(grants, { op: 'fs_read', path: recorded, real: recorded })).toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: outOfScope, real: outOfScope }), 'the id names ONE file').toBe(false);
+  });
+
+  it('…and an id that resolves to NOTHING yields no grant, so the handler keeps its own error', () => {
+    // The failure surface for a missing or stale id must stay the handler's own
+    // message ("no attachment found with id X"), never a bare facade refusal:
+    // the handler returns before it touches the disk, so no facade call happens.
+    const e = [{ kind: 'fs_read', from: 'args.attachment_id', via: 'attachment_row' } as ToolEffect];
+    const lookup = { attachment_row: (): null => null };
+    expect(grantsForCall(AGENT, e, { attachment_id: 'file_gone' }, lookup)).toEqual([]);
+    expect(grantsForCall(AGENT, e, {}, lookup), 'absent argument').toEqual([]);
+    expect(grantsForCall(AGENT, e, { attachment_id: 42 }, lookup), 'non-string id').toEqual([]);
+  });
+
+  it('transcribe_audio DECLARES both of its sources: the recorded attachment and the given path', () => {
+    const given = path.join(scratch, 'clip.wav');
+    const grants = grantsForCall(AGENT, effectsFor('transcribe_audio'), { path: given });
+    expect(grantsCover(grants, { op: 'fs_read', path: given, real: given }), 'the path it was handed').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: outOfScope, real: outOfScope })).toBe(false);
+    // The indirection is DECLARED on the tool, so a later edit cannot drop it silently.
+    expect(
+      effectsFor('transcribe_audio')?.some((x) => x.via === 'attachment_row'),
+      'transcribe_audio must declare the attachment-row indirection',
+    ).toBe(true);
   });
 
   it('CATEGORY CONVERTED: the comms door reads and copies through the facade', () => {
