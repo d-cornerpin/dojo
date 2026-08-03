@@ -32,7 +32,7 @@
 //    interceptor all call the SAME copy.
 // ════════════════════════════════════════════════════════════════════════════
 
-import fs from 'node:fs';
+import * as effectFs from '../../effects/fs.js';
 import path from 'node:path';
 import { getDb } from '../../../db/connection.js';
 import { coerceNumberArg } from '../pagination.js';
@@ -211,7 +211,7 @@ async function executeFileRead(
   }
 
   try {
-    const stat = await fs.promises.stat(filePath).catch(() => null);
+    const stat = await effectFs.promises.stat(filePath).catch(() => null);
     if (!stat) {
       // Self-correcting assist: the model may have dropped the stored timestamp
       // prefix off an attachment name. Hand back the exact stored Path if a
@@ -241,7 +241,7 @@ async function executeFileRead(
         auditLog(agentId, 'file_read', filePath, 'error', `Image too large: ${stat.size} bytes`);
         return `Error: Image is too large (${(stat.size / 1024 / 1024).toFixed(1)}MB). Max is 20MB.`;
       }
-      const data = await fs.promises.readFile(filePath);
+      const data = await effectFs.promises.readFile(filePath);
       const base64 = data.toString('base64');
       const mediaType = IMAGE_MEDIA_TYPES[ext] ?? 'image/png';
 
@@ -262,7 +262,7 @@ async function executeFileRead(
         auditLog(agentId, 'file_read', filePath, 'error', `PDF too large: ${stat.size} bytes`);
         return `Error: PDF is too large (${(stat.size / 1024 / 1024).toFixed(1)}MB). Max is 20MB.`;
       }
-      const data = await fs.promises.readFile(filePath);
+      const data = await effectFs.promises.readFile(filePath);
       const base64 = data.toString('base64');
 
       auditLog(agentId, 'file_read', filePath, 'success', `pdf ${stat.size} bytes`);
@@ -277,7 +277,7 @@ async function executeFileRead(
     }
 
     // ── Text files: return as text ──
-    const content = await fs.promises.readFile(filePath, 'utf-8');
+    const content = await effectFs.promises.readFile(filePath, 'utf-8');
     const allLines = content.split('\n');
     const totalLines = allLines.length;
 
@@ -396,7 +396,7 @@ async function executeFileWrite(agentId: string, args: Record<string, unknown>):
   // EISDIR at the weak model.
   const trailingSep = /[/\\]\s*$/.test(String(args.path ?? '')) || /[/\\]$/.test(filePath);
   let existingDir = false;
-  try { existingDir = (await fs.promises.stat(filePath)).isDirectory(); } catch { /* not present yet */ }
+  try { existingDir = (await effectFs.promises.stat(filePath)).isDirectory(); } catch { /* not present yet */ }
   if (existingDir || trailingSep) {
     auditLog(agentId, 'file_write', filePath, 'error', 'target is a directory, not a file (no filename supplied)');
     return directoryTargetGuidance(filePath);
@@ -404,8 +404,8 @@ async function executeFileWrite(agentId: string, args: Record<string, unknown>):
 
   try {
     const dir = path.dirname(filePath);
-    await fs.promises.mkdir(dir, { recursive: true });
-    await fs.promises.writeFile(filePath, content, 'utf-8');
+    await effectFs.promises.mkdir(dir, { recursive: true });
+    await effectFs.promises.writeFile(filePath, content, 'utf-8');
     auditLog(agentId, 'file_write', filePath, 'success', `${content.length} bytes written`);
 
     const downloadUrl = registerSharedFile(agentId, filePath);
@@ -445,7 +445,7 @@ async function executeFileAppend(agentId: string, args: Record<string, unknown>)
   // to append to and would throw EISDIR. Return corrective guidance, not a crash.
   const trailingSep = /[/\\]\s*$/.test(String(args.path ?? '')) || /[/\\]$/.test(filePath);
   let existingDir = false;
-  try { existingDir = (await fs.promises.stat(filePath)).isDirectory(); } catch { /* not present yet */ }
+  try { existingDir = (await effectFs.promises.stat(filePath)).isDirectory(); } catch { /* not present yet */ }
   if (existingDir || trailingSep) {
     auditLog(agentId, 'file_write', filePath, 'error', 'target is a directory, not a file (no filename supplied)');
     return directoryTargetGuidance(filePath);
@@ -453,7 +453,7 @@ async function executeFileAppend(agentId: string, args: Record<string, unknown>)
 
   try {
     const dir = path.dirname(filePath);
-    await fs.promises.mkdir(dir, { recursive: true });
+    await effectFs.promises.mkdir(dir, { recursive: true });
 
     let leading = '';
     if (ensureNewline) {
@@ -461,11 +461,11 @@ async function executeFileAppend(agentId: string, args: Record<string, unknown>)
       // need a separator. fs.stat is cheaper than reading the file.
       let existingSize = 0;
       try {
-        const stat = await fs.promises.stat(filePath);
+        const stat = await effectFs.promises.stat(filePath);
         existingSize = stat.size;
       } catch { /* file doesn't exist, append creates it, no leading newline needed */ }
       if (existingSize > 0) {
-        const fh = await fs.promises.open(filePath, 'r');
+        const fh = await effectFs.promises.open(filePath, 'r');
         try {
           const buf = Buffer.alloc(1);
           await fh.read(buf, 0, 1, existingSize - 1);
@@ -477,8 +477,8 @@ async function executeFileAppend(agentId: string, args: Record<string, unknown>)
     }
 
     const payload = leading + content;
-    await fs.promises.appendFile(filePath, payload, 'utf-8');
-    const stat = await fs.promises.stat(filePath);
+    await effectFs.promises.appendFile(filePath, payload, 'utf-8');
+    const stat = await effectFs.promises.stat(filePath);
     auditLog(agentId, 'file_write', filePath, 'success', `${payload.length} bytes appended (total ${stat.size})`);
 
     const downloadUrl = registerSharedFile(agentId, filePath);
@@ -551,7 +551,7 @@ export async function executeFilePatch(
 
   let stat: import('node:fs').Stats;
   try {
-    stat = await fs.promises.stat(filePath);
+    stat = await effectFs.promises.stat(filePath);
   } catch {
     auditLog(agentId, 'file_patch', filePath, 'error', 'File not found');
     return `Error: File not found: ${filePath}. file_patch only edits files that already exist, use file_write to create new ones.`;
@@ -562,7 +562,7 @@ export async function executeFilePatch(
 
   let original: string;
   try {
-    const buf = await fs.promises.readFile(filePath);
+    const buf = await effectFs.promises.readFile(filePath);
     // Binary detection: text files don't contain NUL bytes. Sample first
     // 8KB so we don't scan a 20MB HTML for every patch call.
     const sample = buf.subarray(0, Math.min(8192, buf.length));
@@ -625,17 +625,15 @@ export async function executeFilePatch(
     );
   }
 
-  // Atomic write: temp file in the same dir, then rename. fs.rename is
-  // atomic on the same filesystem, so a crash mid-write either leaves the
-  // original intact or commits the new content, never a half file.
-  const tmpName = `.${path.basename(filePath)}.patch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp`;
-  const tmpPath = path.join(path.dirname(filePath), tmpName);
+  // Atomic write (temp sibling, then rename): the mechanism moved WHOLE into
+  // `effects/fs.ts` at PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM mechanic 6 —
+  // same naming, same rename, same best-effort cleanup, error rethrown
+  // unchanged so the message below is byte-for-byte what it was. The tmp
+  // sibling is not a resource this tool NAMES: `args.path` names the target,
+  // and declaring the sibling would describe the mechanism, not the effect.
   try {
-    await fs.promises.writeFile(tmpPath, working, 'utf-8');
-    await fs.promises.rename(tmpPath, filePath);
+    await effectFs.atomicWriteFile(filePath, working, 'utf-8');
   } catch (err) {
-    // Best-effort tmp cleanup, then return the error.
-    try { await fs.promises.unlink(tmpPath); } catch { /* ignore */ }
     const msg = err instanceof Error ? err.message : String(err);
     auditLog(agentId, 'file_patch', filePath, 'error', `write failed: ${msg}`);
     return `Error writing patched file: ${msg}`;
@@ -666,7 +664,7 @@ async function executeFileList(agentId: string, args: Record<string, unknown>): 
   }
 
   try {
-    const stat = await fs.promises.stat(dirPath).catch(() => null);
+    const stat = await effectFs.promises.stat(dirPath).catch(() => null);
     if (!stat) {
       auditLog(agentId, 'file_read', dirPath, 'error', 'Directory not found');
       return `Error: Directory not found: ${dirPath}`;
@@ -677,12 +675,12 @@ async function executeFileList(agentId: string, args: Record<string, unknown>): 
       return 'Error: Path is not a directory, use file_read instead';
     }
 
-    const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+    const entries = await effectFs.promises.readdir(dirPath, { withFileTypes: true });
     const lines = await Promise.all(entries.map(async entry => {
       const type = entry.isDirectory() ? 'dir' : entry.isSymbolicLink() ? 'link' : 'file';
       try {
         const entryPath = path.join(dirPath, entry.name);
-        const entryStat = await fs.promises.stat(entryPath);
+        const entryStat = await effectFs.promises.stat(entryPath);
         const size = entry.isDirectory() ? '-' : formatBytes(entryStat.size);
         return `${type}\t${size}\t${entry.name}`;
       } catch {

@@ -201,7 +201,18 @@ export function grantsForCall(
       if (fsKind) {
         const resolved = resolvePathArg(raw);
         if (resolved.ok) {
-          grants.push({ kind: fsKind, at: 'path', lexical: resolved.value.lexical, real: resolved.value.real });
+          // `scope: { at: 'argTree' }` — the argument names a DIRECTORY and the
+          // effect covers what is inside it (`file_list` stats every entry).
+          // The root is the resolved argument, so this can never be wider than
+          // the directory the agent named and the gate loop already authorized.
+          if (effect.scope?.at === 'argTree') {
+            grants.push({ kind: fsKind, at: 'tree', root: resolved.value.lexical });
+            if (resolved.value.real !== resolved.value.lexical) {
+              grants.push({ kind: fsKind, at: 'tree', root: resolved.value.real });
+            }
+          } else {
+            grants.push({ kind: fsKind, at: 'path', lexical: resolved.value.lexical, real: resolved.value.real });
+          }
         }
       } else if (effect.kind === 'proc') {
         const resolved = resolveArgvArg(raw);
@@ -239,6 +250,10 @@ export function grantsForCall(
         grants.push({ kind: 'proc', program: scope.program, display: scope.program });
         continue;
       }
+      // `argTree` qualifies an `args.` effect and has no template of its own, so
+      // a `derived:` effect carrying it names no resource at all — no grant,
+      // fail closed, exactly as a `derived:` with no scope does.
+      if (scope.at === 'argTree') continue;
       const abs = expandScopeTemplate(scope.template, agentId, args);
       if (!abs || !fsKind) continue;
       if (scope.at === 'tree') grants.push({ kind: fsKind, at: 'tree', root: abs });

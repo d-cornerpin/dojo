@@ -23,6 +23,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { canonicalizeAgentPath, resolveRealPathHardened } from '../path-resolve.js';
 import { requireAuthorized, type EffectRequest } from './capability.js';
 
@@ -120,20 +121,78 @@ export function rmSync(target: fs.PathLike, options?: fs.RmOptions): void {
   fs.rmSync(target, options);
 }
 
+/**
+ * WRITE A FILE ATOMICALLY — RULING P5-R15 ADDENDUM mechanic 6.
+ *
+ * The temp-sibling-then-rename mechanism moved here WHOLE out of `file_patch`:
+ * same temp naming, same rename, same best-effort cleanup, and the error is
+ * rethrown unchanged so the caller's own message is byte-for-byte what it was.
+ * `fs.rename` is atomic on the same filesystem, so a crash mid-write either
+ * leaves the original intact or commits the new content, never a half file.
+ *
+ * **The declared resource is the TARGET.** The temp sibling is this layer's own
+ * implementation detail — its name is derived from the target and it lives in
+ * the target's directory, so it cannot be aimed anywhere the target is not —
+ * and it is deliberately NOT a second grant. Requiring one would mean every
+ * declaration had to describe a file the tool does not name and the user never
+ * sees, which is a declaration about the mechanism instead of the effect.
+ */
+export async function atomicWriteFile(
+  target: string,
+  data: string,
+  encoding: BufferEncoding,
+): Promise<void> {
+  check('fs_write', target);
+  const tmpName = `.${path.basename(target)}.patch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tmp`;
+  const tmpPath = path.join(path.dirname(target), tmpName);
+  try {
+    await fs.promises.writeFile(tmpPath, data, encoding);
+    await fs.promises.rename(tmpPath, target);
+  } catch (err) {
+    try { await fs.promises.unlink(tmpPath); } catch { /* ignore */ }
+    throw err;
+  }
+}
+
 // ── The promises surface, same rules ────────────────────────────────────────
+//
+// The two overloaded entries are declared as functions rather than object
+// methods because an object literal cannot carry overload signatures — and the
+// overloads are what keep the shape 1:1 with `node:fs`, so a conversion stays a
+// rename instead of a rewrite.
+
+async function readFileAsync(target: fs.PathLike, encoding: BufferEncoding): Promise<string>;
+async function readFileAsync(target: fs.PathLike): Promise<Buffer>;
+async function readFileAsync(target: fs.PathLike, encoding?: BufferEncoding): Promise<string | Buffer> {
+  check('fs_read', target);
+  return encoding === undefined ? fs.promises.readFile(target) : fs.promises.readFile(target, encoding);
+}
+
+async function readdirAsync(target: fs.PathLike, options: { withFileTypes: true }): Promise<fs.Dirent[]>;
+async function readdirAsync(target: fs.PathLike): Promise<string[]>;
+async function readdirAsync(
+  target: fs.PathLike,
+  options?: { withFileTypes: true },
+): Promise<string[] | fs.Dirent[]> {
+  check('fs_read', target);
+  return options === undefined ? fs.promises.readdir(target) : fs.promises.readdir(target, options);
+}
 
 export const promises = {
   async stat(target: fs.PathLike): Promise<fs.Stats> {
     check('fs_stat', target);
     return fs.promises.stat(target);
   },
-  async readFile(target: fs.PathLike, encoding: BufferEncoding): Promise<string> {
-    check('fs_read', target);
-    return fs.promises.readFile(target, encoding);
-  },
-  async readdir(target: fs.PathLike): Promise<string[]> {
-    check('fs_read', target);
-    return fs.promises.readdir(target);
+  readFile: readFileAsync,
+  readdir: readdirAsync,
+  /**
+   * Open a handle. The AUTHORIZATION IS ON THE OPEN, which is where it belongs:
+   * a handle is a capability over one already-named file, and every read or
+   * write it can perform is a read or write of that same path.
+   */
+  async open(target: fs.PathLike, flags: string): Promise<fs.promises.FileHandle> {
+    check(flags.startsWith('r') && !flags.includes('+') ? 'fs_read' : 'fs_write', target);
+    return fs.promises.open(target, flags);
   },
   async writeFile(
     target: fs.PathLike,

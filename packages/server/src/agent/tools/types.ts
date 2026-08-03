@@ -162,7 +162,23 @@ export type EffectIndirection = 'attachment_row';
 export type EffectScope =
   | { readonly at: 'tree'; readonly template: string }
   | { readonly at: 'path'; readonly template: string }
-  | { readonly at: 'program'; readonly program: string };
+  | { readonly at: 'program'; readonly program: string }
+  /**
+   * THE ARGUMENT NAMES A DIRECTORY AND THE EFFECT COVERS WHAT IS INSIDE IT
+   * (PHASE-5 T8, RULING P5-R15 part 1 — the `file_list` tree-scope resolver).
+   *
+   * `file_list` is the whole class: it is given a directory and it stats every
+   * entry IN that directory. A grant on the directory alone is not what the
+   * tool does, and converting the call site without this would have made every
+   * entry's size column silently read `-`, because the handler's own `catch`
+   * turns a refusal into a dash. **A silent narrowing is the failure mode this
+   * task exists to prevent**, and a call-site workaround would have hidden it.
+   *
+   * It qualifies an `args.` effect — the root is the argument the brokers just
+   * resolved and authorized, so it needs no template of its own, and it can
+   * never be wider than the directory the agent named and the gate allowed.
+   */
+  | { readonly at: 'argTree' };
 
 /** Prefixes `from` may carry. Exported so the walk and the brokers share one list. */
 export const EFFECT_FROM_ARGS = 'args.';

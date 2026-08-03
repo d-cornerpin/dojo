@@ -375,7 +375,15 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'file_list',
     description: 'List the contents of a directory at the given absolute path. Returns file names, sizes, and types. Example: file_list({ path: "~/projects" }).',
-    effects: [{ kind: 'fs_read', from: 'args.path' }],
+    // PHASE-5 T8 Step 3 — THE TREE IS THE EFFECT (RULING P5-R15 part 1). This
+    // tool is handed a directory and stats every entry IN it to report sizes, so
+    // a grant on the directory alone is not what it does. Converted without this,
+    // the handler's own `catch` would have turned every per-entry refusal into a
+    // `-` in the size column — a SILENT NARROWING, which is the failure mode this
+    // task exists to prevent. The root is still the argument the brokers resolved
+    // and authorized, so this can never reach outside the directory the agent
+    // named. `file_read`'s identical `from` deliberately does NOT carry it.
+    effects: [{ kind: 'fs_read', from: 'args.path', scope: { at: 'argTree' } }],
     input_schema: {
       type: 'object',
       properties: {

@@ -481,6 +481,74 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(grantsCover(grants, { op: 'fs_write', path: stored, real: stored })).toBe(false);
   });
 
+  it('CATEGORY CONVERTED: the file door reads, writes, appends, patches and lists through the facade', () => {
+    const src = fs.readFileSync(path.join(SRC, 'agent/tools/cat/fs.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(src), 'the file door must not hold node:fs').toBe(false);
+    expect(src.includes('effectFs.'), 'it reaches the disk through the facade').toBe(true);
+    // The toolbox tree now has exactly ONE remaining direct holder, and it is
+    // NAMED rather than allowed by a pattern: `agent/tools/util.ts` converts
+    // LAST because its three probes run on the CALLER's grant — every tool that
+    // hands it a path must declare that path first — and because its own
+    // `catch` returns null, so a premature conversion would narrow silently
+    // (no download URL, no canvas chip) instead of refusing loudly. When it
+    // converts, this list becomes empty and the toolbox grep-zero is complete.
+    expect(
+      filesContaining("from 'node:fs'", path.join(SRC, 'agent', 'tools')),
+      'agent/tools/** reaches the disk through the facade except the named last file',
+    ).toEqual(['agent/tools/util.ts']);
+  });
+
+  it('MECHANIC 6: the atomic write owns its temp sibling, and the DECLARED resource is the target', async () => {
+    // RULING P5-R15 ADDENDUM. `file_patch` wrote `.<name>.patch-<ts>-<rand>.tmp`
+    // beside the target and renamed it. The grant from `args.path` names the
+    // TARGET, so the tmp write was refused — the mechanism had to move into the
+    // carrying layer whole rather than the declaration having to describe a file
+    // the tool does not name and the user never sees.
+    const target = path.join(scratch, 'patched.txt');
+    fs.writeFileSync(target, 'before\n');
+    await inCall([pathGrant('fs_write', target)], 'file_patch', async () => {
+      await effectFs.atomicWriteFile(target, 'after\n', 'utf-8');
+    });
+    expect(fs.readFileSync(target, 'utf8')).toBe('after\n');
+    // The temp sibling did not survive the rename, and nothing else appeared.
+    expect(fs.readdirSync(scratch).filter((n) => n.includes('.tmp'))).toEqual([]);
+    // …and it is still an authorization: a target this call did not declare is refused.
+    await inCall([pathGrant('fs_write', target)], 'file_patch', async () => {
+      await expect(effectFs.atomicWriteFile(outOfScope, 'x', 'utf-8')).rejects.toBeInstanceOf(EffectNotAuthorized);
+    });
+  });
+
+  it('file_list DECLARES the tree it lists, so the size column SURVIVES the conversion', () => {
+    // T8C §5d: the handler stats every entry INSIDE the listed directory, the
+    // grant from `args.path` was `at:'path'` on the directory alone, and the
+    // handler's own `catch` turns a refusal into `-`. Converted as-is, every
+    // entry's size would have silently become a dash. That is the silent
+    // narrowing this task exists to prevent, so the RESOLVER learned to express
+    // the declared tree — never a call-site workaround.
+    const dir = path.join(scratch, 'listing');
+    fs.mkdirSync(dir, { recursive: true });
+    const entry = path.join(dir, 'inside.txt');
+    fs.writeFileSync(entry, 'x');
+    const grants = grantsForCall(AGENT, effectsFor('file_list'), { path: dir });
+    expect(grantsCover(grants, { op: 'fs_stat', path: dir, real: dir }), 'the directory itself').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: dir, real: dir }), 'readdir of the directory').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_stat', path: entry, real: entry }), 'AND every entry inside it').toBe(true);
+    // …and it is still a scope: the parent and a sibling directory are not covered.
+    const sibling = path.join(scratch, 'listing-other', 'x.txt');
+    expect(grantsCover(grants, { op: 'fs_stat', path: sibling, real: sibling }), 'not a neighbour').toBe(false);
+    expect(grantsCover(grants, { op: 'fs_stat', path: outOfScope, real: outOfScope }), 'not the parent contents').toBe(false);
+    // A LIST is not a licence to write.
+    expect(grantsCover(grants, { op: 'fs_write', path: entry, real: entry })).toBe(false);
+  });
+
+  it('…and file_read is still ONE file, which is what makes argTree a scope rather than a habit', () => {
+    const dir = path.join(scratch, 'listing');
+    const entry = path.join(dir, 'inside.txt');
+    const grants = grantsForCall(AGENT, effectsFor('file_read'), { path: dir });
+    expect(grantsCover(grants, { op: 'fs_read', path: dir, real: dir })).toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: entry, real: entry }), 'file_read does not gain a tree').toBe(false);
+  });
+
   it('CATEGORY CONVERTED: the async audio delivery path writes through the facade', () => {
     // RECLASSIFIED by the RULING P5-R15 ADDENDUM re-read: both modules had been
     // recorded as platform-timed, and the sharpened criterion is whose async

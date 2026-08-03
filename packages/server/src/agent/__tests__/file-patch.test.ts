@@ -22,6 +22,30 @@ vi.mock('../../gateway/ws.js', () => ({
 }));
 
 import { executeFilePatch } from '../tools/cat/fs.js';
+import { runWithToolCallId } from '../turn-state.js';
+import { attachCallCapability, mintCallCapability } from '../effects/capability.js';
+import { grantsForCall } from '../effects/scopes.js';
+import { effectsFor } from '../tools/registry.js';
+
+// PHASE-5 T8 Step 3: `file_patch` now performs its I/O through the effect
+// facade, which acts only for a call the executor's gate loop authorized. These
+// tests call the handler directly, so they must open the SAME per-call context
+// production opens — otherwise they measure "a handler outside a tool call is
+// refused", which is the residual test's job, not this file's.
+//
+// The grants come from the tool's OWN declaration resolved against these args,
+// exactly as the gate loop resolves them. Nothing is widened: a hand-written
+// grant list would let this file pass while the real declaration was wrong.
+const AGENT = 'agent-1';
+function inCall<T>(args: Record<string, unknown>, body: () => Promise<T>): Promise<T> {
+  return runWithToolCallId(AGENT, 'file-patch-test', async () => {
+    attachCallCapability(mintCallCapability({
+      agentId: AGENT, tool: 'file_patch', callId: 'file-patch-test',
+      grants: grantsForCall(AGENT, effectsFor('file_patch'), args),
+    }));
+    return body();
+  });
+}
 
 let tmpDir: string;
 
@@ -37,10 +61,13 @@ describe('file_patch', () => {
   it('replaces a single occurrence in place', async () => {
     const file = path.join(tmpDir, 'a.txt');
     fs.writeFileSync(file, 'hello world\nhello world\n');
-    const out = await executeFilePatch('agent-1', {
+    const out = await inCall({
       path: file,
       patches: [{ search: 'hello', replace: 'hi' }],
-    });
+    }, () => executeFilePatch(AGENT, {
+      path: file,
+      patches: [{ search: 'hello', replace: 'hi' }],
+    }));
     expect(out).toMatch(/Patched .*1 total replacements/);
     expect(fs.readFileSync(file, 'utf-8')).toBe('hi world\nhello world\n');
   });
@@ -48,10 +75,13 @@ describe('file_patch', () => {
   it('replace_all replaces every occurrence', async () => {
     const file = path.join(tmpDir, 'a.txt');
     fs.writeFileSync(file, 'foo bar foo baz foo');
-    const out = await executeFilePatch('agent-1', {
+    const out = await inCall({
       path: file,
       patches: [{ search: 'foo', replace: 'qux', replace_all: true }],
-    });
+    }, () => executeFilePatch(AGENT, {
+      path: file,
+      patches: [{ search: 'foo', replace: 'qux', replace_all: true }],
+    }));
     expect(out).toMatch(/3 replacements/);
     expect(fs.readFileSync(file, 'utf-8')).toBe('qux bar qux baz qux');
   });
@@ -59,10 +89,13 @@ describe('file_patch', () => {
   it('hard-errors when a search string is not found and does NOT touch disk', async () => {
     const file = path.join(tmpDir, 'a.txt');
     fs.writeFileSync(file, 'this is the file content');
-    const out = await executeFilePatch('agent-1', {
+    const out = await inCall({
       path: file,
       patches: [{ search: 'NOT IN FILE', replace: 'x' }],
-    });
+    }, () => executeFilePatch(AGENT, {
+      path: file,
+      patches: [{ search: 'NOT IN FILE', replace: 'x' }],
+    }));
     expect(out).toMatch(/^Error: patch 1 of 1 did not match/);
     expect(out).toMatch(/No changes have been written/);
     // File on disk is untouched.
@@ -72,13 +105,19 @@ describe('file_patch', () => {
   it('applies patches sequentially (later patches see earlier results)', async () => {
     const file = path.join(tmpDir, 'a.txt');
     fs.writeFileSync(file, 'one two three');
-    const out = await executeFilePatch('agent-1', {
+    const out = await inCall({
       path: file,
       patches: [
         { search: 'one', replace: 'ONE' },
         { search: 'ONE two', replace: 'TWO ONE' }, // depends on patch 1
       ],
-    });
+    }, () => executeFilePatch(AGENT, {
+      path: file,
+      patches: [
+        { search: 'one', replace: 'ONE' },
+        { search: 'ONE two', replace: 'TWO ONE' }, // depends on patch 1
+      ],
+    }));
     expect(out).toMatch(/Patched/);
     expect(fs.readFileSync(file, 'utf-8')).toBe('TWO ONE three');
   });
@@ -86,13 +125,19 @@ describe('file_patch', () => {
   it('aborts the entire batch if ANY patch fails — no partial writes', async () => {
     const file = path.join(tmpDir, 'a.txt');
     fs.writeFileSync(file, 'alpha beta gamma');
-    const out = await executeFilePatch('agent-1', {
+    const out = await inCall({
       path: file,
       patches: [
         { search: 'alpha', replace: 'A' },        // would have matched
         { search: 'NOT THERE', replace: 'X' },    // fails
       ],
-    });
+    }, () => executeFilePatch(AGENT, {
+      path: file,
+      patches: [
+        { search: 'alpha', replace: 'A' },        // would have matched
+        { search: 'NOT THERE', replace: 'X' },    // fails
+      ],
+    }));
     expect(out).toMatch(/^Error: patch 2 of 2 did not match/);
     // First patch's intended change must NOT be on disk.
     expect(fs.readFileSync(file, 'utf-8')).toBe('alpha beta gamma');
@@ -101,11 +146,15 @@ describe('file_patch', () => {
   it('dry_run reports what would change but never writes', async () => {
     const file = path.join(tmpDir, 'a.txt');
     fs.writeFileSync(file, 'hello world');
-    const out = await executeFilePatch('agent-1', {
+    const out = await inCall({
       path: file,
       patches: [{ search: 'world', replace: 'universe' }],
       dry_run: true,
-    });
+    }, () => executeFilePatch(AGENT, {
+      path: file,
+      patches: [{ search: 'world', replace: 'universe' }],
+      dry_run: true,
+    }));
     expect(out).toMatch(/^\[Dry run/);
     expect(out).toMatch(/1 replacement/);
     expect(fs.readFileSync(file, 'utf-8')).toBe('hello world');
@@ -115,10 +164,13 @@ describe('file_patch', () => {
     const file = path.join(tmpDir, 'a.txt');
     const original = 'line1\r\nline2\r\nline3\r\n';
     fs.writeFileSync(file, original);
-    const out = await executeFilePatch('agent-1', {
+    const out = await inCall({
       path: file,
       patches: [{ search: 'line2', replace: 'LINE-TWO' }],
-    });
+    }, () => executeFilePatch(AGENT, {
+      path: file,
+      patches: [{ search: 'line2', replace: 'LINE-TWO' }],
+    }));
     expect(out).toMatch(/Patched/);
     expect(fs.readFileSync(file, 'utf-8')).toBe('line1\r\nLINE-TWO\r\nline3\r\n');
   });
@@ -127,10 +179,13 @@ describe('file_patch', () => {
     const file = path.join(tmpDir, 'a.bin');
     const buf = Buffer.concat([Buffer.from('PNG'), Buffer.from([0x00, 0x01, 0x02])]);
     fs.writeFileSync(file, buf);
-    const out = await executeFilePatch('agent-1', {
+    const out = await inCall({
       path: file,
       patches: [{ search: 'PNG', replace: 'XXX' }],
-    });
+    }, () => executeFilePatch(AGENT, {
+      path: file,
+      patches: [{ search: 'PNG', replace: 'XXX' }],
+    }));
     expect(out).toMatch(/binary/i);
     // Untouched.
     expect(fs.readFileSync(file)).toEqual(buf);
@@ -139,26 +194,35 @@ describe('file_patch', () => {
   it('rejects empty search strings', async () => {
     const file = path.join(tmpDir, 'a.txt');
     fs.writeFileSync(file, 'content');
-    const out = await executeFilePatch('agent-1', {
+    const out = await inCall({
       path: file,
       patches: [{ search: '', replace: 'x' }],
-    });
+    }, () => executeFilePatch(AGENT, {
+      path: file,
+      patches: [{ search: '', replace: 'x' }],
+    }));
     expect(out).toMatch(/non-empty string/);
   });
 
   it('errors when the file does not exist', async () => {
-    const out = await executeFilePatch('agent-1', {
+    const out = await inCall({
       path: path.join(tmpDir, 'does-not-exist.txt'),
       patches: [{ search: 'a', replace: 'b' }],
-    });
+    }, () => executeFilePatch(AGENT, {
+      path: path.join(tmpDir, 'does-not-exist.txt'),
+      patches: [{ search: 'a', replace: 'b' }],
+    }));
     expect(out).toMatch(/File not found/);
   });
 
   it('errors when path is a directory', async () => {
-    const out = await executeFilePatch('agent-1', {
+    const out = await inCall({
       path: tmpDir,
       patches: [{ search: 'a', replace: 'b' }],
-    });
+    }, () => executeFilePatch(AGENT, {
+      path: tmpDir,
+      patches: [{ search: 'a', replace: 'b' }],
+    }));
     expect(out).toMatch(/is a directory/);
   });
 
@@ -166,10 +230,13 @@ describe('file_patch', () => {
     const file = path.join(tmpDir, 'big.html');
     const big = 'PREFIX' + 'a'.repeat(5_000_000) + 'SUFFIX';
     fs.writeFileSync(file, big);
-    const out = await executeFilePatch('agent-1', {
+    const out = await inCall({
       path: file,
       patches: [{ search: 'SUFFIX', replace: 'TAIL' }],
-    });
+    }, () => executeFilePatch(AGENT, {
+      path: file,
+      patches: [{ search: 'SUFFIX', replace: 'TAIL' }],
+    }));
     expect(out).toMatch(/Patched/);
     const after = fs.readFileSync(file, 'utf-8');
     expect(after.endsWith('TAIL')).toBe(true);
@@ -180,10 +247,13 @@ describe('file_patch', () => {
   it('does NOT leave a tmp file behind on success', async () => {
     const file = path.join(tmpDir, 'a.txt');
     fs.writeFileSync(file, 'hello');
-    await executeFilePatch('agent-1', {
+    await inCall({
       path: file,
       patches: [{ search: 'hello', replace: 'world' }],
-    });
+    }, () => executeFilePatch(AGENT, {
+      path: file,
+      patches: [{ search: 'hello', replace: 'world' }],
+    }));
     const entries = fs.readdirSync(tmpDir);
     expect(entries).toEqual(['a.txt']);
   });
