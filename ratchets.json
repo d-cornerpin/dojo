@@ -1311,6 +1311,13 @@
       "why": "`invalid_args` joins blocked/crashed/cancelled because the schema-validation boundary gave `INVALID_ARGS` its first writer, and without the arm a malformed call classified `crashed` — the platform reporting itself broken for a call it understood and refused. The raise is the enum member, its entry in TOOL_SEAM_REASONS, and TWO lines of doc: what it means, and the one distinction a reader must not get wrong (it is NOT `blocked`; retry with corrected arguments, not never). The longer rationale deliberately lives at the classifier in `agent/tool-outcome.ts` rather than here, which is why this is +2 and not +13 — the first draft was, and the ratchet is what forced the prose to the file that owns the decision."
     },
     {
+      "path": "packages/server/src/agent/tools/cat/tracker.ts",
+      "from": 0,
+      "to": 837,
+      "by": "PHASE-5 T4 sitting 2 (2026-08-02) — new-file-cap PIN, not a raise",
+      "why": "PHASE-5 T4, the toolbox split. 837 lines of RELOCATED handler bodies: the 23 work-verb dispatch keys lifted byte-faithful out of the switch in agent/tools.ts, which lost 692 lines of switch plus normalizeRepeatDaysOfWeek in the same commit. Not new code. The size is PHASE-2 T8V's own shape: 24 tool names collapsed into six verbs, so `work_update` alone reaches seven bodies and `work_validate` five, and the 23 operations are the category. It also carries ALL NINETEEN per-OPERATION checkRequired sites T3C deliberately preserved (the work verbs' input_schema.required is [] because the wire carries a union; a schema-compiled validator validates nothing for them). Splitting the file would split those nineteen across modules for a line count. Decrease-only from here."
+    },
+    {
       "path": "packages/server/src/agent/tools/cat/comms.ts",
       "from": 0,
       "to": 844,
@@ -1465,6 +1472,7 @@
     "packages/shared/src/ws.ts": 1088,
     "watchdog/src/index.ts": 1198,
     "packages/server/src/agent/tools/cat/comms.ts": 844,
+    "packages/server/src/agent/tools/cat/tracker.ts": 837,
     "packages/server/src/agent/tools/cat/healer.ts": 288
   }
 }
