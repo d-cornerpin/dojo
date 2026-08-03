@@ -31,7 +31,15 @@ export const PRIMARY_AGENT_PERMISSIONS: PermissionManifest = {
   max_processes: 10,
   can_spawn_agents: true,
   can_assign_permissions: true,
-  system_control: ['*'],
+  // PHASE-5 T5: `'*'` and `'applescript'`, and the second name is not redundant.
+  // `'*'` grants every system-control CATEGORY; AppleScript stopped being one of
+  // them in `brokers/grants.ts` this task, because osascript is a second
+  // interpreter rather than a category (the plan's own direction at T3 Step 2).
+  // Naming it here is what makes that flip cost the owner's own agent nothing —
+  // the explicit grant lands BEFORE the blanket stops covering it, which is the
+  // only order that preserves capability. Migration 155 does the same for every
+  // stored manifest that held `'*'`.
+  system_control: ['*', 'applescript'],
 };
 
 export const DEFAULT_SUBAGENT_PERMISSIONS: PermissionManifest = {

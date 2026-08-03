@@ -206,10 +206,18 @@ describe('migration 154 — the exec doors reach the grant rows', () => {
       projectManifestToRules({ ...base, system_control } as unknown as PermissionManifest)
         .filter((r) => r.effectKind === 'applescript').length;
 
-    // `'*'` still covers it — narrowing a wildcard manifest would be a capability
-    // loss for the primary agent, which is the owner's decision, not a worker's.
-    expect(kindsFor('*')).toBe(1);
-    expect(kindsFor(['*'])).toBe(1);
+    // ⚠ FLIPPED BY PHASE-5 T5, DELIBERATELY AND VISIBLY. At T3 these two read
+    // `.toBe(1)`: `'*'` still covered AppleScript, because narrowing a wildcard
+    // manifest was a capability loss T3 had no licence to take. T5 took it the
+    // preserving way — every `'*'` holder gained an EXPLICIT `'applescript'`
+    // grant first (`PRIMARY_AGENT_PERMISSIONS` in code, migration 155 in the
+    // stored rows), and only then did the blanket stop meaning it. The clause
+    // that proves nothing was lost lives in
+    // `brokers/__tests__/applescript-grant.test.ts`; this one records that the
+    // blanket's meaning changed on purpose.
+    expect(kindsFor('*')).toBe(0);
+    expect(kindsFor(['*'])).toBe(0);
+    expect(kindsFor(['*', 'applescript'])).toBe(1);
     expect(kindsFor(['applescript'])).toBe(1);
     expect(kindsFor(['applescript_run'])).toBe(1);
     // A list that does NOT name it grants no AppleScript — which is exactly what

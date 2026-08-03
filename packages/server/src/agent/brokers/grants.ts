@@ -149,18 +149,29 @@ export function projectManifestToRules(manifest: PermissionManifest): GrantRule[
   if (control === '*') push('system_control', 'allow', '*');
   else if (Array.isArray(control)) for (const c of control) push('system_control', 'allow', c);
 
-  // ── `applescript` AS ITS OWN CLASS (PHASE-5 T3 Step 2) ──
+  // ── `applescript` AS ITS OWN CLASS, AND OUT OF THE BLANKET (T3 Step 2 → T5) ──
   // osascript is a second interpreter with no allowlist of its own, so it gets
   // its own rows and its own broker call rather than being one string compare
-  // inside `system_control`. The DERIVATION is deliberately parity-preserving:
-  // a `'*'` grant still covers it (narrowing the primary's own agent is an
-  // OWNER decision, not a worker's), and a LIST must name `applescript` or
-  // `applescript_run` — which is precisely what the ladder's category
-  // derivation already required, so no live manifest changes meaning.
-  if (control === '*') push('applescript', 'allow', '*');
-  else if (Array.isArray(control)) {
+  // inside `system_control`.
+  //
+  // PHASE-5 T5 completes the direction the plan states at T3 Step 2 — *"osascript
+  // is an unrestricted second shell — never again inside `system_control:'*'`"*.
+  // T3 deliberately left `'*'` covering it because removing it blind would have
+  // stripped AppleScript off a LIVE agent; that is a narrowing, and a narrowing
+  // is the owner's decision. The preserving order is: grant it EXPLICITLY to
+  // every `'*'` holder first, then stop `'*'` meaning it. Both halves landed
+  // together — `PRIMARY_AGENT_PERMISSIONS` names it in code, migration 155 names
+  // it in every stored manifest that held `'*'` — so no agent alive when this
+  // shipped lost anything. `__tests__/applescript-grant.test.ts` holds both
+  // halves, including the negatives.
+  //
+  // A LIST must therefore name `applescript` or `applescript_run` outright, and
+  // `'*'` inside a list is no longer one of the spellings that counts. Everything
+  // ELSE `'*'` grants (mouse, keyboard, screen, web_browse) is untouched: the
+  // system_control rows above are unchanged and only this projection moved.
+  if (Array.isArray(control)) {
     for (const c of control) {
-      if (c === '*' || c === 'applescript' || c === 'applescript_run') push('applescript', 'allow', c);
+      if (c === 'applescript' || c === 'applescript_run') push('applescript', 'allow', c);
     }
   }
 
