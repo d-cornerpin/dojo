@@ -24,6 +24,9 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { authorizeAppleScript } from '../applescript.js';
 import { authorizeShellScript, authorizeArgv } from '../proc.js';
 import { grantForManifest } from '../grants.js';
@@ -142,6 +145,47 @@ describe('P5-R6 — the staged set, derived from the brokers rather than declare
     // The positive test the phase's posture requires beside every refusal.
     const verdict = applescript(wildcard, 'display dialog "hello"');
     expect(verdict.allowed, 'a wildcard holder keeps its AppleScript reach').toBe(true);
+  });
+
+  it('⚠ THE STAGED SET IS EMPTY, BY CENSUS — and cannot widen without this failing', () => {
+    // THE GUARD THAT WAS MISSING. T2 measured the set empty and RECORDED it;
+    // nothing held it, so when T3 added a refusal with an unrecognised rule id
+    // the set widened silently and stayed widened until this task re-derived it.
+    //
+    // The census: every `deny('bypass-hardening', '<rule>', …)` site in the
+    // broker sources, read from the SOURCE TEXT so a new one cannot hide, and
+    // each rule id checked against the staging predicate. A deliberate future
+    // staging — a refusal decided by an agent's own GRANT, which is what the
+    // window is actually for — is added to EXPECTED_STAGED below, visibly, in a
+    // commit somebody reviews. That is the difference between a set that is
+    // empty and a set that is merely believed to be.
+    const dir = path.dirname(fileURLToPath(import.meta.url));
+    const brokers = fs.readdirSync(path.join(dir, '..'))
+      .filter((f) => f.endsWith('.ts'));
+    const found: string[] = [];
+    for (const file of brokers) {
+      const source = fs.readFileSync(path.join(dir, '..', file), 'utf8');
+      // `deny(` … `'bypass-hardening',` … `'<rule-id>',` — the two literals in
+      // order, tolerating the line breaks prettier puts between them.
+      for (const m of source.matchAll(/'bypass-hardening',\s*\n?\s*'([a-z0-9-]+)'/g)) {
+        found.push(m[1]);
+      }
+      // …and the parameterised form, where the basis is a variable: those sites
+      // pass a rule id that comes from the deny TABLE, so they are global denies
+      // by construction. Named here so the census does not silently miss them.
+      if (/basis,\s*\n?\s*(lexicalRule|realRule)\.id/.test(source)) found.push('<deny-table-id>');
+    }
+    expect(found.length, 'the census found no bypass-hardening sites at all — the regex has rotted').toBeGreaterThan(0);
+
+    const EXPECTED_STAGED: readonly string[] = [];
+    const staged = [...new Set(found)]
+      .filter((rule) => rule !== '<deny-table-id>' && !isGlobalDenyRule(rule));
+    expect(
+      staged.sort(),
+      `these refusals are LOG-ONLY for sub-agents. P5-R6: a global deny is never staged. ` +
+      `If one of these is deliberately staged (a refusal decided by an agent's own GRANT), ` +
+      `add it to EXPECTED_STAGED with its reason.`,
+    ).toEqual([...EXPECTED_STAGED]);
   });
 
   it('the argv door’s sensitive-read refusal is enforced too', () => {
