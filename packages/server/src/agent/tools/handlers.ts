@@ -43,6 +43,7 @@ import { webHandlers } from './cat/web.js';
 import { canvasHandlers } from './cat/canvas.js';
 import { hidHandlers } from './cat/hid.js';
 import { credentialsHandlers } from './cat/credentials.js';
+import { agentsHandlers } from './cat/agents.js';
 import { googleHandlers } from './provider/google.js';
 import { microsoftHandlers } from './provider/microsoft.js';
 import { plaudHandlers } from './provider/plaud.js';
@@ -64,6 +65,7 @@ const TABLE: ReadonlyMap<string, ToolHandler> = new Map<string, ToolHandler>([
   ...Object.entries(canvasHandlers),
   ...Object.entries(hidHandlers),
   ...Object.entries(credentialsHandlers),
+  ...Object.entries(agentsHandlers),
   ...Object.entries(googleHandlers),
   ...Object.entries(microsoftHandlers),
   ...Object.entries(plaudHandlers),
