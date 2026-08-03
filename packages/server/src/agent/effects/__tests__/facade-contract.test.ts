@@ -228,6 +228,34 @@ describe('grantsForCall reads the registry, and invents nothing', () => {
     expect(grantsForCall(AGENT, [effect('fs_read', 'args.path')], {})).toEqual([]);
   });
 
+  it('an args.<name>[] effect mints ONE grant PER ELEMENT — the declaration says "every one of them"', () => {
+    // THE GAP THIS CLOSES (T8C §5a, re-derived: 11 fs-kind declarations write
+    // this shape): the resolver read `args.attachments[]` as a literal key,
+    // found no argument called `attachments[]`, and yielded NO grant at all. A
+    // declaration that resolves to nothing is fail-closed in the WRONG place —
+    // it reads as "this tool touches no file" when the tool touches every file
+    // in the list, and the first converted site would refuse working behaviour.
+    const a = path.join(scratch, 'a.pdf');
+    const b = path.join(scratch, 'b.pdf');
+    const grants = grantsForCall(AGENT, [effect('fs_read', 'args.attachments[]')], { attachments: [a, b] });
+    expect(grants).toHaveLength(2);
+    expect(grantsCover(grants, { op: 'fs_read', path: a, real: a })).toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: b, real: b })).toBe(true);
+    // …and nothing the call did not list.
+    expect(grantsCover(grants, { op: 'fs_read', path: outOfScope, real: outOfScope })).toBe(false);
+  });
+
+  it('…and an absent, empty, non-array or non-string element yields nothing rather than widening', () => {
+    const e = (args: Record<string, unknown>): unknown[] =>
+      grantsForCall(AGENT, [effect('fs_read', 'args.attachments[]')], args);
+    expect(e({}), 'absent').toEqual([]);
+    expect(e({ attachments: [] }), 'empty list').toEqual([]);
+    expect(e({ attachments: inScope }), 'a bare string is not the declared list').toEqual([]);
+    expect(e({ attachments: [42, null] }), 'non-string elements').toEqual([]);
+    // One good element among bad ones grants that one and no more.
+    expect(e({ attachments: [inScope, 42] })).toHaveLength(1);
+  });
+
   it('a derived effect with NO declared scope yields no grant — the honest fail-closed', () => {
     // This is RULING P5-R14 branch (A) stated as behaviour: prose is not a
     // scope. An unconverted handler is unaffected (it still calls node:fs); a
@@ -361,6 +389,23 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     const doorSrc = fs.readFileSync(path.join(SRC, 'agent/tools/cat/canvas.ts'), 'utf8');
     expect(/^import .*['"]node:fs['"]/m.test(doorSrc), 'the canvas door must not hold node:fs').toBe(false);
     expect(doorSrc.includes('effectFs.'), 'it writes through the facade').toBe(true);
+  });
+
+  it('CATEGORY CONVERTED: the email attachment reader reads through the facade', () => {
+    const src = fs.readFileSync(path.join(SRC, 'services/email-attachments.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(src), 'the attachment reader must not hold node:fs').toBe(false);
+    expect(src.includes('effectFs.'), 'it reads through the facade').toBe(true);
+  });
+
+  it('gmail_send / outlook_send authorize exactly the attachments the call names', () => {
+    const a = path.join(scratch, 'quote.pdf');
+    for (const tool of ['gmail_send', 'outlook_send']) {
+      const grants = grantsForCall(AGENT, effectsFor(tool), { to: 'x@y.z', attachments: [a] });
+      expect(grantsCover(grants, { op: 'fs_read', path: a, real: a }), `${tool} may read what it was given`).toBe(true);
+      expect(grantsCover(grants, { op: 'fs_read', path: outOfScope, real: outOfScope }), `${tool} may not read anything else`).toBe(false);
+      // A read of an attachment is not a licence to write over it.
+      expect(grantsCover(grants, { op: 'fs_write', path: a, real: a })).toBe(false);
+    }
   });
 
   it('CATEGORY CONVERTED: the recall door reads the large-file store through the facade', () => {

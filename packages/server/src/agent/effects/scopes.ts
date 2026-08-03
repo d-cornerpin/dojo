@@ -130,6 +130,27 @@ export function grantsForCall(
     // ── args.<dotted> ──
     if (effect.from.startsWith(EFFECT_FROM_ARGS)) {
       const dotted = effect.from.slice(EFFECT_FROM_ARGS.length);
+
+      // `args.<name>[]` — EVERY ELEMENT of an array argument, one grant each.
+      // Read as a literal key this found no argument called `attachments[]` and
+      // yielded NO grant at all, which is fail-closed in the wrong place: it
+      // reads as "this tool touches no file" when the tool touches every file in
+      // the list, and the first converted site would have refused working
+      // behaviour. An element that is not a usable path grants nothing, so a
+      // malformed list narrows to what it legitimately named and never widens.
+      if (dotted.endsWith('[]') && fsKind) {
+        const list = readArgPath(args, dotted.slice(0, -2));
+        if (Array.isArray(list)) {
+          for (const element of list) {
+            const resolved = resolvePathArg(element);
+            if (resolved.ok) {
+              grants.push({ kind: fsKind, at: 'path', lexical: resolved.value.lexical, real: resolved.value.real });
+            }
+          }
+        }
+        continue;
+      }
+
       const raw = readArgPath(args, dotted);
       if (fsKind) {
         const resolved = resolvePathArg(raw);

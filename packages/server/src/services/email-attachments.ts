@@ -7,7 +7,7 @@
 // multipart for Gmail, Graph fileAttachment array for Outlook, overflow
 // upload to Drive vs. OneDrive) lives in the respective tools-write.ts.
 
-import { existsSync, statSync, readFileSync } from 'node:fs';
+import * as effectFs from '../agent/effects/fs.js';
 import { basename, extname } from 'node:path';
 
 export interface LocalAttachment {
@@ -82,12 +82,12 @@ export function readLocalAttachments(
     if (!p.startsWith('/')) {
       return { ok: false, error: `Error: attachment path must be absolute (got "${p}"). Use the full path, e.g. ~/.dojo/uploads/<your-agent-id>/file.pdf resolved to an absolute /Users/... path.` };
     }
-    if (!existsSync(p)) {
+    if (!effectFs.existsSync(p)) {
       return { ok: false, error: `Error: attachment file not found at "${p}". Verify the path or re-download/re-create the file.` };
     }
     let stat;
     try {
-      stat = statSync(p);
+      stat = effectFs.statSync(p);
     } catch (err) {
       return { ok: false, error: `Error: cannot stat attachment "${p}": ${err instanceof Error ? err.message : String(err)}` };
     }
@@ -96,7 +96,7 @@ export function readLocalAttachments(
     }
     let content: Buffer;
     try {
-      content = readFileSync(p);
+      content = effectFs.readFileSync(p);
     } catch (err) {
       return { ok: false, error: `Error: cannot read attachment "${p}": ${err instanceof Error ? err.message : String(err)}` };
     }
