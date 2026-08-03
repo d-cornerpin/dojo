@@ -1311,6 +1311,13 @@
       "why": "`invalid_args` joins blocked/crashed/cancelled because the schema-validation boundary gave `INVALID_ARGS` its first writer, and without the arm a malformed call classified `crashed` — the platform reporting itself broken for a call it understood and refused. The raise is the enum member, its entry in TOOL_SEAM_REASONS, and TWO lines of doc: what it means, and the one distinction a reader must not get wrong (it is NOT `blocked`; retry with corrected arguments, not never). The longer rationale deliberately lives at the classifier in `agent/tool-outcome.ts` rather than here, which is why this is +2 and not +13 — the first draft was, and the ratchet is what forced the prose to the file that owns the decision."
     },
     {
+      "path": "packages/server/src/agent/tools/cat/media.ts",
+      "from": 0,
+      "to": 896,
+      "by": "PHASE-5 T4 sitting 2 (2026-08-02) — new-file-cap PIN, not a raise",
+      "why": "PHASE-5 T4, the toolbox split. Relocated handler bodies for the five Media Generation tools; agent/tools.ts lost 874 lines of switch in the same commit. Not new code. image_create ALONE is ~450 lines — model choice, the generation job's lifecycle, the synthetic ack, and a deferred delivery IIFE that waits for the agent to go idle, sets it back to working, writes the attachment and wakes the runtime — and its C13 capture of the turn-scoped iMessage recipient is positional, so the body cannot be cut in half without moving that capture. Not split, on the precedent set for cat/healer.ts. Decrease-only from here."
+    },
+    {
       "path": "packages/server/src/agent/tools/cat/tracker.ts",
       "from": 0,
       "to": 837,
@@ -1472,6 +1479,7 @@
     "packages/shared/src/ws.ts": 1088,
     "watchdog/src/index.ts": 1198,
     "packages/server/src/agent/tools/cat/comms.ts": 844,
+    "packages/server/src/agent/tools/cat/media.ts": 896,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
     "packages/server/src/agent/tools/cat/healer.ts": 288
   }
