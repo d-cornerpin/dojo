@@ -13,6 +13,7 @@ import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
 import { markPendingUpdate, markBootingNew } from '../../update-state.js';
 import { routeFailure } from './route-failure.js';
+import { ARTIFACT_MANIFEST_ASSET, fetchArtifactManifest, verifyArtifactAgainstManifest } from '../../update/artifact-integrity.js';
 
 const execAsync = promisify(exec);
 const logger = createLogger('updater');
@@ -252,6 +253,49 @@ export function compareVersions(a: string, b: string): number {
   if (pa.pre === null) return 1;  // a stable, b pre-release
   if (pb.pre === null) return -1; // a pre-release, b stable
   return pa.pre - pb.pre;
+}
+
+/**
+ * THE ROLLBACK ORDERING CHECK (PHASE-5 T6B). `/rollback` took the caller's
+ * `tag` and interpolated it straight into a GitHub API URL — so a path-shaped
+ * tag selected a DIFFERENT artifact, which was then rsynced with `--delete`
+ * over the running install — and it never asked whether the target was
+ * actually an EARLIER version. Two arms, and each is here for its own reason:
+ *
+ *   SHAPE — reaching another repository's zip through a crafted tag was never
+ *   a capability anyone granted, so refusing it strengthens a guard rather
+ *   than narrowing one. `isValidVersionTag` already existed and was not called.
+ *
+ *   ORDER — this door's job is going BACK. Forward movement is `applyUpdate`,
+ *   which resolves the channel, records the update episode and drives the
+ *   boot-attempt/auto-rollback machinery; a "rollback" to a newer tag bypassed
+ *   all of it, so the refusal names that door and redirects the capability
+ *   rather than removing it. MEASURED NARROWING, on the record: installing a
+ *   specific NEWER-but-not-latest release from the Settings list is refused
+ *   after this change — reachable instead by channel + Check for updates.
+ *
+ * A legitimate rollback must still work — it is the recovery path — and that is
+ * a positive clause, not an assumption. The watchdog's AUTOMATIC rollback does
+ * not come through here at all (it shells `~/.dojo/scripts/rollback.sh` against
+ * a local backup), so this gate cannot stand between a wedged box and its
+ * recovery. Full reasoning: `update/__tests__/artifact-integrity.test.ts`.
+ */
+export function authorizeRollbackTarget(
+  tag: string,
+  currentVersion: string,
+): { ok: true; targetVersion: string } | { ok: false; error: string } {
+  const trimmed = (tag ?? '').trim();
+  if (!isValidVersionTag(trimmed)) {
+    return { ok: false, error: `"${trimmed}" is not a version tag (expected e.g. "v3.1.16").` };
+  }
+  const targetVersion = trimmed.replace(/^v/, '');
+  if (compareVersions(targetVersion, currentVersion) >= 0) {
+    return {
+      ok: false,
+      error: `${targetVersion} is not earlier than the installed ${currentVersion}. Rollback only moves backward; use Check for updates to move forward.`,
+    };
+  }
+  return { ok: true, targetVersion };
 }
 
 // ── Update channel (Stable / Preflight) ──
@@ -559,6 +603,19 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
 
     await execAsync(`curl -L -o "${zipPath}" "${zipAsset.browser_download_url}"`, { timeout: 120000 });
 
+    // 2b. INTEGRITY BEFORE ANY SWAP (PHASE-5 T6B). Nothing is extracted and
+    // nothing is rsynced until the bytes match the manifest published beside
+    // them. A release with no manifest is applied and recorded as unverified —
+    // every artifact published before this change has none, and refusing them
+    // would end the rollback path. Reasoning: `update/artifact-integrity.ts`.
+    const applyVerdict = await verifyArtifactAgainstManifest(
+      zipPath,
+      await fetchArtifactManifest(release.assets.find(a => a.name === ARTIFACT_MANIFEST_ASSET)?.browser_download_url),
+    );
+    if (applyVerdict.outcome === 'refused') {
+      return { ok: false, message: `Update REFUSED — ${applyVerdict.reason}`, status: 502 };
+    }
+
     // 3. Extract the zip
     await execAsync(`unzip -o "${zipPath}" -d "${tmpDir}"`, { timeout: 60000 });
 
@@ -772,8 +829,14 @@ updateRouter.post('/rollback', async (c) => {
     return c.json({ ok: false, error: 'tag is required (e.g. "v1.12.0")' }, 400);
   }
 
-  const targetTag = body.tag as string;
-  const targetVersion = targetTag.replace(/^v/, '');
+  const targetTag = (body.tag as string).trim();
+  // PHASE-5 T6B: the ordering + shape gate. Nothing is fetched until the target
+  // is a version tag AND an earlier one than the installed build.
+  const authorized = authorizeRollbackTarget(targetTag, currentVersion);
+  if (!authorized.ok) {
+    return c.json({ ok: false, error: authorized.error }, 400);
+  }
+  const targetVersion = authorized.targetVersion;
 
   const isProduction = fs.existsSync(PLATFORM_DIR) && fs.existsSync(path.join(PLATFORM_DIR, 'package.json'));
   if (!isProduction) {
@@ -806,6 +869,17 @@ updateRouter.post('/rollback', async (c) => {
     const zipPath = path.join(tmpDir, 'dojo-platform.zip');
 
     await execAsync(`curl -L -o "${zipPath}" "${zipAsset.browser_download_url}"`, { timeout: 120000 });
+
+    // Same gate as apply, and it must be here too: this path also rsyncs with
+    // `--delete` over the running install (PHASE-5 T6B).
+    const rollbackVerdict = await verifyArtifactAgainstManifest(
+      zipPath,
+      await fetchArtifactManifest(release.assets.find(a => a.name === ARTIFACT_MANIFEST_ASSET)?.browser_download_url),
+    );
+    if (rollbackVerdict.outcome === 'refused') {
+      return c.json({ ok: false, error: `Rollback REFUSED — ${rollbackVerdict.reason}` }, 502);
+    }
+
     await execAsync(`unzip -o "${zipPath}" -d "${tmpDir}"`, { timeout: 60000 });
 
     const extractedDir = path.join(tmpDir, 'dojo-platform', 'platform');
