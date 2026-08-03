@@ -1311,6 +1311,13 @@
       "why": "`invalid_args` joins blocked/crashed/cancelled because the schema-validation boundary gave `INVALID_ARGS` its first writer, and without the arm a malformed call classified `crashed` — the platform reporting itself broken for a call it understood and refused. The raise is the enum member, its entry in TOOL_SEAM_REASONS, and TWO lines of doc: what it means, and the one distinction a reader must not get wrong (it is NOT `blocked`; retry with corrected arguments, not never). The longer rationale deliberately lives at the classifier in `agent/tool-outcome.ts` rather than here, which is why this is +2 and not +13 — the first draft was, and the ratchet is what forced the prose to the file that owns the decision."
     },
     {
+      "path": "packages/server/src/agent/tools/util.ts",
+      "from": 0,
+      "to": 338,
+      "by": "PHASE-5 T4 sitting 2 (2026-08-02) — new-file-cap PIN, not a raise",
+      "why": "PHASE-5 T4, the toolbox split. Research 05 §(a) names `util.ts` in the split skeleton and it exists for a STRUCTURAL reason, not a tidiness one: a category module may not import `agent/tools.ts` (that is the cycle the split is undoing), so a helper two categories share has to live in a leaf. Every line here is relocated from agent/tools.ts, which lost the same content in the same commits: auditLog + AUDIT_ACTION_MAP (sitting 1), then getDownloadUrl/registerSharedFile/toDashboardPath, agentCanSelfComplete(+ById) and permissionDeniedMessage (the comms move), then the six-function canvas-open cluster (broadcastCanvasUpdate, canvasMime, queueCanvasDocAttachment, syncCanvasAfterWrite, openFileInCanvas, localOfficePathFromResult) that the fs verbs, the office block, the pdf interceptor and the canvas verbs all ask the same question of. Duplicating any of it per category is the disease this overhaul exists to remove — ONE copy is the point. Decrease-only from here; T7 re-derives it once the split is finished."
+    },
+    {
       "path": "packages/server/src/agent/tools/cat/media.ts",
       "from": 0,
       "to": 896,
@@ -1479,6 +1486,7 @@
     "packages/shared/src/ws.ts": 1088,
     "watchdog/src/index.ts": 1198,
     "packages/server/src/agent/tools/cat/comms.ts": 844,
+    "packages/server/src/agent/tools/util.ts": 338,
     "packages/server/src/agent/tools/cat/media.ts": 896,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
     "packages/server/src/agent/tools/cat/healer.ts": 288
