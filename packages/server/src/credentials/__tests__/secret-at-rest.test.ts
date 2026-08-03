@@ -1,7 +1,7 @@
 // PHASE-5 T6C — ONE OWNER for secret-at-rest encryption, and the boundary that
 // says which secrets may live in the agent-reachable store.
 //
-// THIS FILE HOLDS THREE REQUIREMENTS, each as a check over the SOURCE rather
+// THIS FILE HOLDS FOUR REQUIREMENTS, each as a check over the SOURCE rather
 // than a sentence in a report:
 //
 //  (1) There is exactly ONE implementation of "encrypt a secret at rest". Two
@@ -23,6 +23,12 @@
 //      on something that works today — the owner's decision, never a worker's.
 //      If the owner decides to scope it, clause 6 is meant to be flipped
 //      deliberately and visibly, not quietly deleted.
+//
+//  (4) The set of columns that hold a credential IN THE CLEAR is enumerated and
+//      pinned, and the code that touches the live ones is a named seam rather
+//      than a scatter. T6C measured that set instead of moving it; pinning it
+//      is what stops the measurement going stale the moment someone adds a
+//      column, and what keeps the future encryption a small change.
 //
 // No real secret value appears here. Every value in this file is a literal this
 // file made up.
@@ -192,5 +198,95 @@ describe('PHASE-5 T6C (3): RECORDED BEHAVIOUR — the agent credential store is 
     expect(atRest).toMatch(/getCredentialMasterKey.*from '\.\.\/config\/loader\.js'/s);
     expect(atRest).not.toMatch(/from '[^']*credentials\/store\.js'/);
     expect(atRest).not.toMatch(/(?:FROM|INTO|UPDATE)\s+agent_credentials/i);
+  });
+});
+
+describe('PHASE-5 T6C (4): the plaintext-credential surface is enumerated, pinned, and seamed', () => {
+  // Derived at this HEAD by:
+  //   grep -inE '^\s*[a-z_]*(token|secret|password|api_key|credential)[a-z_]*\s+TEXT' \
+  //     packages/server/src/db/migrations/*.sql
+  // UNIT: column DECLARATIONS in the migration chain (a table declared once and
+  // dropped later still has its declaration here — the disposition says so,
+  // which is why this is drop-proof and a live-schema snapshot would not be).
+  //
+  // Every entry carries a disposition. A new credential-shaped TEXT column
+  // fails this clause until it declares which of the three it is.
+  const DECLARED_PLAINTEXT_SURFACE: Record<string, string> = {
+    // LIVE PLAINTEXT CREDENTIALS — the real OAuth material, 4 populated columns
+    // across 4 rows on the dev body. T6C measured these rather than encrypting
+    // them; the measurement and the reason are in the T6C AS-BUILT. OWNER.
+    '071_workspace_accounts.sql:access_token': 'LIVE PLAINTEXT — google_accounts + microsoft_accounts OAuth access tokens',
+    '071_workspace_accounts.sql:refresh_token': 'LIVE PLAINTEXT — google_accounts + microsoft_accounts OAuth refresh tokens',
+    // NOT A CREDENTIAL — one-shot nonces bound to a single held call. They
+    // authorise one action on this box; they authenticate to nothing.
+    '069_destructive_approvals.sql:token': 'NOT A CREDENTIAL — one-shot approval nonce bound to a specific held call',
+    // DROPPED — the table these belonged to is gone (migration 133). Kept in
+    // this list so the scan stays honest instead of being scoped around them.
+    '006_phase5.sql:token': 'DROPPED — `sessions` was removed by migration 133',
+    '006_phase5.sql:csrf_token': 'DROPPED — `sessions` was removed by migration 133',
+  };
+
+  it('pins every credential-shaped TEXT column the migration chain declares', () => {
+    const dir = path.join(SRC, 'db/migrations');
+    const found = new Set<string>();
+    for (const f of fs.readdirSync(dir).filter(n => n.endsWith('.sql'))) {
+      for (const line of fs.readFileSync(path.join(dir, f), 'utf-8').split('\n')) {
+        const m = /^\s*([a-z_]*(?:token|secret|password|api_key|credential)[a-z_]*)\s+TEXT/i.exec(line);
+        if (m) found.add(`${f}:${m[1]}`);
+      }
+    }
+    expect([...found].sort()).toEqual(Object.keys(DECLARED_PLAINTEXT_SURFACE).sort());
+  });
+
+  it('keeps the live plaintext columns behind ONE read seam per provider', () => {
+    // Every read of a token column funnels through the provider's row mapper,
+    // and the writes are the INSERT column list and the partial-update column
+    // map. That is what makes encrypting them later a small change instead of a
+    // hunt — and what this clause exists to keep true. Asserted structurally,
+    // not by an occurrence count: a count would move for reasons that do not
+    // matter and would teach the next reader to re-pin it without looking.
+    for (const file of ['google/accounts.ts', 'microsoft/accounts.ts']) {
+      const text = fs.readFileSync(path.join(SRC, file), 'utf-8');
+      const lines = text.split('\n');
+
+      // ONE decode point: the row mapper, both fields, nowhere else.
+      const decode = lines.filter(l => /(?:accessToken|refreshToken):\s*r\.(?:access|refresh)_token/.test(l));
+      expect(decode).toHaveLength(2);
+      expect(text).toMatch(/function rowToAccount\(/);
+
+      // TWO write points, and both are declarations rather than statements.
+      expect(text).toMatch(/INSERT INTO (?:google|microsoft)_accounts[\s\S]{0,400}access_token, refresh_token/);
+      expect(text).toMatch(/accessToken: 'access_token', refreshToken: 'refresh_token',/);
+
+      // No ad-hoc UPDATE of a token column anywhere in the file.
+      expect(text).not.toMatch(/SET\s+(?:access_token|refresh_token)\s*=/);
+    }
+  });
+
+  it('keeps the token COLUMNS out of every module but the four that own them', () => {
+    // #15's shape: the claim is not "grep found nothing". It is a positive
+    // enumeration, and writing it down as four was wrong until this clause
+    // measured five. The set, each with what it does:
+    //   google/accounts.ts, microsoft/accounts.ts — the row mappers (decode)
+    //     and the two write points. The seam the clause above pins.
+    //   google/auth.ts, microsoft/auth.ts — the OAuth exchanges, where the
+    //     names are fields of the PROVIDER'S JSON response, not SQL.
+    //   migration/checks.ts — a PREDICATE, not a value read: it enumerates
+    //     reconnect cards by `refresh_token IS NOT NULL AND != ''`. It reads no
+    //     token, but it is the one place outside the mappers that runs SQL
+    //     against these columns, so encrypting them later has to answer for it.
+    // Eight further files name the account TABLES (counts, existence checks)
+    // and touch no token — which is why this clause keys on the COLUMNS.
+    const namers = sourceFiles()
+      .filter(f => /\b(?:access_token|refresh_token)\b/.test(fs.readFileSync(f, 'utf-8')))
+      .map(rel)
+      .sort();
+    expect(namers).toEqual([
+      'google/accounts.ts',
+      'google/auth.ts',
+      'microsoft/accounts.ts',
+      'microsoft/auth.ts',
+      'migration/checks.ts',
+    ]);
   });
 });
