@@ -73,6 +73,13 @@
     },
     {
       "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9750,
+      "to": 9774,
+      "by": "PHASE-5 T6B (2026-08-03) — the credential read point (RULING P5-R11)",
+      "why": "+24, and 21 of them are the reason at two sites that read as defects without it. The owner's requirement is that a stored credential must not sit in the clear at rest AND must stay usable; only the first half was holding, because assembly rebuilds the model's array from the STORED rows every tool-loop iteration, so from iteration 2 the agent read its own prior call with the placeholder in it and copied that forward (reproduced at HEAD, digest-compared). THE CODE IS TWO LINES: one import, and `messages: hydrateCredentialsInMessages(agentId, messages)` at the callModel call — plus the tool-result row now storing the placeholder instead of the value. THE MECHANISM IS ELSEWHERE ALREADY: every rule, every property and the whole rationale live in `credentials/secret-values.ts`, which is where they belong and where they were deliberately put to keep this file's growth to the call itself. What the 21 comment lines buy is that neither site can be 'tidied' by a later reader: at the callModel line, moving the call one step earlier (into assembly, where it looks more natural) would put real credential values into the context receipt, the dev instruments and the assembled-context golden — the OR7/#10 breach the seam exists to avoid; at the tool-result line, the previous release stored that row in the clear ON PURPOSE and said so, so deleting the redaction 'back to how it was' is a one-line regression of the exact hole this closes. The alternative that would have held 9750 is not putting the value back where the agent reads it, which is the task."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
       "from": 9548,
       "to": 9608,
       "by": "PHASE-4 T3 (2026-08-02) — the ordered steer queue",
@@ -1486,7 +1493,7 @@
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9750,
+    "packages/server/src/agent/v2/loop.ts": 9774,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 433,
     "packages/server/src/agent/v2/recovery.ts": 605,
