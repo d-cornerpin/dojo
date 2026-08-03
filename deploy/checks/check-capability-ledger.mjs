@@ -65,9 +65,18 @@ const sharedFiles = allFiles.filter((r) => SHARED.test(r) && NOT_TEST(r));
 // ════ 1. TOOLS ════
 // A tool is a `name: '<id>'` property whose object also carries an
 // `input_schema` within the next few lines — the literal shape every
-// ToolDefinition in this codebase has (agent/tools.ts:1040).
+// ToolDefinition in this codebase has (agent/tools.ts:1040 before the split;
+// agent/tools/definitions.ts now).
+//
+// ⚠ THE WINDOW WAS 12 AND IT UNDER-COUNTED (PHASE-5 T7). T1 put an `effects:`
+// declaration — and on some definitions a `fields:` block — between `name:` and
+// `input_schema:`, so two real tools (`save_technique`, `update_technique`, both
+// with long descriptions as well) fell outside a window calibrated before those
+// existed and READ AS LOST CAPABILITY. Widened to 16, which is the smallest
+// value that finds them; the delta is exactly those two names and no other, so
+// nothing else was swept in with them.
 const COMMANDS = {};
-COMMANDS.tool = String.raw`node -e "…" # name:'<id>' followed by input_schema within 12 lines, over packages/server/src/**/*.ts minus tests`;
+COMMANDS.tool = String.raw`node -e "…" # name:'<id>' followed by input_schema within 16 lines, over packages/server/src/**/*.ts minus tests`;
 function extractTools() {
   const out = [];
   for (const rel of serverFiles) {
@@ -75,7 +84,7 @@ function extractTools() {
     for (let i = 0; i < lines.length; i++) {
       const m = /^\s*name:\s*'([a-z0-9_]+)'\s*,\s*$/.exec(lines[i]);
       if (!m) continue;
-      const window = lines.slice(i + 1, i + 12).join('\n');
+      const window = lines.slice(i + 1, i + 16).join('\n');
       if (!/input_schema\s*:/.test(window)) continue;
       out.push({ kind: 'tool', id: m[1], where: `${rel}:${i + 1}` });
     }
@@ -151,6 +160,16 @@ function extractWatchers() {
 COMMANDS.job = String.raw`command grep -anI "setInterval(" packages/server/src/**/*.ts   # every site, unfiltered`;
 function extractJobs() {
   const out = [];
+  // ⚠ THE ID USED TO END IN THE LINE NUMBER, WHICH CONTRADICTED ITS OWN COMMENT
+  // (PHASE-5 T7). "so the id survives a line shift" was the stated intent and
+  // `#${line}` defeated it: every job in a file that gained a line became a LOST
+  // capability and a NEW one in the same breath — 18 of them at this phase's
+  // exit, all of them the same intervals a few lines further down. The suffix is
+  // now an ORDINAL within its (file, function), which keeps several sites in one
+  // function distinct — `index.ts:main` has three — and only changes when the
+  // COUNT changes, which is the thing worth noticing. `where` still carries the
+  // real line, refreshed by --write.
+  const seen = new Map();
   for (const rel of serverFiles) {
     const src = read(rel);
     for (const m of src.matchAll(/\bsetInterval\s*\(/g)) {
@@ -158,7 +177,10 @@ function extractJobs() {
       // Name it by the nearest enclosing function, so the id survives a line shift.
       const before = src.slice(0, m.index);
       const fn = [...before.matchAll(/\b(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(/g)].pop();
-      out.push({ kind: 'job', id: `${path.posix.basename(rel, '.ts')}:${fn ? fn[1] : 'module'}#${line}`, where: `${rel}:${line}` });
+      const base = `${path.posix.basename(rel, '.ts')}:${fn ? fn[1] : 'module'}`;
+      const n = (seen.get(base) ?? 0) + 1;
+      seen.set(base, n);
+      out.push({ kind: 'job', id: `${base}#${n}`, where: `${rel}:${line}` });
     }
   }
   return out;
