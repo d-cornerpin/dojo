@@ -5,7 +5,7 @@ set -euo pipefail
 # DOJO release — one command, fully verified.
 #
 # Cuts a release end-to-end and REFUSES to report success unless the GitHub
-# release actually carries both assets and the self-update path resolves.
+# release actually carries all three assets and the self-update path resolves.
 # This exists because every past release failure was the same shape: the
 # version got bumped, committed, tagged, pushed, and a release page created,
 # but the .zip/.pkg were never uploaded — so every user's self-update saw the
@@ -226,7 +226,7 @@ if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
   # the create step below falls through to an idempotent asset re-upload. If we
   # are NOT resuming, this tag was already fully released; refuse to clobber it.
   [ "$REENTRY" = "1" ] || fail "Release $TAG already exists on GitHub and no matching local tag is at HEAD. Nothing to resume; pick a new version."
-  echo "  ↪ re-entry: release $TAG already exists, will ensure both assets are uploaded, then verify"
+  echo "  ↪ re-entry: release $TAG already exists, will ensure all three assets are uploaded, then verify"
 fi
 echo "  ✓ on $BRANCH, clean tree, gh authed, $CHANNEL_LABEL, $CURRENT → $VERSION, tag $TAG $([ "$REENTRY" = "1" ] && echo '(re-entry)' || echo 'free')"
 
@@ -659,7 +659,7 @@ echo "  📄 release record: $RECORD_OUT"
 if [ "$DRY_RUN" = "1" ]; then
   step "DRY RUN — reverting the version bump; not committing, pushing, or releasing"
   git checkout -- package.json
-  echo "  Would next: commit, tag $TAG, push $BRANCH + tag, create $([ "$PREFLIGHT" = "1" ] && echo 'PRE-')release $TAG with both assets, then verify."
+  echo "  Would next: commit, tag $TAG, push $BRANCH + tag, create $([ "$PREFLIGHT" = "1" ] && echo 'PRE-')release $TAG with all three assets, then verify."
   echo ""
   echo "✅ Dry run OK — every blocking gate green, report tier recorded. Re-run without --dry-run to release for real."
   exit 0
@@ -713,14 +713,14 @@ echo "  ✓ pushed $BRANCH + $TAG"
 # them; only the Preflight channel picks them up.
 PRERELEASE_ARGS=()
 [ "$PREFLIGHT" = "1" ] && PRERELEASE_ARGS=(--prerelease)
-step "Creating GitHub $([ "$PREFLIGHT" = "1" ] && echo 'pre-')release $TAG with both assets"
+step "Creating GitHub $([ "$PREFLIGHT" = "1" ] && echo 'pre-')release $TAG with all three assets"
 # Note the ${arr[@]+"${arr[@]}"} guards: under `set -u`, macOS bash 3.2 treats
 # "${empty[@]}" as an unbound variable and aborts, so expand empty arrays safely.
 if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
   # FA-D3 re-entry: the release row already exists (a prior run created it but
   # the asset upload failed). Ensure BOTH assets are present via an idempotent
   # --clobber upload instead of erroring on the existing release.
-  echo "  ↪ release $TAG already exists, re-uploading both assets (--clobber)"
+  echo "  ↪ release $TAG already exists, re-uploading all three assets (--clobber)"
   gh release upload "$TAG" "$DIST/$ZIP_NAME" "$DIST/$SHA_NAME" "$DIST/$PKG_NAME" --repo "$REPO" --clobber
 else
   gh release create "$TAG" "$DIST/$ZIP_NAME" "$DIST/$SHA_NAME" "$DIST/$PKG_NAME" --repo "$REPO" --title "$TAG" ${PRERELEASE_ARGS[@]+"${PRERELEASE_ARGS[@]}"} ${NOTES_ARGS[@]+"${NOTES_ARGS[@]}"}
