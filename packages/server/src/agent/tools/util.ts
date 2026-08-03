@@ -24,6 +24,11 @@ import { createLogger } from '../../logger.js';
 import { isDreamerAgent, isHealerAgent } from '../../config/platform.js';
 import { getTunnelStatus } from '../../services/tunnel.js';
 import { getCurrentToolCallId, currentTurnNumber, currentTurnRoot } from '../turn-state.js';
+// A LEAF by construction (`credentials/secret-values.ts` imports nothing), which
+// is why the toolbox's shared util can reach the declared-value set without
+// re-opening the `secret-fields -> registry -> tools -> credentials/tools` cycle
+// that module was split out of at T1.
+import { redactHandedCredentials } from '../../credentials/secret-values.js';
 import { broadcast } from '../../gateway/ws.js';
 import { queueCanvasDoc } from '../pending-attachments.js';
 import { setCurrentCanvas, getCurrentCanvas } from '../canvas-view.js';
@@ -53,6 +58,22 @@ export function auditLog(agentId: string, actionType: string, target: string | n
     const db = getDb();
     // Normalize action_type to match the CHECK constraint
     const normalizedAction = AUDIT_ACTION_MAP[actionType] ?? 'tool_call';
+    // PHASE-5 T6 — THE AUDIT ROW IS PART OF THE CREDENTIAL SEAM, and it was the
+    // one copy the seam did not cover. A credential the agent legitimately
+    // FETCHED and USED has to appear in the argv line for the command to work,
+    // and `process-run.ts` audits that argv line verbatim — so the supported
+    // capability was minting a plaintext copy in `audit_log.target` on every
+    // single use (measured on the dev box: three exec calls, three rows).
+    // `audit_log` has no TTL and rides the diagnostics export, so this is the
+    // longest-lived copy the flow produced.
+    //
+    // The key is the DECLARED value set — values this process learned from a
+    // tool's own `secret: true` field or handed out through `credential_get` —
+    // never a value shape. An undeclared secret-shaped string is deliberately
+    // left alone; `__tests__/audit-credential-redaction.test.ts` clause 4 pins
+    // that, because shape-matching is the prose-keying this overhaul deletes.
+    const safeTarget = target === null ? null : redactHandedCredentials(agentId, target);
+    const safeDetail = detail === undefined ? null : redactHandedCredentials(agentId, detail);
     // P6a execution lineage: every audit row carries the turn that ran it and
     // the root it served, read from the live turn state (the receipts
     // pattern), plus the exact tool_use call id where the caller has one.
@@ -61,7 +82,7 @@ export function auditLog(agentId: string, actionType: string, target: string | n
     db.prepare(`
       INSERT INTO audit_log (id, agent_id, action_type, target, result, detail, turn_number, call_id, root_kind, root_id, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    `).run(uuidv4(), agentId, normalizedAction, target, result, detail ?? null,
+    `).run(uuidv4(), agentId, normalizedAction, safeTarget, result, safeDetail,
       turnNumber, callId ?? getCurrentToolCallId(agentId), root?.kind ?? null, root?.id ?? null);
   } catch (err) {
     toolsLogger.error('Failed to write audit log', {
