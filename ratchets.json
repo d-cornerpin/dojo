@@ -1394,6 +1394,34 @@
       "to": 640,
       "by": "PHASE-5 T4 (2026-08-02) — the executor, pinned at its measured size",
       "why": "NEW ENTRY, and it is what is LEFT of a 10,343-line file: 640 lines of door, of which the executable part is one function. It is not a new god file, it is the opposite — the arithmetic is 10,343 → 640 here + 2,632 (the relocated wire array) + 657 (the relocated surface) + the 6,600 already in `cat/`/`provider/`, with the 268 dispatch cases gone from the door entirely. SPLITTING IT WOULD BREAK THE ONE THING IT EXISTS TO GUARANTEE: every tool call in the platform goes through ONE function whose gates run in ONE order — FU-4 deny, `pmMayCall`, malformed args, T2's gate loop, T3C's boundary, the three interceptors (RULING P5-R10, which cannot be handlers because they bypass the tail by design), dispatch, then the tail. Every one of those positions was earned by an incident or a ruling, and 'the order is the contract' is unenforceable across two files. A large share of the body is the WHY of each position, carried verbatim from the tasks that earned it. Decrease-only from here; T7's demolition pass owns the residuals it names (`logOnly`'s staging branch, the `toolCall.__contentBlocks` side channel)."
+    },
+    {
+      "path": "packages/server/src/agent/spawner.ts",
+      "from": 1382,
+      "to": 1425,
+      "by": "PHASE-5 T5 (2026-08-02) — scope: validated, subset-of-parent, readable",
+      "why": "+43, of which 39 are the reason block at the AUTHORITATIVE SPAWN GATE and at the child-scope resolution. RULING P5-R2 required T5 to DECLARE which of the two spawn gates is authoritative and to state the other's disposition at the site rather than in a report nobody opens next year; that declaration is 27 lines and it is the deliverable. The executable change is a NET SIMPLIFICATION: `permissions ?? getAgentPermissions(parentId)` — a child inheriting its parent verbatim, with anything the caller passed stored unread — becomes one `resolveChildScope` call that validates, bounds and defaults, with the logic itself in `agent/scope.ts`. 7 executable lines added, 3 removed."
+    },
+    {
+      "path": "packages/server/src/gateway/routes/agents.ts",
+      "from": 822,
+      "to": 858,
+      "by": "PHASE-5 T5 (2026-08-02) — scope: validated, subset-of-parent, readable",
+      "why": "+36, of which 23 are prose. This route wrote `JSON.stringify(body.permissions ?? {})` straight into the row: no schema, no bound, no reader — the plan's Step 2 requires dashboard creation to go through the SAME validation path as a spawn, and it now calls the same function. The other addition is `effectiveScope` on `GET /:id`, the 'readable any time' half of the same step. 14 executable lines for two of Step 2's five clauses."
+    },
+    {
+      "path": "packages/server/src/agent/brokers/deny.ts",
+      "from": 365,
+      "to": 385,
+      "by": "PHASE-5 T5 (2026-08-02) — scope: validated, subset-of-parent, readable",
+      "why": "+20, of which 19 are the reason block on `isGlobalDenyRule` and ONE is the predicate line itself. RULING P5-R6 is verbatim — 'a global deny is NEVER staged' — and the staged set had widened to one member: the AppleScript door's sensitive-read refusal carried a rule id this function did not recognise, so for a sub-agent the sensitive-files block list was recorded instead of applied. The comment explains which three ids joined and why two of them change no answer, because the next person to touch this predicate needs to know it is about the sensitive TIER and not about basis strings."
+    },
+    {
+      "path": "packages/server/src/agent/brokers/grants.ts",
+      "from": 333,
+      "to": 344,
+      "by": "PHASE-5 T5 (2026-08-02) — scope: validated, subset-of-parent, readable",
+      "why": "+11 net (+20/-9), of which 18 of the additions are prose. `system_control:'*'` stops meaning AppleScript (the plan's own direction at T3 Step 2, executed here). The BRANCH SHRANK — a two-arm if/else over the scalar and list spellings becomes one arm over the list — and the comment grew, because the preserving ORDER is the load-bearing fact: the explicit grants land first (PRIMARY_AGENT_PERMISSIONS in code, migration 155 in the stored rows) and only then does the blanket stop covering it. A reader who reverses that order strips AppleScript off live agents."
     }
   ],
   "maxNewFileLines": 400,
@@ -1423,8 +1451,8 @@
     "packages/dashboard/src/pages/TechniqueDetail.tsx": 410,
     "packages/dashboard/src/pages/Tracker.tsx": 1381,
     "packages/server/src/agent/a2a-transport.ts": 2008,
-    "packages/server/src/agent/brokers/deny.ts": 365,
-    "packages/server/src/agent/brokers/grants.ts": 333,
+    "packages/server/src/agent/brokers/deny.ts": 385,
+    "packages/server/src/agent/brokers/grants.ts": 344,
     "packages/server/src/agent/brokers/proc.ts": 375,
     "packages/server/src/agent/browser.ts": 412,
     "packages/server/src/agent/destructive-gate.ts": 583,
@@ -1434,7 +1462,7 @@
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 317,
     "packages/server/src/agent/runtime.ts": 1415,
-    "packages/server/src/agent/spawner.ts": 1382,
+    "packages/server/src/agent/spawner.ts": 1425,
     "packages/server/src/agent/tools/cat/agents.ts": 1284,
     "packages/server/src/agent/tools/cat/comms.ts": 844,
     "packages/server/src/agent/tools/cat/fs.ts": 848,
@@ -1460,7 +1488,7 @@
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
     "packages/server/src/credentials/secret-fields.ts": 241,
-    "packages/server/src/gateway/routes/agents.ts": 822,
+    "packages/server/src/gateway/routes/agents.ts": 858,
     "packages/server/src/gateway/routes/chat.ts": 484,
     "packages/server/src/gateway/routes/config.ts": 2531,
     "packages/server/src/gateway/routes/memory.ts": 635,
