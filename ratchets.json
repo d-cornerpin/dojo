@@ -1471,6 +1471,13 @@
       "to": 308,
       "by": "PHASE-5 T8 Step 3 (2026-08-03, T8D) — the header stated the per-call window wrongly and the correction is the record",
       "why": "PHASE-5 T8 Step 3. +22 lines and every one of them is COMMENT — the module gained no code. The header claimed a fire-and-forget continuation outliving its dispatch holds a DEAD capability. It was TESTED and it is FALSE: work started INSIDE the dispatch inherits the call's async context and holds a LIVE capability while it runs; only work reached from ANOTHER context (a poller or watcher started at boot, an HTTP route, a closure invoked from outside the chain) holds nothing. THE CORRECTION IS LOAD-BEARING, NOT COSMETIC: 'can this module convert' was being read as 'does the I/O happen after the handler returned', and by that reading `image_create`'s delivery IIFE would be unconvertible when it is not. The real question is WHOSE async context the I/O happens in, which is a caller-chain question. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Fix the sentence and leave the rest (+2): REFUSED — a one-line correction of a claim that had already misdirected one classification pass tells the next reader nothing about which question to ask instead, and this is the module every remaining category is classified against. (b) Put the correction in the report only: REFUSED — a report is not what a worker reads at the call site, and a durable document that describes reality is the bible rule. (c) Move it to a separate design note: REFUSED — a second home for what this module guarantees is the disease this overhaul removes. THE FACTS ARE PINNED AS TESTS AS WELL AS PROSE, so they cannot rot silently: two clauses in `agent/effects/__tests__/facade-contract.test.ts`, planted-fault proven (the liveness read stubbed out -> 5 of 27 fail; reverted -> 27/27)."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2647,
+      "to": 2657,
+      "by": "PHASE-5 T8 Step 3 category 5 (2026-08-03) — image_create DECLARES the generated-images directory the provider bytes land in",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R14. +10 lines: a second `effects[]` entry (the array grows 1 line -> 4) plus the seven-line reason. THE DEFECT IT FIXES IS A DECLARATION THAT WAS SHORT BY ONE, which is a different shape from the two before it and worth the reader's time: `image_create` declared `derived:the calling agent uploads directory`, which is TRUE of the delivery copy and never covered the generator's OWN write — the provider's bytes land in `~/.dojo/uploads/generated`, a SIBLING of the agent's uploads directory, not inside it. A declaration can be honest and still be incomplete, and the facade is what found it. It adds NO refusal: gate rows are declared in `tools/gates.ts` and are never derived from `effects[]` (RULING P5-R5). THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Widen the existing entry's scope to `~/.dojo/uploads` so one line covers both (+0): REFUSED, and this is the important one — it would authorize every OTHER agent's uploads directory to satisfy a line count, which is a real widening of what the capability names and the exact trade this project forbids. (b) Drop the reason comment (+3): REFUSED — the next reader has to know why a declaration that reads as true was still incomplete, or the same class of miss returns. (c) Reformat onto fewer physical lines: REFUSED — no line count passes or fails anything (roadmap #7). THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2657."
     }
   ],
   "maxNewFileLines": 400,
@@ -1520,7 +1527,7 @@
     "packages/server/src/agent/tools/cat/media.ts": 896,
     "packages/server/src/agent/tools/cat/session.ts": 241,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
-    "packages/server/src/agent/tools/definitions.ts": 2647,
+    "packages/server/src/agent/tools/definitions.ts": 2657,
     "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/index.ts": 642,
