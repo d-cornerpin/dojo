@@ -65,6 +65,7 @@ import { getFilteredTools } from '../tools/surface.js';
 import { classifyToolResult } from '../tool-outcome.js';
 import { resolveRecipientDisplay } from '../../contacts/resolve-recipient.js';
 import { hasHandedCredentialValues, redactHandedCredentials, redactAssistantBlocksForPersist, redactDeclaredSecretArgs, noteDeclaredSecretsFromToolCalls } from '../../credentials/secret-fields.js';
+import { hydrateCredentialsInMessages } from '../../credentials/secret-values.js';
 // recordError intentionally NOT imported, handleMessage's catch path calls
 // it. Calling here would double-count errors and trip the loop-detector
 // pause prematurely.
@@ -4016,7 +4017,18 @@ export async function runV2Turn(agentId: string): Promise<void> {
           result = await callModel({
             agentId,
             modelId,
-            messages,
+            // PHASE-5 T6B (RULING P5-R11): THE CREDENTIAL READ POINT, and the
+            // ONLY one. Assembly rebuilds this array from the STORED rows every
+            // iteration, so from the second iteration on the model was reading
+            // its own prior call with the placeholder in it and copying that
+            // forward — the credential worked once per turn and then stopped.
+            // The value goes back HERE, at the provider boundary, so assembly,
+            // the context receipt and the dev instruments all keep the
+            // placeholder and no stored byte is rewritten. A no-op returning
+            // this very array when no placeholder is present, hence no effect on
+            // the cached prefix (OR7/#10). Full rationale + the three properties
+            // that make it safe: `credentials/secret-values.ts`.
+            messages: hydrateCredentialsInMessages(agentId, messages),
             systemPrompt,
             // C28 P-2: system-side volatile lane (empty after P-1). Trails the
             // cached stable system block so it can't invalidate the cached prefix.
@@ -7731,12 +7743,24 @@ export async function runV2Turn(agentId: string): Promise<void> {
         const toolMessageId = uuidv4();
         const toolResultContent = turnToolResults.map((tr) => {
           const blocks = (tr as { contentBlocks?: Array<{ type: string; [key: string]: unknown }> }).contentBlocks;
+          // PHASE-5 T6B (P5-R11 obligation 4 / PHASE-4 exit §8 item 3):
+          // `credential_get`'s RESULT was stored here in the clear, deliberately,
+          // because redacting it made the credential unusable — the loop
+          // re-assembles from the database every iteration. That reason is gone
+          // now the value is put back at the provider boundary, so this surface
+          // closes WITH the capability rather than instead of it; either half
+          // alone is a defect. `blocks` is deliberately not scrubbed — those are
+          // the provider content blocks `file_read` attaches for images and PDFs
+          // (T4B's vision side channel), never a credential result.
+          const storedContent = hasHandedCredentialValues(agentId)
+            ? redactHandedCredentials(agentId, tr.content)
+            : tr.content;
           return {
             type: 'tool_result' as const,
             tool_use_id: tr.toolCallId,
             content: blocks
               ? (blocks as unknown as Anthropic.ToolResultBlockParam['content'])
-              : tr.content,
+              : storedContent,
             is_error: tr.isError,
           };
         }) as Anthropic.ToolResultBlockParam[];

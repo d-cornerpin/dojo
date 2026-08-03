@@ -51,6 +51,7 @@ vi.mock('../../../db/connection.js', () => ({
 import { auditLog } from '../util.js';
 import {
   REDACTED_CREDENTIAL,
+  redactedPlaceholderFor,
   noteHandedCredentialValues,
   forgetHandedCredentialValues,
 } from '../../../credentials/secret-values.js';
@@ -89,7 +90,7 @@ describe('auditLog redacts credential values this agent has handled', () => {
     auditLog(AGENT, 'exec', `sh /tmp/capture.sh ${SECRET} one`, 'success', 'captured-one');
 
     const [row] = rows();
-    expect(row.target).toBe(`sh /tmp/capture.sh ${REDACTED_CREDENTIAL} one`);
+    expect(row.target).toBe(`sh /tmp/capture.sh ${redactedPlaceholderFor(AGENT, SECRET)} one`);
     expect(row.target).not.toContain(SECRET);
   });
 
@@ -98,7 +99,7 @@ describe('auditLog redacts credential values this agent has handled', () => {
     auditLog(AGENT, 'exec', 'echo the-key', 'success', `stdout: ${SECRET}`);
 
     const [row] = rows();
-    expect(row.detail).toBe(`stdout: ${REDACTED_CREDENTIAL}`);
+    expect(row.detail).toBe(`stdout: ${redactedPlaceholderFor(AGENT, SECRET)}`);
     expect(row.detail).not.toContain(SECRET);
   });
 

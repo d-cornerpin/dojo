@@ -28,6 +28,12 @@ import {
   redactHandedCredentials,
   forgetHandedCredentialValues,
 } from '../secret-fields.js';
+// PHASE-5 T6B: a handed VALUE's placeholder now carries the in-process handle that
+// says which value it replaced — without it the value cannot be put back correctly
+// once an agent holds two secrets. The DECLARED-field sentinel above is unchanged
+// and deliberately un-tagged (those are never hydrated). Same clauses, same
+// byte-exact assertions; only where the expected string comes from has moved.
+import { redactedPlaceholderFor } from '../secret-values.js';
 
 const AGENT = 'agent-under-test';
 const SECRET = 'sk-live-t5b-0nlyinthisfile-9f2c';
@@ -129,7 +135,7 @@ describe('the persist seam', () => {
       { type: 'text', text: `I will store ${SECRET} under openweather.` },
     ]);
     expect((stored[0] as { text: string }).text).toBe(
-      `I will store ${REDACTED_CREDENTIAL} under openweather.`);
+      `I will store ${redactedPlaceholderFor(AGENT, SECRET)} under openweather.`);
   });
 
   it('scrubs a secret that a LATER tool call inlines into an unrelated field', () => {
@@ -159,7 +165,7 @@ describe('the value set', () => {
       { name: 'credential_update', arguments: { credentials: { api_key: SECRET } } },
     ]);
     expect(hasHandedCredentialValues(AGENT)).toBe(true);
-    expect(redactHandedCredentials(AGENT, `key=${SECRET}`)).toBe(`key=${REDACTED_CREDENTIAL}`);
+    expect(redactHandedCredentials(AGENT, `key=${SECRET}`)).toBe(`key=${redactedPlaceholderFor(AGENT, SECRET)}`);
   });
 
   it('never turns a trivial value into a scrub rule', () => {
