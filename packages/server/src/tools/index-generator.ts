@@ -3,17 +3,22 @@
 // Writes full tool documentation to ~/.dojo/tools/*.md
 // Runs on startup so load_tool_docs can read them.
 // ════════════════════════════════════════
+//
+// PHASE-5 T8 Step 3 (RULING P5-R15 part 2): this module used to hold the READER
+// too, which meant one `node:fs` import served both a boot job and a tool call.
+// The reader is now `./tool-doc-read.ts` and reaches the disk through the
+// facade; what is left here runs ONCE at boot, from `index.ts`, before any agent
+// exists — so this import is platform-internal and says so.
 
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createLogger } from '../logger.js';
 import type { ToolDefinition } from '../agent/tools/types.js';
 import { registryToolDefinitions } from '../agent/tools/registry.js';
+import { TOOLS_DIR } from './tool-doc-read.js';
 
 const logger = createLogger('tool-docs-generator');
-const TOOLS_DIR = path.join(os.homedir(), '.dojo', 'tools');
 
 // Source directory for hand-written tool doc overrides. When a file named
 // `<tool-name>.md` exists here, it's copied verbatim into ~/.dojo/tools/
@@ -23,10 +28,6 @@ const TOOLS_DIR = path.join(os.homedir(), '.dojo', 'tools');
 // descriptions" section).
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TOOL_DOCS_SOURCE_DIR = path.resolve(__dirname, './docs');
-
-export function getToolsDir(): string {
-  return TOOLS_DIR;
-}
 
 /**
  * Format a tool definition as a Markdown documentation file.
@@ -139,17 +140,4 @@ export async function generateToolDocs(): Promise<{ count: number }> {
 
   logger.info('Tool docs generated', { count, pruned, dir: TOOLS_DIR });
   return { count };
-}
-
-/**
- * Read a tool's documentation file.
- */
-export function readToolDoc(toolName: string): string | null {
-  const filePath = path.join(TOOLS_DIR, `${toolName}.md`);
-  if (!fs.existsSync(filePath)) return null;
-  try {
-    return fs.readFileSync(filePath, 'utf-8');
-  } catch {
-    return null;
-  }
 }

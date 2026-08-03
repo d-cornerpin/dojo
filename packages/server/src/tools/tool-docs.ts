@@ -5,7 +5,7 @@
 // ════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
-import { readToolDoc } from './index-generator.js';
+import { readToolDoc } from './tool-doc-read.js';
 import type { ToolDefinition } from '../agent/tools/types.js';
 
 const logger = createLogger('tool-docs');

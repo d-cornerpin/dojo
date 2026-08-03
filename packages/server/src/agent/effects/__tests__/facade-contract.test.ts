@@ -682,6 +682,35 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(grantsCover(imGrants, { op: 'fs_stat', path: outOfScope, real: outOfScope })).toBe(false);
   });
 
+  it('SURFACE SPLIT: the tool-doc READER is its own module and reads through the facade', () => {
+    // RULING P5-R15 part 2. `tools/index-generator.ts` held one `node:fs` import
+    // serving two populations: a boot job that WRITES every tool doc, and a
+    // reader called inside `load_tool_docs`. Neither classification was honest
+    // while they shared a module, so the surfaces were separated — the reader
+    // moved out because the file's own name and header describe the generator.
+    const reader = fs.readFileSync(path.join(SRC, 'tools/tool-doc-read.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(reader), 'the reader must not hold node:fs').toBe(false);
+    expect(reader.includes('effectFs.'), 'it reads through the facade').toBe(true);
+    // …and the generator half kept the boot job, so its import is honestly
+    // platform-internal: it has exactly one caller and that caller is boot.
+    expect(filesContaining('generateToolDocs(')).toEqual(['index.ts', 'tools/index-generator.ts']);
+    expect(filesContaining('readToolDoc('), 'the reader has one caller and it is a tool handler chain')
+      .toEqual(['tools/tool-doc-read.ts', 'tools/tool-docs.ts']);
+  });
+
+  it('load_tool_docs DECLARES the docs directory it reads, and the scope is that directory alone', () => {
+    const grants = grantsForCall(AGENT, effectsFor('load_tool_docs'), { tools: ['web_fetch'] });
+    const docsDir = path.join(os.homedir(), '.dojo', 'tools');
+    const doc = path.join(docsDir, 'web_fetch.md');
+    expect(grantsCover(grants, { op: 'fs_stat', path: doc, real: doc }), 'it may probe a doc').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: doc, real: doc }), 'it may read a doc').toBe(true);
+    // …and nothing outside the directory, which is what makes it a scope.
+    const outside = path.join(os.homedir(), '.dojo', 'data', 'dojo.db');
+    expect(grantsCover(grants, { op: 'fs_read', path: outside, real: outside }), 'the scope is the docs dir alone').toBe(false);
+    // A read of the docs is not a licence to write them — the generator's job.
+    expect(grantsCover(grants, { op: 'fs_write', path: doc, real: doc })).toBe(false);
+  });
+
   it("open_browser DECLARES the directory it writes, and the declaration covers exactly that", () => {
     // The screenshot fallback has always written a PNG to disk and the tool
     // declared no fs effect at all — so a converted call site would have been

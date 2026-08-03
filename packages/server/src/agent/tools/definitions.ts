@@ -158,7 +158,14 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'load_tool_docs',
     description: 'Load the full documentation for one or more tools before using them. Call this when you need to review a tool\'s parameters or usage details. After loading, the tools become callable on subsequent turns. Your always-loaded tools are already available without needing this.',
-    effects: [],
+    // DECLARATION CORRECTED AT THE SITE (PHASE-5 T8 Step 3, RULING P5-R14). The
+    // docs are markdown files written to disk at boot and this said `effects:[]`.
+    // The directory is the WHOLE reach: the handler intersects every requested
+    // name with the agent's own accessible tools before reading, so no other
+    // path can be named.
+    effects: [
+      { kind: 'fs_read', from: 'derived:the generated tool documentation directory', scope: { at: 'tree', template: '~/.dojo/tools' } },
+    ],
     input_schema: {
       type: 'object',
       properties: {

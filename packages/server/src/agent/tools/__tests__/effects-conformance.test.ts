@@ -167,9 +167,13 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // §T0-PINS P3's "72 effectful defs" was a different unit: definitions carrying
     // an effectful-looking FIELD. Its own enumerated name list reproduces as 64
     // under a recursive scan here; the 104 adds the classes no scan reaches.
+    // T8 Step 3 moves both by ONE a second time, for the same reason:
+    // `load_tool_docs` reads the generated tool-doc file off disk and declared
+    // nothing, so the surface split (RULING P5-R15 part 2) refused it until the
+    // declaration was corrected at the site.
     const effectful = BASE.filter((d) => d.effects.length > 0);
-    expect(effectful.length).toBe(106);
-    expect(ALL.filter((d) => d.effects.length > 0).length).toBe(126);
+    expect(effectful.length).toBe(107);
+    expect(ALL.filter((d) => d.effects.length > 0).length).toBe(127);
     expect(BASE.filter((d) => d.nonEffects).length).toBe(14);
 
     const kindsInUse = new Set(BASE.flatMap((d) => d.effects.map((e) => e.kind)));
