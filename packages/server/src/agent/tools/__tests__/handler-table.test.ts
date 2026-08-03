@@ -52,10 +52,20 @@ describe('the handler table and the surviving switch are disjoint', () => {
     }
   });
 
-  it('the surviving switch still has cases (the split is not silently complete)', () => {
-    // A guard against this file passing trivially once the switch is empty but
-    // the label reader has drifted: when the switch really is gone, `tools.ts`
-    // is DELETED and this clause is deleted with it, deliberately and visibly.
-    expect(survivingCaseLabels().length).toBeGreaterThan(0);
+  it('the switch is GONE — no dispatch case label survives anywhere in the dispatcher', () => {
+    // FLIPPED 2026-08-02 (PHASE-5 T4, the split's last move), deliberately and
+    // visibly, which is what the clause it replaces asked for. It used to read
+    // `toBeGreaterThan(0)` — a guard against this file passing trivially while
+    // the label reader silently drifted off a still-populated switch. That
+    // guard fired on its own terms in this commit: `load_tool_docs` was the
+    // last key, the count went to zero, and the clause failed rather than the
+    // completion happening quietly.
+    //
+    // It is not deleted, because the reader is still worth keeping pointed at
+    // the dispatcher: from here it is a REGRESSION guard. One mechanism per
+    // tool means a new tool gets a handler in `cat/*` or `provider/*`, never a
+    // case label bolted back onto the executor — and the empty-set assertion
+    // names the offender if anyone tries.
+    expect(survivingCaseLabels()).toEqual([]);
   });
 });

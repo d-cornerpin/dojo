@@ -46,6 +46,7 @@ import { credentialsHandlers } from './cat/credentials.js';
 import { agentsHandlers } from './cat/agents.js';
 import { fsHandlers } from './cat/fs.js';
 import { sessionHandlers } from './cat/session.js';
+import { metaHandlers } from './cat/meta.js';
 import { googleHandlers } from './provider/google.js';
 import { microsoftHandlers } from './provider/microsoft.js';
 import { plaudHandlers } from './provider/plaud.js';
@@ -70,6 +71,7 @@ const TABLE: ReadonlyMap<string, ToolHandler> = new Map<string, ToolHandler>([
   ...Object.entries(agentsHandlers),
   ...Object.entries(fsHandlers),
   ...Object.entries(sessionHandlers),
+  ...Object.entries(metaHandlers),
   ...Object.entries(googleHandlers),
   ...Object.entries(microsoftHandlers),
   ...Object.entries(plaudHandlers),
