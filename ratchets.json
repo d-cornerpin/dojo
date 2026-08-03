@@ -1541,6 +1541,20 @@
       "to": 2721,
       "by": "PHASE-5 T8 Step 3 SURFACE SPLIT 1 (2026-08-03, T8F) — load_tool_docs declares the docs directory it reads",
       "why": "PHASE-5 T8 Step 3, RULING P5-R15 part 2. +7 lines: load_tool_docs`s `effects: []` becomes one scoped fs_read, with a five-line reason. THE DEFECT IT FIXES: the tool has always read `~/.dojo/tools/<name>.md` off disk and declared NOTHING, so the surface split that moved the reader out of tools/index-generator.ts refused it until the declaration was corrected AT THE SITE (RULING P5-R14). It adds NO refusal: gate rows are declared in tools/gates.ts and are never derived from effects[] (RULING P5-R5), and the handler intersects every requested name with getFilteredTools(agentId) before the read, so the declared directory IS the whole reach. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Drop the reason (+5 saved): REFUSED — the next reader has to know why a scope this wide is honest here, or it will be narrowed to a single file and load_tool_docs will start refusing every doc but one. The first draft of this comment was EIGHT lines and was tightened to five against its sibling history_get`s, which is the same correction in the same file; that is the saving taken instead. (b) Put the effect on one physical line (+2 saved): REFUSED — open_browser and history_get, the two other T8 declaration corrections in this file, both use the multi-line form, and a third spelling of the same shape is how a reader stops seeing them as one class. (c) Leave the declaration alone and let the reader keep node:fs: REFUSED — that is the split not happening, which is the whole of P5-R15 part 2. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2721."
+    },
+    {
+      "path": "packages/server/src/agent/pdf-tools.ts",
+      "from": 1017,
+      "to": 1055,
+      "by": "PHASE-5 T8 Step 3 the PDF door (2026-08-03, T8F) — the conversion, mechanic 7, and the bare-filename correction",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 2. +38 lines, and 30 of them are COMMENT or nonEffects REASON. What they buy: (a) the module no longer holds node:fs — 22 call sites reach the disk through the facade; (b) pdf_create declares the image blocks it embeds (args.content[].path, mechanic 7) and its content.items finally documents the `path` property it has always accepted; (c) eight BARE-NAME arguments stop being declared as write paths. THE DEFECT (c) FIXES: `filename` / `output_filename` were declared fs_write from args.<name>, so the declaration resolved to a file in the SERVER working directory that these tools never touch, while the real write — the agent uploads dir — went undeclared. The declaration both missed the real resource and named a false one. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Reuse one shared nonEffects reason constant instead of eight literals (minus 21): REFUSED — nonEffects is read by the T1 conformance walk PER DEFINITION and the reason IS the ruling; a shared constant makes eight rulings look like one and the next reader cannot tell which tool was actually judged. (b) Drop the declaration comments (minus 7): REFUSED — the next reader has to know why `filename` is inert while `path` is not, or the two will be made consistent and the false resolution comes back. (c) Leave the bare-name declarations alone and convert anyway: REFUSED — the write would then be authorized for a path the tool never touches and refused for the one it does, i.e. the conversion would break every pdf tool. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 1055."
+    },
+    {
+      "path": "packages/server/src/agent/effects/scopes.ts",
+      "from": 285,
+      "to": 299,
+      "by": "PHASE-5 T8 Step 3 (2026-08-03, T8F) — MECHANIC 7, element-property resolution",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 2 mechanic 7. +14 lines, 10 of them COMMENT: the args.<name>[] branch generalises to args.<name>[].<prop>, so a path one level INSIDE an array element resolves. THE DEFECT IT FIXES is the same family as the array mechanic's and it fails closed in the same wrong place: pdf_create's content blocks carry image { path }, the bare mechanic resolved each ELEMENT as a path, an object element yielded NO grant, and the converted site would have refused a documented, live capability. AN ELEMENT WITHOUT THE PROPERTY GRANTS NOTHING FOR IT, which is what keeps a mixed list — the normal case, since most content blocks are text — narrowed to exactly the elements that name a file. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Add a second branch beside the bare-array one (plus ~8 more): REFUSED — two branches reading the same declaration shape is how one shape comes to mean two things; the bare case is now prop === '' and a clause asserts the bare mechanic is unchanged. (b) Resolve the whole element and let the facade match any property: REFUSED outright — that is the facade gaining a rule of its own (STOP condition 2) and it would grant every path an element happens to carry. (c) Declare the image read as a derived: effect to dodge the resolver: REFUSED — a derived: with no machine scope yields no grant, so it would refuse the capability, and one with a scope cannot express 'anywhere the agent points an image block'. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 299."
     }
   ],
   "maxNewFileLines": 400,
@@ -1577,7 +1591,7 @@
     "packages/server/src/agent/destructive-gate.ts": 583,
     "packages/server/src/agent/effects/capability.ts": 308,
     "packages/server/src/agent/model.ts": 2621,
-    "packages/server/src/agent/pdf-tools.ts": 1017,
+    "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 317,
@@ -1590,7 +1604,7 @@
     "packages/server/src/agent/tools/cat/media.ts": 896,
     "packages/server/src/agent/tools/cat/session.ts": 241,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
-    "packages/server/src/agent/effects/scopes.ts": 285,
+    "packages/server/src/agent/effects/scopes.ts": 299,
     "packages/server/src/agent/tools/definitions.ts": 2721,
     "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
