@@ -1506,6 +1506,13 @@
       "to": 270,
       "by": "PHASE-5 T8 Step 3 category 7 (2026-08-03, T8E) — the growth detector asked, and this is the answer in writing",
       "why": "FIRST PIN, not a raise. The growth detector fired because this file crossed 60% of the 400-line new-file cap (270 of 400) and is new since the 2026-08-01 baseline. Its own instruction is \"split it, or pin it at its current count in a gate-side-only commit\" — pinning is what was chosen, and here is why splitting was refused. WHAT THE FILE IS: the ONE place that turns a tool’s DECLARED effects plus the call’s real arguments into the resource list the capability carries (RULING P5-R14). All of the interpretation lives here on purpose, upstream of the facade, which is what leaves the facade a pure matcher and keeps one owner per job. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Split the three `from` shapes into three modules: REFUSED — they are one decision read in one loop over one declaration array, and three files would need a fourth to sequence them; the mint and the resolver would then sit in different files, which is exactly the second-permission-system shape the facade census exists to catch. (b) Move the two named tables (`CARRIED_PROGRAMS` for branch (B), `INDIRECT_RESOLVERS` for ADDENDUM mechanic 5) out to their own module, about 40 lines: REFUSED — each table is meaningless apart from the resolver clause that reads it, and a table one import away from its only reader is how a list silently grows. (c) Cut the module header, about 30 comment lines: REFUSED — it is the record of what each `from` shape MEANS, which is the single thing every remaining category is written against. WHAT THE PIN BUYS: the file is decrease-only from 270 from now on, so the interpretation layer cannot drift toward a god file while the remaining categories land — and each new category that needs a resolver clause has to come here and argue for it in a gate-side commit."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2686,
+      "to": 2706,
+      "by": "PHASE-5 T8 Step 3 category 8 (2026-08-03, T8E) — tts_create and music_create declare the WHOLE async delivery path",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R14. +20 lines: two declarations grow 1 line to 10 each, six of those ten being the shared reason. THE DEFECT IT FIXES: both tools declared ONE of their three writes, and that one was prose with no machine-checkable scope. The provider bytes land in the shared generated-assets directory, are READ BACK from there, and are copied into the CALLING agent's uploads dir; only the last was declared at all. A declaration can be honest and still be a third of the truth. Neither correction adds a refusal: gate rows are declared in tools/gates.ts and are never derived from effects[] (RULING P5-R5). THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) One tree covering both directories, saving 6 lines: REFUSED — the only tree containing both is the whole uploads root, which covers every OTHER agent's uploads directory; the same widening categories 5, 6 and 7 each refused on this same file. (b) Share one reason comment between the two tools by putting it above the pair, saving 6 lines: REFUSED — the two definitions are 24 lines apart in the array and a reason that is not beside its declaration is a reason the next editor will not see. (c) Drop the reasons entirely, saving 12: REFUSED for the reason every category before this one recorded. WHAT IT BUYS: two more files leave the agent-named class, and they leave it because a RE-READ under the ADDENDUM's sharpened criterion found them convertible after all — not because anything was moved between classes. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2706."
     }
   ],
   "maxNewFileLines": 400,
@@ -1556,7 +1563,7 @@
     "packages/server/src/agent/tools/cat/session.ts": 241,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
     "packages/server/src/agent/effects/scopes.ts": 270,
-    "packages/server/src/agent/tools/definitions.ts": 2686,
+    "packages/server/src/agent/tools/definitions.ts": 2706,
     "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/index.ts": 642,
