@@ -1373,6 +1373,13 @@
       "to": 2632,
       "by": "PHASE-5 T4 (2026-08-02) — the wire array, pinned at its measured size",
       "why": "NEW ENTRY, and it is 2,474 lines of RELOCATED DATA plus a header that says so. `toolDefinitions` is the provider payload itself: `agent/model.ts` projects {name, description, input_schema} out of it onto the request and both prompt goldens hash exactly that projection, which is why the array moved BYTE-IDENTICAL (`sed -n '794,3267p'` of the old file and `sed -n '144,2617p'` of this one hash to the same 14eba6f7…) and why `registry-order.test.ts`'s byte-identity clause plus both golden hashes are the proof rather than this sentence. SPLITTING IT TO FIT THE 400-LINE CAP WOULD BE THE DISEASE, NOT THE CURE, and the cache-prefix law is the reason rather than taste: Anthropic's prefix cache breakpoint sits on the LAST always-loaded tool, so the emission ORDER of this array is a cost guarantee, and spreading 320 definitions across seven files to satisfy a line count creates seven places that each believe they know where a tool goes — exactly the drift OR7 forbids and exactly what `getAllToolDefinitions()` exists to prevent by being the ONE declared order. The same precedent the split already set for `cat/agents.ts` (1,284) and `cat/media.ts` (896): shaping code to fit a gate is not what the gate is for. `agent/tools.ts` fell 3,942 → 1,377 in the same commit, so the toolbox is net far NEGATIVE on this move. Decrease-only from here; T7's demolition pass is where any real compression of the definitions themselves belongs, and the honest note is that there is very little — these lines are tool descriptions the model reads."
+    },
+    {
+      "path": "packages/server/src/agent/tools/surface.ts",
+      "from": 0,
+      "to": 657,
+      "by": "PHASE-5 T4 (2026-08-02) — the advertised surface, pinned at its measured size",
+      "why": "NEW ENTRY (589 relocated lines + the header that states the contract). It is ONE mechanism and splitting it is the thing this entry refuses: `parseToolsPolicy` is the SINGLE parser behind both the advertised-surface strip (`computeFilteredTools`) and the executor-side deny re-check (`getAgentDenySet`), and FU-4's whole requirement is that those two cannot drift — putting them in two files is precisely how they would, silently and in the permissive direction, because Architecture Rule 1 makes the strip advice and the executor gate the enforcement. Most of the body is `computeFilteredTools`'s per-family eligibility: Google and Microsoft each with agent/user slots, service-level flags, access levels, Plaud, Office packages, credentials, the FA-TS2 primary-only strip and the per-account description annotation — one long ordered filter whose ORDER is its correctness, not seven small functions. The two memos are a measurement (FA-TS1: a 20-tool-call turn rebuilt the list ~20 times, ~185 synchronous account scans per rebuild) and they must sit beside what they memoize. `agent/tools.ts` fell 1,377 → 800 in the same commit and 18 orphaned imports were REMOVED rather than pinned (unused symbols 118 → 113). Decrease-only from here; T7's demolition pass owns any real compression."
     }
   ],
   "maxNewFileLines": 400,
@@ -1425,6 +1432,7 @@
     "packages/server/src/agent/tools/definitions.ts": 2632,
     "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 346,
+    "packages/server/src/agent/tools/surface.ts": 657,
     "packages/server/src/agent/tools/util.ts": 338,
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 484,
