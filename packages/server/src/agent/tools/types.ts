@@ -100,7 +100,41 @@ export const EFFECT_KINDS: readonly EffectKind[] = [
 export interface ToolEffect {
   kind: EffectKind;
   from: string;
+  /**
+   * THE MACHINE-CHECKABLE HALF OF A `derived:` DECLARATION (PHASE-5 T8,
+   * RULING P5-R14 branch A).
+   *
+   * `from: 'derived:<prose>'` says a human read it and knew what it meant. It
+   * cannot be enforced, because a sentence is not a scope. This sibling is the
+   * same fact written so the executor can resolve it before dispatch — and it is
+   * a SIBLING rather than a replacement so the prose survives: "we looked at
+   * this and it is deliberate" and "nobody looked" must never read the same,
+   * which is the same reason `nonEffects` carries reasons instead of flags.
+   *
+   * A `derived:` effect with no `scope` yields no resource grant at all, so the
+   * facade refuses it rather than guessing — loudly, because a refusal on driven
+   * traffic is the signal that a declaration is owed.
+   */
+  scope?: EffectScope;
 }
+
+/**
+ * WHERE A DERIVED EFFECT ACTS, declared so it can be checked.
+ *
+ * Templates expand exactly three things and nothing else — no globs, no regexes,
+ * no code: `~` (home), `<agentId>` (the calling agent) and `{args.<dotted>}`
+ * (one argument of this call, one path segment, never a separator).
+ *
+ *   `tree`     a directory the tool works inside (an uploads dir, a technique dir)
+ *   `path`     one file the tool always touches
+ *   `program`  a fixed program the tool spawns whose argv it builds itself —
+ *              RULING P5-R14 branch (B), carried and audited from an explicit
+ *              named list rather than matched.
+ */
+export type EffectScope =
+  | { readonly at: 'tree'; readonly template: string }
+  | { readonly at: 'path'; readonly template: string }
+  | { readonly at: 'program'; readonly program: string };
 
 /** Prefixes `from` may carry. Exported so the walk and the brokers share one list. */
 export const EFFECT_FROM_ARGS = 'args.';

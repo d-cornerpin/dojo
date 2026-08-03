@@ -80,6 +80,7 @@ import { getRegisteredMaxResultTokens } from '../v2/classifiers/concurrency.js';
 import { prependUserMailboxBanner } from './provider/mailbox-banner.js';
 import { auditLog, agentCanSelfCompleteById, permissionDeniedMessage, openFileInCanvas } from './util.js';
 import { evaluateGate } from './gate-eval.js';
+import { openCallCapability } from '../effects/scopes.js';
 import { isPrimaryAgent, isPMAgent } from '../../config/platform.js';
 // Single source of truth for the PM overseer allow-list; re-checked at the
 // executor chokepoint (demolition Phase 1.7 PM verb enforcement).
@@ -356,6 +357,15 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         tool: name, effects: ungated,
       }, agentId);
     }
+
+    // ── THE CAPABILITY (PHASE-5 T8 Step 2, RULING P5-R14) ───────────────────
+    // Every gate answered and none refused, so what this call may proceed TO
+    // becomes a value: its DECLARED effects, resolved against these arguments,
+    // as the only resources the facade will perform work on. The half Phase 5
+    // promised and did not build — it DECIDED and nothing CARRIED, so a handler
+    // acting on a resource it never declared was seen by no check. It mints no
+    // permission of its own; why, and the refusals: `agent/effects/scopes.ts`.
+    openCallCapability(agentId, name, id, args);
   }
 
   // ── THE ONE SCHEMA-VALIDATION BOUNDARY (PHASE-5 T3 Step 3, RULING P5-R8) ──

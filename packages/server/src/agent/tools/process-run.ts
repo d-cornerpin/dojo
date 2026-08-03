@@ -16,16 +16,22 @@
 // reason this file can be a leaf at all.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { resolveHomePath, isExistingDirectory } from '../path-resolve.js';
 import { coerceNumberArg } from './pagination.js';
+import { execFileAuthorized } from '../effects/proc.js';
 
 // `execFile` never consults a shell, which is what makes `exec({argv})`
 // argv-no-shell rather than argv-shaped. The `shell` door reaches /bin/zsh
 // through this SAME primitive with an explicit `-c`, so there is exactly one
 // process-spawning call in the toolbox.
-const execFileAsync = promisify(execFile);
+//
+// PHASE-5 T8 Step 3 (CATEGORY: the process door). That one call now goes through
+// `agent/effects/proc.ts`, which requires the capability the gate loop minted
+// for THIS call and refuses a program it does not name. Nothing else moved: the
+// same primitive, the same arguments, the same options object, the same caps and
+// the same failure translation below. The brokers still DECIDE (`gates.ts` rows
+// 3 and 3s → `authorizeExecShapedCall`); what changed is that the carrying is no
+// longer done by a raw `child_process` import a handler could aim anywhere.
 
 export const EXEC_TIMEOUT_MS = 30000;
 export const EXEC_TIMEOUT_MAX_MS = 120000;
@@ -133,7 +139,7 @@ export async function runProcess(input: {
 }): Promise<string> {
   const { auditTarget, file, argv, timeout, cwd, note, audit } = input;
   try {
-    const { stdout, stderr } = await execFileAsync(file, argv, {
+    const { stdout, stderr } = await execFileAuthorized(file, argv, {
       timeout,
       maxBuffer: 1024 * 1024, // 1MB
       encoding: 'utf-8',
