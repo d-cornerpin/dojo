@@ -27,7 +27,6 @@ import { broadcast } from '../gateway/ws.js';
 import { setCurrentCanvas, getCurrentCanvas, viewCanvas } from './canvas-view.js';
 import { isEmbeddable, captureSiteScreenshot } from './site-snapshot.js';
 import { queueCanvasDoc, queueScreenChip, queueLinkArtifact } from './pending-attachments.js';
-import { memoryGrep, memoryDescribe, memoryExpand } from '../memory/retrieval.js';
 import { insertMessageIfAbsent, rewriteSystemPromptRow } from '../memory/message-store.js';
 import {
   openCommitment, resolveCommitment, dismissCommitment, findObligationByTypedId,
@@ -44,6 +43,7 @@ import { checkPermission, getAgentPermissions } from './permissions.js';
 import { resolvePath, isSensitivePath, sharePathGuard, pdfInputPaths } from './path-guards.js';
 import { gatesForCall, ungatedEffectKinds, PRIMARY_ONLY_TOOLS } from './tools/gates.js';
 import { validateToolArgs, PER_TOOL_VALIDATED_AT_BOUNDARY } from './tools/validate-args.js';
+import { handlerFor } from './tools/handlers.js';
 import { evaluateGate, logOnly } from './tools/gate-eval.js';
 import { resolveArgvArg } from './brokers/resolve.js';
 import {
@@ -111,22 +111,9 @@ import { NEW_SESSION_DIVIDER } from '@dojo/shared';
 const logger = createLogger('tools');
 
 
-// RC-3 item 2: per-turn recall budget. Cumulative recall_recent_thread +
-// history_search EMITTED output tokens are tracked per turn (agent/turn-state.ts);
-// past this budget the tools return a short engine notice instead of another dump.
-// Deterministic brake on the recall doom loop (the excavation itself creates the
-// context pressure that forces the compaction the agent is flailing to recover
-// from). Tokens are estimated as chars/4 at the dispatch site.
-const RECALL_BUDGET_TOKENS = 8000;
-
-function recallBudgetNotice(usedTokens: number): string {
-  const k = Math.round(usedTokens / 1000);
-  return (
-    `You have recalled ~${k}k tokens this turn. The current conversation is already in ` +
-    `your context; if you are looking for a specific message, use history_search with a ` +
-    `narrow pattern, or ask the person directly.`
-  );
-}
+// PHASE-5 T4: the per-turn recall budget (`RECALL_BUDGET_TOKENS` +
+// `recallBudgetNotice`) moved WITH the four recall handlers it exists for, to
+// `agent/tools/cat/recall.ts`. It had no other reader here.
 
 /** Build a full download URL that works from anywhere, tunnel if active, localhost otherwise */
 function getDownloadUrl(fileId: string): string {
@@ -4828,6 +4815,26 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     // nothing in this switch can be mistaken for a tool name and T10's grep-zero
     // over the retired verb list has nothing left to find here.
     const dispatchKey = workOperation(name, args) ?? name;
+
+    // ── THE RELOCATED HANDLERS (PHASE-5 T4) ─────────────────────────────────
+    // Categories that have moved out of this file answer from `agent/tools/`
+    // instead of from the switch below. A dispatch key is served by ONE of the
+    // two, never both — a category's move deletes its cases in the same commit
+    // that adds its module — so this is a shrinking switch, not a second
+    // dispatcher racing it (roadmap non-negotiable #1). `handler-table.test.ts`
+    // asserts the two key sets are disjoint rather than trusting the discipline.
+    //
+    // The handler answers with the same two values the case bodies assigned, so
+    // everything below the switch — the per-tool `maxResultTokens` cap, the
+    // unknown-args warning, the try/catch that turns a throw into
+    // `Tool execution failed: …` — still applies to it identically.
+    const relocated = handlerFor(dispatchKey);
+    if (relocated) {
+      const outcome = await relocated({ agentId, name, args, callId: id });
+      content = outcome.content;
+      isError = outcome.isError;
+      if (outcome.errorCode) errorCode = outcome.errorCode;
+    } else
     switch (dispatchKey) {
       case 'load_tool_docs': {
         const { executeLoadToolDocs } = await import('../tools/tool-docs.js');
@@ -5024,116 +5031,6 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
         auditLog(agentId, 'share_file', sharePath, 'success', downloadUrl);
         break;
       }
-      case 'recall_recent_thread': {
-        // RC-3 item 2: per-turn recall budget (deterministic doom-loop brake). Once
-        // cumulative recall/history output for THIS turn crosses the budget, return a
-        // short engine notice instead of another 12-16k-char dump (the excavation
-        // itself is what forces the compaction the agent is flailing to recover from).
-        {
-          const { getRecallBudgetUsed } = await import('./turn-state.js');
-          const used = getRecallBudgetUsed(agentId);
-          if (used >= RECALL_BUDGET_TOKENS) {
-            content = recallBudgetNotice(used);
-            break;
-          }
-        }
-        const turnCount = Math.min(30, Math.max(1, Math.floor(coerceNumberArg(args.turn_count) ?? 8)));
-        const includeToolCalls = args.include_tool_calls === false ? false : true;
-        const includeToolResults = args.include_tool_results === true;
-        const truncateToolResultChars = Math.min(
-          4000,
-          Math.max(200, Math.floor(coerceNumberArg(args.truncate_tool_result_chars) ?? 1500)),
-        );
-        const truncateMessageChars = Math.min(
-          8000,
-          Math.max(200, Math.floor(coerceNumberArg(args.truncate_message_chars) ?? 1500)),
-        );
-        const beforeId = typeof args.before_id === 'string' ? args.before_id : undefined;
-        const since = typeof args.since === 'string' ? args.since : undefined;
-        // OPEN-15: default to the current conversation; allow an explicit
-        // scope:"all" to recover across conversations when the agent really
-        // means "show me everything recent."
-        const recallScope = args.scope === 'all' ? 'all' : 'conversation';
-        // E-C1: scope recall to the conversation THIS turn is serving (from live
-        // turn state), not the last-stamped heuristic that bled an unrelated human
-        // conversation into recall on engine/A2A turns. PHASE-2 T10I: the scope is the
-        // conversation's FK; the `.has()` test is the three-state contract (entry+id = that
-        // conversation, entry+null = engine/A2A turn, no entry = outside a turn).
-        const { currentTurnConversationId } = await import('./turn-state.js');
-        const turnConversationId = currentTurnConversationId.has(agentId)
-          ? (currentTurnConversationId.get(agentId) ?? null)
-          : undefined;
-        const { recallRecentThread } = await import('../memory/recall.js');
-        content = recallRecentThread(agentId, {
-          turnCount,
-          includeToolCalls,
-          includeToolResults,
-          truncateToolResultChars,
-          truncateMessageChars,
-          beforeId,
-          since,
-          scope: recallScope,
-          turnConversationId,
-        });
-        // RC-3: bill the emitted output against this turn's recall budget.
-        {
-          const { addRecallBudgetUsed } = await import('./turn-state.js');
-          addRecallBudgetUsed(agentId, Math.ceil(content.length / 4));
-        }
-        break;
-      }
-      case 'history_search': {
-        // Accept `query` as an alias for `pattern`. `pattern` is canonical, but
-        // agents who learned the tool from natural descriptions ("search for the
-        // QUARK marker") often pass `query`. Both are declared in the schema
-        // above (so the unknown-arg detector does not warn), and required is
-        // loosened there because either one satisfies this call. Without this
-        // fallback, undefined was silently passed to the FTS5 engine and
-        // returned irrelevant rows. Validate explicitly.
-        const grepPattern = (args.pattern ?? args.query) as string | undefined;
-        if (!grepPattern || typeof grepPattern !== 'string' || !grepPattern.trim()) {
-          content = 'Error: history_search needs a non-empty `pattern` (the search string). Example: history_search({ pattern: "budget meeting" }).';
-          isError = true;
-          break;
-        }
-        // RC-3: history_search shares the per-turn recall budget with
-        // recall_recent_thread (both are the doom-loop excavation fuel).
-        {
-          const { getRecallBudgetUsed } = await import('./turn-state.js');
-          const used = getRecallBudgetUsed(agentId);
-          if (used >= RECALL_BUDGET_TOKENS) {
-            content = recallBudgetNotice(used);
-            break;
-          }
-        }
-        content = memoryGrep(agentId, {
-          pattern: grepPattern,
-          mode: args.mode as 'full_text' | 'regex' | undefined,
-          scope: args.scope as 'messages' | 'summaries' | 'both' | undefined,
-          since: args.since as string | undefined,
-          before: args.before as string | undefined,
-          limit: args.limit as number | undefined,
-        });
-        {
-          const { addRecallBudgetUsed } = await import('./turn-state.js');
-          addRecallBudgetUsed(agentId, Math.ceil(content.length / 4));
-        }
-        break;
-      }
-      case 'history_get': {
-        content = memoryDescribe(agentId, { id: args.id as string });
-        break;
-      }
-      case 'history_expand': {
-        content = await memoryExpand(agentId, {
-          query: args.query as string | undefined,
-          summary_ids: args.summary_ids as string[] | undefined,
-          prompt: args.prompt as string,
-        });
-        break;
-      }
-      // C27: memory_search removed; its calls alias to history_search
-      // ({query} -> {pattern}) before dispatch, so no case is needed here.
 
       // ── Web Tools ──
       case 'web_search': {

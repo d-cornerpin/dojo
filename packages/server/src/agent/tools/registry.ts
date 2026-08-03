@@ -7,16 +7,18 @@
 // surface T2's dispatcher authorizes against and the surface T7's exit gate
 // reports effect coverage FROM — never from historical usage (research 19 §3.3).
 //
-// ── WHAT IS DELIBERATELY NOT HERE YET, AND WHY ──
-// The plan sketches `Map<name,{def,handler,category,effects}>`. There is no
-// `handler` field. At this HEAD every handler IS the 267-case switch inside
-// `executeTool`, and T1's own verify line says the dispatch shape must not move
-// while the registry lands — a `handler` that merely called back into the
-// switch would be a placeholder wearing the name of the thing T4 is going to
-// build. T4 moves handler bodies into `agent/tools/cat/*.ts` and adds the field
-// with something real in it. Recorded in PHASE-5.md's T1 AS-BUILT rather than
-// papered over (roadmap #16: the plan's artefact is a claim, and this one did
-// not survive contact with the step boundary).
+// ── THE `handler` FIELD, ADDED AT T4 WITH SOMETHING REAL IN IT ──
+// T1 shipped this map WITHOUT `handler` and said why: at that HEAD every
+// handler WAS the 267-case switch inside `executeTool`, so the field would have
+// been a placeholder wearing T4's name. T4 moves handler bodies into
+// `agent/tools/cat/*.ts` and the field now points at them.
+//
+// It is `null` for two honest reasons, and they are different: a tool whose
+// category has not moved out of the switch yet, and a WORK VERB, whose handlers
+// are keyed per OPERATION (`work_update:status`, …) and therefore cannot be
+// reached by tool name at all. `agent/tools/handlers.ts` is the dispatch-key
+// authority; this field is the by-name view of it, so nothing has to guess
+// which surface owns a tool.
 //
 // ── THE EMISSION ORDER IS A TEST, NOT A COMMENT (OR7 / roadmap #10) ──
 // The cache-prefix rider names the hazard precisely: a Map filled across
@@ -35,6 +37,8 @@ import { getAllToolDefinitions } from '../tools.js';
 import { TOOL_CATEGORIES } from '../../tools/categories.js';
 import { declaredSecretFields } from './effect-conformance.js';
 import type { ToolDefinition, ToolEffect } from './types.js';
+import type { ToolHandler } from './handler.js';
+import { handlerFor } from './handlers.js';
 
 /**
  * WHERE THE ORDER COMES FROM, stated once so there is exactly one authority.
@@ -65,6 +69,13 @@ export interface ToolRegistryEntry {
   effects: readonly ToolEffect[];
   /** Fields of this tool's own schema that carry credential material. */
   secretFields: readonly string[];
+  /**
+   * The relocated body that serves this tool, or `null` while the switch in
+   * `agent/tools.ts` still owns it (or when the tool is a work verb dispatched
+   * per operation — see the header). Never both: `handler-table.test.ts`
+   * asserts the handler table and the surviving case labels are disjoint.
+   */
+  handler: ToolHandler | null;
 }
 
 let cache: ReadonlyMap<string, ToolRegistryEntry> | null = null;
@@ -97,6 +108,7 @@ export function getToolRegistry(): ReadonlyMap<string, ToolRegistryEntry> {
       category: byCategory.get(def.name) ?? byCategory.get(def.name.replace(/^user_/, '')) ?? null,
       effects: def.effects,
       secretFields: declaredSecretFields(def),
+      handler: handlerFor(def.name) ?? null,
     });
   }
   cache = map;

@@ -88,7 +88,15 @@ const CANONICAL = 'packages/server/src/memory/budget.ts';
 const DECLARED_SURVIVORS: Array<{ file: string; why: string }> = [
   { file: 'packages/server/src/agent/model.ts', why: 'usage FALLBACK at :1682-1683 — only when a provider reports no usage at all' },
   { file: 'packages/server/src/providers/anthropic-sdk.ts', why: 'usage FALLBACK at :365,:368 — same job as above' },
-  { file: 'packages/server/src/agent/tools.ts', why: 'recall-budget accounting at :4992,:5030,:10465 — a per-tool spend ledger, not a prompt cost' },
+  { file: 'packages/server/src/agent/tools.ts', why: 'result-cap accounting in applyMaxResultTokensCap — a per-tool spend ledger, not a prompt cost' },
+  // PHASE-5 T4 (the toolbox split): the recall-budget half of the entry above
+  // MOVED with the handlers it belongs to. Two of that entry's three sites were
+  // `recall_recent_thread` and `history_search` billing their own emitted output
+  // against the per-turn recall budget; those bodies now live in
+  // `agent/tools/cat/recall.ts` and the third (the result cap) stayed. Same job,
+  // same reason, new file — the survivor list follows the code rather than the
+  // code being reshaped to fit the list.
+  { file: 'packages/server/src/agent/tools/cat/recall.ts', why: 'recall-budget accounting (RC-3) — a per-tool spend ledger billed against the turn, not a prompt cost' },
 ];
 
 describe('ONE estimator, whole tree (research 06 requirement A2)', () => {
