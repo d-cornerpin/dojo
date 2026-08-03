@@ -15,7 +15,7 @@
 // with its own ruling, never a side effect of the toolbox moving.
 // ════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
-import { getAllToolDefinitions } from '../../tools.js';
+import { getAllToolDefinitions } from '../definitions.js';
 import {
   getToolRegistry,
   registryToolDefinitions,

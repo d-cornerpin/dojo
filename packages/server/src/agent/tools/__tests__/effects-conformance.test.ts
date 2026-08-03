@@ -20,7 +20,7 @@
 // such in the T1 report rather than propagated.
 // ════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
-import { getAllToolDefinitions } from '../../tools.js';
+import { getAllToolDefinitions } from '../definitions.js';
 import {
   checkEffectDeclarations,
   declaredSecretFields,

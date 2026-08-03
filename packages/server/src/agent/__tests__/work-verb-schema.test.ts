@@ -19,10 +19,13 @@ import {
   workProp,
 } from '../work-verb-schema.js';
 
-const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'tools.ts');
+// PHASE-5 T4: the wire array moved to `agent/tools/definitions.ts` byte-identical.
+// This walk reads the SOURCE TEXT, so the path follows the code — that is the point
+// of a source walk, and a stale path here would have failed loudly (it did).
+const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'tools', 'definitions.ts');
 
 /**
- * Read the two verbs' schemas out of the source rather than importing `tools.ts`, whose
+ * Read the two verbs' schemas out of the source rather than importing the module, whose
  * module graph pulls in the whole server. The literals are pure data — the same
  * brace-match-then-evaluate method §T0-E used, and it cross-checked to 1.5% against an
  * independent path.

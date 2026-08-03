@@ -33,7 +33,7 @@
 // cannot reorder the wire, at T1 or at any later cutover, without failing.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { getAllToolDefinitions } from '../tools.js';
+import { getAllToolDefinitions } from './definitions.js';
 import { TOOL_CATEGORIES } from '../../tools/categories.js';
 import { declaredSecretFields } from './effect-conformance.js';
 import type { ToolDefinition, ToolEffect } from './types.js';

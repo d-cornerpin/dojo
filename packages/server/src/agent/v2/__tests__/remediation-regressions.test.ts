@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest';
 import { isNearDuplicateText } from '../classifiers/loop.js';
 import { crossTurnFailureNote } from '../attempt-record.js';
 import { isDestructiveCall } from '../../destructive-gate.js';
-import { getAllToolDefinitions } from '../../tools.js';
+import { getAllToolDefinitions } from '../../tools/definitions.js';
 import { buildTechniqueMatchQuery } from '../classifiers/technique.js';
 import { pushEngineMessage } from '../engine-message.js';
 import { detectContextGap } from '../classifiers/context-gap.js';
