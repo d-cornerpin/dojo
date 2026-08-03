@@ -22,7 +22,7 @@
 // Output: image is decoded and saved to ~/.dojo/uploads/generated/{uuid}.png
 // and the caller receives the absolute path + cost/token usage.
 
-import fs from 'node:fs';
+import * as effectFs from '../agent/effects/fs.js';
 import path from 'node:path';
 import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
@@ -35,8 +35,8 @@ const logger = createLogger('image-gen');
 export const GENERATED_IMAGES_DIR = path.join(os.homedir(), '.dojo', 'uploads', 'generated');
 
 export function ensureGeneratedImagesDir(): void {
-  if (!fs.existsSync(GENERATED_IMAGES_DIR)) {
-    fs.mkdirSync(GENERATED_IMAGES_DIR, { recursive: true });
+  if (!effectFs.existsSync(GENERATED_IMAGES_DIR)) {
+    effectFs.mkdirSync(GENERATED_IMAGES_DIR, { recursive: true });
     logger.info('Created generated-images directory', { path: GENERATED_IMAGES_DIR });
   }
 }
@@ -400,7 +400,7 @@ export async function generateImage(req: GenerateImageRequest): Promise<Generate
   const filePath = path.join(GENERATED_IMAGES_DIR, filename);
 
   try {
-    fs.writeFileSync(filePath, decoded.bytes);
+    effectFs.writeFileSync(filePath, decoded.bytes);
   } catch (err) {
     return {
       ok: false,

@@ -391,6 +391,27 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(doorSrc.includes('effectFs.'), 'it writes through the facade').toBe(true);
   });
 
+  it('CATEGORY CONVERTED: the image generator writes its output through the facade', () => {
+    const src = fs.readFileSync(path.join(SRC, 'services/image-generation.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(src), 'the image generator must not hold node:fs').toBe(false);
+    expect(src.includes('effectFs.'), 'it writes through the facade').toBe(true);
+  });
+
+  it('image_create DECLARES the generated-images directory it writes, and the scope is that alone', () => {
+    // `~/.dojo/uploads/generated` is a SIBLING of the calling agent's uploads
+    // directory, not inside it, so the declaration the tool already carried
+    // (`derived:the calling agent uploads directory`) never covered the
+    // generator's own write. Corrected at the site with its reason (P5-R14).
+    const grants = grantsForCall(AGENT, effectsFor('image_create'), { prompt: 'a cat' });
+    const generated = path.join(os.homedir(), '.dojo', 'uploads', 'generated');
+    const png = path.join(generated, 'x.png');
+    expect(grantsCover(grants, { op: 'fs_mkdir', path: generated, real: generated }), 'it may create its own directory').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_write', path: png, real: png }), 'it may write the generated image').toBe(true);
+    // …and not a neighbour under the same parent, which is what makes it a scope.
+    const neighbour = path.join(os.homedir(), '.dojo', 'uploads', 'someone-else', 'x.png');
+    expect(grantsCover(grants, { op: 'fs_write', path: neighbour, real: neighbour }), 'the scope is the generated dir alone').toBe(false);
+  });
+
   it('CATEGORY CONVERTED: the email attachment reader reads through the facade', () => {
     const src = fs.readFileSync(path.join(SRC, 'services/email-attachments.ts'), 'utf8');
     expect(/^import .*['"]node:fs['"]/m.test(src), 'the attachment reader must not hold node:fs').toBe(false);

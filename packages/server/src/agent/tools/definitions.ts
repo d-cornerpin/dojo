@@ -1715,7 +1715,17 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'image_create',
     description: 'Generate an image from a text description. The engine handles the ENTIRE delivery flow, DO NOT write any user-facing text around this tool. When you call it, the engine immediately posts a short acknowledgment ("On it.") to the chat. 10-60 s later when the image is ready, the engine posts the image directly with a short caption ("Here you go."). You do NOT need a second turn. Just call this tool and end your turn, anything you write will duplicate what the engine already posted. Do NOT mention the image generation model or any internal system to the user.',
-    effects: [{ kind: 'fs_write', from: 'derived:the calling agent uploads directory' }],
+    // PHASE-5 T8 Step 3 — THE GENERATOR'S OWN WRITE, DECLARED (RULING P5-R14).
+    // The provider's bytes land in `~/.dojo/uploads/generated` before anything
+    // is copied to the caller: a SIBLING of the calling agent's uploads
+    // directory, not inside it, so the line below never covered it. Corrected
+    // at the site; it adds no refusal (gate rows are declared in
+    // `tools/gates.ts`, never derived from `effects[]` — P5-R5). The prose
+    // declaration keeps its line: the delivery copy is a second, later write.
+    effects: [
+      { kind: 'fs_write', from: 'derived:the calling agent uploads directory' },
+      { kind: 'fs_write', from: 'derived:the generated-images directory the provider bytes land in', scope: { at: 'tree', template: '~/.dojo/uploads/generated' } },
+    ],
     input_schema: {
       type: 'object',
       properties: {
