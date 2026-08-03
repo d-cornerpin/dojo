@@ -34,6 +34,7 @@ import { contactsHandlers } from './cat/contacts.js';
 import { techniqueHandlers } from './cat/techniques.js';
 import { healerHandlers } from './cat/healer.js';
 import { clockHandlers } from './cat/clock.js';
+import { platformHandlers } from './cat/platform.js';
 
 const TABLE: ReadonlyMap<string, ToolHandler> = new Map<string, ToolHandler>([
   ...Object.entries(recallHandlers),
@@ -42,6 +43,7 @@ const TABLE: ReadonlyMap<string, ToolHandler> = new Map<string, ToolHandler>([
   ...Object.entries(techniqueHandlers),
   ...Object.entries(healerHandlers),
   ...Object.entries(clockHandlers),
+  ...Object.entries(platformHandlers),
 ]);
 
 /** The handler for this dispatch key, or `undefined` if the switch still owns it. */
