@@ -1450,6 +1450,13 @@
       "to": 642,
       "by": "PHASE-5 T8 Step 2 (2026-08-03) — the executor's gate loop mints the per-call effect capability",
       "why": "PHASE-5 T8 Step 2 (RULING P5-R14). +10 lines: ONE import and ONE call, plus the seven-line comment that names the ruling and points at the module. THE MECHANISM ITSELF IS NOT HERE, deliberately — the gate's own instruction is 'move the new code elsewhere', and that is what was done: the capability, the resolver from declaration to resource, the branch-(A) scope templates and the branch-(B) carried list all live in the new `agent/effects/` module, and the executor gains a STEP rather than a mechanism. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Mint inline (the first draft): +32, refused — the interpretation of what a declaration MEANS belongs with the declarations, not in the dispatcher. (b) Wrap the dispatch in a callback to close the capability's window in a `finally`: +4 more and REFUSED for a better reason than lines — the window now expires off the platform's OWN per-call identity (`turn-state.ts`), so 'per call' is derived rather than remembered, and a fire-and-forget continuation cannot hold a live capability even if somebody forgets a `finally`. (c) Put the call anywhere other than immediately after the gate loop: refused, because the capability must carry resources the gates just authorized, and a mint before the refusals would exist for a call the platform declined. WHAT THE TEN LINES BUY: the residual this phase's exit gate is un-ticked over — a handler acting on a resource the gate loop never authorized, seen by no check. Held permanently by `agent/effects/__tests__/facade-contract.test.ts`, planted-fault proven in both directions (the facade stopped asking → 2 clauses fail; a second minting site → the unforgeability census fails naming the file)."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2632,
+      "to": 2640,
+      "by": "PHASE-5 T8 Step 3 category 2 (2026-08-03) — open_browser DECLARES the directory it has always written",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R14. +8 lines: the corrected `effects[]` declaration (1 line → 4) plus the five-line reason. THE DEFECT IT FIXES: `open_browser`'s screenshot fallback has always written a PNG into `~/.dojo/data/canvas-shots` and the tool declared NO fs effect at all, so the converted call site was REFUSED until the declaration was corrected — which is the branch-(A) loop working exactly as P5-R14 designed it (the refusal is the signal that a declaration is owed). It adds NO refusal of its own: gate rows are declared in `tools/gates.ts` and are never derived from `effects[]` (RULING P5-R5), so this widens what the facade will carry and gates nothing new. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Drop the reason comment and keep the declaration alone (+3): REFUSED — 'we looked and this is what it does' and 'nobody looked' must never read the same, and the next reader has to know the correction adds no refusal or they will re-litigate it. (b) Reformat the effect onto fewer physical lines to hold the count flat: REFUSED outright — contorting a source layout to move a line count is the trade this project forbids, and no line count passes or fails anything (roadmap #7). (c) Move the declaration out of the registry: REFUSED — the definition IS the declaration's home (T1); a second home for what a tool does is the disease this overhaul removes. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2640, and T8's remaining categories each correct their own declarations at this same site."
     }
   ],
   "maxNewFileLines": 400,
@@ -1499,7 +1506,7 @@
     "packages/server/src/agent/tools/cat/media.ts": 896,
     "packages/server/src/agent/tools/cat/session.ts": 241,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
-    "packages/server/src/agent/tools/definitions.ts": 2632,
+    "packages/server/src/agent/tools/definitions.ts": 2640,
     "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/index.ts": 642,
