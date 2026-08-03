@@ -1,4 +1,4 @@
-import fs from 'node:fs';
+import * as effectFs from '../agent/effects/fs.js';
 import path from 'node:path';
 import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
@@ -250,14 +250,14 @@ export function interceptLargeFile(
   const agentDir = path.join(FILES_BASE_DIR, agentId);
 
   // Create directory
-  if (!fs.existsSync(agentDir)) {
-    fs.mkdirSync(agentDir, { recursive: true });
+  if (!effectFs.existsSync(agentDir)) {
+    effectFs.mkdirSync(agentDir, { recursive: true });
   }
 
   const storagePath = path.join(agentDir, `${fileId}${ext}`);
 
   // Write content to disk
-  fs.writeFileSync(storagePath, content, 'utf-8');
+  effectFs.writeFileSync(storagePath, content, 'utf-8');
 
   // Generate exploration summary
   const explorationSummary = generateExplorationSummary(content, originalPath);
@@ -306,7 +306,7 @@ export function getLargeFile(fileId: string): { content: string; metadata: Recor
   if (!row) return null;
 
   try {
-    const content = fs.readFileSync(row.storage_path, 'utf-8');
+    const content = effectFs.readFileSync(row.storage_path, 'utf-8');
     return {
       content,
       metadata: {

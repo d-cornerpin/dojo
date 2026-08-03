@@ -64,7 +64,10 @@ describe('tool registry (PHASE-5 T1 Step 2)', () => {
     const cov = effectCoverage();
     expect(cov.total).toBe(438);
     expect(cov.declared).toBe(438);
-    expect(cov.effectful).toBe(125);
+    // T8 Step 3: 125 → 126. `history_get` gained the fs_read it always
+    // performed, when the recall door converted to the facade and the missing
+    // declaration refused it (RULING P5-R14, corrected at the site).
+    expect(cov.effectful).toBe(126);
     // PHASE-5 T3, and this number corrects an assumption rather than confirming
     // one: `proc` is 18, not 1. T1 already declared `proc` on 17 tools that run
     // a subprocess with no shell and no resource argument (all eight Plaud verbs

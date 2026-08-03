@@ -502,7 +502,14 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'history_get',
     description: 'Look up the full content of a stored item by its ID. Accepts THREE id types:\n  - Summary IDs (sum_*), returns full summary text + metadata\n  - Large file IDs (file_*), returns the exploration summary + metadata\n  - Raw message UUIDs, returns the full message body\n\nUse this AFTER history_search when a snippet is truncated and you need the full message. history_search emits a ready-to-copy hint at the end of each truncated result line: `[snippet only, call history_get(id="…") for full N-char message]`. Copy the full UUID from inside those quotes, the short `id=<8chars>` shown at the start of the result line is for visual scanning only and is NOT enough.',
-    effects: [],
+    // DECLARATION CORRECTED AT THE SITE (PHASE-5 T8 Step 3, RULING P5-R14). A
+    // `file_*` id has always been served by reading the stored body off disk and
+    // this said `effects: []`. The scope is the store's own tree because the row
+    // names the file, not the agent: the per-agent ownership check stays exactly
+    // where it is, after the read, so nothing the owner sees changes.
+    effects: [
+      { kind: 'fs_read', from: 'derived:the large-file store a file_* row points into', scope: { at: 'tree', template: '~/.dojo/data/files' } },
+    ],
     input_schema: {
       type: 'object',
       properties: {

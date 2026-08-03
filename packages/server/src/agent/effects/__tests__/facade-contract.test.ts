@@ -334,6 +334,31 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(doorSrc.includes('effectFs.'), 'it writes through the facade').toBe(true);
   });
 
+  it('CATEGORY CONVERTED: the recall door reads the large-file store through the facade', () => {
+    const src = fs.readFileSync(path.join(SRC, 'memory/large-files.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(src), 'the large-file store must not hold node:fs').toBe(false);
+    expect(src.includes('effectFs.'), 'it reads and writes through the facade').toBe(true);
+  });
+
+  it('history_get DECLARES the large-file store it reads, and the scope is that store alone', () => {
+    // Same shape as `open_browser`: `history_get` has always read the stored
+    // body of a `file_*` id off disk and declared NO fs effect at all, so the
+    // converted call site refused until the declaration was corrected AT THE
+    // SITE with its reason (RULING P5-R14). The scope is the store's own tree
+    // because that is what the tool reads — the row's `storage_path` is chosen
+    // by the platform, and the per-agent ownership check stays exactly where it
+    // is, after the read, so no message the owner sees changes.
+    const grants = grantsForCall(AGENT, effectsFor('history_get'), { id: 'file_x' });
+    const store = path.join(os.homedir(), '.dojo', 'data', 'files');
+    const stored = path.join(store, 'some-agent', 'file_x.txt');
+    expect(grantsCover(grants, { op: 'fs_read', path: stored, real: stored }), 'it may read a stored body').toBe(true);
+    // …and nothing else under the same parent, which is what makes it a scope.
+    const sibling = path.join(os.homedir(), '.dojo', 'data', 'dojo.db');
+    expect(grantsCover(grants, { op: 'fs_read', path: sibling, real: sibling }), 'the scope is the store alone').toBe(false);
+    // A read declaration is not a write one.
+    expect(grantsCover(grants, { op: 'fs_write', path: stored, real: stored })).toBe(false);
+  });
+
   it("open_browser DECLARES the directory it writes, and the declaration covers exactly that", () => {
     // The screenshot fallback has always written a PNG to disk and the tool
     // declared no fs effect at all — so a converted call site would have been

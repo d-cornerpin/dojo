@@ -157,12 +157,19 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // door and declares `shell`. `exec` itself did not change COUNT, it changed
     // KIND — `shell/args.command` became `proc/args.argv` — which is the whole
     // rebuild visible in one declaration.
+    // T8 Step 3 moves both by ONE again, and it is the census doing its job
+    // rather than a number being tuned: `history_get` has always read the stored
+    // body of a `file_*` id off disk and declared NOTHING, so converting the
+    // recall door to the facade refused it until the declaration was corrected
+    // at the site (RULING P5-R14). A tool that gains a TRUE effect is the shape
+    // of every remaining category, and each one shows up here by exactly its
+    // own count.
     // §T0-PINS P3's "72 effectful defs" was a different unit: definitions carrying
     // an effectful-looking FIELD. Its own enumerated name list reproduces as 64
     // under a recursive scan here; the 104 adds the classes no scan reaches.
     const effectful = BASE.filter((d) => d.effects.length > 0);
-    expect(effectful.length).toBe(105);
-    expect(ALL.filter((d) => d.effects.length > 0).length).toBe(125);
+    expect(effectful.length).toBe(106);
+    expect(ALL.filter((d) => d.effects.length > 0).length).toBe(126);
     expect(BASE.filter((d) => d.nonEffects).length).toBe(14);
 
     const kindsInUse = new Set(BASE.flatMap((d) => d.effects.map((e) => e.kind)));
