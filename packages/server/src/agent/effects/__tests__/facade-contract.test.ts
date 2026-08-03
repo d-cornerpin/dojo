@@ -682,6 +682,86 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(grantsCover(imGrants, { op: 'fs_stat', path: outOfScope, real: outOfScope })).toBe(false);
   });
 
+  it('MECHANIC 7: a path one level INSIDE an array element resolves, and an element without it grants nothing', () => {
+    // RULING P5-R15 ADDENDUM 2. `pdf_create` takes `content` blocks and an
+    // `image` block carries `{ path }`. The bare array mechanic resolves each
+    // ELEMENT as a path, so an element that is an object granted nothing and the
+    // converted site would have refused a documented, live capability.
+    const a = path.join(scratch, 'chart.png');
+    const b = path.join(scratch, 'logo.png');
+    const imageBlocks: ToolEffect = { kind: 'fs_read', from: 'args.content[].path' };
+    const grants = grantsForCall(AGENT, [imageBlocks], {
+      content: [
+        { type: 'heading', text: 'Q3' },            // no path — grants nothing
+        { type: 'image', path: a },
+        { type: 'paragraph', text: 'body' },        // no path — grants nothing
+        { type: 'image', path: b },
+      ],
+    });
+    expect(grants).toHaveLength(2);
+    expect(grantsCover(grants, { op: 'fs_read', path: a, real: a })).toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: b, real: b })).toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: outOfScope, real: outOfScope }), 'and nothing else').toBe(false);
+  });
+
+  it('…and mechanic 7 narrows rather than widens on every malformed shape', () => {
+    const e = (args: Record<string, unknown>): unknown[] =>
+      grantsForCall(AGENT, [{ kind: 'fs_read', from: 'args.content[].path' } as ToolEffect], args);
+    expect(e({}), 'absent').toEqual([]);
+    expect(e({ content: [] }), 'empty list').toEqual([]);
+    expect(e({ content: [inScope] }), 'a bare string element has no property').toEqual([]);
+    expect(e({ content: [{ path: 42 }] }), 'non-string property').toEqual([]);
+    expect(e({ content: [{ notpath: inScope }] }), 'a different property').toEqual([]);
+    expect(e({ content: 'x' }), 'not a list at all').toEqual([]);
+    // …and the BARE array mechanic is unchanged by mechanic 7 living beside it.
+    expect(grantsForCall(AGENT, [{ kind: 'fs_read', from: 'args.attachments[]' } as ToolEffect], { attachments: [inScope] })).toHaveLength(1);
+  });
+
+  it('CATEGORY CONVERTED: the PDF door reads and writes through the facade', () => {
+    const src = fs.readFileSync(path.join(SRC, 'agent/pdf-tools.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(src), 'the PDF door must not hold node:fs').toBe(false);
+    expect(src.includes('effectFs.'), 'it reaches the disk through the facade').toBe(true);
+  });
+
+  it('the pdf tools DECLARE the uploads dir they really write, never the bare filename they were given', () => {
+    // RULING P5-R15 ADDENDUM 2's ordinary site correction. `filename` /
+    // `output_filename` are BARE NAMES: resolved as paths they named a file
+    // relative to the server's working directory — a resource these tools never
+    // touch — while the real write, `~/.dojo/uploads/<agentId>/<sanitised>.pdf`,
+    // went undeclared. The declaration both missed the real write and named a
+    // false one, and the conversion is what forced it into the open.
+    const uploads = path.join(os.homedir(), '.dojo', 'uploads', AGENT);
+    const out = path.join(uploads, 'report.pdf');
+    const source = path.join(scratch, 'source.pdf');
+    for (const tool of ['pdf_merge', 'pdf_extract_pages', 'pdf_rotate_pages', 'pdf_reorder_pages',
+      'pdf_delete_pages', 'pdf_watermark', 'pdf_fill_form']) {
+      const grants = grantsForCall(AGENT, effectsFor(tool), {
+        path: source, input_paths: [source], output_filename: 'report.pdf',
+      });
+      expect(grantsCover(grants, { op: 'fs_mkdir', path: uploads, real: uploads }), `${tool} may create its uploads dir`).toBe(true);
+      expect(grantsCover(grants, { op: 'fs_write', path: out, real: out }), `${tool} may write its output`).toBe(true);
+      expect(grantsCover(grants, { op: 'fs_read', path: source, real: source }), `${tool} may read its input`).toBe(true);
+      // …and never another agent's uploads directory, which is what makes it a scope.
+      const other = path.join(os.homedir(), '.dojo', 'uploads', 'someone-else', 'x.pdf');
+      expect(grantsCover(grants, { op: 'fs_write', path: other, real: other }), `${tool} may not write elsewhere`).toBe(false);
+      // A read of the input is not a licence to overwrite it in place.
+      expect(grantsCover(grants, { op: 'fs_write', path: source, real: source }), `${tool} may not overwrite its input`).toBe(false);
+    }
+  });
+
+  it('pdf_create DECLARES its output dir AND the image blocks it embeds', () => {
+    const img = path.join(scratch, 'chart.png');
+    const grants = grantsForCall(AGENT, effectsFor('pdf_create'), {
+      filename: 'deck.pdf',
+      content: [{ type: 'image', path: img }],
+    });
+    const uploads = path.join(os.homedir(), '.dojo', 'uploads', AGENT);
+    const out = path.join(uploads, 'deck.pdf');
+    expect(grantsCover(grants, { op: 'fs_write', path: out, real: out }), 'it may write the PDF').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: img, real: img }), 'it may read the image it embeds').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: outOfScope, real: outOfScope }), 'and no other image').toBe(false);
+  });
+
   it('SURFACE SPLIT: the tool-doc READER is its own module and reads through the facade', () => {
     // RULING P5-R15 part 2. `tools/index-generator.ts` held one `node:fs` import
     // serving two populations: a boot job that WRITES every tool doc, and a

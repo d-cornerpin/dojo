@@ -184,11 +184,25 @@ export function grantsForCall(
       // the list, and the first converted site would have refused working
       // behaviour. An element that is not a usable path grants nothing, so a
       // malformed list narrows to what it legitimately named and never widens.
-      if (dotted.endsWith('[]') && fsKind) {
-        const list = readArgPath(args, dotted.slice(0, -2));
+      //
+      // `args.<name>[].<prop>` — RULING P5-R15 ADDENDUM 2 mechanic 7. The
+      // element is an OBJECT and the path is one of its properties
+      // (`pdf_create`'s `content` blocks carry `image { path, … }`, and
+      // `office_create_word_document` declares the identical shape). Same family
+      // as the bare array mechanic: expressiveness, not policy. An element
+      // WITHOUT the property grants nothing for it, so a mixed list — the normal
+      // case, since most content blocks are text — narrows to exactly the
+      // elements that name a file.
+      const arrayAt = dotted.indexOf('[]');
+      if (arrayAt !== -1 && fsKind) {
+        const list = readArgPath(args, dotted.slice(0, arrayAt));
+        const prop = dotted.slice(arrayAt + 2);
         if (Array.isArray(list)) {
           for (const element of list) {
-            const resolved = resolvePathArg(element);
+            const named = prop === ''
+              ? element
+              : readArgPath(element as Record<string, unknown>, prop.startsWith('.') ? prop.slice(1) : prop);
+            const resolved = resolvePathArg(named);
             if (resolved.ok) {
               grants.push({ kind: fsKind, at: 'path', lexical: resolved.value.lexical, real: resolved.value.real });
             }

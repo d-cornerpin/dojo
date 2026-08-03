@@ -20,7 +20,11 @@
 //   pdf_fill_form            — Set AcroForm field values, optionally flatten
 // ════════════════════════════════════════
 
-import fs from 'node:fs';
+// PHASE-5 T8 Step 3: every path this module touches now goes through the
+// facade, which performs the work only on a resource the call's own
+// declaration named. Same primitives, same arguments — a rename, not a
+// rewrite.
+import * as effectFs from './effects/fs.js';
 import path from 'node:path';
 import os from 'node:os';
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
@@ -33,7 +37,7 @@ const UPLOADS_DIR = path.join(os.homedir(), '.dojo', 'uploads');
 
 function ensureAgentUploadDir(agentId: string): string {
   const dir = path.join(UPLOADS_DIR, agentId);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  if (!effectFs.existsSync(dir)) effectFs.mkdirSync(dir, { recursive: true });
   return dir;
 }
 
@@ -408,11 +412,11 @@ function renderTable(ctx: RenderCtx, block: PdfTableBlock): void {
 }
 
 async function renderImage(ctx: RenderCtx, block: PdfImageBlock): Promise<void> {
-  if (!block.path || !fs.existsSync(block.path)) {
+  if (!block.path || !effectFs.existsSync(block.path)) {
     logger.warn('PDF image block: file not found, skipping', { path: block.path });
     return;
   }
-  const data = fs.readFileSync(block.path);
+  const data = effectFs.readFileSync(block.path);
   const ext = path.extname(block.path).toLowerCase();
   let img: unknown;
   if (ext === '.png') {
@@ -515,7 +519,7 @@ async function generatePdfBuffer(blocks: PdfBlock[], options: PdfDocOptions = {}
 // ── Per-operation helpers (merge, extract, rotate, etc.) ──
 
 async function loadPdf(filePath: string): Promise<unknown> {
-  const bytes = fs.readFileSync(filePath);
+  const bytes = effectFs.readFileSync(filePath);
   return await PDFDocument.load(bytes);
 }
 
@@ -541,7 +545,7 @@ async function mergePdfs(inputPaths: string[], outputPath: string): Promise<{ pa
       totalPages++;
     }
   }
-  fs.writeFileSync(outputPath, await merged.save());
+  effectFs.writeFileSync(outputPath, await merged.save());
   return { pageCount: totalPages };
 }
 
@@ -552,7 +556,7 @@ async function extractPages(inputPath: string, pageIndices: number[], outputPath
   const copied = await out.copyPages(src, pageIndices);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const page of copied) out.addPage(page);
-  fs.writeFileSync(outputPath, await out.save());
+  effectFs.writeFileSync(outputPath, await out.save());
   return { pageCount: pageIndices.length };
 }
 
@@ -565,7 +569,7 @@ async function rotatePages(inputPath: string, rotations: Array<{ page: number; d
     if (idx < 0 || idx >= total) continue;
     src.getPage(idx).setRotation(degrees(r.degrees));
   }
-  fs.writeFileSync(outputPath, await src.save());
+  effectFs.writeFileSync(outputPath, await src.save());
 }
 
 async function reorderPages(inputPath: string, newOrder: number[], outputPath: string): Promise<void> {
@@ -578,7 +582,7 @@ async function reorderPages(inputPath: string, newOrder: number[], outputPath: s
   const copied = await out.copyPages(src, order);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const page of copied) out.addPage(page);
-  fs.writeFileSync(outputPath, await out.save());
+  effectFs.writeFileSync(outputPath, await out.save());
 }
 
 async function deletePages(inputPath: string, removeIndices: number[], outputPath: string): Promise<{ pageCount: number }> {
@@ -592,7 +596,7 @@ async function deletePages(inputPath: string, removeIndices: number[], outputPat
   const copied = await out.copyPages(src, keep);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   for (const page of copied) out.addPage(page);
-  fs.writeFileSync(outputPath, await out.save());
+  effectFs.writeFileSync(outputPath, await out.save());
   return { pageCount: keep.length };
 }
 
@@ -627,7 +631,7 @@ async function watermarkPdf(
       rotate: degrees(rotation),
     });
   }
-  fs.writeFileSync(outputPath, await src.save());
+  effectFs.writeFileSync(outputPath, await src.save());
 }
 
 async function fillForm(
@@ -661,7 +665,7 @@ async function fillForm(
     }
   }
   if (flatten) form.flatten();
-  fs.writeFileSync(outputPath, await src.save());
+  effectFs.writeFileSync(outputPath, await src.save());
   return { filledFields: filled, unmatchedKeys: unmatched };
 }
 
@@ -699,7 +703,20 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_create',
     description: 'Create a new PDF (.pdf) from a content-blocks schema and save it under your agent uploads dir. Returns the absolute output path. Mirrors the docx schema where possible — paragraph / heading / table / bullet_list / numbered_list / image / page_break / horizontal_rule — so an outline that worked for a Word doc can be re-used here.\n\nKey defaults applied automatically: US Letter, 1" margins, Helvetica 11pt, tables get borders + light-blue header shading, page numbers in the footer only when explicitly requested.',
-    effects: [{ kind: 'fs_write', from: 'args.filename' }],
+    // DECLARATIONS CORRECTED AT THE SITE (PHASE-5 T8 Step 3, RULING P5-R15
+    // ADDENDUM 2). `filename` is a BARE NAME: resolved as a path it named a
+    // file relative to the server's working directory, which this tool never
+    // touches, while the real write — the agent's uploads dir — went
+    // undeclared. The `image` content blocks read a path off disk and were not
+    // declared at all; `args.content[].path` is mechanic 7, and a block without
+    // a `path` grants nothing.
+    effects: [
+      { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } },
+      { kind: 'fs_read', from: 'args.content[].path' },
+    ],
+    nonEffects: {
+      filename: 'a bare NAME, not a path: the handler sanitises it and writes into the agent uploads directory, which the fs_write effect above declares. Resolved as a path it would name a file in the server working directory that this tool never touches — the false resolution RULING P5-R15 ADDENDUM 2 named',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -714,7 +731,7 @@ export const pdfToolDefinitions: ToolDefinition[] = [
         content: {
           type: 'array',
           description: 'Ordered content blocks. Types: heading {text, level 1-3, align}, paragraph {text, bold, italic, align, size_pt, color}, bullet_list {items}, numbered_list {items}, table {rows: string[][], column_widths_pct, header_shading_hex, border_color_hex, first_row_bold}, image {path, width_in, height_in, align}, horizontal_rule {color}, page_break.',
-          items: { type: 'object' },
+          items: { type: 'object', properties: { path: { type: 'string', description: 'For an image block: absolute path to the PNG/JPG to embed.' } } },
         },
       },
       required: ['filename', 'content'],
@@ -747,7 +764,10 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_merge',
     description: 'Combine multiple PDFs (in the given order) into a single new PDF. Returns the absolute output path. Original files are not modified.',
-    effects: [{ kind: 'fs_read', from: 'args.input_paths[]' }, { kind: 'fs_write', from: 'args.output_filename' }],
+    effects: [{ kind: 'fs_read', from: 'args.input_paths[]' }, { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } }],
+    nonEffects: {
+      output_filename: 'a bare NAME, not a path: the handler sanitises it and writes into the agent uploads directory, which the fs_write effect above declares. Resolved as a path it would name a file in the server working directory that this tool never touches — the false resolution RULING P5-R15 ADDENDUM 2 named',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -760,7 +780,10 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_extract_pages',
     description: 'Pull a list of pages from an existing PDF into a new file (useful for splits, single-page extracts, or "give me just the first chapter"). Returns the absolute output path.',
-    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.output_filename' }],
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } }],
+    nonEffects: {
+      output_filename: 'a bare NAME, not a path: the handler sanitises it and writes into the agent uploads directory, which the fs_write effect above declares. Resolved as a path it would name a file in the server working directory that this tool never touches — the false resolution RULING P5-R15 ADDENDUM 2 named',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -774,7 +797,10 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_rotate_pages',
     description: 'Rotate specific pages of an existing PDF and save the result. Returns the output path.',
-    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.output_filename' }],
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } }],
+    nonEffects: {
+      output_filename: 'a bare NAME, not a path: the handler sanitises it and writes into the agent uploads directory, which the fs_write effect above declares. Resolved as a path it would name a file in the server working directory that this tool never touches — the false resolution RULING P5-R15 ADDENDUM 2 named',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -799,7 +825,10 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_reorder_pages',
     description: 'Rearrange the pages of an existing PDF. Returns the output path. The `new_order` list must include every page exactly once.',
-    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.output_filename' }],
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } }],
+    nonEffects: {
+      output_filename: 'a bare NAME, not a path: the handler sanitises it and writes into the agent uploads directory, which the fs_write effect above declares. Resolved as a path it would name a file in the server working directory that this tool never touches — the false resolution RULING P5-R15 ADDENDUM 2 named',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -813,7 +842,10 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_delete_pages',
     description: 'Remove pages from an existing PDF and save the result. Returns the output path.',
-    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.output_filename' }],
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } }],
+    nonEffects: {
+      output_filename: 'a bare NAME, not a path: the handler sanitises it and writes into the agent uploads directory, which the fs_write effect above declares. Resolved as a path it would name a file in the server working directory that this tool never touches — the false resolution RULING P5-R15 ADDENDUM 2 named',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -827,7 +859,10 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_watermark',
     description: 'Stamp a text watermark diagonally across pages of an existing PDF. Returns the output path. Useful for "DRAFT", "CONFIDENTIAL", or per-recipient marks.',
-    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.output_filename' }],
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } }],
+    nonEffects: {
+      output_filename: 'a bare NAME, not a path: the handler sanitises it and writes into the agent uploads directory, which the fs_write effect above declares. Resolved as a path it would name a file in the server working directory that this tool never touches — the false resolution RULING P5-R15 ADDENDUM 2 named',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -846,7 +881,10 @@ export const pdfToolDefinitions: ToolDefinition[] = [
   {
     name: 'pdf_fill_form',
     description: 'Fill AcroForm fields in an existing PDF and save the result. Use pdf_get_info first to discover field names. Returns the output path and counts of filled vs unmatched fields. Pass `flatten: true` to make the filled fields non-editable.',
-    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'args.output_filename' }],
+    effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } }],
+    nonEffects: {
+      output_filename: 'a bare NAME, not a path: the handler sanitises it and writes into the agent uploads directory, which the fs_write effect above declares. Resolved as a path it would name a file in the server working directory that this tool never touches — the false resolution RULING P5-R15 ADDENDUM 2 named',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -890,7 +928,7 @@ export async function executePdfTool(
         };
         const buf = await generatePdfBuffer(blocks, opts);
         const out = resolveOutputPath(agentId, filename);
-        fs.writeFileSync(out, buf);
+        effectFs.writeFileSync(out, buf);
         return (
           `PDF created at ${out} (${buf.length} bytes, ${blocks.length} block(s) rendered). ` +
           `To give the user a downloadable URL for this file, call share_file with path="${out}" — do NOT invent or guess a URL.`
@@ -899,17 +937,17 @@ export async function executePdfTool(
       case 'pdf_get_info': {
         const p = args.path as string;
         if (!p) return 'Error: path is required.';
-        if (!fs.existsSync(p)) return `Error: file not found: ${p}`;
+        if (!effectFs.existsSync(p)) return `Error: file not found: ${p}`;
         const info = await getPdfInfo(p);
         return JSON.stringify(info, null, 2);
       }
       case 'pdf_read': {
         const p = args.path as string;
         if (!p) return 'Error: path is required.';
-        if (!fs.existsSync(p)) return `Error: file not found: ${p}`;
+        if (!effectFs.existsSync(p)) return `Error: file not found: ${p}`;
         const { extractPdfText, PdfExtractError } = await import('../services/pdf-extract.js');
         try {
-          const data = fs.readFileSync(p).toString('base64');
+          const data = effectFs.readFileSync(p).toString('base64');
           const extracted = await extractPdfText(data);
           const trimmed = extracted.text.trim();
           if (!trimmed) {
@@ -925,7 +963,7 @@ export async function executePdfTool(
       case 'pdf_merge': {
         const inputs = args.input_paths as string[] | undefined;
         if (!inputs || inputs.length < 2) return 'Error: input_paths must have at least 2 files.';
-        for (const p of inputs) if (!fs.existsSync(p)) return `Error: file not found: ${p}`;
+        for (const p of inputs) if (!effectFs.existsSync(p)) return `Error: file not found: ${p}`;
         const outFile = args.output_filename as string;
         const out = resolveOutputPath(agentId, outFile);
         const { pageCount } = await mergePdfs(inputs, out);
@@ -936,7 +974,7 @@ export async function executePdfTool(
         const pages = args.pages as number[] | undefined;
         const outFile = args.output_filename as string;
         if (!p || !pages || pages.length === 0 || !outFile) return 'Error: path, pages, and output_filename are required.';
-        if (!fs.existsSync(p)) return `Error: file not found: ${p}`;
+        if (!effectFs.existsSync(p)) return `Error: file not found: ${p}`;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const src = await loadPdf(p) as any;
         const total = src.getPageCount();
@@ -951,7 +989,7 @@ export async function executePdfTool(
         const rotations = args.rotations as Array<{ page: number; degrees: number }> | undefined;
         const outFile = args.output_filename as string;
         if (!p || !rotations || !outFile) return 'Error: path, rotations, and output_filename are required.';
-        if (!fs.existsSync(p)) return `Error: file not found: ${p}`;
+        if (!effectFs.existsSync(p)) return `Error: file not found: ${p}`;
         for (const r of rotations) {
           if (r.degrees % 90 !== 0) return `Error: rotation must be a multiple of 90; got ${r.degrees}.`;
         }
@@ -964,7 +1002,7 @@ export async function executePdfTool(
         const order = args.new_order as number[] | undefined;
         const outFile = args.output_filename as string;
         if (!p || !order || !outFile) return 'Error: path, new_order, and output_filename are required.';
-        if (!fs.existsSync(p)) return `Error: file not found: ${p}`;
+        if (!effectFs.existsSync(p)) return `Error: file not found: ${p}`;
         const out = resolveOutputPath(agentId, outFile);
         await reorderPages(p, order, out);
         return `Reordered pages → ${out}.`;
@@ -974,7 +1012,7 @@ export async function executePdfTool(
         const pages = args.pages as number[] | undefined;
         const outFile = args.output_filename as string;
         if (!p || !pages || pages.length === 0 || !outFile) return 'Error: path, pages, and output_filename are required.';
-        if (!fs.existsSync(p)) return `Error: file not found: ${p}`;
+        if (!effectFs.existsSync(p)) return `Error: file not found: ${p}`;
         const out = resolveOutputPath(agentId, outFile);
         const { pageCount } = await deletePages(p, pages, out);
         return `Deleted ${pages.length} page(s); ${pageCount} remain → ${out}.`;
@@ -984,7 +1022,7 @@ export async function executePdfTool(
         const text = args.text as string;
         const outFile = args.output_filename as string;
         if (!p || !text || !outFile) return 'Error: path, text, and output_filename are required.';
-        if (!fs.existsSync(p)) return `Error: file not found: ${p}`;
+        if (!effectFs.existsSync(p)) return `Error: file not found: ${p}`;
         const out = resolveOutputPath(agentId, outFile);
         await watermarkPdf(p, out, {
           text,
@@ -1001,7 +1039,7 @@ export async function executePdfTool(
         const values = args.values as Record<string, string | boolean | number> | undefined;
         const outFile = args.output_filename as string;
         if (!p || !values || !outFile) return 'Error: path, values, and output_filename are required.';
-        if (!fs.existsSync(p)) return `Error: file not found: ${p}`;
+        if (!effectFs.existsSync(p)) return `Error: file not found: ${p}`;
         const out = resolveOutputPath(agentId, outFile);
         const result = await fillForm(p, out, values, (args.flatten as boolean) ?? false);
         return `Filled ${result.filledFields} field(s) → ${out}. ${result.unmatchedKeys.length > 0 ? `Unmatched keys: ${result.unmatchedKeys.join(', ')}.` : ''}`.trim();

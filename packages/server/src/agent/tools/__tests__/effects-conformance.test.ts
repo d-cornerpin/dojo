@@ -174,7 +174,14 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     const effectful = BASE.filter((d) => d.effects.length > 0);
     expect(effectful.length).toBe(107);
     expect(ALL.filter((d) => d.effects.length > 0).length).toBe(127);
-    expect(BASE.filter((d) => d.nonEffects).length).toBe(14);
+    // T8 Step 3 moves this by EIGHT, and the tripwire is what earned it:
+    // `pdf_create.filename` and the seven `output_filename` siblings are BARE
+    // NAMES, not paths. Their old `fs_write from: args.<name>` declaration
+    // resolved to a file in the server's working directory that the tool never
+    // touches, while the real write went undeclared. With the real target now
+    // declared (the agent uploads tree), clause 6 asked what the name itself is
+    // — and `inert, with the reason` is the true answer.
+    expect(BASE.filter((d) => d.nonEffects).length).toBe(22);
 
     const kindsInUse = new Set(BASE.flatMap((d) => d.effects.map((e) => e.kind)));
     // `fs_delete` and `spawn` are single-member classes today; since T3 so are
