@@ -28,8 +28,8 @@ import { broadcast } from '../../../gateway/ws.js';
 import { setCurrentCanvas, viewCanvas } from '../../canvas-view.js';
 import { isEmbeddable, captureSiteScreenshot } from '../../site-snapshot.js';
 import { queueScreenChip } from '../../pending-attachments.js';
-import { resolvePath } from '../../path-guards.js';
-import { registerSharedFile, toDashboardPath, queueCanvasDocAttachment } from '../util.js';
+import { resolvePath, sharePathGuard } from '../../path-guards.js';
+import { auditLog, permissionDeniedMessage, registerSharedFile, toDashboardPath, queueCanvasDocAttachment } from '../util.js';
 import { isScreenShareEnabled } from '../../../screen-share/manager.js';
 import type { ToolHandlerMap } from '../handler.js';
 
@@ -44,6 +44,21 @@ export const canvasHandlers: ToolHandlerMap = {
     // `path`: register the on-disk file so the canvas can fetch it (and
     // remember the path so later edits to it auto-refresh the canvas).
     if (rawPath) {
+      // PHASE-5 T8 Step 7 — THE GUARD ITS SIBLINGS RUN. `registerSharedFile`
+      // below mints the SAME unauthenticated download URL `share_file` mints,
+      // so the same question has to be asked first: the sensitive tier of the
+      // merged deny list, then the agent's own file_read permission. This was
+      // the one member of the publish family that never asked it; the family's
+      // completeness is now held by
+      // `agent/tools/__tests__/publish-path-guards.test.ts` so a future member
+      // cannot be added without one. Owner-authorised 2026-08-03.
+      const canvasGuard = await sharePathGuard(agentId, 'canvas_render', rawPath);
+      if (!canvasGuard.allowed) {
+        auditLog(agentId, 'canvas_render', canvasGuard.absPath, 'denied', canvasGuard.reason);
+        content = canvasGuard.blockedMessage ?? permissionDeniedMessage(canvasGuard.reason, agentId);
+        isError = true;
+        return { content, isError, errorCode: 'PERMISSION_DENIED' };
+      }
       canvasPath = resolvePath(rawPath);
       const registered = registerSharedFile(agentId, canvasPath);
       if (!registered) {

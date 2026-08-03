@@ -222,6 +222,102 @@ describe('share_publicly refuses sensitive paths', () => {
 });
 
 // ════════════════════════════════════════
+// PHASE-5 T8 Step 7 — THE FAMILY'S MISSING MEMBER
+//
+// `canvas_render({path})` mints the SAME unauthenticated download URL
+// `share_file` mints (both reach it through `registerSharedFile`), and it was
+// the one member of this family that never asked the guard its siblings ask.
+// The requirement — *every publish-path tool runs the same sanctioned guard its
+// siblings run* — lands here BEFORE the guard does. The completeness of the
+// family is held separately, by the census in
+// `agent/tools/__tests__/publish-path-guards.test.ts`, so a future member
+// cannot be added without one.
+//
+// This is a NEW REFUSAL on behaviour that works today, authorised by the owner
+// directly (2026-08-03, "Close it now"), which is why it is written as a test
+// first and why the negative controls below are as load bearing as the blocks.
+// ════════════════════════════════════════
+
+describe('canvas_render refuses sensitive paths — the guard family gains its missing member', () => {
+  const renderPath = async (p: string): Promise<{ content: string; isError: boolean }> => {
+    const r = toolResultOf(await executeTool(AGENT, {
+      id: 'canvas-1', name: 'canvas_render', arguments: { path: p },
+    }));
+    return { content: r.content, isError: !!r.isError };
+  };
+
+  it('blocks ~/.dojo/secrets.yaml and mints NO url', async () => {
+    const r = await renderPath('~/.dojo/secrets.yaml');
+    expect(r.content).toContain('[BLOCKED]');
+    expect(r.content).toContain('sensitive-files block list');
+    expect(r.isError).toBe(true);
+    // The whole point: the canvas never opened and no download URL exists.
+    expect(r.content).not.toMatch(/Canvas opened/);
+  });
+
+  it('blocks ~/.ssh/id_ed25519', async () => {
+    const r = await renderPath('~/.ssh/id_ed25519');
+    expect(r.content).toContain('[BLOCKED]');
+    expect(r.isError).toBe(true);
+    expect(r.content).not.toMatch(/Canvas opened/);
+  });
+
+  it('blocks ~/.dojo/Secrets.yaml — the case-folding spelling, same as its siblings', async () => {
+    setFsCaseInsensitive(true);
+    const r = await renderPath('~/.dojo/Secrets.yaml');
+    expect(r.content).toContain('[BLOCKED]');
+    expect(r.isError).toBe(true);
+  });
+
+  it('a blocked canvas_render is structurally `refused`, not an indistinguishable isError', async () => {
+    const o = await executeTool(AGENT, {
+      id: 'canvas-refused', name: 'canvas_render', arguments: { path: '~/.dojo/secrets.yaml' },
+    });
+    expect(o.kind).toBe('refused');
+    expect(toolWasBlocked(o)).toBe(true);
+  });
+
+  it('NEGATIVE CONTROL: an ordinary file still opens the canvas', async () => {
+    const r = await renderPath(scratchFile);
+    expect(r.content).not.toContain('[BLOCKED]');
+    expect(r.isError).toBe(false);
+    expect(r.content).toMatch(/Canvas opened/);
+  });
+
+  it('NEGATIVE CONTROL: inline `html` has no path, so the guard does not run', async () => {
+    const r = toolResultOf(await executeTool(AGENT, {
+      id: 'canvas-html', name: 'canvas_render', arguments: { html: '<h1>hi</h1>' },
+    }));
+    expect(r.content).not.toContain('[BLOCKED]');
+    expect(r.isError).toBeFalsy();
+    expect(r.content).toMatch(/Canvas opened/);
+  });
+
+  it('NEGATIVE CONTROL: an external `url` has no path, so the guard does not run', async () => {
+    const r = toolResultOf(await executeTool(AGENT, {
+      id: 'canvas-url', name: 'canvas_render', arguments: { url: 'https://example.com/report.html' },
+    }));
+    expect(r.content).not.toContain('[BLOCKED]');
+    expect(r.isError).toBeFalsy();
+  });
+
+  it('a permission refusal renders the STANDARD permission text, byte-identical to share_file’s', async () => {
+    // Same split its siblings have: `blockedMessage === null` means the refusal
+    // came from the permission layer, and the caller renders it with the same
+    // `permissionDeniedMessage()` every other permission block in the platform
+    // uses — agents parse these strings, so the two must not diverge.
+    const denied = path.join(fixtureHome, '.dojo', 'logs', 'healer.log');
+    const r = await renderPath(denied);
+    expect(r.isError).toBe(true);
+    expect(r.content).toContain('permanently blocked by your permission settings');
+    expect(r.content).not.toContain('sensitive-files block list');
+    expect(r.content).not.toMatch(/Canvas opened/);
+    // Parity with the sibling, on the same path.
+    expect(r.content).toBe((await share(denied)).content.replace(/share_file/g, 'canvas_render'));
+  });
+});
+
+// ════════════════════════════════════════
 // The permission half of the gate
 // ════════════════════════════════════════
 
