@@ -160,12 +160,23 @@ for (const rel of allFiles.filter((r) => /^(?:packages\/[^/]+|watchdog)\/package
  * concerned and the next one closes it, manufacturing specifiers out of
  * commentary — which is exactly what an earlier draft reported.
  */
+// ⚠ THE ORDER OF THESE TWO STRIPS IS LOAD-BEARING, AND IT WAS WRONG (PHASE-5 T7).
+// Block comments were blanked FIRST, so a `/*` sitting inside a `//` LINE comment
+// opened a block comment that ran until the next `*/` anywhere in the file — and
+// a header that documents a directory (`tools/cat/*`) contains exactly that. The
+// cost was not theoretical: `agent/tools/index.ts` — the executor every tool call
+// goes through — had ZERO specifiers extracted, so the walk could not see the
+// toolbox at all and 28 files that a header mentions this way were at risk of the
+// same silence. It surfaced only when a test-side import was deleted and the one
+// module left with no other reader failed the gate. Line comments are stripped
+// FIRST now, which cannot mis-open anything, and the block strip runs on what is
+// left.
 function decomment(src) {
   return src
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
     .split('\n')
     .map((l) => l.replace(/(^|[^:])\/\/.*$/, (m, p) => p + ' '.repeat(m.length - p.length)))
-    .join('\n');
+    .join('\n')
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '));
 }
 
 // Assets a bundler resolves and a module walk has no business following.
