@@ -24,7 +24,8 @@
 //
 //   agent/model.ts:1682-1683                usage FALLBACK when a provider reports none
 //   providers/anthropic-sdk.ts:365,:368     usage FALLBACK, same job
-//   agent/tools.ts:4992,:5030,:10465        recall-budget accounting
+//   agent/tools/cat/recall.ts               recall-budget accounting (was agent/tools.ts)
+//   agent/tools/index.ts                    result-cap accounting (was agent/tools.ts)
 //
 // The grep is whole-tree (`packages/**/src`, every `.ts` that is not a test) and it looks
 // for the SHAPE of an estimator — a division of a length by a small constant — not for the
@@ -88,7 +89,14 @@ const CANONICAL = 'packages/server/src/memory/budget.ts';
 const DECLARED_SURVIVORS: Array<{ file: string; why: string }> = [
   { file: 'packages/server/src/agent/model.ts', why: 'usage FALLBACK at :1682-1683 — only when a provider reports no usage at all' },
   { file: 'packages/server/src/providers/anthropic-sdk.ts', why: 'usage FALLBACK at :365,:368 — same job as above' },
-  { file: 'packages/server/src/agent/tools.ts', why: 'result-cap accounting in applyMaxResultTokensCap — a per-tool spend ledger, not a prompt cost' },
+  // PHASE-5 T4 (the split's last move): `agent/tools.ts` is DELETED and the
+  // survivor FOLLOWED THE CODE for the second time — `applyMaxResultTokensCap`
+  // moved to the executor's new home with the executor that calls it. This
+  // walk caught the stale entry itself ("packages/server/src/agent/tools.ts
+  // vanished — re-derive before deleting it from this list"), which is the
+  // clause working: a declared survivor that quietly disappears is how a list
+  // rots into lies.
+  { file: 'packages/server/src/agent/tools/index.ts', why: 'result-cap accounting in applyMaxResultTokensCap — a per-tool spend ledger, not a prompt cost' },
   // PHASE-5 T4 (the toolbox split): the recall-budget half of the entry above
   // MOVED with the handlers it belongs to. Two of that entry's three sites were
   // `recall_recent_thread` and `history_search` billing their own emitted output

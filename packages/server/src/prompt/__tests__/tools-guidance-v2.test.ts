@@ -3,7 +3,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import type { ToolDefinition } from '../../agent/tools.js';
+import type { ToolDefinition } from '../../agent/tools/types.js';
 
 const mockDb = { current: null as Database.Database | null };
 
@@ -36,7 +36,7 @@ vi.mock('../../microsoft/auth.js', () => ({
   getMicrosoftWorkspaceConfig: () => ({ accountEmail: '' }),
 }));
 
-vi.mock('../../agent/tools.js', () => {
+vi.mock('../../agent/tools/surface.js', () => {
   const fakeTools: ToolDefinition[] = [
     {
       name: 'imessage_send',

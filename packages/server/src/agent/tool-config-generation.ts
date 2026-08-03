@@ -15,8 +15,10 @@
 // surface by the next turn.
 //
 // This lives in its own zero-import module so the low-level account / config
-// writers can bump it without importing agent/tools.ts, which would create an
-// import cycle (tools.ts -> google/auth.ts -> google/accounts.ts -> tools.ts).
+// writers can bump it without importing the module that owns the memo, which
+// would close an import cycle. PHASE-5 T4 re-pointed the names, not the rule:
+// the memo is now `agent/tools/surface.ts` and the loop it would close is
+// surface.ts -> google/auth.ts -> google/accounts.ts -> surface.ts.
 // ════════════════════════════════════════
 
 let generation = 0;

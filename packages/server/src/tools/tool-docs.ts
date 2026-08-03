@@ -421,7 +421,7 @@ export function partitionToolsForApiCall(
  * module is the tool hub and importing it statically from here would close a cycle.
  */
 export async function measureAgentToolPayloadTokens(agentId: string): Promise<number> {
-  const { getFilteredTools } = await import('../agent/tools.js');
+  const { getFilteredTools } = await import('../agent/tools/surface.js');
   const { estimateTokens } = await import('../memory/budget.js');
   const allPermitted = getFilteredTools(agentId);
   const alwaysLoaded = getAgentAlwaysLoadedTools(agentId);

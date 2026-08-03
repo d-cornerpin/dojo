@@ -28,7 +28,7 @@ import {
   resetRehydrationForTests,
   DEFAULT_ALWAYS_LOADED_TOOLS,
 } from '../../tools/tool-docs.js';
-import type { ToolDefinition } from '../../agent/tools.js';
+import type { ToolDefinition } from '../../agent/tools/types.js';
 
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');

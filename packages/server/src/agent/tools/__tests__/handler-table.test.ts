@@ -1,17 +1,19 @@
 // ════════════════════════════════════════════════════════════════════════════
-// THE HANDLER TABLE IS DISJOINT FROM THE SURVIVING SWITCH (PHASE-5 T4)
+// ONE MECHANISM PER TOOL, HELD BY MACHINE (PHASE-5 T4)
 //
-// The toolbox split moves handler bodies out of `agent/tools.ts` one category
-// at a time, so for the length of the split there are two dispatch surfaces:
-// the handler table and the shrinking switch. Roadmap non-negotiable #1 says no
-// task may leave both the old and the new mechanism alive for the same job —
-// and "the same job" here is a DISPATCH KEY, not the file.
+// The toolbox split moved 268 handler bodies out of `agent/tools.ts` one
+// category at a time across three sittings, so for the length of the move there
+// were two dispatch surfaces: the handler table and the shrinking switch.
+// Roadmap non-negotiable #1 says no task may leave both the old and the new
+// mechanism alive for the same job — and "the same job" here is a DISPATCH KEY,
+// not the file. This test is what made that a fact instead of a discipline:
+// it reads `case '…':` labels straight out of the dispatcher's source and
+// asserts they are disjoint from the table's keys, so a half-moved category —
+// a module added while its cases still stood — failed here, naming the key.
 //
-// The discipline is that a category's move deletes its cases in the commit that
-// adds its module. This file is what makes that a fact instead of a discipline:
-// it reads the surviving `case '…':` labels straight out of the source text and
-// asserts the two key sets do not intersect. A half-moved category — a module
-// added while its cases still stand — fails here, naming the key.
+// The move is DONE: `agent/tools.ts` is deleted and the label set is empty.
+// The reader stays, pointed at `agent/tools/index.ts`, as the regression half
+// of the same rule — a new tool gets a handler, never a case label.
 //
 // It also asserts the table is non-empty, so the test cannot pass by measuring
 // nothing (the failure mode that makes a green meaningless).
@@ -24,11 +26,14 @@ import path from 'node:path';
 import { handledDispatchKeys, handlerFor } from '../handlers.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const TOOLS_TS = path.resolve(HERE, '../../tools.ts');
+// PHASE-5 T4 (the split's last move): `agent/tools.ts` is DELETED; the
+// dispatcher is `agent/tools/index.ts`. The reader follows the code — and it
+// failed loudly on the stale path first, which is what a source walk is for.
+const DISPATCHER_TS = path.resolve(HERE, '../index.ts');
 
 /** Every `case '<key>':` label of the dispatch switch, read from the source. */
 function survivingCaseLabels(): string[] {
-  const src = readFileSync(TOOLS_TS, 'utf8');
+  const src = readFileSync(DISPATCHER_TS, 'utf8');
   // The dispatch switch's cases are the only ones at this exact indent (six
   // spaces): `canvasMime`'s switch and the two nested switches sit deeper or
   // shallower. §T0-PINS / research 05 uses the same discriminator.

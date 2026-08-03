@@ -111,7 +111,7 @@ beforeEach(() => {
   mockDb.current = db;
 });
 
-import { executeTool, toolResultOf } from '../tools.js';
+import { executeTool, toolResultOf } from '../tools/index.js';
 
 describe('spawn contract - P3 timeout ownership', () => {
   it('spawn_agent for a non-ronin sub-agent with no timeout_minutes is refused with a teaching error', async () => {

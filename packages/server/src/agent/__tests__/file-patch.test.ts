@@ -21,7 +21,7 @@ vi.mock('../../gateway/ws.js', () => ({
   broadcast: () => { /* no-op */ },
 }));
 
-import { executeFilePatch } from '../tools.js';
+import { executeFilePatch } from '../tools/cat/fs.js';
 
 let tmpDir: string;
 

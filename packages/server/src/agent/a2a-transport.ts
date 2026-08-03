@@ -1285,7 +1285,7 @@ async function deliverJoinResultToOwnerInner(
       // dashboard fallback below.
       meta.chatType !== 'group' && isSenderAuthorized('teams', meta.sender ?? '', 'agent')
     ) {
-      const { executeTool } = await import('./tools.js');
+      const { executeTool } = await import('./tools/index.js');
       const tc: ToolCall = { id: uuidv4(), name: 'teams_send_message', arguments: { chat_id: meta.chatId, message: deliveryBody } };
       const r = await executeTool(join.agentId, tc);
       delivered = r.kind === 'applied'; channel = 'teams'; recipientId = meta.chatId;
@@ -1295,7 +1295,7 @@ async function deliverJoinResultToOwnerInner(
       // relayed answer (falls through to the dashboard fallback).
       isSenderAuthorized('email', meta.sender ?? '', 'agent', { emailService: meta.emailService === 'outlook' ? 'outlook' : 'gmail' })
     ) {
-      const { executeTool } = await import('./tools.js');
+      const { executeTool } = await import('./tools/index.js');
       const toolName = meta.emailService === 'gmail' ? 'gmail_reply' : 'outlook_reply';
       const tc: ToolCall = {
         id: uuidv4(), name: toolName,
@@ -1309,7 +1309,7 @@ async function deliverJoinResultToOwnerInner(
       // BUG-3 (comms-audit): the owner can ask via SMS; route via the sms_send tool (like the
       // teams/email branches) so the same executor, its safe-sender revalidation and the
       // harness capture all apply, and text the original from-number back.
-      const { executeTool } = await import('./tools.js');
+      const { executeTool } = await import('./tools/index.js');
       const to = meta.smsFromNumber ?? meta.sender!;
       const tc: ToolCall = { id: uuidv4(), name: 'sms_send', arguments: { to, body: deliveryBody } };
       const r = await executeTool(join.agentId, tc);

@@ -82,8 +82,8 @@ vi.mock('../../model.js', async () => {
   };
 });
 
-vi.mock('../../tools.js', async () => {
-  const actual = await vi.importActual<typeof import('../../tools.js')>('../../tools.js');
+vi.mock('../../tools/index.js', async () => {
+  const actual = await vi.importActual<typeof import('../../tools/index.js')>('../../tools/index.js');
   const { classifyToolResult } = await vi.importActual<typeof import('../../tool-outcome.js')>('../../tool-outcome.js');
   return {
     ...actual,

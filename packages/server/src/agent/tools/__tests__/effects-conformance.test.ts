@@ -13,11 +13,13 @@
 // than assuming it: §T0-PINS P3 says 13 effectful defs get twins, and a spread
 // that lost `effects` would leave 13 undeclared tools live on the wire.
 //
-// Why the import of `agent/tools.js` is safe here: `tools/__tests__/tool-list-
-// conformance.test.ts` records that importing it standalone hangs on a
-// module-init cycle. Re-derived at `d0b3320` — it does not; the import resolves
-// in ~2s and returns 437 definitions. That comment is stale and is recorded as
-// such in the T1 report rather than propagated.
+// Why importing the definitions leaf is safe here: `tools/__tests__/tool-list-
+// conformance.test.ts` records that importing the old tool hub standalone hangs
+// on a module-init cycle. Re-derived at `d0b3320` — it did not; the import
+// resolved in ~2s and returned 437 definitions, and that comment was recorded
+// as stale in the T1 report rather than propagated. PHASE-5 T4 settles the
+// question structurally: `agent/tools/definitions.ts` is the wire array and
+// the fifteen family arrays, with no dispatcher and no handler in its graph.
 // ════════════════════════════════════════════════════════════════════════════
 import { describe, it, expect } from 'vitest';
 import { getAllToolDefinitions } from '../definitions.js';

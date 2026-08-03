@@ -10,7 +10,8 @@
 // the integration with executeTool happens via dev-test-tools.
 
 import { describe, it, expect } from 'vitest';
-import { applyMaxResultTokensCap, applyTextPagination } from '../tools.js';
+import { applyMaxResultTokensCap } from '../tools/index.js';
+import { applyTextPagination } from '../tools/pagination.js';
 
 describe('applyMaxResultTokensCap', () => {
   it('returns content unchanged when under the cap', () => {

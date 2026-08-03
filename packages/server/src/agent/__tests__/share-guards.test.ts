@@ -68,7 +68,7 @@ vi.mock('../../services/tunnel.js', () => ({
   killTunnelSync: () => { /* no-op */ },
 }));
 
-import { executeTool, toolResultOf, toolWasBlocked } from '../tools.js';
+import { executeTool, toolResultOf, toolWasBlocked } from '../tools/index.js';
 import {
   foldPath,
   isSensitivePath,

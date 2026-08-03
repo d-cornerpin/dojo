@@ -109,7 +109,7 @@ beforeEach(() => {
   embedCounter = 0;
 });
 
-import { executeTool, toolResultOf } from '../tools.js';
+import { executeTool, toolResultOf } from '../tools/index.js';
 
 describe('Phase 7 — squad_share / squad_recall integration', () => {
   it('squad members hand off: alpha-1 shares, alpha-2 recalls', async () => {

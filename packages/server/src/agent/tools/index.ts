@@ -1,123 +1,103 @@
-import { runWithToolCallId, currentTurnRoot } from './turn-state.js';
-import { classifyToolResult, toolErrorCodeForThrow, type ToolOutcome } from './tool-outcome.js';
-export { toolResultOf, toolWasBlocked, type ToolOutcome } from './tool-outcome.js';
+// ════════════════════════════════════════════════════════════════════════════
+// THE EXECUTOR (PHASE-5 T4 — relocated from `agent/tools.ts`, which is DELETED)
+//
+// `executeTool` is the single door every tool call goes through: the loop's
+// parallel and serial batches, the loop's auto-delivery sends, and
+// a2a-transport's parked-call resumes. It is research 05 §(a)'s
+// `agent/tools/index.ts` — "alias resolve, deny/PM gate, registry lookup,
+// result cap — NO switch" — and as of this commit there is no switch.
+//
+// ── THE ORDER IS THE CONTRACT, AND IT IS THE THING TO CHECK FIRST ──
+// Every gate below runs in a deliberate sequence and each position was earned
+// by an incident or a ruling. Reading top to bottom:
+//
+//   1. FU-4 `tools_policy.deny` — FIRST, and specifically AHEAD of any
+//      outbound-capture instrumentation, so a denied comms send is never even
+//      recorded as captured.
+//   2. The `pmMayCall` overseer wall (RULING P5-R1) — the PM validates and
+//      retasks; it never executes.
+//   3. Malformed-argument JSON (`__malformed_args`) → PARSE_ERROR.
+//   4. THE GATE LOOP (PHASE-5 T2) — fifteen hand-written permission branches
+//      became declared gates in `tools/gates.ts` evaluated here, refusing
+//      exactly what they refused, per row, with the same words and codes.
+//   5. THE ONE SCHEMA-VALIDATION BOUNDARY (PHASE-5 T3 Step 3, RULING P5-R8) —
+//      AFTER the refusals, so a call the platform was never going to run
+//      answers "permission denied" rather than being graded on its arguments;
+//      BEFORE dispatch, so no handler sees a shape it would crash on.
+//   6. The three membership interceptors (PDF / Slides / Forms).
+//   7. Dispatch: the handler table, else the membership fallback.
+//   8. The tail: the result cap, the unknown-args warning, the audit row.
+//
+// ── THE THREE INTERCEPTORS ARE EXECUTOR BODY, NOT HANDLERS (RULING P5-R10) ──
+// PDF, Slides and Forms each return a `ToolResult` DIRECTLY and therefore
+// deliberately bypass the tail — the result cap in particular. The handler
+// contract cannot express that and must not: a handler that could return early
+// could skip a context-budget guarantee the loop depends on. So they moved here
+// VERBATIM with the executor and they are absent from the handler table by
+// construction. No worker re-opens this.
+//
+// ── THE MEMBERSHIP FALLBACK IS THE OLD `default:`, AND THE SHAPE CHANGED ONCE ──
+// The switch's `default:` arm is now the `else` of `handlerFor(dispatchKey)`,
+// which is what "no case matched" already meant. Its one `break` was a guard
+// early-exit — `if (writeTool) { if (!primary) { …; break; } }` with nothing
+// after the inner `if` — so it is exactly `else if (writeTool && !primary)`,
+// and the second `break` sat at the end of the block doing nothing. The
+// primary-only Workspace-write wall and the Google-read banner asymmetry are
+// byte-identical to what stood in the switch.
+//
+// ── WHAT DELIBERATELY DID NOT COME HERE ──
+// The 268 handler bodies (`tools/cat/*`, `tools/provider/*`), the wire array
+// (`tools/definitions.ts`), the advertised surface (`tools/surface.ts`), the
+// gates (`tools/gates.ts` + `tools/gate-eval.ts`), the validator
+// (`tools/validate-args.ts`), the audit writer and the canvas cluster
+// (`tools/util.ts`). This file dispatches; it does not implement.
+// ════════════════════════════════════════════════════════════════════════════
 
-// PHASE-5 T3: `promisify(exec)` is GONE from this file with the string-exec
-// entry point it served, and so is every process spawn — both doors run through
-// `agent/tools/process-run.ts`, which uses `execFile` (never a shell) and reaches
-// /bin/zsh only with an explicit `-c`.
-// (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
-import { getDb } from '../db/connection.js';
-import { createLogger } from '../logger.js';
-import { resolveToolAlias } from '../tools/aliases.js';
-import { workOperation } from '../tools/work-verbs.js';
+
+import { runWithToolCallId, currentTurnRoot } from '../turn-state.js';
+import { classifyToolResult, toolErrorCodeForThrow, type ToolOutcome } from '../tool-outcome.js';
+export { toolResultOf, toolWasBlocked, type ToolOutcome } from '../tool-outcome.js';
+
+import { getDb } from '../../db/connection.js';
+import { createLogger } from '../../logger.js';
+import { resolveToolAlias } from '../../tools/aliases.js';
+import { workOperation } from '../../tools/work-verbs.js';
 import {
   withOutboundAsyncIfAbsent, outboundChannelForTool, outboundRecipientForTool,
-} from './v2/outbound.js';
-import { resolveAgentRef, resolveGroupRef } from './tool-helpers.js';
-// Phase 3.5 (2026-05-04), `shouldIntercept` / `interceptLargeFile` removed
-// from the executeTool path. See agent/tools.ts:executeTool for the explanation.
-// The functions still exist in `memory/large-files.ts` for backward compatibility
-// with `large_files` table records created before Phase 3.5; new tool calls
-// don't intercept.
+} from '../v2/outbound.js';
+import { resolveAgentRef, resolveGroupRef } from '../tool-helpers.js';
 // PHASE-0 T10: sensitive-path list, ~-expansion and the share/read gate.
-import { sharePathGuard, pdfInputPaths } from './path-guards.js';
-import { gatesForCall, ungatedEffectKinds } from './tools/gates.js';
-import { validateToolArgs } from './tools/validate-args.js';
-import { toolDefinitions, toolDefinitionsByName, isBoundaryValidated } from './tools/definitions.js';
-import { getFilteredTools, getAgentDenySet } from './tools/surface.js';
-// Re-exported so `agent/model.ts`, `prompt/assembler.ts`, `agent/v2/loop.ts` and
-// `tools/tool-docs.ts` keep resolving until the executor's relocation follows every
-// importer onto the leaf. A pointer, not a second surface.
-export { getFilteredTools } from './tools/surface.js';
-// Re-exported so `agent/model.ts` and `prompt/assembler.ts` keep resolving until the
-// executor's own relocation moves every importer of this file onto its real home
-// (`agent/tools/definitions.js` for the wire, `agent/tools/surface.js` for the surface).
-// A pointer, not a second array: there is one `toolDefinitions` and it is the leaf's.
-export { toolDefinitions } from './tools/definitions.js';
-import { handlerFor } from './tools/handlers.js';
+import { sharePathGuard, pdfInputPaths } from '../path-guards.js';
+import { gatesForCall, ungatedEffectKinds } from './gates.js';
+import { validateToolArgs } from './validate-args.js';
+import { toolDefinitions, toolDefinitionsByName, isBoundaryValidated } from './definitions.js';
+import { getFilteredTools, getAgentDenySet } from './surface.js';
+import { handlerFor } from './handlers.js';
 // The registration LOOP over `toolDefinitions` travelled to the definitions
 // leaf with the array it projects; this file keeps only the cap's READER,
 // which `applyMaxResultTokensCap` below is the sole caller of.
-import { getRegisteredMaxResultTokens } from './v2/classifiers/concurrency.js';
-import { prependUserMailboxBanner } from './tools/provider/mailbox-banner.js';
-import { auditLog, agentCanSelfCompleteById, permissionDeniedMessage, openFileInCanvas } from './tools/util.js';
-// PHASE-5 T4: `agentCanSelfComplete` / `agentCanSelfCompleteById` moved to
-// `agent/tools/util.ts` so `permissionDeniedMessage` — which every relocated
-// gated handler prints — could move with them. Re-exported here so this file's
-// existing importers (`v2/loop.ts`) keep resolving until the executor's own
-// relocation moves them onto `agent/tools/index.js`.
-export { agentCanSelfComplete, agentCanSelfCompleteById } from './tools/util.js';
-// PHASE-5 T4: `executeFilePatch` moved to `agent/tools/cat/fs.ts` with the nine
-// file/exec handlers that were its only production callers. Re-exported here so
-// `agent/__tests__/file-patch.test.ts` keeps resolving until the executor's own
-// relocation moves this file's importers onto `agent/tools/index.js`.
-export { executeFilePatch } from './tools/cat/fs.js';
-import { evaluateGate, logOnly } from './tools/gate-eval.js';
-import { isPrimaryAgent, isPMAgent } from '../config/platform.js';
+import { getRegisteredMaxResultTokens } from '../v2/classifiers/concurrency.js';
+import { prependUserMailboxBanner } from './provider/mailbox-banner.js';
+import { auditLog, agentCanSelfCompleteById, permissionDeniedMessage, openFileInCanvas } from './util.js';
+import { evaluateGate, logOnly } from './gate-eval.js';
+import { isPrimaryAgent, isPMAgent } from '../../config/platform.js';
 // Single source of truth for the PM overseer allow-list; re-checked at the
 // executor chokepoint (demolition Phase 1.7 PM verb enforcement).
 // `PM_ONLY_WORK_OPS` left with the ladder: the gate that reads it now lives in
 // `tools/gates.ts` (row 8). The `pmMayCall` WALL stays here, above the gate loop
 // and outside the deleted range — RULING P5-R1.
-import { pmMayCall } from '../tracker/pm-agent.js';
-import { googleReadToolDefinitions, executeGoogleReadTool } from '../google/tools-read.js';
-import { googleWriteToolDefinitions, executeGoogleWriteTool } from '../google/tools-write.js';
-import { slidesToolNames, executeGoogleSlidesTool } from '../google/tools-slides.js';
-import { pdfToolNames, executePdfTool } from './pdf-tools.js';
-import { formsToolNames, executeGoogleFormsTool } from '../google/tools-forms.js';
-import { getAgentGoogleAccessLevel } from '../google/auth.js';
-import { microsoftReadToolDefinitions, executeMicrosoftReadTool } from '../microsoft/tools-read.js';
-import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../microsoft/tools-write.js';
+import { pmMayCall } from '../../tracker/pm-agent.js';
+import { googleReadToolDefinitions, executeGoogleReadTool } from '../../google/tools-read.js';
+import { googleWriteToolDefinitions, executeGoogleWriteTool } from '../../google/tools-write.js';
+import { slidesToolNames, executeGoogleSlidesTool } from '../../google/tools-slides.js';
+import { pdfToolNames, executePdfTool } from '../pdf-tools.js';
+import { formsToolNames, executeGoogleFormsTool } from '../../google/tools-forms.js';
+import { getAgentGoogleAccessLevel } from '../../google/auth.js';
+import { microsoftReadToolDefinitions, executeMicrosoftReadTool } from '../../microsoft/tools-read.js';
+import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../../microsoft/tools-write.js';
 import type { ToolCall, ToolResult, ToolErrorCode } from '@dojo/shared';
 
 const logger = createLogger('tools');
-
-
-// PHASE-5 T4: the per-turn recall budget (`RECALL_BUDGET_TOKENS` +
-// `recallBudgetNotice`) moved WITH the four recall handlers it exists for, to
-// `agent/tools/cat/recall.ts`. It had no other reader here.
-
-// PHASE-5 T4: `getDownloadUrl`, `toDashboardPath` and `registerSharedFile`
-// moved to `agent/tools/util.ts` — the comms handlers that mint a download URL
-// left this file, and a category module may not import it back.
-
-// PHASE-5 T4: the canvas-open cluster (`broadcastCanvasUpdate`, `canvasMime`,
-// `queueCanvasDocAttachment`, `syncCanvasAfterWrite`, `openFileInCanvas`,
-// `localOfficePathFromResult`) moved to `agent/tools/util.ts` — every category
-// that writes a file asks it whether the user gets to see the result.
-
-// ── Filtered tools per agent (based on permissions + tools policy) ──
-
-// PHASE-5 T4: the WIRE ARRAY (`toolDefinitions`, ~2,474 lines),
-// `getAllToolDefinitions()` (the ONE declared emission order) and the two
-// definition-derived lookups the validation boundary uses
-// (`toolDefinitionsByName`, `isBoundaryValidated`) moved to
-// `agent/tools/definitions.ts`. The array IS the provider payload and both
-// prompt goldens hash exactly its projection, so it relocated BYTE-IDENTICAL
-// and the module it landed in says so at the top with the proof.
-
-// PHASE-5 T4: the ADVERTISED SURFACE — `getFilteredTools`, `computeFilteredTools`,
-// the per-agent memo and its fingerprint, `parseToolsPolicy` and the FU-4
-// executor-side deny memo (`getAgentDenySet`) — moved to
-// `agent/tools/surface.ts`. It had to move ahead of the last dispatch key:
-// `load_tool_docs` reads `getFilteredTools`, and a category module may not
-// import this file. The FU-4 GATE itself did not move — it is still the first
-// branch of `executeToolInner`, ahead of the outbound-capture instrument.
-
-
-// ── Tool definitions: the type is the LEAF now (PHASE-5 T1) ──
-//
-// `ToolDefinition` moved to `agent/tools/types.ts`, a module with zero imports,
-// because fifteen modules type-imported it from HERE and this file statically
-// imports eleven of them straight back (§T0-PINS P8). Those eleven cycles are
-// why `applyTextPagination` had to be fetched through `await import()` at
-// runtime from two of them. The re-export below keeps every consumer outside
-// the toolbox working unchanged; new code should import from the leaf.
-export type { ToolDefinition, ToolEffect, EffectKind, ToolFieldDeclaration } from './tools/types.js';
-// The pagination leaf's two helpers keep their old public home so the six
-// former `await import('../agent/tools.js')` call sites are the only movers.
-export { applyTextPagination, coerceNumberArg } from './tools/pagination.js';
 
 // Membership sets for dispatch routing. The Google/Microsoft definition arrays
 // already include the user_* slot variants (the generators push them at module
@@ -131,74 +111,7 @@ const MS_WRITE_TOOL_NAMES = new Set(microsoftWriteToolDefinitions.map(t => t.nam
 const MS_READ_TOOL_NAMES = new Set(microsoftReadToolDefinitions.map(t => t.name));
 
 
-
-// ── Path Resolution ──
-// resolvePath / SENSITIVE_BASENAMES / isSensitivePath moved to
-// agent/path-guards.ts (PHASE-0 T10) so the case-fold and the share gate have
-// one home. Imported at the top of this file; behaviour is unchanged here.
-
-
-// The exec sensitive-file scan MOVED to `agent/brokers/proc.ts` at PHASE-5 T2.
-// It answered "may this command run" from inside the string-exec handler, i.e. from the
-// handler, while the ladder answered the same question at the door — two places,
-// one question, which is the shape this phase exists to delete. The broker now
-// asks it, with the refusal message carried verbatim on the verdict so nothing
-// an agent reads changed.
-
 // ── Tool Execution ──
-
-// PHASE-5 T4: `auditLog` and its AUDIT_ACTION_MAP moved to
-// `agent/tools/util.ts`. A relocated handler cannot import this file (that is
-// the cycle the split is undoing), and two copies of an audit writer is exactly
-// the disease — so there is ONE, imported by both surfaces.
-
-// ════════════════════════════════════════════════════════════════════════════
-// THE TWO EXEC DOORS (PHASE-5 T3 Step 1).
-//
-// WHAT STOOD HERE. One function — the string-exec entry point — which took
-// `args.command as string` and handed it to `execAsync(command, { shell:
-// '/bin/zsh' })`. It is DELETED — not flag-disabled, not renamed — and its
-// identifier is grep-zero. Everything that made it dangerous was structural: the
-// tool's schema said *"the shell command to execute"*, so the model composed
-// shell syntax, and the gate in front of it could only ever inspect a program
-// NAME inside a line the shell was about to re-parse.
-//
-// WHAT STANDS HERE INSTEAD:
-//   `executeArgv`        `exec({argv})` — `execFile`, no shell at all. The
-//                        program is argv[0], every other element is one literal
-//                        argument, and the shell's metacharacters are inert.
-//   `executeShellScript` `shell({script})` — `/bin/zsh -c <script>`, the same
-//                        interpreter with the same semantics as before, behind
-//                        its OWN grant class, with the FULL script text audited.
-//
-// ⚠ `executeShellScript` IS NOT THE DELETED ENTRY POINT RENAMED, and the
-// difference is worth stating because a reviewer should be able to check it: the
-// old function read `args.command`, was gated by a check that saw only a base
-// command, and audited `command` as its target with no record of what the shell
-// then did with it. This one reads `args.script`, is gated by the `shell` grant
-// rows through the same seam the approval gate uses, and writes the whole script
-// to the audit row. The owner's EXEC-LOOP ruling (2026-07-28) rides here intact:
-// an agent with shell access runs loops, pipes and redirects as it did yesterday.
-//
-// The RUNNING — the per-stream 16K caps, the `stdout_truncated:true` flags, the
-// `command_failed:` header, the ENOENT/SIGTERM translation — moved verbatim to
-// `agent/tools/process-run.ts` so both doors share one body by construction.
-// ════════════════════════════════════════════════════════════════════════════
-
-/** Both doors write the same audit shape the deleted entry point wrote. */
-// PHASE-5 T4: the file/exec implementations (`executeArgv`,
-// `executeShellScript`, `executeFileRead/Write/Append/Patch/List`, the stored-
-// attachment lookup and their helpers) moved to `agent/tools/cat/fs.ts` with
-// the nine handlers that were their only callers.
-// PHASE-5 T4: `USER_MAILBOX_READ_TOOLS` + `prependUserMailboxBanner` moved to
-// `agent/tools/provider/mailbox-banner.ts`, with the TEST that holds the
-// behaviour — the explicit Google and Microsoft read handlers both banner, the
-// default membership branch below banners Google reads and not Microsoft ones,
-// and that asymmetry is now a measured, tested fact rather than a comment.
-
-// PHASE-5 T4: `normalizeRepeatDaysOfWeek` + `REPEAT_DAY_NAME_MAP` moved to
-// `agent/tools/cat/tracker.ts` with the three work-verb handlers that were
-// their only callers.
 
 // P6a: one tool call = one execution context. Everything below records against
 // `toolCall.id` through getCurrentToolCallId, so the identity is attached here,
@@ -555,61 +468,56 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
     // over the retired verb list has nothing left to find here.
     const dispatchKey = workOperation(name, args) ?? name;
 
-    // ── THE RELOCATED HANDLERS (PHASE-5 T4) ─────────────────────────────────
-    // Categories that have moved out of this file answer from `agent/tools/`
-    // instead of from the switch below. A dispatch key is served by ONE of the
-    // two, never both — a category's move deletes its cases in the same commit
-    // that adds its module — so this is a shrinking switch, not a second
-    // dispatcher racing it (roadmap non-negotiable #1). `handler-table.test.ts`
-    // asserts the two key sets are disjoint rather than trusting the discipline.
+    // ── DISPATCH (PHASE-5 T4) ───────────────────────────────────────────────
+    // Every one of the 268 dispatch keys answers from `tools/cat/*` or
+    // `tools/provider/*`. There is no switch left: the `else` below is the old
+    // `default:` arm, which is what "no case matched" always meant.
     //
     // The handler answers with the same two values the case bodies assigned, so
-    // everything below the switch — the per-tool `maxResultTokens` cap, the
-    // unknown-args warning, the try/catch that turns a throw into
-    // `Tool execution failed: …` — still applies to it identically.
+    // everything below — the per-tool `maxResultTokens` cap, the unknown-args
+    // warning, the try/catch that turns a throw into `Tool execution failed: …`
+    // — still applies to it identically. That is why a handler CANNOT return
+    // early, and why the three interceptors above are not handlers.
     const relocated = handlerFor(dispatchKey);
     if (relocated) {
       const outcome = await relocated({ agentId, name, args, callId: id, toolCall });
       content = outcome.content;
       isError = outcome.isError;
       if (outcome.errorCode) errorCode = outcome.errorCode;
-    } else
-    switch (dispatchKey) {
-      default: {
-        // Membership-based routing for Google / Microsoft tools that the
-        // explicit cases above don't list, newer base tools (drive_move,
-        // gmail_create_label, docs_insert_text, sheets_format, calendar_freebusy,
-        // …) and the user_* slot variants (user_calendar_create, user_docs_create,
-        // …). Without this they fell through to "Unknown tool" even with the
-        // account connected. The executors handle the user_ prefix + slot.
-        if (GOOGLE_WRITE_TOOL_NAMES.has(name) || MS_WRITE_TOOL_NAMES.has(name)) {
-          if (!isPrimaryAgent(agentId)) {
-            content = 'Permission denied: only the primary agent can use Workspace write tools.';
-            isError = true;
-            auditLog(agentId, name, null, 'denied', 'Workspace write tool restricted to primary agent');
-            break;
-          }
-        }
-        const dispatchAgentName =
-          (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined)?.name ?? agentId;
-        if (GOOGLE_WRITE_TOOL_NAMES.has(name)) {
-          content = await executeGoogleWriteTool(name, args, agentId, dispatchAgentName);
-          isError = content.startsWith('Error');
-        } else if (GOOGLE_READ_TOOL_NAMES.has(name)) {
-          content = prependUserMailboxBanner(await executeGoogleReadTool(name, args, agentId, dispatchAgentName), name);
-          isError = content.startsWith('Error');
-        } else if (MS_WRITE_TOOL_NAMES.has(name)) {
-          content = await executeMicrosoftWriteTool(name, args, agentId, dispatchAgentName);
-          isError = content.startsWith('Error');
-        } else if (MS_READ_TOOL_NAMES.has(name)) {
-          content = await executeMicrosoftReadTool(name, args, agentId, dispatchAgentName);
-          isError = content.startsWith('Error');
-        } else {
-          content = `Unknown tool: ${name}`;
-          isError = true;
-          auditLog(agentId, 'tool_call', name, 'error', 'Unknown tool');
-        }
-        break;
+    } else if (
+      // The switch's `default:` arm, and its guard early-exit written as the
+      // condition it always was: `if (write) { if (!primary) { …break; } }` had
+      // nothing after the inner `if`, so this is the same branch.
+      (GOOGLE_WRITE_TOOL_NAMES.has(name) || MS_WRITE_TOOL_NAMES.has(name)) && !isPrimaryAgent(agentId)
+    ) {
+      content = 'Permission denied: only the primary agent can use Workspace write tools.';
+      isError = true;
+      auditLog(agentId, name, null, 'denied', 'Workspace write tool restricted to primary agent');
+    } else {
+      // Membership-based routing for Google / Microsoft tools that the
+      // explicit cases above don't list, newer base tools (drive_move,
+      // gmail_create_label, docs_insert_text, sheets_format, calendar_freebusy,
+      // …) and the user_* slot variants (user_calendar_create, user_docs_create,
+      // …). Without this they fell through to "Unknown tool" even with the
+      // account connected. The executors handle the user_ prefix + slot.
+      const dispatchAgentName =
+        (getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined)?.name ?? agentId;
+      if (GOOGLE_WRITE_TOOL_NAMES.has(name)) {
+        content = await executeGoogleWriteTool(name, args, agentId, dispatchAgentName);
+        isError = content.startsWith('Error');
+      } else if (GOOGLE_READ_TOOL_NAMES.has(name)) {
+        content = prependUserMailboxBanner(await executeGoogleReadTool(name, args, agentId, dispatchAgentName), name);
+        isError = content.startsWith('Error');
+      } else if (MS_WRITE_TOOL_NAMES.has(name)) {
+        content = await executeMicrosoftWriteTool(name, args, agentId, dispatchAgentName);
+        isError = content.startsWith('Error');
+      } else if (MS_READ_TOOL_NAMES.has(name)) {
+        content = await executeMicrosoftReadTool(name, args, agentId, dispatchAgentName);
+        isError = content.startsWith('Error');
+      } else {
+        content = `Unknown tool: ${name}`;
+        isError = true;
+        auditLog(agentId, 'tool_call', name, 'error', 'Unknown tool');
       }
     }
   } catch (err) {

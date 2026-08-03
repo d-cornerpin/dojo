@@ -1,7 +1,9 @@
 // ════════════════════════════════════════
 // The TOOL-EXECUTION boundary's `Outcome` (PHASE-4 T1 Step 2, cluster 3 of 3).
 //
-// §T0-PINS A pins the boundary at `agent/tools.ts:executeTool`. It answered
+// §T0-PINS A pins the boundary at `executeTool` — `agent/tools.ts` when that
+// pin was taken, `agent/tools/index.ts` since PHASE-5 T4 deleted that file.
+// It answered
 // `ToolResult` — a BOOLEAN `isError` and a prose `content` — so "the platform
 // refused this" and "the tool broke" arrived at the caller as the same fact, and
 // the only way to tell them apart was to read the English.

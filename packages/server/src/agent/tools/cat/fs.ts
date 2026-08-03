@@ -13,8 +13,8 @@
 // RELOCATION, NOT REWRITE, and five things here are load bearing:
 //
 // 1. **`executeFilePatch` stays EXPORTED** — `agent/__tests__/file-patch.test.ts`
-//    imports it, and `agent/tools.ts` re-exports it from here so that importer
-//    keeps resolving until the executor's own relocation moves it.
+//    imported it via a re-export in `agent/tools.ts`; that file is DELETED and
+//    the test imports HERE, which exposed the cycle `tools/handlers.ts` records.
 // 2. **T3's exec seam is untouched.** `executeArgv` and `executeShellScript`
 //    call `runProcess` with an argv and with `/bin/zsh -c <script>`
 //    respectively; the approval gate and the dispatcher answer the destructive
