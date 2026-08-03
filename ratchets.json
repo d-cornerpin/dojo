@@ -1311,6 +1311,20 @@
       "why": "`invalid_args` joins blocked/crashed/cancelled because the schema-validation boundary gave `INVALID_ARGS` its first writer, and without the arm a malformed call classified `crashed` — the platform reporting itself broken for a call it understood and refused. The raise is the enum member, its entry in TOOL_SEAM_REASONS, and TWO lines of doc: what it means, and the one distinction a reader must not get wrong (it is NOT `blocked`; retry with corrected arguments, not never). The longer rationale deliberately lives at the classifier in `agent/tool-outcome.ts` rather than here, which is why this is +2 and not +13 — the first draft was, and the ratchet is what forced the prose to the file that owns the decision."
     },
     {
+      "path": "packages/server/src/agent/tools/cat/fs.ts",
+      "from": 0,
+      "to": 848,
+      "by": "PHASE-5 T4 sitting 2 (2026-08-02) — new-file-cap PIN, not a raise",
+      "why": "PHASE-5 T4, the toolbox split. Relocated: the nine file/scratchpad/exec handler bodies AND the implementations they were the only production callers of — executeArgv, executeShellScript, executeFileRead/Write/Append/Patch/List, the stored-attachment lookup and their helpers. agent/tools.ts lost 95 lines of switch plus 675 lines of those functions in the same commit, and the file went 4,926 -> 3,942. Not new code. executeFileRead alone is ~190 lines because it is the vision path: image and PDF reads return provider content blocks. Not split, on the precedent set for cat/healer.ts. Decrease-only from here."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/session.ts",
+      "from": 0,
+      "to": 241,
+      "by": "PHASE-5 T4 sitting 2 (2026-08-02) — new-file-cap PIN, not a raise",
+      "why": "PHASE-5 T4, the toolbox split. Relocated bodies for `tunnel`, `set_user_presence` and `reset_session` (208 lines of switch deleted in the same commit). Three single-key categories that act on the DOJO's own state; they are together rather than in cat/platform.ts because platform.ts is at its own measured size and reset_session is deliberately NOT a DOJO control — PRIMARY_ONLY_TOOLS excludes it so the Healer, a non-primary service agent, can clear a wedged agent's context. Decrease-only from here."
+    },
+    {
       "path": "packages/server/src/agent/tools/cat/agents.ts",
       "from": 0,
       "to": 1284,
@@ -1494,6 +1508,8 @@
     "watchdog/src/index.ts": 1198,
     "packages/server/src/agent/tools/cat/agents.ts": 1284,
     "packages/server/src/agent/tools/cat/comms.ts": 844,
+    "packages/server/src/agent/tools/cat/fs.ts": 848,
+    "packages/server/src/agent/tools/cat/session.ts": 241,
     "packages/server/src/agent/tools/util.ts": 338,
     "packages/server/src/agent/tools/cat/media.ts": 896,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
