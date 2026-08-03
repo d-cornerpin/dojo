@@ -39,6 +39,9 @@ import { commsHandlers } from './cat/comms.js';
 import { trackerHandlers } from './cat/tracker.js';
 import { mediaHandlers } from './cat/media.js';
 import { officeHandlers } from './cat/office.js';
+import { webHandlers } from './cat/web.js';
+import { canvasHandlers } from './cat/canvas.js';
+import { hidHandlers } from './cat/hid.js';
 
 const TABLE: ReadonlyMap<string, ToolHandler> = new Map<string, ToolHandler>([
   ...Object.entries(recallHandlers),
@@ -52,6 +55,9 @@ const TABLE: ReadonlyMap<string, ToolHandler> = new Map<string, ToolHandler>([
   ...Object.entries(trackerHandlers),
   ...Object.entries(mediaHandlers),
   ...Object.entries(officeHandlers),
+  ...Object.entries(webHandlers),
+  ...Object.entries(canvasHandlers),
+  ...Object.entries(hidHandlers),
 ]);
 
 /** The handler for this dispatch key, or `undefined` if the switch still owns it. */
