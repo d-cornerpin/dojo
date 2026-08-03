@@ -109,10 +109,10 @@ describe('a converted call site cannot act on a resource the call never declared
     });
   });
 
-  it('a capability is dead once its call ends — a late continuation holds nothing', async () => {
-    // The leak this closes: work started inside a dispatch and NOT awaited keeps
-    // running after the call returns. It captures the async context, so without
-    // an expiry it would still hold a live authorization.
+  it('a capability answers NOTHING from outside its call — invoked later, from another context', async () => {
+    // The leak this closes: a closure minted inside a dispatch and CALLED from
+    // somewhere else — a poller, a route, a watcher started at boot. It holds a
+    // reference, and without an expiry it would hold a live authorization.
     let escaped: (() => void) | null = null;
     await inCall([pathGrant('fs_read', inScope)], 'file_read', () => {
       expect(currentCapability()).not.toBeNull();
@@ -120,6 +120,35 @@ describe('a converted call site cannot act on a resource the call never declared
     });
     expect(escaped).not.toBeNull();
     expect(escaped!).toThrow(EffectNotAuthorized);
+  });
+
+  it('…but work STARTED INSIDE the call keeps it while it runs, and that is the correct answer', async () => {
+    // MEASURED, T8D — an earlier wording of `capability.ts`'s header said a
+    // fire-and-forget continuation outliving its dispatch holds a DEAD
+    // capability. It does not: the continuation inherits the call's async
+    // context. This clause pins the real contract because it decides which
+    // remaining modules can convert at all.
+    //
+    // It is the RIGHT answer rather than a hole: the continuation is still THAT
+    // call's own work, and it can still only touch what THAT call declared —
+    // proven by the second half. `image_create` answers the model at once and
+    // delivers the image from exactly this shape.
+    let insideLater: unknown = null;
+    let refusedLater: unknown = null;
+    let finish!: () => void;
+    const ran = new Promise<void>((r) => { finish = r; });
+
+    await inCall([pathGrant('fs_read', inScope)], 'image_create', () => {
+      void (async () => {
+        await new Promise((r) => setTimeout(r, 5));
+        try { insideLater = effectFs.readFileSync(inScope, 'utf8'); } catch (err) { insideLater = err; }
+        try { effectFs.readFileSync(outOfScope, 'utf8'); } catch (err) { refusedLater = err; }
+        finish();
+      })();
+    });
+    await ran;
+    expect(typeof insideLater, 'the declared resource is still reachable from the continuation').toBe('string');
+    expect(refusedLater, 'and the undeclared one is still refused there').toBeInstanceOf(EffectNotAuthorized);
   });
 
   it('the refusal says which tool reached where, so a too-narrow declaration is adjudicable', async () => {

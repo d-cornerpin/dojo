@@ -40,15 +40,37 @@
 // itself. A brand keeps the type unconstructible outside this file.
 //
 // ── PER CALL MEANS PER CALL, AND IT IS DERIVED RATHER THAN REMEMBERED ──
-// A capability is live only while the tool call it was minted for is still
-// running, and that is not a flag somebody has to clear: it is read from the
+// A capability answers only inside the async context of the tool call it was
+// minted for, and that is not a flag somebody has to clear: it is read from the
 // platform's OWN per-call identity (`turn-state.ts`, opened once at the single
-// door every dispatch path goes through). A fire-and-forget continuation that
-// outlives its own dispatch therefore holds a DEAD capability, and so does one
-// that leaked into a sibling call — `getCurrentToolCallId` answers only for a
-// matching agent, so a capability cannot be borrowed across identities either.
-// The difference this makes: "the authorization was for THAT call" instead of
-// "for that agent, roughly, for a while".
+// door every dispatch path goes through). A capability that leaked into a
+// sibling call is dead — `getCurrentToolCallId` answers only for a matching
+// agent, so it cannot be borrowed across identities either. The difference this
+// makes: "the authorization was for THAT call" instead of "for that agent,
+// roughly, for a while".
+//
+// ── WHAT "THE CALL" INCLUDES, MEASURED RATHER THAN ASSUMED (T8D) ──
+// An earlier wording of this header said a fire-and-forget continuation that
+// outlives its dispatch holds a DEAD capability. **It was tested and it is not
+// true**, and the distinction is load-bearing for every category still to
+// convert, so it is written here and pinned by two clauses in
+// `__tests__/facade-contract.test.ts` rather than left as prose:
+//
+//   * work STARTED INSIDE the dispatch — `void (async () => { … })()`, a
+//     `setTimeout`, a callback registered there — inherits the call's async
+//     context and therefore holds a LIVE capability for as long as it runs.
+//     That is correct and is the property the media/canvas doors depend on:
+//     it is still THAT call's work, and it can still only touch resources THAT
+//     call declared. `image_create` answers the model immediately and delivers
+//     the image from such a continuation.
+//   * work reached from ANOTHER context — a poller loop or watcher started at
+//     boot, an HTTP route, a callback invoked later from outside the chain —
+//     holds NOTHING, and a converted site there refuses.
+//
+// So "can this file convert?" is not answered by *when* the I/O happens. It is
+// answered by *whose async context it happens in*, which is a caller-chain
+// question and is why every category establishes that chain by reading before
+// it converts.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { AsyncLocalStorage } from 'node:async_hooks';
