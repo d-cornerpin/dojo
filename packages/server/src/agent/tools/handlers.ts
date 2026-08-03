@@ -42,6 +42,11 @@ import { officeHandlers } from './cat/office.js';
 import { webHandlers } from './cat/web.js';
 import { canvasHandlers } from './cat/canvas.js';
 import { hidHandlers } from './cat/hid.js';
+import { credentialsHandlers } from './cat/credentials.js';
+import { googleHandlers } from './provider/google.js';
+import { microsoftHandlers } from './provider/microsoft.js';
+import { plaudHandlers } from './provider/plaud.js';
+import { unifiedHandlers } from './provider/unified.js';
 
 const TABLE: ReadonlyMap<string, ToolHandler> = new Map<string, ToolHandler>([
   ...Object.entries(recallHandlers),
@@ -58,6 +63,11 @@ const TABLE: ReadonlyMap<string, ToolHandler> = new Map<string, ToolHandler>([
   ...Object.entries(webHandlers),
   ...Object.entries(canvasHandlers),
   ...Object.entries(hidHandlers),
+  ...Object.entries(credentialsHandlers),
+  ...Object.entries(googleHandlers),
+  ...Object.entries(microsoftHandlers),
+  ...Object.entries(plaudHandlers),
+  ...Object.entries(unifiedHandlers),
 ]);
 
 /** The handler for this dispatch key, or `undefined` if the switch still owns it. */
