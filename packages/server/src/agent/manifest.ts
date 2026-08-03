@@ -10,6 +10,8 @@
 // truth for a grant and the rows are its projection.
 // ════════════════════════════════════════════════════════════════════════════
 
+import os from 'node:os';
+import path from 'node:path';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { isPrimaryAgent } from '../config/platform.js';
@@ -62,12 +64,60 @@ export const DEFAULT_SUBAGENT_PERMISSIONS: PermissionManifest = {
   // scope: inherit parent minus danger). Recorded as a hand-up, not silently.
   shell_allow: ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'echo', 'node', 'npm', 'npx', 'git'],
   shell_deny: ['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *'],
-  network_domains: 'none',
+  // ⚠ WAS `'none'`, AND THE PLAN CALLS THAT A FALSE STATEMENT (T5 Step 1).
+  // The owner's DECIDED default is "inherit parent minus danger", and network is
+  // not in the danger set — workers must browse. `'none'` projected NO net allow
+  // rows, so every agent whose stored manifest is `'{}'` (40 of 56 on the dev
+  // body) was refused `web_fetch` / `web_search` while the platform's own
+  // documentation described them as researchers. Widening a default is never a
+  // capability loss, and this one is the owner's own words.
+  //
+  // NOTE for whoever reads this next: this constant does TWO jobs — it is the
+  // scope of every agent storing `'{}'` AND the fallback for an agent id that is
+  // not in the table at all. The second is a bug-shaped path (`logger.warn`
+  // "Agent not found") and it now inherits the wider default with the first.
+  // Recorded as a hand-up in `.superpowers/sdd/PHASE-5/task-T5-report.md` §7
+  // rather than fixed here, because splitting it is a different job.
+  network_domains: '*',
   max_processes: 3,
   can_spawn_agents: false,
   can_assign_permissions: false,
   system_control: [],
 };
+
+
+// ── THE ARTIFACT DIRECTORY (PHASE-5 T5) ──
+// `~/.dojo/uploads/<agentId>` is where an agent's own artifacts land —
+// `image_create` writes there, `imessage_send` stages attachments there, the PDF
+// tools output there. It was in NO default manifest, which is the gap T2's
+// log-only staging window was opened for in the first place ("enforcing a
+// brand-new refusal against sub-agents today would break every artifact flow").
+// It cannot be a constant because the path contains the agent's id, so it is
+// filled in per agent here, on every branch that returns a manifest.
+//
+// Widening only, and only into the agent's OWN directory: `'*'` is left alone
+// rather than expanded into a list (turning a wildcard into an enumeration would
+// NARROW it), and no agent gains a path belonging to another.
+
+/** `~/.dojo/uploads/<agentId>/**` — this agent's own artifact directory. */
+export function artifactPathFor(agentId: string): string {
+  return path.join(os.homedir(), '.dojo', 'uploads', agentId, '**');
+}
+
+function withArtifactPath(value: string[] | '*', agentId: string): string[] | '*' {
+  if (value === '*') return '*';
+  const artifact = artifactPathFor(agentId);
+  return value.includes(artifact) ? value : [...value, artifact];
+}
+
+/** Any manifest, with this agent's artifact directory readable and writable. */
+export function withArtifactPaths(manifest: PermissionManifest, agentId: string): PermissionManifest {
+  return {
+    ...manifest,
+    file_read: withArtifactPath(manifest.file_read, agentId),
+    file_write: withArtifactPath(manifest.file_write, agentId),
+  };
+}
 
 export function getAgentPermissions(agentId: string): PermissionManifest {
   // Primary agent always gets full permissions
@@ -84,7 +134,7 @@ export function getAgentPermissions(agentId: string): PermissionManifest {
 
   if (!agent) {
     logger.warn('Agent not found for permissions check, using restricted defaults', { agentId }, agentId);
-    return DEFAULT_SUBAGENT_PERMISSIONS;
+    return withArtifactPaths(DEFAULT_SUBAGENT_PERMISSIONS, agentId);
   }
 
   // The platform-seeded primary agent (created_by='system', spawn_depth 0,
@@ -105,8 +155,11 @@ export function getAgentPermissions(agentId: string): PermissionManifest {
   if (agent.permissions && agent.permissions !== '{}') {
     try {
       const parsed = JSON.parse(agent.permissions) as Partial<PermissionManifest>;
-      // Merge with defaults for any missing fields
-      return {
+      // Merge with defaults for any missing fields, then add this agent's own
+      // artifact directory (T5) — a stored manifest predates that path existing
+      // in any default, so filling it in here is what makes every agent able to
+      // reach its own uploads dir without anybody editing a row.
+      return withArtifactPaths({
         file_read: parsed.file_read ?? DEFAULT_SUBAGENT_PERMISSIONS.file_read,
         file_write: parsed.file_write ?? DEFAULT_SUBAGENT_PERMISSIONS.file_write,
         file_delete: parsed.file_delete ?? DEFAULT_SUBAGENT_PERMISSIONS.file_delete,
@@ -126,11 +179,11 @@ export function getAgentPermissions(agentId: string): PermissionManifest {
         can_spawn_agents: parsed.can_spawn_agents ?? DEFAULT_SUBAGENT_PERMISSIONS.can_spawn_agents,
         can_assign_permissions: parsed.can_assign_permissions ?? DEFAULT_SUBAGENT_PERMISSIONS.can_assign_permissions,
         system_control: parsed.system_control ?? DEFAULT_SUBAGENT_PERMISSIONS.system_control,
-      };
+      }, agentId);
     } catch {
       logger.warn('Failed to parse agent permissions, using defaults', { agentId }, agentId);
     }
   }
 
-  return DEFAULT_SUBAGENT_PERMISSIONS;
+  return withArtifactPaths(DEFAULT_SUBAGENT_PERMISSIONS, agentId);
 }

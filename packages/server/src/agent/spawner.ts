@@ -4,6 +4,7 @@ import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
 import { getAgentPermissions, checkPermission } from './permissions.js';
+import { resolveChildScope } from './scope.js';
 import { inheritedCreatorKind } from './created-by-kind.js';
 import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
 import { sendAgentMessage } from './agent-bus.js';
@@ -260,7 +261,23 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
   const timeoutSeconds = classification === 'ronin' ? null : (timeout ?? null);
   const timeoutAt = timeoutSeconds ? new Date(Date.now() + timeoutSeconds * 1000).toISOString().replace('T', ' ').replace('Z', '') : null;
 
-  const permissionsJson = JSON.stringify(permissions ?? getAgentPermissions(parentId));
+  // ── THE CHILD'S SCOPE (PHASE-5 T5) ──
+  // What stood here was `permissions ?? getAgentPermissions(parentId)`: a child
+  // received its parent's manifest VERBATIM, and anything the caller passed was
+  // stored unread. Two consequences, both measured on the live body: a child of
+  // the primary inherited `system_control:['*']` (two such sub-agents exist), and
+  // a malformed `permissions` argument was written to the row as-is, to be
+  // silently downgraded to the default by the next reader.
+  //
+  // `resolveChildScope` answers both. No manifest named → the owner's DECIDED
+  // default (parent minus danger, plus the child's own artifact directory). A
+  // manifest named → schema-validated and bounded by child ⊆ parent, and a
+  // malformed or escalating one REFUSES THE SPAWN rather than downgrading it.
+  const scope = resolveChildScope(permissions, getAgentPermissions(parentId), agentId);
+  if (!scope.ok) {
+    throw new Error(`Spawn denied: ${scope.reason}`);
+  }
+  const permissionsJson = JSON.stringify(scope.manifest);
   const toolsPolicyJson = JSON.stringify(toolsPolicy ?? {});
 
   db.prepare(`
@@ -335,7 +352,7 @@ export async function spawnAgent(params: SpawnParams): Promise<{ agentId: string
     groupId: groupId ?? null,
     maxRuntime: timeoutSeconds,
     timeoutAt,
-    permissions: permissions ?? null,
+    permissions: scope.manifest,
     toolsPolicy: toolsPolicy ?? null,
     equippedTechniques: equippedTechniques ?? [],
     taskId: taskId ?? null,

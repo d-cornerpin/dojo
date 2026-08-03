@@ -19,6 +19,8 @@ import { sanitizeMessagesOnModelChange } from '../../agent/model-switch.js';
 import type { AgentDetail, Model, Message, AgentMessage } from '@dojo/shared';
 import { deriveOrigin, legacyOriginInputs, NEW_SESSION_DIVIDER} from '@dojo/shared';
 import { noteRouteFailure } from './route-failure.js';
+import { resolveChildScope } from '../../agent/scope.js';
+import { getAgentPermissions } from '../../agent/permissions.js';
 
 const logger = createLogger('agents-routes');
 const agentsRouter = new Hono();
@@ -43,7 +45,16 @@ agentsRouter.get('/:id', (c) => {
   }
 
   const agent = rowToAgentDetail(row);
-  return c.json({ ok: true, data: agent });
+  // ── THE EFFECTIVE SCOPE, READABLE ANY TIME (PHASE-5 T5 Step 2) ──
+  // `permissions` is the STORED blob and it is not the answer to "what can this
+  // agent actually do": it is `'{}'` for 40 of 56 agents on the dev body, it is
+  // partial for others, and the platform's own identity rules override it for
+  // the primary. `effectiveScope` is what `getAgentPermissions` actually returns
+  // — defaults filled in, identity applied, the agent's own artifact directory
+  // present — so nobody has to reconstruct it from three files to answer the
+  // question. Additive: `permissions` still carries the stored blob byte for
+  // byte, because a reader that wants to know what was WRITTEN still can.
+  return c.json({ ok: true, data: { ...agent, effectiveScope: getAgentPermissions(id) } });
 });
 
 // PATCH /:id/model - set agent's model
@@ -112,6 +123,31 @@ agentsRouter.post('/', async (c) => {
   try {
     const db = getDb();
     const agentId = uuidv4();
+
+    // ── THE SAME VALIDATION PATH THE SPAWNER USES (PHASE-5 T5 Step 2) ──
+    // This route used to write `JSON.stringify(body.permissions ?? {})` straight
+    // into the row: no schema, no bound, no reader. A manifest of the wrong shape
+    // was stored happily and silently downgraded to the default by the next
+    // reader, and a manifest claiming more than the platform grants was stored
+    // just as happily. The plan's requirement is that dashboard agent creation
+    // goes through the SAME path, so it does — literally the same function.
+    //
+    // The parent here is the PRIMARY agent's scope, because that is what a
+    // dashboard-created agent is bounded by: the route is the owner acting, and
+    // the owner's own agent is the ceiling. A body that names no manifest gets
+    // the decided default, exactly as a spawn does.
+    const scope = resolveChildScope(
+      body.permissions,
+      getAgentPermissions(getPrimaryAgentId()),
+      agentId,
+    );
+    if (!scope.ok) {
+      // A REFUSAL, NOT A DOWNGRADE. 400 rather than 500: the caller sent
+      // something the platform will not store, and the message names the field.
+      logger.warn('Dashboard agent creation refused an invalid manifest', { reason: scope.reason });
+      return c.json({ ok: false, error: `Agent not created — ${scope.reason}` }, 400);
+    }
+
     const resolvedModelId = body.modelId || null;
     const config = JSON.stringify({
       shareUserProfile: body.shareUserProfile || undefined,
@@ -146,7 +182,7 @@ agentsRouter.post('/', async (c) => {
       groupId,
       timeoutSeconds,
       timeoutAt,
-      JSON.stringify(body.permissions ?? {}),
+      JSON.stringify(scope.manifest),
       JSON.stringify(body.toolsPolicy ?? {}),
       JSON.stringify(body.equippedTechniques ?? []),
       body.taskId ?? null,
@@ -208,7 +244,7 @@ agentsRouter.post('/', async (c) => {
         groupId: null,
         maxRuntime: timeoutSeconds,
         timeoutAt,
-        permissions: body.permissions ?? {},
+        permissions: scope.manifest,
         toolsPolicy: body.toolsPolicy ?? {},
         equippedTechniques: body.equippedTechniques ?? [],
         taskId: body.taskId ?? null,
