@@ -37,6 +37,7 @@ import { clockHandlers } from './cat/clock.js';
 import { platformHandlers } from './cat/platform.js';
 import { commsHandlers } from './cat/comms.js';
 import { trackerHandlers } from './cat/tracker.js';
+import { mediaHandlers } from './cat/media.js';
 
 const TABLE: ReadonlyMap<string, ToolHandler> = new Map<string, ToolHandler>([
   ...Object.entries(recallHandlers),
@@ -48,6 +49,7 @@ const TABLE: ReadonlyMap<string, ToolHandler> = new Map<string, ToolHandler>([
   ...Object.entries(platformHandlers),
   ...Object.entries(commsHandlers),
   ...Object.entries(trackerHandlers),
+  ...Object.entries(mediaHandlers),
 ]);
 
 /** The handler for this dispatch key, or `undefined` if the switch still owns it. */
