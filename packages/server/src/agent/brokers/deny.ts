@@ -346,6 +346,26 @@ export function isGlobalDenyRule(ruleId: string): boolean {
   // SUB-AGENT would have run it log-only — the exact shape of the incident that
   // earned P5-R6 on the filesystem side.
   if (ruleId.startsWith('global-exec-deny:') || ruleId.startsWith('global-exec-substring:')) return true;
+  // PHASE-5 T5: the TOKENIZED SENSITIVE-READ refusals join it too, and this is
+  // the same omission one line later rather than a new idea. All three ids below
+  // are `isSensitivePath` — the `sensitive` tier of the table above — enforced at
+  // a door that reaches it by a route other than a path argument:
+  //
+  //   `exec-sensitive-read`                argv / shell command tokens
+  //   `applescript-shell-sensitive-read`   a `do shell script "…"` payload
+  //   `sensitive-share`                    the share / pdf-input surface
+  //
+  // Two of them already carried `basis:'ladder-parity'`, so the window never
+  // reached them and naming them here changes no answer. The AppleScript one did
+  // NOT: T3 gave it `basis:'bypass-hardening'` (correctly — the pre-T3 tree never
+  // audited a script body at all) and an id this function did not recognise, so
+  // for a SUB-AGENT the block list was RECORDED and not applied, and because the
+  // payload scan runs ahead of the grant rows the staged verdict also returned
+  // before `no-applescript-grant` could. P5-R6 is verbatim — *"a global deny is
+  // NEVER staged"* — and the sensitive-files list is a global deny however the
+  // door reaches it. Held by `__tests__/staged-set.test.ts`, which asks the
+  // brokers themselves rather than trusting this list.
+  if (ruleId === 'exec-sensitive-read' || ruleId === 'applescript-shell-sensitive-read' || ruleId === 'sensitive-share') return true;
   return DENY_RULES.some((r) => r.id === ruleId);
 }
 
