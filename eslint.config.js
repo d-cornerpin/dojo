@@ -77,13 +77,34 @@ export default [
       '@typescript-eslint/no-floating-promises': 'warn',
 
       // fs/proc reached directly instead of through a broker (Phase 5).
+      //
+      // ⚠ WHAT THIS COUNT IS, AFTER PHASE-5 T7 READ ALL 95 SITES (RULING P5-R12).
+      // The rule counts IMPORT STATEMENTS; the requirement is *nothing an agent
+      // can reach touches fs/proc/net except through a broker*. Those are not the
+      // same measurement, and the classification says why: of the 95 sites, 37
+      // act on a resource the AGENT NAMES (a path, a command, a URL out of tool
+      // arguments), 17 are reachable from a tool call but act on a PLATFORM
+      // LITERAL the agent cannot influence (self-update, voice models, the
+      // tunnel pidfile), and 41 are platform-internal with no tool path at all
+      // (boot, migration, logging, the dashboard's own routes).
+      //
+      // The rule cannot be flipped to 'error' without either inventing a
+      // threshold or routing platform machinery through agent-facing brokers,
+      // which would make the number LIE about the surface it exists to measure.
+      // It stays advisory, and the BASELINE keeps the direction enforced: the
+      // count may only fall, and a raise is a reviewed by-hand edit that has to
+      // say what it measured and refused. The flip needs an fs/proc facade that
+      // performs the I/O behind the brokers, which no plan builds today —
+      // recorded in lint-baseline.json's $classification entry with its command.
       'no-restricted-imports': [
         'warn',
         {
           paths: RESTRICTED_EFFECT_MODULES.map((name) => ({
             name,
             message:
-              'Direct fs/proc access. Phase 5 routes these through brokers with declared effects; advisory until then.',
+              'Direct fs/proc access. The brokers AUTHORIZE a declared effect; they do not perform the I/O, so an ' +
+              'import here is not by itself a hole — see eslint.config.js above this rule and lint-baseline.json ' +
+              '$classification for what the 95 sites actually are. Advisory, and the baseline may only fall.',
           })),
         },
       ],
