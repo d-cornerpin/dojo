@@ -147,7 +147,7 @@ cat > "$DEST/README.md" << 'READMEEOF'
 
 All data stored in `~/.dojo/`:
 - `data/dojo.db` — Database
-- `secrets.yaml` — API keys (encrypted at rest)
+- `secrets.yaml` — API keys and the credential master key (plaintext, owner-only permissions — back it up as carefully as you would a password file)
 - `prompts/` — Customizable agent prompts
 - `techniques/` — Learned techniques
 - `logs/` — Application logs
