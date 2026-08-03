@@ -24,6 +24,9 @@ import { createLogger } from '../../logger.js';
 import { isDreamerAgent, isHealerAgent } from '../../config/platform.js';
 import { getTunnelStatus } from '../../services/tunnel.js';
 import { getCurrentToolCallId, currentTurnNumber, currentTurnRoot } from '../turn-state.js';
+import { broadcast } from '../../gateway/ws.js';
+import { queueCanvasDoc } from '../pending-attachments.js';
+import { setCurrentCanvas, getCurrentCanvas } from '../canvas-view.js';
 
 /**
  * THE TOOLBOX LOGGER, shared rather than re-created per module.
@@ -192,4 +195,144 @@ export function permissionDeniedMessage(reason: string | undefined, agentId: str
   }
   const numbered = steps.map((s, i) => `${i + 1}. ${s}`).join('\n');
   return `[BLOCKED] Permission denied: ${reason ?? 'not allowed'}\n\nThis operation is permanently blocked by your permission settings. Retrying will fail every time.\n\nInstead, you should:\n${numbered}`;
+}
+
+// ── THE CANVAS-OPEN CLUSTER (PHASE-5 T4) ────────────────────────────────────
+// Six helpers that answer one question — "the agent just wrote a file; does the
+// user get to SEE it?" — and every category that writes a file needs the answer:
+// the fs verbs, the office block, the pdf interceptor in the executor, and the
+// canvas verbs themselves. They lived in `agent/tools.ts` and a category module
+// may not import that, so they live here, ONCE, byte-faithful.
+// Tell any open canvas showing this file to re-fetch. The right dock matches on
+// absolute path, so editing a document the user is watching (file_write /
+// file_patch / file_append) refreshes the canvas with no manual step.
+export function broadcastCanvasUpdate(agentId: string, filePath: string): void {
+  try {
+    broadcast({ type: 'canvas:updated', agentId, data: { path: filePath } });
+  } catch { /* best effort, never let a UI ping break a file write */ }
+}
+
+// Everything the canvas can render. Used both to AUTO-OPEN a file the moment
+// it's written/created (file_write, office, pdf) and to drop an "Open in
+// canvas" chip on the reply so the user can re-open it later. Per the owner's
+// choice, every type here auto-opens, documents, data, AND source/config code.
+const CANVAS_VIEWABLE_EXTS = new Set([
+  '.html', '.htm', '.md', '.markdown', '.txt', '.text', '.json', '.csv',
+  '.docx', '.xlsx', '.xls', '.xlsm', '.pdf', '.svg',
+  '.js', '.ts', '.tsx', '.jsx', '.py', '.css', '.xml', '.yaml', '.yml',
+  '.sh', '.sql', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.toml',
+]);
+
+export function canvasMime(ext: string): string {
+  switch (ext) {
+    case '.pdf': return 'application/pdf';
+    case '.html': case '.htm': return 'text/html';
+    case '.json': return 'application/json';
+    case '.csv': return 'text/csv';
+    case '.docx': return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case '.xlsx': case '.xls': case '.xlsm': return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    case '.md': case '.markdown': return 'text/markdown';
+    default: return 'text/plain';
+  }
+}
+
+// Queue an "Open in canvas" reference onto the agent's reply for a doc it just
+// showed, so the user can re-open it from the chat after closing the canvas.
+export function queueCanvasDocAttachment(agentId: string, filePath: string, downloadUrl: string | null): void {
+  try {
+    const ext = path.extname(filePath).toLowerCase();
+    if (!CANVAS_VIEWABLE_EXTS.has(ext)) return;
+    const fileId = downloadUrl?.match(/\/download\/([^/?#]+)/)?.[1];
+    if (!fileId) return;
+    const stat = fs.statSync(filePath);
+    const category = ext === '.pdf' ? 'pdf'
+      : ext === '.docx' || ext === '.xlsx' || ext === '.xls' || ext === '.xlsm' ? 'office'
+      : 'text';
+    queueCanvasDoc(agentId, {
+      fileId,
+      filename: path.basename(filePath),
+      mimeType: canvasMime(ext),
+      size: stat.size,
+      path: filePath,
+      category,
+      openInCanvas: true,
+    });
+  } catch { /* best effort, never let a UI chip break a tool */ }
+}
+
+// Keep the canvas in sync after writing a file. If the canvas is already showing
+// this exact file, just refresh it. Otherwise, if it's anything the canvas can
+// render (CANVAS_VIEWABLE_EXTS, documents, data, AND source/config code),
+// AUTO-OPEN it in the dock, so "write me a page / doc / script" lands in the
+// canvas without the model having to remember canvas_render (weaker models
+// routinely don't, even when explicitly told to). Non-renderable writes only
+// ping (a no-op unless some canvas already watches that path).
+export function syncCanvasAfterWrite(agentId: string, filePath: string, downloadUrl: string | null): { opened: boolean } {
+  const cur = getCurrentCanvas(agentId);
+  if (cur?.kind === 'canvas' && cur.path === filePath) {
+    broadcastCanvasUpdate(agentId, filePath);
+    return { opened: false };
+  }
+  const ext = path.extname(filePath).toLowerCase();
+  if (!CANVAS_VIEWABLE_EXTS.has(ext) || !downloadUrl) {
+    broadcastCanvasUpdate(agentId, filePath);
+    return { opened: false };
+  }
+  let url = downloadUrl;
+  if (/\/api\/upload\/download\/[^?#]+/.test(url) && !/[?&]inline=1\b/.test(url)) {
+    url += (url.includes('?') ? '&' : '?') + 'inline=1';
+  }
+  const title = path.basename(filePath);
+  try {
+    broadcast({ type: 'dock:open', agentId, data: { kind: 'canvas', url, title, path: filePath } });
+    setCurrentCanvas(agentId, { kind: 'canvas', url, path: filePath, title });
+    queueCanvasDocAttachment(agentId, filePath, downloadUrl);
+    return { opened: true };
+  } catch {
+    return { opened: false };
+  }
+}
+
+// Open an arbitrary on-disk file in the canvas (register it, then broadcast the
+// dock:open). Used to AUTO-OPEN Office documents the moment they're created, 
+// the same "it just appears in the canvas" behaviour html/md/txt get from
+// syncCanvasAfterWrite. Without this the model has to pick canvas_render over
+// show_to_user / share_file, and weak models reliably pick the wrong one (a
+// .docx via show_to_user is a useless download chip, not a preview).
+export function openFileInCanvas(agentId: string, filePath: string): { opened: boolean } {
+  try {
+    if (!fs.existsSync(filePath)) return { opened: false };
+    // Already showing this exact file (e.g. an in-place edit to the open doc)?
+    // Just refresh it rather than re-opening, the canvas re-fetches/re-renders.
+    const cur = getCurrentCanvas(agentId);
+    if (cur?.kind === 'canvas' && cur.path === filePath) {
+      broadcastCanvasUpdate(agentId, filePath);
+      return { opened: true };
+    }
+    const registered = registerSharedFile(agentId, filePath);
+    if (!registered) return { opened: false };
+    let url = registered;
+    if (/\/api\/upload\/download\/[^?#]+/.test(url) && !/[?&]inline=1\b/.test(url)) {
+      url += (url.includes('?') ? '&' : '?') + 'inline=1';
+    }
+    const title = path.basename(filePath);
+    broadcast({ type: 'dock:open', agentId, data: { kind: 'canvas', url, title, path: filePath } });
+    setCurrentCanvas(agentId, { kind: 'canvas', url, path: filePath, title });
+    queueCanvasDocAttachment(agentId, filePath, registered);
+    return { opened: true };
+  } catch {
+    return { opened: false };
+  }
+}
+
+// Office tools report the saved file as "...created locally at <path> (<n>
+// bytes)" (create) or "Saved to <path>." (in-place edit). Pull that local path
+// back out so we can auto-open / refresh the canvas. Only the local-save
+// branch matches (OneDrive results carry a file_id + webUrl, no on-disk path).
+// Uploads filenames are sanitized (no spaces), so \S+ is safe.
+export function localOfficePathFromResult(result: string): string | null {
+  const created = result.match(/created locally at (\/\S+\.(?:docx|xlsx|xls|xlsm))\s*\(\d+\s*bytes\)/i);
+  if (created) return created[1];
+  const saved = result.match(/\bSaved to (\/\S+\.(?:docx|xlsx|xls|xlsm))\./i);
+  return saved ? saved[1] : null;
 }

@@ -24,9 +24,9 @@ import {
   withOutboundAsyncIfAbsent, outboundChannelForTool, outboundRecipientForTool,
 } from './v2/outbound.js';
 import { broadcast } from '../gateway/ws.js';
-import { setCurrentCanvas, getCurrentCanvas, viewCanvas } from './canvas-view.js';
+import { setCurrentCanvas, viewCanvas } from './canvas-view.js';
 import { isEmbeddable, captureSiteScreenshot } from './site-snapshot.js';
-import { queueCanvasDoc, queueScreenChip, queueLinkArtifact } from './pending-attachments.js';
+import { queueScreenChip, queueLinkArtifact } from './pending-attachments.js';
 import { insertMessageIfAbsent, rewriteSystemPromptRow } from '../memory/message-store.js';
 import { friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer } from './tool-helpers.js';
 // Phase 3.5 (2026-05-04), `shouldIntercept` / `interceptLargeFile` removed
@@ -34,13 +34,13 @@ import { friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer }
 // The functions still exist in `memory/large-files.ts` for backward compatibility
 // with `large_files` table records created before Phase 3.5; new tool calls
 // don't intercept.
-import { checkPermission, getAgentPermissions } from './permissions.js';
+import { getAgentPermissions } from './permissions.js';
 // PHASE-0 T10: sensitive-path list, ~-expansion and the share/read gate.
 import { resolvePath, isSensitivePath, sharePathGuard, pdfInputPaths } from './path-guards.js';
 import { gatesForCall, ungatedEffectKinds, PRIMARY_ONLY_TOOLS } from './tools/gates.js';
 import { validateToolArgs, PER_TOOL_VALIDATED_AT_BOUNDARY } from './tools/validate-args.js';
 import { handlerFor } from './tools/handlers.js';
-import { auditLog, toDashboardPath, registerSharedFile, agentCanSelfComplete, agentCanSelfCompleteById, permissionDeniedMessage } from './tools/util.js';
+import { auditLog, toDashboardPath, registerSharedFile, agentCanSelfComplete, agentCanSelfCompleteById, permissionDeniedMessage, syncCanvasAfterWrite, openFileInCanvas, queueCanvasDocAttachment } from './tools/util.js';
 // PHASE-5 T4: `agentCanSelfComplete` / `agentCanSelfCompleteById` moved to
 // `agent/tools/util.ts` so `permissionDeniedMessage` — which every relocated
 // gated handler prints — could move with them. Re-exported here so this file's
@@ -82,8 +82,8 @@ import { plaudReadToolDefinitions, executePlaudTool } from '../plaud/tools-read.
 import { isPlaudConnected } from '../plaud/auth.js';
 import { credentialsToolDefinitions, executeCredentialTool } from '../credentials/tools.js';
 import { microsoftWriteToolDefinitions, executeMicrosoftWriteTool } from '../microsoft/tools-write.js';
-import { officeCreateToolDefinitions, officeWordEditToolDefinitions, officeExcelEditToolDefinitions, officeEditToolDefinitions, executeOfficeTool } from '../microsoft/tools-office.js';
-import { getAgentMicrosoftAccessLevel, isMicrosoftConnected, getMicrosoftWorkspaceConfig, isAnyMicrosoftAccountConnected, isMsServiceEnabledForKind, getMsServiceFlagsForKind } from '../microsoft/auth.js';
+import { officeCreateToolDefinitions, officeWordEditToolDefinitions, officeExcelEditToolDefinitions, officeEditToolDefinitions } from '../microsoft/tools-office.js';
+import { getAgentMicrosoftAccessLevel, getMicrosoftWorkspaceConfig, isAnyMicrosoftAccountConnected, isMsServiceEnabledForKind, getMsServiceFlagsForKind } from '../microsoft/auth.js';
 import { areOfficePackagesInstalled } from '../microsoft/office-packages.js';
 import { unifiedToolDefinitions, EMAIL_SEARCH_TOOL, unifiedCalendarAgenda, unifiedEmailSearch } from '../tools/unified-read.js';
 import { getEffectiveAudioGenModel } from '../services/audio-gen-model.js';
@@ -104,139 +104,10 @@ const logger = createLogger('tools');
 // moved to `agent/tools/util.ts` — the comms handlers that mint a download URL
 // left this file, and a category module may not import it back.
 
-// Tell any open canvas showing this file to re-fetch. The right dock matches on
-// absolute path, so editing a document the user is watching (file_write /
-// file_patch / file_append) refreshes the canvas with no manual step.
-function broadcastCanvasUpdate(agentId: string, filePath: string): void {
-  try {
-    broadcast({ type: 'canvas:updated', agentId, data: { path: filePath } });
-  } catch { /* best effort, never let a UI ping break a file write */ }
-}
-
-// Everything the canvas can render. Used both to AUTO-OPEN a file the moment
-// it's written/created (file_write, office, pdf) and to drop an "Open in
-// canvas" chip on the reply so the user can re-open it later. Per the owner's
-// choice, every type here auto-opens, documents, data, AND source/config code.
-const CANVAS_VIEWABLE_EXTS = new Set([
-  '.html', '.htm', '.md', '.markdown', '.txt', '.text', '.json', '.csv',
-  '.docx', '.xlsx', '.xls', '.xlsm', '.pdf', '.svg',
-  '.js', '.ts', '.tsx', '.jsx', '.py', '.css', '.xml', '.yaml', '.yml',
-  '.sh', '.sql', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.toml',
-]);
-
-function canvasMime(ext: string): string {
-  switch (ext) {
-    case '.pdf': return 'application/pdf';
-    case '.html': case '.htm': return 'text/html';
-    case '.json': return 'application/json';
-    case '.csv': return 'text/csv';
-    case '.docx': return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-    case '.xlsx': case '.xls': case '.xlsm': return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-    case '.md': case '.markdown': return 'text/markdown';
-    default: return 'text/plain';
-  }
-}
-
-// Queue an "Open in canvas" reference onto the agent's reply for a doc it just
-// showed, so the user can re-open it from the chat after closing the canvas.
-function queueCanvasDocAttachment(agentId: string, filePath: string, downloadUrl: string | null): void {
-  try {
-    const ext = path.extname(filePath).toLowerCase();
-    if (!CANVAS_VIEWABLE_EXTS.has(ext)) return;
-    const fileId = downloadUrl?.match(/\/download\/([^/?#]+)/)?.[1];
-    if (!fileId) return;
-    const stat = fs.statSync(filePath);
-    const category = ext === '.pdf' ? 'pdf'
-      : ext === '.docx' || ext === '.xlsx' || ext === '.xls' || ext === '.xlsm' ? 'office'
-      : 'text';
-    queueCanvasDoc(agentId, {
-      fileId,
-      filename: path.basename(filePath),
-      mimeType: canvasMime(ext),
-      size: stat.size,
-      path: filePath,
-      category,
-      openInCanvas: true,
-    });
-  } catch { /* best effort, never let a UI chip break a tool */ }
-}
-
-// Keep the canvas in sync after writing a file. If the canvas is already showing
-// this exact file, just refresh it. Otherwise, if it's anything the canvas can
-// render (CANVAS_VIEWABLE_EXTS, documents, data, AND source/config code),
-// AUTO-OPEN it in the dock, so "write me a page / doc / script" lands in the
-// canvas without the model having to remember canvas_render (weaker models
-// routinely don't, even when explicitly told to). Non-renderable writes only
-// ping (a no-op unless some canvas already watches that path).
-function syncCanvasAfterWrite(agentId: string, filePath: string, downloadUrl: string | null): { opened: boolean } {
-  const cur = getCurrentCanvas(agentId);
-  if (cur?.kind === 'canvas' && cur.path === filePath) {
-    broadcastCanvasUpdate(agentId, filePath);
-    return { opened: false };
-  }
-  const ext = path.extname(filePath).toLowerCase();
-  if (!CANVAS_VIEWABLE_EXTS.has(ext) || !downloadUrl) {
-    broadcastCanvasUpdate(agentId, filePath);
-    return { opened: false };
-  }
-  let url = downloadUrl;
-  if (/\/api\/upload\/download\/[^?#]+/.test(url) && !/[?&]inline=1\b/.test(url)) {
-    url += (url.includes('?') ? '&' : '?') + 'inline=1';
-  }
-  const title = path.basename(filePath);
-  try {
-    broadcast({ type: 'dock:open', agentId, data: { kind: 'canvas', url, title, path: filePath } });
-    setCurrentCanvas(agentId, { kind: 'canvas', url, path: filePath, title });
-    queueCanvasDocAttachment(agentId, filePath, downloadUrl);
-    return { opened: true };
-  } catch {
-    return { opened: false };
-  }
-}
-
-// Open an arbitrary on-disk file in the canvas (register it, then broadcast the
-// dock:open). Used to AUTO-OPEN Office documents the moment they're created, 
-// the same "it just appears in the canvas" behaviour html/md/txt get from
-// syncCanvasAfterWrite. Without this the model has to pick canvas_render over
-// show_to_user / share_file, and weak models reliably pick the wrong one (a
-// .docx via show_to_user is a useless download chip, not a preview).
-function openFileInCanvas(agentId: string, filePath: string): { opened: boolean } {
-  try {
-    if (!fs.existsSync(filePath)) return { opened: false };
-    // Already showing this exact file (e.g. an in-place edit to the open doc)?
-    // Just refresh it rather than re-opening, the canvas re-fetches/re-renders.
-    const cur = getCurrentCanvas(agentId);
-    if (cur?.kind === 'canvas' && cur.path === filePath) {
-      broadcastCanvasUpdate(agentId, filePath);
-      return { opened: true };
-    }
-    const registered = registerSharedFile(agentId, filePath);
-    if (!registered) return { opened: false };
-    let url = registered;
-    if (/\/api\/upload\/download\/[^?#]+/.test(url) && !/[?&]inline=1\b/.test(url)) {
-      url += (url.includes('?') ? '&' : '?') + 'inline=1';
-    }
-    const title = path.basename(filePath);
-    broadcast({ type: 'dock:open', agentId, data: { kind: 'canvas', url, title, path: filePath } });
-    setCurrentCanvas(agentId, { kind: 'canvas', url, path: filePath, title });
-    queueCanvasDocAttachment(agentId, filePath, registered);
-    return { opened: true };
-  } catch {
-    return { opened: false };
-  }
-}
-
-// Office tools report the saved file as "...created locally at <path> (<n>
-// bytes)" (create) or "Saved to <path>." (in-place edit). Pull that local path
-// back out so we can auto-open / refresh the canvas. Only the local-save
-// branch matches (OneDrive results carry a file_id + webUrl, no on-disk path).
-// Uploads filenames are sanitized (no spaces), so \S+ is safe.
-function localOfficePathFromResult(result: string): string | null {
-  const created = result.match(/created locally at (\/\S+\.(?:docx|xlsx|xls|xlsm))\s*\(\d+\s*bytes\)/i);
-  if (created) return created[1];
-  const saved = result.match(/\bSaved to (\/\S+\.(?:docx|xlsx|xls|xlsm))\./i);
-  return saved ? saved[1] : null;
-}
+// PHASE-5 T4: the canvas-open cluster (`broadcastCanvasUpdate`, `canvasMime`,
+// `queueCanvasDocAttachment`, `syncCanvasAfterWrite`, `openFileInCanvas`,
+// `localOfficePathFromResult`) moved to `agent/tools/util.ts` — every category
+// that writes a file asks it whether the user gets to see the result.
 
 // ── Filtered tools per agent (based on permissions + tools policy) ──
 
@@ -6546,112 +6417,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
         }
         content = await executePlaudTool(name, args);
         isError = content.startsWith('Error') || content.startsWith('Plaud is no longer connected');
-        break;
-      }
-
-      // ── Office Document Tools ──
-
-      case 'office_create_word_document':
-      case 'office_append_to_word_document':
-      case 'office_get_word_document_outline':
-      case 'office_read_word_document':
-      case 'office_replace_in_word_document':
-      case 'office_insert_in_word_document':
-      case 'office_delete_block_in_word_document':
-      case 'office_create_spreadsheet':
-      case 'office_get_spreadsheet_range':
-      case 'office_write_spreadsheet_range':
-      case 'office_append_spreadsheet_rows':
-      case 'office_add_sheet':
-      case 'office_delete_sheet':
-      case 'office_create_presentation':
-      case 'office_get_presentation_outline':
-      case 'office_read_presentation':
-      case 'office_replace_in_presentation':
-      case 'office_insert_slide':
-      case 'office_delete_slide': {
-        // ── Local vs Microsoft-account office split (owner decision 2026-07-03) ──
-        // The office_* tools are DUAL-destination. A create writes to the agent's
-        // LOCAL uploads dir when Microsoft is NOT connected, but UPLOADS to the
-        // owner's OneDrive when it is (saveOfficeBuffer → isMicrosoftConnected).
-        // An edit/read works on a LOCAL `path` or, when handed a `file_id`, on
-        // the OneDrive item; the presentation edit/read tools are file_id-only
-        // (always the Microsoft account).
-        //   • Anything that writes/edits the connected MICROSOFT account stays
-        //     PRIMARY-ONLY: the owner's cloud is the owner's; a sub-agent must
-        //     not mutate it.
-        //   • A LOCAL office doc is just a file on disk: allowed for ANY agent,
-        //     governed by its permission manifest (file_write), exactly like the
-        //     file_write tool. No hard primary-only gate (that was the defect the
-        //     manifest now enforces after the spawn_depth fix).
-        const OFFICE_CREATE_TOOLS = new Set([
-          'office_create_word_document', 'office_create_spreadsheet', 'office_create_presentation',
-        ]);
-        // OneDrive/Graph-only ops with no local mode (they operate on a file_id).
-        const OFFICE_MS_ACCOUNT_ONLY_TOOLS = new Set([
-          'office_get_presentation_outline', 'office_read_presentation',
-          'office_replace_in_presentation', 'office_insert_slide', 'office_delete_slide',
-        ]);
-        const usesOneDriveFileId = typeof args.file_id === 'string' && (args.file_id as string).trim().length > 0;
-        // A create goes to OneDrive only when Microsoft is connected AND the
-        // caller is the primary agent; saveOfficeBuffer routes every other
-        // agent's create to the LOCAL uploads path. Pre-fix this keyed on the
-        // connection alone, so connecting Microsoft flipped every sub-agent
-        // create from "local file, manifest-governed" to "account write,
-        // denied", the exact split the 2026-07-03 decision forbids. The
-        // primary-only wall below still guards every REAL account write
-        // (file_id edits and the Graph-only presentation ops).
-        const createGoesToOneDrive = OFFICE_CREATE_TOOLS.has(name) && isMicrosoftConnected('agent') && isPrimaryAgent(agentId);
-        const targetsMicrosoftAccount = OFFICE_MS_ACCOUNT_ONLY_TOOLS.has(name) || usesOneDriveFileId || createGoesToOneDrive;
-
-        if (targetsMicrosoftAccount) {
-          if (!isPrimaryAgent(agentId)) {
-            content = 'Permission denied: only the primary agent can create or edit Office documents on the connected Microsoft account.';
-            isError = true;
-            auditLog(agentId, name, null, 'denied', 'Microsoft-account office tool restricted to primary agent');
-            break;
-          }
-        } else {
-          // Local office document: enforce the agent's file_write manifest on the
-          // destination (an explicit local `path` for an edit, or the agent's
-          // uploads dir for a create), the same floor file_write itself enforces.
-          const localFilename = typeof args.filename === 'string' && (args.filename as string).trim().length > 0
-            ? (args.filename as string).trim()
-            : 'document';
-          const localDest = typeof args.path === 'string' && (args.path as string).trim().length > 0
-            ? (args.path as string).trim()
-            : path.join(os.homedir(), '.dojo', 'uploads', agentId, localFilename);
-          const perm = checkPermission(agentId, { type: 'file_write', path: localDest });
-          if (!perm.allowed) {
-            auditLog(agentId, name, localDest, 'denied', perm.reason);
-            content = permissionDeniedMessage(perm.reason, agentId);
-            isError = true;
-            break;
-          }
-        }
-        const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-        content = await executeOfficeTool(name, args, agentId, agentRow?.name ?? agentId);
-        isError = content.startsWith('Error');
-        // Auto-open / refresh the canvas for Word & Excel writes that touch a
-        // LOCAL file, creates AND in-place edits (replace/insert/delete/append
-        // save back to the same path). The canvas renders them as a formatted
-        // preview; for an edit to the already-open doc openFileInCanvas just
-        // refreshes it. PowerPoint isn't canvas-renderable, so it's excluded.
-        // OneDrive results carry no local path, so this is a no-op for them.
-        const OFFICE_LOCAL_CANVAS_TOOLS = new Set([
-          'office_create_word_document', 'office_append_to_word_document',
-          'office_replace_in_word_document', 'office_insert_in_word_document',
-          'office_delete_block_in_word_document', 'office_create_spreadsheet',
-          'office_write_spreadsheet_range', 'office_append_spreadsheet_rows',
-          'office_add_sheet', 'office_delete_sheet',
-        ]);
-        if (!isError && OFFICE_LOCAL_CANVAS_TOOLS.has(name)) {
-          const localPath = localOfficePathFromResult(content);
-          if (localPath && openFileInCanvas(agentId, localPath).opened) {
-            const verb = name === 'office_create_word_document' || name === 'office_create_spreadsheet' ? 'is now open' : 'has been updated';
-            content += `\n\nThis document ${verb} in the canvas, the user can see it as a formatted preview. No need to call canvas_render, show_to_user, or share_file; just tell them it is on the canvas (share the download link only if they ask to save it).`;
-          }
-        }
         break;
       }
 
