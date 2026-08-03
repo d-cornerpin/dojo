@@ -1478,6 +1478,13 @@
       "to": 2657,
       "by": "PHASE-5 T8 Step 3 category 5 (2026-08-03) — image_create DECLARES the generated-images directory the provider bytes land in",
       "why": "PHASE-5 T8 Step 3, RULING P5-R14. +10 lines: a second `effects[]` entry (the array grows 1 line -> 4) plus the seven-line reason. THE DEFECT IT FIXES IS A DECLARATION THAT WAS SHORT BY ONE, which is a different shape from the two before it and worth the reader's time: `image_create` declared `derived:the calling agent uploads directory`, which is TRUE of the delivery copy and never covered the generator's OWN write — the provider's bytes land in `~/.dojo/uploads/generated`, a SIBLING of the agent's uploads directory, not inside it. A declaration can be honest and still be incomplete, and the facade is what found it. It adds NO refusal: gate rows are declared in `tools/gates.ts` and are never derived from `effects[]` (RULING P5-R5). THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Widen the existing entry's scope to `~/.dojo/uploads` so one line covers both (+0): REFUSED, and this is the important one — it would authorize every OTHER agent's uploads directory to satisfy a line count, which is a real widening of what the capability names and the exact trade this project forbids. (b) Drop the reason comment (+3): REFUSED — the next reader has to know why a declaration that reads as true was still incomplete, or the same class of miss returns. (c) Reformat onto fewer physical lines: REFUSED — no line count passes or fails anything (roadmap #7). THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2657."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2657,
+      "to": 2667,
+      "by": "PHASE-5 T8 Step 3 category 6 (2026-08-03) — show_to_user DECLARES the uploads directory it copies into",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R14. +10 lines: the corrected effects[] declaration (1 line -> 4) plus the six-line reason. THE DEFECT IT FIXES: show_to_user copies any file from outside the uploads directory INTO ~/.dojo/uploads/<agentId> so the dashboards serve route can find it — the tools OWN description ends with that sentence — and it declared only the READ of the source. The write has never been declared, so the converted call site was REFUSED until the declaration was corrected at the site, which is branch (A) working exactly as P5-R14 designed it. It adds NO refusal of its own: gate rows are declared in tools/gates.ts and are never derived from effects[] (RULING P5-R5). THE SCOPE IS THE CALLING AGENTS OWN UPLOADS TREE, and the wider one was refused on evidence rather than preference: ~/.dojo/uploads would have authorized every OTHER agents uploads directory, which is the widening category 5 already refused on this same file for the same reason. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Drop the reason comment and keep the declaration alone (+4): REFUSED for the reason categories 2, 3 and 5 each recorded — we looked and this is what it does and nobody looked must never read the same. (b) Reformat the effects array onto fewer physical lines to hold the count flat: REFUSED outright — no line count passes or fails anything (roadmap #7) and contorting layout to move one is the trade this project forbids. (c) Declare the write as fixed:~/.dojo/uploads/<agentId> instead of a scoped derived: (+0 net): REFUSED because it would be a LIE about the mechanism — the directory is derived inside the handler from the calling agents identity, and fixed: is for a constant the tool always touches. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2667."
     }
   ],
   "maxNewFileLines": 400,
@@ -1527,7 +1534,7 @@
     "packages/server/src/agent/tools/cat/media.ts": 896,
     "packages/server/src/agent/tools/cat/session.ts": 241,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
-    "packages/server/src/agent/tools/definitions.ts": 2657,
+    "packages/server/src/agent/tools/definitions.ts": 2667,
     "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/index.ts": 642,
