@@ -24,6 +24,38 @@ function ensurePlatformDir(): void {
   }
 }
 
+/** Owner-only. The mode `agent/brokers/deny.ts`'s `dojo-secrets-store` row
+ *  names as one of this file's two protections. */
+const SECRETS_MODE = 0o600;
+
+/**
+ * PHASE-5 T6C — re-assert owner-only permissions on the secrets file.
+ *
+ * `fs.writeFileSync(path, data, { mode })` applies the mode only when it
+ * CREATES the file; a rewrite inherits whatever the file already carried. The
+ * installer sets 0600 at creation and `migration/import.ts` re-asserts it after
+ * a machine migration, but between those two nothing did — so a file that was
+ * ever restored, copied or re-saved by another tool stayed as open as that tool
+ * left it, and the deny row's stated protection was an intention rather than a
+ * fact. This is the one writer of the file, so this is where it is made true.
+ *
+ * Best-effort by design: a volume that cannot chmod must not take the boot
+ * down. Tightening only — a file the owner made stricter than 0600 is left
+ * alone.
+ */
+function enforceSecretsMode(): void {
+  try {
+    const current = fs.statSync(SECRETS_PATH).mode & 0o777;
+    if ((current & ~SECRETS_MODE) === 0) return; // already owner-only or tighter
+    fs.chmodSync(SECRETS_PATH, SECRETS_MODE);
+    logger.warn('secrets.yaml was more permissive than owner-only — tightened', {
+      from: current.toString(8), to: SECRETS_MODE.toString(8),
+    });
+  } catch {
+    /* unreadable, missing, or a filesystem without chmod — never fatal */
+  }
+}
+
 /**
  * v2.3.19 — invalidate the cache if secrets.yaml has been edited
  * out-of-band since we last read it. Cheap stat call on every access.
@@ -79,6 +111,9 @@ export function loadSecrets(): SecretsData {
     const validated = SecretsSchema.parse(parsed);
     cachedSecrets = validated;
     cachedSecretsMtimeMs = stat.mtimeMs;
+    // Runs on the first load and on every cache invalidation, not per access —
+    // a box found open does not stay open until its next write.
+    enforceSecretsMode();
     return cachedSecrets;
   } catch (err) {
     logger.error('Failed to load secrets.yaml', {
@@ -91,7 +126,9 @@ export function loadSecrets(): SecretsData {
 export function saveSecrets(data: SecretsData): void {
   ensurePlatformDir();
   const content = yaml.stringify(data);
-  fs.writeFileSync(SECRETS_PATH, content, { mode: 0o600 });
+  fs.writeFileSync(SECRETS_PATH, content, { mode: SECRETS_MODE });
+  // The mode argument above only bites when this call CREATED the file.
+  enforceSecretsMode();
   cachedSecrets = data;
   // Record post-write mtime so the staleness check doesn't trigger on
   // our own write.
