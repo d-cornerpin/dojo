@@ -27,7 +27,7 @@
 // the tail; they are not handlers and are not modelled here.
 // ════════════════════════════════════════════════════════════════════════════
 
-import type { ToolErrorCode } from '@dojo/shared';
+import type { ToolCall, ToolErrorCode } from '@dojo/shared';
 
 /**
  * What a handler is told. This is precisely the set of `executeToolInner`
@@ -47,6 +47,27 @@ export interface ToolHandlerContext {
   args: Record<string, unknown>;
   /** The provider's id for this tool call. */
   callId: string;
+  /**
+   * The raw tool call OBJECT, and it is here for exactly one reason — a
+   * MEASURED CORRECTION to this contract's first derivation (PHASE-5 T4
+   * sitting 2).
+   *
+   * Sitting 1 wrote "precisely the set of `executeToolInner` locals the case
+   * bodies read" from the 49 bodies it moved. `file_read` reads one more:
+   * when it returns an image or a PDF it attaches the provider content blocks
+   * to THIS OBJECT (`(toolCall as …).__contentBlocks = …`), and `v2/loop.ts`
+   * reads them back off the same object after `executeTool` returns and copies
+   * them onto the tool result. That side channel is how vision content reaches
+   * the model at all, so a handler contract that could not express it would
+   * have silently dropped image and PDF reading in the move — the exact class
+   * of loss this phase must not create.
+   *
+   * It is deliberately NOT a way to return early or to skip the executor's
+   * tail: the outcome is still `{content, isError}` and the tail still runs.
+   * Whether the blocks should ride the OUTCOME instead of the call object is a
+   * mechanism change and therefore T7's, not a relocation's.
+   */
+  toolCall: ToolCall;
 }
 
 /**
