@@ -1534,6 +1534,13 @@
       "to": 2714,
       "by": "PHASE-5 T8 Step 3 category 9 (2026-08-03, T8E) — file_list declares the TREE it lists",
       "why": "PHASE-5 T8 Step 3, RULING P5-R15 part 1. +8 lines: file_list's effect gains `scope: { at: 'argTree' }` and an eight-line reason. THE DEFECT IT FIXES: the tool stats every entry inside the directory it is given, and declared only the directory. Converting it without this would have silently blanked the size column for every entry — the handler's catch swallows the refusal — which is precisely the silent narrowing this task exists to prevent, and it would have been invisible in every gate. It adds NO refusal: gate rows are declared in tools/gates.ts and are never derived from effects[] (RULING P5-R5). THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Drop the reason (+6 saved): REFUSED — the next reader has to know why file_list carries a scope that file_read, with the identical from:, deliberately does not, or the two will be \"made consistent\" and every read tool will quietly gain a tree. (b) Leave the declaration alone and accept the dashes: REFUSED — that is a capability narrowing, STOP condition 4, and it would have shipped invisibly. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2714."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2714,
+      "to": 2721,
+      "by": "PHASE-5 T8 Step 3 SURFACE SPLIT 1 (2026-08-03, T8F) — load_tool_docs declares the docs directory it reads",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R15 part 2. +7 lines: load_tool_docs`s `effects: []` becomes one scoped fs_read, with a five-line reason. THE DEFECT IT FIXES: the tool has always read `~/.dojo/tools/<name>.md` off disk and declared NOTHING, so the surface split that moved the reader out of tools/index-generator.ts refused it until the declaration was corrected AT THE SITE (RULING P5-R14). It adds NO refusal: gate rows are declared in tools/gates.ts and are never derived from effects[] (RULING P5-R5), and the handler intersects every requested name with getFilteredTools(agentId) before the read, so the declared directory IS the whole reach. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Drop the reason (+5 saved): REFUSED — the next reader has to know why a scope this wide is honest here, or it will be narrowed to a single file and load_tool_docs will start refusing every doc but one. The first draft of this comment was EIGHT lines and was tightened to five against its sibling history_get`s, which is the same correction in the same file; that is the saving taken instead. (b) Put the effect on one physical line (+2 saved): REFUSED — open_browser and history_get, the two other T8 declaration corrections in this file, both use the multi-line form, and a third spelling of the same shape is how a reader stops seeing them as one class. (c) Leave the declaration alone and let the reader keep node:fs: REFUSED — that is the split not happening, which is the whole of P5-R15 part 2. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2721."
     }
   ],
   "maxNewFileLines": 400,
@@ -1584,7 +1591,7 @@
     "packages/server/src/agent/tools/cat/session.ts": 241,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
     "packages/server/src/agent/effects/scopes.ts": 285,
-    "packages/server/src/agent/tools/definitions.ts": 2714,
+    "packages/server/src/agent/tools/definitions.ts": 2721,
     "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/index.ts": 642,
