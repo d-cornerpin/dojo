@@ -29,9 +29,13 @@
 
 import type { ToolHandler } from './handler.js';
 import { recallHandlers } from './cat/recall.js';
+import { vaultHandlers } from './cat/vault.js';
+import { contactsHandlers } from './cat/contacts.js';
 
 const TABLE: ReadonlyMap<string, ToolHandler> = new Map<string, ToolHandler>([
   ...Object.entries(recallHandlers),
+  ...Object.entries(vaultHandlers),
+  ...Object.entries(contactsHandlers),
 ]);
 
 /** The handler for this dispatch key, or `undefined` if the switch still owns it. */

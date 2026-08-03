@@ -1,6 +1,6 @@
 import type { ToolDefinition } from './tools/types.js';
 import { coerceNumberArg } from './tools/pagination.js';
-import { getCurrentToolCallId, runWithToolCallId, currentTurnNumber, currentTurnRoot } from './turn-state.js';
+import { runWithToolCallId, currentTurnNumber, currentTurnRoot } from './turn-state.js';
 import { classifyToolResult, toolErrorCodeForThrow, type ToolOutcome } from './tool-outcome.js';
 export { toolResultOf, toolWasBlocked, type ToolOutcome } from './tool-outcome.js';
 import { taskScope, projectScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
@@ -44,6 +44,7 @@ import { resolvePath, isSensitivePath, sharePathGuard, pdfInputPaths } from './p
 import { gatesForCall, ungatedEffectKinds, PRIMARY_ONLY_TOOLS } from './tools/gates.js';
 import { validateToolArgs, PER_TOOL_VALIDATED_AT_BOUNDARY } from './tools/validate-args.js';
 import { handlerFor } from './tools/handlers.js';
+import { auditLog } from './tools/util.js';
 import { evaluateGate, logOnly } from './tools/gate-eval.js';
 import { resolveArgvArg } from './brokers/resolve.js';
 import {
@@ -83,7 +84,6 @@ import { webSearch, webFetch } from './web-tools.js';
 import { mouseClick, mouseMove, keyboardType, screenRead, applescriptRun } from './system-control.js';
 import { executeWebBrowse } from './browser.js';
 import { createGroup, assignAgentToGroup } from './groups.js';
-import { executeVaultRemember, executeVaultSearch, executeVaultForget, executeVaultExpand, executeVaultUpdate } from '../vault/tools.js';
 import { googleReadToolDefinitions, executeGoogleReadTool } from '../google/tools-read.js';
 import { googleWriteToolDefinitions, executeGoogleWriteTool } from '../google/tools-write.js';
 import { slidesToolDefinitions, slidesToolNames, executeGoogleSlidesTool } from '../google/tools-slides.js';
@@ -3631,36 +3631,10 @@ import os from 'node:os';
 
 // ── Tool Execution ──
 
-// Map tool names to valid audit_log action_type values
-const AUDIT_ACTION_MAP: Record<string, string> = {
-  file_read: 'file_read',
-  file_list: 'file_read',
-  file_write: 'file_write',
-  file_delete: 'file_write',
-  exec: 'exec',
-};
-
-function auditLog(agentId: string, actionType: string, target: string | null, result: 'success' | 'denied' | 'error', detail?: string, callId?: string | null): void {
-  try {
-    const db = getDb();
-    // Normalize action_type to match the CHECK constraint
-    const normalizedAction = AUDIT_ACTION_MAP[actionType] ?? 'tool_call';
-    // P6a execution lineage: every audit row carries the turn that ran it and
-    // the root it served, read from the live turn state (the receipts
-    // pattern), plus the exact tool_use call id where the caller has one.
-    const turnNumber = currentTurnNumber.get(agentId) ?? null;
-    const root = currentTurnRoot.get(agentId) ?? null;
-    db.prepare(`
-      INSERT INTO audit_log (id, agent_id, action_type, target, result, detail, turn_number, call_id, root_kind, root_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-    `).run(uuidv4(), agentId, normalizedAction, target, result, detail ?? null,
-      turnNumber, callId ?? getCurrentToolCallId(agentId), root?.kind ?? null, root?.id ?? null);
-  } catch (err) {
-    logger.error('Failed to write audit log', {
-      error: err instanceof Error ? err.message : String(err),
-    }, agentId);
-  }
-}
+// PHASE-5 T4: `auditLog` and its AUDIT_ACTION_MAP moved to
+// `agent/tools/util.ts`. A relocated handler cannot import this file (that is
+// the cycle the split is undoing), and two copies of an audit writer is exactly
+// the disease — so there is ONE, imported by both surfaces.
 
 // ════════════════════════════════════════════════════════════════════════════
 // THE TWO EXEC DOORS (PHASE-5 T3 Step 1).
@@ -9354,215 +9328,6 @@ Re-call send_to_agent with the right intent. When in doubt, pick a wake intent, 
           );
           content = `Technique "${techName}", ${versions.length} version(s) on disk (newest first):\n\n${lines.join('\n\n')}\n\nUse file_read with the listed paths to view any prior version. Current TECHNIQUE.md (latest version) is at ${tech.directoryPath}/TECHNIQUE.md.`;
         }
-        break;
-      }
-
-      // ── Vault (Long-Term Memory) ──
-
-      case 'vault_remember': {
-        content = await executeVaultRemember(agentId, args);
-        // RC-13: vault_remember bounces return plain refusal strings that do NOT
-        // start with "Error" ("Too long…", "Reads like narrative prose…",
-        // "Refused:…", "Near-duplicate:…"). Left as startsWith('Error') they read
-        // as SUCCESS to every downstream mechanism (the bookkeeping "reply
-        // 'Saved.'" nudge, recordToolOutcome's failure ledger). Treat every bounce
-        // shape as a real tool error so a rejected save never masquerades as done.
-        isError = /^(Error|Too long|Reads like narrative prose|Refused|Near-duplicate)/.test(content);
-        break;
-      }
-      case 'vault_search': {
-        content = await executeVaultSearch(agentId, args);
-        isError = content.startsWith('Error');
-        break;
-      }
-      case 'vault_get': {
-        content = executeVaultExpand(agentId, args);
-        isError = content.startsWith('Error');
-        break;
-      }
-      case 'vault_refresh': {
-        // Phase 4 §C, return the snapshot the assembler would have injected
-        // at session start (pinned + session_context-tagged entries).
-        try {
-          // W3-4: scoped to the calling agent's own vault (per-agent design).
-          const { getPinnedEntries, getSessionContextEntries } = await import('../vault/store.js');
-          const pinned = getPinnedEntries(agentId);
-          const sessionCtx = getSessionContextEntries(agentId);
-          // Dedupe (a pinned entry might also be tagged session_context).
-          const seen = new Set<string>();
-          const merged: typeof pinned = [];
-          for (const e of [...pinned, ...sessionCtx]) {
-            if (!seen.has(e.id)) { seen.add(e.id); merged.push(e); }
-          }
-          if (merged.length === 0) {
-            content = 'Vault refresh: no pinned or session_context-tagged entries found. Use vault_remember(content, pin=true) or vault_remember(content, tags=["session_context"]) to add some.';
-          } else {
-            const lines = merged.map((e) => {
-              const flags: string[] = [];
-              if (e.isPinned) flags.push('pinned');
-              if (e.isPermanent) flags.push('permanent');
-              if (e.tags?.includes('session_context')) flags.push('session_context');
-              const flagStr = flags.length > 0 ? ` {${flags.join(',')}}` : '';
-              return `[${e.type}]${flagStr} ${e.content}\n  ID: ${e.id}`;
-            });
-            content = `Vault snapshot (${merged.length} entries):\n\n${lines.join('\n\n')}`;
-          }
-          isError = false;
-        } catch (err) {
-          content = `Error refreshing vault: ${err instanceof Error ? err.message : String(err)}`;
-          isError = true;
-        }
-        break;
-      }
-      case 'vault_forget': {
-        content = executeVaultForget(agentId, args);
-        isError = content.startsWith('Error');
-        break;
-      }
-      case 'vault_update': {
-        content = await executeVaultUpdate(agentId, args);
-        isError = content.startsWith('Error');
-        break;
-      }
-      case 'vault_discard_archives': {
-        // Dreamer-only, silently no-op for everyone else so the dispatcher
-        // doesn't crash if a non-Dreamer agent somehow calls it. The
-        // permission gate at tools-policy / always-loaded should prevent
-        // this anyway.
-        const { isDreamerAgent } = await import('../config/platform.js');
-        if (!isDreamerAgent(agentId)) {
-          content = 'Error: vault_discard_archives is Dreamer-only.';
-          isError = true;
-          break;
-        }
-        const archiveIds = (args.archive_ids as unknown[] | undefined)?.filter((id): id is string => typeof id === 'string') ?? [];
-        const reason = (args.reason as string | undefined)?.trim() || '(no reason given)';
-        if (archiveIds.length === 0) {
-          content = 'Error: archive_ids is required and must contain at least one ID.';
-          isError = true;
-          break;
-        }
-        const { deleteConversation } = await import('../vault/store.js');
-        let deleted = 0;
-        const skipped: string[] = [];
-        for (const id of archiveIds) {
-          try {
-            const ok = deleteConversation(id);
-            if (ok) deleted++;
-            else skipped.push(id);
-          } catch {
-            skipped.push(id);
-          }
-        }
-        auditLog(agentId, 'tool_call', 'vault_discard_archives', 'success',
-          `deleted=${deleted} skipped=${skipped.length} reason=${reason.slice(0, 200)}`,
-        );
-        logger.info('Dreamer discarded vault archives', {
-          deleted, skipped: skipped.length, reason: reason.slice(0, 200),
-        }, agentId);
-        content = `Discarded ${deleted} archive${deleted === 1 ? '' : 's'}` +
-          (skipped.length > 0 ? `. ${skipped.length} archive ID${skipped.length === 1 ? '' : 's'} could not be deleted (already gone or invalid): ${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? '…' : ''}` : '.');
-        break;
-      }
-
-      // ── DOJO Contacts (v2.9.16) ──
-
-      case 'contact_remember': {
-        const { executeContactRemember } = await import('../contacts/tools.js');
-        content = executeContactRemember(agentId, args);
-        isError = content.startsWith('Error');
-        break;
-      }
-      case 'contact_search': {
-        const { executeContactSearch } = await import('../contacts/tools.js');
-        content = executeContactSearch(args);
-        isError = content.startsWith('Error');
-        break;
-      }
-      case 'contact_list': {
-        const { executeContactList } = await import('../contacts/tools.js');
-        content = executeContactList(args);
-        isError = content.startsWith('Error');
-        break;
-      }
-      case 'contact_get': {
-        const { executeContactGet } = await import('../contacts/tools.js');
-        content = executeContactGet(args);
-        isError = content.startsWith('Error');
-        break;
-      }
-      case 'contact_update': {
-        const { executeContactUpdate } = await import('../contacts/tools.js');
-        content = executeContactUpdate(agentId, args);
-        isError = content.startsWith('Error');
-        break;
-      }
-      case 'contact_forget': {
-        const { executeContactForget } = await import('../contacts/tools.js');
-        content = executeContactForget(args);
-        isError = content.startsWith('Error');
-        break;
-      }
-      case 'contacts_overview': {
-        const { executeContactDescribe } = await import('../contacts/tools.js');
-        content = executeContactDescribe();
-        isError = false;
-        break;
-      }
-
-      // ── Squad Coordination (Phase 7 / Part X) ──
-
-      case 'squad_share': {
-        const { vaultRememberInNamespace, resolveAgentNamespace } = await import('../vault/namespaces.js');
-        const namespace = resolveAgentNamespace(agentId);
-        if (!namespace) {
-          content = 'Error: You are not a member of any squad (no group_id). squad_share / squad_recall are only available to agents in a group. Use vault_remember instead, or ask your owner to assign you to a group.';
-          isError = true;
-          break;
-        }
-        const shareContent = (args.content as string | undefined)?.trim();
-        if (!shareContent) {
-          content = 'Error: content is required.';
-          isError = true;
-          break;
-        }
-        const tags = (args.tags as unknown[] | undefined)?.filter((t): t is string => typeof t === 'string') ?? [];
-        const agentRow = getDb().prepare('SELECT name FROM agents WHERE id = ?').get(agentId) as { name: string } | undefined;
-        const entry = await vaultRememberInNamespace({
-          agentId,
-          agentName: agentRow?.name,
-          namespace,
-          content: shareContent,
-          tags,
-        });
-        content = `Shared to ${namespace}. Entry id: ${entry.id}.`;
-        isError = false;
-        break;
-      }
-      case 'squad_recall': {
-        const { vaultSearchInNamespace, resolveAgentNamespace } = await import('../vault/namespaces.js');
-        const namespace = resolveAgentNamespace(agentId);
-        if (!namespace) {
-          content = 'Error: You are not a member of any squad (no group_id). squad_recall is only available to agents in a group.';
-          isError = true;
-          break;
-        }
-        const query = (args.query as string | undefined) ?? '';
-        const tag = args.tag as string | undefined;
-        const limit = typeof args.limit === 'number' ? args.limit : 5;
-        const matches = vaultSearchInNamespace({ namespace, query, tag, limit });
-        if (matches.length === 0) {
-          content = `No squad memory entries match in ${namespace}.`;
-          isError = false;
-          break;
-        }
-        const lines = matches.map((m) => {
-          const author = m.agentName ?? m.agentId;
-          const tagStr = m.tags.length > 0 ? ` [${m.tags.join(', ')}]` : '';
-          return `- ${author} (${m.createdAt}): ${m.snippet}${tagStr}\n  ID: ${m.id} | Length: ${m.fullLength} chars (use vault_get to read full).`;
-        });
-        content = `Squad memory (${matches.length} match${matches.length === 1 ? '' : 'es'} in ${namespace}):\n\n${lines.join('\n\n')}`;
-        isError = false;
         break;
       }
 
