@@ -20,7 +20,7 @@
 // copy, shared with the fs verbs and the office block.
 // ════════════════════════════════════════════════════════════════════════════
 
-import fs from 'node:fs';
+import * as effectFs from '../../effects/fs.js';
 import os from 'node:os';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
@@ -133,9 +133,9 @@ export const canvasHandlers: ToolHandlerMap = {
     try {
       const png = await captureSiteScreenshot(targetUrl);
       const shotsDir = path.join(os.homedir(), '.dojo', 'data', 'canvas-shots');
-      fs.mkdirSync(shotsDir, { recursive: true });
+      effectFs.mkdirSync(shotsDir, { recursive: true });
       const pngPath = path.join(shotsDir, `${uuidv4()}.png`);
-      fs.writeFileSync(pngPath, png);
+      effectFs.writeFileSync(pngPath, png);
       let pngUrl = registerSharedFile(agentId, pngPath);
       if (!pngUrl) throw new Error('could not serve the screenshot file');
       // Render same-origin so the <img> resolves over localhost, a LAN IP,

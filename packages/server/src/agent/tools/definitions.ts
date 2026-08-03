@@ -644,7 +644,15 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'open_browser',
     description:
       'Open a live website in the user\'s right dock so you and the user can view it together. The dojo interface slides left and the page loads in a resizable frame on the right with refresh and close controls. Use this for showing a real, working website at a URL (not your own generated markup, for that use canvas_render). Note: some sites refuse to load inside a frame; if a page comes up blank the site has blocked embedding. Example: open_browser({ url: "https://example.com", title: "Example" }).',
-    effects: [{ kind: 'net', from: 'args.url' }],
+    // PHASE-5 T8 Step 3 — THE UNDECLARED WRITE, DECLARED (RULING P5-R14): the
+    // screenshot fallback has always written a PNG here and the tool declared no
+    // fs effect, so a converted call site would refuse. It adds NO refusal —
+    // gate rows are declared in `tools/gates.ts`, never derived from `effects[]`
+    // (P5-R5) — it states what the tool already does so the facade can carry it.
+    effects: [
+      { kind: 'net', from: 'args.url' },
+      { kind: 'fs_write', from: 'derived:the canvas screenshot directory', scope: { at: 'tree', template: '~/.dojo/data/canvas-shots' } },
+    ],
     input_schema: {
       type: 'object',
       properties: {

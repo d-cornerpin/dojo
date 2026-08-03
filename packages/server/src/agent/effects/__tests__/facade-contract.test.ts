@@ -34,6 +34,7 @@ import {
 } from '../capability.js';
 import { runWithToolCallId } from '../../turn-state.js';
 import { grantsForCall, expandScopeTemplate, CARRIED_PROGRAMS } from '../scopes.js';
+import { effectsFor } from '../../tools/registry.js';
 import { execFileAuthorized } from '../proc.js';
 import * as effectFs from '../fs.js';
 import { runProcess } from '../../tools/process-run.js';
@@ -325,5 +326,29 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     // The facade itself is the one place that holds it.
     expect(filesContaining("from 'node:child_process'", path.join(SRC, 'agent', 'effects')))
       .toEqual(['agent/effects/proc.ts']);
+  });
+
+  it('CATEGORY CONVERTED: the canvas door writes its screenshot through the facade', () => {
+    const doorSrc = fs.readFileSync(path.join(SRC, 'agent/tools/cat/canvas.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(doorSrc), 'the canvas door must not hold node:fs').toBe(false);
+    expect(doorSrc.includes('effectFs.'), 'it writes through the facade').toBe(true);
+  });
+
+  it("open_browser DECLARES the directory it writes, and the declaration covers exactly that", () => {
+    // The screenshot fallback has always written a PNG to disk and the tool
+    // declared no fs effect at all — so a converted call site would have been
+    // refused. RULING P5-R14: a declaration proven too narrow is CORRECTED with
+    // its reason recorded at the site, never worked around at the call site.
+    // Adding the effect adds no refusal: gates are declared in `tools/gates.ts`
+    // and are not derived from `effects[]` (RULING P5-R5), so this widens what
+    // the facade will carry and gates nothing new.
+    const grants = grantsForCall(AGENT, effectsFor('open_browser'), { url: 'https://example.com' });
+    const shotsDir = path.join(os.homedir(), '.dojo', 'data', 'canvas-shots');
+    const png = path.join(shotsDir, 'a-screenshot.png');
+    expect(grantsCover(grants, { op: 'fs_mkdir', path: shotsDir, real: shotsDir }), 'it may create its own directory').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_write', path: png, real: png }), 'it may write the screenshot').toBe(true);
+    // …and nothing else under the same parent, which is what makes it a scope.
+    const sibling = path.join(os.homedir(), '.dojo', 'data', 'dojo.db');
+    expect(grantsCover(grants, { op: 'fs_write', path: sibling, real: sibling }), 'the scope is the shots dir alone').toBe(false);
   });
 });
