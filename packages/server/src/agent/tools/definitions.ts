@@ -1518,7 +1518,17 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'show_to_user',
     description: 'Display one or more IMAGES (and short audio/video clips) to the user IN THE CHAT as inline thumbnails, as part of your reply. Use this for a picture you want the user to actually look at right in the conversation, a slide PNG a sub-agent sent you, a Drive image you downloaded, a photo from your uploads folder. WITHOUT this tool, "take a look at this image" is a lie, the file is on disk but the user sees no thumbnail.\n\nDOCUMENTS GO IN THE CANVAS, NOT HERE. A PDF, Word/Excel/PowerPoint, Markdown, text, or code file passed to show_to_user is REJECTED, those render as a real formatted preview in the canvas. Canvas-renderable files auto-open the moment you write them (file_write, or creating a Word/Excel/PDF); use canvas_render({ path }) to (re)open one. Reserve show_to_user for images/media.\n\nThis tool inserts an assistant-role message into your chat with the files attached and your `caption` as the bubble text. The user sees: your caption + thumbnails. After calling, end your turn (or continue with more tool calls if needed).\n\nExample (forwarding a slide preview a sub-agent sent):\n  show_to_user({ file_paths: ["/Users/.../uploads/<your-agent-id>/draft_slide_preview.png"], caption: "Sub-agent finished a draft of the title slide. Looks good to me, anything you want changed?" })\n\nFile paths must already exist (typically under ~/.dojo/uploads/<your-agent-id>/ or wherever a sub-agent delivered them). Files outside the uploads dir are copied in.',
-    effects: [{ kind: 'fs_read', from: 'args.file_paths[]' }],
+    // PHASE-5 T8 Step 3 — THE COPY-IN, DECLARED (RULING P5-R14). The last line
+    // of the description above has always been true: "Files outside the uploads
+    // dir are copied in", so the dashboard's serve route can find them. That
+    // write was never declared. Corrected at the site with its reason; it adds
+    // no refusal, because gate rows are declared in `tools/gates.ts` and are
+    // never derived from `effects[]` (P5-R5). The scope is the CALLING agent's
+    // own uploads directory, so one agent still cannot write into another's.
+    effects: [
+      { kind: 'fs_read', from: 'args.file_paths[]' },
+      { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } },
+    ],
     input_schema: {
       type: 'object',
       properties: {

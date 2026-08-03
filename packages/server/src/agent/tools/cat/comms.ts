@@ -44,7 +44,7 @@
 // different module from the first (`services/agent-controls.js`).
 // ════════════════════════════════════════════════════════════════════════════
 
-import fs, { existsSync, statSync } from 'node:fs';
+import * as effectFs from '../../effects/fs.js';
 import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import type { ToolErrorCode } from '@dojo/shared';
@@ -85,12 +85,12 @@ export const commsHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError, ...(errorCode !== undefined ? { errorCode } : {}) };
     }
-    if (!fs.existsSync(sharePath)) {
+    if (!effectFs.existsSync(sharePath)) {
       content = `Error: File not found: ${sharePath}`;
       isError = true;
       return { content, isError, ...(errorCode !== undefined ? { errorCode } : {}) };
     }
-    const stat = fs.statSync(sharePath);
+    const stat = effectFs.statSync(sharePath);
     if (stat.isDirectory()) {
       content = `Error: ${sharePath} is a directory, not a file. Use file_list to see its contents.`;
       isError = true;
@@ -134,7 +134,7 @@ export const commsHandlers: ToolHandlerMap = {
     }
 
     const uploadsDir = path.join(os.homedir(), '.dojo', 'uploads', agentId);
-    try { fs.mkdirSync(uploadsDir, { recursive: true }); } catch { /* best effort */ }
+    try { effectFs.mkdirSync(uploadsDir, { recursive: true }); } catch { /* best effort */ }
 
     const guessMime = (filename: string): string => {
       const ext = path.extname(filename).toLowerCase();
@@ -173,12 +173,12 @@ export const commsHandlers: ToolHandlerMap = {
           isError = true;
           break;
         }
-        if (!fs.existsSync(srcPath)) {
+        if (!effectFs.existsSync(srcPath)) {
           content = `Error: file not found: ${srcPath}`;
           isError = true;
           break;
         }
-        const stat = fs.statSync(srcPath);
+        const stat = effectFs.statSync(srcPath);
         if (!stat.isFile()) {
           content = `Error: not a file: ${srcPath}`;
           isError = true;
@@ -208,7 +208,7 @@ export const commsHandlers: ToolHandlerMap = {
           const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
           const storedName = `${Date.now()}_${safeFilename}`;
           destPath = path.join(uploadsDir, storedName);
-          fs.copyFileSync(srcPath, destPath);
+          effectFs.copyFileSync(srcPath, destPath);
         }
 
         attachments.push({
@@ -585,14 +585,14 @@ export const commsHandlers: ToolHandlerMap = {
           auditLog(agentId, 'imessage_send', recipient, 'error', 'relative attachment path');
           break;
         }
-        if (!existsSync(p)) {
+        if (!effectFs.existsSync(p)) {
           content = `iMessage NOT sent - attachment file not found at "${p}". Verify the path or re-create the file.`;
           isError = true;
           auditLog(agentId, 'imessage_send', recipient, 'error', `missing attachment: ${p}`);
           break;
         }
         try {
-          const stat = statSync(p);
+          const stat = effectFs.statSync(p);
           if (!stat.isFile()) {
             content = `iMessage NOT sent - attachment "${p}" is not a regular file (is it a directory?).`;
             isError = true;

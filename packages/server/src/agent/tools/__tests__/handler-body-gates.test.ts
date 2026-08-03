@@ -59,11 +59,18 @@ describe('the two handler-body permission checks — the demolition list’s thi
       'the per-path file_read check is the only gate on show_to_user’s paths',
     ).toBe(true);
     // …and it refuses BEFORE the file is opened, stat-ed or copied. The check
-    // sits above the first `fs.existsSync(srcPath)` in that loop; if a future
-    // edit moves it below, an agent learns whether a forbidden file exists.
+    // sits above the first existence probe in that loop; if a future edit moves
+    // it below, an agent learns whether a forbidden file exists.
+    //
+    // PHASE-5 T8 Step 3: the probe's SPELLING changed when the comms door
+    // converted — `fs.existsSync` became `effectFs.existsSync`, the facade entry
+    // that performs the same call behind the per-call capability. The
+    // REQUIREMENT this clause holds is unchanged (the permission check runs
+    // first), and the token is the current one on purpose: matching both
+    // spellings would let a revert to raw `node:fs` pass silently.
     const loop = src.slice(src.indexOf('for (const srcPath of filePaths)'));
     const check = loop.indexOf("checkPermission(agentId, { type: 'file_read', path: srcPath })");
-    const firstTouch = loop.indexOf('fs.existsSync(srcPath)');
+    const firstTouch = loop.indexOf('effectFs.existsSync(srcPath)');
     expect(check, 'the check must be inside the loop').toBeGreaterThan(-1);
     expect(firstTouch, 'the existence probe must be inside the loop').toBeGreaterThan(-1);
     expect(check, 'the permission check must run BEFORE the file is touched').toBeLessThan(firstTouch);

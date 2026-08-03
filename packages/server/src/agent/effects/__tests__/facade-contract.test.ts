@@ -454,6 +454,44 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(grantsCover(grants, { op: 'fs_write', path: stored, real: stored })).toBe(false);
   });
 
+  it('CATEGORY CONVERTED: the comms door reads and copies through the facade', () => {
+    const src = fs.readFileSync(path.join(SRC, 'agent/tools/cat/comms.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(src), 'the comms door must not hold node:fs').toBe(false);
+    expect(src.includes('effectFs.'), 'it reaches files through the facade').toBe(true);
+  });
+
+  it("show_to_user DECLARES the uploads directory it copies into, and the scope is that agent's alone", () => {
+    // `show_to_user` copies whatever it is shown INTO `~/.dojo/uploads/<agentId>`
+    // so the dashboard's serve route can find it, and declared only the read of
+    // the source. Corrected at the site with its reason (RULING P5-R14); it adds
+    // no refusal, because gate rows are declared in `tools/gates.ts` and are
+    // never derived from `effects[]` (P5-R5).
+    const shown = path.join(scratch, 'photo.png');
+    const grants = grantsForCall(AGENT, effectsFor('show_to_user'), { file_paths: [shown] });
+    const uploads = path.join(os.homedir(), '.dojo', 'uploads', AGENT);
+    const copy = path.join(uploads, '1_photo.png');
+    expect(grantsCover(grants, { op: 'fs_read', path: shown, real: shown }), 'it may read what it was asked to show').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_mkdir', path: uploads, real: uploads }), 'it may create its own uploads directory').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_write', path: copy, real: copy }), 'it may copy the file in for the serve route').toBe(true);
+    // …and never into ANOTHER agent's uploads directory, which is what makes it a scope.
+    const other = path.join(os.homedir(), '.dojo', 'uploads', 'someone-else', 'x.png');
+    expect(grantsCover(grants, { op: 'fs_write', path: other, real: other }), "the scope is this agent's uploads alone").toBe(false);
+    // A read of the source is not a licence to overwrite it.
+    expect(grantsCover(grants, { op: 'fs_write', path: shown, real: shown })).toBe(false);
+  });
+
+  it('share_file and imessage_send probe exactly the files their call named', () => {
+    const doc = path.join(scratch, 'quote.pdf');
+    const shareGrants = grantsForCall(AGENT, effectsFor('share_file'), { path: doc });
+    expect(grantsCover(shareGrants, { op: 'fs_stat', path: doc, real: doc })).toBe(true);
+    expect(grantsCover(shareGrants, { op: 'fs_stat', path: outOfScope, real: outOfScope })).toBe(false);
+    const imGrants = grantsForCall(AGENT, effectsFor('imessage_send'), {
+      recipient: '+15550100', message: 'hi', attachments: [doc],
+    });
+    expect(grantsCover(imGrants, { op: 'fs_stat', path: doc, real: doc })).toBe(true);
+    expect(grantsCover(imGrants, { op: 'fs_stat', path: outOfScope, real: outOfScope })).toBe(false);
+  });
+
   it("open_browser DECLARES the directory it writes, and the declaration covers exactly that", () => {
     // The screenshot fallback has always written a PNG to disk and the tool
     // declared no fs effect at all — so a converted call site would have been
