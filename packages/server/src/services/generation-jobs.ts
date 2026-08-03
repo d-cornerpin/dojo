@@ -25,7 +25,7 @@
 // gone. So at startup we mark any leftover queued/running rows as failed.
 // ════════════════════════════════════════
 
-import fs from 'node:fs';
+import * as effectFs from '../agent/effects/fs.js';
 import { currentTurnRoot, currentTurnNumber, currentTurnServedWork } from '../agent/turn-state.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -173,7 +173,7 @@ export function setFailed(jobId: string, error: string): void {
  */
 function deliverAsset(row: GenerationJobRow, assetPath: string, sizeBytes: number, mime: string): void {
   const recipientDir = path.join(os.homedir(), '.dojo', 'uploads', row.agent_id);
-  if (!fs.existsSync(recipientDir)) fs.mkdirSync(recipientDir, { recursive: true });
+  if (!effectFs.existsSync(recipientDir)) effectFs.mkdirSync(recipientDir, { recursive: true });
   const ext = path.extname(assetPath) || '.wav';
   const titleSlug = row.title ? slugify(row.title) : '';
   const shortId = row.id.replace(/^gen_/, '').slice(0, 8);
@@ -181,7 +181,7 @@ function deliverAsset(row: GenerationJobRow, assetPath: string, sizeBytes: numbe
   const stablePath = path.join(recipientDir, stableFilename);
   let deliveredPath = assetPath;
   try {
-    fs.copyFileSync(assetPath, stablePath);
+    effectFs.copyFileSync(assetPath, stablePath);
     deliveredPath = stablePath;
   } catch (err) {
     logger.warn('generation delivery: copy to caller uploads dir failed — using shared path', {

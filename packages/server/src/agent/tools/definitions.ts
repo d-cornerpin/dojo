@@ -1813,7 +1813,17 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'tts_create',
     description: 'Generate spoken audio from text, text-to-speech (TTS). The engine handles delivery, DO NOT write any user-facing text around this tool. When you call it, the engine posts a short acknowledgment immediately. ~2-10 s later the engine delivers the audio file directly to the chat with an inline player. Just call this tool and end your turn. Do NOT mention the TTS model or any internal system to the user. This tool reads text aloud verbatim, it does NOT compose music or sound effects.',
-    effects: [{ kind: 'fs_write', from: 'derived:the calling agent uploads directory' }],
+    // PHASE-5 T8 Step 3 (T8E) — THE WHOLE ASYNC DELIVERY PATH, DECLARED.
+    // The spoken-audio bytes land in the shared generated-assets directory, are read
+    // back from there, and are copied into the CALLING agent's uploads dir so the
+    // chat has a stable path. Only the last of those three was declared, and it
+    // was prose with no machine-checkable scope. All three corrected at the site
+    // (RULING P5-R14); none adds a refusal (P5-R5).
+    effects: [
+      { kind: 'fs_write', from: 'derived:the generated-assets directory the provider bytes land in', scope: { at: 'tree', template: '~/.dojo/uploads/generated' } },
+      { kind: 'fs_read', from: 'derived:the generated asset read back for the delivery copy', scope: { at: 'tree', template: '~/.dojo/uploads/generated' } },
+      { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } },
+    ],
     input_schema: {
       type: 'object',
       properties: {
@@ -1837,7 +1847,17 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'music_create',
     description: 'Compose original music or a sound piece from a text description. This is NOT text-to-speech (use tts_create to read words aloud). music_create generates an instrumental/musical composition from a creative brief. The engine handles the ENTIRE flow: when you call it, the engine posts a brief acknowledgment to the user and returns immediately. ~10-40 s later when the track is ready, the engine posts the audio file directly to the chat with an inline player. You do NOT get a second turn, just call this tool once and end your turn. Do NOT call it again to check progress. Do NOT mention the music model or any internal system to the user.',
-    effects: [{ kind: 'fs_write', from: 'derived:the calling agent uploads directory' }],
+    // PHASE-5 T8 Step 3 (T8E) — THE WHOLE ASYNC DELIVERY PATH, DECLARED.
+    // The composed-track bytes land in the shared generated-assets directory, are read
+    // back from there, and are copied into the CALLING agent's uploads dir so the
+    // chat has a stable path. Only the last of those three was declared, and it
+    // was prose with no machine-checkable scope. All three corrected at the site
+    // (RULING P5-R14); none adds a refusal (P5-R5).
+    effects: [
+      { kind: 'fs_write', from: 'derived:the generated-assets directory the provider bytes land in', scope: { at: 'tree', template: '~/.dojo/uploads/generated' } },
+      { kind: 'fs_read', from: 'derived:the generated asset read back for the delivery copy', scope: { at: 'tree', template: '~/.dojo/uploads/generated' } },
+      { kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } },
+    ],
     input_schema: {
       type: 'object',
       properties: {

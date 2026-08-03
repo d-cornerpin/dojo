@@ -24,7 +24,7 @@
 // stereo, so sample rate + channels are parameters the caller sets.
 // ════════════════════════════════════════
 
-import fs from 'node:fs';
+import * as effectFs from '../agent/effects/fs.js';
 import path from 'node:path';
 import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
@@ -36,8 +36,8 @@ const logger = createLogger('audio-generation');
 
 const GENERATED_DIR = path.join(os.homedir(), '.dojo', 'uploads', 'generated');
 function ensureGeneratedDir(): void {
-  if (!fs.existsSync(GENERATED_DIR)) {
-    fs.mkdirSync(GENERATED_DIR, { recursive: true });
+  if (!effectFs.existsSync(GENERATED_DIR)) {
+    effectFs.mkdirSync(GENERATED_DIR, { recursive: true });
     logger.info('Created generated audio directory', { path: GENERATED_DIR });
   }
 }
@@ -319,7 +319,7 @@ export async function generateAudio(req: GenerateAudioRequest): Promise<Generate
   const filename = `${uuidv4()}${ext}`;
   const filePath = path.join(GENERATED_DIR, filename);
   try {
-    fs.writeFileSync(filePath, fileBytes);
+    effectFs.writeFileSync(filePath, fileBytes);
   } catch (err) {
     return {
       ok: false,

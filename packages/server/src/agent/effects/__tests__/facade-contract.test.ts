@@ -481,6 +481,37 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(grantsCover(grants, { op: 'fs_write', path: stored, real: stored })).toBe(false);
   });
 
+  it('CATEGORY CONVERTED: the async audio delivery path writes through the facade', () => {
+    // RECLASSIFIED by the RULING P5-R15 ADDENDUM re-read: both modules had been
+    // recorded as platform-timed, and the sharpened criterion is whose async
+    // context the I/O runs in. Re-derived by command at this HEAD — `deliverAsset`
+    // has ONE call site, reached only from `runAudioOrMusicJob`, reached only
+    // from `enqueueAudioOrMusicJob`, whose ONE production caller is the
+    // tts_create / music_create handler; the boot worker calls `setFailed` and
+    // `deliverError` and never reaches an fs line at all.
+    for (const file of ['services/generation-jobs.ts', 'services/audio-generation.ts']) {
+      const src = fs.readFileSync(path.join(SRC, file), 'utf8');
+      expect(/^import .*['"]node:fs['"]/m.test(src), `${file} must not hold node:fs`).toBe(false);
+      expect(src.includes('effectFs.'), `${file} must write through the facade`).toBe(true);
+    }
+  });
+
+  it('tts_create and music_create DECLARE the generated dir AND their own delivery copy', () => {
+    const generatedDir = path.join(os.homedir(), '.dojo', 'uploads', 'generated');
+    const wav = path.join(generatedDir, 'x.wav');
+    const uploads = path.join(os.homedir(), '.dojo', 'uploads', AGENT);
+    const stable = path.join(uploads, 'weekly-recap-1234.wav');
+    for (const tool of ['tts_create', 'music_create']) {
+      const grants = grantsForCall(AGENT, effectsFor(tool), { text: 'hello', description: 'a beat' });
+      expect(grantsCover(grants, { op: 'fs_mkdir', path: generatedDir, real: generatedDir }), `${tool} may create the generated dir`).toBe(true);
+      expect(grantsCover(grants, { op: 'fs_write', path: wav, real: wav }), `${tool} may write the asset`).toBe(true);
+      expect(grantsCover(grants, { op: 'fs_read', path: wav, real: wav }), `${tool} may read it back to deliver it`).toBe(true);
+      expect(grantsCover(grants, { op: 'fs_write', path: stable, real: stable }), `${tool} may place the delivery copy`).toBe(true);
+      const other = path.join(os.homedir(), '.dojo', 'uploads', 'someone-else', 'x.wav');
+      expect(grantsCover(grants, { op: 'fs_write', path: other, real: other }), `${tool} may not write another agent uploads dir`).toBe(false);
+    }
+  });
+
   it('CATEGORY CONVERTED: the media door reads and delivers through the facade', () => {
     const src = fs.readFileSync(path.join(SRC, 'agent/tools/cat/media.ts'), 'utf8');
     expect(/^import .*['"]node:fs['"]/m.test(src), 'the media door must not hold node:fs').toBe(false);
