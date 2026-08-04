@@ -1788,6 +1788,13 @@
       "why": "PHASE-6 T1. NOT A RAISE — a first pin, and the file SHRANK to earn it (338 -> 218 as the ten per-turn maps left for `turn-context.ts`). The plan's own instruction: 'Neither turn-state.ts nor shared-state.ts is in ratchets.json — T1 must add the pin or the collapse target can grow unwatched.' Both sat under `maxNewFileLines` (400) and were therefore invisible to the decrease-only rule while half the ambient surface lived in them. Pinned at their measured size, which is a far tighter watch than the 400 cap: what is left here is the CROSS-TURN state, and it may only shrink."
     },
     {
+      "path": "packages/server/src/agent/turn-context.ts",
+      "from": 593,
+      "to": 641,
+      "by": "PHASE-6 T2 (CUT 9) carrier 1/1 (2026-08-04)",
+      "why": "PHASE-6 T2, CUT 9. RULING P6-R3(1) applied to the LAST and largest crossing in the phase: the turn's reducer state becomes a field on the turn's bag, because three closures declared in the `preflight` span read it LIVE after the boundary and one of them reads it from a WALL-CLOCK TIMER. The whole +48 is the field and the reasoning that belongs AT it - the three closures named with what each silently does when handed a frozen copy (a second ack to a person already answered; an ask re-served AFTER the side effect; the engine half of the same counter), and the paragraph establishing that this is ONE owner and not a mirror, since the driver keeps no `state` local beside it. THREE ALTERNATIVES MEASURED AND REFUSED: (a) a one-line comment per field, which is what every earlier carrier's hazard would have been reduced to and is exactly what teaches the next reader to discount the ones that matter; (b) writing the reasons into the report only, where the next editor of this file will never meet them; (c) keeping `state` a driver local and pinning the three closures to the driver instead - measured at ~200 lines of residue AND forcing the F10 timer to arm ~300 statements later than it arms today, a behaviour change a relocation did not admit to (CUT 4's `await import` precedent)."
+    },
+    {
       "path": "packages/server/src/agent/shared-state.ts",
       "from": null,
       "to": 90,
@@ -2153,7 +2160,7 @@
     "packages/server/src/agent/tools/surface.ts": 657,
     "packages/server/src/agent/tools/types.ts": 338,
     "packages/server/src/agent/tools/util.ts": 371,
-    "packages/server/src/agent/turn-context.ts": 593,
+    "packages/server/src/agent/turn-context.ts": 641,
     "packages/server/src/agent/turn-state.ts": 218,
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 482,
