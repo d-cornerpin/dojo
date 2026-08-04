@@ -351,6 +351,20 @@ export interface TurnContext {
   startAckSteerArmedThisTurn: boolean;
   startAckSteersInjected: number;
   startAckSteerInjectedAtLoop: number;
+
+  /** Ghosted-work-ask floor (2026-07-22): the multistep classifier's verdict on THIS
+   *  turn's inbound — was a WORK ask made, as opposed to chatter — so the `[no-reply]`
+   *  handling can tell a silence that is never valid from one that is fine.
+   *
+   *  ⚠ POPULATION 2 (PHASE-6 T4, CUT 6). Written ONCE, in straight-line code inside the
+   *  `assemble` span's multistep-detection block, and read in `postCallClassify` at the
+   *  ghosted-ask floor. It is honestly labelled: the write is not in a timer or a
+   *  callback, so the CUT 3 test would clear it — but the span WRITES it and a later
+   *  span READS the write, so a by-value hand-off loses the verdict entirely and the
+   *  floor sees `false` on every turn. That is the silent direction: a ghosted work ask
+   *  would read as chatter and the steer would never fire. It migrates under RULING
+   *  P6-R3(1)'s rule, with that consequence measured rather than assumed. */
+  inboundClassifiedAsWork: boolean;
 }
 
 /** The one registry. Keyed by agentId because a turn belongs to an agent and
@@ -395,6 +409,7 @@ export function openTurnContext(agentId: string): TurnContext {
     startAckSteerArmedThisTurn: false,
     startAckSteersInjected: 0,
     startAckSteerInjectedAtLoop: 0,
+    inboundClassifiedAsWork: false,
   };
   openContexts.set(agentId, ctx);
   return ctx;

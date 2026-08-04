@@ -101,6 +101,9 @@ const THE_DRIVER_CARRIES = [
   'startAckSteerArmedThisTurn',
   'startAckSteersInjected',
   'startAckSteerInjectedAtLoop',
+  // Written once, straight-line, INSIDE the span and read by `postCallClassify` — the
+  // silent direction is that a ghosted work ask reads as chatter and never steers.
+  'inboundClassifiedAsWork',
 ];
 
 /** The six in `turn-state.ts` that OUTLIVE the turn on purpose. */

@@ -2023,11 +2023,12 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // reason that had stopped being true (the start-ack timer no longer reads it; that
   // branch was retired 2026-07-23); the measurement is recorded at the field.
   // Ghosted-work-ask floor (2026-07-22): the multistep classifier's verdict on
-  // THIS turn's inbound, hoisted to turn scope so the [no-reply] handling can
-  // tell a work ask (silence is never valid) from chatter (silence is fine).
-  // 'user_creating_explicitly' counts as work: multistep=false there only means
-  // the ENGINE defers scaffolding to the model, not that no work was asked.
-  let inboundClassifiedAsWork = false;
+  // THIS turn's inbound, so the [no-reply] handling can tell a work ask (silence is
+  // never valid) from chatter (silence is fine). 'user_creating_explicitly' counts as
+  // work: multistep=false there only means the ENGINE defers scaffolding to the model,
+  // not that no work was asked.
+  // PHASE-6 T4 (CUT 6): MOVED to the turn's bag — `assemble` writes it and
+  // `postCallClassify` reads the write. Reason at the field (RULING P6-R3(1)).
   // The TRUTHFUL answer key (2026-07-22 silent-completion root fix): set ONLY
   // at the persists that genuinely deliver a user-facing reply (the terminal
   // persist, the G-SUP-2 recovery, the attachment surfacing nets), NEVER at
@@ -3002,7 +3003,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
             ).get(agentId, lastUserMessageContent);
             if (!existingTask && !bootstrapTwin) {
               const decision = await detectMultistep(lastUserMessageContent, agentId, cfg);
-              inboundClassifiedAsWork =
+              turnCtx.inboundClassifiedAsWork =
                 decision.multistep || decision.source === 'user_creating_explicitly';
               logger.info('v2 multistep classifier ran', {
                 agentId,
@@ -3024,7 +3025,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
               // name the classifier for deletion.
               //
               // WHAT IS KEPT, and it is the whole point of keeping the classifier at all:
-              //   * `inboundClassifiedAsWork` — the SIGNAL. It gates the bare-[no-reply]
+              //   * `turnCtx.inboundClassifiedAsWork` — the SIGNAL. It gates the bare-[no-reply]
               //     refusal below, and the plan says keep it by name.
               //   * the START ACK. The requirement is "the person who asked hears that this
               //     is being worked on, once, before the model does anything", and it never
@@ -3997,7 +3998,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         // never speaks as the agent, owner ruling 2026-07-22); double-ghosted
         // silence stands, loudly logged, and the ladder owns the follow-up.
         const ghostedWorkAsk =
-          isBareNoReply && !!triggerRow && inboundClassifiedAsWork &&
+          isBareNoReply && !!triggerRow && turnCtx.inboundClassifiedAsWork &&
           !state.surfacedReplyThisTurn && !deferredDeliveredByAck;
         if (ghostedWorkAsk && !steerFired(state.steerQueue, 'ghosted-ask')) {
           broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
