@@ -515,7 +515,7 @@ export class CallSession {
       // the meta this leg already holds — never re-derived. recordInboundMeta below
       // still records the full blob (call sid, from number, reply address).
       // insertMessageIfAbsent keeps the call-sid de-duplication of INSERT OR IGNORE.
-      await insertInboundMessageIfAbsent({
+      insertInboundMessageIfAbsent({
         id: msgId,
         agentId: primaryId,
         role: 'user',

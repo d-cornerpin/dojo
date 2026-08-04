@@ -135,7 +135,7 @@ export async function submitUserMessage(
   // meta), so the row is never briefly unstamped: `authorized` is dashMeta's own verdict
   // (the owner's dashboard/voice session), `senderId` is the counterparty identity the
   // conversation just resolved on, and `conversationId` lands in the SAME write.
-  await insertInboundMessageIfAbsent({
+  insertInboundMessageIfAbsent({
     id: messageId,
     agentId,
     role: 'user',

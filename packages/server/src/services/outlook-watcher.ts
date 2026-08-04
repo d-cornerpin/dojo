@@ -366,7 +366,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
       // the meta this watcher just computed — never re-derived. recordInboundMeta
       // below still records the full blob. insertMessageIfAbsent keeps the
       // external_message_id de-duplication the INSERT OR IGNORE relied on.
-      await insertInboundMessageIfAbsent({
+      insertInboundMessageIfAbsent({
         id: msgId,
         agentId: primaryId,
         role: 'user',

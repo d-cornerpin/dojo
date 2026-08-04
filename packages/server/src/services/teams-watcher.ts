@@ -326,7 +326,7 @@ async function pollForNewMessages(): Promise<void> {
         // below still records the full blob (chatId, chatType, recipientAddress).
         // insertMessageIfAbsent keeps the external_message_id de-duplication that the
         // INSERT OR IGNORE provided.
-        await insertInboundMessageIfAbsent({
+        insertInboundMessageIfAbsent({
           id: msgId,
           agentId: primaryId,
           role: 'user',

@@ -426,7 +426,7 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       // below still records the full blob (account, subject, provider message id).
       // INSERT OR IGNORE → insertMessageIfAbsent keeps the external_message_id
       // de-duplication exactly as it was.
-      await insertInboundMessageIfAbsent({
+      insertInboundMessageIfAbsent({
         id: msgId,
         agentId: primaryId,
         role: 'user',

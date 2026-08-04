@@ -340,7 +340,7 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
   // still records the full blob (from/to numbers, reply address).
   // insertMessageIfAbsent keeps the MessageSid de-duplication the INSERT OR IGNORE
   // leaned on (the unique index on external_message_id).
-  await insertInboundMessageIfAbsent({
+  insertInboundMessageIfAbsent({
     id: msgId,
     agentId: primaryId,
     role: 'user',

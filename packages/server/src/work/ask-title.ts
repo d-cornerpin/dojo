@@ -1,5 +1,8 @@
 // ════════════════════════════════════════════════════════════════════════════
-// WHAT AN ASK TICKET IS CALLED (PHASE-5 T9 — the owner's decision D4)
+// WHAT AN ASK TICKET IS CALLED
+//   PHASE-5 T9 (the owner's decision D4) — the title is WRITTEN BY THE SYSTEM MODEL.
+//   PHASE-6 T0B (the owner, 2026-08-04) — it is ID-FIRST, and the model's title
+//   REPLACES it. Nothing waits.
 //
 // The ticket a person's message opens used to be titled with the first 120
 // characters of that message. A title derived by SLICING is a copy: whatever
@@ -15,30 +18,31 @@
 //
 // ── THE THREE REQUIREMENTS, each with the thing that holds it ──
 //
-//  1. THE ASK HAPPENS BEFORE THE WRITE OPENS. `insertMessage`'s own header
-//     records the one-transaction invariant: the message row and the ticket it
-//     opens are ONE unit, both or neither. The prohibition was never on
-//     waiting — it is on holding a write transaction open across a network
-//     call. So the model is asked FIRST, and the message and its ticket are
-//     then written together with the real title already in place. No interim
-//     value is ever written, and `withUnit` still compile-refuses an await.
-//     Held by: `insertInboundMessageIfAbsent` below, and `SyncOnly<T>` in
-//     `db/unit.ts`.
+//  1. THE TICKET FILES IMMEDIATELY, WITH ITS OWN IDENTIFIER. `insertMessage`'s
+//     own header records the one-transaction invariant: the message row and the
+//     ticket it opens are ONE unit, both or neither. That is untouched. What
+//     changed is what the unit carries: `askIdForMessage()`, derived from the
+//     message id and therefore carrying nothing a person typed. **REFUSAL: the
+//     initial value is NEVER the 120-character slice** — that is the mechanism
+//     being removed, and re-introducing it anywhere on this path re-opens the
+//     hole it was removed for.
+//     Held by: `insertInboundMessageIfAbsent` below (synchronous — you cannot
+//     wait on what is not a promise) and `SyncOnly<T>` in `db/unit.ts`.
 //
-//  2. THE WAIT IS BOUNDED AND ITS FALLBACK IS CONTENT-FREE. On timeout, on any
-//     provider failure, or when no system tier is configured, the ticket is
-//     written with ITS OWN IDENTIFIER as the title — `askIdForMessage()`,
-//     which is derived from the message id and therefore carries nothing a
-//     person typed. **REFUSAL: the fallback is NEVER the 120-character slice.**
-//     Re-introducing it on the timeout path would re-open the hole on exactly
-//     the messages where the model was too slow to help. The bound is enforced
-//     by a race here, not by trusting the provider layer to honour an abort.
+//  2. THE MODEL'S TITLE REPLACES IT, IN THE BACKGROUND, AND MAY LOSE. The
+//     replacement writes ONLY over the identifier the ticket was filed with
+//     (`retitleIfStillUnnamed` below). Anything that renamed the ticket in the
+//     meantime — an agent, the owner, the PM — is newer than the model's answer
+//     and wins. That guard is also what makes this crash-honest: a replacement
+//     that never arrives leaves a title that is content-free by construction,
+//     there is no retry loop that can spin, and no interim state is orphaned
+//     because the "interim" value is the permanent fallback.
 //
 //  3. AN INSTRUCTION TO A MODEL IS NOT A PROVEN REFUSAL. The prompt asks for a
 //     title that copies no values; that request is a request. What makes it a
 //     property is `acceptModelTitle()`, which runs the platform's EXISTING
 //     declared-value scrub over the model's answer and REFUSES the whole title
-//     if the scrub would change it — falling back to the ticket's own id.
+//     if the scrub would change it — leaving the ticket's own id standing.
 //     **REFUSAL: the title is never "repaired" by writing the scrubbed form.**
 //     A title that had to be scrubbed is a title the model copied from, and
 //     what it copied the rest of is not knowable.
@@ -54,47 +58,50 @@
 // scope, and it is a check ON TOP OF the model's answer, not a filter that
 // makes the model's answer safe.
 //
-// ── THE TWO BOUNDS: ONE MEASURED, ONE THE PLATFORM'S OWN ──
-// The length cap is `OPENER_MAX_CHARS = 80` from the voice opener
-// (`voice/voice-ws.ts:1251`), the platform's other short model-written string.
+// ── THE COST THAT WAS REMOVED, AND THE MEASUREMENT THAT PRICED IT ──
+// T9 asked the model BEFORE the write opened and made ingest WAIT for the
+// answer under a bounded race (`ASK_TITLE_TIMEOUT_MS = 5000`, `Promise.race`).
+// That bound was measured rather than inherited: driven on the box 2026-08-03
+// through this exact path (POST /api/chat/kevin/messages, wall clock at the
+// caller, system tier = the floor model), NINE samples ran 2296 / 2577 / 2847 /
+// 3246 / 3622 / 3670 / 3727 / 4215 / 5198 ms — median 3622, max 5198. So every
+// inbound ask paid 2.3–5.2 s before its row landed. The owner read that number
+// at the PHASE-5 exit review and directed the flip; PHASE-6 T0B deleted the
+// bound and the race in the same change that stopped waiting, and the whole
+// cost is now zero — the row lands at once and the title catches up.
 //
-// THE TIMEOUT WAS NOT INHERITED — IT WAS MEASURED, because the inherited one was
-// wrong. This started at the voice opener's 1500 ms and that number never fires:
-// driven on the box 2026-08-03 through this exact path (POST /api/chat/kevin/
-// messages, wall clock at the caller, system tier = the floor model), NINE
-// samples ran 2296 / 2577 / 2847 / 3246 / 3622 / 3670 / 3727 / 4215 / 5198 ms —
-// median 3622, max 5198. At 1500 ms every inbound ask would take the fallback and
-// the decision would be dead on arrival.
+// The one bound that stays is the LENGTH cap, `OPENER_MAX_CHARS = 80` from the
+// voice opener (`voice/voice-ws.ts:1251`), the platform's other short
+// model-written string.
 //
-// 5000 ms is where it sits, and it is the platform's OTHER existing system-model
-// bound (`multistepLLMClassify`'s default, `agent/v2/classifiers/multistep.ts`)
-// rather than a number invented here. Against those nine samples it would have
-// produced a real title on eight and taken the content-free fallback on one,
-// which is the designed graceful path and not a failure.
-//
-// THE COST IS REAL AND IT IS THE OWNER'S ACCEPTED TRADE: an inbound ask now waits
-// for its title before its row lands. Nothing else waits — a message that opens
-// no ticket never calls a model at all.
+// NOTHING HERE IS UNBOUNDED BY THE DELETION, and that is measured rather than
+// assumed: every provider path in `callModel` carries its own bound that does
+// not depend on a caller's signal — the Ollama path a 300 s fetch timeout
+// (`agent/model.ts:615`), the OpenAI and Anthropic paths the stream watchdog's
+// 90 s first-chunk / 60 s idle abort (`agent/model.ts:55-77`), whose controller
+// fires whether or not an external signal was supplied. What was deleted is the
+// bound on how long INGEST waits, because ingest no longer waits at all.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
 import { redactHandedCredentials } from '../credentials/secret-values.js';
+import { withUnit } from '../db/unit.js';
+import { getDb } from '../db/connection.js';
+import { askIdForMessage } from './store.js';
+import { patchWork } from './tracker-store.js';
 import {
   insertMessageIfAbsent, wouldOpenAsk, type NewMessage, type Persisted,
 } from '../memory/message-store.js';
 
 const logger = createLogger('ask-title');
 
-/** How long ingest will wait for the system model before falling back. */
-export const ASK_TITLE_TIMEOUT_MS = 5000;
-
 /** The longest title written. */
 export const ASK_TITLE_MAX_CHARS = 80;
 
 /**
  * How much of the message the system model is shown. Bounded because this call
- * is on the ingest path of every inbound ask: a long paste must not turn one
- * message into an expensive request.
+ * happens for every inbound ask: a long paste must not turn one message into an
+ * expensive request.
  */
 export const ASK_TITLE_INPUT_CHARS = 2000;
 
@@ -111,8 +118,8 @@ const TITLE_INSTRUCTION = [
  * THE CHECK (requirement 3). Turn whatever the model said into a title, or
  * refuse it.
  *
- * Returns `null` for "use the ticket's own identifier" — every caller treats
- * `null` that way and no caller may substitute anything else.
+ * Returns `null` for "leave the ticket its own identifier" — every caller
+ * treats `null` that way and no caller may substitute anything else.
  */
 export function acceptModelTitle(agentId: string, raw: string | null | undefined): string | null {
   if (typeof raw !== 'string') return null;
@@ -127,7 +134,7 @@ export function acceptModelTitle(agentId: string, raw: string | null | undefined
     // fallback is correct and the ticket is fine — but a fallback nobody can see
     // is a mechanism that can rot in silence, so it says so.
     logger.warn('ask title: the system model answered with nothing usable '
-      + '(falling back to the ticket id)', { agentId, answeredChars: raw.length });
+      + '(the ticket keeps its own identifier)', { agentId, answeredChars: raw.length });
     return null;
   }
 
@@ -144,11 +151,11 @@ export function acceptModelTitle(agentId: string, raw: string | null | undefined
 }
 
 /**
- * Ask the system model for this ask's title. Bounded; `null` means "the ticket
- * uses its own identifier".
+ * Ask the system model for this ask's title. `null` means "leave the ticket its
+ * own identifier".
  *
- * Never throws: an ingest path that could not get a title still has a person's
- * message to land, and a failure here may never cost that message.
+ * Never throws: this runs behind a message that has already landed, and a
+ * failure to name a ticket may never become anything louder than a log line.
  *
  * The two imports are dynamic for the reason the other two system-model callers
  * are (`agent/v2/classifiers/multistep.ts:280`, `voice/voice-ws.ts:1270`): the
@@ -163,62 +170,67 @@ export async function resolveAskTitle(agentId: string, content: string): Promise
     const { getSystemModel } = await import('../router/selector.js');
     systemModel = getSystemModel();
   } catch (err) {
-    logger.warn('ask title: the system tier could not be read (falling back to the ticket id)', {
+    logger.warn('ask title: the system tier could not be read (the ticket keeps its own identifier)', {
       error: err instanceof Error ? err.message : String(err),
     }, agentId);
     return null;
   }
   // No system tier configured is a legitimate, supported state — the ticket
-  // gets its own identifier and nothing about ingest changes.
+  // keeps its own identifier and nothing about ingest changes.
   if (!systemModel) return null;
 
-  let timer: NodeJS.Timeout | undefined;
   try {
     const { callModel } = await import('../agent/model.js');
-    const answered = callModel({
+    // ONE attempt. A retry here would be a loop nobody is waiting on, running
+    // behind a person who has already been answered — see requirement 2.
+    const r = await callModel({
       agentId,
       modelId: systemModel,
       systemPrompt: '',
       messages: [{ role: 'user', content: `${TITLE_INSTRUCTION}\n\n${content.slice(0, ASK_TITLE_INPUT_CHARS)}` }],
       tools: false,
-      abortSignal: AbortSignal.timeout(ASK_TITLE_TIMEOUT_MS),
-      // The caller fully handles failure with the fallback below, so a handled
-      // timeout must not read as an agent-level error in the log.
+      // The caller fully handles failure with the id title, so a handled
+      // failure must not read as an agent-level error in the log.
       bestEffort: true,
-    })
-      .then((r) => r.content)
-      // Attached here so a late rejection after the race has been decided is
-      // never an unhandled rejection.
-      .catch((err: unknown) => {
-        logger.warn('ask title: the system model did not answer (falling back to the ticket id)', {
-          error: err instanceof Error ? err.message : String(err), model: systemModel,
-        }, agentId);
-        return null;
-      });
-
-    // The bound is HERE, not in the provider layer: whatever the adapter does
-    // with an abort signal, ingest returns within the bound.
-    const raced = await Promise.race([
-      answered,
-      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ASK_TITLE_TIMEOUT_MS); }),
-    ]);
-    return acceptModelTitle(agentId, raced);
+    });
+    return acceptModelTitle(agentId, r.content);
   } catch (err) {
-    logger.warn('ask title: could not be resolved (falling back to the ticket id)', {
-      error: err instanceof Error ? err.message : String(err),
+    logger.warn('ask title: the system model did not answer (the ticket keeps its own identifier)', {
+      error: err instanceof Error ? err.message : String(err), model: systemModel,
     }, agentId);
     return null;
-  } finally {
-    if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * The replacement write. It may only write over the identifier the ticket was
+ * FILED with, which is the ask's own id.
+ *
+ * Anything else in that column is newer than this answer — an agent's edit, the
+ * owner's, the PM's rename — and a background job that arrived late may not
+ * overwrite it. The read and the write are one unit, so nothing can slip
+ * between them.
+ *
+ * Returns true when the title actually landed.
+ */
+function retitleIfStillUnnamed(workId: string, title: string): boolean {
+  return withUnit((): boolean => {
+    const row = getDb()
+      .prepare("SELECT title FROM work WHERE id = ? AND kind = 'ask'")
+      .get(workId) as { title: string | null } | undefined;
+    // A ticket that is not there (never opened, or already deleted) is not an
+    // error — it is a background job arriving after the world moved on.
+    if (!row || row.title !== workId) return false;
+    return patchWork(workId, { title }) === 1;
+  });
 }
 
 // ── THE INGEST DOOR ─────────────────────────────────────────────────────────
 //
 // Every channel that carries a person's message writes it through here rather
 // than calling the writer directly, for one reason: the ticket that message
-// opens needs a title, the title is written by the system model, and the model
-// must be asked BEFORE the write opens.
+// opens is filed with its own identifier and then needs a real title, and the
+// system model is asked for that title AFTER the row is durable.
 //
 // IT LIVES HERE AND NOT IN THE WRITER, and that is a graph fact rather than a
 // taste: `memory/message-store.ts` is the SINGLE SYNCHRONOUS WRITER for
@@ -226,44 +238,60 @@ export async function resolveAskTitle(agentId: string, content: string): Promise
 // side at the router. The dependency runs one way — the door reaches for the
 // writer, never the reverse — so the writer keeps knowing nothing about models.
 //
-// The one-transaction invariant is untouched and this is the whole shape of
-// why: the ask happens out here, where awaiting is legal; the write is the same
-// synchronous `withUnit` it always was, and it now carries the finished title
-// in. No interim value is ever written, and `SyncOnly<T>` in `db/unit.ts` still
-// compile-refuses an await inside the unit.
+// The one-transaction invariant is untouched: the write is the same synchronous
+// `withUnit` it always was, and `SyncOnly<T>` in `db/unit.ts` still compile-
+// refuses an await inside the unit.
 //
-// A message NEVER waits for a title it does not need: `wouldOpenAsk` is the
+// A message NEVER costs a model call it does not need: `wouldOpenAsk` is the
 // same gate the writer applies inside the unit, so anything that is not a
-// person asking this agent for something goes straight through with no model
-// call at all.
-//
-// This never throws for a title's sake. Every failure — no system tier, a slow
-// provider, an unusable answer — lands the message with the ticket carrying its
-// own identifier. A person's message may not be lost over what it is called.
+// person asking this agent for something goes through with no model call at
+// all — and a duplicate arrival buys none either, because the writer's designed
+// no-op returns `null` and a null row starts nothing.
 
 /**
- * The title this row's ticket will carry, resolved BEFORE any transaction opens.
- * `null` means "the ticket takes its own identifier" — every caller treats it
- * that way and no caller may substitute anything derived from the content.
+ * Ask the system model to name this ask's ticket, and write the answer over the
+ * identifier the ticket was filed with. Fire-and-forget: production never awaits
+ * it, which is the entire point of the flip.
+ *
+ * Never throws — a rejected promise nobody is holding is an unhandled rejection,
+ * and every failure inside is already a fallback that has been chosen.
  *
  * Exported for the one producer that owns an outer transaction of its own
  * (`services/imessage-bridge.ts`: the poll cursor advances with the row). It
- * calls this above its own `db.transaction`, exactly as it already resolves
- * conversation identity there.
+ * calls this AFTER its transaction commits.
  */
-export async function resolveInboundAskTitle(m: NewMessage): Promise<string | null> {
-  if (!wouldOpenAsk(m)) return null;
-  return resolveAskTitle(m.agentId, m.content);
+export async function replaceAskTitleFromModel(m: NewMessage, messageId: string): Promise<void> {
+  try {
+    if (!wouldOpenAsk(m)) return;
+    const title = await resolveAskTitle(m.agentId, m.content);
+    // `null` is the designed outcome, not a failure: the ticket keeps the
+    // content-free identifier it was filed with.
+    if (title === null) return;
+    const workId = askIdForMessage(messageId);
+    if (!retitleIfStillUnnamed(workId, title)) {
+      logger.info('ask title: the ticket was renamed before the model answered, so the '
+        + 'later name stands', { workId }, m.agentId);
+    }
+  } catch (err) {
+    logger.warn('ask title: the replacement could not be written (the ticket keeps its own '
+      + 'identifier)', { error: err instanceof Error ? err.message : String(err) }, m.agentId);
+  }
 }
 
 /**
  * The door for a message arriving from a person on a channel.
  *
+ * SYNCHRONOUS on purpose: nothing waits for a title any more, and a signature
+ * that cannot be awaited is how that is held rather than remembered.
+ *
  * Returns `null` when the row was already there (the same designed no-op
  * `insertMessageIfAbsent` returns).
  */
-export async function insertInboundMessageIfAbsent(m: NewMessage): Promise<Persisted | null> {
-  if (m.askTitle !== undefined) return insertMessageIfAbsent(m);
-  const askTitle = await resolveInboundAskTitle(m);
-  return insertMessageIfAbsent(askTitle === null ? m : { ...m, askTitle });
+export function insertInboundMessageIfAbsent(m: NewMessage): Persisted | null {
+  const persisted = insertMessageIfAbsent(m);
+  // A caller that brought its own title is honoured and asks no model.
+  if (persisted !== null && m.askTitle === undefined) {
+    void replaceAskTitleFromModel(m, persisted.id);
+  }
+  return persisted;
 }

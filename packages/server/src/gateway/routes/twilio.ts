@@ -258,7 +258,7 @@ twilioRouter.post('/webhook/voicemail-transcription', async (c) => {
         // caller as sender, and the authorized:false verdict below) are stamped IN the
         // insert, so the row is never briefly unstamped. recordInboundMeta still records
         // the full meta blob for the resolver.
-        await insertInboundMessageIfAbsent({
+        insertInboundMessageIfAbsent({
           id: msgId,
           agentId: primaryId,
           role: 'user',

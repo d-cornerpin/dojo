@@ -20,7 +20,7 @@ import Database from 'better-sqlite3';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
 import { insertMessageIfAbsent, sweepById, type NewMessage } from '../memory/message-store.js';
-import { resolveInboundAskTitle } from '../work/ask-title.js';
+import { replaceAskTitleFromModel } from '../work/ask-title.js';
 import { isContentFreeCourtesy } from '../agent/v2/classifiers/inbound-courtesy.js';
 import { appleMessageDateToUnixMs } from './imessage-date.js';
 import { recordAtDoor, withOutboundIfAbsent, PLATFORM_SENDER, recordedId } from '../agent/v2/outbound.js';
@@ -1209,18 +1209,11 @@ export async function processInboundIMessage(
     senderId: inboundMetaObj.sender,
     authorized: inboundMetaObj.authorized,
   };
-  // T9 (D4): the ticket's title is written by the system model, and the model is
-  // asked BEFORE this transaction opens — for the same reason conversation identity
-  // is resolved above it. This bridge owns its own outer transaction (the cursor
-  // advance rides with the row), so it resolves the title itself rather than through
-  // the ingest door; the resolver is the same one, and `null` means the ticket takes
-  // its own identifier.
-  const askTitle = await resolveInboundAskTitle(inboundRow);
   db.transaction(() => {
     // `conversationId` stays spelled in the write itself: identity is stamped
     // ATOMICALLY with the row (OR4), and the serve-boundary conformance walk reads
     // exactly this statement.
-    insertMessageIfAbsent({ ...inboundRow, conversationId, ...(askTitle === null ? {} : { askTitle }) });
+    insertMessageIfAbsent({ ...inboundRow, conversationId });
     recordInboundMeta(msgId, inboundMetaObj);
     if (input.staleSentAtIso) {
       // P5c: the reply-vs-note decision, made structurally at ingest. A stale
@@ -1240,6 +1233,15 @@ export async function processInboundIMessage(
   // Everything below is POST-COMMIT: the row is durable and (for the poll loop)
   // the cursor advanced, so a failure here must never look like a persist
   // failure to the caller (no retry/rollback).
+
+  // T0B (the owner's flip of D4): the ticket has already been filed with its own
+  // identifier inside the transaction above; the system model is asked for the real
+  // title now, and it writes over that identifier when it arrives. This bridge owns
+  // its own outer transaction (the cursor advance rides with the row), so it starts
+  // the replacement itself rather than through the ingest door — the job is the same
+  // one, and it is fire-and-forget by design: nothing here waits for a title.
+  void replaceAskTitleFromModel(inboundRow, msgId);
+
   try {
     broadcast({
       type: 'chat:message',
