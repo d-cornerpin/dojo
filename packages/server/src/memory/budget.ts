@@ -95,6 +95,140 @@ export function estimateStoredTokens(text: string): number {
   return Math.max(1, estimateTokens(text));
 }
 
+// ── The image estimator (PHASE-6 T4-CAP) ────────────────────────────────────────────────
+//
+// AN IMAGE IS NOT TEXT AND MUST NOT BE BILLED AS TEXT. Everything above answers "what does
+// this text cost", and until 2026-08-04 an image block was answered by the same function —
+// `messageTokens` JSON-stringified the block, so an image cost the length of its base64
+// over four. **No provider charges for base64 length.** The fallback vision captioner's own
+// payload — one image and three sentences — therefore measured 185,178 tokens against
+// budgets of 170,071–179,553 and C11 threw at the provider boundary before the request was
+// ever sent; the agent then told its owner its vision pipeline had failed. Nine of those
+// refusals are on the platform's own durable record (`~/.dojo/logs/assembly-validation.jsonl`,
+// 2026-08-01 → 2026-08-03, `tokenTotal` 185,178 on every one), and the user-visible symptom
+// is `behav-sig:360ba8e3` in `DOJO-ISSUES-LOG.md`.
+//
+// ── THE THREE NUMBERS BELOW ARE RECEIPTS. Re-measure before touching one. ────────────────
+// Driven on the dev box 2026-08-04: **64 image calls + 20 text-only controls = 84 provider
+// receipts**, five models over two providers (`google/gemini-2.5-flash-image`,
+// `google/gemini-3.1-flash-image-preview`, `qwen/qwen3.5-9b`, `~moonshotai/kimi-latest` via
+// OpenRouter; `gemma4:31b` via ollama-local). Each call replayed `captionOne`'s exact
+// payload carrying ONE synthetic PNG of known dimensions; an image's own bill is that call's
+// provider-reported `input_tokens` minus the text-only control's. The receipts are kept at
+// `~/.dojo/receipts/t4cap-image-token-measurement/` and, per call, in `cost_records`, where
+// `estimated_input_tokens` (ours) sits beside `input_tokens` (theirs).
+//
+//   BYTES DO NOT MOVE THE BILL, and that one fact IS the defect. Nine flat-vs-noise pairs at
+//   IDENTICAL dimensions, byte ratios up to 346x: the largest provider token delta across
+//   all nine was **3**. Our estimator moved by up to 65,463 on the same pairs.
+//
+//   PIXELS DO. Per-megapixel rates measured: gemini 2.5 / 3.1 flat 258 at every size ·
+//   gemma4 ~450 · qwen ~980 · kimi ~1,300–1,408. Above each provider's own working
+//   resolution the curve STOPS — kimi bills a flat 11,674 from 3,072² through 8,192² (67
+//   megapixels), qwen a flat 16,387 from 4,096² up — because providers downscale.
+//
+// The law is the worst arm of that measurement, because the direction of error matters:
+// an estimator that UNDER-bills lets the allocator admit an assembly the provider will
+// refuse, which is the failure requirement C11 exists to prevent. Checked against all 64
+// measurements — 0 under-billed, two of them exactly on the bound (kimi 512² sets the slope,
+// qwen 4,096²+ sets the ceiling). `__tests__/image-token-rate.test.ts` pins the corpus.
+//
+// ⚠ ONE HONEST VARIANCE, recorded rather than smoothed away: OpenRouter routed the SAME
+// model and the SAME image to backends with different image preprocessing, so `qwen3.5-9b`
+// billed between 963 and 16,387 tokens for one 4,096² image across four drives. The law
+// covers the expensive arm; a cheaper one costs the allocator nothing but headroom.
+
+/** Tokens per megapixel — the STEEPEST rate measured (kimi-latest @ 512x512). */
+export const IMAGE_TOKENS_PER_MEGAPIXEL = 1408;
+
+/** No image was measured to cost less than this. Both Gemini models bill it flat, at every
+ *  size from 64x64 to 1536x1536, so a thumbnail is not free anywhere. */
+export const IMAGE_TOKEN_FLOOR = 258;
+
+/** The largest bill any image produced (qwen3.5-9b at 4096x4096 and above). Past its own
+ *  working resolution a provider downscales, so the curve stops climbing — and an estimator
+ *  that kept climbing would refuse assemblies the provider would have answered. */
+export const IMAGE_TOKEN_CEILING = 16387;
+
+/**
+ * What one image costs, from its pixels — the only dimension the receipts show a provider
+ * charging for. Unknown dimensions are the caller's problem, not this function's: see
+ * `IMAGE_TOKEN_CEILING` for what "I cannot size it" must cost.
+ */
+export function estimateImageTokens(width: number, height: number): number {
+  const megapixels = (Math.max(0, width) * Math.max(0, height)) / 1_000_000;
+  const fromPixels = Math.ceil(megapixels * IMAGE_TOKENS_PER_MEGAPIXEL);
+  return Math.min(IMAGE_TOKEN_CEILING, Math.max(IMAGE_TOKEN_FLOOR, fromPixels));
+}
+
+/**
+ * Pixel dimensions sniffed from an image's own magic bytes. Returns null for anything it
+ * cannot read, which is a QUESTION for the caller and never an answer — see #15.
+ *
+ * ONE OWNER: this was `services/image-generation.ts`'s private `getImageDimensions`, where
+ * the cost tracker used it for megapixel-priced models. It moved here rather than being
+ * copied, because two functions answering "how big is this image" is how the six token
+ * estimators happened. `image-generation.ts` imports this one.
+ */
+export function imagePixelDimensions(bytes: Buffer): { width: number; height: number } | null {
+  // PNG: 8-byte signature 89 50 4E 47 0D 0A 1A 0A, then IHDR with width at offset 16 and
+  // height at offset 20, both big-endian uint32.
+  if (
+    bytes.length >= 24 &&
+    bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+  ) {
+    return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
+  }
+  // GIF: 'GIF87a' / 'GIF89a', then width and height as little-endian uint16.
+  if (bytes.length >= 10 && bytes.subarray(0, 3).toString('ascii') === 'GIF') {
+    return { width: bytes.readUInt16LE(6), height: bytes.readUInt16LE(8) };
+  }
+  // JPEG: starts FF D8. Scan segments for an SOFn marker (FF C0..CF, excluding C4/C8/CC
+  // which are DHT/JPG/DAC). The 5 bytes after the marker are precision, height, width.
+  if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+    let i = 2;
+    while (i < bytes.length - 9) {
+      if (bytes[i] !== 0xff) { i++; continue; }
+      const marker = bytes[i + 1];
+      const isSof = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+      if (isSof) {
+        return { width: bytes.readUInt16BE(i + 7), height: bytes.readUInt16BE(i + 5) };
+      }
+      const segLen = bytes.readUInt16BE(i + 2);
+      if (segLen < 2) break;
+      i += 2 + segLen;
+    }
+  }
+  // WebP: RIFF....WEBPVP8?
+  if (
+    bytes.length >= 30 &&
+    bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    bytes.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    const fourcc = bytes.subarray(12, 16).toString('ascii');
+    if (fourcc === 'VP8X') {
+      // Extended: 4-byte flags @ offset 20, then 3-byte (width-1) LE, 3-byte (height-1) LE.
+      return {
+        width: 1 + (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16)),
+        height: 1 + (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16)),
+      };
+    }
+    if (fourcc === 'VP8L') {
+      // Lossless: 1 byte signature 0x2F at offset 20, then 14-bit (width-1), 14-bit (height-1).
+      const b1 = bytes[21], b2 = bytes[22], b3 = bytes[23], b4 = bytes[24];
+      return {
+        width: 1 + ((b1 | (b2 << 8)) & 0x3fff),
+        height: 1 + (((b2 >> 6) | (b3 << 2) | (b4 << 10)) & 0x3fff),
+      };
+    }
+    if (fourcc === 'VP8 ') {
+      // Lossy: dimensions at offset 26 (frame tag + start code already past).
+      return { width: bytes.readUInt16LE(26) & 0x3fff, height: bytes.readUInt16LE(28) & 0x3fff };
+    }
+  }
+  return null;
+}
+
 // ── The thresholds ──
 
 /**

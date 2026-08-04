@@ -58,7 +58,9 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 
 import type Anthropic from '@anthropic-ai/sdk';
-import { estimateTokens } from './budget.js';
+import {
+  estimateTokens, estimateImageTokens, imagePixelDimensions, IMAGE_TOKEN_CEILING,
+} from './budget.js';
 import { MessageSlot } from '../prompt/registry/types.js';
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────────────────
@@ -495,10 +497,64 @@ export const SCAFFOLDING_ACK_RESERVE_TOKENS = (() => {
 
 // ── Cost ────────────────────────────────────────────────────────────────────────────────
 
-/** What one emitted message costs, by the ONE estimator, exactly as the transports count it. */
+/**
+ * How many base64 characters are decoded to sniff an image's dimensions. A PNG/GIF/WebP
+ * header lives in the first 30 bytes; a JPEG's SOFn sits after its EXIF and thumbnail, which
+ * a phone camera can push past 60 KB. A multiple of 4, so the slice is whole base64 groups.
+ */
+const IMAGE_HEADER_B64_CHARS = 262_144;
+
+/**
+ * What ONE image block costs, by the MEASURED per-pixel rate (`memory/budget.ts`).
+ *
+ * An image whose size cannot be read — a `url` source carrying no bytes at all, a format the
+ * sniffer does not know — is billed at the measured CEILING. That is deliberate and it is
+ * the safe direction: guessing lower would let the allocator admit an assembly the provider
+ * then refuses, which is the failure C11 exists to prevent, and "probably a small one" is
+ * exactly the invented threshold #14 forbids.
+ */
+function imageBlockTokens(block: Record<string, unknown>): number {
+  const source = block.source as { type?: unknown; data?: unknown } | undefined;
+  if (source?.type === 'base64' && typeof source.data === 'string') {
+    const head = Buffer.from(source.data.slice(0, IMAGE_HEADER_B64_CHARS), 'base64');
+    const dims = imagePixelDimensions(head);
+    if (dims) return estimateImageTokens(dims.width, dims.height);
+  }
+  return IMAGE_TOKEN_CEILING;
+}
+
+const isImageBlock = (b: unknown): b is Record<string, unknown> =>
+  typeof b === 'object' && b !== null && (b as { type?: unknown }).type === 'image';
+
+/**
+ * What one emitted message costs, by the ONE estimator, exactly as the transports count it.
+ *
+ * PHASE-6 T4-CAP: an image block is billed by its PIXELS, which is the only thing 84 driven
+ * provider receipts show anyone charging for — not by the length of its base64, which is
+ * what this function used to count and what produced the captioner's 185,178-token payload.
+ * The derivation, the corpus and the three constants are `memory/budget.ts`'s own header.
+ *
+ * A message carrying NO image block returns exactly what it returned before, character for
+ * character: this function has five production readers and four of them are the allocator's
+ * own budget accounting, so image-free arithmetic that moved by even one token would change
+ * what the allocator admits on every turn on the platform. Neither reference file carries an
+ * image block, and neither does any of the dev body's 23,101 stored messages — the image
+ * path is reached only by a live attachment or by the captioner's own hand-built payload.
+ */
 export function messageTokens(m: LaneMessage): number {
-  const content = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-  return estimateTokens(content);
+  if (typeof m.content === 'string') return estimateTokens(m.content);
+  // The same cast `assembly-validation.ts`'s `blocksOf` uses: the SDK's block union is
+  // read structurally here, because what matters is `type === 'image'` and nothing else.
+  const blocks = m.content as unknown as Array<Record<string, unknown>>;
+  const images = blocks.filter(isImageBlock);
+  if (images.length === 0) return estimateTokens(JSON.stringify(m.content));
+  // The block's ENVELOPE is still text and is still counted as text; only the payload the
+  // provider does not charge for is replaced by what the provider does charge for.
+  const withoutPayloads = blocks.map((b) =>
+    isImageBlock(b) ? { ...b, source: { ...(b.source as object), data: '' } } : b,
+  );
+  return estimateTokens(JSON.stringify(withoutPayloads))
+    + images.reduce((t, b) => t + imageBlockTokens(b), 0);
 }
 
 export function renderTokens(messages: LaneMessage[]): number {

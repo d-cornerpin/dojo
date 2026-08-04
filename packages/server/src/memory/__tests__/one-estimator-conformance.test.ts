@@ -161,6 +161,13 @@ describe('ONE estimator, whole tree (research 06 requirement A2)', () => {
       [/^\s*(?:export\s+)?const\s+CHARS_PER_TOKEN\s*=\s*\d/m, 'CHARS_PER_TOKEN'],
       [/^\s*(?:export\s+)?const\s+OUTPUT_RESERVE_TOKENS\s*=\s*\d/m, 'OUTPUT_RESERVE_TOKENS'],
       [/^\s*(?:export\s+)?const\s+CONTEXT_THRESHOLD\s*=\s*[\d.]/m, 'CONTEXT_THRESHOLD'],
+      // PHASE-6 T4-CAP. An image is billed by its pixels, and that rate is a MEASUREMENT
+      // (84 provider receipts, `budget.ts`'s header). It joins this clause on the first day
+      // it exists, because a second copy of a measured rate is how a re-measurement reaches
+      // one reader and not the other — the same disease as the six divisors above.
+      [/^\s*(?:export\s+)?const\s+IMAGE_TOKENS_PER_MEGAPIXEL\s*=\s*\d/m, 'IMAGE_TOKENS_PER_MEGAPIXEL'],
+      [/^\s*(?:export\s+)?const\s+IMAGE_TOKEN_FLOOR\s*=\s*\d/m, 'IMAGE_TOKEN_FLOOR'],
+      [/^\s*(?:export\s+)?const\s+IMAGE_TOKEN_CEILING\s*=\s*\d/m, 'IMAGE_TOKEN_CEILING'],
     ];
     for (const [re, name] of declRes) {
       const holders = files.filter((f) => re.test(stripComments(fs.readFileSync(path.join(REPO, f), 'utf8'))));
