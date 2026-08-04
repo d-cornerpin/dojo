@@ -29,6 +29,10 @@ import { channelLabel, findRecentDeliveries, findRecentDeliveriesKeyed, relative
 import { isNearDuplicateText } from '../../classifiers/loop.js';
 import { detectDeliveryDenial } from '../../classifiers/grounding.js';
 import { claimedDeliverySteer, decideClaimedDelivery } from '../../claimed-delivery.js';
+import {
+  decideUncommittedPromise, openedBoardWorkSince, uncommittedPromiseSteer,
+} from '../../recorded-commitment.js';
+import { tsToMs } from '../../../../work/tracker-view.js';
 import { continueLoop, proceed, type StepOutcome } from '../step-outcome.js';
 import type { PostCallClassifyContext, PostCallScratch } from './index.js';
 
@@ -40,7 +44,7 @@ export function runReplyFloors(
   ctx: PostCallClassifyContext,
   sc: PostCallScratch,
 ): StepOutcome {
-  const { agentId, counterparty, db, result, triggerRow, turnNumber } = ctx;
+  const { agentId, counterparty, db, result, triggerRow, turnNumber, turnStartedAt } = ctx;
   const { deliberateSurfaceTurn, interAgentTurn } = sc;
   let { persistedContent } = sc;
   // ── Claimed-delivery floor (OPEN-14, REKEYED PHASE-4 T4) ── Catch a fabricated
@@ -193,6 +197,58 @@ export function runReplyFloors(
         agentId, rejected,
       }, agentId);
       return continueLoop(state); // re-enter so the agent retries the save or tells the truth
+    }
+  }
+
+  // ── PHASE-6 T-PROMISE: the UNCOMMITTED-PROMISE floor ── The reply tells the person
+  // the commitment is recorded, and the work ledger has nothing from this turn. It is the
+  // same guard as the three above it with the noun changed from a SEND to a PROMISE, which
+  // is what the kit scenario's own `knownFailing` and `task-T0C-report.md` §7 hand-up 4
+  // both asked for in writing and neither had an owner for.
+  //
+  // Why it is here and not a prompt edit: measured at `b17b39b`, the scenario's turn-1
+  // shape driven 12 times on the floor model opened a row on 3 — and NINE OF THE NINE
+  // MISSES CALLED NO TOOL AT ALL while telling the user it was recorded. There is no verb
+  // to consolidate when no verb was called; the only place the failure is visible is right
+  // here, after the model has spoken and before the turn ends.
+  //
+  // Receipt-keyed like its three siblings: `agent/v2/recorded-commitment.ts` holds the
+  // decision, the prose only NARROWS (the hit and the miss are the same sentence — proven
+  // by a clause), and the spine read is what fires. One steer per turn; across turns the
+  // ledger is the latch, because the moment the row exists the floor cannot fire again.
+  if (
+    persistedContent &&
+    result.toolCalls.length === 0 &&
+    !interAgentTurn &&
+    counterparty.kind === 'user' &&
+    !steerFired(state.steerQueue, 'uncommitted-promise')
+  ) {
+    const turnStartedAtMs = tsToMs(turnStartedAt) ?? 0;
+    const promise = decideUncommittedPromise({
+      agentId,
+      responseText: persistedContent,
+      // C5's rule, the same one the claimed-delivery floor states: the CUMULATIVE tool
+      // activity across every iteration. `result.toolCalls` is empty by the guard above.
+      toolResultsThisTurn: state.toolResults,
+      openedWorkThisTurn: () => openedBoardWorkSince(agentId, turnStartedAtMs),
+    });
+    if (!promise.fires) {
+      logger.info('v2 uncommitted-promise floor stood down; the ledger answered', {
+        agentId, turnNumber, reason: promise.reason,
+      }, agentId);
+    } else {
+      state = persistEngineSteer(
+        state,
+        {
+          agentId, content: uncommittedPromiseSteer(promise), turnNumber,
+          floor: 'uncommitted-promise', atLoop: state.loopCount,
+        },
+        { broadcast },
+      );
+      logger.info('v2 uncommitted-promise floor fired: the reply claims a recorded commitment the ledger does not hold, re-entering', {
+        agentId, turnNumber, wentToMemory: promise.wentToMemory,
+      }, agentId);
+      return continueLoop(state); // re-enter so the agent records the promise or says it is not tracked
     }
   }
 

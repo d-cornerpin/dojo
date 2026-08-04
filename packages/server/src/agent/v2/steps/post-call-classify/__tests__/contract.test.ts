@@ -292,7 +292,7 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     expect(advanceAt).toBeLessThan(callAt);
   });
 
-  it('THE EXIT-REQUEST CHANNEL, as a CENSUS WITH A DENOMINATOR: three directives, SEVEN exits, SEVENTEEN continues', () => {
+  it('THE EXIT-REQUEST CHANNEL, as a CENSUS WITH A DENOMINATOR: three directives, SEVEN exits, EIGHTEEN continues', () => {
     // Twenty-four conversions — the most of any tranche in the phase, four times
     // `execute`'s six. Every one of them was a `break` or a `continue` of the driver's
     // loop before the cut, so a new silent way out cannot appear without failing here.
@@ -320,9 +320,16 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     // reply · the A2A missed-reply hardcap · the close-out one-shot · the tracker
     // close-out hardcap · and the plain "no tool calls, the turn is done".
     expect(exitSites).toBe(7);
-    // The seventeen re-entries: three in the empty-response ladder and fourteen floors
-    // that hand the model one more round to put something right.
-    expect(continueSites).toBe(17);
+    // The eighteen re-entries: three in the empty-response ladder and FIFTEEN floors that
+    // hand the model one more round to put something right.
+    //
+    // ⚠ RE-DERIVED, NOT LOWERED (PHASE-6 T-PROMISE). This pin was SEVENTEEN when CUT 8
+    // landed the tranche, and the guard bit on the first change that moved it — which is
+    // the guard working. The +1 is the `uncommitted-promise` floor and nothing else: the
+    // exit count is UNCHANGED at seven, which is the arithmetic that proves a floor was
+    // ADDED rather than an exit quietly converted into a re-entry. A future cut cannot
+    // pass this clause by moving the two numbers in step.
+    expect(continueSites).toBe(18);
   });
 
   it('EXIT IS NOT SAYABLE WITHOUT A REASON, and the arms name their own', async () => {
@@ -369,11 +376,22 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     //     its own denominator, so a floor silently lost in the move fails loudly.
     const FLOORS = [
       'empty-response', 'ungrounded-claim', 'delivery-denial', 'failed-save-claim',
+      'uncommitted-promise',
       'silent-closeout', 'add-notes-stop', 'going-idle-in-progress', 'owed-interrupt',
       'promise-floor', 'a2a-handoff-floor', 'reminder-silence', 'ghosted-ask',
       'ghosted-ask-answer', 'a2a-missed-reply', 'tracker-closeout',
     ];
     for (const f of FLOORS) expect(text).toContain(`'${f}'`);
+    //     ⚠ AND THE DENOMINATOR NOW RUNS BOTH WAYS (PHASE-6 T-PROMISE). The loop above
+    //     only proves every listed floor is still here; it forgave a NEW floor landing
+    //     unlisted, which is exactly what happened when `uncommitted-promise` was added —
+    //     this clause passed while the list was one short. The census below reads the
+    //     floor ids the package actually WRITES (`floor: '<id>'`, comments stripped) and
+    //     asserts set EQUALITY, so neither direction can go quiet again.
+    const declared = new Set(
+      [...stepCode().matchAll(/(?<!\w)floor:\s*'([a-z0-9-]+)'/g)].map((m) => m[1]),
+    );
+    expect([...declared].sort()).toEqual([...FLOORS].sort());
     // (b) the package writes no assistant-role message of its own composing. The one
     //     assistant row it persists is the MODEL's own text, and it goes through the
     //     driver's own capture site rather than being composed here.
@@ -445,6 +463,51 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
       ctxFor({ result: modelResult({ content: 'Saved that for you.' }) }),
     );
     expect(quiet.state.steerQueue.fired.some((e) => e.floor === 'failed-save-claim')).toBe(false);
+  });
+
+  it('PHASE-6 T-PROMISE: THE UNCOMMITTED-PROMISE FLOOR — the LEDGER fires it, and the SAME WORDS with a row stand down', async () => {
+    // The measured miss, verbatim from the Step-0 drive (9 of 9 misses called no tool at all
+    // and claimed the recording anyway). `fakeDb` answers nothing, so the spine read returns
+    // no rows — which is exactly the state the floor exists for.
+    const miss = await runPostCallClassify(freshState(), ctxFor({
+      result: modelResult({
+        content: "acorn Noted — I've recorded the commitment to email the roof quote to Bob once he sends his address.",
+      }),
+    }));
+    expect(miss.directive).toBe('continue');
+    expect(miss.state.steerQueue.fired.some((e) => e.floor === 'uncommitted-promise')).toBe(true);
+
+    // THE CONTROL, and it is the clause that proves the trigger is not the prose: the same
+    // sentence with a successful `work_open` on the turn stands down. The hit and the miss
+    // are the same English; only the ledger separates them.
+    const hit = await runPostCallClassify(
+      freshState({
+        toolResults: [
+          { toolCallId: 'wo-1', name: 'work_open', content: 'Recorded: cmt:a709cb4fd087', isError: false },
+        ] as AgentTurnState['toolResults'],
+      }),
+      ctxFor({
+        result: modelResult({
+          content: "acorn Noted — I've recorded the commitment to email the roof quote to Bob once he sends his address.",
+        }),
+      }),
+    );
+    expect(hit.state.steerQueue.fired.some((e) => e.floor === 'uncommitted-promise')).toBe(false);
+  });
+
+  it('PHASE-6 T-PROMISE: it is NOT `promise-floor` — different trigger, different action, and it is sequenced first', async () => {
+    // Measured rather than asserted: across all 12 Step-0 attempts `promise-floor` never
+    // fired, and it MUST not here — `isForwardPromiseReply` keys on a promise to START WORK
+    // NOW ("I'll pull/check/get…"), while the scenario's own prompt says the work cannot be
+    // done this turn. Steering "do the work NOW" would be a false accusation.
+    const out = await runPostCallClassify(freshState(), ctxFor({
+      result: modelResult({
+        content: 'acorn Noted — the fence estimate to Bob is recorded as a commitment; I will email it once he sends his address.',
+      }),
+    }));
+    const fired = out.state.steerQueue.fired.map((e) => e.floor);
+    expect(fired).toContain('uncommitted-promise');
+    expect(fired).not.toContain('promise-floor');
   });
 
   it('THE SHARED CONTRACT IS REUSED UNCHANGED — no private directive was invented here', () => {

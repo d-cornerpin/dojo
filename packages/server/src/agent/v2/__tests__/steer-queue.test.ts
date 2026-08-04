@@ -124,7 +124,7 @@ describe('the declared precedence table', () => {
     }
   });
 
-  it('covers the whole re-derived steer surface: 26 staged + 1 converted = 27 floors', () => {
+  it('covers the whole re-derived steer surface: 26 staged + 1 converted + 1 new noun = 28 floors', () => {
     // §T0-PINS F derived 26 setting sites at `1249866`, re-derived unchanged by T3.
     //
     // PHASE-4 T4 adds the 27th, and the number moved for a reason worth stating rather than
@@ -138,8 +138,26 @@ describe('the declared precedence table', () => {
     // staged-enablement flag. Its job was that the rollout stayed diagnosable — one group
     // per commit, a red readable against 3-5 floors — and the rollout is over. What the
     // clause still owes is the COUNT and the identity of the converted floor, both below.
-    expect(STEER_PRECEDENCE.length).toBe(27);
+    // PHASE-6 T-PROMISE adds the 28th, and it is neither a staged floor nor a conversion:
+    // `uncommitted-promise` is NEW BEHAVIOUR, the fourth truth guard, and it says so. It is
+    // the same grounding guard as `ungrounded-claim` with the noun changed from a SEND to a
+    // PROMISE — the thing the kit scenario's `knownFailing` and `task-T0C-report.md` §7
+    // hand-up 4 both asked for and neither had an owner for. THE COUNT WAS RAISED BECAUSE A
+    // FLOOR WAS ADDED, never to make a red go away: the clause below names the addition, so
+    // a future +1 with no name beside it still fails.
+    expect(STEER_PRECEDENCE.length).toBe(28);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'reminder-silence').length).toBe(1);
+    expect(STEER_PRECEDENCE.filter((f) => f.id === 'uncommitted-promise').length).toBe(1);
+  });
+
+  it('PHASE-6 T-PROMISE: the promise guard sits in the TRUTH band, below the three sends and above every silence floor', () => {
+    const p = (id: string) => STEER_PRECEDENCE.find((f) => f.id === id)!.priority;
+    // Below the three that are about something the person was told happened IN THE WORLD…
+    expect(p('failed-save-claim')).toBeLessThan(p('uncommitted-promise'));
+    // …and above every silence floor, because "the promise is recorded" is a statement of
+    // fact and it is untrue, which outranks a turn merely ending quietly.
+    expect(p('uncommitted-promise')).toBeLessThan(p('ghosted-ask'));
+    expect(p('uncommitted-promise')).toBeLessThan(p('promise-floor'));
   });
 
   it('the converted reminder floor ranks with the silence floors, above the start-ack band', () => {

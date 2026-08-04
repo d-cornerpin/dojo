@@ -55,7 +55,7 @@
 
 /** Every floor that may steer the model. One id per floor — never two floors sharing one. */
 export type SteerFloorId =
-  | 'ungrounded-claim' | 'delivery-denial' | 'failed-save-claim'
+  | 'ungrounded-claim' | 'delivery-denial' | 'failed-save-claim' | 'uncommitted-promise'
   | 'ghosted-ask' | 'ghosted-ask-answer' | 'silent-closeout' | 'delegation-exit'
   | 'reminder-silence'
   | 'start-ack' | 'start-ack-reminder' | 'owed-interrupt' | 'promise-floor'
@@ -86,6 +86,12 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
   { id: 'ungrounded-claim',      priority: 10, why: 'reply claims a delivery no send tool made' },
   { id: 'delivery-denial',       priority: 11, why: 'reply denies a send the receipt ledger recorded' },
   { id: 'failed-save-claim',     priority: 12, why: 'reply claims a save every vault call rejected' },
+  // PHASE-6 T-PROMISE. The fourth truth guard and the SECOND NOUN of the same guard: the
+  // ledger, asked about a promise instead of a send. It ranks below the three above it
+  // because they are about something the person was told HAPPENED in the world, while this
+  // one is about the platform's own record of something still owed — but it is in the same
+  // band, because "the promise is recorded" is a statement of fact and it is untrue.
+  { id: 'uncommitted-promise',   priority: 13, why: 'reply says the promise is recorded and the work ledger holds nothing' },
 
   { id: 'ghosted-ask',           priority: 20, why: 'a direct human ask ended in silence' },
   { id: 'ghosted-ask-answer',    priority: 21, why: 'ghosted twice; hand the model its own recorded answer' },
