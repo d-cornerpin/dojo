@@ -2080,6 +2080,20 @@
       "to": 171,
       "by": "PHASE-6 T6 (CUT 8, 2026-08-04) — the header note that named this tranche as owing the migration is CLOSED in place",
       "why": "PHASE-6 T6 (CUT 8, 2026-08-04) — +9, all of it prose correcting a note that would otherwise be false. CUT 3 wrote here that `engineStartAckDeliveredThisTurn` and `deferredDeliveredByAck` ride by value and that 'the tranches that WRITE them (`assemble`, `postCallClassify`) are the ones that will owe the migration'. Both have now paid, so the note says so — AND says why this step's own interface did not change (its context closure reads the pair off the bag once per iteration and hands the VALUE down, which is exactly what the original positive evidence licenses). TWO ALTERNATIVES MEASURED AND REFUSED: deleting the paragraph — it is the reasoning that makes three plain booleans on this interface correct rather than lazy, and a reader who finds it gone re-derives it or, worse, 'fixes' the interface; and editing it down to one line — the note is load-bearing in BOTH directions (why they rode by value THEN, why they still may NOW) and a one-liner can only carry one of them."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts",
+      "from": 311,
+      "to": 367,
+      "by": "PHASE-6 T-PROMISE, the uncommitted-promise floor (2026-08-04)",
+      "why": "+56, and 41 of them are the reason rather than the mechanism. The floor itself is a guarded block that calls `decideUncommittedPromise` and, on a fire, `persistEngineSteer` + `continueLoop` - the same 15-line shape as the three grounding floors above it. The other 41 lines are the header: the Step-0 measurement that decided the mechanism (12 attempts, 3 opened a row, NINE OF THE NINE MISSES CALLED NO TOOL AT ALL) and the one-line refutation of the alternative it makes possible - you cannot consolidate your way out of a call that was never made. ALTERNATIVES MEASURED AND REFUSED: (a) put the decision inline here rather than in `recorded-commitment.ts` - that is +90 on this file and makes the narrowing untestable without driving the whole step, which is how the pre-rekey claimed-delivery floor stayed prose-keyed for months; (b) cut the header to one line - the numbers ARE the argument for the floor existing, and a floor whose reason lives only in a report is the floor the next reader deletes; (c) put the reason in the report only - refused for the same reason, and it is the mistake `handlers.ts`'s stale cycle comment records."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steer-queue.ts",
+      "from": 275,
+      "to": 281,
+      "by": "PHASE-6 T-PROMISE, the 28th floor (2026-08-04)",
+      "why": "+6: one union member and one table row with the five-line argument for why a FOURTH truth guard exists and why it ranks below the three sends. This table's own integrity clause refuses a priority with no argument, so the `why` is not optional decoration. ALTERNATIVES MEASURED AND REFUSED: (a) reuse `failed-save-claim` for the promise noun - it is latched and texted for the VAULT, so sharing it would silently disarm one of the two whenever both applied, which is the exact one-slot loss this queue was built to end; (b) a one-line `why` - the band placement is the decision (a truth guard, not a silence floor) and it is the part a later reader will want argued."
     }
   ],
   "maxNewFileLines": 400,
@@ -2147,9 +2161,10 @@
     "packages/server/src/agent/v2/loop.ts": 2305,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 433,
+    "packages/server/src/agent/v2/recorded-commitment.ts": 209,
     "packages/server/src/agent/v2/recovery.ts": 605,
     "packages/server/src/agent/v2/state.ts": 610,
-    "packages/server/src/agent/v2/steer-queue.ts": 275,
+    "packages/server/src/agent/v2/steer-queue.ts": 281,
     "packages/server/src/agent/v2/steps/assemble/delegation-and-attachments.ts": 183,
     "packages/server/src/agent/v2/steps/assemble/index.ts": 302,
     "packages/server/src/agent/v2/steps/assemble/multistep-detection.ts": 180,
@@ -2192,7 +2207,7 @@
     "packages/server/src/agent/v2/steps/post-call-classify/owed-interrupt.ts": 134,
     "packages/server/src/agent/v2/steps/post-call-classify/persist-assistant.ts": 323,
     "packages/server/src/agent/v2/steps/post-call-classify/promise-floor.ts": 115,
-    "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 311,
+    "packages/server/src/agent/v2/steps/post-call-classify/reply-floors.ts": 367,
     "packages/server/src/agent/v2/steps/post-call-classify/silent-closeout.ts": 134,
     "packages/server/src/agent/v2/steps/post-call-classify/terminal-text.ts": 187,
     "packages/server/src/agent/v2/steps/post-call-classify/tracker-closeout.ts": 249,

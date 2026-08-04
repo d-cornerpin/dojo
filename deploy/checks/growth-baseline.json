@@ -184,6 +184,7 @@
     "packages/server/src/agent/v2/owner-affinity.ts": 173,
     "packages/server/src/agent/v2/proactive-budget.ts": 74,
     "packages/server/src/agent/v2/receipt.ts": 433,
+    "packages/server/src/agent/v2/recorded-commitment.ts": 209,
     "packages/server/src/agent/v2/recovery.ts": 596,
     "packages/server/src/agent/v2/reply-destination.ts": 86,
     "packages/server/src/agent/v2/state.ts": 701,
