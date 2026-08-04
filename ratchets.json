@@ -1632,6 +1632,20 @@
       "to": 258,
       "by": "PHASE-5 T8 Step 3 (2026-08-03, T8G) — FIRST PIN, at the growth detector's own instruction",
       "why": "PHASE-5 T8 Step 3. FIRST PIN, not a raise: check-growth.mjs flagged this file at 258 lines for crossing 60% of the 400-line new-file cap, and its own remedy is to pin it here so the decision is visible and the file is decrease-only from now on. WHY IT GREW: it is the fs half of the effect facade, and it grows by ONE ENTRY PER CONVERTED CATEGORY on purpose — an operation nothing calls is unexercised code pretending to be a lock, so each category brings the operations it drives and a test that drives them. This sitting added a `withFileTypes` overload (the techniques search walk) and a SECOND temp-then-rename entry moved WHOLE out of the slides style writer. THE ALTERNATIVES WERE MEASURED. (a) Split the sync and promises surfaces into two modules (minus about 100 here): REFUSED — the shape is deliberately 1:1 with node:fs so a conversion stays a rename plus an await, and two modules would make a converted call site import two things to replace one. (b) Blend the new temp-rename entry into atomicWriteFile (minus 26): REFUSED — different temp naming, different sync/async shape; merging them would change one caller's behaviour to match the other's, which a relocation may never do. (c) Drop the entry comments (minus 60): REFUSED — every entry's comment says WHAT IS DECLARED versus what is the carry's own implementation detail, and that distinction is the whole difference between a lock and a rename. THE DIRECTION IS ENFORCED FROM HERE: this file may only shrink from 258."
+    },
+    {
+      "path": "packages/server/src/agent/effects/scopes.ts",
+      "from": 340,
+      "to": 349,
+      "by": "PHASE-5 T8 Step 3 the transcode carry (2026-08-03, T8H) — branch (B)'s first named member",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 4(1) / P5-R14 branch (B). +9 lines, ALL of them the `CARRIED_PROGRAMS` entry and its reason: `ffmpeg` is the first program the platform CARRIES rather than matches, because `transcribe_audio`'s transcode builds its argv out of two paths the platform generates in its own temp directory. NO BRANCH WAS ADDED — the `scope: { at: 'program' }` arm has been in this file since T8B and has been yielding nothing because the list was empty; what landed is one row in the list. THE REASON IS THE POINT AND IS WHY IT IS NOT ONE LINE: the census clause already refuses a bare name, so the entry has to say what the program is for and why the argv cannot be declared, which is exactly the fact a future reader needs before adding a second. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Declare the transcode as an `args.` proc effect instead (about the same lines): REFUSED — no argument of `transcribe_audio` names a program, so the declaration would be a fiction and the resolver would mint nothing. (b) Keep the reason in `transcode.ts` and leave a bare key here (minus 7): REFUSED — the census reads the reason out of THIS object, so a reason living elsewhere is a reason the gate cannot see. (c) Route the temp pair through the facade and drop branch (B) entirely (minus 9 here, plus N in declarations): REFUSED — it needs a declaration that can name `os.tmpdir()`, which no template can, and inventing one would be a scope the agent never chose. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 349."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2741,
+      "to": 2749,
+      "by": "PHASE-5 T8 Step 3 the transcode carry (2026-08-03, T8H) — the undeclared transcoder, declared",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 4(1). +8 lines: ONE effect line on `transcribe_audio` and 7 lines of comment saying why the declaration names a PROGRAM rather than a resource. THE DEFECT IT FIXES: every source this tool accepts — attachment, path or url — is decoded or demuxed through ffmpeg before any engine sees it, and the definition declared no `proc` effect at all, so the spawn was invisible to the gate loop and the converted carry would have refused the tool's own transcode. NO `input_schema` LINE IS TOUCHED, so the tools array does not move and no prefix re-blessing is owed. THE ALTERNATIVES WERE MEASURED. (a) Declare it with prose only, no `scope` (minus 1): REFUSED — a `derived:` with no scope yields NO grant by design, so the tool would still refuse its own transcode; the prose survives as the `from`, which is the point of the sibling. (b) Drop the comment (minus 7): REFUSED — this is the FIRST branch-(B) declaration in the tree and the next reader has to know why a program is declarable here and an argv is not, or the list grows by imitation. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2749."
     }
   ],
   "maxNewFileLines": 400,
@@ -1681,8 +1695,8 @@
     "packages/server/src/agent/tools/cat/media.ts": 896,
     "packages/server/src/agent/tools/cat/session.ts": 241,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
-    "packages/server/src/agent/effects/scopes.ts": 340,
-    "packages/server/src/agent/tools/definitions.ts": 2741,
+    "packages/server/src/agent/effects/scopes.ts": 349,
+    "packages/server/src/agent/tools/definitions.ts": 2749,
     "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/index.ts": 642,
