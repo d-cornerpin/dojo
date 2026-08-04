@@ -2,6 +2,13 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+          "path": "packages/server/src/work/ask-title.ts",
+          "from": 246,
+          "to": 269,
+          "by": "PHASE-5 T9 (2026-08-03) — the bounded wait's number is measured, not inherited",
+          "why": "+23, and every line of it is the measurement that corrected an inherited number plus the failure mode that correction exposed. The timeout started at the voice opener's 1500 ms and DRIVING it on the box showed that value never fires: nine samples through the live seam ran 2296-5198 ms, median 3622. The header now carries those nine numbers, the command that produced them, and why 5000 ms (the platform's other existing system-model bound) is where it landed — because a threshold with no measurement beside it is a rumour, and this file is where the next reader will look for it. The remaining lines are a log line for a failure mode observed on the box: a system model answering with nothing at all fell back correctly and SILENTLY, and a mechanism whose failure mode is silence rots without anyone finding out. From here this file may only shrink."
+    },
+    {
           "path": "packages/server/src/gateway/routes/chat.ts",
           "from": 484,
           "to": 485,
@@ -1816,7 +1823,7 @@
     "packages/server/src/voice/voice-ws.ts": 2299,
     "packages/server/src/work/occurrences.ts": 426,
     "packages/server/src/work/override-requests.ts": 247,
-    "packages/server/src/work/ask-title.ts": 246,
+    "packages/server/src/work/ask-title.ts": 269,
     "packages/server/src/work/store.ts": 1741,
     "packages/server/src/work/tracker-store.ts": 503,
     "packages/server/src/work/tracker-view.ts": 509,
