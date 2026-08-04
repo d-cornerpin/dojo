@@ -3072,3 +3072,136 @@ describe('PHASE-6 CUT 7: the execute span kept the A2A re-send cap nobody tested
     expect(assistant?.content).toBe('sent');
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════
+// PHASE-6 CUT 8 (T6, `postCallClassify`) — THE RC-13.2 FAILED-SAVE-CLAIM FLOOR GETS
+// THE FIRST TEST IT HAS EVER HAD, GREEN ON THE UNMOVED TREE, BEFORE THE SPAN MOVES.
+//
+// How it was found, by command rather than by eye. Every floor id declared inside this
+// tranche's span was greped for across BOTH repos' test corpora:
+//   git grep -l "'failed-save-claim'" -- '…/__tests__/…'   → nothing
+//   git grep -l "failed-save-claim"   (the whole kit repo)  → nothing
+//   git grep -l "You told the user you saved that"         → nothing, either repo
+// Of the fifteen floors this span declares, it is the only one with no test, no kit
+// scenario and no clause naming its steer text anywhere.
+//
+// WHAT THE REQUIREMENT IS, in the guard's own terms (`loop.ts`, "RC-13.2
+// failed-save-claim floor"): the reply claims something was saved / stored /
+// remembered, but every `vault_remember` THIS TURN was REJECTED and nothing was
+// stored. That is the agent telling the person a falsehood about its own memory —
+// the honesty class this project exists to remove — and the floor catches it BEFORE
+// the claim becomes the turn's answer, then re-enters so the model either retries the
+// save or says truthfully that it is not saved yet.
+//
+// THE CONDITION HAS THREE PARTS AND EACH ONE IS A SEPARATE WAY TO BE WRONG:
+//   * a save CLAIM in the terminal text (not merely a failed tool);
+//   * `succeeded === 0` — if ANYTHING was stored the claim is true enough and the
+//     floor must stay quiet;
+//   * `rejected >= 1` — there has to be a rejection to lie about.
+// Plus the `steerFired` one-shot, so a model that repeats itself cannot spin the
+// engine. Non-negotiable #2 in its strict form: the requirement is written down
+// before the code is touched.
+// ════════════════════════════════════════════════════════════════════════════════
+describe('PHASE-6 CUT 8: the postCallClassify span kept the RC-13.2 save-claim floor nobody tested', () => {
+  const remember = (n: number): ToolCall =>
+    ({ id: `vr-${n}`, name: 'vault_remember', arguments: { content: `fact ${n}` } } as ToolCall);
+
+  const messagesOfCall = (i: number): string =>
+    JSON.stringify((callModelSpy.mock.calls[i]?.[0] as { messages?: unknown })?.messages ?? []);
+
+  /** Drive a turn whose FIRST round calls `vault_remember` and whose later rounds are
+   *  plain text. `results` decides which of those saves the vault accepted. */
+  const driveClaimTurn = async (opts: {
+    saves: number;
+    accept: (n: number) => boolean;
+    texts: string[];
+  }): Promise<void> => {
+    let round = 0;
+    callModelSpy.mockImplementation(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          content: '', toolCalls: Array.from({ length: opts.saves }, (_, i) => remember(i + 1)) as ToolCall[],
+          inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
+        };
+      }
+      return {
+        content: opts.texts[round - 2] ?? 'ok', toolCalls: [] as ToolCall[],
+        inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
+      };
+    });
+    executeToolSpy.mockImplementation(async (_agentId: string, toolCall: ToolCall) => {
+      const n = Number(String(toolCall.id).split('-')[1]);
+      return opts.accept(n)
+        ? { toolCallId: toolCall.id, name: toolCall.name, content: 'stored', isError: false }
+        : { toolCallId: toolCall.id, name: toolCall.name, content: 'REJECTED: needs a subject', isError: true };
+    });
+    await runV2Turn('primary');
+  };
+
+  it('THE FLOOR: every save was rejected and the reply claims one succeeded — the turn re-enters instead of shipping the lie', async () => {
+    await driveClaimTurn({
+      saves: 2,
+      accept: () => false,
+      texts: ['Saved that for you.', 'Actually it did not save — the vault rejected it.'],
+    });
+
+    // POSITIVE CONTROL: the claim round really happened, so a green below cannot mean
+    // "the turn never got there".
+    expect(callModelSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // THE CLAUSE: the model is asked a THIRD time, and what it is handed is the floor's
+    // steer — with the rejected COUNT in it and both honest ways out named.
+    expect(callModelSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
+    const steer = messagesOfCall(2);
+    expect(steer).toContain('You told the user you saved that');
+    expect(steer).toContain('all 2 vault_remember calls this turn');
+    expect(steer).toContain('were REJECTED and nothing was stored');
+    expect(steer).toContain('tell the counterpart truthfully that it is not saved yet');
+  });
+
+  it('THE `succeeded === 0` ARM: one save landed, so the claim is not a lie and the floor stays quiet', async () => {
+    // The sharp control: there IS a rejection, so a floor that only counted rejections
+    // would fire here. Something was stored, so the claim is true enough and the engine
+    // has no business interrupting.
+    await driveClaimTurn({
+      saves: 2,
+      accept: (n) => n === 1,
+      texts: ['Saved that for you.'],
+    });
+
+    expect(callModelSpy).toHaveBeenCalledTimes(2);
+    expect(messagesOfCall(1)).not.toContain('You told the user you saved that');
+  });
+
+  it('THE SCOPE ARM: a rejected save with NO claim in the reply is not this floor\'s business', async () => {
+    await driveClaimTurn({
+      saves: 1,
+      accept: () => false,
+      texts: ['That did not go through — want me to try again?'],
+    });
+
+    expect(callModelSpy).toHaveBeenCalledTimes(2);
+    expect(messagesOfCall(1)).not.toContain('You told the user you saved that');
+  });
+
+  it('ONE SHOT: the model repeats the claim after the steer and the engine does NOT steer again', async () => {
+    // The `steerFired` guard is what stops an unrepentant model spinning the loop on a
+    // floor that re-enters. Without it this turn would ping-pong until MAX_TOOL_LOOPS.
+    await driveClaimTurn({
+      saves: 1,
+      accept: () => false,
+      texts: ['Saved that for you.', 'I saved it, honestly.', 'Fine — it is not saved.'],
+    });
+
+    // The steer is persisted as its own role='system' row (`persistEngineSteer`), so the
+    // number of rows IS the number of times the floor fired — a count the prompt text
+    // cannot give, because once persisted the steer rides every later assembly.
+    const rows = mockDb.current!
+      .prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'system' AND content LIKE '%You told the user you saved that%'")
+      .get() as { n: number };
+    // POSITIVE CONTROL: it fired at all, so "exactly one" is a latch and not an absence.
+    expect(rows.n).toBe(1);
+    // …and the model really did get a third and fourth round to repeat itself in.
+    expect(callModelSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+});
