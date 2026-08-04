@@ -1075,7 +1075,9 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // F9: timestamp of the turn's most recent context assembly; sibling user rows
   // of the same conversation created before this instant were IN the assembled
   // context and are claimed at teardown (see claimAssembledSiblings).
-  let lastAssembledAtIso: string | null = null;
+  // PHASE-6 T4 (CUT 6): MOVED to the turn's bag with its two siblings — the
+  // `assemble` span writes it and the teardown closure reads it, so a by-value
+  // hand-off would lose the stamp. Reason at the field (RULING P6-R3(1)).
   // FA-M1: the non-compressible overhead (assembled system prompt + tool-schema/
   // output reserve) the pre-call compaction gate subtracts from the window to get
   // the compressible budget. Refreshed from each assembly below; the pre-call gate
@@ -1083,8 +1085,9 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // iteration's value (0 on the very first gate, i.e. old full-window behavior).
   // The stronger, exact anti-silent-loss signal is the eviction broadcast, which
   // fires whenever the assembler actually drops fresh-tail rows.
-  let assemblerOverheadTokens = 0;
-  let freshTailDropWarned = false;
+  // PHASE-6 T4 (CUT 6): both MOVED to the turn's bag — see `lastAssembledAtIso`
+  // above. `freshTailDropWarned` is the once-per-TURN latch behind the CONTEXT_HIGH
+  // banner, which is why it cannot ride by value into a step that runs per iteration.
   // E-C1: publish the conversation this turn serves so recall_recent_thread scopes
   // to it. null on engine/A2A turns (no waiting human) so recall doesn't latch the
   // last human conversation. Cleared when the agent goes idle.
@@ -2552,7 +2555,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
 
   const teardownContext = (): TeardownContext => ({
     agentId, turnCtx, turnNumber, db,
-    chosenConvKey, chosenConversationId, lastAssembledAtIso,
+    chosenConvKey, chosenConversationId, lastAssembledAtIso: turnCtx.lastAssembledAtIso,
     terminalAnswerRowId, triggerWorkId,
     toolPhaseEndedBySpinBrake: turnCtx.toolPhaseEndedBySpinBrake,
     turnInjectedTechniqueId: turnCtx.turnInjectedTechniqueId,
@@ -2571,7 +2574,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // step never points back at the driver (CUT 2's `stopStatusHeartbeat` precedent).
   const preCallGatesContext = (): PreCallGatesContext => ({
     agentId, turnNumber, contextWindow, contextModelId, configuredModelId, isAutoRouted,
-    counterparty, assemblerOverheadTokens,
+    counterparty, assemblerOverheadTokens: turnCtx.assemblerOverheadTokens,
     engineStartAckDeliveredThisTurn, deferredDeliveredByAck,
     engineBlockEscapeHatch: ENGINE_BLOCK_ESCAPE_HATCH,
     broadcast, setAgentStatus, stashContinuationIfHuman, detectTaskThrashing,
@@ -2670,7 +2673,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       // iteration, so a gate that judges them as prefix churn reports the prescribed shape
       // as a defect, which is why `check-message-prefix` could never go green.
       const volatileFrom = ctx.messages.length;
-      lastAssembledAtIso = new Date().toISOString(); // F9: see claimAssembledSiblings
+      turnCtx.lastAssembledAtIso = new Date().toISOString(); // F9: see claimAssembledSiblings
       let systemPrompt = ctx.systemPrompt;
       const messages = ctx.messages;
       // ── STRIP (PHASE-3 T7 Step 2, 2026-08-01) — the SETTLED_HINT is DELETED, both branches.
@@ -2712,15 +2715,15 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       // is now measured per agent and no longer importable. `ctx.reserveTokens` is the
       // number the assembler ACTUALLY set aside on the assembly that just ran — the loop
       // reads the decision instead of re-deriving it, which is the same one-owner move.
-      assemblerOverheadTokens = estimateTokens(systemPrompt) + (ctx.reserveTokens ?? 0);
+      turnCtx.assemblerOverheadTokens = estimateTokens(systemPrompt) + (ctx.reserveTokens ?? 0);
 
       // FA-M1: surface the assembler's oldest-fresh-tail eviction. budgetFreshTail
       // silently dropped older fresh-tail groups to fit the window (live-view loss
       // where the weakest model needs it most). Emit the existing CONTEXT_HIGH
       // warning once per turn so the dashboard shows it instead of it being
       // log-only. The dropped rows are persisted and later summarized (not lost).
-      if (!freshTailDropWarned && (ctx.freshTailDropped ?? 0) > 0) {
-        freshTailDropWarned = true;
+      if (!turnCtx.freshTailDropWarned && (ctx.freshTailDropped ?? 0) > 0) {
+        turnCtx.freshTailDropWarned = true;
         const dropped = ctx.freshTailDropped ?? 0;
         logger.warn('assembler evicted oldest fresh-tail messages to fit the window (live-view loss)', {
           agentId, dropped, contextWindow,
@@ -4975,11 +4978,11 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
           !steerFired(state.steerQueue, 'owed-interrupt') &&
           persistedContent && persistedContent.trim().length > 0 &&
           state.loopCount < MAX_TOOL_LOOPS &&
-          lastAssembledAtIso &&
+          turnCtx.lastAssembledAtIso &&
           chosenConvKey &&
           chosenConvKey !== 'engine'
         ) {
-          let owed = getOwedMidTurnArrivals(agentId, chosenConvKey, turnStartedAt, lastAssembledAtIso);
+          let owed = getOwedMidTurnArrivals(agentId, chosenConvKey, turnStartedAt, turnCtx.lastAssembledAtIso);
           if (owed.length > 0) {
             // Belt-and-suspenders on top of the query's origin_kind='engine' filter:
             // never quote human text that merely opens with an engine tag ([System:,

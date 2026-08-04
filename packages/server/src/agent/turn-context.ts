@@ -291,6 +291,35 @@ export interface TurnContext {
    *  untouched — a carrier feeding a context field is the same value it always fed,
    *  read one property later. */
   turnInjectedTechniqueId: string | null;
+
+  /** THE ASSEMBLER'S OWN BOOKKEEPING FOR THIS TURN — three locals of one mechanism,
+   *  all WRITTEN by the `assemble` span and all read after it.
+   *
+   *  ⚠ POPULATION 2 (PHASE-6 T4, CUT 6), and this family is one of the two in the
+   *  phase whose by-value alternative is measurably WRONG rather than merely against
+   *  the rule. CUT 3's by-value test is "exactly one write site, none inside a timer
+   *  or callback"; these pass THAT test and fail the one that matters, because the
+   *  span WRITES them and something outside it READS the write:
+   *    * `lastAssembledAtIso` is stamped by the assembly and read by the turn's
+   *      TEARDOWN closure (F9's `claimAssembledSiblings` — the sibling user rows of
+   *      this conversation created before the assembly instant were IN the window and
+   *      are claimed at turn end) and by the owed-mid-turn-arrivals check. Handed by
+   *      value the stamp would die at the module boundary and every turn would claim
+   *      nothing, silently, because `null` is a legal value there.
+   *    * `assemblerOverheadTokens` is the non-compressible overhead the assembler just
+   *      produced, read by the NEXT ITERATION's pre-call gate — a step that was
+   *      already extracted at CUT 3, which named this tranche as the owner of the
+   *      migration in its own AS-BUILT. Lost, the gate measures the compressible total
+   *      against the full window instead of the real compressible budget.
+   *    * `freshTailDropWarned` is a ONE-SHOT LATCH ACROSS ITERATIONS: the CONTEXT_HIGH
+   *      banner that tells the user the agent set its oldest messages aside fires once
+   *      per TURN. Reset every iteration, a long turn shows the same banner on every
+   *      round. That is a user-visible regression, and the clause that catches it
+   *      (`integration.test.ts`, "fires ONCE PER TURN, not once per iteration") landed
+   *      GREEN on the unmoved tree before this field existed. */
+  lastAssembledAtIso: string | null;
+  assemblerOverheadTokens: number;
+  freshTailDropWarned: boolean;
 }
 
 /** The one registry. Keyed by agentId because a turn belongs to an agent and
@@ -328,6 +357,9 @@ export function openTurnContext(agentId: string): TurnContext {
     ownerAffinityDestination: null,
     deferredUserReplyWithTools: null,
     turnInjectedTechniqueId: null,
+    lastAssembledAtIso: null,
+    assemblerOverheadTokens: 0,
+    freshTailDropWarned: false,
   };
   openContexts.set(agentId, ctx);
   return ctx;

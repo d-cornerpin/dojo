@@ -87,6 +87,13 @@ const THE_DRIVER_CARRIES = [
   'ownerAffinityDestination',
   'deferredUserReplyWithTools',
   'turnInjectedTechniqueId',
+  // PHASE-6 T4 (CUT 6) — the `assemble` tranche's crossings. The assembler-bookkeeping
+  // trio is the family whose by-value alternative is measurably WRONG in three
+  // different ways: the stamp dies at the boundary, the overhead never reaches the next
+  // iteration's gate, and the once-per-TURN banner latch resets every round.
+  'lastAssembledAtIso',
+  'assemblerOverheadTokens',
+  'freshTailDropWarned',
 ];
 
 /** The six in `turn-state.ts` that OUTLIVE the turn on purpose. */
