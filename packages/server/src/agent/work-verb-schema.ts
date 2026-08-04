@@ -55,6 +55,32 @@ export const WORK_REPEAT_UNIT_ENUM = [
 /** How a recurrence ends. Declared once; identical bytes in both. */
 export const WORK_REPEAT_END_TYPE_ENUM = ['never', 'after_count', 'on_date'] as const;
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// PHASE-6 T0A — THE EDITABLE-FIELD LIST, DECLARED ONCE SO THE TWO LISTS CANNOT DISAGREE.
+// ════════════════════════════════════════════════════════════════════════════════════════
+//
+// The defect this closes, reported from the owner's own preflight box on 2026-08-03: the
+// `work_update(action="edit")` refusal text ADVERTISED fifteen editable fields, and the
+// agent-facing door's forward list carried thirteen of them. `anchor_time` was declared on
+// the tool, described by the tool, read and applied by `trackerEditTask`, named in the
+// refusal's own `Editable:` list — and dropped at the door, so an agent that obeyed the
+// error message got the error message again. Two lists, one question, two answers.
+//
+// There is ONE list now. `tracker/tools.ts` renders the refusal from it and
+// `agent/tools/cat/tracker.ts` forwards from it, so a field can no longer be advertised
+// without being forwarded — not by discipline, by construction. `tracker-door-census.test.ts`
+// holds the remaining direction (every DECLARED parameter is forwarded or carries a reason).
+//
+// ORDER IS THE ADVERTISEMENT. The sequence below is the exact sequence the refusal string
+// has always printed; `work-verb-schema.test.ts` pins the rendered bytes so this stays a
+// single-sourcing and never becomes a rewording.
+export const WORK_EDITABLE_TASK_FIELDS = [
+  'title', 'description', 'goal', 'depends_on', 'step_number', 'phase',
+  'scheduled_start', 'repeat_interval', 'repeat_unit',
+  'repeat_end_type', 'repeat_end_value', 'repeat_days_of_week', 'anchor_time',
+  'priority', 'notes',
+] as const;
+
 type PropSchema = Record<string, unknown>;
 
 /**

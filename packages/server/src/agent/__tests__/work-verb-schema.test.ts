@@ -16,6 +16,7 @@ import {
   WORK_SHARED_PROPERTIES,
   WORK_PRIORITY_ENUM,
   WORK_FIELD_TEXT,
+  WORK_EDITABLE_TASK_FIELDS,
   workProp,
 } from '../work-verb-schema.js';
 
@@ -169,6 +170,45 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     // provider accepts — a behaviour change outside structural single-sourcing.
     expect(pu.priority.enum).toBeUndefined();
     expect(WORK_SHARED_PROPERTIES.priority).toEqual({ type: 'string' });
+  });
+
+  // ── PHASE-6 T0A — the editable-field advertisement, pinned to the byte ──────────────
+  //
+  // `WORK_EDITABLE_TASK_FIELDS` now renders the `work_update(action="edit")` refusal AND
+  // drives the door's forward loop, which is what makes the two lists one. That is a
+  // single-sourcing, so the sentence the model reads must not have moved by one character:
+  // the literal below is the string as it stood at `d716172`, before the rewire.
+  it('T0A — the Editable: advertisement is byte-identical to the hand-written one', () => {
+    const rendered =
+      'Error: at least one editable field must be provided. Editable: '
+      + WORK_EDITABLE_TASK_FIELDS.join(', ')
+      + '. (For status changes use work_update(action="status"); for assignee changes use '
+      + 'work_update(action="reassign"); for pause/resume use work_schedule(action="pause").)';
+    expect(rendered).toBe(
+      'Error: at least one editable field must be provided. Editable: title, description, goal, '
+      + 'depends_on, step_number, phase, scheduled_start, repeat_interval, repeat_unit, '
+      + 'repeat_end_type, repeat_end_value, repeat_days_of_week, anchor_time, priority, notes. '
+      + '(For status changes use work_update(action="status"); for assignee changes use '
+      + 'work_update(action="reassign"); for pause/resume use work_schedule(action="pause").)',
+    );
+    expect(rendered).toHaveLength(417);
+    // And the refusal renders from THIS list rather than from a second copy of it.
+    const tools = fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'tracker', 'tools.ts'), 'utf8');
+    expect(tools).toContain('WORK_EDITABLE_TASK_FIELDS.join');
+    expect(tools, 'the advertisement is spelled out again somewhere in tracker/tools.ts')
+      .not.toContain('Editable: title, description, goal');
+  });
+
+  it('T0A — every advertised editable field is DECLARED on work_update, so a model can pass it', () => {
+    const pu = (upd as { properties: Record<string, unknown> }).properties;
+    const undeclared = WORK_EDITABLE_TASK_FIELDS.filter((f) => !(f in pu));
+    expect(
+      undeclared,
+      `${undeclared.length} of ${WORK_EDITABLE_TASK_FIELDS.length} advertised editable field(s) are not `
+      + 'declared on work_update — advertised and unreachable',
+    ).toEqual([]);
+    expect(WORK_EDITABLE_TASK_FIELDS).toHaveLength(15);
   });
 
   it('the module refuses an undeclared property rather than inventing one', () => {

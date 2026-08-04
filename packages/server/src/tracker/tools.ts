@@ -58,6 +58,7 @@ import { getPrimaryAgentId, isPrimaryAgent, getOwnerName, isPMAgent } from '../c
 import { getAgentRuntime } from '../agent/runtime.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
 import { currentTurnNumber, getTurnReceipts, getWorkOriginForAgent, currentTurnRoot } from '../agent/turn-state.js';
+import { WORK_EDITABLE_TASK_FIELDS } from '../agent/work-verb-schema.js';
 import { getReceiptsByIds, stampReceiptsTask, type ToolReceiptRow } from '../receipts/store.js';
 import { insertEngineEventIfAbsent, insertMessageIfAbsent } from '../memory/message-store.js';
 import { formatTimeForAgent } from '../services/format-time.js';
@@ -2128,14 +2129,19 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
     const notes = args.notes as string | undefined;
     const goal = args.goal as string | undefined;
 
-    const editableKeys = [
-      title, description, dependsOn, stepNumber, phase,
-      scheduledStart, repeatInterval, repeatUnit, repeatEndType, repeatEndValue,
-      repeatDaysOfWeek, anchorTime,
-      priority, notes, goal,
-    ];
-    if (editableKeys.every(v => v === undefined)) {
-      return 'Error: at least one editable field must be provided. Editable: title, description, goal, depends_on, step_number, phase, scheduled_start, repeat_interval, repeat_unit, repeat_end_type, repeat_end_value, repeat_days_of_week, anchor_time, priority, notes. (For status changes use work_update(action="status"); for assignee changes use work_update(action="reassign"); for pause/resume use work_schedule(action="pause").)';
+    // PHASE-6 T0A: the supplied-field check and the refusal's `Editable:` list are keyed
+    // by ONE declaration (`WORK_EDITABLE_TASK_FIELDS` — its header carries the defect).
+    // Keys are the advertised names, values are the locals above (the actual reads), so
+    // the map is a join between the two rather than a second copy of either.
+    const editableValues: Record<string, unknown> = {
+      title, description, goal, depends_on: dependsOn, step_number: stepNumber, phase,
+      scheduled_start: scheduledStart, repeat_interval: repeatInterval, repeat_unit: repeatUnit,
+      repeat_end_type: repeatEndType, repeat_end_value: repeatEndValue,
+      repeat_days_of_week: repeatDaysOfWeek, anchor_time: anchorTime,
+      priority, notes,
+    };
+    if (WORK_EDITABLE_TASK_FIELDS.every(f => editableValues[f] === undefined)) {
+      return `Error: at least one editable field must be provided. Editable: ${WORK_EDITABLE_TASK_FIELDS.join(', ')}. (For status changes use work_update(action="status"); for assignee changes use work_update(action="reassign"); for pause/resume use work_schedule(action="pause").)`;
     }
 
     // Recurring-schedule integrity gate. Same shape as the gate in

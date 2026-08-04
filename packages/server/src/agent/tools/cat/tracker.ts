@@ -43,6 +43,7 @@ import { patchWork } from '../../../work/tracker-store.js';
 import { openCommitment, resolveCommitment, dismissCommitment, findObligationByTypedId } from '../../../work/store.js';
 import { recordRemediation } from '../../../work/poke-ladder.js';
 import { resolveTaskId, formatResolveError } from '../../../tracker/schema.js';
+import { WORK_EDITABLE_TASK_FIELDS } from '../../work-verb-schema.js';
 import * as trackerMod from '../../../tracker/tools.js';
 import {
   trackerCreateProject, trackerCreateTask, reminderCreate, trackerUpdateStatus,
@@ -239,6 +240,10 @@ export const trackerHandlers: ToolHandlerMap = {
         repeat_end_type: args.repeat_end_type as string | undefined,
         repeat_end_value: args.repeat_end_value as string | undefined,
         repeat_days_of_week: repeatDaysOfWeek,
+        // PHASE-6 T0A: declared on work_open, read by trackerCreateTask, dropped here —
+        // so a fixed wall-clock cadence was unreachable at creation and every schedule
+        // drifted by its own run duration. Held by tracker-door-census.test.ts.
+        anchor_time: args.anchor_time as string | undefined,
         // Group assignment
         assigned_to_group: args.assigned_to_group as string | undefined,
         // Override for the near-duplicate guard
@@ -400,15 +405,13 @@ export const trackerHandlers: ToolHandlerMap = {
     if (editErr) { content = editErr; isError = true; return { content, isError }; }
     // Forward every field the schema lists. trackerEditTask reads either
     // snake_case or camelCase, so passing snake_case through works.
+    // PHASE-6 T0A: the list is `WORK_EDITABLE_TASK_FIELDS`, the same declaration the
+    // refusal's `Editable:` line renders from — see its header for the defect that
+    // cost. A hand-written copy here is what dropped `anchor_time`.
     const editArgs: Record<string, unknown> = {
       taskId: args.task_id as string,
     };
-    for (const k of [
-      'title', 'description', 'depends_on', 'step_number', 'phase',
-      'scheduled_start', 'repeat_interval', 'repeat_unit',
-      'repeat_end_type', 'repeat_end_value', 'priority', 'notes',
-      'goal',
-    ]) {
+    for (const k of WORK_EDITABLE_TASK_FIELDS) {
       if (args[k] !== undefined) editArgs[k] = args[k];
     }
     // v2.5.3, normalize and forward repeat_days_of_week so agents can
