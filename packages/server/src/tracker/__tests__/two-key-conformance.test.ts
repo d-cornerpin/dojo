@@ -75,6 +75,39 @@ function subsystemFiles(dir: string): string[] {
     .map((f) => `${dir}/${f}`);
 }
 
+// ⚠ PHASE-6 T9b — THE WALK WENT QUIET, AND QUIET IS THE DANGEROUS DIRECTION.
+//
+// `subsystemFiles` is NOT recursive: it reads one directory's own `.ts` files. The
+// engine's driver was therefore in this corpus only because `agent/v2/loop.ts` is
+// listed BY NAME below. PHASE-6 cuts that driver into `agent/v2/steps/<name>/`, and
+// the ninth tranche took the strike-0 receipt close — the single KEY-1 writer this
+// file allowlists in `loop.ts` (`evidenceRef: strike0Delivery,`) — out with it.
+//
+// Nothing went red. The scan simply stopped having that writer in front of it, which
+// is worse than a failure: a KEY-1 walk that cannot see the engine's own privileged
+// close is a walk that would pass on a tree where the close had been rewritten to
+// forge a completion without a receipt. It was found by enumerating every guard that
+// scans `loop.ts` by path BEFORE the cut, not by the suite.
+//
+// So the corpus grows a recursive arm for the step packages, and the eight tranches
+// (seven still to come) are covered by construction rather than one at a time.
+function stepPackageFiles(): string[] {
+  const rel = 'agent/v2/steps';
+  const out: string[] = [];
+  const walk = (dir: string): void => {
+    const abs = path.join(SERVER_SRC, dir);
+    if (!fs.existsSync(abs)) return;
+    for (const e of fs.readdirSync(abs, { withFileTypes: true })) {
+      if (e.isDirectory()) { if (e.name !== '__tests__') walk(`${dir}/${e.name}`); continue; }
+      if (e.name.endsWith('.ts') && !e.name.endsWith('.d.ts') && !e.name.endsWith('.test.ts')) {
+        out.push(`${dir}/${e.name}`);
+      }
+    }
+  };
+  walk(rel);
+  return out;
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // KEY 1 : writers of a TASK's status='complete'
 // ────────────────────────────────────────────────────────────────────────────
@@ -144,7 +177,10 @@ const KEY1_ALLOW: Record<string, string[]> = {
     'evidenceRef: strike2Delivery, resultDeliveryId: strike2Delivery,',
   ],
   // Strike-0 receipt close at the turn boundary: the SAME-TURN form of strike 2.
-  'agent/v2/loop.ts': [
+  // PHASE-6 T9b: it moved with the teardown tranche. The allowlist key follows the
+  // code — an entry pointing at a file the writer has left is a stale reason, and the
+  // staleness clause below is what refuses one.
+  'agent/v2/steps/teardown/finalize-record.ts': [
     'evidenceRef: strike0Delivery,',
   ],
   // The apprentice's own complete_task, and its lineage-scoped dangler sweep.
@@ -254,6 +290,7 @@ const KEY1_FILES = [
   ...subsystemFiles('scheduler'),
   ...subsystemFiles('agent'),
   'agent/v2/loop.ts', // the markDeliverableShown CALL sites live here; prove it holds NO writer
+  ...stepPackageFiles(), // PHASE-6: the driver's spans, as they are cut out of it
 ];
 
 // complete_validated is scanned across all three subsystems; pause_validated only in
@@ -263,12 +300,14 @@ const KEY2_COMPLETE_FILES = [
   ...subsystemFiles('scheduler'),
   ...subsystemFiles('agent'),
   'agent/v2/loop.ts',
+  ...stepPackageFiles(),
 ];
 const KEY2_PAUSE_FILES = [
   ...subsystemFiles('tracker'),
   ...subsystemFiles('scheduler'),
   ...subsystemFiles('agent'),
   'agent/v2/loop.ts', // Phase 1.4 removed the pre-turn gate's pause_validated=1 writer here
+  ...stepPackageFiles(),
 ];
 
 describe('two-key KEY 1: TASK status=complete writers limited to the reviewed set', () => {

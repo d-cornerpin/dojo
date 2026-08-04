@@ -165,7 +165,27 @@ describe('T10I — the identity readers no longer read messages.conv_key', () =>
 // `agent/v2/__tests__/integration.test.ts` ("STRIP-3").
 // ════════════════════════════════════════════════════════════════════════════════════════
 describe('STRIP-3 — the two conv-key/conversation-id call sites, pinned', () => {
-  const loop = (): string => stripComments(src('packages/server/src/agent/v2/loop.ts'));
+  // PHASE-6 T9b: THE CORPUS IS THE ENGINE, NOT ONE FILE. `claimAssembledSiblings(`
+  // left `loop.ts` for `agent/v2/steps/teardown/` when the ninth tranche was cut, and
+  // this clause went red — honestly, but only because it asserts PRESENCE. The scan's
+  // requirement was never "these calls live in loop.ts"; it is "the engine still calls
+  // them, and still with a conv KEY." So the corpus is the driver plus every step
+  // package, which also covers the seven tranches still to come.
+  const engineFiles = (): string[] => {
+    const out = ['packages/server/src/agent/v2/loop.ts'];
+    const rel = 'packages/server/src/agent/v2/steps';
+    const walk = (dir: string): void => {
+      const abs = path.join(REPO, dir);
+      if (!fs.existsSync(abs)) return;
+      for (const e of fs.readdirSync(abs, { withFileTypes: true })) {
+        if (e.isDirectory()) { if (e.name !== '__tests__') walk(`${dir}/${e.name}`); continue; }
+        if (/\.ts$/.test(e.name) && !/\.(test|spec)\.ts$/.test(e.name)) out.push(`${dir}/${e.name}`);
+      }
+    };
+    walk(rel);
+    return out;
+  };
+  const loop = (): string => engineFiles().map((f) => stripComments(src(f))).join('\n');
 
   it('the ghosted-ask ladder looks its recorded answer up by conversation ID, never by conv key', () => {
     const s = loop();
@@ -180,8 +200,19 @@ describe('STRIP-3 — the two conv-key/conversation-id call sites, pinned', () =
     expect(s.match(/turnCtx\.conversationId = /g) ?? []).toHaveLength(1);
     // …and it runs after the repair that can REASSIGN what it publishes. Written as an
     // ordering, because the defect was an ordering: the value was correct, the moment was not.
-    const repairAt = s.indexOf('chosenConversationId = resolveOrCreateConversation(');
-    const publishAt = s.indexOf('turnCtx.conversationId = ');
+    // ⚠ THE ORDERING IS READ INSIDE ONE FILE, and that is a PHASE-6 correction rather
+    // than a nicety: once the corpus is a concatenation, comparing two indexes across it
+    // measures the order the files were joined in, not the order the engine executes. So
+    // the clause first insists both sites are in the SAME source file — if a later
+    // tranche ever splits them, this fails loudly instead of quietly measuring nothing.
+    const withBoth = engineFiles()
+      .map((f) => stripComments(src(f)))
+      .filter((t) => t.includes('chosenConversationId = resolveOrCreateConversation(')
+                  && t.includes('turnCtx.conversationId = '));
+    expect(withBoth, 'the repair and the publish must stay in one file for their order to mean anything')
+      .toHaveLength(1);
+    const repairAt = withBoth[0].indexOf('chosenConversationId = resolveOrCreateConversation(');
+    const publishAt = withBoth[0].indexOf('turnCtx.conversationId = ');
     expect(repairAt).toBeGreaterThan(-1);
     expect(publishAt).toBeGreaterThan(repairAt);
   });

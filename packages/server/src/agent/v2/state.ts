@@ -23,7 +23,39 @@ export type TurnPhase =
   | 'execute'          // partition + run tool calls
   | 'postExecution'    // permission denials, progress, tracker enforcement
   | 'finalize'         // iMessage routing, status, hooks
-  | 'done';            // terminal
+  | 'done'             // terminal: the value the `while` head tests, and the ONLY
+                       // member anything READS. It is a loop-exit sentinel rather
+                       // than a phase, which is worth knowing before adding to this
+                       // union.
+  // PHASE-6 T9b — THE NINTH MEMBER, and the decision the plan's §A owed.
+  //
+  // `teardown` is the turn's exit path: the `catch` and the `finally` of
+  // `runV2TurnBody`, extracted to `agent/v2/steps/teardown/`. The driver advances
+  // into it at the top of the `finally`, which is the block that runs on EVERY
+  // exit path — clean reply, decline, MAX_TOOL_LOOPS, a mid-loop break, an early
+  // return inside the main try, or a throw. That is what makes the member worth
+  // having: with it, the union spans the whole turn instead of stopping at the
+  // loop.
+  //
+  // The alternative the plan offered — "record that the ninth module owns the
+  // `finally` outside the union" — was refused on a measurement rather than a
+  // preference: `'preflight'` is seeded by `initialState` and runs BEFORE the
+  // main try opens, so this union already had a member outside the loop, and an
+  // exception for the ninth step would have been an exception to a rule that does
+  // not exist. Two further measurements said the addition is safe: `state.phase`
+  // has exactly ONE production read (the `while` head, which has already finished
+  // by then), and a phase-only `advance` re-validates fields unchanged since their
+  // own last valid write, so it cannot newly throw — which matters here and
+  // nowhere else, because this transition also happens on the throw path, where a
+  // new throw would replace the error the turn was already handling.
+  //
+  // ⚠ WHAT IT DOES NOT DO: it does not make `TurnPhase` "load-bearing" in T13's
+  // sense (*a per-turn transition record exists AND at least one decision other
+  // than the loop head reads it*). The record half is met by `turns.exit_reason` +
+  // `turns.answered`, written and then read one statement later inside the
+  // teardown step itself; the `state.phase` half is not, and inventing a reader
+  // during a relocation would be a behaviour change the tranche did not admit to.
+  | 'teardown';        // the exit path: the turn's own catch + finally
 
 export interface ModelCallResult {
   content: string;

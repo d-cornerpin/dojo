@@ -168,10 +168,28 @@ describe('a spin-braked (engine-coerced) reply is STATUS, never a delivery', () 
 // turn 'brake'. That label is one ternary, and its ORDER is the whole guard: put
 // `answerRow` first and a braked turn that also persisted text becomes
 // 'answered', which re-opens the exact class d54cd1f closed.
-describe('turn-outcome conformance: brake outranks answered (loop.ts)', () => {
+describe('turn-outcome conformance: brake outranks answered (the engine)', () => {
+  // PHASE-6 T9b: THE GUARD'S SUBJECT MOVED, SO THE GUARD MOVES WITH IT — the same
+  // repair CUT 1 recorded on `engine-steer.test.ts`. This scan read `loop.ts` alone,
+  // and the exit-reason ternary it is about left that file for
+  // `agent/v2/steps/teardown/` when the ninth tranche was cut. The requirement was
+  // never "the ternary lives in loop.ts"; it is "the brake is tested BEFORE
+  // answerRow, wherever the engine computes the turn's exit reason." So the corpus
+  // is the ENGINE'S source — the driver plus every step package — and the seven
+  // tranches still to come are covered by construction rather than by a later fix.
   const loopSrc = (): string => {
     const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-    return fs.readFileSync(path.join(srcRoot, 'agent/v2/loop.ts'), 'utf8');
+    const parts = [fs.readFileSync(path.join(srcRoot, 'agent/v2/loop.ts'), 'utf8')];
+    const walk = (dir: string): void => {
+      if (!fs.existsSync(dir)) return;
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const abs = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== '__tests__') walk(abs); continue; }
+        if (/\.ts$/.test(e.name) && !/\.(test|spec)\.ts$/.test(e.name)) parts.push(fs.readFileSync(abs, 'utf8'));
+      }
+    };
+    walk(path.join(srcRoot, 'agent/v2/steps'));
+    return parts.join('\n');
   };
 
   // PHASE-2 T2 renamed the variable (`outcome` -> `exitReason`) when the column split into

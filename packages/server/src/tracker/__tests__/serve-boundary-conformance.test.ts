@@ -20,6 +20,26 @@ import { fileURLToPath } from 'node:url';
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');
 
+// PHASE-6 T9b: THE ENGINE'S SOURCE — the driver plus every step package under
+// `agent/v2/steps/`. The turn record's finalize and the per-ask answer stamp left
+// `loop.ts` for `agent/v2/steps/teardown/` when the ninth tranche was cut, and the two
+// clauses below went red. Their requirement was never "these calls live in loop.ts"; it
+// is "every turn start records its subject and root, and every exit finalizes." Reading
+// the engine rather than one file covers the seven tranches still to come as well.
+const engine = (): string => {
+  const parts = [read('agent/v2/loop.ts')];
+  const walk = (dir: string): void => {
+    if (!fs.existsSync(dir)) return;
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, e.name);
+      if (e.isDirectory()) { if (e.name !== '__tests__') walk(abs); continue; }
+      if (/\.ts$/.test(e.name) && !/\.(test|spec)\.ts$/.test(e.name)) parts.push(fs.readFileSync(abs, 'utf8'));
+    }
+  };
+  walk(path.join(SRC, 'agent/v2/steps'));
+  return parts.join('\n');
+};
+
 describe('serve boundary (P2)', () => {
   it('getPendingEngineEvent premise-checks before eligibility', () => {
     const cp = read('agent/v2/counterparty.ts');
@@ -164,7 +184,7 @@ describe('once-per-response guard (P3)', () => {
 
 describe('turn record (P4)', () => {
   it('every turn start records its subject and root; every exit finalizes', () => {
-    const loop = read('agent/v2/loop.ts');
+    const loop = engine();
     // PHASE-2 T2: identity is ALLOCATED at start (startTurn returns the number) and the
     // exit records why it ended AND whether the person heard from us, as two facts.
     expect(loop).toMatch(/return startTurn\(\{/);
@@ -186,7 +206,7 @@ describe('turn record (P4)', () => {
     // `markServedByRowid`, because with the `conv_key='engine'` sentinel gone that stamp IS
     // the atomic claim and its `.changes` has to be read. Still three sites, still the same
     // column; the clause counts both spellings so it keeps its whole subject.
-    const loop = read('agent/v2/loop.ts');
+    const loop = engine();
     const claimSites = (loop.match(/markServedByRowid\(/g) ?? []).length
       + (loop.match(/claimEngineEventByRowid\(/g) ?? []).length;
     expect(claimSites).toBeGreaterThanOrEqual(3);
