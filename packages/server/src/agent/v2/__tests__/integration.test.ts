@@ -2763,3 +2763,101 @@ describe('PHASE-6 CUT 4: the deferred answer is recovered at finalize (G-SUP-2)'
     expect(fired).toBe(true);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// PHASE-6 CUT 5, STEP 1a — THE ABORT HAND-BACK (N-1 / P6b-1) GETS THE FIRST
+// TEST IT HAS EVER HAD, GREEN ON THE UNMOVED TREE, BEFORE THE `callLLM`
+// TRANCHE MOVES ITS TWO CALL SITES.
+//
+// `git grep -lw revertTriggerStampOnAbort` over every `__tests__` directory in
+// BOTH repos returned NOTHING. Its two call sites are inside this tranche's
+// span (the fixed-model rethrow and the auto-routed give-up), so the span
+// cannot move until the requirement is written down — non-negotiable #2.
+//
+// The requirement has TWO arms and the second one is the interesting one:
+//   • a turn that dies with no answer HANDS THE ASK BACK to the waiting set,
+//     because a person who asked is still owed one; and
+//   • a turn that already performed a side effect DOES NOT — it holds the ask
+//     and records the refusal as a work event, because re-firing would send the
+//     email twice. The loop's own words: "a turn that performed a side effect
+//     must never re-fire" (07 §2c, ledger P6b-1).
+// ════════════════════════════════════════════════════════════════════════════
+describe('PHASE-6 CUT 5: a turn that dies with no answer hands the ask back — unless it already acted', () => {
+  /** The ask the seeded user message opened, and the state the spine holds it in. */
+  function askRow(): { id: string; state: string } {
+    return mockDb.current!
+      .prepare("SELECT id, state FROM work WHERE kind = 'ask' AND agent_id = 'primary' ORDER BY rowid LIMIT 1")
+      .get() as { id: string; state: string };
+  }
+
+  function eventsFor(workId: string): Array<{ kind: string; payload: string | null }> {
+    return mockDb.current!
+      .prepare('SELECT kind, payload FROM work_events WHERE work_id = ? ORDER BY rowid')
+      .all(workId) as Array<{ kind: string; payload: string | null }>;
+  }
+
+  const kinds = (workId: string): string[] => eventsFor(workId).map((e) => e.kind);
+
+  it('POSITIVE CONTROL: a turn that ANSWERS does not hand its ask back', async () => {
+    // The control a tree that re-arms unconditionally fails. Same seeded ask, same
+    // engine, and the only difference is that the model call succeeded.
+    callModelSpy.mockResolvedValue({
+      content: 'Here you go.', toolCalls: [] as ToolCall[],
+      inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
+    });
+
+    await runV2Turn('primary');
+
+    expect(askRow().state).not.toBe('open');
+    expect(kinds(askRow().id)).not.toContain('rearm_refused');
+  });
+
+  it('THE HAND-BACK: a model call that gives up returns the ask to the waiting set', async () => {
+    // The fixed-model path rethrows every error that is not the stream-idle watchdog,
+    // and reverts the claim on its way out. Driven through `runV2Turn` because the
+    // guard is a CLOSURE over the turn's own trigger — calling it directly would test
+    // a function, not the engine's promise to the person waiting.
+    callModelSpy.mockImplementation(async () => { throw new Error('provider exploded'); });
+
+    const before = askRow();
+
+    await runV2Turn('primary');
+
+    // Back in the waiting set — and NOT because it never left it. The revert is a
+    // state transition whose `expectedState` is `claimed`, so its own event is the
+    // proof that this turn claimed the ask and then gave it back, carrying the
+    // engine's reason with it.
+    expect(askRow().state).toBe('open');
+    const handBack = eventsFor(before.id).find((e) => String(e.payload ?? '').includes('handing the ask back to the waiting set'));
+    expect(handBack, 'no hand-back event on the ask').toBeTruthy();
+    expect(kinds(before.id)).not.toContain('rearm_refused');
+  });
+
+  it('THE REFUSAL IS THE RULE: a turn that already SENT something holds the ask and says so', async () => {
+    // One successful send, then the model dies. Re-arming here would re-run a turn
+    // that already reached a person — the duplicate-send defect P6b-1 records. The ask
+    // is HELD, and the refusal is written to the work record so a held ask is a fact
+    // somebody can find rather than silence.
+    let n = 0;
+    callModelSpy.mockImplementation(async () => {
+      n += 1;
+      if (n === 1) {
+        return {
+          content: '', toolCalls: [{ id: 'tc1', name: 'imessage_send', arguments: { to: 'Michael', text: 'on it' } }] as ToolCall[],
+          inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
+        };
+      }
+      throw new Error('provider exploded');
+    });
+    executeToolSpy.mockResolvedValue({
+      toolCallId: 'tc1', name: 'imessage_send', content: 'sent', isError: false,
+    });
+
+    const before = askRow();
+    await runV2Turn('primary');
+
+    expect(n).toBe(2);                                   // positive control: it did die on the second call
+    expect(askRow().state).toBe('claimed');              // held, not handed back
+    expect(kinds(before.id)).toContain('rearm_refused');
+  });
+});
