@@ -107,6 +107,7 @@ import {
   OPENING_WORK_OPS,
 } from '../../tools/work-verbs.js';
 import { taskScope, msToText, tsToMs, STATE_TO_STATUS_SQL, stampColumns, engineScaffoldScope, ENGINE_SCAFFOLD_ROOT_KIND } from '../../work/tracker-view.js';
+import { splitDanglers, closeOutGateDecision, resolveServedWork } from './stale-work-ids.js';
 import { setTrackerStatus, patchWork, upholdClaim } from '../../work/tracker-store.js';
 
 import {
@@ -1583,14 +1584,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
         : { kind: 'engine', id: pendingEngineEvent.id, sourceMessageId: null });
       if (pendingEngineEvent.taskId) {
         try {
-          const servedTask = db.prepare('SELECT task_kind AS kind, origin_conv_key FROM work WHERE id = ?')
-            .get(pendingEngineEvent.taskId) as { kind: string | null; origin_conv_key: string | null } | undefined;
-          currentTurnServedWork.set(agentId, {
-            taskId: pendingEngineEvent.taskId,
-            runId: pendingEngineEvent.runId,
-            taskKind: servedTask?.kind ?? null,
-            originConvKey: servedTask?.origin_conv_key ?? null,
-          });
+          // PHASE-6 T0D: the map used to be set even when this read came back
+          // EMPTY, publishing a dead task id to five readers — `stale-work-ids.ts`.
+          const served = resolveServedWork(pendingEngineEvent.taskId, pendingEngineEvent.runId);
+          if (served) currentTurnServedWork.set(agentId, served);
+          else {
+            logger.warn('v2: the engine event names a task row that is not there; serving no work this turn', {
+              agentId, taskId: pendingEngineEvent.taskId,
+            }, agentId);
+          }
         } catch { /* best effort; the lane simply stays inactive */ }
       }
     }
@@ -6507,18 +6509,20 @@ export async function runV2Turn(agentId: string): Promise<void> {
             }, agentId);
 
             try {
-              // Distinguish the two kinds of danglers. One-shot in_progress rows
-              // keep their TRUE status (no pause, no stamp); on_deck stragglers
-              // stay on_deck, the user can decide whether to reassign or close
-              // the project.
-              const inProgressIds = db
-                .prepare(
-                  `SELECT id FROM work WHERE id IN (${state.danglingTaskIds.map(() => '?').join(',')}) AND state = 'claimed'`,
-                )
-                .all(...state.danglingTaskIds) as Array<{ id: string }>;
-              const onDeckIds = state.danglingTaskIds.filter(
-                (id) => !inProgressIds.some((r) => r.id === id),
-              );
+              // Distinguish the KINDS of dangler. One-shot in_progress rows keep
+              // their TRUE status (no pause, no stamp); on_deck stragglers stay
+              // on_deck, the user can decide whether to reassign or close the
+              // project. PHASE-6 T0D: there are THREE kinds and this asked for
+              // two — see `stale-work-ids.ts`.
+              const danglers = splitDanglers(state.danglingTaskIds);
+              const inProgressIds = danglers.claimed;
+              const onDeckIds = danglers.onDeck;
+              if (danglers.gone.length > 0) {
+                state = advance(state, { danglingTaskIds: [...danglers.claimed, ...danglers.onDeck] });
+                logger.info('v2: dropped dangling task ids whose rows are gone', {
+                  agentId, goneCount: danglers.gone.length, remaining: state.danglingTaskIds.length,
+                }, agentId);
+              }
 
               // Demolition Phase 1.4: the gate no longer PAUSES one-shot danglers
               // or pre-blesses a pause (pause_validated=1). That flag was an
@@ -6531,7 +6535,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               const { forceResetStuckRecurringTask } = await import('../../scheduler/runner.js');
               const recurringResetIds: string[] = [];
               const oneShotDanglerIds: string[] = [];
-              for (const tid of inProgressIds.map((r) => r.id)) {
+              for (const tid of inProgressIds) {
                 const isRecurring = db.prepare(`SELECT repeat_interval FROM work WHERE id = ?`).get(tid) as { repeat_interval: number | null } | undefined;
                 if (isRecurring?.repeat_interval) {
                   try { forceResetStuckRecurringTask(tid); recurringResetIds.push(tid); } catch { /* best effort */ }
@@ -7005,15 +7009,25 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // ops below are exactly the retired names this list used to carry, and
           // the two obligation ops are deliberately NOT here (closing a promise is
           // not engaging with a dangling task).
-          if (
-            state.danglingTaskIds.length > 0 &&
-            !state.closeOutGateSatisfied &&
-            !CLOSE_OUT_WORK_OPS.has(toolOpKey(tc.name, tc.arguments))
-          ) {
-            const taskListShort = state.danglingTaskIds.slice(0, 5).map((id) => id.slice(0, 8)).join(', ');
+          //
+          // PHASE-6 T0D: the three conditions are unchanged and tested in the same
+          // order; the gate re-validates against the spine before it refuses, so a
+          // dangler deleted mid-turn can no longer trap the agent. Why, and what it
+          // costs: `stale-work-ids.ts`.
+          const closeOut = closeOutGateDecision(
+            state.danglingTaskIds, state.closeOutGateSatisfied, toolOpKey(tc.name, tc.arguments),
+          );
+          if (closeOut.live.length !== state.danglingTaskIds.length) {
+            state = advance(state, { danglingTaskIds: closeOut.live });
+            logger.info('v2: close-out gate dropped dangling ids whose rows are gone', {
+              agentId, remaining: closeOut.live.length,
+            }, agentId);
+          }
+          if (closeOut.refuse) {
+            const taskListShort = closeOut.live.slice(0, 5).map((id) => id.slice(0, 8)).join(', ');
             const refusalText = (
-              `Refused: engine close-out gate. You have ${state.danglingTaskIds.length} in_progress ` +
-              `task(s) from a previous turn that you never closed (ids: ${taskListShort}${state.danglingTaskIds.length > 5 ? '...' : ''}). ` +
+              `Refused: engine close-out gate. You have ${closeOut.live.length} in_progress ` +
+              `task(s) from a previous turn that you never closed (ids: ${taskListShort}${closeOut.live.length > 5 ? '...' : ''}). ` +
               `Before any other tool call, resolve at least one with work_update(action="complete_step"), ` +
               `work_update(action="status", status="complete" | "blocked" | "paused"), or, if you're genuinely still working ` +
               `on it across turns, work_note to signal "in flight." After ANY one of those, the gate ` +
@@ -7026,7 +7040,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               broadcast({ type: 'chat:tool_result', agentId, tool: tc.name, result: refusalText.slice(0, 500) });
             } catch { /* best effort */ }
             logger.info('v2: close-out gate refused call', {
-              agentId, tool: tc.name, danglingCount: state.danglingTaskIds.length,
+              agentId, tool: tc.name, danglingCount: closeOut.live.length,
             }, agentId);
             return {
               toolCallId: tc.id,

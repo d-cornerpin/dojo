@@ -700,7 +700,18 @@ export function getTask(id: string): Task | null {
 
 export type IdResolution =
   | { ok: true; id: string }
-  | { ok: false; reason: 'empty' | 'too_short' | 'not_found' | 'ambiguous'; matches?: string[] };
+  | {
+      ok: false;
+      reason: 'empty' | 'too_short' | 'not_found' | 'ambiguous';
+      matches?: string[];
+      /** PHASE-6 T0D: did the TITLE fallback also run and find nothing? Carried as a
+       *  FIELD rather than baked into the message, because "we tried both routes" is a
+       *  fact the renderer needs and a caller might one day branch on — and because a
+       *  message that claims a lookup happened when it did not is the same dishonesty,
+       *  one layer up, that this task is closing at the doors. Only meaningful on
+       *  `not_found`. */
+      triedTitle?: boolean;
+    };
 
 function resolveIdIn(kind: 'task' | 'project', idOrPrefix: string, agentId?: string): IdResolution {
   if (!idOrPrefix || typeof idOrPrefix !== 'string') {
@@ -736,11 +747,34 @@ function resolveIdIn(kind: 'task' | 'project', idOrPrefix: string, agentId?: str
   // nothing, so it never competes with a real id and only helps a wrong-shape
   // arg do the right thing. Requires an agentId to scope; unscoped callers
   // (no agentId) keep the original id-only behavior.
+  //
+  // ── PHASE-6 T0D DECIDED THIS ONE, AND IT STANDS ──
+  // The survey named it the stale-task-id class's second open half: a dead id
+  // that happens to match a live row's TITLE resolves to that other row, so
+  // refusing stale ids at the doors while this stands would be a half-measure
+  // with an escape hatch. It stands for two reasons, one recorded and one
+  // measured.
+  //   RECORDED: it is the 2026-07-17 PM 189-call spin's fix. Hard-failing a
+  //     title-shaped argument sent the PM into a retry loop on the same string.
+  //     Deleting it re-opens a closed incident, and non-negotiable #2 says a
+  //     guard's requirement becomes a test before its code is touched — so the
+  //     requirement is now pinned in
+  //     `__tests__/id-resolution-and-the-title-fallback.test.ts`.
+  //   MEASURED, on the dev body at this commit: 340 tracker rows, of which 0
+  //     have an id-shaped title, 0 carry a title equal to any other row's id,
+  //     and 0 equal their own. T0B's 37 ask rows whose title IS their own id
+  //     are `kind='ask'` and sit outside `TASK_WHERE`/`PROJECT_WHERE` by
+  //     construction, so the one interaction that could have created the hazard
+  //     cannot reach it.
+  // What DOES change is the refusal: it now says the title was tried too, so a
+  // model that passed a title learns both routes failed instead of retrying the
+  // same string — the 189-call spin from the other side.
   if (agentId) {
     const byTitle = resolveByTitleScoped(kind, input, agentId);
     if (byTitle) return byTitle;
+    return { ok: false, reason: 'not_found', triedTitle: true };
   }
-  return { ok: false, reason: 'not_found' };
+  return { ok: false, reason: 'not_found', triedTitle: false };
 }
 
 /**
@@ -810,7 +844,14 @@ export function formatResolveError(
       const titleHint = titleShaped
         ? ` That looks like a TITLE, not an id: pass the id (or its first 8 characters) shown in [brackets] by the listing.`
         : '';
-      return `Error: ${Kind} not found: '${input}'.${titleHint} It may have been deleted or completed. Use work_update(action='list') to see current ${kind}s.`;
+      // PHASE-6 T0D: when the title fallback ALSO ran and found nothing, say so.
+      // Without it the model is told only that an id was not found, and retrying
+      // the same title is the obvious next move — which is the shape of the
+      // 2026-07-17 spin this fallback was built to stop.
+      const triedTitle = resolution.triedTitle
+        ? ` It was looked up as an id and no ${kind} of yours matches it as a title either, so a different spelling will not help.`
+        : '';
+      return `Error: ${Kind} not found: '${input}'.${titleHint}${triedTitle} It may have been deleted or completed. Use work_update(action='list') to see current ${kind}s.`;
     }
     case 'ambiguous': {
       const shown = (resolution.matches ?? []).map(m => m.slice(0, 12)).join(', ');
