@@ -292,7 +292,15 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'file_append',
     description: 'Append content to the end of a file at the given absolute path. Creates the file (and parent directories) if they do not exist. Use this for incremental writes, accumulating output across multiple turns, building a long doc one section at a time, logging progress to a scratchpad, instead of `file_write` (which overwrites everything) or the read-modify-rewrite cycle. The latter fills your context with the file\'s existing contents every time you want to add to it; `file_append` does not. Returns bytes appended, total file size, and a download URL.\n\nExample: file_append({ path: "/Users/me/notes.md", content: "\\n## Section 5\\nNew content here." }).\n\nBy default a leading newline is added if the existing file doesn\'t already end in one (so appended sections don\'t smush into the prior line). Set ensure_newline=false to append the exact bytes verbatim.',
-    effects: [{ kind: 'fs_write', from: 'args.path' }],
+    // PHASE-5 T12 — THE SEPARATOR PEEK, DECLARED (RULING P5-R14).
+    // At `ensure_newline`'s DEFAULT against a non-empty file, `executeFileAppend`
+    // (`cat/fs.ts`) OPENS THIS SAME PATH FOR READING to inspect the last byte
+    // before appending; the write line alone never covered it, so the facade
+    // refused the tool on the path its own description recommends. It adds NO
+    // refusal — gate rows are declared in `tools/gates.ts`, never derived from
+    // `effects[]` (P5-R5) — and it is one file in both directions, so nothing
+    // widens. Held by `agent/__tests__/file-append.test.ts`'s default-path clause.
+    effects: [{ kind: 'fs_write', from: 'args.path' }, { kind: 'fs_read', from: 'args.path' }],
     input_schema: {
       type: 'object',
       properties: {
