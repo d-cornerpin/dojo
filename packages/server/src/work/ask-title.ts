@@ -221,7 +221,7 @@ function retitleIfStillUnnamed(workId: string, title: string): boolean {
     // A ticket that is not there (never opened, or already deleted) is not an
     // error — it is a background job arriving after the world moved on.
     if (!row || row.title !== workId) return false;
-    return patchWork(workId, { title }) === 1;
+    return patchWork(workId, { title }).kind === 'applied';
   });
 }
 

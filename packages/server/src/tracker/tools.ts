@@ -346,7 +346,7 @@ export async function fileAssignDeliverableCloseRequest(
     logger.info('assign-deliverable close skipped: no delivery on the ledger for this work', { taskId: task.id }, senderAgentId);
     return false;
   }
-  patchWork(task.id, { result: resultText, evidence_json: evidenceJson });
+  noteUnsettled(patchWork(task.id, { result: resultText, evidence_json: evidenceJson }), 'fileAssignDeliverableCloseRequest: result + evidence recorded', { taskId: task.id });
   const res = setTrackerStatus(task.id, 'complete', {
     by: 'engine', actorId: 'engine', expectedState: 'claimed',
     evidenceRef: handoffDelivery, resultDeliveryId: handoffDelivery,
@@ -890,7 +890,7 @@ export function trackerCreateProject(agentId: string, args: Record<string, unkno
       const goal = provided || (t.description ? t.description.trim() : '') || (t.title ? t.title.trim() : '');
       if (!goal) continue;
       try {
-        if (!t.goal) patchWork(id, { goal }, { touch: false });
+        if (!t.goal) noteUnsettled(patchWork(id, { goal }, { touch: false }), 'trackerCreateProject: goal backfilled onto an existing project', { taskId: id });
       } catch (err) {
         logger.warn('Failed to default goal on inline project task (non-fatal)', { taskId: id, error: err instanceof Error ? err.message : String(err) }, agentId);
       }
@@ -1123,7 +1123,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
     // legacy columns; adding goal as an extra parameter would force every
     // call site to update. Cleaner to set it here.)
     try {
-      patchWork(taskId, { goal }, { touch: false });
+      noteUnsettled(patchWork(taskId, { goal }, { touch: false }), 'trackerCreateTask: goal recorded', { taskId });
     } catch (err) {
       logger.warn('Failed to persist goal on new task (non-fatal)', { taskId, error: err instanceof Error ? err.message : String(err) });
     }
@@ -1208,13 +1208,13 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       };
       const nextRun = calculateNextRun(taskForCalc) ?? scheduledStart;
 
-      patchWork(taskId, {
+      noteUnsettled(patchWork(taskId, {
         scheduled_start: tsToMs(scheduledStart), repeat_interval: repeatInterval ?? null,
         repeat_unit: repeatUnit ?? null, repeat_end_type: repeatEndType,
         repeat_end_value: repeatEndValue ?? null, repeat_days_of_week: repeatDaysOfWeek ?? null,
         anchor_local: anchorTime ?? null, next_run_at: tsToMs(nextRun),
         schedule_status: 'waiting',
-      });
+      }), 'trackerCreateTask: schedule recorded', { taskId });
     }
 
     // Handle group assignment (validated: an unknown group id would otherwise
@@ -1225,7 +1225,7 @@ export function trackerCreateTask(agentId: string, args: Record<string, unknown>
       if (!groupRow) {
         return `Error: agent group '${assignedToGroup}' does not exist. The task was created assigned to you; use work_update(action="edit") to reassign once you have a valid group id.`;
       }
-      patchWork(taskId, { assigned_to_group: assignedToGroup, assignee_agent: null });
+      noteUnsettled(patchWork(taskId, { assigned_to_group: assignedToGroup, assignee_agent: null }), 'trackerCreateTask: assigned to a group', { taskId });
     }
 
     const parts = [
@@ -1635,7 +1635,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
 
       // Persist result + (augmented) evidence on the task row for PM to read.
       try {
-        patchWork(taskId, { result, evidence_json: JSON.stringify(evidenceOut) });
+        noteUnsettled(patchWork(taskId, { result, evidence_json: JSON.stringify(evidenceOut) }), 'trackerUpdateStatus: result + evidence recorded', { taskId });
       } catch (err) {
         logger.warn('Failed to persist result/evidence on complete (non-fatal)', {
           taskId, error: err instanceof Error ? err.message : String(err),
@@ -1677,7 +1677,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
       if (allRunsRes.kind !== 'applied') {
         return closeRefusalText(taskId, allRunsRes, 'complete');
       }
-      patchWork(taskId, { schedule_status: 'completed', is_paused: 1 });
+      noteUnsettled(patchWork(taskId, { schedule_status: 'completed', is_paused: 1 }), 'trackerUpdateStatus: the final occurrence completed the schedule', { taskId });
       // PHASE-2 T10F: close the run in flight on the row that replaced `task_runs`. The
       // agent's assertion is 'complete' with no delivery of its own, so the occurrence
       // settles `abandoned` while its history still reads `complete` — G7's rule kept, the
@@ -1789,7 +1789,7 @@ export function trackerUpdateStatus(agentId: string, args: Record<string, unknow
         }
         // Clear result/evidence on the task row so the next fire starts
         // from scratch, the per-run record lives in task_log.
-        patchWork(taskId, { result: null, evidence_json: null }, { touch: false });
+        noteUnsettled(patchWork(taskId, { result: null, evidence_json: null }, { touch: false }), 'trackerUpdateStatus: result cleared on reopen', { taskId });
         // Advance the schedule (fire-and-forget, same pattern the
         // generic complete handler uses below).
         const notes = args.notes as string | undefined;
@@ -2237,7 +2237,7 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
       }
       try {
         const priorGoal = getDb().prepare(`SELECT goal FROM work WHERE id = ?`).get(taskId) as { goal: string | null } | undefined;
-        patchWork(taskId, { goal: goalTrimmed });
+        noteUnsettled(patchWork(taskId, { goal: goalTrimmed }), 'trackerEditTask: goal changed', { taskId });
         writeTaskLog({
           taskId,
           fromEntity: isPMAgent(agentId) ? 'pm' : `agent:${agentId}`,
@@ -2420,10 +2420,10 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
           // that have already fired, in that case leave whatever status was
           // there (typically 'completed' or 'idle').
           if (nextRun) {
-            patchWork(taskId, { next_run_at: tsToMs(nextRun), schedule_status: 'waiting' });
+            noteUnsettled(patchWork(taskId, { next_run_at: tsToMs(nextRun), schedule_status: 'waiting' }), 'trackerEditTask: next run recomputed', { taskId });
           } else if (row.scheduled_start === null) {
             // Schedule was cleared entirely, drop next_run_at too.
-            patchWork(taskId, { next_run_at: null, schedule_status: 'idle' });
+            noteUnsettled(patchWork(taskId, { next_run_at: null, schedule_status: 'idle' }), 'trackerEditTask: schedule cleared', { taskId });
           }
         }
       } catch (recalcErr) {
@@ -3274,7 +3274,7 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
     if (!workSettled(schedDoneRes)) {
       return closeRefusalText(taskId, schedDoneRes, 'complete');
     }
-    patchWork(taskId, { is_paused: 1, schedule_status: 'completed' });
+    noteUnsettled(patchWork(taskId, { is_paused: 1, schedule_status: 'completed' }), 'trackerPauseSchedule: final occurrence, schedule completed', { taskId });
     // PHASE-2 T10F: same close, against the occurrence rows.
     skipOpenOccurrencesAsComplete(taskId, 'Schedule stopped and marked complete');
     const freshSchedDone = getTask(taskId);
@@ -3285,7 +3285,7 @@ export function trackerPauseSchedule(agentId: string, args: Record<string, unkno
   }
 
   noteUnsettled(setTrackerStatus(taskId, 'paused', { by: 'agent', actorId: agentId, reason: 'schedule paused by the assigned agent' }), 'schedule paused by the assigned agent', { taskId });
-  patchWork(taskId, { is_paused: 1, schedule_status: 'paused' });
+  noteUnsettled(patchWork(taskId, { is_paused: 1, schedule_status: 'paused' }), 'trackerPauseSchedule: schedule paused', { taskId });
   const freshSchedPaused = getTask(taskId);
   if (freshSchedPaused) broadcast({ type: 'tracker:task_updated', data: freshSchedPaused });
   logger.info('Schedule paused', { taskId }, agentId);
@@ -3326,10 +3326,10 @@ export function trackerResumeSchedule(agentId: string, args: Record<string, unkn
   // missed_runs_paused_at = NULL: an explicit resume also disarms the D12
   // engine fallback for a pause the missed-runs detector set.
   noteUnsettled(setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'schedule resumed; waiting for the next run' }), 'schedule resumed', { taskId });
-  patchWork(taskId, {
+  noteUnsettled(patchWork(taskId, {
     is_paused: 0, schedule_status: 'waiting',
     next_run_at: tsToMs(nextRun), missed_runs_paused_at: null,
-  });
+  }), 'trackerResumeSchedule: schedule resumed', { taskId });
   const freshResumed = getTask(taskId);
   if (freshResumed) broadcast({ type: 'tracker:task_updated', data: freshResumed });
 
@@ -3364,7 +3364,7 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
     // missed_runs_paused_at so the engine's auto-skip fallback stands down.
     // The agent explicitly chose to keep the task paused, and the model
     // tool takes precedence over the fallback when called first.
-    if (task.missed_runs_paused_at != null) patchWork(taskId, { missed_runs_paused_at: null });
+    if (task.missed_runs_paused_at != null) noteUnsettled(patchWork(taskId, { missed_runs_paused_at: null }), 'trackerResolveMissedRuns: missed-run pause cleared', { taskId });
     logger.info('Missed-runs resolved: pause', { taskId }, agentId);
     return `OK: task "${title}" stays paused. The user can resume it from the dashboard, or you can later call work_schedule(action="resume").`;
   }
@@ -3394,10 +3394,10 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
       return `Could not compute a next-run for "${title}" (likely past repeat_end_value or anchor missing). Task stays paused; investigate manually.`;
     }
     noteUnsettled(setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'missed runs skipped; back on the schedule' }), 'missed runs skipped', { taskId });
-    patchWork(taskId, {
+    noteUnsettled(patchWork(taskId, {
       is_paused: 0, schedule_status: 'waiting',
       next_run_at: tsToMs(nextRun), missed_runs_paused_at: null,
-    });
+    }), 'trackerResolveMissedRuns: missed runs skipped', { taskId });
     logger.info('Missed-runs resolved: skip', { taskId, nextRun }, agentId);
     return `OK: task "${title}" unpaused. All missed slots skipped. Next run: ${nextRun}.`;
   }
@@ -3408,10 +3408,10 @@ export function trackerResolveMissedRuns(agentId: string, args: Record<string, u
   // next anchor and the task resumes its normal cadence.
   const nowIso = new Date().toISOString();
   noteUnsettled(setTrackerStatus(taskId, 'on_deck', { by: 'agent', actorId: agentId, reason: 'catch-up run requested; back on the schedule now' }), 'catch-up run requested', { taskId });
-  patchWork(taskId, {
+  noteUnsettled(patchWork(taskId, {
     is_paused: 0, schedule_status: 'waiting',
     next_run_at: tsToMs(nowIso), missed_runs_paused_at: null,
-  });
+  }), 'trackerResolveMissedRuns: catch-up run scheduled now', { taskId });
   logger.info('Missed-runs resolved: run_now', { taskId }, agentId);
   return `OK: task "${title}" unpaused and scheduled to fire on the next scheduler tick (within ~1 minute). Schedule resumes on its normal anchor after this run completes.`;
 }
@@ -3828,7 +3828,7 @@ export async function trackerValidateComplete(
         evidenceJson: task.evidence_json,
       });
       // Clear result/evidence so the next run starts fresh.
-      patchWork(taskId, { result: null, evidence_json: null });
+      noteUnsettled(patchWork(taskId, { result: null, evidence_json: null }), 'trackerValidateComplete: result cleared so the next run starts fresh', { taskId });
       // Advance the schedule. onTaskRunComplete:
       //   - marks the running task_run row complete
       //   - increments run_count
@@ -3942,7 +3942,7 @@ export async function trackerValidateComplete(
   if (!updated) return `Error: task ${taskId} was deleted before complete-reject could land.`;
   // Clear stale result/evidence on revert so the agent can resubmit cleanly.
   throwBackClaim(taskId, 'done', 'pm', pmAgentId, rejectReason);
-  patchWork(taskId, { result: null, evidence_json: null });
+  noteUnsettled(patchWork(taskId, { result: null, evidence_json: null }), 'trackerValidateComplete: result cleared after the PM rejected the close', { taskId });
   // updateTask broadcast with stale result/evidence/revert_count above, 
   // re-broadcast so the dashboard's evidence panel reflects the cleared
   // state.

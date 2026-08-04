@@ -37,6 +37,7 @@ import { insertMessageIfAbsent, rewriteSystemPromptRow } from '../../../memory/m
 import { writeToolReceipt } from '../../../receipts/store.js';
 import { taskScope, projectScope, STATE_TO_STATUS_SQL } from '../../../work/tracker-view.js';
 import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../../../work/tracker-store.js';
+import { noteUnsettled } from '../../../work/store.js';
 import { skipOpenOccurrencesAsComplete } from '../../../work/occurrences.js';
 import { spawnAgent, terminateAgent, completeAgent, applySpawnTimeoutDecision } from '../../spawner.js';
 import { createGroup, assignAgentToGroup } from '../../groups.js';
@@ -104,7 +105,7 @@ async function resolveSpawnSquad(opts: {
               // Stale stamp (group was deleted): fall through and re-create below.
             }
             const group = createGroup(proj.title, `Squad for project "${proj.title}".`, opts.callerAgentId);
-            patchWork(proj.id, { group_id: group.id });
+            noteUnsettled(patchWork(proj.id, { group_id: group.id }), 'spawn_squad: project joined to the new group', { taskId: proj.id });
             return { groupId: group.id, squadName: group.name, note: ` (created for project "${proj.title}")` };
           }
         }
@@ -208,7 +209,7 @@ export const agentsHandlers: ToolHandlerMap = {
         try {
           const resolvedTask = resolveTaskId(args.task_id as string);
           if (resolvedTask.ok) {
-            patchWork(resolvedTask.id, { agent_id: result.agentId, assignee_agent: result.agentId, assigned_to_group: null });
+            noteUnsettled(patchWork(resolvedTask.id, { agent_id: result.agentId, assignee_agent: result.agentId, assigned_to_group: null }), 'spawn_agent: task reassigned to the spawned agent', { taskId: resolvedTask.id });
             writeTaskLog({
               taskId: resolvedTask.id,
               fromEntity: `agent:${agentId}`,
@@ -1249,10 +1250,10 @@ export const agentsHandlers: ToolHandlerMap = {
           resultDeliveryId: orphanDelivery,
         });
         if (r.kind === 'applied') {
-          patchWork(t.id, {
+          noteUnsettled(patchWork(t.id, {
             schedule_status: t.schedule_status === 'unscheduled' ? 'unscheduled' : 'completed',
             is_paused: 1,
-          });
+          }), 'terminate_agent: schedule stopped with the agent', { taskId: t.id });
         } else {
           logger.warn('group-delete task close refused', { taskId: t.id, result: r });
         }

@@ -109,19 +109,26 @@ describe('M7 — patchWork', () => {
     expect(workRow('w1').title).toBe('a new title');
   });
 
-  it('a patch that assigns nothing does not move updated_at and reports 0 rows', () => {
+  it('a patch that assigns nothing does not move updated_at and reports nothing happened', () => {
     // `updated_at` is the PM ladder's "when did this work last MOVE" column
     // (`patchWork`'s own doc comment). A patch that turned out to say nothing did not move
     // anything, so bumping the clock would be a false receipt — and before this rule an
     // all-undefined patch bumped it while ALSO erasing every column it named.
+    //
+    // PHASE-6 T0D changed the SPELLING of "nothing happened" and not the rule: the door
+    // answered `0` for this AND for "that row does not exist", and those are two different
+    // facts. `no_change`/`empty-patch` is this one, and the clock assertion below — which is
+    // what this clause was written for — is untouched.
     seedWork('w1');
-    expect(patchWork('w1', { title: undefined, goal: undefined })).toBe(0);
+    const nothing = patchWork('w1', { title: undefined, goal: undefined });
+    expect(nothing.kind).toBe('no_change');
+    if (nothing.kind === 'no_change') expect(nothing.reason).toBe('empty-patch');
     expect(workRow('w1').updated_at).toBe(T);
   });
 
   it('an empty patch object is the same nothing', () => {
     seedWork('w1');
-    expect(patchWork('w1', {})).toBe(0);
+    expect(patchWork('w1', {}).kind).toBe('no_change');
     expect(workRow('w1').updated_at).toBe(T);
   });
 

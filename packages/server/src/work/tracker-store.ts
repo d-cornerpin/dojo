@@ -22,10 +22,12 @@
 //     status half had no gate at all.
 
 import { v4 as uuidv4 } from 'uuid';
+import type { OutcomeRefused } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { patchAssignments } from '../db/patch.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
+import { noSuchWorkDetail, noteUnsettled, type WorkPatchOutcome } from './outcome.js';
 import {
   transition, rejectClaim, appendWorkEvent,
   type Actor, type Claim, type WorkOutcome, type WorkState,
@@ -191,21 +193,46 @@ export type WorkPatch = Partial<Record<TrackerAttr, unknown>>;
  * reason and carries it: requirement #15 says the denormalized activity stamps must never
  * bump `updated_at`, because the PM ladder reads that column as "when did this work last
  * MOVE" and a stamp is not a move. `tracker/task-stamps.ts` passes `touch: false`.
+ *
+ * PHASE-6 T0D — G1, THE ATTRIBUTE DOOR'S OWN. This was a bare `UPDATE … WHERE id = ?`
+ * returning `number`, with no existence check, no log and no outcome type, so a write
+ * against an id from an earlier session did nothing and told nobody. It is the same gate
+ * `transition()` has carried since PHASE-2, on the other half of the row, telling the same
+ * story in the same sentence (`noSuchWorkDetail`).
+ *
+ * THE CHECK COSTS NOTHING ON THE PATH THAT MATTERS, and that is why it is shaped this way:
+ * SQLite's `changes` counts rows the statement PROCESSED, not rows whose values differed, so
+ * `changes === 0` after a non-empty patch means no row matched — no probing SELECT is owed.
+ * The one extra read is on the empty-patch branch, which is the rare caller bug.
  */
-export function patchWork(id: string, patch: WorkPatch, opts?: { touch?: boolean }): number {
+export function patchWork(id: string, patch: WorkPatch, opts?: { touch?: boolean }): WorkPatchOutcome {
   const { sets, values } = patchAssignments(patch);
   // A patch that mentions no field CHANGED NOTHING, so `updated_at` may not move either:
   // the PM ladder reads that column as "when did this work last MOVE" and a clock bumped by
   // an empty patch is a receipt for something that did not happen. (Before M7 this function
   // did the opposite twice over — an all-`undefined` patch erased every column it named AND
   // bumped the clock, and an empty `{}` bumped the clock on its own.)
-  if (sets.length === 0) return 0;
+  //
+  // It is still a `no_change` and not a refusal — nothing was asked — UNLESS the row is not
+  // there, because then the caller has two problems and only one of them is about the world.
+  if (sets.length === 0) {
+    return getDb().prepare('SELECT 1 FROM work WHERE id = ?').get(id)
+      ? { kind: 'no_change', workId: id, reason: 'empty-patch', detail: `no field named for ${id}` }
+      : refuseNoSuchWork(id);
+  }
   if (opts?.touch !== false) {
     sets.push('updated_at = ?');
     values.push(now());
   }
   values.push(id);
-  return getDb().prepare(`UPDATE work SET ${sets.join(', ')} WHERE id = ?`).run(...values).changes;
+  const changes = getDb()
+    .prepare(`UPDATE work SET ${sets.join(', ')} WHERE id = ?`).run(...values).changes;
+  return changes === 0 ? refuseNoSuchWork(id) : { kind: 'applied', value: changes };
+}
+
+/** The attribute door's stale-id refusal, built once so its two branches cannot drift. */
+function refuseNoSuchWork(id: string): OutcomeRefused<'no-such-work'> & { workId: string } {
+  return { kind: 'refused', workId: id, reason: 'no-such-work', detail: noSuchWorkDetail(id) };
 }
 
 /** The same patch applied to every row matching a predicate on ONE column. The only shape
@@ -334,17 +361,17 @@ export function setTrackerStatus(
     if (result.kind !== 'applied') return;
 
     if (to === 'paused') {
-      patchWork(id, {
+      noteUnsettled(patchWork(id, {
         ...(input.syncSchedulePause ? { is_paused: 1 } : {}),
         status_before_pause: before && before.state !== 'paused' ? stateToStatus(before.state) : null,
         ...(input.pausedUntilMs !== undefined ? { paused_until: input.pausedUntilMs } : {}),
-      });
+      }), 'setTrackerStatus: pause bookkeeping', { taskId: id });
     } else {
-      patchWork(id, {
+      noteUnsettled(patchWork(id, {
         ...(input.syncSchedulePause && to !== 'done' ? { is_paused: 0 } : {}),
         paused_until: null,
         status_before_pause: null,
-      });
+      }), 'setTrackerStatus: pause bookkeeping cleared', { taskId: id });
     }
   });
   return result;

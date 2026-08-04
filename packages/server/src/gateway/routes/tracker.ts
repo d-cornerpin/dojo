@@ -21,7 +21,7 @@ import {
 import {
   upholdClaim, resetRevertCount, recordValidationEscalation, clearUserVerdict,
 } from '../../work/tracker-store.js';
-import { workSettled, isStateConflict } from '../../work/store.js';
+import { workSettled, isStateConflict, noteUnsettled } from '../../work/store.js';
 import {
   findOverrideRequest, resolveOverrideRequest, listOverrideRequests,
   overrideRollup as overrideRollupSince, type OverrideStatus,
@@ -580,7 +580,7 @@ trackerRouter.post('/tasks', async (c) => {
       };
       const nextRun = calculateNextRun(taskForCalc) ?? body.scheduled_start;
 
-      patchWork(taskId, {
+      noteUnsettled(patchWork(taskId, {
         scheduled_start: tsToMs(body.scheduled_start),
         repeat_interval: body.repeat_interval ?? null,
         repeat_unit: body.repeat_unit ?? null,
@@ -590,7 +590,7 @@ trackerRouter.post('/tasks', async (c) => {
         anchor_local: anchorTime,
         next_run_at: tsToMs(nextRun),
         schedule_status: 'waiting',
-      });
+      }), 'dashboard: schedule recorded on task create', { taskId });
     }
 
     const task = getTask(taskId);
@@ -739,11 +739,11 @@ trackerRouter.put('/tasks/:id', async (c) => {
     if (body.scheduled_start !== undefined) {
       if (body.scheduled_start === null) {
         // Remove schedule
-        patchWork(id, {
+        noteUnsettled(patchWork(id, {
           scheduled_start: null, repeat_interval: null, repeat_unit: null,
           repeat_end_type: null, repeat_end_value: null, repeat_days_of_week: null,
           anchor_local: null, next_run_at: null, schedule_status: 'unscheduled',
-        });
+        }), 'dashboard: schedule cleared on task edit', { taskId: id });
       } else {
         const { calculateNextRun } = await import('../../scheduler/engine.js');
         const existingTask = getTask(id);
@@ -774,7 +774,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
         };
         const nextRun = calculateNextRun(taskForCalc) ?? body.scheduled_start;
 
-        patchWork(id, {
+        noteUnsettled(patchWork(id, {
           scheduled_start: tsToMs(body.scheduled_start),
           repeat_interval: body.repeat_interval ?? null,
           repeat_unit: body.repeat_unit ?? null,
@@ -785,7 +785,7 @@ trackerRouter.put('/tasks/:id', async (c) => {
           next_run_at: tsToMs(nextRun),
           schedule_status: 'waiting',
           is_paused: 0,
-        });
+        }), 'dashboard: schedule set on task edit', { taskId: id });
       }
     }
 

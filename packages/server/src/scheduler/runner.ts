@@ -132,7 +132,7 @@ function alertMissedRuns(taskRow: Record<string, unknown>, missedSlots: number):
     : null;
   const paused = { changes: pausedRes && pausedRes.kind === 'applied' ? 1 : 0 };
   if (paused.changes === 1) {
-    patchWork(taskId, { is_paused: 1, schedule_status: 'paused', missed_runs_paused_at: Date.now() });
+    noteUnsettled(patchWork(taskId, { is_paused: 1, schedule_status: 'paused', missed_runs_paused_at: Date.now() }), 'scheduler: paused after too many missed runs', { taskId });
   }
   if (paused.changes === 0) {
     logger.info('Scheduler: missed-runs pause already set elsewhere, skipping duplicate alert', { taskId });
@@ -551,10 +551,10 @@ async function autoResolveStaleMissedRunPauses(): Promise<void> {
           reason: `missed-runs pause unresolved for ${MISSED_RUNS_AUTO_RESOLVE_MINUTES} minutes; skipped to the next anchor`,
         });
         if (releasedRes.kind !== 'applied') continue;
-        patchWork(taskId, {
+        noteUnsettled(patchWork(taskId, {
           is_paused: 0, schedule_status: 'waiting',
           next_run_at: tsToMs(nextRun), missed_runs_paused_at: null,
-        });
+        }), 'scheduler: stale missed-run pause auto-resolved', { taskId });
         writeTaskLog({
           taskId,
           fromEntity: 'engine',
@@ -580,7 +580,7 @@ async function autoResolveStaleMissedRunPauses(): Promise<void> {
         const dGuard = db.prepare('SELECT is_paused, missed_runs_paused_at FROM work WHERE id = ?')
           .get(taskId) as { is_paused: number; missed_runs_paused_at: number | null } | undefined;
         if (!dGuard || dGuard.is_paused !== 1 || dGuard.missed_runs_paused_at == null) continue;
-        patchWork(taskId, { missed_runs_paused_at: null });
+        noteUnsettled(patchWork(taskId, { missed_runs_paused_at: null }), 'scheduler: missed-run pause stamp cleared', { taskId });
         writeTaskLog({
           taskId,
           fromEntity: 'engine',
@@ -692,7 +692,7 @@ export async function checkScheduledTasks(): Promise<void> {
             // in the ISO `now` this scheduler string-compares against, so a
             // same-date space value reads as already due and the defer would
             // collapse to "due again next tick". ISO keeps the defer honest.
-            patchWork(taskId, { next_run_at: Date.now() + 30_000 }, { touch: false });
+            noteUnsettled(patchWork(taskId, { next_run_at: Date.now() + 30_000 }, { touch: false }), 'scheduler: fire deferred 30s after a lost claim', { taskId });
             continue;
           }
         }
@@ -1049,7 +1049,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
       noteUnsettled(setTrackerStatus(taskId, 'on_deck', {
         by: 'scheduler', actorId: 'scheduler', reason: 'run finished; waiting for the next occurrence',
       }), 'scheduler: run finished, waiting for the next occurrence', { taskId });
-      patchWork(taskId, { next_run_at: tsToMs(nextRun), schedule_status: 'waiting', last_run_at: tsToMs(now) });
+      noteUnsettled(patchWork(taskId, { next_run_at: tsToMs(nextRun), schedule_status: 'waiting', last_run_at: tsToMs(now) }), 'scheduler: run finished, waiting for the next occurrence', { taskId });
     });
   } else if (failedFinalRun) {
     // D8: final run failed, keep the failure VISIBLE (see block comment above).
@@ -1057,7 +1057,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
       noteUnsettled(setTrackerStatus(taskId, 'fallen', {
         by: 'scheduler', actorId: 'scheduler', reason: 'the final scheduled run failed',
       }), 'scheduler: final run failed', { taskId });
-      patchWork(taskId, { schedule_status: 'completed', last_run_at: tsToMs(now) });
+      noteUnsettled(patchWork(taskId, { schedule_status: 'completed', last_run_at: tsToMs(now) }), 'scheduler: final run failed, schedule completed', { taskId });
     });
       retireEngineEventsForTask(taskId, 'task_fallen');
     try {
@@ -1130,7 +1130,7 @@ export async function onTaskRunComplete(taskId: string, status: string, summary:
         resultDeliveryId: finalDelivery,
         reason: 'the schedule ran out of occurrences and the last run succeeded',
       });
-      patchWork(taskId, { schedule_status: 'completed', last_run_at: tsToMs(now) });
+      noteUnsettled(patchWork(taskId, { schedule_status: 'completed', last_run_at: tsToMs(now) }), 'scheduler: occurrences ran out, schedule completed', { taskId });
       return res;
     });
     if (!workSettled(finalRes)) {
@@ -1518,7 +1518,7 @@ function recoverMissingNextRun(taskId: string): void {
 
   const nextRun = calculateNextRun(scheduledTask);
   if (nextRun) {
-    patchWork(taskId, { next_run_at: tsToMs(nextRun), schedule_status: 'waiting' });
+    noteUnsettled(patchWork(taskId, { next_run_at: tsToMs(nextRun), schedule_status: 'waiting' }), 'scheduler: missing next_run_at recovered', { taskId });
     if (task.status !== 'on_deck' && task.status !== 'in_progress') {
       noteUnsettled(setTrackerStatus(taskId, 'on_deck', {
         by: 'scheduler', actorId: 'scheduler',
@@ -1538,7 +1538,7 @@ function recoverMissingNextRun(taskId: string): void {
     if (!workSettled(recRes)) {
       logger.warn('Scheduler: recovery close refused by the work gate', { taskId, result: recRes });
     }
-    patchWork(taskId, { schedule_status: 'completed' });
+    noteUnsettled(patchWork(taskId, { schedule_status: 'completed' }), 'scheduler: missing next_run_at had no future occurrence, schedule completed', { taskId });
     logger.warn('Scheduler: recurring task had no recoverable next run, marked complete', {
       taskId, title: task.title,
     });
@@ -1595,7 +1595,7 @@ export function forceResetStuckRecurringTask(taskId: string): void {
       by: 'scheduler', actorId: 'scheduler',
       reason: 'this run is failed; the schedule rejoins at its next occurrence',
     }), 'scheduler: failed run rejoins at next occurrence', { taskId });
-    patchWork(taskId, { schedule_status: 'waiting', next_run_at: tsToMs(nextRun) });
+    noteUnsettled(patchWork(taskId, { schedule_status: 'waiting', next_run_at: tsToMs(nextRun) }), 'scheduler: stuck recurring task reset onto its next occurrence', { taskId });
     logger.warn('Scheduler: force-reset stuck recurring task to on_deck/waiting', { taskId, title: task.title, nextRun });
   } else {
     const frDelivery = deliveryForTaskClose(taskId);
@@ -1607,7 +1607,7 @@ export function forceResetStuckRecurringTask(taskId: string): void {
     if (!workSettled(frRes)) {
       logger.warn('Scheduler: force-reset close refused by the work gate', { taskId, result: frRes });
     }
-    patchWork(taskId, { schedule_status: 'completed' });
+    noteUnsettled(patchWork(taskId, { schedule_status: 'completed' }), 'scheduler: stuck recurring task had no next occurrence, schedule completed', { taskId });
     logger.warn('Scheduler: force-reset stuck recurring task — no future runs, marked complete', { taskId, title: task.title });
   }
 

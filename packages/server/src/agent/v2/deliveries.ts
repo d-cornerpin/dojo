@@ -19,7 +19,7 @@ import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { currentTurnNumber, currentTurnRoot } from '../turn-state.js';
 import { resolveOrCreateConversation } from '../../memory/conversations.js';
-import { closeAsksForDelivery } from '../../work/store.js';
+import { closeAsksForDelivery, noSuchWorkDetail } from '../../work/store.js';
 import { withUnit } from '../../db/unit.js';
 import type { LedgerOutcome } from './delivery-outcome.js';
 export { deliveryIdOf, recordedId, type LedgerOutcome } from './delivery-outcome.js';
@@ -198,7 +198,7 @@ export function recordDelivery(input: DeliveryInput): LedgerOutcome {
 export function recordOwnerCloseReceipt(workId: string, surface: string): LedgerOutcome {
   const w = getDb().prepare('SELECT agent_id FROM work WHERE id = ?')
     .get(workId) as { agent_id: string } | undefined;
-  if (!w) return { kind: 'refused', reason: 'no-such-work', detail: `no work row ${workId}` };
+  if (!w) return { kind: 'refused', reason: 'no-such-work', detail: noSuchWorkDetail(workId) };
   return recordDelivery({
     agentId: w.agent_id,
     tool: 'owner-close',

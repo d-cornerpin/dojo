@@ -26,7 +26,7 @@ import {
   openTrackerProject, openTrackerTask, patchWork, appendWorkNotes,
   setTrackerStatus, type WorkPatch, type SetStatusInput,
 } from '../work/tracker-store.js';
-import { workSettled, type Actor } from '../work/store.js';
+import { workSettled, noteUnsettled, type Actor } from '../work/store.js';
 import type { Project, ProjectDetail, Task } from '@dojo/shared';
 
 const logger = createLogger('tracker-schema');
@@ -483,7 +483,7 @@ export function updateProject(
       logger.warn('project status change refused', { projectId: id, result: r });
     }
   }
-  if (Object.keys(patch).length > 0) patchWork(id, patch);
+  if (Object.keys(patch).length > 0) noteUnsettled(patchWork(id, patch), 'updateProject: project attributes patched', { taskId: id });
 
   logger.info('Project updated', { projectId: id, updates });
 
@@ -909,14 +909,19 @@ export function updateTask(id: string, updates: Partial<{
   if (updates.repeatDaysOfWeek !== undefined) patch.repeat_days_of_week = updates.repeatDaysOfWeek;
   if (updates.anchorTime !== undefined) patch.anchor_local = updates.anchorTime;
 
-  const changes = patchWork(id, patch);
-  if (changes === 0) {
-    // UPDATE matched zero rows, the id doesn't exist. Callers that pass
-    // the result through tracker tools should have already resolved the
-    // id via resolveTaskId() before calling updateTask(), so hitting this
-    // path generally means a race (task deleted between resolve and
-    // update) or a caller that bypassed the resolver.
-    logger.warn('updateTask: UPDATE affected zero rows (task id does not exist)', { taskId: id });
+  const patched = patchWork(id, patch);
+  if (patched.kind !== 'applied') {
+    // The door refused or had nothing to do. Callers that pass the result
+    // through tracker tools should have already resolved the id via
+    // resolveTaskId() before calling updateTask(), so a refusal here generally
+    // means a race (task deleted between resolve and update) or a caller that
+    // bypassed the resolver.
+    //
+    // PHASE-6 T0D: this branch used to be `changes === 0`, which was BOTH of the
+    // door's two failures wearing one number — "the id does not exist" and "the
+    // patch named no field" — and the log asserted the first of them either way.
+    // Now it says which, and the null it returns is unchanged for both.
+    logger.warn(`updateTask: patch not applied (${patched.reason})`, { taskId: id, detail: patched.detail });
     return null;
   }
 
@@ -985,7 +990,7 @@ export function addTaskNotes(id: string, notes: string): void {
  * addTaskNotes instead.
  */
 export function setTaskNotes(id: string, notes: string): void {
-  patchWork(id, { notes });
+  noteUnsettled(patchWork(id, { notes }), 'setTaskNotes: notes replaced', { taskId: id });
   logger.info('Task notes replaced', { taskId: id, notesLength: notes.length });
 }
 
@@ -994,7 +999,7 @@ export function setTaskNotes(id: string, notes: string): void {
  * notes are obsolete and no replacement content is appropriate.
  */
 export function clearTaskNotes(id: string): void {
-  patchWork(id, { notes: null });
+  noteUnsettled(patchWork(id, { notes: null }), 'clearTaskNotes: notes cleared', { taskId: id });
   logger.info('Task notes cleared', { taskId: id });
 }
 

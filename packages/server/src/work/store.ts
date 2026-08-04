@@ -40,9 +40,10 @@ import { createLogger } from '../logger.js';
 // it was for `TransitionResult`, so every caller keeps ONE import path and the
 // split is an implementation detail rather than a second place to look.
 import type { WorkEventKind } from './event-kinds.js';
+import { noSuchWorkDetail } from './outcome.js';
 import type { TransitionApplied, TransitionGate, WorkOutcome } from './outcome.js';
-export type { TransitionApplied, TransitionGate, WorkOutcome, WorkOutcomeReason } from './outcome.js';
-export { workSettled, isStateConflict, noteUnsettled } from './outcome.js';
+export type { TransitionApplied, TransitionGate, WorkOutcome, WorkOutcomeReason, WorkPatchOutcome } from './outcome.js';
+export { workSettled, isStateConflict, noteUnsettled, noSuchWorkDetail } from './outcome.js';
 
 const logger = createLogger('work-store');
 
@@ -223,10 +224,7 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
     'SELECT id, kind, root_kind, parent_id, state, result_delivery_id, remaining_children FROM work WHERE id = ?',
   ).get(workId) as WorkRow | undefined;
   if (!row) {
-    return {
-      kind: 'refused', workId, reason: 'no-such-work',
-      detail: `No work row ${workId}. It may be from an earlier session; list the open work and use a current id.`,
-    };
+    return { kind: 'refused', workId, reason: 'no-such-work', detail: noSuchWorkDetail(workId) };
   }
 
   // ── G2: a state change nobody can explain does not happen. ──
@@ -507,7 +505,7 @@ export function rejectClaim(
   }
   const db = getDb();
   if (!db.prepare('SELECT 1 FROM work WHERE id = ?').get(workId)) {
-    return { kind: 'refused', reason: 'no-such-work', detail: `no work row ${workId}` };
+    return { kind: 'refused', reason: 'no-such-work', detail: noSuchWorkDetail(workId) };
   }
   // T2: the verdict and the event that records it are ONE unit — a rejection nobody
   // can find in the event log is the silence this phase exists to close.

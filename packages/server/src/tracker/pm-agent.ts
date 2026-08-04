@@ -694,7 +694,7 @@ function runSmellDetector(taskId: string, toStatus: string): void {
           if (!nonTrackerTool) {
             // Structured flag (P6b): readers parse fields, not prose.
             const flag = JSON.stringify({ kind: 'complete_dodges_poke', elapsedSec, closingTurn });
-            patchWork(taskId, { last_smell_flag: flag }, { touch: false });
+            noteUnsettled(patchWork(taskId, { last_smell_flag: flag }, { touch: false }), 'pm: smell flag stamped', { taskId });
             void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
               taskId,
               fromEntity: 'engine',
@@ -730,7 +730,7 @@ function runSmellDetector(taskId: string, toStatus: string): void {
       // The window here is the rate definition of "thrash", not a scar; the
       // count already reads structured spine transitions. Structured flag.
       const flag = JSON.stringify({ kind: 'pause_resume_thrash', cycles: cycles.c, windowMin: SMELL_PAUSE_THRASH_WINDOW_MIN });
-      patchWork(taskId, { last_smell_flag: flag }, { touch: false });
+      noteUnsettled(patchWork(taskId, { last_smell_flag: flag }, { touch: false }), 'pm: smell flag stamped', { taskId });
       void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
         taskId,
         fromEntity: 'engine',
@@ -1882,7 +1882,7 @@ export async function runPokeCheck(): Promise<void> {
         logger.warn('strike-2 engine close refused by the work gate', { taskId: task.id, result: s2 });
       } else {
         const cur = db.prepare('SELECT result FROM work WHERE id = ?').get(task.id) as { result: string | null } | undefined;
-        if (!cur?.result) patchWork(task.id, { result: `Delivered (engine-recorded): ${renderDeliveryEvidence(deliveryEvidence)}` });
+        if (!cur?.result) noteUnsettled(patchWork(task.id, { result: `Delivered (engine-recorded): ${renderDeliveryEvidence(deliveryEvidence)}` }), 'pm: delivery evidence recorded on the poke sweep', { taskId: task.id });
       }
       void import('./task-log.js').then(({ writeTaskLog }) => writeTaskLog({
         taskId: task.id,

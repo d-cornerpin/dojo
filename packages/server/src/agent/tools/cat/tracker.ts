@@ -814,12 +814,20 @@ export const trackerHandlers: ToolHandlerMap = {
         }
         newAgent = lookup.id;
       }
-      patchWork(reassignTaskId, { agent_id: newAgent, assignee_agent: newAgent, assigned_to_group: null });
+      // PHASE-6 T0D — the two sites in this file get a BRANCH rather than the
+      // recorder, because a model is waiting on the answer: the row was resolved
+      // and re-read above, so a refusal here means it was deleted in between, and
+      // the old code went on to say "reassigned to X" about a row that is not
+      // there. Telling a model a write landed when it did not is the stale-id
+      // class doing its damage one layer up from the door.
+      const moved = patchWork(reassignTaskId, { agent_id: newAgent, assignee_agent: newAgent, assigned_to_group: null });
+      if (moved.kind !== 'applied') { content = `Error: ${moved.detail}`; isError = true; return { content, isError }; }
       // Resolve name for response
       const agentName = (reassignDb.prepare('SELECT name FROM agents WHERE id = ?').get(newAgent) as { name: string } | undefined)?.name ?? newAgent;
       content = `Task "${reassignTask.title}" reassigned to ${agentName}`;
     } else if (newGroup) {
-      patchWork(reassignTaskId, { assignee_agent: null, assigned_to_group: newGroup });
+      const moved = patchWork(reassignTaskId, { assignee_agent: null, assigned_to_group: newGroup });
+      if (moved.kind !== 'applied') { content = `Error: ${moved.detail}`; isError = true; return { content, isError }; }
       const groupName = (reassignDb.prepare('SELECT name FROM agent_groups WHERE id = ?').get(newGroup) as { name: string } | undefined)?.name ?? newGroup;
       content = `Task "${reassignTask.title}" reassigned to group "${groupName}", PM will pick an agent at run time`;
     } else {

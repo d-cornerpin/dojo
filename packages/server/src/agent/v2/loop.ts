@@ -9676,7 +9676,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               // API takes values, not expressions.
               const cur = db.prepare('SELECT result FROM work WHERE id = ?').get(t.id) as { result: string | null } | undefined;
               if (!cur?.result) {
-                patchWork(t.id, { result: `Delivered (engine-recorded at the turn boundary): ${strike0Summary}` });
+                noteUnsettled(patchWork(t.id, { result: `Delivered (engine-recorded at the turn boundary): ${strike0Summary}` }), 'engine: strike-0 delivery recorded at the turn boundary', { taskId: t.id });
               }
               void import('../../tracker/task-log.js').then(({ writeTaskLog }) => writeTaskLog({
                 taskId: t.id,

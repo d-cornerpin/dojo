@@ -43,6 +43,25 @@ import type { WorkState } from './store.js';
 const logger = createLogger('work-outcome');
 
 /**
+ * THE ONE SENTENCE FOR "that work row is not there" (PHASE-6 T0D).
+ *
+ * The fact had four writers and three wordings: `transition()` G1's steerable
+ * one, `rejectClaim`'s bare `no work row <id>`, `recordWorkDelivery`'s copy of
+ * that, and — after this task — the attribute door. Three renderings of one
+ * refusal is the drift class this project keeps closing one marker at a time
+ * (research 17 C5's rule, applied to a refusal instead of a display marker):
+ * the steer that tells a model what to DO must not depend on which door it
+ * happened to knock on.
+ *
+ * The remedy half is load-bearing and is why the bare wording is not kept for
+ * the "internal" callers: a stale id is the one refusal a model can act on by
+ * itself, and `list the open work` is the action.
+ */
+export function noSuchWorkDetail(workId: string): string {
+  return `No work row ${workId}. It may be from an earlier session; list the open work and use a current id.`;
+}
+
+/**
  * The gate that refused. Unchanged from `TransitionGate` — twelve names, each one
  * a branch some caller already reads, so the rename of the FIELD (`gate` ->
  * `reason`) deliberately did not touch the VALUES.
@@ -104,6 +123,30 @@ export type WorkUnsettledOutcome =
   | Extract<LiveOutcome<TransitionApplied, WorkOutcomeReason>, { kind: 'failed' }>;
 
 /**
+ * WHAT THE ATTRIBUTE DOOR ANSWERS (PHASE-6 T0D Step 2).
+ *
+ * `patchWork` used to answer `number`, and `0` said two unrelated things: "you
+ * named no field" and "that row does not exist". The second is the stale-task-id
+ * class — a write against an id from an earlier session did nothing and said
+ * nothing, at 49 of its 51 call sites — and a `number` is a value TypeScript
+ * cannot make anyone read.
+ *
+ * The three arms are the three facts, and the shape is what the must-consume
+ * lint keys on, so a discarded refusal is now a build error rather than a
+ * silence. `failed` is deliberately NOT declared here (unlike `WorkOutcome`'s):
+ * the UPDATE runs on one statement and a storage fault throws, so there is no
+ * reachable arm to declare and declaring an unreachable one is prose.
+ *
+ * `applied.value` is the row count, always 1 — carried rather than dropped
+ * because two of the door's callers already read it (`updateTask`'s zero-row
+ * branch and `retitleIfStillUnnamed`'s `=== 1`).
+ */
+export type WorkPatchOutcome =
+  | OutcomeApplied<number>
+  | (OutcomeNoChange<'empty-patch'> & { readonly workId: string })
+  | (OutcomeRefused<'no-such-work'> & { readonly workId: string });
+
+/**
  * The one merge `Outcome` sanctions — the shape fourteen call sites had already
  * written by hand as `r.kind !== 'applied' && r.kind !== 'noop'`.
  *
@@ -146,12 +189,20 @@ export function isStateConflict(
  *
  * `null` is accepted for `revertAskClaimOnAbort`'s deliberate hold, which is
  * already recorded as a `rearm_refused` event and is not an unsettled outcome.
+ *
+ * PHASE-6 T0D WIDENED IT TO THE ATTRIBUTE DOOR rather than growing a second
+ * recorder beside it. The two doors refuse for the same reasons about the same
+ * rows; a `notePatchUnsettled` would have been two mechanisms for one job, which
+ * is the disease this overhaul exists to remove. The message says `write` rather
+ * than `transition` because it now covers both, and nothing outside this file
+ * reads the string (`git grep "work transition refused" -- packages/ deploy/`
+ * returned this line and nothing else).
  */
 export function noteUnsettled(
-  o: WorkOutcome | null, where: string, ctx: Record<string, unknown> = {},
+  o: WorkOutcome | WorkPatchOutcome | null, where: string, ctx: Record<string, unknown> = {},
 ): void {
-  if (o === null || workSettled(o)) return;
-  logger.warn(`work transition refused: ${where}`, {
+  if (o === null || o.kind === 'applied' || o.kind === 'no_change') return;
+  logger.warn(`work write refused: ${where}`, {
     ...ctx,
     reason: o.reason,
     detail: o.detail,

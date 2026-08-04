@@ -13,7 +13,7 @@ import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import {
   setTrackerStatus, patchWork, appendWorkNotes, deliveryForTaskClose,
 } from '../work/tracker-store.js';
-import { workSettled } from '../work/store.js';
+import { workSettled, noteUnsettled } from '../work/store.js';
 import { memoryGrep } from '../memory/retrieval.js';
 import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { canSpawnAgent } from '../services/resource-monitor.js';
@@ -799,10 +799,10 @@ export async function completeAgent(
     // The apprentice's result columns are a patch; the status is a transition. A
     // `complete` close points at the hand-off the apprentice actually made (G7) — for an
     // apprentice that is normally the A2A delivery back to the agent that spawned it.
-    patchWork(resolvedTaskId, {
+    noteUnsettled(patchWork(resolvedTaskId, {
       completion_summary: summary,
       ...(taskStatus === 'complete' ? { result: summary, evidence_json: evidenceJson } : {}),
-    });
+    }), 'completeAgent: completion summary recorded', { taskId: resolvedTaskId });
     const closeRes = setTrackerStatus(resolvedTaskId, taskStatus, {
       by: 'agent', actorId: agentId,
       reason: `apprentice "${agent.name}" called complete_task(status="${status}")`,

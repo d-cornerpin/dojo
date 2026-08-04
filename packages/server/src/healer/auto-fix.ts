@@ -13,7 +13,7 @@ import { sanitizeMessagesOnModelChange } from '../agent/model-switch.js';
 import type { DiagnosticItem } from './diagnostic.js';
 import { taskScope, projectScope } from '../work/tracker-view.js';
 import { setTrackerStatus, patchWork, deliveryForCompletedChildren } from '../work/tracker-store.js';
-import { workSettled } from '../work/store.js';
+import { workSettled, noteUnsettled } from '../work/store.js';
 
 const logger = createLogger('healer-autofix');
 
@@ -245,7 +245,7 @@ function fixOrphanedTask(item: DiagnosticItem): AutoFixResult {
       });
       if (!workSettled(r)) continue;
     }
-    patchWork(o.id, { agent_id: null, assignee_agent: null });
+    noteUnsettled(patchWork(o.id, { agent_id: null, assignee_agent: null }), 'healer: orphaned task unassigned', { taskId: o.id });
     changed++;
   }
   const orphaned = { changes: changed };
