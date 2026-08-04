@@ -190,7 +190,10 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // relative name itself is, and `inert, with the reason` is the true answer.
     // `update_technique.files[].path` is the same correction, on a definition
     // that already carried a ruling, so it moves no count here.
-    expect(BASE.filter((d) => d.nonEffects).length).toBe(23);
+    // T8 Step 3, the office door: +1. `office_create_spreadsheet` gains its first
+    // ruling because `filename` is the same BARE NAME the PDF door carried — its
+    // two create siblings already had a `nonEffects` block, so they move nothing.
+    expect(BASE.filter((d) => d.nonEffects).length).toBe(24);
 
     const kindsInUse = new Set(BASE.flatMap((d) => d.effects.map((e) => e.kind)));
     // `fs_delete` and `spawn` are single-member classes today; since T3 so are

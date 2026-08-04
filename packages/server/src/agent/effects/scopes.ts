@@ -42,6 +42,7 @@ import {
 import { resolveAttachmentPath } from '../../services/attachment-resolve.js';
 import { techniqueDirectory } from '../../techniques/technique-dir.js';
 import { canvasFilePath } from '../canvas-state.js';
+import { localPathFromFileId } from '../../microsoft/office-local-path.js';
 import { attachCallCapability, mintCallCapability, type ResourceGrant } from './capability.js';
 
 /**
@@ -93,6 +94,11 @@ export const INDIRECT_RESOLVERS: Readonly<Record<EffectIndirection, IndirectReso
    *  RULING P5-R15 ADDENDUM 3(1)(b). Reached through `scope: { at: 'agentResolved' }`,
    *  which hands it the calling agent's id instead of an argument value. */
   agent_canvas_file: canvasFilePath,
+  /** The office edit tools take a local document in `path` OR in `file_id`, and
+   *  the handler's OWN test is whether it starts with `/` or `~` — ADDENDUM
+   *  3(1)(c). Asking that same question here is why a genuine OneDrive id mints
+   *  no fs grant, so no false grant for a cloud id can exist. */
+  office_local_path: localPathFromFileId,
 };
 
 // `EffectScope` is declared on the registry leaf (`tools/types.ts`) beside the

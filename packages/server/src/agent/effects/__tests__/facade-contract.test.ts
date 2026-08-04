@@ -357,7 +357,9 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     // Mechanic 5's equivalent of `CARRIED_PROGRAMS`'s census: a new way to turn
     // an argument into a resource has to be written into the table by hand to
     // exist at all, so the set cannot grow by declaration.
-    expect(Object.keys(INDIRECT_RESOLVERS)).toEqual(['attachment_row', 'technique_dir', 'agent_canvas_file']);
+    expect(Object.keys(INDIRECT_RESOLVERS)).toEqual(
+      ['attachment_row', 'technique_dir', 'agent_canvas_file', 'office_local_path'],
+    );
     for (const resolve of Object.values(INDIRECT_RESOLVERS)) {
       expect(typeof resolve, 'every indirection resolves through a real reader').toBe('function');
     }
@@ -1042,5 +1044,96 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
       effectsFor('canvas_read')?.some((e) => e.scope?.at === 'agentResolved'),
       'canvas_read must declare the per-agent canvas it reads',
     ).toBe(true);
+  });
+
+  it('APPLICATION (c): the HANDLER\'S OWN PREDICATE decides whether an argument names a file at all', () => {
+    // RULING P5-R15 ADDENDUM 3(1)(c). The office edit tools accept a local path
+    // in EITHER `path` OR `file_id`, because models conflate the two — the
+    // handler's own test is "does it start with / or ~". Declaring `file_id` as
+    // an fs effect outright would mint a false grant for every genuine OneDrive
+    // id; declaring nothing refuses a documented, live capability. The predicate
+    // itself is the resolver, so a cloud id grants nothing and no false grant
+    // can exist.
+    const local = path.join(scratch, 'brief.docx');
+    const decl: ToolEffect = { kind: 'fs_read', from: 'args.file_id', via: 'office_local_path' };
+    const g1 = grantsForCall(AGENT, [decl], { file_id: local });
+    expect(grantsCover(g1, { op: 'fs_read', path: local, real: local }), 'a path passed as file_id resolves').toBe(true);
+    // A genuine OneDrive id is not a path and grants NOTHING — not the cwd
+    // resolution of itself, not anything else.
+    const cloud = '01ABCDEF23456789';
+    const g2 = grantsForCall(AGENT, [decl], { file_id: cloud });
+    expect(g2, 'a cloud id names no file').toEqual([]);
+    expect(grantsForCall(AGENT, [decl], { file_id: 'relative/thing.docx' }), 'nor does a relative name').toEqual([]);
+    expect(grantsForCall(AGENT, [decl], {}), 'nor an absent one').toEqual([]);
+  });
+
+  it('ONE RESOLUTION POINT: the office local-path predicate exists in exactly one place', () => {
+    // The predicate was written TWICE in the same module (the Word edit resolver
+    // and the Excel one), which is two chances for the gate loop's answer and the
+    // handler's answer to drift apart. It is now one function both call, in a
+    // leaf the gate loop can import without pulling ExcelJS, docx and the Graph
+    // client into every dispatch's module graph.
+    const leaf = fs.readFileSync(path.join(SRC, 'microsoft/office-local-path.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(leaf), 'deciding whether a string is a path reads no file').toBe(false);
+    expect(filesContaining('function localPathFromFileId('), 'the predicate has exactly one home')
+      .toEqual(['microsoft/office-local-path.ts']);
+    const door = fs.readFileSync(path.join(SRC, 'microsoft/tools-office.ts'), 'utf8');
+    // No copy of the home expansion survives in the door — that was the tell of
+    // the duplicate. (Its one remaining `startsWith('/')` is a zip-entry name
+    // inside a .pptx, a different question entirely.)
+    expect(door.includes("startsWith('~')"), 'the door expands no home path of its own').toBe(false);
+    expect((door.match(/officeLocalPath\(args\)/g) ?? []).length, 'every local-target question goes through the one predicate').toBe(6);
+  });
+
+  it('CATEGORY CONVERTED: the office door reads and writes through the facade', () => {
+    const src = fs.readFileSync(path.join(SRC, 'microsoft/tools-office.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(src), 'the office door must not hold node:fs').toBe(false);
+    expect(src.includes('effectFs.'), 'it reaches the disk through the facade').toBe(true);
+  });
+
+  it('every office edit tool authorizes the local file its call names, whichever argument named it', () => {
+    const doc = path.join(scratch, 'report.docx');
+    const READERS = ['office_get_word_document_outline', 'office_read_word_document', 'office_get_spreadsheet_range'];
+    const WRITERS = ['office_append_to_word_document', 'office_replace_in_word_document',
+      'office_insert_in_word_document', 'office_delete_block_in_word_document',
+      'office_write_spreadsheet_range', 'office_append_spreadsheet_rows',
+      'office_add_sheet', 'office_delete_sheet'];
+    for (const tool of [...READERS, ...WRITERS]) {
+      for (const args of [{ path: doc }, { file_id: doc }]) {
+        const grants = grantsForCall(AGENT, effectsFor(tool), args);
+        const named = 'path' in args ? 'path' : 'file_id';
+        expect(grantsCover(grants, { op: 'fs_stat', path: doc, real: doc }), `${tool} may probe via ${named}`).toBe(true);
+        expect(grantsCover(grants, { op: 'fs_read', path: doc, real: doc }), `${tool} may read via ${named}`).toBe(true);
+        expect(grantsCover(grants, { op: 'fs_read', path: outOfScope, real: outOfScope }), `${tool} reaches nothing else`).toBe(false);
+        const canWrite = WRITERS.includes(tool);
+        expect(grantsCover(grants, { op: 'fs_write', path: doc, real: doc }), `${tool} write via ${named}`).toBe(canWrite);
+      }
+      // …and a genuine OneDrive id authorizes NO file at all.
+      expect(grantsForCall(AGENT, effectsFor(tool), { file_id: '01ABCDEF23456789' }), `${tool} on a cloud id`).toEqual([]);
+    }
+  });
+
+  it('the office create tools DECLARE the uploads dir they really write, never the bare filename', () => {
+    // The same bare-name defect the PDF door carried: `filename` is a NAME the
+    // handler sanitises before writing into `~/.dojo/uploads/<agentId>`. Resolved
+    // as a path it named a file in the server's working directory these tools
+    // never touch, while the real write went undeclared.
+    const uploads = path.join(os.homedir(), '.dojo', 'uploads', AGENT);
+    const out = path.join(uploads, 'Report.docx');
+    for (const tool of ['office_create_word_document', 'office_create_spreadsheet', 'office_create_presentation']) {
+      const grants = grantsForCall(AGENT, effectsFor(tool), { filename: 'Report.docx' });
+      expect(grantsCover(grants, { op: 'fs_mkdir', path: uploads, real: uploads }), `${tool} may create its uploads dir`).toBe(true);
+      expect(grantsCover(grants, { op: 'fs_write', path: out, real: out }), `${tool} may write its output`).toBe(true);
+      const other = path.join(os.homedir(), '.dojo', 'uploads', 'someone-else', 'x.docx');
+      expect(grantsCover(grants, { op: 'fs_write', path: other, real: other }), `${tool} may not write elsewhere`).toBe(false);
+      const cwd = path.resolve('Report.docx');
+      expect(grantsCover(grants, { op: 'fs_write', path: cwd, real: cwd }), `${tool} never names the bare filename`).toBe(false);
+    }
+    // …and office_create_word_document still reads the image blocks it embeds.
+    const img = path.join(scratch, 'chart.png');
+    const g = grantsForCall(AGENT, effectsFor('office_create_word_document'), {
+      filename: 'Report.docx', content: [{ type: 'image', path: img }],
+    });
+    expect(grantsCover(g, { op: 'fs_read', path: img, real: img })).toBe(true);
   });
 });

@@ -147,7 +147,7 @@ export interface ToolEffect {
  * turn an argument into a resource has to be written here by hand to exist at
  * all, so the set cannot grow by declaration.
  */
-export type EffectIndirection = 'attachment_row' | 'technique_dir' | 'agent_canvas_file';
+export type EffectIndirection = 'attachment_row' | 'technique_dir' | 'agent_canvas_file' | 'office_local_path';
 
 /**
  * WHERE A DERIVED EFFECT ACTS, declared so it can be checked.
