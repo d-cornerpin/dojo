@@ -193,13 +193,20 @@ describe('the seam cannot quietly spread', () => {
     return out;
   }
 
-  it('has exactly ONE production call site, and it is the tool loop', () => {
+  it('has exactly ONE production call site, and it is in the tool loop\'s own engine', () => {
+    // PHASE-6 CUT 5: the call site MOVED with the `callLLM` tranche, from the driver
+    // into `agent/v2/steps/call-llm/model-call.ts`. The requirement was never "the
+    // site lives in `loop.ts`" — it is "there is exactly ONE and it is at the provider
+    // boundary" — so the clause names the ENGINE (the driver plus every step package
+    // under `agent/v2/steps/`) and keeps the count at one. The count did not move and
+    // must not: a second call site is the defect this clause exists to catch.
     const callers = filesUnder(srcRoot)
       .filter((f) => /\bhydrateCredentialsInMessages\s*\(/.test(fs.readFileSync(f, 'utf8')))
       .map((f) => path.relative(srcRoot, f))
       .filter((f) => f !== 'credentials/secret-values.ts')
       .sort();
-    expect(callers).toEqual(['agent/v2/loop.ts']);
+    expect(callers).toHaveLength(1);
+    expect(callers[0]).toMatch(/^agent\/v2\/(loop\.ts$|steps\/)/);
   });
 
   it('is absent from the assembler, so assembly is byte-identical whatever is held', () => {

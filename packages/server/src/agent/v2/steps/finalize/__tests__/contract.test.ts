@@ -29,6 +29,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { engineText } from '../../../__tests__/engine-sources.js';
 import Database from 'better-sqlite3';
 
 const mockDb = { current: null as Database.Database | null };
@@ -211,16 +212,26 @@ describe('PHASE-6 CUT 4: the finalize step\'s contract', () => {
       expect(b).toBeLessThan(tryEnd);
     }
 
-    // (c) AND THE EXITS THAT GENUINELY BYPASS IT, pinned at exactly TWO so a third
-    //     cannot appear silently: the stopped and the preempted mid-call returns. Both
-    //     write `idle` themselves and both still run the `finally`, so the turn record
-    //     is still finalized — but the finalize span does NOT run for them, and that is
-    //     a deliberate property of those two paths rather than an oversight.
-    expect(returns.length).toBe(2);
-    for (const r of returns) {
-      const ctx = src.split('\n').slice(r - 6, r).join('\n');
-      expect(ctx).toMatch(/stoppedAgents|preemptedAgents/);
-    }
+    // (c) AND THE EXITS THAT GENUINELY BYPASS IT, STILL PINNED AT EXACTLY TWO so a
+    //     third cannot appear silently: the stopped and the preempted mid-call exits.
+    //     Both write `idle` themselves and both still run the `finally`, so the turn
+    //     record is still finalized — but the finalize span does NOT run for them.
+    //
+    //     ⚠ PHASE-6 CUT 5 CHANGED HOW THEY ARE SPELLED, NOT HOW MANY THERE ARE. They
+    //     lived in the `callLLM` span, which is now a step, and a module cannot
+    //     `return` from its caller: each is an `abandonTurn(...)` in the step and the
+    //     driver honours BOTH with ONE `return` at the call site. So the census is
+    //     read over the ENGINE — one bypassing `return` in the driver, two abandon
+    //     sites in the steps — and the number of ways past this step is still two.
+    //     Lowering the pin to "one return" would have been the loosening this clause
+    //     exists to refuse.
+    expect(returns.length).toBe(1);
+    const honoursAbandon = src.split('\n').slice(returns[0] - 2, returns[0]).join('\n');
+    expect(honoursAbandon).toMatch(/directive === 'abandon'/);
+    // `abandonTurn(state,` matches the CALLS and not the shared contract's own
+    // declaration (`abandonTurn(state: AgentTurnState`) nor any prose about it.
+    const abandonSites = [...engineText().matchAll(/abandonTurn\(state,/g)].length;
+    expect(abandonSites).toBe(2);
   });
 
   it('THE ORDER IS THE CONTRACT — reordering would change what gets routed', () => {

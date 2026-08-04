@@ -56,15 +56,13 @@ import { parseTechniqueFreshRead } from '@dojo/shared';
 import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 
 import { assembleContext } from '../../memory/assembler.js';
-import { callModel, getContextWindow, STREAM_IDLE_TIMEOUT_ERROR } from '../model.js';
-import { writeContextReceipt } from './receipt.js';
+import { getContextWindow } from '../model.js';
 import { executeTool, toolResultOf } from '../tools/index.js';
 import { agentCanSelfCompleteById } from '../tools/util.js';
 import { getFilteredTools } from '../tools/surface.js';
 import { classifyToolResult } from '../tool-outcome.js';
 import { resolveRecipientDisplay } from '../../contacts/resolve-recipient.js';
-import { hasHandedCredentialValues, redactHandedCredentials, redactAssistantBlocksForPersist, redactDeclaredSecretArgs, noteDeclaredSecretsFromToolCalls } from '../../credentials/secret-fields.js';
-import { hydrateCredentialsInMessages } from '../../credentials/secret-values.js';
+import { hasHandedCredentialValues, redactHandedCredentials, redactAssistantBlocksForPersist, redactDeclaredSecretArgs } from '../../credentials/secret-fields.js';
 // recordError intentionally NOT imported, handleMessage's catch path calls
 // it. Calling here would double-count errors and trip the loop-detector
 // pause prematurely.
@@ -74,7 +72,6 @@ import {
 } from '../../services/imessage-bridge.js';
 import { resolveInbound } from './inbound-channel.js';
 // recordCost intentionally NOT imported, callModel records cost internally.
-import { queueEmbedding } from '../../memory/embeddings.js';
 import { isPrimaryAgent, isTrainerAgent, isPMAgent, isHealerAgent, isDreamerAgent } from '../../config/platform.js';
 import os from 'node:os';
 import path from 'node:path';
@@ -83,16 +80,12 @@ import { turnBoundary, forceA2ATurn, lastTurnWasA2A, continuationContext, accumu
 // module-level helpers below, which run whether or not that agent is in a turn).
 import { openTurnContext, turnContext, endTurnContext, type TurnContext, type TurnRoot } from '../turn-context.js';
 import { persistEngineSteer } from './engine-steer.js';
-import { pushEngineMessage } from './engine-message.js';
-import { collectMessageLaneIds } from '../../memory/message-lane-tag.js';
 import {
-  clearSteerQueue, enqueueSteer, markSteerAttempted, markSteerDelivered, nextSteer,
+  clearSteerQueue, enqueueSteer, markSteerAttempted, nextSteer,
   steerFireCount, steerFired, steerFiredAny, steerFiredAtLoop,
   TRACKER_STEER_FLOORS, type SteerEntry,
 } from './steer-queue.js';
-import { findRecentDeliveries, findRecentDeliveriesKeyed, getRecentOutbound, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
-import { renderDeliveriesLaneMessage } from '../../memory/deliveries-lane.js';
-import { resolveToolAlias } from '../../tools/aliases.js';
+import { findRecentDeliveries, findRecentDeliveriesKeyed, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
 // PHASE-2 T8V: the six work verbs made tool NAMES insufficient to identify an
 // operation, so every gate below matches `toolOpKey(name, args)` — the operation
 // id for a work verb, the plain name for everything else. One matcher, one marker.
@@ -112,8 +105,6 @@ import { splitDanglers, closeOutGateDecision, resolveServedWork } from './stale-
 
 import {
   stoppedAgents,
-  preemptedAgents,
-  activeAbortControllers,
   statusHeartbeats,
   turnContinuationCounts,
 } from '../shared-state.js';
@@ -158,7 +149,6 @@ import {
   markServedByRowid,
 } from '../../memory/message-store.js';
 import { resolveOrCreateConversation } from '../../memory/conversations.js';
-import { buildOpenWorkInjection } from '../../work/obligations.js';
 import { a2aReplyEnforcer, parseA2ATrigger } from './classifiers/a2a.js';
 import { resolveTurnCounterparty, getWaitingHumanConversations, getPendingEngineEvent, recordEngineEventDeliveryFailure, getOwedMidTurnArrivals, type TurnCounterparty } from './counterparty.js';
 // PHASE-2 T6 — THE ANSWERED EDGE. One module answers "has the person heard from us" for
@@ -208,6 +198,7 @@ import { runPreCallGates, type PreCallGatesContext } from './steps/pre-call-gate
 // and before the exit path. It is the last statement of the main `try`, so it can
 // never ask to exit; the reply-destination resolver and the two safety nets live there.
 import { runFinalize, type FinalizeContext } from './steps/finalize/index.js';
+import { runCallLLM, type CallLLMContext } from './steps/call-llm/index.js';
 
 const logger = createLogger('v2-loop');
 
@@ -3246,567 +3237,27 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       // ── Phase: model call ──
       // (Auto-routing + capability gate + retry-fallback + TRUE streaming.)
       state = advance(state, { phase: 'callLLM' });
-      const messageId = uuidv4();
-      state = advance(state, { currentMessageId: messageId });
-
-      // ── Auto-routing model selection (matches v1 runtime.ts:954-988) ──
-      // For auto-routed agents, pick the right model for THIS query. Lock
-      // the model across tool loops so we don't switch mid-task.
-      let modelId: string;
-      let routerTier: string | null = null;
-      // Captured for the (gated, off-by-default) low-confidence shadow probe
-      // that harvests over-routing labels. Only the fresh-decision path probes,
-      // never the mid-task locked-model reuse.
-      let routerConfidence = 0;
-      let routerFreshDecision = false;
-      const excludedModels: string[] = [];
-
-      if (isAutoRouted) {
-        if (state.lockedModelId && state.loopCount > 1) {
-          modelId = state.lockedModelId;
-          routerTier = state.lockedTier;
-          logger.info('v2 auto-router: using locked model (mid-task)', {
-            modelId, tier: routerTier,
-          }, agentId);
-        } else {
-          const { decideTier } = await import('../../router/decide.js');
-          const { selectModel, logRouterDecision } = await import('../../router/selector.js');
-          // Layered decision: structural rules -> semantic classifier ->
-          // keyword heuristic fallback. See router/decide.ts.
-          const decision = await decideTier(
-            systemPrompt,
-            messages as Array<{ role: string; content: string | object[] }>,
-            agentId,
-            // Authoritative user query, clean of engine injections (technique
-            // hints etc.) that ride in the messages array as user-role entries.
-            lastUserMessageContent,
-          );
-          routerTier = decision.tier;
-          routerConfidence = decision.confidence;
-          routerFreshDecision = true;
-          const selected = selectModel(decision.tier, agentId, undefined, ['tools']);
-          if (!selected) {
-            revertTriggerStampOnAbort(); // N-1: no answer produced, re-arm the ask
-            throw new AgentError('Auto-router: no models available in any tier', agentId, { code: 'NO_MODEL' });
-          }
-          modelId = selected.modelId;
-          logger.info(`v2 auto-router: tier=${decision.tier} (${decision.method}) → ${modelId}`, {
-            tier: decision.tier,
-            method: decision.method,
-            confidence: Number(decision.confidence.toFixed(3)),
-            modelId,
-            fallbackUsed: selected.fallbackUsed,
-          }, agentId);
-          // Record the decision so the Router tab can chart tier usage over time.
-          // Only the scored path is logged (one decision per task), the mid-task
-          // locked-model branch above reuses this same decision, so logging it
-          // too would double-count.
-          logRouterDecision(
-            agentId,
-            decision.scores,
-            decision.rawScore,
-            decision.tier,
-            modelId,
-            selected.fallbackUsed,
-            decision.latencyMs,
-            decision.method,
-            decision.confidence,
-            decision.headVersion,
-            decision.queryPreview,
-          );
-        }
-      } else {
-        modelId = configuredModelId;
-      }
-      state = advance(state, { modelId, routerTier });
-
-      // ── Pre-flight capability enforcement (matches v1 runtime.ts:995) ──
-      // Routes images through the fallback vision model when configured
-      // (replacing each image block with a text description), or strips
-      // them if no fallback is set. Returns useTools=false if model
-      // lacks tool support (with banner). Now async because the
-      // fallback caption call is a network round-trip.
-      const { enforceModelCapabilities } = await import('../runtime.js');
-      const { useTools } = await enforceModelCapabilities(agentId, modelId, messages);
-
-      // If tools are disabled, inject a one-shot note so the model knows it
-      // can only respond with text. Only inject on first iteration when last
-      // message is assistant (alternation safety).
-      if (!useTools && state.loopCount === 1 && messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
-        injectRegistryMessage('msg.tool-note', messages, mctx);
-      }
-
-      // Precise clock time as the FINAL message, after every other engine
-      // injection, so its per-minute churn falls past the entire cached
-      // prefix (system + tools + conversation history + other injections)
-      // instead of breaking it. The system prompt carries date-only; this is
-      // the live time. Always injected.
-      // C28 Part 1: the per-turn routing/presence block (reply destination, the
-      // sole routing authority C5, channel landscape, phone conduct, counterparty
-      // header, bridge state, waiting/conversational hints) injects HERE, right
-      // before current-time, so the volatile route sits past the cached prefix.
-      injectRegistryMessage('msg.turn-context', messages, mctx);
-
-      // ── RC-12 / RC-1: engine-verified outbound facts (volatile lane) ──
-      // Injected HERE, in the same volatile region as turn-context / current-time
-      // (after the fresh tail, past the cached prefix), so they never break the
-      // prompt-cache prefix. Human turns only: an engine fact that survives the
-      // conversation scoping the model context is subject to, so the model can
-      // answer truthfully about what it did send and bind a bare answer to the
-      // question it asked. Rebuilt each iteration with the rest of this block, so a
-      // single copy lands per model call.
-      if (counterparty.kind === 'user') {
-        try {
-          // RECENT OUTBOUND (RC-12 item 7): the last N sends in 24h, engine-verified.
-          // Survives scoping (receipts are not conversation rows), so a denial or a
-          // "did you send it" is answerable from fact, not scoped-away memory.
-          const recentOut = getRecentOutbound(agentId, 24, 5);
-          if (recentOut.length > 0) {
-            const outLines = recentOut.map(
-              (d) => `${relativeTimeAgo(d.createdAt)} ${channelLabel(d.channel)} -> ${d.recipient ?? 'unknown'}`,
-            );
-            pushEngineMessage(messages, `RECENT OUTBOUND (engine-verified):\n${outLines.join('\n')}`, 'engine.recent-outbound'); // registry-exempt(2026-07-16): RC-12 receipts block reads per-iteration ledger state; migrate with the volatile-injection registry refactor
-          }
-
-          // ── THE DELIVERIES LANE (PHASE-3 T7 Step 1, research 18 §open-1) ──
-          // Quote the agent's own recent messages TO THIS counterparty (never another
-          // conversation's content) so a bare answer ("5550001234") is bindable even by
-          // the weakest model. It reads the `deliveries` rows natively and is DECLARED in
-          // the lane table (`lane.deliveries`: position 1860, a 316-token reserve, and a
-          // real `truncate()`), which is what lets the cross-conversation ECHO ROW
-          // DUPLICATION be stripped in T7 Step 2 — until now those persisted rows were the
-          // primary and this header was the fallback they suppressed.
-          //
-          // The read, the render and the fit live in `memory/deliveries-lane.ts`. What
-          // stays HERE is the one thing only the array's holder can answer: is this text
-          // already visible? (The echo rows are still being written during T7's quiet
-          // window; quoting a row the tail already carries would duplicate it.) When the
-          // echo writer dies the predicate stops matching and the lane carries the job
-          // whole — nothing else about this site changes.
-          const pendConvId = turnCtx.root?.conversationId ?? null;
-          mctx.deliveriesLane = renderDeliveriesLaneMessage({
-            agentId,
-            conversationId: pendConvId,
-            counterpartyName: counterparty.name,
-            recipientHints: [counterparty.senderId, counterparty.name].filter(
-              (h): h is string => !!h && h.trim().length > 0,
-            ),
-            alreadyVisible: (probe) => probe.length > 0 && messages.some(
-              (mRow) => mRow.role === 'assistant' && typeof mRow.content === 'string' &&
-                mRow.content.includes('[Sent via') && mRow.content.includes(probe),
-            ),
-          });
-          injectRegistryMessage('msg.deliveries', messages, mctx);
-
-          // OPEN WORK (PHASE-2 T7): what this agent still OWES — the current
-          // conversation's open asks and commitments first, then up to 3 from other
-          // conversations labelled as such. Reads the work spine directly; the rows
-          // are created when the obligation is made (4a), so nothing here parses a
-          // summary or matches prose. Aged rows are excluded and go to the daily
-          // brief instead (4b: ageing demotes, it never closes). Same volatile lane
-          // as the outbound facts above, so it never breaks the prompt-cache prefix.
-          //
-          // Keyed on `conversation_id`, not on `conv_key`: the deleted block compared
-          // conv_key strings, which is the column that also carried the claim token
-          // and the park sigils, so a parked row changed which party its items
-          // belonged to.
-          const openWorkBlock = buildOpenWorkInjection(agentId, pendConvId);
-          if (openWorkBlock) pushEngineMessage(messages, openWorkBlock, 'engine.open-work'); // registry-exempt(2026-07-16): the open-work block reads conv-scoped rows mid-iteration; migrate with the volatile-injection registry refactor
-
-          // RECENTLY ANSWERED (ticket-stamps plan A4, owner-approved): the
-          // last few asks of THIS conversation that already have answers,
-          // read from the per-ask answer stamps (mig 113), so answered-ness
-          // survives compaction structurally and the model never re-answers
-          // a settled question. Bounded: 3 lines; human turns; volatile lane.
-          if (chosenConversationId) {
-            try {
-              const answeredAsks = db.prepare(
-                `SELECT content, created_at FROM messages
-                  WHERE agent_id = ? AND conversation_id = ? AND role = 'user'
-                    AND answer_message_id IS NOT NULL
-                  ORDER BY created_at DESC LIMIT 3`,
-              ).all(agentId, chosenConversationId) as Array<{ content: string; created_at: string }>;
-              if (answeredAsks.length > 0) {
-                const lines = answeredAsks.map((a) => {
-                  const excerpt = a.content.replace(/^\[[^\]]*\]\s*/g, '').trim().slice(0, 90);
-                  return `- answered ${relativeTimeAgo(a.created_at)}: "${excerpt}"`;
-                });
-                pushEngineMessage(messages, `RECENTLY ANSWERED in this conversation (engine record; do NOT re-execute this work. If asked about it again, a brief restatement of the answer's content is fine, or point at the earlier answer; never silence, and never re-run the work itself):\n${lines.join('\n')}`, 'engine.recently-answered'); // registry-exempt(2026-07-22): reads per-iteration conv-scoped answer stamps; migrate with the volatile-injection registry refactor
-              }
-            } catch { /* best effort */ }
-          }
-        } catch (err) {
-          logger.debug('RC-12/RC-1 volatile outbound injection failed (non-fatal)', {
-            agentId, error: err instanceof Error ? err.message : String(err),
-          }, agentId);
-        }
-      }
-
-      // ── RULING P3-R1 (PHASE-3 T3): msg.peer-status, RESTORED. ──
-      // The entry has been registered at MessageSlot.PeerStatus (1875) since `5cb1758` and
-      // NO injection site has ever existed, so the live idle/working state the 2026-07-16
-      // cache fix relocated out of the cached group roster has never reached a model. No
-      // decision removed it (#15: the absence is not a ruling) — that commit's own stated
-      // intent was to RELOCATE, and the relocation only ever landed its first half.
-      // It goes HERE because the near-tail order 1850 -> 1875 -> 1900 is a preserved
-      // contract (this phase's Global Constraints): after msg.turn-context, before
-      // msg.current-time, behind the cache boundary by construction.
-      injectRegistryMessage('msg.peer-status', messages, mctx);
-
-      injectRegistryMessage('msg.current-time', messages, mctx);
-
-      // ── Context receipt (debug-gated, fire-and-forget) ──
-      // Last touch point before the provider call: every injector and
-      // post-assembly mutation has run, so this records exactly what the
-      // model receives this iteration.
-      // PHASE-4 T3: DELIVERED-TO-MODEL, RECORDED not assumed — the lane ids are read off the
-      // array the provider is handed, so a steer pushed and then dropped is NOT delivered.
-      const laneIdsForThisCall = collectMessageLaneIds(messages);
-      if (steerAwaitingConfirm) {
-        state = advance(state, {
-          steerQueue: laneIdsForThisCall.includes('msg.pending-nudge')
-            ? markSteerDelivered(state.steerQueue, steerAwaitingConfirm)
-            : markSteerAttempted(state.steerQueue, steerAwaitingConfirm),
-        });
-      }
-      writeContextReceipt({
-        agentId,
-        modelId,
-        turnNumber,
-        loopCount: state.loopCount,
-        systemPrompt,
-        messages,
-        useTools,
-        systemEntryIds: ctx.systemEntryIds,
-        // PHASE-3 T6 (F21): read OFF THIS ARRAY, not off `ctx.messageEntryIds` — the
-        // assembler's copy stops at `volatileFrom` and would miss every tail-append below.
-        messageEntryIds: laneIdsForThisCall,
-        volatileFrom,
-        // F20/F22: the allocator's own record, and the assembly's own numbers.
-        allocation: ctx.allocation,
-        freshTailDropped: ctx.freshTailDropped,
-        systemVolatileChars: (ctx.systemVolatile ?? '').length,
-        reserveTokens: ctx.reserveTokens,
-      });
-
-      // ── Call model with retry-and-fallback (matches v1 runtime.ts:1028-1116) ──
-      // For auto-routed agents, try up to 3 different models in the tier.
-      // For fixed-model agents, throw on first failure.
-      // Fixed-model agents get ONE attempt normally, PLUS one same-model retry
-      // when the stream idle watchdog aborted a hung provider call (model.ts,
-      // 2026-07-10): the request died on the wire, not in the model, and a
-      // fresh attempt typically succeeds in seconds (the 602s production hang's
-      // silent retry completed in 3s).
-      const maxAttempts = isAutoRouted ? 3 : 2;
-      let result: Awaited<ReturnType<typeof callModel>> | undefined;
-      let callSucceeded = false;
-
-      for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        const abortController = new AbortController();
-        activeAbortControllers.set(agentId, abortController);
-
-        try {
-          // RC-4.4: mark the model call in flight so the start-ack streaming-race grace
-          // can defer firing while the reply is still streaming. Cleared in the finally.
-          turnCtx.modelCallInFlight = true;
-          result = await callModel({
-            agentId,
-            modelId,
-            // PHASE-5 T6B (RULING P5-R11): THE CREDENTIAL READ POINT, and the
-            // ONLY one. Assembly rebuilds this array from the STORED rows every
-            // iteration, so from the second iteration on the model was reading
-            // its own prior call with the placeholder in it and copying that
-            // forward — the credential worked once per turn and then stopped.
-            // The value goes back HERE, at the provider boundary, so assembly,
-            // the context receipt and the dev instruments all keep the
-            // placeholder and no stored byte is rewritten. A no-op returning
-            // this very array when no placeholder is present, hence no effect on
-            // the cached prefix (OR7/#10). Full rationale + the three properties
-            // that make it safe: `credentials/secret-values.ts`.
-            messages: hydrateCredentialsInMessages(agentId, messages),
-            systemPrompt,
-            // C28 P-2: system-side volatile lane (empty after P-1). Trails the
-            // cached stable system block so it can't invalidate the cached prefix.
-            systemVolatile: ctx.systemVolatile,
-            tools: useTools,
-            routerTier: routerTier ?? undefined,
-            // Real abort signal, when stopAgent fires controller.abort(), the
-            // underlying SDK call (Anthropic/OpenAI/Ollama) actually cancels
-            // the in-flight fetch and throws here. Without this signal, stop
-            // would only halt the runtime loop AFTER the model call finished.
-            abortSignal: abortController.signal,
-            // TRUE streaming, broadcast each chunk as it arrives.
-            onChunk: (chunk) => {
-              if (abortController.signal.aborted) return;
-              // Inter-agent turns must NOT stream to the user's chat. The turn's
-              // persisted message is hidden from the dashboard (source='a2a', via
-              // the origin classifier), but the live chat:chunk path bypasses that
-              // filter, streaming the agent-to-agent prose live produced a "reply
-              // to no one" bubble that then vanished on refresh (the refetch
-              // correctly hides the A2A row). Suppress the live stream at the
-              // source so inter-agent coordination never reaches the user's chat,
-              // live OR on reload. The phone/TTS accumulation below is unaffected:
-              // an inter-agent turn never has turnCtx.phoneStreamCallSid set.
-              if (!isA2ATurn && counterparty.kind !== 'agent') {
-                broadcast({
-                  type: 'chat:chunk',
-                  agentId,
-                  messageId,
-                  content: chunk,
-                  done: false,
-                });
-              }
-              // v2.9.23, phone-call streaming TTS. Accumulate chunks
-              // into a buffer and flush each completed sentence to
-              // CallSession.queueAgentSay as it appears. Effect: audio
-              // starts playing on the first sentence, instead of
-              // waiting for the full model response. Same idea as
-              // voice mode's clause splitter but landing on the
-              // Twilio CallSession's TTS queue instead of the voice
-              // WS stream.
-              if (turnCtx.phoneStreamCallSid) {
-                turnCtx.phoneStreamBuffer += chunk;
-                // Boundary: sentence-end punctuation followed by
-                // whitespace. Sentence-level keeps the synth boundary
-                // clean for both Kokoro and Hume.
-                const flushParts: string[] = [];
-                let last = 0;
-                const re = /[.!?\n]+\s+/g;
-                let m: RegExpExecArray | null;
-                while ((m = re.exec(turnCtx.phoneStreamBuffer)) !== null) {
-                  const end = m.index + m[0].length;
-                  const part = turnCtx.phoneStreamBuffer.slice(last, end).trim();
-                  if (part) flushParts.push(part);
-                  last = end;
-                }
-                if (last > 0) turnCtx.phoneStreamBuffer = turnCtx.phoneStreamBuffer.slice(last);
-                if (flushParts.length > 0) {
-                  // B-2 (comms-audit): set the streamed flag SYNCHRONOUSLY the moment
-                  // we decide to flush, BEFORE the detached async IIFE. The old code
-                  // set it inside the IIFE after an awaited import, so the turn-end
-                  // check could read it as false (microtask not yet run) and fall to
-                  // the one-shot full-reply fallback → the caller heard the reply
-                  // TWICE. Setting it here is safe even though the enqueue is deferred:
-                  // queueAgentSay only no-ops when the session is gone or ENDED, and
-                  // `ended` is a one-way latch, so if the session is still live at
-                  // turn-end (the only path that reads this flag, after re-checking
-                  // !session / isEnded()), it was live at IIFE time too and the parts
-                  // WERE enqueued. There is no live-call-hears-silence window here.
-                  turnCtx.phoneStreamFlushedAny = true;
-                  // v2.10.1, queueAgentSay is now just an enqueue
-                  // (the CallSession runs a single-flight drain
-                  // worker), so synchronous push is fine and order
-                  // is preserved by the worker. No IIFE / no
-                  // parallel synths.
-                  void (async () => {
-                    try {
-                      const { getCallSession } = await import('../../twilio/call-session.js');
-                      const session = getCallSession(turnCtx.phoneStreamCallSid as string);
-                      if (!session || session.isEnded()) return;
-                      for (const part of flushParts) {
-                        if (abortController.signal.aborted) return;
-                        // Fire-and-forget: queueAgentSay enqueues
-                        // and returns; the drain worker handles
-                        // serial synthesis.
-                        void session.queueAgentSay(part);
-                      }
-                    } catch { /* best effort; one-shot fallback runs at turn end */ }
-                  })();
-                }
-              }
-            },
-            // Reasoning / thinking chunks (DeepSeek native, OpenRouter
-            // unified). The dashboard renders these in a collapsible
-            // "Thinking…" panel above the assistant bubble, separate
-            // from the final-answer text stream.
-            onReasoningChunk: (chunk) => {
-              if (abortController.signal.aborted) return;
-              broadcast({
-                type: 'chat:reasoning_chunk',
-                agentId,
-                messageId,
-                content: chunk,
-                done: false,
-              });
-            },
-          });
-          activeAbortControllers.delete(agentId);
-          callSucceeded = true;
-          break;
-        } catch (err) {
-          activeAbortControllers.delete(agentId);
-
-          if (stoppedAgents.has(agentId)) {
-            stoppedAgents.delete(agentId);
-            setAgentStatus(agentId, 'idle');
-            return;
-          }
-          if (preemptedAgents.has(agentId)) {
-            preemptedAgents.delete(agentId);
-            logger.info('v2 run preempted, queued wakeup will fire', {}, agentId);
-            setAgentStatus(agentId, 'idle');
-            return;
-          }
-
-          // Fixed-model path: the ONLY error that earns the second attempt is
-          // the stream-idle watchdog abort (same model, fresh connection).
-          // Everything else rethrows immediately, exactly as before.
-          if (!isAutoRouted) {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (attempt < maxAttempts - 1 && msg.includes(STREAM_IDLE_TIMEOUT_ERROR)) {
-              logger.warn('v2: model stream idle timeout; retrying the same model once on a fresh connection', {
-                attempt, modelId,
-              }, agentId);
-              continue;
-            }
-            revertTriggerStampOnAbort(); // N-1: model call failed with no answer, re-arm the ask
-            throw err;
-          }
-          // Auto-routed and exhausted attempts, rethrow.
-          // (v1's catch path in handleMessage handles further recovery, 
-          // Dreamer overflow, provider 4xx, healer notification, etc. Phase 6
-          // moves all of that into agent/v2/recovery.ts.)
-          if (attempt >= maxAttempts - 1) {
-            revertTriggerStampOnAbort(); // N-1: model call failed with no answer, re-arm the ask
-            throw err;
-          }
-
-          // Auto-routed: try the next model in the fallback chain.
-          excludedModels.push(modelId);
-          // Clear model lock so fallback can pick a different model.
-          state = advance(state, { lockedModelId: null, lockedTier: null });
-          const { selectModel } = await import('../../router/selector.js');
-          const fallbackTier = routerTier ?? state.lockedTier ?? 'standard';
-          const fallback = selectModel(fallbackTier, agentId, excludedModels, ['tools']);
-          if (!fallback) {
-            logger.error('v2 auto-router: no fallback models available', {
-              failedModel: modelId, tier: fallbackTier, excludedModels, attempt,
-            }, agentId);
-            revertTriggerStampOnAbort(); // N-1: all fallbacks exhausted, no answer, re-arm the ask
-            throw err;
-          }
-          logger.warn(`v2 auto-router: ${modelId} failed → falling back to ${fallback.modelId}`, {
-            failedModel: modelId,
-            fallbackModel: fallback.modelId,
-            tier: routerTier,
-            error: err instanceof Error ? err.message.slice(0, 100) : String(err),
-          }, agentId);
-          // Phone streaming: this failed model's stream is discarded, so
-          // drop its un-flushed tail and clear the "already streamed"
-          // latch before the fallback attempt runs. The buffer only ever
-          // holds the CURRENT stream's unsent tail (the sent prefix is
-          // stripped in onChunk), and that stream is gone. The latch
-          // means "this turn's answer already streamed"; the fallback
-          // attempt re-latches it if IT streams. Resetting the latch here
-          // prefers a rare duplication (a partial already spoken plus the
-          // full answer spoken one-shot when the fallback does NOT stream)
-          // over ever leaving the caller without the final answer. Audio
-          // already handed to queueAgentSay stays committed by design;
-          // there is no dequeue and none should be added.
-          if (turnCtx.phoneStreamCallSid) { turnCtx.phoneStreamBuffer = ''; turnCtx.phoneStreamFlushedAny = false; }
-          modelId = fallback.modelId;
-          state = advance(state, { modelId });
-        } finally {
-          // RC-4.4: the model call for this attempt has settled (success break, retry
-          // continue, or throw); it is no longer in flight. A retry sets it true again.
-          turnCtx.modelCallInFlight = false;
-        }
-      }
-
-      if (!callSucceeded || !result) {
-        // Defensive guard only, in practice unreachable: the retry loop above exits
-        // either by `break` (callSucceeded=true) or by throwing on the final failed
-        // attempt (the catch's give-up paths). The N-1 stamp-revert therefore lives at
-        // those actual throw sites (revertTriggerStampOnAbort), NOT here, so a model-call
-        // failure re-arms the human's ask on the path that genuinely runs.
-        revertTriggerStampOnAbort();
-        throw new AgentError('Model call failed after all attempts', agentId, { code: 'MODEL_CALL_FAILED' });
-      }
-
-      // PHASE-4 T5b (P4-R2): learn this result's DECLARED secrets here, once,
-      // before it reaches any persist / index / broadcast seam below. The live
-      // tool call keeps the real value; every stored copy gets the sentinel.
-      noteDeclaredSecretsFromToolCalls(agentId, result.toolCalls);
-
-      // ── Low-confidence shadow probe (gated, off by default) ──
-      // After the real answer is in hand, optionally re-run this turn at the
-      // next-lower tier in the background to learn whether we over-routed. Fully
-      // best-effort and budget-capped; never delays or affects this response.
-      // Only on the fresh-decision path, and only for text-only turns (skip when
-      // the model kicked off tool calls, a no-tools shadow can't be compared).
-      if (
-        isAutoRouted && routerFreshDecision && routerTier &&
-        result.toolCalls.length === 0 && result.content
-      ) {
-        const probeTier = routerTier;
-        const probeConfidence = routerConfidence;
-        const probeContent = result.content;
-        // The authoritative user query, clean of engine injections.
-        const probeMsgs = messages as Array<{ role: string; content: string | object[] }>;
-        const probeQuery = lastUserMessageContent ?? '';
-        void (async () => {
-          try {
-            const { maybeProbe } = await import('../../router/probe.js');
-            maybeProbe({
-              agentId,
-              systemPrompt,
-              messages: probeMsgs as Array<{ role: 'user' | 'assistant'; content: string | object[] }>,
-              tier: probeTier as 'light' | 'standard' | 'heavy',
-              confidence: probeConfidence,
-              query: probeQuery,
-              realAnswer: probeContent,
-            });
-          } catch { /* best effort */ }
-        })();
-      }
-
-      // ── Lock model for tool loops ──
-      // For auto-routed agents that just kicked off tool calls, pin the
-      // chosen model for the remainder of this turn so tools+follow-up calls
-      // use the same model.
-      if (isAutoRouted && !state.lockedModelId && result.toolCalls.length > 0) {
-        state = advance(state, { lockedModelId: modelId, lockedTier: routerTier });
-        logger.info('v2 auto-router: locking model for tool loop', { modelId, tier: routerTier }, agentId);
-      }
-
-      // Cost recording happens inside callModel (model.ts records once per
-      // provider path). The v2 loop must NOT call recordCost again, doing so
-      // double-bills the cost tracker. Verified against logs 2026-05-04.
-      //
-      // Embedding queueing: callModel does NOT queue embeddings, that's the
-      // runtime's job. v1 calls queueEmbedding for assistant text responses
-      // (runtime.ts), so v2 does the same.
-      // Skip embedding the no-reply sentinel, it's not real content and the
-      // matching assistant message row never gets persisted.
-      // PHASE-1 T8: was a fourth, slightly narrower spelling of "the whole message is the
-      // sentinel" — it did not tolerate the markdown wrappers the weak model adds about half
-      // the time, so a backtick-wrapped sentinel was embedded as if it were real content.
-      // Same intent, one owner, and the widening only ever skips embedding a non-message.
-      const isNoReplySentinel =
-        !!result.content &&
-        result.toolCalls.length === 0 &&
-        isBareNoReplySentinel(result.content);
-      if (result.content && result.content.trim().length > 0 && !isNoReplySentinel) {
-        try {
-          // T5b: the semantic index is a persist seam too — a secret in the
-          // preview is reachable by recall and by summarisation. Embed what the
-          // row will hold, not what the model said.
-          queueEmbedding('message', messageId, agentId, redactHandedCredentials(agentId, result.content));
-        } catch { /* best effort */ }
-      }
-
-      // C27 hook 1: canonicalize aliased (renamed) tool-call names + args BEFORE
-      // any gate/classifier reads them (they match on canonical names). Tombstoned
-      // tools are left as-is; executeTool returns their pointer error at dispatch.
-      for (const tc of result.toolCalls) {
-        const aliasResolved = resolveToolAlias(tc.name, tc.arguments ?? {});
-        if (!aliasResolved.tombstone && aliasResolved.name !== tc.name) {
-          tc.name = aliasResolved.name;
-          tc.arguments = aliasResolved.args;
-        }
-      }
-
-      state = advance(state, { lastResponse: result, toolCalls: result.toolCalls });
+      // THE EXIT-REQUEST CHANNEL (PHASE-6, `steps/step-outcome.ts`), and this step
+      // is the one that can ask to leave the TURN rather than the loop: `abandon`
+      // is honoured by RETURNING, so finalize does not run and only the `finally`
+      // does. That is what the two mid-call `return`s did, preserved exactly.
+      // What this step reads from the driver. Built HERE rather than beside the other
+      // step contexts because five of its inputs — the assembled call, its system
+      // prompt, the assembly context, the volatile boundary and the steer awaiting
+      // confirmation — are produced by `assemble`, inside this same iteration.
+      const callLLMContext: CallLLMContext = {
+        agentId, turnCtx, turnNumber, db,
+        counterparty, isA2ATurn, isAutoRouted, configuredModelId, lastUserMessageContent,
+        messages, systemPrompt, assembled: ctx, modelContext: mctx, volatileFrom,
+        steerAwaitingConfirm,
+        revertTriggerStampOnAbort, setAgentStatus,
+      };
+      const callLLM = await runCallLLM(state, callLLMContext);
+      state = callLLM.state;
+      if (callLLM.directive === 'abandon') return;
+      if (callLLM.directive === 'exit') break;
+      if (callLLM.directive === 'continue') continue;
+      const { messageId, result } = callLLM;
 
       // Spin-brake grace (owner ruling 2026-07-19): once the tool phase has
       // been ended by the terminal brake, every further tool call returns an

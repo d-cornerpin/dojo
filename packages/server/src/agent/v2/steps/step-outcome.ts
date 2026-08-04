@@ -37,6 +37,17 @@
 //      BY CONSTRUCTION, so "the loop stopped and nothing recorded why" is not a
 //      state this type can express.
 //
+// ── `abandon` vs `exit` (PHASE-6 T5 / CUT 5) ──
+// `exit` leaves the LOOP: finalize still runs, the turn still answers whoever it
+// owes, and the turn record is written by a step that ran. `abandon` leaves the
+// TURN: only the `finally` runs. The engine has exactly two such exits and they
+// both live in the `callLLM` span — the user pressed stop, or a peer preempted,
+// while the model call was in flight — and CUT 4's finalize contract already pins
+// them from the driver's side at exactly two, as "the exits that genuinely bypass
+// it". A module cannot `return` from its caller, so the vocabulary gains the
+// shape rather than that one step inventing a private channel for it; a step that
+// abandons must be honoured by the driver RETURNING, never by breaking.
+//
 // ── `continue` vs `proceed` ──
 // They differ for every step that is not the last statement of the loop body:
 // `continue` abandons the rest of the ITERATION, `proceed` runs the steps after
@@ -46,7 +57,7 @@
 
 import type { AgentTurnState } from '../state.js';
 
-export type StepDirective = 'proceed' | 'continue' | 'exit';
+export type StepDirective = 'proceed' | 'continue' | 'exit' | 'abandon';
 
 /**
  * What a step hands back. `state` is always the advanced state — the driver
@@ -56,7 +67,8 @@ export type StepDirective = 'proceed' | 'continue' | 'exit';
 export type StepOutcome =
   | { readonly directive: 'proceed'; readonly state: AgentTurnState }
   | { readonly directive: 'continue'; readonly state: AgentTurnState }
-  | { readonly directive: 'exit'; readonly state: AgentTurnState; readonly reason: string };
+  | { readonly directive: 'exit'; readonly state: AgentTurnState; readonly reason: string }
+  | { readonly directive: 'abandon'; readonly state: AgentTurnState; readonly reason: string };
 
 /** Run the steps after this one in the same iteration. */
 export function proceed(state: AgentTurnState): StepOutcome {
@@ -75,4 +87,14 @@ export function continueLoop(state: AgentTurnState): StepOutcome {
  */
 export function requestExit(state: AgentTurnState, reason: string): StepOutcome {
   return { directive: 'exit', state, reason };
+}
+
+/**
+ * Ask the driver to leave the TURN, and say why. Not the loop — the turn: the
+ * driver `return`s, so finalize does not run and only the `finally` does. Reserved
+ * for the two mid-call exits the engine already had (stopped, preempted); see the
+ * header for why this is shared vocabulary rather than one step's private channel.
+ */
+export function abandonTurn(state: AgentTurnState, reason: string): StepOutcome {
+  return { directive: 'abandon', state, reason };
 }
