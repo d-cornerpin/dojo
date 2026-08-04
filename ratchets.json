@@ -1800,6 +1800,27 @@
       "to": 275,
       "by": "PHASE-6 T1 (2026-08-04) — NEW PIN (the collapse target itself)",
       "why": "PHASE-6 T1. NOT A RAISE — a new file at 275, well under `maxNewFileLines` (400) and therefore already legal; pinned anyway so the thing the ten maps collapsed INTO is watched at least as tightly as the two they came from. Its content is the ten fields with the comments that moved with them, plus the lifecycle (`openTurnContext` / `turnContext` / `endTurnContext`) and the reason the clear lives in `runV2Turn`'s wrapper rather than the teardown `finally`."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9808,
+      "to": 9672,
+      "by": "PHASE-6 T8 (2026-08-04) — A LOWERING, the first tranche of the decomposition",
+      "why": "THE TIGHTENING THE PLAN'S per-tranche Step 3 OWES, paid at the tranche that earned it. The postExecution gates (`:8329`-`:8480` at `b391949`, 152 lines) left this file for `agent/v2/steps/post-execution/`; the call site that replaced them is 13 lines and its import 3, so the MEASURED cut is 136 (9808 -> 9672) and not the 152 that moved. The difference is stated rather than smoothed: a relocation pays for its own seam. From here this file may only shrink, and each of the eight remaining tranches lowers it again. TWO ALTERNATIVES MEASURED AND REFUSED: (a) `check-ratchets.mjs --tighten`, which would ALSO have lowered five unrelated files carrying pre-existing slack (`agent/tools/cat/fs.ts` -2, `services/transcription.ts` -84, `techniques/share-import.ts` -101, `techniques/store.ts` -75, `work/store.ts` -2) — real slack, and real, but someone else's to claim rather than this tranche's to bundle in; (b) leaving the pin at 9808 so the later tranches have headroom, which is the ratchet inverted — headroom is the precise thing the decrease-only rule exists to remove."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/post-execution/index.ts",
+      "from": null,
+      "to": 235,
+      "by": "PHASE-6 T8 (2026-08-04) — NEW PIN (the first step package)",
+      "why": "NOT A RAISE — a new file at 235, under `maxNewFileLines` (400) and under the growth gate's 240 crossing line, so it is already legal twice over. Pinned anyway for the reason T1 pinned `turn-context.ts`: the thing the driver decomposes INTO must be watched at least as tightly as the thing it came out of, or this phase moves 8,800 lines into nine unwatched files and reports a shrinking `loop.ts` as progress. 152 of the 235 are the relocated span, byte-faithful bar five control-flow statements and two comments; the remainder is the module header, the typed `(state, ctx)` inputs, and the measured note that replaced the two false ones."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/step-outcome.ts",
+      "from": null,
+      "to": 78,
+      "by": "PHASE-6 T8 (2026-08-04) — NEW PIN (the step contract every tranche shares)",
+      "why": "NOT A RAISE — a new file at 78. It carries the contract the nine step packages share: the `(state, ctx)` -> `StepOutcome` shape, and the exit-request channel (a step ASKS by returning; the driver honours it at the call site, where nothing downstream can overwrite the request; `exit` carries its reason by construction). Pinned because it is the one file every remaining tranche will touch, and a shared contract that grows unwatched is how nine tranches grow nine conventions — the failure RULING P6-R3(1) exists to prevent. 47 of its 78 lines are the doc stating the rule and citing the defect it replaces (`loop.ts`'s own head comment on mid-body `phase` writes)."
     }
   ],
   "maxNewFileLines": 400,
@@ -1864,7 +1885,7 @@
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 482,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9808,
+    "packages/server/src/agent/v2/loop.ts": 9672,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 433,
     "packages/server/src/agent/v2/recovery.ts": 605,
@@ -1958,6 +1979,8 @@
     "packages/shared/src/types.ts": 527,
     "packages/shared/src/visibility.ts": 881,
     "packages/shared/src/ws.ts": 1088,
-    "watchdog/src/index.ts": 1198
+    "watchdog/src/index.ts": 1198,
+    "packages/server/src/agent/v2/steps/post-execution/index.ts": 235,
+    "packages/server/src/agent/v2/steps/step-outcome.ts": 78
   }
 }
