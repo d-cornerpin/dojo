@@ -217,6 +217,21 @@ export interface TurnContext {
    *  destination is meaningless without the conversation its cooldown is keyed to. */
   ownerAffinityConversationId: string | null;
   ownerAffinityDestination: 'imessage' | null;
+
+  /** Captured text that rode WITH tool calls and might be the user's genuine answer:
+   *  set by the demotion block, consumed by the `[no-reply]` promotion, the start-ack
+   *  gate and — at turn end — G-SUP-2, which recovers it so a waiting human is never
+   *  left in silence when no tool-less reply landed.
+   *
+   *  ⚠ POPULATION 2. Written four times inside the loop body, all straight-line, so
+   *  like the affinity pair it migrates under RULING P6-R3(1)'s rule and not under a
+   *  measured hazard. ONE STALE REASON IS CORRECTED RATHER THAN CARRIED: the driver
+   *  comment said this was declared above the ack closures "so the start-ack timer can
+   *  capture it" (F10, 2026-07-16). That branch is GONE — the owner's 2026-07-23
+   *  production report retired it — and `fireStartAckIfOwed` no longer reads this at
+   *  all, so no timer closes over it today. Recorded here because a position defended
+   *  by a reason that stopped being true is how the next reader inherits a false one. */
+  deferredUserReplyWithTools: string | null;
 }
 
 /** The one registry. Keyed by agentId because a turn belongs to an agent and
@@ -248,6 +263,7 @@ export function openTurnContext(agentId: string): TurnContext {
     phoneStreamFlushedAny: false,
     ownerAffinityConversationId: null,
     ownerAffinityDestination: null,
+    deferredUserReplyWithTools: null,
   };
   openContexts.set(agentId, ctx);
   return ctx;

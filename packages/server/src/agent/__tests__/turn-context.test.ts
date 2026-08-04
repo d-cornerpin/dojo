@@ -74,6 +74,7 @@ const THE_DRIVER_CARRIES = [
   'phoneStreamFlushedAny',
   'ownerAffinityConversationId',
   'ownerAffinityDestination',
+  'deferredUserReplyWithTools',
 ];
 
 /** The six in `turn-state.ts` that OUTLIVE the turn on purpose. */

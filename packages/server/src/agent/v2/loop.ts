@@ -2019,7 +2019,10 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // demotion block, consumed by G-SUP-2 / the start-ack / the [no-reply]
   // promotion). Declared HERE, above the ack closures, so the start-ack timer
   // can capture it (2026-07-16, the trivial-save sequence).
-  let deferredUserReplyWithTools: string | null = null;
+  // PHASE-6 T9 (CUT 4), RULING P6-R3(1): on the turn's bag — it crosses into the
+  // `finalize` span, where G-SUP-2 recovers it. The declaration comment above kept a
+  // reason that had stopped being true (the start-ack timer no longer reads it; that
+  // branch was retired 2026-07-23); the measurement is recorded at the field.
   // Ghosted-work-ask floor (2026-07-22): the multistep classifier's verdict on
   // THIS turn's inbound, hoisted to turn scope so the [no-reply] handling can
   // tell a work ask (silence is never valid) from chatter (silence is fine).
@@ -4059,7 +4062,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         // inter-agent / background turn it is coordination narration, hard-
         // suppress with no recovery (keeps A2A chatter off human channels).
         if (hasUnansweredUser && !interAgentTurn) {
-          deferredUserReplyWithTools = persistedContent;
+          turnCtx.deferredUserReplyWithTools = persistedContent;
           // Steered start line (owner ruling 2026-07-22): the start-ack steer
           // asked the model to speak and this is its next text riding with
           // tool calls. Surface it NOW as the user-visible start line, the
@@ -4069,13 +4072,13 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
           if (
             startAckSteerArmedThisTurn &&
             !engineStartAckDeliveredThisTurn &&
-            deferredUserReplyWithTools &&
+            turnCtx.deferredUserReplyWithTools &&
             !startAckRepliedNow()
           ) {
             engineStartAckDeliveredThisTurn = true;
             deliveredAsStartLine = true;
-            const startLine = deferredUserReplyWithTools.trim();
-            deferredUserReplyWithTools = null;
+            const startLine = turnCtx.deferredUserReplyWithTools.trim();
+            turnCtx.deferredUserReplyWithTools = null;
             deferredDeliveredByAck = true;
             // Fresh id on purpose: messageId already holds this iteration's
             // persisted tool_use row, so reusing it makes the INSERT no-op and
@@ -4473,11 +4476,11 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         triggerRow &&
         !state.surfacedReplyThisTurn &&
         !deferredDeliveredByAck &&
-        deferredUserReplyWithTools &&
-        deferredUserReplyWithTools.trim().length > 0
+        turnCtx.deferredUserReplyWithTools &&
+        turnCtx.deferredUserReplyWithTools.trim().length > 0
       ) {
-        persistedContent = deferredUserReplyWithTools.trim();
-        deferredUserReplyWithTools = null;
+        persistedContent = turnCtx.deferredUserReplyWithTools.trim();
+        turnCtx.deferredUserReplyWithTools = null;
         noReplyOverridden = true;
         logger.info('v2: [no-reply] on a served human turn with an undelivered captured answer; promoting it as the reply', {
           agentId, turnNumber, preview: persistedContent.slice(0, 60),
@@ -4585,7 +4588,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
           // REG-3 (comms-audit): the agent INTENTIONALLY went silent ([no-reply] /
           // prose decline). Discard any deferred text-with-tools narration so the
           // G-SUP-2 finalize recovery can't resurrect it and override the decision.
-          deferredUserReplyWithTools = null;
+          turnCtx.deferredUserReplyWithTools = null;
 
           // Silent turn that still opened a canvas (or queued attachments via
           // show_to_user): surface the pending "Open in canvas" chip / thumbnails
@@ -5095,7 +5098,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
           (!persistedContent || persistedContent.trim().length === 0) &&
           !state.surfacedReplyThisTurn &&
           !state.lastAssistantTextForIM &&
-          !deferredUserReplyWithTools &&
+          !turnCtx.deferredUserReplyWithTools &&
           !Object.values(state.explicitSendThisTurn).some(Boolean)
         ) {
           try {
@@ -7856,7 +7859,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     // to the dashboard chat AND hand it to the channel router below. When a real
     // tool-less reply DID land, lastAssistantTextForIM is set and this is skipped,
     // so there is no double-reply.
-    if (deferredUserReplyWithTools && !state.lastAssistantTextForIM) {
+    if (turnCtx.deferredUserReplyWithTools && !state.lastAssistantTextForIM) {
       const recoveredId = uuidv4();
       try {
         // RC-12 item 6: the recovery path used to route deferred text WITHOUT the
@@ -7869,7 +7872,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         // model-visible correction path for the common case.
         try {
           const g = decideClaimedDelivery({
-            agentId, turnNumber, responseText: deferredUserReplyWithTools,
+            agentId, turnNumber, responseText: turnCtx.deferredUserReplyWithTools,
             toolCallsThisTurn: state.toolResults.filter((r) => !r.isError).map((r) => ({ name: r.name })),
             counterpartyName: counterparty.name,
             hasDeliveryReceipt: (recipient) =>
@@ -7885,17 +7888,17 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         } catch { /* detection is best-effort; never block the recovery delivery */ }
         insertMessageIfAbsent({
           id: recoveredId, agentId, role: 'assistant',
-          content: deferredUserReplyWithTools, turnNumber,
+          content: turnCtx.deferredUserReplyWithTools, turnNumber,
         });
         broadcast({
           type: 'chat:message',
           agentId,
           message: {
-            id: recoveredId, agentId, role: 'assistant' as const, content: deferredUserReplyWithTools,
+            id: recoveredId, agentId, role: 'assistant' as const, content: turnCtx.deferredUserReplyWithTools,
             tokenCount: null, modelId: null, cost: null, latencyMs: null, createdAt: new Date().toISOString(),
           },
         });
-        state = advance(state, { lastAssistantTextForIM: stripMoodMarker(deferredUserReplyWithTools) });
+        state = advance(state, { lastAssistantTextForIM: stripMoodMarker(turnCtx.deferredUserReplyWithTools) });
       noteTerminalAnswer(recoveredId, 'recovered reply delivered');
         logger.info('v2 G-SUP-2 recovery: delivered deferred text-with-tools reply (turn ended with no tool-less reply)', {
           agentId, turnNumber,
