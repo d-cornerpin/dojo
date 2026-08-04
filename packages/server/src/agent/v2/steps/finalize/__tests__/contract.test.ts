@@ -211,12 +211,23 @@ describe('PHASE-6 CUT 4: the finalize step\'s contract', () => {
     // with ONE `break` at the call site. So the driver's own count falls 19 → 13 while
     // the number of ways the loop can stop is unchanged — and the step-side half is
     // counted over the ENGINE so it cannot go quiet as the remaining tranches move.
-    expect(breaks.length).toBe(13);
+    //
+    // ⚠ PHASE-6 CUT 8 MOVED SEVEN MORE, THE BIGGEST SINGLE SHIFT IN THE PHASE. The
+    // `postCallClassify` span held seven `break`s of this loop; in the step they are
+    // `requestExit(...)` calls and the driver honours all seven with ONE `break` at the
+    // call site, so the driver's own count falls 13 → 6 while the number of ways the
+    // loop can stop is unchanged. RE-DERIVED IN BOTH HALVES, NEVER LOWERED: 6 + 23 = 29,
+    // against CUT 7's 13 + 16 = 29. The total is the invariant this census is actually
+    // about, and it did not move.
+    expect(breaks.length).toBe(6);
     // The step-side half: every `requestExit` in every step package. Each one is a way
     // out of the loop that the driver honours with one of the `break`s above, and each
     // one still lands in this step.
     const stepExitSites = [...engineText().matchAll(/requestExit\(state,/g)].length;
-    expect(stepExitSites).toBe(16);
+    expect(stepExitSites).toBe(23);
+    // THE INVARIANT UNDERNEATH BOTH HALVES, stated as its own clause so a future cut
+    // that moves N exits and adds N+1 cannot pass by moving the two numbers in step.
+    expect(breaks.length + stepExitSites).toBe(29);
     const tryStart = sf.getLineAndCharacterOfPosition(tryStmt.getStart(sf)).line + 1;
     const tryEnd = sf.getLineAndCharacterOfPosition(tryStmt.tryBlock.getEnd()).line + 1;
     for (const b of breaks) {

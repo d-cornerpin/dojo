@@ -263,11 +263,16 @@ describe('the deliberate non-folds', () => {
         + 'from @dojo/shared.',
     },
     {
-      file: 'server/src/agent/v2/loop.ts',
+      // ⚠ RE-POINTED 2026-08-04 BY PHASE-6 T6 (CUT 8), and this entry is the audit
+      // working exactly as its own declaration predicted: the `postCallClassify` tranche
+      // moved the no-reply family out of `loop.ts` and this clause went RED naming
+      // itself, rather than quietly passing over a file that no longer holds its
+      // subject. The reason is unchanged; only the home is.
+      file: 'server/src/agent/v2/steps/post-call-classify/no-reply.ts',
       what: 'DECLINE_OPENER_RE',
       why: 'An engine BEHAVIOUR classifier over the model\'s prose ("is this a decline?"), '
         + 'deciding whether a row is written at all. It reads meaning, not markers. OR2 / '
-        + 'PHASE 4 owns the engine\'s prose judgements. (Its former neighbour here, '
+        + 'PHASE 4 owns the engine\'s prose judgements. (Its former neighbour, '
         + '`isGenericCloseout`, was DELETED by PHASE-2 T6: the redundant-closeout floor it '
         + 'served is keyed on the delivery ledger now, not on a phrase list.)',
     },

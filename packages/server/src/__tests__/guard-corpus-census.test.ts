@@ -155,7 +155,19 @@ const DRIVER_BY_PATH: Declaration[] = [
       + 'code. The driver is named only inside the NOT_FOLDED exemption list, and that list '
       + 'already re-tests its own subject (`read(n.file).includes(n.what)`), so when '
       + '`DECLINE_OPENER_RE` rides a tranche out the entry fails loudly and names itself. An '
-      + 'exemption must name the file it exempts — widening it would blunt the list, not sharpen it.',
+      + 'exemption must name the file it exempts — widening it would blunt the list, not sharpen it. '
+      + '(That prediction came true at CUT 8: the entry went RED, named itself, and was re-pointed '
+      + 'at `steps/post-call-classify/no-reply.ts` with its reason unchanged.)',
+  },
+  {
+    rel: 'packages/server/src/agent/v2/steps/post-call-classify/__tests__/contract.test.ts',
+    verdict: 'cannot-go-quiet',
+    why: 'Same shape as the `execute` contract above, and for the same one question: that the '
+      + "`advance` into `postCallClassify` sits AHEAD of the call site, which is a fact about the "
+      + "DRIVER's own statement order that a step package cannot answer about itself. Both "
+      + '`indexOf`s are asserted `> -1` before they are compared, so a driver that stopped calling '
+      + 'this step fails here rather than passing on two -1s. Widening the corpus to the engine '
+      + 'would be wrong on purpose: it would let the call site move into a step and still pass.',
   },
   {
     rel: 'packages/server/src/agent/v2/steps/teardown/__tests__/contract.test.ts',
@@ -261,6 +273,17 @@ const STEPS_BY_PATH: Declaration[] = [
     verdict: 'step-aware',
     why: 'THE derivation itself — the one place `agent/v2/steps` is walked. Every other guard '
       + 'imports from here rather than growing its own copy.',
+  },
+  {
+    rel: 'packages/server/src/__tests__/marker-ownership.test.ts',
+    verdict: 'step-aware',
+    why: 'It grows no walk of its own — its corpus is already a recursive walk of all three '
+      + 'packages, which is why it follows moved code by construction. A step path appears in '
+      + 'exactly ONE place: the NOT_FOLDED exemption entry naming the file that holds '
+      + '`DECLINE_OPENER_RE`, which moved into `steps/post-call-classify/no-reply.ts` at CUT 8. '
+      + 'An exemption must name the file it exempts, and the list re-tests its own subject '
+      + '(`read(n.file).includes(n.what)`), so a stale entry fails loudly and names itself — '
+      + 'which is exactly how CUT 8 found it.',
   },
 ];
 
