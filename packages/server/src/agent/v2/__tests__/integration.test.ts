@@ -2618,3 +2618,148 @@ describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the 
     expect(sys[0].content).toMatch(/running for about 60 minutes without finishing/);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════
+// PHASE-6 CUT 4 (`finalize`) — G-SUP-2: THE ANSWER THAT RODE WITH A TOOL CALL IS
+// RECOVERED, NEVER SILENTLY DROPPED.
+//
+// WHY THIS LANDS BEFORE ANYTHING MOVES. Non-negotiable #2: a guard's requirement is
+// written down as a test before its code is touched. `git grep -lw G-SUP-2` over
+// every `__tests__` directory in BOTH repos found NOTHING — the sibling G-SUP-3 has
+// clauses (PRESERVATION #40), G-SUP-2 has none, and it is the FIRST block of the
+// `finalize` span. These clauses are GREEN on the unmoved tree; the tranche moves
+// the code under them.
+//
+// THE REQUIREMENT, in the guard's own terms (comms-audit). A human is waiting. The
+// only user-facing text the turn produced rode in the SAME model response as a tool
+// call, so the engine deliberately did NOT show it as a mid-turn bubble (the preamble
+// leak G-SUP-2's sibling rule exists to stop) — it REMEMBERED it instead. If the turn
+// then ends with no proper tool-less reply, the ask would be answered by silence. So
+// finalize recovers the remembered text: persists it as the agent's own assistant row,
+// broadcasts it to the dashboard, and hands it to the channel router so it reaches the
+// person on the channel they used.
+//
+// AND THE PART THAT IS EASY TO GET WRONG, held by its own clause: when a real
+// tool-less reply DID land, `lastAssistantTextForIM` is set and the recovery is
+// skipped — there is no double-reply.
+//
+// RC-12 ITEM 6 rides here too. The recovery path used to route deferred text WITHOUT
+// the claimed-delivery floor, so a false "I sent it" that rode with a tool call went
+// straight to the channel. The floor now runs on this path as well — but as a LOUD
+// TRIPWIRE, not a veto: the loop has already exited, there is no re-entry to correct
+// the model, and a waiting human must not be left in silence. It warns AND delivers.
+// ════════════════════════════════════════════════════════════════════════════════
+describe('PHASE-6 CUT 4: the deferred answer is recovered at finalize (G-SUP-2)', () => {
+  const DEFERRED = 'Your report is ready and saved to the desktop.';
+
+  /**
+   * The agent's own SPEECH this turn, oldest first. `content NOT LIKE '[{%'` is the
+   * engine's own predicate for "a person could read this" (`startAckRepliedNow`'s
+   * query uses it verbatim): a tool_use array is persisted on an `assistant` row too,
+   * and counting it as speech would make every clause below read one row high.
+   */
+  function assistantRows(): Array<{ id: string; content: string }> {
+    return mockDb.current!
+      .prepare("SELECT id, content FROM messages WHERE role = 'assistant' AND content NOT LIKE '[{%' ORDER BY rowid")
+      .all() as Array<{ id: string; content: string }>;
+  }
+
+  function broadcastAssistantTexts(): string[] {
+    return getBroadcastEventsByType('chat:message')
+      .map((e) => (e as { message?: { role?: string; content?: string } }).message)
+      .filter((m): m is { role: string; content: string } => m?.role === 'assistant')
+      .map((m) => m.content);
+  }
+
+  /** One tool round whose response ALSO carries text, then a terminal round with `tail`. */
+  async function turnWithTextRidingATool(tail: string): Promise<void> {
+    callModelSpy
+      .mockResolvedValueOnce({
+        content: DEFERRED,
+        toolCalls: [{ id: 'tc1', name: 'file_write', arguments: { path: '/tmp/r.md', content: 'x' } }] as ToolCall[],
+        inputTokens: 100, outputTokens: 10, stopReason: 'tool_use',
+      })
+      .mockResolvedValue({
+        content: tail,
+        toolCalls: [],
+        inputTokens: 50, outputTokens: 5, stopReason: 'end_turn',
+      });
+    executeToolSpy.mockResolvedValue({
+      toolCallId: 'tc1', name: 'file_write', content: 'written', isError: false,
+    });
+    await runV2Turn('primary');
+  }
+
+  it('POSITIVE CONTROL: an ordinary tool-less terminal reply is delivered once and nothing is recovered', async () => {
+    // The control matters more than usual here: every other clause asserts that a
+    // SECOND row appears, and a tree where the engine simply double-posts would pass
+    // them all. This one fails on exactly that tree.
+    await turnWithTextRidingATool('Here is the summary you asked for.');
+
+    const rows = assistantRows();
+    expect(rows.map((r) => r.content)).toEqual(['Here is the summary you asked for.']);
+    expect(rows.some((r) => r.content === DEFERRED)).toBe(false);
+  });
+
+  it('the turn ends with no tool-less reply → the deferred text IS delivered, as the agent, once', async () => {
+    // The weak-model shape this exists for: the answer was paired with the closing
+    // tool call, and the model then said nothing at all.
+    await turnWithTextRidingATool('');
+
+    const rows = assistantRows();
+    expect(rows.map((r) => r.content)).toEqual([DEFERRED]);
+    // It reached the dashboard as the agent's own message, not only the DB.
+    expect(broadcastAssistantTexts()).toContain(DEFERRED);
+  });
+
+  it('the recovered text becomes the turn\'s reply, so the channel router can still route it', async () => {
+    // `lastAssistantTextForIM` is what every channel branch below reads. If the
+    // recovery persisted a row but left that unset, the person on iMessage/SMS/email
+    // would still get silence — the exact failure G-SUP-2 exists to prevent, one
+    // layer down. The turn record's answer id is the observable half.
+    await turnWithTextRidingATool('');
+
+    const recovered = assistantRows()[0];
+    const turn = mockDb.current!
+      .prepare('SELECT answered, answer_message_id FROM turns ORDER BY rowid DESC LIMIT 1')
+      .get() as { answered: number; answer_message_id: string | null } | undefined;
+    expect(turn?.answered).toBe(1);
+    expect(turn?.answer_message_id).toBe(recovered.id);
+  });
+
+  it('RC-12 item 6: a claimed delivery the ledger contradicts warns LOUDLY and still delivers', async () => {
+    // "I texted Michael" with no delivery receipt anywhere. The floor fires as a
+    // tripwire, naming the row — and the recovery still happens, because the loop has
+    // exited and silence is the worse failure.
+    callModelSpy
+      .mockResolvedValueOnce({
+        content: 'I texted Michael the details.',
+        toolCalls: [{ id: 'tc1', name: 'file_write', arguments: { path: '/tmp/r.md', content: 'x' } }] as ToolCall[],
+        inputTokens: 100, outputTokens: 10, stopReason: 'tool_use',
+      })
+      .mockResolvedValue({ content: '', toolCalls: [], inputTokens: 50, outputTokens: 5, stopReason: 'end_turn' });
+    // ARM B of the floor: a delivery the DOOR ITSELF recorded as failed, this turn,
+    // for the person the text names. Written from inside the tool call so it lands on
+    // the turn that is actually running rather than on a number guessed up front.
+    executeToolSpy.mockImplementation(async () => {
+      const t = mockDb.current!
+        .prepare("SELECT turn_number FROM turns WHERE agent_id = 'primary' ORDER BY rowid DESC LIMIT 1")
+        .get() as { turn_number: number } | undefined;
+      mockDb.current!.prepare(
+        `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, recipient_display, outcome)
+         VALUES ('d-failed-1', 'primary', ?, 'imessage_send', 'imessage', 'Michael', 'Michael', 'failed')`,
+      ).run(t?.turn_number ?? null);
+      return { toolCallId: 'tc1', name: 'file_write', content: 'written', isError: false };
+    });
+
+    await runV2Turn('primary');
+
+    // IT STILL DELIVERS. This is the whole point of the tripwire shape: the loop has
+    // exited, there is no re-entry to correct the model, and silence is the worse
+    // failure. A version of this guard that VETOED would pass a "did not double-send"
+    // assertion and re-open the defect G-SUP-2 exists to close.
+    expect(assistantRows().map((r) => r.content)).toEqual(['I texted Michael the details.']);
+    const fired = loggerWarnSpy.mock.calls.some((c) => String(c[0]).includes('G-SUP-2 recovery: delivered text claims a delivery'));
+    expect(fired).toBe(true);
+  });
+});
