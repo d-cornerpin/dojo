@@ -328,6 +328,9 @@ vi.mock('../answered-edge.js', async () => {
 });
 
 // Now import the module under test (after mocks are set up)
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runV2Turn } from '../loop.js';
 import { stoppedAgents, recoveryRunStreak, pendingWakeups } from '../../shared-state.js';
 import { turnContext } from '../../turn-context.js';
@@ -389,6 +392,26 @@ function setupTestDb(): Database.Database {
   });
 
   return db;
+}
+
+// The ENGINE'S OWN SOURCE — the driver plus every step package under `agent/v2/steps/`.
+// PHASE-6 cuts the driver into step directories one tranche at a time, so a source scan
+// pinned to `loop.ts` alone stops seeing its subject the moment that subject moves, and
+// it goes QUIET rather than red. Same widening, same reason, as CUT 1's repair to
+// `engine-steer.test.ts`; the eight tranches behind this one are covered by construction.
+const V2_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+function engineSource(): string {
+  const out: string[] = [fs.readFileSync(path.join(V2_DIR, 'loop.ts'), 'utf8')];
+  const walk = (dir: string): void => {
+    if (!fs.existsSync(dir)) return;
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, e.name);
+      if (e.isDirectory()) { if (e.name !== '__tests__') walk(abs); continue; }
+      if (/\.ts$/.test(e.name) && !/\.(test|spec)\.ts$/.test(e.name)) out.push(fs.readFileSync(abs, 'utf8'));
+    }
+  };
+  walk(path.join(V2_DIR, 'steps'));
+  return out.join('\n');
 }
 
 function getBroadcastEventsByType(type: string): unknown[] {
@@ -2258,5 +2281,117 @@ describe('PHASE-6 T1: the turn owns its facts and clears them in its finally', (
 
     const warned = loggerWarnSpy.mock.calls.some((c) => String(c[0]).includes('ticket stamps'));
     expect(warned).toBe(true);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// F10 — THE WALL-CLOCK START-ACK TIMER MUST NEVER OUTLIVE ITS TURN.
+//
+// PHASE-6 T9b, landed BEFORE the teardown span moves (non-negotiable #2: a guard's
+// requirement becomes a test before its code is touched). `git grep -l startAckTimer`
+// over the whole suite found NOTHING: the clear at the top of the turn's `finally` is
+// the only thing standing between a 30-second timer and the turn after it, and no test
+// anywhere said so.
+//
+// WHAT IT PROTECTS. The timer's callback asks `fireStartAckIfOwed` to request a steer
+// so the MODEL says "on it" (engine detects, agent speaks — OR2). A timer that survives
+// its turn fires against the NEXT turn's state, which is how the double-ack and the
+// stray "On it" after an already-sent relay happened; the site's own comment records
+// the DB re-check as a race backstop and calls cancelling here "the primary discipline".
+//
+// WHY IT IS THE TRANCHE'S OWN CLAUSE. This is the ONE mutable driver local the teardown
+// span both reads and WRITES (`startAckTimer = null`), so it is the crossing that
+// RULING P6-R3(1) migrates to the turn's bag before anything moves. The requirement is
+// pinned here first, on the unmoved tree, so the migration and the extraction after it
+// are judged against a clause that already passes rather than one written to fit them.
+// ════════════════════════════════════════════════════════════════════════════════
+
+describe('F10: the wall-clock start-ack timer never outlives its turn', () => {
+  // The threshold the watcher below matches on. Asserted against the engine's own
+  // declaration by the provenance clause, so a watcher that has drifted onto the wrong
+  // timer fails loudly instead of silently observing nothing.
+  const START_ACK_AFTER_MS = 30_000;
+
+  const answerOnce = (text = 'done'): void => {
+    callModelSpy.mockResolvedValue({
+      content: text, toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
+    });
+  };
+
+  interface TimerWatch { armed: unknown[]; cleared: unknown[]; restore: () => void }
+
+  // Watch the GLOBAL timer doors rather than reaching into the loop: the requirement is
+  // about a real timer being really cancelled, and a spy on the engine's own helper
+  // would pass on a tree where the cancel was deleted.
+  function watchStartAckTimer(): TimerWatch {
+    const realSet = globalThis.setTimeout;
+    const realClear = globalThis.clearTimeout;
+    const armed: unknown[] = [];
+    const cleared: unknown[] = [];
+    const setSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(
+      ((fn: () => void, ms?: number, ...rest: unknown[]) => {
+        const handle = (realSet as (...a: unknown[]) => unknown)(fn, ms, ...rest);
+        if (ms === START_ACK_AFTER_MS) armed.push(handle);
+        return handle;
+      }) as unknown as typeof globalThis.setTimeout,
+    );
+    const clearSpy = vi.spyOn(globalThis, 'clearTimeout').mockImplementation(
+      ((handle: unknown) => {
+        cleared.push(handle);
+        (realClear as (...a: unknown[]) => void)(handle);
+      }) as unknown as typeof globalThis.clearTimeout,
+    );
+    return {
+      armed,
+      cleared,
+      restore: () => {
+        setSpy.mockRestore();
+        clearSpy.mockRestore();
+        // Belt and braces: on a tree where the cancel was deleted, do not leave a live
+        // 30s timer behind for the rest of the file to trip over.
+        for (const h of armed) (realClear as (...a: unknown[]) => void)(h);
+      },
+    };
+  }
+
+  it('PROVENANCE: the threshold watched here is the engine\'s own declaration', () => {
+    // The corpus is the ENGINE'S source — the driver plus every step package — for the
+    // reason CUT 1 recorded on `engine-steer.test.ts`: this phase moves the driver's
+    // spans into `agent/v2/steps/`, and a scan pinned to one file goes QUIET rather than
+    // red when its subject moves out from under it.
+    expect(engineSource()).toMatch(
+      new RegExp(`const ENGINE_START_ACK_AFTER_MS = ${START_ACK_AFTER_MS};`),
+    );
+  });
+
+  it('a clean turn arms the timer and CANCELS it before it returns', async () => {
+    const w = watchStartAckTimer();
+    try {
+      answerOnce();
+      await runV2Turn('primary');
+      // POSITIVE CONTROL: the fixture really is a start-ack-armed turn (a human
+      // counterparty with a trigger row). Without this the clause below would pass
+      // vacuously on any tree where the timer stopped being armed at all.
+      expect(w.armed).toHaveLength(1);
+      expect(w.cleared).toContain(w.armed[0]);
+    } finally {
+      w.restore();
+    }
+  });
+
+  it('a turn that THREW cancels it too — the teardown runs on the error path', async () => {
+    // The throw has to land ABOVE the model call's own try/catch to reach the function
+    // -level `catch`; `assembleContext` is exactly one of the sites the catch's own
+    // comment names. The timer is armed long before assemble, so this is the arm where
+    // a missing cancel would leave a live timer on a turn that is already going wrong.
+    const w = watchStartAckTimer();
+    try {
+      assembleContextMock.mockRejectedValueOnce(new Error('assembler exploded'));
+      await runV2Turn('primary');
+      expect(w.armed).toHaveLength(1);
+      expect(w.cleared).toContain(w.armed[0]);
+    } finally {
+      w.restore();
+    }
   });
 });
