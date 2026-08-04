@@ -574,6 +574,20 @@
       "verifiedBy": "git grep -l 'schedule_status' -- packages/server/src packages/dashboard/src | grep -v '__tests__|.test.|/migrations/'"
     },
     {
+      "id": "work.tz",
+      "kind": "column",
+      "table": "work",
+      "column": "tz",
+      "definedIn": "packages/server/src/db/migrations/135_work_spine.sql",
+      "why": "THE SCHEDULE AXIS's per-row timezone. Declared by 135:60 (and carried in the backfill lists at :278/:355 and 135b:62) as the successor half of `schedule_json`/`tz`/`anchor_local`/`sequence`, and it is the ONLY member of that group with neither a reader nor a writer. Re-derived at PHASE-6 T0A (2026-08-04, `d716172`): `git grep -n '\\btz\\b' -- packages/server/src | grep -v __tests__ | grep -v migrations/` = 85 hit lines, every one a LOCAL VARIABLE or a comment and not one of them this column; `WorkPatch` declares no `tz` key, so no write path can reach it. Timezone is entirely process-global today \u2014 `getBoxTimeZone()` at scheduler/engine.ts:50-52 \u2014 and `calculateNextRun`'s optional `timeZone` parameter is passed by NONE of its 12 production call sites (`git grep -n 'calculateNextRun(' -- packages/server/src | grep -v __tests__` = 13 lines, 12 calls + the definition).",
+      "zeroReader": {
+        "kind": "owed",
+        "owner": "SWEEP-F (background services \u2014 'the scheduler owns its clock', 00-EXECUTION-ROADMAP.md Arc 2 row F)",
+        "date": "2026-08-04",
+        "reason": "PHASE-6 T0A Step 5 decided this in writing and did NOT wire it. Wiring `work.tz` is a PRODUCT change, not a seam fix: it would make one task's schedule interpretable in a zone other than the box's, which nothing today asks for, and it would need a declared, forwarded, advertised parameter on both work verbs \u2014 the surface T0C owns. Deleting it is refused outright: an absence is a question, not a verdict (#15), and the orphan gate carried NO disposition for it before this entry, so it was an invisible absence rather than a watched one. This entry converts it into a watched debt. The column is the natural home for a per-task timezone the moment the scheduler stops being single-zone, which is exactly Sweep F's scope."
+      }
+    },
+    {
       "id": "work.is_paused",
       "kind": "column",
       "table": "work",

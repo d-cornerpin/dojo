@@ -1782,7 +1782,7 @@
     "packages/server/src/healer/diagnostic.ts": 1036,
     "packages/server/src/healer/healer-agent.ts": 1170,
     "packages/server/src/healer/injury-recovery.ts": 822,
-    "packages/server/src/index.ts": 1178,
+    "packages/server/src/index.ts": 1186,
     "packages/server/src/memory/assembler.ts": 2612,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 610,
