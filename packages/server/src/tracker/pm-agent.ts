@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { findDeliveryEvidenceForTask, renderDeliveryEvidence } from './delivery-evidence.js';
 import { renderTaskStamps, renderStepFacts, type TaskStampFields } from './task-stamps.js';
-import { currentTurnNumber } from '../agent/turn-state.js';
+import { turnContext } from '../agent/turn-context.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { v4 as uuidv4 } from 'uuid';
@@ -672,7 +672,7 @@ function runSmellDetector(taskId: string, toStatus: string): void {
         // assignee closing its own task in-turn, so the closing turn is the
         // assignee's live turn; an engine/Key-2 close has no live turn and is
         // not a dodge, so no flag.
-        const closingTurn = taskAgent?.assigned_to ? currentTurnNumber.get(taskAgent.assigned_to) : undefined;
+        const closingTurn = taskAgent?.assigned_to ? turnContext(taskAgent.assigned_to)?.turnNumber : undefined;
         if (taskAgent?.assigned_to && closingTurn !== undefined) {
           // PHASE-2 T8V — A NAME MATCH THE TYPESCRIPT SWEEP COULD NOT SEE, because it
           // is a SQL LIKE against `audit_log.target`. `audit_log` records the tool NAME,

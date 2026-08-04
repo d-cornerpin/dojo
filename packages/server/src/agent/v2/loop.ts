@@ -79,7 +79,10 @@ import { queueEmbedding } from '../../memory/embeddings.js';
 import { isPrimaryAgent, isTrainerAgent, isPMAgent, isHealerAgent, isDreamerAgent } from '../../config/platform.js';
 import os from 'node:os';
 import path from 'node:path';
-import { turnBoundary, forceA2ATurn, lastTurnWasA2A, currentTurnKind, currentTurnConvKey, currentTurnConversationId, currentTurnImRecipient, currentModelRequestId, currentTurnNumber, currentTurnRoot, currentTurnServedWork, continuationContext, clearTurnReceipts, clearRecallBudget, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
+import { turnBoundary, forceA2ATurn, lastTurnWasA2A, continuationContext, accumulateUntrackedWorkAcrossTurns, getUntrackedWorkAcrossTurns, clearUntrackedWorkAcrossTurns } from '../turn-state.js';
+// PHASE-6 T1: the turn's own facts (`turnCtx`, threaded; `turnContext(agentId)` for the
+// module-level helpers below, which run whether or not that agent is in a turn).
+import { openTurnContext, turnContext, endTurnContext, type TurnContext, type TurnRoot } from '../turn-context.js';
 import { persistEngineSteer } from './engine-steer.js';
 import { pushEngineMessage } from './engine-message.js';
 import { collectMessageLaneIds } from '../../memory/message-lane-tag.js';
@@ -793,7 +796,7 @@ function detectTaskThrashing(agentId: string): {
     // Turn-keyed window (P6b-2). Rows with NULL turn_number (pre-113 or the
     // odd unstamped write) fall out of the window, which fails SAFE for a
     // detector (missing one row can only under-count).
-    const minTurn = (currentTurnNumber.get(agentId) ?? 0) - THRASH_TURN_WINDOW;
+    const minTurn = (turnContext(agentId)?.turnNumber ?? 0) - THRASH_TURN_WINDOW;
     const rows = db.prepare(`
       SELECT content FROM messages
       WHERE agent_id = ? AND role = 'assistant'
@@ -900,7 +903,7 @@ function startStatusHeartbeat(agentId: string): void {
       // UI (thinking dots + stop button) on the next tick, clobbering the 'a2a'
       // turnKind that the turn-start broadcast set, so inter-agent turns flashed
       // the working UI back into the user's chat every heartbeat interval.
-      broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: currentTurnKind.get(agentId) ?? 'user', userFacing: typeof currentTurnConvKey.get(agentId) === 'string' });
+      broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: turnContext(agentId)?.kind ?? 'user', userFacing: typeof turnContext(agentId)?.convKey === 'string' });
     } catch {
       /* best effort */
     }
@@ -919,14 +922,15 @@ function stopStatusHeartbeat(agentId: string): void {
 export function setAgentStatus(agentId: string, status: AgentStatus): void {
   try {
     const db = getDb();
-    // Capture the turn's human-conversation binding BEFORE the idle boundary below
-    // deletes it. currentTurnConvKey is a non-null conv_key on a genuine human turn
-    // (dashboard / iMessage / voice) and null on a pure background a2a / engine
-    // turn. Threaded onto the broadcast as `userFacing` so the composer can tell an
-    // "idle after a user turn" from an "idle after background noise" without
-    // guessing: on a busy box a queued dashboard send must keep its working-UI latch
-    // across a background turn's idle (see AgentStatusEvent.userFacing).
-    const turnConvKeyAtStatus = currentTurnConvKey.get(agentId); // string | null | undefined
+    // The turn's human-conversation binding: non-null conv_key on a genuine human turn
+    // (dashboard / iMessage / voice), null on a pure background a2a / engine turn,
+    // undefined outside a turn. Threaded onto the broadcast as `userFacing` so the
+    // composer can tell "idle after a user turn" from "idle after background noise": on
+    // a busy box a queued dashboard send must keep its working-UI latch across a
+    // background turn's idle (see AgentStatusEvent.userFacing).
+    // PHASE-6 T1: was a capture taken BEFORE this function deleted ten turn-state maps.
+    // That delete is gone; a status write no longer decides how long the turn's facts live.
+    const turnConvKeyAtStatus = turnContext(agentId)?.convKey; // string | null | undefined
     const userFacingTurn = typeof turnConvKeyAtStatus === 'string' && turnConvKeyAtStatus.length > 0;
     // FA-A2: clear the diagnostic ONLY on a clean turn end ('idle'), not on the
     // 'working' transition. A turn that errors and retries goes working → error →
@@ -943,11 +947,10 @@ export function setAgentStatus(agentId: string, status: AgentStatus): void {
         UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?
       `).run(status, agentId);
     }
-    if (status === 'idle') { currentTurnKind.delete(agentId); currentTurnConvKey.delete(agentId); currentTurnConversationId.delete(agentId); currentTurnImRecipient.delete(agentId); currentModelRequestId.delete(agentId); currentTurnNumber.delete(agentId); currentTurnRoot.delete(agentId); currentTurnServedWork.delete(agentId); clearTurnReceipts(agentId); clearRecallBudget(agentId); }
     // On 'working', carry the turn kind so the composer can stay quiet on pure
     // A2A turns (unless wordy mode). Defaults to 'user' until the counterparty
     // is resolved early in the turn.
-    const turnKind = status === 'working' ? (currentTurnKind.get(agentId) ?? 'user') : undefined;
+    const turnKind = status === 'working' ? (turnContext(agentId)?.kind ?? 'user') : undefined;
     // userFacing rides on EVERY status this seam emits (working AND idle/terminal),
     // captured above before the idle delete. `undefined` (no turn resolved yet, e.g.
     // the pre-classification 'working' at turn start) is omitted so the client keeps
@@ -985,8 +988,21 @@ export function setAgentStatus(agentId: string, status: AgentStatus): void {
 /**
  * Run a single user-message → agent-response cycle on the v2 runtime.
  * Mirrors v1's runAgentLoop semantics with the Control Shell pattern.
+ *
+ * PHASE-6 T1: this wrapper IS the turn's lifetime. Why the clear lives here and not in
+ * the body's teardown `finally` is written at `endTurnContext` (`agent/turn-context.ts`).
+ * ⚠ FOR T12: the tripwire's subject — "the driver's residual" — is `runV2TurnBody`.
  */
 export async function runV2Turn(agentId: string): Promise<void> {
+  const turnCtx = openTurnContext(agentId);
+  try {
+    await runV2TurnBody(agentId, turnCtx);
+  } finally {
+    endTurnContext(agentId);
+  }
+}
+
+async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<void> {
   const db = getDb();
 
   const agent = db.prepare('SELECT * FROM agents WHERE id = ?').get(agentId) as
@@ -1060,7 +1076,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // producer and read straight off the trigger row here; the `??` fallback below (at the
   // pickup stamp) is what covers a row no door ever resolved for. `chosenConvKey` SURVIVES
   // beside it because four other tables are still keyed by the string — see
-  // `currentTurnConversationId`'s note in turn-state.ts.
+  // `TurnContext.conversationId`'s note in turn-context.ts.
   let chosenConversationId: string | null = isHumanContinuation
     ? (continuation!.conversationId ?? null)
     : (waitingConvs[0]?.oldest?.conversation_id ?? null);
@@ -1080,7 +1096,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // E-C1: publish the conversation this turn serves so recall_recent_thread scopes
   // to it. null on engine/A2A turns (no waiting human) so recall doesn't latch the
   // last human conversation. Cleared when the agent goes idle.
-  currentTurnConvKey.set(agentId, chosenConvKey);
+  turnCtx.convKey = chosenConvKey;
   // The ID half of the same publication is written AFTER the pickup block below, where
   // `chosenConversationId` becomes final. See the note at that write.
   // OPEN-12: trigger on the OLDEST unanswered message in the chosen conversation,
@@ -1092,7 +1108,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // born this turn will carry (the prose copy in lastUserMessageContent stays
   // for display; identity travels as this id).
   const lastUserMessageId: string | null = triggerRow?.id != null ? String(triggerRow.id) : null;
-  currentTurnRoot.set(agentId, lastUserMessageId ? { kind: 'ask', id: lastUserMessageId, sourceMessageId: lastUserMessageId, conversationId: (triggerRow as unknown as { conversation_id?: string | null })?.conversation_id ?? null } : null);
+  turnCtx.root = lastUserMessageId ? { kind: 'ask', id: lastUserMessageId, sourceMessageId: lastUserMessageId, conversationId: (triggerRow as unknown as { conversation_id?: string | null })?.conversation_id ?? null } : null;
   // CLAIM this ask the moment the turn picks it up, so it reads as SERVED regardless of how
   // this turn ends. The old design only marked a conversation served when the turn
   // delivered a terminal reply (or [no-reply]), so a turn that did real, NON-IDEMPOTENT
@@ -1183,7 +1199,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // SQLite DB). Bail cleanly instead of running a DUPLICATE turn on the same
       // message. Single-process production never hits this (changes is always 1); this
       // only guards the multi-process case (e.g. stray dev `tsx watch` processes). The
-      // idle status clears the turn-state maps; the other process serves the message.
+      // turn's own `finally` clears its context; the other process serves the message.
       logger.warn('v2: pickup claim lost, another process already claimed this trigger; skipping to avoid a duplicate turn', { agentId, rowid: triggerRow.rowid, workId: triggerWorkId }, agentId);
       setAgentStatus(agentId, 'idle');
       return;
@@ -1199,7 +1215,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // missing and answered again (dojo `8bc7d7a`'s re-answer ghost; 23.6% of user rows on the dev
   // body carry no `conversation_id`). MOVED, not doubled — a second `.set()` is two owners of
   // one fact. Pinned by integration.test.ts, "STRIP-3 … (b)".
-  currentTurnConversationId.set(agentId, chosenConversationId);
+  turnCtx.conversationId = chosenConversationId;
 
   // N-1 (comms-audit): re-arm a stranded human ask. The pickup claim above marks the ask
   // served so a concurrent turn can't double-serve it. If THIS turn then aborts BEFORE
@@ -1484,7 +1500,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   if (terminalWakeDrivesTurn && terminalWakeA2A) {
     // P1 lineage spine: an A2A wake turn's root is its thread.
     const twThread = (terminalWakeA2A as unknown as { a2a_thread_id?: string | null }).a2a_thread_id;
-    if (twThread) currentTurnRoot.set(agentId, { kind: 'a2a', id: String(twThread), sourceMessageId: null });
+    if (twThread) turnCtx.root = { kind: 'a2a', id: String(twThread), sourceMessageId: null };
   }
 
   // ── Engine turn classification (OPEN-11) ──
@@ -1579,15 +1595,15 @@ export async function runV2Turn(agentId: string): Promise<void> {
     // and the served task's kind/origin are published to turn-state so lanes
     // (reminder delivery) can read what this turn's output belongs to.
     if (engineClaimed) {
-      currentTurnRoot.set(agentId, pendingEngineEvent.runId
+      turnCtx.root = pendingEngineEvent.runId
         ? { kind: 'occurrence', id: pendingEngineEvent.runId, sourceMessageId: null }
-        : { kind: 'engine', id: pendingEngineEvent.id, sourceMessageId: null });
+        : { kind: 'engine', id: pendingEngineEvent.id, sourceMessageId: null };
       if (pendingEngineEvent.taskId) {
         try {
           // PHASE-6 T0D: the map used to be set even when this read came back
           // EMPTY, publishing a dead task id to five readers — `stale-work-ids.ts`.
           const served = resolveServedWork(pendingEngineEvent.taskId, pendingEngineEvent.runId);
-          if (served) currentTurnServedWork.set(agentId, served);
+          if (served) turnCtx.servedWork = served;
           else {
             logger.warn('v2: the engine event names a task row that is not there; serving no work this turn', {
               agentId, taskId: pendingEngineEvent.taskId,
@@ -1611,13 +1627,10 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // status with it so the composer can stay quiet on pure A2A turns (unless
   // wordy mode is on). The DB status was already set to 'working' at turn start;
   // this is a broadcast-only update and the 30s heartbeat reads the same map.
-  currentTurnKind.set(agentId, isA2ATurn ? 'a2a' : 'user');
-  // C26: start each turn with a clean receipt register so receipts only ever
-  // count for the turn that produced them (a later poked turn keeps the
-  // prose-evidence path). Cleared again on idle at the boundary above.
-  clearTurnReceipts(agentId);
-  // RC-3: start each turn with a fresh recall budget (per-turn doom-loop brake).
-  clearRecallBudget(agentId);
+  turnCtx.kind = isA2ATurn ? 'a2a' : 'user';
+  // PHASE-6 T1: the two turn-entry clears here (`clearTurnReceipts`, `clearRecallBudget`)
+  // are gone with their functions — C26's receipt register and RC-3's recall brake start
+  // clean because the bag is new, not because two calls were remembered.
   broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: isA2ATurn ? 'a2a' : 'user', userFacing: !!chosenConvKey });
 
   // Enforcer arms ONLY on A2A turns AND only for reply-needed intents. On a user
@@ -1666,9 +1679,9 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // T-4: publish this turn's iMessage recipient (the human counterparty) so an
   // explicit no-recipient imessage_send / image_create reply goes to THIS person.
   if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {
-    currentTurnImRecipient.set(agentId, counterparty.senderId);
+    turnCtx.imRecipient = counterparty.senderId;
   } else {
-    currentTurnImRecipient.delete(agentId);
+    turnCtx.imRecipient = undefined;
   }
 
   // RC-10: owner-channel affinity, resolved ONCE here so the SAME value drives both the
@@ -1726,7 +1739,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
   // longer resets when history is cleared, which is the honest reading of "turn 41 of this
   // agent's life".
   const turnNumber: number = (() => {
-    const root = currentTurnRoot.get(agentId) ?? null;
+    const root = turnCtx.root ?? null;
     const kind: 'user' | 'a2a' | 'engine' | null =
       isEngineTurn ? 'engine' : ((isA2ATurn || terminalWakeA2A) ? 'a2a' : (chosenConvKey ? 'user' : null));
     const subjectKind = isEngineTurn ? 'engine_event' as const
@@ -1738,7 +1751,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       : terminalWakeA2A ? terminalWakeA2A.threadId
       : isA2ATurn ? ((terminalWakeA2A as unknown as { a2a_thread_id?: string | null } | null)?.a2a_thread_id ?? null)
       : chosenConvKey;
-    currentModelRequestId.set(agentId, `req_${uuidv4().replace(/-/g, '').slice(0, 16)}`);
+    turnCtx.modelRequestId = `req_${uuidv4().replace(/-/g, '').slice(0, 16)}`;
     return startTurn({
       agentId, kind, subjectKind, subjectId,
       // P8: typed spoken-stream lane on the record.
@@ -1749,8 +1762,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
   })();
   // RC-12: publish the turn number so writeToolReceipt can stamp turn_number on
   // engine receipts without threading it through every send executor. Cleared at
-  // the turn boundary (idle), like currentTurnConvKey.
-  currentTurnNumber.set(agentId, turnNumber);
+  // the turn's `finally`, like every other fact in the bag.
+  turnCtx.turnNumber = turnNumber;
   // S3 (PHASE-3 T3): restart rehydration, at the TURN, once per agent per process.
   // `memory/assembler.ts:1262-1281` (pre-repin) did this from inside the assembly read path
   // on EVERY assembly — a mutation on a read, and one that re-broke the cached tools prefix
@@ -2107,7 +2120,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           {
             agentId, tool: 'engine-ack', channel: 'imessage',
             recipientId: counterparty.senderId,
-            conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+            conversationId: turnCtx.root?.conversationId ?? null,
           },
           async () => sendResponseViaIMessage(text, agentId, counterparty.senderId!, false),
         );
@@ -2120,7 +2133,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             {
               agentId, tool: 'engine-ack', channel: 'phone',
               recipientId: state.inboundContext.phoneFromNumber ?? counterparty.senderId ?? null,
-              conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+              conversationId: turnCtx.root?.conversationId ?? null,
             },
             () => session.queueAgentSay(text),
           );
@@ -2135,7 +2148,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           await withOutboundAsync(
             {
               agentId, tool: 'engine-ack', channel: 'sms', recipientId: smsTo,
-              conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+              conversationId: turnCtx.root?.conversationId ?? null,
             },
             () => sendSms(smsTo, text, fromNumber),
           );
@@ -3167,8 +3180,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // (non-wordy) mode and buries the rest of the turn's output as inter-agent
       // traffic (production transcript 2026-07-09).
       const preModelInterAgent = counterparty.kind !== 'user' && (isA2ATurn || counterparty.kind === 'agent' || (mostRecentIsA2A && !hasUnansweredUser));
-      if (preModelInterAgent && currentTurnKind.get(agentId) !== 'a2a') {
-        currentTurnKind.set(agentId, 'a2a');
+      if (preModelInterAgent && turnCtx.kind !== 'a2a') {
+        turnCtx.kind = 'a2a';
         broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: 'a2a', userFacing: !!chosenConvKey });
       }
       const ctx = await assembleContext(agentId, contextModelId, sharedTurnContext);
@@ -3890,7 +3903,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // window; quoting a row the tail already carries would duplicate it.) When the
           // echo writer dies the predicate stops matching and the lane carries the job
           // whole — nothing else about this site changes.
-          const pendConvId = currentTurnRoot.get(agentId)?.conversationId ?? null;
+          const pendConvId = turnCtx.root?.conversationId ?? null;
           mctx.deliveriesLane = renderDeliveriesLaneMessage({
             agentId,
             conversationId: pendConvId,
@@ -4512,8 +4525,8 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // chat live and then vanished on refresh. Re-stamp the turn kind HERE, from
       // the SAME predicate the persistence uses, before any chunk is emitted (this
       // point precedes the model call); the heartbeat re-broadcasts the same map.
-      if (interAgentTurn && currentTurnKind.get(agentId) !== 'a2a') {
-        currentTurnKind.set(agentId, 'a2a');
+      if (interAgentTurn && turnCtx.kind !== 'a2a') {
+        turnCtx.kind = 'a2a';
         broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: 'a2a', userFacing: !!chosenConvKey });
       }
       // [DIAGNOSTIC] phantom-waiting-user: an A2A poke that should be a background turn
@@ -5258,7 +5271,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         persistedContent &&
         persistedContent.trim().length <= REDUNDANT_CLOSEOUT_MAX_CHARS &&
         result.toolCalls.length === 0 &&
-        turnDeliveredToPerson(agentId, turnNumber, currentTurnRoot.get(agentId)?.conversationId ?? null)
+        turnDeliveredToPerson(agentId, turnNumber, turnCtx.root?.conversationId ?? null)
       ) {
         persistedContent = null;
         broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
@@ -6241,7 +6254,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // never owed the old notice and is not owed a ghost record either.
           if (handoffAttempts >= MAX_FLOOR_STEER_ATTEMPTS && !counterpartyIsAgentSender
               && !turnDeliveredToPerson(agentId, turnNumber, chosenConversationId ?? null)) {
-            const root = currentTurnRoot.get(agentId);
+            const root = turnCtx.root;
             recordFloorGhost({
               agentId, turnNumber, floor: 'a2a-handoff-floor',
               workId: root?.kind === 'ask' ? askIdForMessage(root.id) : null,
@@ -6273,7 +6286,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         // verified on the answered edge. If it still says nothing, that is a system fault and
         // it is recorded as one, in the platform's own voice, against the occurrence row.
         {
-          const servedRem = currentTurnServedWork.get(agentId);
+          const servedRem = turnCtx.servedWork;
           if (
             servedRem?.taskKind === 'reminder' &&
             (!persistedContent || persistedContent.trim().length === 0) &&
@@ -6805,7 +6818,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           //     itself is rooted in the owner's own text conversation (the
           //     owner texted us; replying in-channel is the conversation).
           if ((tc.name === 'imessage_send' || tc.name === 'sms_send')) {
-            const served = currentTurnServedWork.get(agentId);
+            const served = turnCtx.servedWork;
             const a = (tc.arguments ?? {}) as Record<string, unknown>;
             const recip = String(a.recipient ?? a.to ?? '').trim();
             const recipIsOwner = recip ? recipientIsChannelOwner(tc.name, recip) : false;
@@ -7887,7 +7900,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         if (trackerWriteInThisIter) {
           clearUntrackedWorkAcrossTurns(agentId);
         } else if (nonTrackerInThisIter > 0) {
-          const turnConv = currentTurnConvKey.get(agentId);
+          const turnConv = turnCtx.convKey;
           if (typeof turnConv === 'string' && turnConv.length > 0) {
             accumulateUntrackedWorkAcrossTurns(agentId, turnConv, nonTrackerInThisIter);
           }
@@ -7928,7 +7941,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // per-turn count on a2a/engine turns (conv_key null). The per-turn count is a
       // subset of the cross-turn total on a human turn, so Math.max is just defensive.
       // The >3 NUDGE tier stays per-turn (it is a within-turn model-choice assist).
-      const turnConvForFloor = currentTurnConvKey.get(agentId);
+      const turnConvForFloor = turnCtx.convKey;
       const effectiveUntracked =
         typeof turnConvForFloor === 'string' && turnConvForFloor.length > 0
           ? Math.max(state.nonTrackerToolCalls, getUntrackedWorkAcrossTurns(agentId, turnConvForFloor))
@@ -8936,7 +8949,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           recordedId(recordHeld(
             {
               agentId, tool: 'auto-route', channel: 'dashboard',
-              conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+              conversationId: turnCtx.root?.conversationId ?? null,
             },
             // The held row carries the ROOT READ that produced it, not a restatement of the
             // symptom: "no affirmative root" is the rule, and a reader of this ledger can now
@@ -8972,7 +8985,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
             {
               agentId, tool: 'auto-route', channel: 'imessage',
               recipientId: imRecipient ?? null,
-              conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+              conversationId: turnCtx.root?.conversationId ?? null,
             },
             async () => {
               const d = sendResponseViaIMessage(replyText, agentId, imRecipient, ownerBound);
@@ -9027,7 +9040,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               {
                 agentId, tool: 'auto-route', channel: 'teams',
                 recipientId: state.inboundContext.chatId, threadRoot: state.inboundContext.chatId,
-                conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+                conversationId: turnCtx.root?.conversationId ?? null,
               },
               () => executeTool(agentId, tc),
             );
@@ -9072,7 +9085,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 agentId, tool: 'auto-route', channel: 'email',
                 recipientId: state.inboundContext.recipientAddress ?? null,
                 provider: state.inboundContext.emailService ?? null,
-                conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+                conversationId: turnCtx.root?.conversationId ?? null,
               },
               () => executeTool(agentId, tc),
             );
@@ -9137,7 +9150,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                   {
                     agentId, tool: 'auto-route', channel: 'phone',
                     recipientId: state.inboundContext.phoneFromNumber ?? null,
-                    conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+                    conversationId: turnCtx.root?.conversationId ?? null,
                   },
                   () => session.queueAgentSay(tail),
                 );
@@ -9157,7 +9170,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
                 {
                   agentId, tool: 'auto-route', channel: 'phone',
                   recipientId: state.inboundContext.phoneFromNumber ?? null,
-                  conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+                  conversationId: turnCtx.root?.conversationId ?? null,
                 },
                 () => session.queueAgentSay(phoneText),
               );
@@ -9192,7 +9205,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
               const r = await withOutboundAsync(
                 {
                   agentId, tool: 'auto-route', channel: 'sms', recipientId: smsTo,
-                  conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+                  conversationId: turnCtx.root?.conversationId ?? null,
                 },
                 async () => {
                   const res = await sendSms(smsTo, smsText, fromNumber);
@@ -9570,7 +9583,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // the finalize log so the two halves of the answered edge are readable together,
       // and a missing receipt beside a set key is a visible fact rather than a silence.
       const terminalDeliveryId = answerRow
-        ? terminalDeliveryForTurn(agentId, turnNumber, currentTurnRoot.get(agentId)?.conversationId ?? null)
+        ? terminalDeliveryForTurn(agentId, turnNumber, turnCtx.root?.conversationId ?? null)
         : null;
       // PHASE-2 T4: "did this turn park?" was a LIKE over a conv_key namespace, which is why
       // it had to be time-bounded and could match another turn's park. The same fact is now a
@@ -9624,7 +9637,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
         if (counterparty.kind === 'user' && !isA2ATurn && !isEngineTurn) {
           pauseDriveWorkWaitingOnOwner(agentId, turnNumber, {
             transitionedThisTurn: state.trackerStatusUpdatedThisTurn,
-            conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+            conversationId: turnCtx.root?.conversationId ?? null,
             // SCOPE: only work THIS TURN touched. A backlog item nobody moved belongs to
             // the poke ladder ("an in_progress task does not EVER just get ignored"), and
             // this window is what keeps the disposition from ever reaching it.
@@ -9641,15 +9654,22 @@ export async function runV2Turn(agentId: string): Promise<void> {
       // touches, so the model reads state instead of guessing it.
       try {
         const { stampTasksAtTurnFinalize } = await import('../../tracker/task-stamps.js');
-        const stampRoot = currentTurnRoot.get(agentId);
+        const stampRoot = turnCtx.root;
         stampTasksAtTurnFinalize({
           agentId, turnNumber, outcome,
           answerMessageId: answerRow?.id ?? null,
           rootSourceMessageId: stampRoot?.sourceMessageId ?? null,
           convKey: chosenConvKey ?? null,
-          servedTaskId: currentTurnServedWork.get(agentId)?.taskId ?? null,
+          servedTaskId: turnCtx.servedWork?.taskId ?? null,
         });
-      } catch { /* stamps are best-effort; never block finalize */ }
+      } catch (err) {
+        // PHASE-6 T1: was a BARE `catch {}`. The call used to be handed two nulls, so it
+        // had nothing to fail at; it does real work now. Best-effort decides whether to
+        // CONTINUE, never whether to be findable.
+        logger.warn('v2: ticket stamps at turn finalize failed (non-fatal, the turn record is already written)', {
+          agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
+        }, agentId);
+      }
       // Strike-0 receipt close (2026-07-22, the boundary wrap-up in its final
       // form): a task CREATED THIS TURN whose turn is ending answered with a
       // TANGIBLE delivery on record is finished work whose bookkeeping the

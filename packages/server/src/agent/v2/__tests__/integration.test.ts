@@ -269,22 +269,68 @@ vi.mock('../../../router/selector.js', () => ({
 // (injuries, 4xx/5xx classification), so without this mock every test run
 // pollutes the dev box's production log with fake failures. Mirrors the
 // real export surface (createLogger/setLogLevel/setLogBroadcast/readLogEntries).
+// PHASE-6 T1: the warn channel is a SHARED spy rather than a fresh `vi.fn()` per
+// `createLogger()` call, because one clause needs to prove a swallow became loud —
+// a bare `catch {}` in teardown was replaced by a logged one, and an unobservable
+// logger cannot tell the difference between "logged" and "still swallowed".
+const loggerWarnSpy = vi.fn();
+const loggerErrorSpy = vi.fn();
 vi.mock('../../../logger.js', () => ({
   createLogger: () => ({
     debug: vi.fn(),
     info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
+    warn: (...args: unknown[]) => loggerWarnSpy(...args),
+    error: (...args: unknown[]) => loggerErrorSpy(...args),
   }),
   setLogLevel: vi.fn(),
   setLogBroadcast: vi.fn(),
   readLogEntries: () => [],
 }));
 
+// ════════════════════════════════════════════════════════════════════════════════
+// PHASE-6 T1 — THE FOUR TEARDOWN READS, OBSERVED AT THE ARGUMENT.
+//
+// Both mocks below are PASS-THROUGHS: the real function still runs, so nothing in
+// this file's other 90 tests changes behaviour. They exist to record WHAT THE TURN'S
+// `finally` HANDED THEM, which is the only place the defect is visible — every one
+// of the four reads degrades through `?.` / `?? null`, so a wrong value produces no
+// error, no log line and no failing query. It produces a silently narrower result.
+// ════════════════════════════════════════════════════════════════════════════════
+const stampTasksSpy = vi.fn();
+vi.mock('../../../tracker/task-stamps.js', async () => {
+  const actual = await vi.importActual<typeof import('../../../tracker/task-stamps.js')>(
+    '../../../tracker/task-stamps.js',
+  );
+  return {
+    ...actual,
+    stampTasksAtTurnFinalize: (input: Parameters<typeof actual.stampTasksAtTurnFinalize>[0]) => {
+      stampTasksSpy(input);
+      return actual.stampTasksAtTurnFinalize(input);
+    },
+  };
+});
+
+const terminalDeliveryForTurnSpy = vi.fn();
+const pauseDriveWorkWaitingOnOwnerSpy = vi.fn();
+vi.mock('../answered-edge.js', async () => {
+  const actual = await vi.importActual<typeof import('../answered-edge.js')>('../answered-edge.js');
+  return {
+    ...actual,
+    terminalDeliveryForTurn: (...args: Parameters<typeof actual.terminalDeliveryForTurn>) => {
+      terminalDeliveryForTurnSpy(...args);
+      return actual.terminalDeliveryForTurn(...args);
+    },
+    pauseDriveWorkWaitingOnOwner: (...args: Parameters<typeof actual.pauseDriveWorkWaitingOnOwner>) => {
+      pauseDriveWorkWaitingOnOwnerSpy(...args);
+      return actual.pauseDriveWorkWaitingOnOwner(...args);
+    },
+  };
+});
+
 // Now import the module under test (after mocks are set up)
 import { runV2Turn } from '../loop.js';
 import { stoppedAgents, recoveryRunStreak, pendingWakeups } from '../../shared-state.js';
-import { currentTurnConversationId } from '../../turn-state.js';
+import { turnContext } from '../../turn-context.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { claimAsk, askIdForMessage } from '../../../work/store.js';
@@ -386,6 +432,11 @@ beforeEach(() => {
   stoppedAgents.clear();
   recoveryRunStreak.clear();
   pendingWakeups.clear();
+  stampTasksSpy.mockClear();
+  terminalDeliveryForTurnSpy.mockClear();
+  pauseDriveWorkWaitingOnOwnerSpy.mockClear();
+  loggerWarnSpy.mockClear();
+  loggerErrorSpy.mockClear();
   scoreQueryMock.mockClear();
   selectModelMock.mockClear();
   scoreQueryMock.mockImplementation(() => ({ tier: 'standard', scores: [], rawScore: 0, confidence: 0.5, latencyMs: 0 }));
@@ -1906,7 +1957,7 @@ describe('STRIP-3: the turn hands down conversation IDENTITY, never a conversati
     // the agent goes idle, so reading it after the turn would measure nothing.
     const seenAtAssembly: Array<string | null | undefined> = [];
     assembleContextMock.mockImplementation(async () => {
-      seenAtAssembly.push(currentTurnConversationId.get('primary'));
+      seenAtAssembly.push(turnContext('primary')?.conversationId);
       return { systemPrompt: '<system prompt>', messages: [{ role: 'user', content: 'hello' }] };
     });
     callModelSpy.mockResolvedValue({
@@ -1969,5 +2020,189 @@ describe('STRIP-3: the turn hands down conversation IDENTITY, never a conversati
     expect(callModelSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
     expect(messagesOfCall(2)).toContain('[Engine record: you again ended with [no-reply]');
     expect(messagesOfCall(2)).toContain('The launch is on the 14th');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// PHASE-6 T1 — `TurnContext`: the turn owns its facts, and clears them in its
+// `finally` rather than as a side effect of the idle status write.
+//
+// THE DEFECT THESE CLAUSES FAIL ON, AT `8e8106f`. Ten module-level maps held the
+// turn's facts; ONE statement deleted all ten; that statement lived inside
+// `setAgentStatus(agentId, 'idle')`. The ordinary end-of-turn idle write sits INSIDE
+// the main `try`, and the `finally` that finalizes the turn record opens after it —
+// so on EVERY turn, not on five edge cases, teardown read facts that had already
+// been deleted, and every one of those reads degrades silently through `?.`/`?? null`.
+//
+// The observable consequences, each its own clause below:
+//   * `stampTasksAtTurnFinalize` — THE DECLARED ONE STAMPING POINT — ran with two of
+//     its four tie predicates matched against the empty string on every turn
+//     (`w.source_message_id = ''`, `w.id = ''`), so a ticket tied to the turn only by
+//     the ask it was born from was never stamped.
+//   * `terminalDeliveryForTurn` and `turnDeliveredToPerson` ran UNSCOPED where they
+//     were written to be scoped to the turn's own conversation, so the receipt behind
+//     `result_delivery_id` — and the pause disposition's own gate — could be satisfied
+//     by a delivery that went to somebody else.
+//
+// These clauses observe the ARGUMENT, because that is where the defect is: the queries
+// still run, still succeed, and still return a defensible-looking answer.
+// ════════════════════════════════════════════════════════════════════════════════
+describe('PHASE-6 T1: the turn owns its facts and clears them in its finally', () => {
+  const answerOnce = (text = 'done'): void => {
+    callModelSpy.mockResolvedValue({
+      content: text, toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
+    });
+  };
+
+  it('THE ORDINARY TURN: the one stamping point receives THIS turn\'s root, not null', async () => {
+    answerOnce();
+    await runV2Turn('primary');
+
+    // POSITIVE CONTROL: teardown reached the stamping point at all. Without this a
+    // green below could mean "finalize never ran", which is the opposite finding.
+    expect(stampTasksSpy).toHaveBeenCalledTimes(1);
+    const input = stampTasksSpy.mock.calls[0][0] as { rootSourceMessageId: string | null; servedTaskId: string | null; convKey: string | null };
+
+    // THE CLAUSE. `rootSourceMessageId` is the ask this turn is serving. It was `null`
+    // on every turn the engine has ever run, which made `w.source_message_id = ''` —
+    // one of the four ways a ticket ties to its turn — permanently unmatched.
+    expect(input.rootSourceMessageId).toBe('msg-user-1');
+  });
+
+  it('THE ORDINARY TURN: a ticket tied ONLY by its source message IS stamped', async () => {
+    // The end-to-end shape of the clause above, through the real query. This ticket
+    // shares no conv_key, no origin_turn and no id with the turn — its only tie is the
+    // ask it was born from, which is exactly the tie the null erased.
+    const db = mockDb.current!;
+    db.prepare(
+      `INSERT INTO work (id, agent_id, kind, requester, root_kind, root_id, state, intent,
+                         wakes, closes_thread, title, source_message_id, opened_at, updated_at)
+       VALUES ('w-tied-by-source', 'primary', 'task', 'owner', 'tracker', 'w-tied-by-source', 'claimed',
+               'action', 1, 0, 'tied by its ask', 'msg-user-1',
+               unixepoch('now')*1000, unixepoch('now')*1000)`,
+    ).run();
+
+    answerOnce();
+    await runV2Turn('primary');
+
+    // The stamp's durable sink is `work_events` (PHASE-2 T8b moved it off the row's
+    // columns), so that is what the clause reads — a test that asserted the legacy
+    // columns would go green on a tree where the stamp had been deleted outright.
+    const stamped = db.prepare(
+      `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'activity'`,
+    ).all('w-tied-by-source') as Array<{ payload: string }>;
+    expect(stamped).toHaveLength(1);
+    expect(JSON.parse(stamped[0].payload)).toMatchObject({ turn: 1, outcome: 'answered' });
+  });
+
+  it('THE ORDINARY TURN: the terminal-delivery lookup is scoped to the turn\'s own conversation', async () => {
+    answerOnce();
+    await runV2Turn('primary');
+
+    // POSITIVE CONTROL: the lookup ran from teardown.
+    expect(terminalDeliveryForTurnSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
+    // THE CLAUSE: every teardown call names the conversation. `null` here is not a
+    // narrower query, it is a WIDER one — `answered-edge.ts` swaps `conversation_id = ?`
+    // for `conversation_id IS NOT NULL`, so the receipt behind `result_delivery_id`
+    // could be a delivery to a different person on the same turn.
+    const conversationArgs = terminalDeliveryForTurnSpy.mock.calls.map((c) => c[2]);
+    expect(conversationArgs).toContain('conv-primary');
+  });
+
+  it('THE ORDINARY TURN: the pause disposition is told which conversation was served', async () => {
+    answerOnce();
+    await runV2Turn('primary');
+
+    expect(pauseDriveWorkWaitingOnOwnerSpy).toHaveBeenCalled();
+    const opts = pauseDriveWorkWaitingOnOwnerSpy.mock.calls[0][2] as { conversationId?: string | null };
+    // THE CLAUSE: the disposition's own gate ("did this turn deliver to the person")
+    // and the `evidenceRef` it stamps on the pause both key on this value.
+    expect(opts.conversationId).toBe('conv-primary');
+  });
+
+  it('A `break` EXIT still reaches teardown with the turn\'s root intact', async () => {
+    // The stop-signal break at the top of the loop is one of the five mid-loop `break`
+    // exits research 22 named. It calls `setAgentStatus(agentId, 'idle')` and falls
+    // through to finalize — so pre-fix it deleted the turn's facts on its way past the
+    // very block that reads them, exactly like the ordinary path.
+    let callCount = 0;
+    callModelSpy.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) {
+        stoppedAgents.add('primary');
+        return {
+          content: '', toolCalls: [{ id: 'tc1', name: 'file_read', arguments: { path: '/x' } }],
+          inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
+        };
+      }
+      return { content: 'unreachable', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
+    });
+    executeToolSpy.mockResolvedValue({ toolCallId: 'tc1', name: 'file_read', content: 'x', isError: false });
+
+    await runV2Turn('primary');
+
+    expect(callModelSpy).toHaveBeenCalledTimes(1);   // positive control: the break fired
+    expect(stampTasksSpy).toHaveBeenCalledTimes(1);  // positive control: teardown ran
+    const input = stampTasksSpy.mock.calls[0][0] as { rootSourceMessageId: string | null };
+    expect(input.rootSourceMessageId).toBe('msg-user-1');
+  });
+
+  it('A `return` EXIT INSIDE THE MAIN `try` RUNS TEARDOWN — and it too must see the root', async () => {
+    // ⚠ A CORRECTION TO THIS TASK'S OWN PINNED GROUND. The plan splits the ten idle
+    // writes into "5 followed by `break` (reach teardown)" and "4 followed by `return`
+    // (never reach teardown)". Two of those four — the stop and preempt returns inside
+    // the model call's own catch — sit INSIDE the main `try`, so their `return` runs the
+    // `finally`. They belong with the `break` family, not with the exits that need
+    // nothing from teardown. Verified with the compiler's own parser, not by eye.
+    callModelSpy.mockImplementation(async () => {
+      stoppedAgents.add('primary');
+      throw new Error('stream aborted');
+    });
+
+    await runV2Turn('primary');
+
+    // POSITIVE CONTROL: teardown ran on a path the plan said never reaches it.
+    expect(stampTasksSpy).toHaveBeenCalledTimes(1);
+    const input = stampTasksSpy.mock.calls[0][0] as { rootSourceMessageId: string | null };
+    expect(input.rootSourceMessageId).toBe('msg-user-1');
+  });
+
+  it('NO LEAK: a turn that THREW leaves nothing of itself behind', async () => {
+    // The mirror defect of the four reads above, and it comes from the same coupling.
+    // `setAgentStatus` only clears on `'idle'`, and the recovery cascade sets `'error'`
+    // — so a turn that threw left every one of its facts standing for the next turn, or
+    // for a PEER, to read. `currentTurnKind` is the one a peer reads by name: an agent
+    // whose turn died still answered "yes, mid-conversation with a human" to
+    // `send_to_agent`'s busy check, indefinitely.
+    callModelSpy.mockImplementation(async () => { throw new Error('provider exploded'); });
+
+    await runV2Turn('primary');
+
+    // POSITIVE CONTROL: the turn really did run far enough to publish its kind.
+    expect(callModelSpy).toHaveBeenCalled();
+    // THE CLAUSE.
+    expect(turnContext('primary')).toBeUndefined();
+  });
+
+  it('NO LEAK: a clean turn leaves nothing of itself behind (control for the clause above)', async () => {
+    answerOnce();
+    await runV2Turn('primary');
+    expect(turnContext('primary')).toBeUndefined();
+  });
+
+  it('THE SWALLOW BECOMES LOUD: a throwing stamp is recorded, not discarded', async () => {
+    // The stamp call was wrapped in `catch { /* stamps are best-effort */ }` — a bare
+    // catch with no binding, so a throw from the dynamic import or the call itself left
+    // no trace at all. Best-effort is a policy about whether to CONTINUE; it is not a
+    // reason to be unable to find out. `stampTasksAtTurnFinalize` already swallows and
+    // logs its own internal failures, so this outer catch was the second swallow of one
+    // job and the only one that was silent.
+    stampTasksSpy.mockImplementationOnce(() => { throw new Error('stamp module exploded'); });
+    answerOnce();
+
+    await runV2Turn('primary');
+
+    const warned = loggerWarnSpy.mock.calls.some((c) => String(c[0]).includes('ticket stamps'));
+    expect(warned).toBe(true);
   });
 });

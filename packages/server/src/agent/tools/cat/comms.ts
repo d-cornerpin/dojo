@@ -501,7 +501,7 @@ export const commsHandlers: ToolHandlerMap = {
     // X", it could deliver the owner's message to a contact who happened to
     // text moments earlier (third-party delivery of owner-directed content).
     // A genuine iMessage-reply turn always publishes its counterparty to
-    // currentTurnImRecipient, so turn-scoped resolution keeps every real reply
+    // its `TurnContext`, so turn-scoped resolution keeps every real reply
     // working while refusing to guess on a proactive send.
     const inboundSender = getTurnScopedImRecipient(agentId);
     let switchedFromInbound: string | null = null;

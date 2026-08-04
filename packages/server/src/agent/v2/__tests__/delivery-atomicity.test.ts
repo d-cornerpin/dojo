@@ -43,7 +43,7 @@ vi.mock('../../../db/connection.js', async () => {
 
 import { runMigrations } from '../../../db/migrations.js';
 import { recordDelivery } from '../deliveries.js';
-import { currentTurnNumber, currentTurnRoot } from '../../turn-state.js';
+import { openTurnContext, endTurnContext, turnContext } from '../../turn-context.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn } from '../../../work/store.js';
 import { insertMessage } from '../../../memory/message-store.js';
 
@@ -93,13 +93,16 @@ beforeEach(() => {
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)
      VALUES ('conv-dash', ?, 'dashboard', 'owner')`,
   ).run(AGENT);
-  currentTurnNumber.set(AGENT, TURN);
+  // PHASE-6 T1: the turn's facts are one bag now, opened by the turn. These fixtures
+  // stand in for a live turn, so they open one and set the same facts on it.
+  endTurnContext(AGENT);
+  openTurnContext(AGENT).turnNumber = TURN;
 });
 
 describe('T2 flagship: recordDelivery is ONE unit — the row and the close, or neither', () => {
   it('POSITIVE: the happy path is unchanged — one delivery row, the ask done and pointing at it', () => {
     const workId = seedClaimedAsk('m-ok');
-    currentTurnRoot.set(AGENT, {
+    turnContext(AGENT)!.root = ({
       kind: 'ask', id: workId, sourceMessageId: 'm-ok', conversationId: 'conv-dash',
     });
 
@@ -120,7 +123,7 @@ describe('T2 flagship: recordDelivery is ONE unit — the row and the close, or 
 
   it('THE DEFECT: when the close half fails, the delivery row is NOT left behind', () => {
     const workId = seedClaimedAsk('m-bad');
-    currentTurnRoot.set(AGENT, {
+    turnContext(AGENT)!.root = ({
       kind: 'ask', id: workId, sourceMessageId: 'm-bad', conversationId: 'conv-dash',
     });
     makeTransitionFail(workId);
@@ -142,7 +145,7 @@ describe('T2 flagship: recordDelivery is ONE unit — the row and the close, or 
 
   it('NEGATIVE CONTROL: an INSERT that fails closes nothing — the unit does not over-reach', () => {
     const workId = seedClaimedAsk('m-insert-fail');
-    currentTurnRoot.set(AGENT, {
+    turnContext(AGENT)!.root = ({
       kind: 'ask', id: workId, sourceMessageId: 'm-insert-fail', conversationId: 'conv-dash',
     });
     mockDb.current!.exec(`
@@ -163,7 +166,7 @@ describe('T2 flagship: recordDelivery is ONE unit — the row and the close, or 
   it('NEGATIVE CONTROL: a delivery answering NO ask still records — one unit, not one requirement', () => {
     // The unit must not make the close a precondition of the record. A send to a third
     // party during someone else's turn closes nothing and is still a delivery.
-    currentTurnRoot.set(AGENT, {
+    turnContext(AGENT)!.root = ({
       kind: 'ask', id: 'no-such-work', sourceMessageId: 'm-none', conversationId: 'conv-dash',
     });
     const out = recordDelivery({

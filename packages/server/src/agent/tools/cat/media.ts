@@ -10,8 +10,8 @@
 // 1. **C13 — the turn-scoped iMessage recipient is captured at tool-CALL time.**
 //    `image_create` reads `getTurnScopedImRecipient(agentId)` into a `const`
 //    BEFORE the deferred delivery IIFE, and the comment at that line says why:
-//    the IIFE waits for the agent to go idle before sending, idle wipes
-//    `currentTurnImRecipient`, and a delivery-time re-read would return null —
+//    the IIFE outlives the turn, the turn's `finally` ends its `TurnContext`
+//    (PHASE-6 T1; it was the idle status write), and a re-read would return null —
 //    so the image would fall to the owner, or under concurrency to a third
 //    party. The capture's POSITION is the guarantee, and it is unchanged.
 // 2. **The delivery IIFE's own shape.** `void (async () => { … })()` runs after
@@ -126,7 +126,7 @@ const handlers = {
     // runtime clears the flag after sending the ack. The background task
     // needs this to know whether to send the finished image back via
     // iMessage when it's done, the flag will be long gone by then.
-    // D10: turn-anchored check. currentTurnImRecipient is set iff THIS turn's
+    // D10: turn-anchored check. `TurnContext.imRecipient` is set iff THIS turn's
     // counterparty is a human iMessage sender (derived from the persisted
     // inbound_meta), which stays correct even when the pending map was already
     // consumed or was overwritten by a newer inbound (the bridge no longer
@@ -141,11 +141,11 @@ const handlers = {
     // goes to the owner (getDefaultSender) on the away-forward branch below,
     // never to a guessed contact.
     //
-    // C13: capture at tool-CALL time. The delivery IIFE waits for the agent to
-    // go idle before sending, and idle wipes currentTurnImRecipient, so a
-    // delivery-time re-read would return null and the image would fall to the
-    // owner (or a third party under concurrency). This const is closed over by
-    // the deferred IIFE and unaffected by idle.
+    // C13: capture at tool-CALL time. The delivery IIFE outlives the turn, and the turn's
+    // `finally` ends its `TurnContext` (PHASE-6 T1 — it was the idle status write; this
+    // capture's POSITION is what made that change safe), so a delivery-time re-read would
+    // return null and the image would fall to the owner (or a third party under
+    // concurrency). This const is closed over by the IIFE and unaffected by the turn end.
     const requesterIMessage = getTurnScopedImRecipient(agentId);
     const triggeredByIMessage = requesterIMessage !== null;
 

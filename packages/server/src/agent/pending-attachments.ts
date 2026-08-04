@@ -24,7 +24,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
-import { currentTurnNumber } from './turn-state.js';
+import { turnContext } from './turn-context.js';
 
 const logger = createLogger('pending-attachments');
 
@@ -56,7 +56,7 @@ function insertArtifact(
   `).run(
     uuidv4(),
     agentId,
-    currentTurnNumber.get(agentId) ?? null,
+    turnContext(agentId)?.turnNumber ?? null,
     kind,
     att.path || null,
     caption,
@@ -228,7 +228,7 @@ export function queueLinkArtifact(agentId: string, url: string, filePath: string
     getDb().prepare(`
       INSERT INTO turn_artifacts (id, agent_id, turn_number, kind, path, caption, payload_json, queued_at, created_at, updated_at)
       VALUES (?, ?, ?, 'link', ?, NULL, ?, datetime('now'), datetime('now'), datetime('now'))
-    `).run(uuidv4(), agentId, currentTurnNumber.get(agentId) ?? null, filePath, JSON.stringify({ url }));
+    `).run(uuidv4(), agentId, turnContext(agentId)?.turnNumber ?? null, filePath, JSON.stringify({ url }));
   } catch (err) {
     logger.warn('queueLinkArtifact failed (backstop will not see this link)', {
       agentId, path: filePath, error: err instanceof Error ? err.message : String(err),

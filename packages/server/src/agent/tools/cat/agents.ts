@@ -45,7 +45,7 @@ import { friendlyDbError, resolveAgentRef, resolveGroupRef, compactListTrailer }
 
 import { auditLog, agentCanSelfCompleteById, toolsLogger as logger } from '../util.js';
 import { activeRuns } from '../../shared-state.js';
-import { currentTurnKind } from '../../turn-state.js';
+import { turnContext } from '../../turn-context.js';
 import { decideApproval } from '../../destructive-gate.js';
 import { findInboundAssignByThread, recordA2AReply } from '../../a2a-replies.js';
 import { getAgentPermissions } from '../../permissions.js';
@@ -472,7 +472,7 @@ export const agentsHandlers: ToolHandlerMap = {
                 // being ignored. Purely informational, delivery is unchanged.
                 try {
                   if (targetCheck && activeRuns.has(targetCheck.id)) {
-                    const humanBusy = currentTurnKind.get(targetCheck.id) === 'user';
+                    const humanBusy = turnContext(targetCheck.id)?.kind === 'user';
                     content += humanBusy
                       ? ` NOTE: "${agentRef}" is currently in a live conversation with their user, so your message is queued and will be served when they are free. Expect a slower reply; do not re-send and do not escalate.`
                       : ` NOTE: "${agentRef}" is currently mid-task, so your message is queued and will be served when they are free. Expect a slower reply; do not re-send.`;

@@ -1,5 +1,26 @@
-// Per-agent turn state shared between the runtime and context assembler.
-// Lives in its own module to avoid circular imports (runtime ↔ assembler).
+// Per-agent state that OUTLIVES a turn, shared between the runtime and the
+// assembler. Lives in its own module to avoid circular imports (runtime ↔ assembler).
+//
+// PHASE-6 T1: the ten PER-TURN maps that used to sit here — `currentTurnKind`,
+// `currentTurnConvKey`, `currentTurnConversationId`, `currentTurnImRecipient`,
+// `currentModelRequestId`, `currentTurnReceipts`, `currentTurnNumber`,
+// `currentTurnRecallTokens`, `currentTurnRoot`, `currentTurnServedWork` — are GONE.
+// They are one object now, `agent/turn-context.ts`, opened by the turn and cleared in
+// its `finally`. They all died in one statement inside `setAgentStatus(…, 'idle')`,
+// which meant the lifetime of the turn's facts was a side effect of a status write:
+// the ordinary end-of-turn idle write happens INSIDE the loop's main `try`, so
+// teardown read them after they had been deleted, on every turn.
+//
+// WHAT IS LEFT HERE IS LEFT ON PURPOSE, and it is the reason this file did not simply
+// become that one. Every carrier below is deliberately WIDER than a turn:
+// `continuationContext` is stashed by one turn expressly so the NEXT turn can consume
+// it; `untrackedWorkAcrossTurns` exists precisely because the per-turn counter
+// resetting every turn was the defect; `forceA2ATurn` / `a2aTurnRetries` /
+// `lastTurnWasA2A` bound how many FUTURE turns an owed A2A may claim. Sweeping any of
+// them into a bag emptied in `finally` would delete state that is supposed to survive.
+// `drainHead` is the precedent for the ones that should go further still: it was
+// retired into a ROW (migration `140_drain_state.sql`, whose header says "A Map dies
+// with the process") with its scope preserved verbatim — see MAX_DRAIN_STUCK below.
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { clearDrainLadder } from './drain-state.js';
@@ -7,120 +28,16 @@ import { clearDrainLadder } from './drain-state.js';
 // Timestamp of when each agent's current turn started, context assembly
 // uses this to exclude user messages that arrived mid-turn so they get
 // a fresh run via the wakeup mechanism.
+//
+// CROSS-TURN ON PURPOSE, and it is the one that looks per-turn and is not: the
+// runtime clears it AFTER the next wakeup is queued (`runtime.ts:847`, `:879`) so the
+// new run sees every message the old turn excluded. Clearing it with the turn would
+// re-open the mid-turn arrival it exists to defer.
 export const turnBoundary = new Map<string, string>();
-
-// Kind of the current turn per agent ('user' | 'a2a'), set once the turn's
-// counterparty is resolved. Threaded onto agent:status='working' broadcasts so
-// the dashboard composer can stay quiet (no thinking dots / stop button) on
-// pure agent-to-agent turns unless wordy mode is on. Cleared when idle.
-export const currentTurnKind = new Map<string, 'user' | 'a2a'>();
-
-// E-C1: the conv_key of the conversation the current turn is serving. Set when the
-// turn picks its trigger; read by recall_recent_thread so it scopes to the CURRENT
-// conversation instead of re-deriving "the most recently stamped conv_key", which
-// on an engine/A2A turn (no human conv stamped this turn) wrongly latched the last
-// HUMAN conversation and bled it into the recall. The map having an entry means a
-// turn is in progress: a non-null value = that human conversation; an explicit null
-// = engine/A2A turn (no human conv) → recall stays on untagged/current-turn rows.
-// No entry = called outside a turn → recall falls back to the legacy heuristic.
-export const currentTurnConvKey = new Map<string, string | null>();
-
-// PHASE-2 T10I: the same fact as `currentTurnConvKey`, as `conversations.id`.
-//
-// ⚠ BOTH MAPS EXIST ON PURPOSE and this is not a duplicate mechanism. `conv_key` did not
-// die at T10I — it died on `messages` only. It is still first-class on FOUR other tables
-// (`work.origin_conv_key`, `turns.conv_key`, `tool_receipts.conv_key`, `summaries.conv_key`),
-// two of which are JOINED to each other on it (`tracker/delivery-evidence.ts` matches a
-// work's `origin_conv_key` against a turn's `conv_key`). So the string above is what those
-// four columns are stamped with, and the id below is what the MESSAGE readers scope on.
-// Deleting either would break the other's consumers; they are two records of one fact only
-// until the four surviving columns are themselves rekeyed, which is not this task's.
-//
-// Same lifecycle contract as the map above, exactly: an entry means a turn is in progress,
-// a non-null value = that human conversation, explicit null = engine/A2A turn, no entry =
-// called outside a turn.
-export const currentTurnConversationId = new Map<string, string | null>();
-
-// T-4: the iMessage address this turn is conversing with (the turn counterparty's
-// senderId, when it's a human iMessage turn). This is the ONLY iMessage
-// recipient state (the racy per-agent last-inbound map was stripped, P5c), so an
-// explicit imessage_send with no recipient, and an image_create reply, go to THIS
-// turn's person, not whoever messaged most recently during a multi-conversation
-// drain (the "reply to a contact sent to the owner" class of bug). Cleared on idle.
-export const currentTurnImRecipient = new Map<string, string>();
-
-/** P6b: the per-turn model-request id, the JOIN between the router's decision
- *  (router_log.request_id) and the spend it produced (cost_records.request_id).
- *  Minted once at turn start, cleared at idle; out-of-turn model calls
- *  (background summarizers and the like) find no entry and record NULL rather
- *  than inheriting a stale turn's id. */
-export const currentModelRequestId = new Map<string, string>();
-
-// C26: per-turn register of engine-written tool_receipts ids. writeToolReceipt
-// (receipts/store.ts) appends the receipt id here the moment it persists the
-// row; the tracker complete gate reads getTurnReceipts(agentId) to demand a
-// verified receipt for a turn that ran a send-class tool. Same-process,
-// deterministic, LLM-free, the same pattern as currentTurnKind above. Cleared
-// at the turn boundary (turn entry + idle) so receipts only ever count for the
-// turn that produced them; a later poked turn keeps the prose-evidence path.
-export const currentTurnReceipts = new Map<string, string[]>();
-
-// RC-12: the outer turn number of the current turn per agent. Set by the loop
-// right after it derives turnNumber (mirrors currentTurnConvKey above); read by
-// writeToolReceipt (receipts/store.ts) so an engine-written receipt can be stamped
-// with the turn that produced it WITHOUT threading turnNumber through every send
-// executor. Cleared at the turn boundary (idle). A missing entry means "outside a
-// turn" and the receipt's turn_number stays NULL.
-export const currentTurnNumber = new Map<string, number>();
-
-// RC-3 item 2: per-turn recall budget. recall_recent_thread / history_search
-// dumps are the doom-loop fuel (a wordy recall returns 12-16k chars, and nothing
-// caps N of them per turn). This map tracks cumulative EMITTED recall/history
-// output tokens for the current turn so the tool dispatcher (agent/tools.ts) can
-// return a short engine notice instead of another dump once the budget is spent.
-// The AgentTurnState (agent/v2/state.ts) is not reachable from the tool executor,
-// so the enforcement counter lives here alongside currentTurnReceipts, the
-// established home for per-turn state the executor must see. Cleared at the turn
-// boundary (turn entry + idle).
-export const currentTurnRecallTokens = new Map<string, number>();
-
-/** Recall/history output tokens accumulated this turn for the agent (0 if none). */
-export function getRecallBudgetUsed(agentId: string): number {
-  return currentTurnRecallTokens.get(agentId) ?? 0;
-}
-
-/** Add `tokens` to the agent's recall budget for this turn; returns the new total. */
-export function addRecallBudgetUsed(agentId: string, tokens: number): number {
-  const next = (currentTurnRecallTokens.get(agentId) ?? 0) + Math.max(0, tokens);
-  currentTurnRecallTokens.set(agentId, next);
-  return next;
-}
-
-/** Clear the current turn's recall budget (turn boundary). */
-export function clearRecallBudget(agentId: string): void {
-  currentTurnRecallTokens.delete(agentId);
-}
-
-/** Append a receipt id to the current turn's register for this agent. */
-export function noteTurnReceipt(agentId: string, receiptId: string): void {
-  const list = currentTurnReceipts.get(agentId);
-  if (list) list.push(receiptId);
-  else currentTurnReceipts.set(agentId, [receiptId]);
-}
-
-/** Receipt ids written this turn for this agent (empty array if none). */
-export function getTurnReceipts(agentId: string): string[] {
-  return currentTurnReceipts.get(agentId) ?? [];
-}
-
-/** Clear the current turn's receipt register (turn boundary). */
-export function clearTurnReceipts(agentId: string): void {
-  currentTurnReceipts.delete(agentId);
-}
 
 // C3: carries the "a human is still waiting on this task" signal across an ENGINE
 // auto-continue (MAX_TOOL_LOOPS / time-budget / emergency-compaction). The continued
-// turn fires with an EMPTY trigger, so it has no waiting human and no triggerRow, 
+// turn fires with an EMPTY trigger, so it has no waiting human and no triggerRow,
 // without this it is classified pureBackgroundTurn, its final answer suppressed as
 // inter-agent chatter, and the reply loses its channel (routes to dashboard). Stashed
 // (the conversation's convKey + counterparty) right before the auto-continue; restored
@@ -128,6 +45,9 @@ export function clearTurnReceipts(agentId: string): void {
 // continuation is used at most once, and if a real human turn arrived in between it is
 // stale and must be dropped so it can never falsely restore on a later background wake.
 // (Import type only, erased at compile, so no runtime cycle with counterparty.ts.)
+//
+// THE CLEAREST REASON THIS FILE STILL EXISTS: it is written by one turn FOR the next
+// one. A per-turn bag cleared in `finally` would delete it between the two.
 export const continuationContext = new Map<string, {
   convKey: string;
   /** PHASE-2 T10I: the conversation as the FK, so the restored turn scopes its recall and
@@ -206,6 +126,9 @@ export function clearServedConversations(agentId: string): void {
 // participate; a2a/engine detours (conv_key null) leave it untouched so an
 // interleaved A2A turn does not clobber the human conversation's running total. Same
 // in-memory, deterministic, LLM-free pattern as the counters above.
+//
+// ⚠ THE CLEAREST "DO NOT PUT THIS IN THE TURN'S BAG": a per-turn counter resetting
+// every turn IS the defect this exists to fix.
 export const untrackedWorkAcrossTurns = new Map<string, { convKey: string; count: number }>();
 
 /** Add `delta` untracked work-tool calls to the agent's cross-turn total for the
@@ -248,55 +171,7 @@ export const lastTurnWasA2A = new Set<string>();
 /** Max dedicated A2A turns spent on one owed reply before the engine gives up. */
 export const MAX_A2A_TURN_RETRIES = 2;
 
-// ── Lanes & lineage spine (P1, 2026-07-21) ──
-// The ROOT of the current turn per agent: the one origin this turn is serving.
-// Set at trigger claim (human pickup / engine-event claim / A2A wake), cleared
-// at idle with the other per-turn maps. Writers of work records (tracker
-// creates, scaffolds) read this to stamp the origin quad, so a task born from
-// an ask carries the ask's identity instead of a prose copy of its text.
-// kind vocabulary matches migration 112: ask / occurrence / a2a / engine.
-export interface TurnRoot {
-  kind: 'ask' | 'occurrence' | 'a2a' | 'engine';
-  id: string;
-  // The message row id of the inbound human ask, when kind === 'ask'.
-  sourceMessageId: string | null;
-  // P6a: the conversation the root belongs to (from the trigger row).
-  conversationId?: string | null;
-}
-export const currentTurnRoot = new Map<string, TurnRoot | null>();
-
-// The origin quad a work-record writer should stamp for work created by this
-// agent right now. kind is the CREATION PATH (who decided to create the record),
-// not the root kind; the source/turn/conv triple ties it to the live turn.
-export interface WorkOrigin {
-  kind: 'user_ask' | 'engine_scaffold' | 'a2a_assign' | 'model' | 'reminder' | 'user_direct' | 'system' | null;
-  sourceMessageId: string | null;
-  turn: number | null;
-  convKey: string | null;
-}
-export function getWorkOriginForAgent(agentId: string, kind: WorkOrigin['kind']): WorkOrigin {
-  const root = currentTurnRoot.get(agentId) ?? null;
-  return {
-    kind,
-    sourceMessageId: root?.sourceMessageId ?? null,
-    turn: currentTurnNumber.get(agentId) ?? null,
-    convKey: currentTurnConvKey.get(agentId) ?? null,
-  };
-}
-
-// The WORK the current engine turn is serving (P1 spine consumer #1): set at
-// the engine-event claim from the trigger row's task/run referent columns,
-// cleared at idle. The reminder-delivery lane reads taskKind to know this
-// turn's output belongs to the owner.
-export interface ServedWork {
-  taskId: string | null;
-  runId: string | null;
-  taskKind: string | null;
-  originConvKey: string | null;
-}
-export const currentTurnServedWork = new Map<string, ServedWork | null>();
-
-// P6a: the tool_use call id currently executing. Read by auditLog (agent/tools.ts)
+// P6a: the tool_use call id currently executing. Read by auditLog (agent/tools/util.ts)
 // and writeToolReceipt (receipts/store.ts) so every execution record carries the
 // exact call that produced it.
 //
@@ -318,6 +193,11 @@ export const currentTurnServedWork = new Map<string, ServedWork | null>();
 // written FOR ANOTHER AGENT from inside this agent's tool call (a spawn, an A2A
 // send) still gets NULL rather than borrowing an identity — the one honest
 // property the per-agent map did have.
+//
+// NOT MOVED TO `turn-context.ts` BY PHASE-6 T1, and the reason is that it is already
+// correctly scoped: its lifetime is one tool EXECUTION, which is narrower than a turn,
+// and async-context is a stronger guarantee than any per-agent registry can give.
+// Moving it for symmetry would trade a correct mechanism for a tidier import list.
 //
 // Outside any tool execution the answer is NULL. That is a change: the map kept
 // the last call's id until the agent went idle, so engine-initiated writes (the

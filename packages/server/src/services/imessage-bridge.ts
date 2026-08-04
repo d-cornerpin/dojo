@@ -14,7 +14,7 @@ import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { handleIMCommand } from './imessage-commands.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { activeRuns, agentStartTimes } from '../agent/shared-state.js';
-import { currentTurnImRecipient } from '../agent/turn-state.js';
+import { turnContext } from '../agent/turn-context.js';
 import { v4 as uuidv4 } from 'uuid';
 import Database from 'better-sqlite3';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
@@ -756,7 +756,7 @@ function maybeSendBusyAck(agentId: string, sender: string): void {
 // commit, rebuilt six times, it was a racy single-value global fully decoupled
 // from turn execution. The requirement it encoded, "a reply routes to the
 // sender of the message it answers", rides structural identity now: the turn's
-// counterparty (currentTurnImRecipient, derived from the persisted
+// counterparty (`TurnContext.imRecipient`, derived from the persisted
 // inbound_meta / conversation row) addresses replies, the D16
 // repliedToCounterpartyThisTurn turn-state suppresses the end-of-turn
 // auto-route after an explicit send, and rows without a served turn ARE the
@@ -765,7 +765,7 @@ function maybeSendBusyAck(agentId: string, sender: string): void {
 // falls to the owner default rather than guessing from a racy global.
 
 /**
- * FA-C1: the TURN-scoped iMessage counterparty ONLY (currentTurnImRecipient),
+ * FA-C1: the TURN-scoped iMessage counterparty ONLY (`TurnContext.imRecipient`),
  * with NO last-inbound fallback (the legacy map is stripped, P5c). Used by the explicit
  * imessage_send default-recipient path and the image_create delivery path, so an
  * omitted recipient can only ever resolve to the person THIS turn is actually
@@ -775,7 +775,7 @@ function maybeSendBusyAck(agentId: string, sender: string): void {
  * content to whatever contact happened to text moments earlier.
  */
 export function getTurnScopedImRecipient(agentId: string): string | null {
-  return currentTurnImRecipient.get(agentId) ?? null;
+  return turnContext(agentId)?.imRecipient ?? null;
 }
 
 // P5c STRIP: the agent-initiated (relay) contact set is gone. Its three

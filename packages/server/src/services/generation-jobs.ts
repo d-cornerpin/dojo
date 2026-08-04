@@ -26,7 +26,7 @@
 // ════════════════════════════════════════
 
 import * as effectFs from '../agent/effects/fs.js';
-import { currentTurnRoot, currentTurnNumber, currentTurnServedWork } from '../agent/turn-state.js';
+import { turnContext } from '../agent/turn-context.js';
 import path from 'node:path';
 import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
@@ -111,10 +111,10 @@ export function createGenerationJob(params: CreateGenerationJobParams): string {
   `).run(id, params.kind, params.agentId, params.modelId, params.providerId, params.prompt,
     params.title ?? null, params.voice ?? null,
     // P6a execution lineage from the live turn (best-effort; NULL outside a turn).
-    currentTurnRoot.get(params.agentId)?.sourceMessageId ?? null,
-    currentTurnNumber.get(params.agentId) ?? null,
-    currentTurnServedWork.get(params.agentId)?.taskId ?? null,
-    currentTurnRoot.get(params.agentId)?.conversationId ?? null);
+    turnContext(params.agentId)?.root?.sourceMessageId ?? null,
+    turnContext(params.agentId)?.turnNumber ?? null,
+    turnContext(params.agentId)?.servedWork?.taskId ?? null,
+    turnContext(params.agentId)?.root?.conversationId ?? null);
   const row = getJob(id);
   if (row) emitUpdate(row);
   return id;

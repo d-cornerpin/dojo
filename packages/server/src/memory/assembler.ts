@@ -37,7 +37,10 @@ import { isPMAgent } from '../config/platform.js';
 import { buildAssemblyContext, assembleSystemFromRegistry } from '../prompt/registry/assembler.js';
 import { MessageSlot, type AssemblyTurnState } from '../prompt/registry/types.js';
 // (getRuntimeVersion import removed in Phase 9 Stage 2, single-track v2)
-import { turnBoundary, currentTurnConversationId } from '../agent/turn-state.js';
+import { turnBoundary } from '../agent/turn-state.js';
+// ALIASED: `turnContext` already means `PromptTurnContext` (an assembly's per-turn
+// INPUTS) throughout this file. This one is the turn's own ambient facts (PHASE-6 T1).
+import { turnContext as liveTurnContext } from '../agent/turn-context.js';
 import { currentTurnNumber, readStoredTurnThreshold, CONTINUITY_BRIEF_HORIZON_TURNS } from '../agent/v2/turn-record.js';   // G24
 import type { Summary } from './dag.js';
 import type { Message } from '@dojo/shared';
@@ -1064,7 +1067,7 @@ function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unk
         try {
           const { getActiveUserDirective, formatDirectiveBlock } = await import('./directive.js');
           const cp = ctx.turnContext?.counterparty;
-          const stampedConversationId = currentTurnConversationId.get(ctx.agentId);
+          const stampedConversationId = liveTurnContext(ctx.agentId)?.conversationId;
           const directiveConversationId =
             (ctx.turnContext?.isEngineTurn || cp?.kind === 'agent')
               ? '__none__'
@@ -1314,7 +1317,7 @@ async function assembleMessageContext(
         ? scopeToA2AThread(freshTailRaw, turnContext.counterparty.threadId)
         : turnContext?.isEngineTurn
         ? scopeToEngineTurn(freshTailRaw)
-        : scopeToHumanConversation(freshTailRaw, turnContext?.counterparty, currentTurnConversationId.get(agentId) ?? null);
+        : scopeToHumanConversation(freshTailRaw, turnContext?.counterparty, liveTurnContext(agentId)?.conversationId ?? null);
       // EVENTS / awareness lane: engine notices AND unauthorized human inbound — things the
       // agent should be AWARE of but is NOT in conversation with. An action-required
       // engine-origin A2A stays FULL in the live tail on its engine turn.

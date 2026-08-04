@@ -34,7 +34,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { channelOfSendTool, type WsEvent } from '@dojo/shared';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
-import { currentTurnRoot, currentTurnNumber } from '../turn-state.js';
+import { turnContext } from '../turn-context.js';
 import { linkArtifactsToDelivery } from '../pending-attachments.js';
 import { recordDelivery, type DeliveryInput } from './deliveries.js';
 import { deliveryIdOf, type LedgerOutcome } from './delivery-outcome.js';
@@ -446,12 +446,12 @@ export function recordDashboardDelivery(event: WsEvent): string | null {
       messageId: msg.id,
       // The turn's own conversation, exactly as the auto-route sites pass it. Falling back
       // to the resolver keeps a bubble outside a turn (a boot notice) recordable.
-      conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+      conversationId: turnContext(agentId)?.root?.conversationId ?? null,
       outcome: 'delivered',
     }));
     // The files, canvas chips and screen chips that rode this bubble now point at the row
     // that carried them (Phase-1 §7 debt: `turn_artifacts.delivery_id`).
-    if (deliveryId) linkArtifactsToDelivery(agentId, currentTurnNumber.get(agentId) ?? null, deliveryId);
+    if (deliveryId) linkArtifactsToDelivery(agentId, turnContext(agentId)?.turnNumber ?? null, deliveryId);
     return deliveryId;
   } catch (err) {
     logger.warn('dashboard delivery record failed (the bubble itself is unaffected)', {

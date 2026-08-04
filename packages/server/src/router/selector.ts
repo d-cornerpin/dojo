@@ -4,7 +4,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
-import { currentModelRequestId, currentTurnRoot } from '../agent/turn-state.js';
+import { turnContext } from '../agent/turn-context.js';
 import { createLogger } from '../logger.js';
 import { isRateLimited } from './rate-limits.js';
 import { getDailySpend } from '../costs/tracker.js';
@@ -191,9 +191,9 @@ export function logRouterDecision(
       headVersion ?? null,
       // P6b execution lineage: the per-turn request id (shared with the
       // cost_records rows this decision produced) and the turn's root.
-      currentModelRequestId.get(agentId) ?? null,
-      currentTurnRoot.get(agentId)?.kind ?? null,
-      currentTurnRoot.get(agentId)?.id ?? null,
+      turnContext(agentId)?.modelRequestId ?? null,
+      turnContext(agentId)?.root?.kind ?? null,
+      turnContext(agentId)?.root?.id ?? null,
     );
   } catch (err) {
     logger.error('Failed to log router decision', {

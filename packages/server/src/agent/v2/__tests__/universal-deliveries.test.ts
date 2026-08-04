@@ -52,7 +52,7 @@ import {
   withOutbound, withOutboundAsync, recordAtDoor, noteReceiptForOutbound, deliveryIdOf,
   recordDashboardDelivery, PLATFORM_SENDER,
 } from '../outbound.js';
-import { currentTurnNumber, currentTurnRoot } from '../../turn-state.js';
+import { openTurnContext, endTurnContext, turnContext } from '../../turn-context.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn } from '../../../work/store.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { writeToolReceipt } from '../../../receipts/store.js';
@@ -79,10 +79,11 @@ beforeEach(() => {
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)
      VALUES ('conv-dash', ?, 'dashboard', 'owner'), ('conv-im', ?, 'imessage', '+15550000')`,
   ).run(AGENT, AGENT);
-  currentTurnNumber.set(AGENT, 7);
-  currentTurnRoot.set(AGENT, {
-    kind: 'ask', id: 'm-ask', sourceMessageId: 'm-ask', conversationId: 'conv-dash',
-  });
+  // PHASE-6 T1: the turn's facts are one bag now, opened by the turn.
+  endTurnContext(AGENT);
+  const turn = openTurnContext(AGENT);
+  turn.turnNumber = 7;
+  turn.root = { kind: 'ask', id: 'm-ask', sourceMessageId: 'm-ask', conversationId: 'conv-dash' };
 });
 
 // ════════════════════════════════════════════════════════════════════════

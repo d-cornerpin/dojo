@@ -18,7 +18,7 @@
 // ════════════════════════════════════════
 
 import { v4 as uuidv4 } from 'uuid';
-import { currentTurnRoot, currentTurnServedWork, currentTurnNumber } from './turn-state.js';
+import { turnContext } from './turn-context.js';
 import { getDb } from '../db/connection.js';
 import { insertMessage } from '../memory/message-store.js';
 import { createLogger } from '../logger.js';
@@ -291,14 +291,14 @@ export async function requestApproval(input: {
 }): Promise<string> {
   const token = uuidv4();
   try {
-    const root = currentTurnRoot.get(input.agentId) ?? null;
-    const served = currentTurnServedWork.get(input.agentId) ?? null;
+    const root = turnContext(input.agentId)?.root ?? null;
+    const served = turnContext(input.agentId)?.servedWork ?? null;
     getDb().prepare(`
       INSERT INTO destructive_approvals (token, agent_id, tool_name, signature, request_text, args_json, root_kind, root_id, task_id, turn_number)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(token, input.agentId, input.toolName, input.signature, input.callDescription,
       input.argsJson ?? null, root?.kind ?? null, root?.id ?? null,
-      served?.taskId ?? null, currentTurnNumber.get(input.agentId) ?? null);
+      served?.taskId ?? null, turnContext(input.agentId)?.turnNumber ?? null);
   } catch (err) {
     logger.error('destructive-gate: failed to file approval request', {
       error: err instanceof Error ? err.message : String(err),

@@ -34,7 +34,8 @@ import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { isDreamerAgent, isHealerAgent } from '../../config/platform.js';
 import { getTunnelStatus } from '../../services/tunnel.js';
-import { getCurrentToolCallId, currentTurnNumber, currentTurnRoot } from '../turn-state.js';
+import { getCurrentToolCallId } from '../turn-state.js';
+import { turnContext } from '../turn-context.js';
 // A LEAF by construction (`credentials/secret-values.ts` imports nothing), which
 // is why the toolbox's shared util can reach the declared-value set without
 // re-opening the `secret-fields -> registry -> tools -> credentials/tools` cycle
@@ -88,8 +89,8 @@ export function auditLog(agentId: string, actionType: string, target: string | n
     // P6a execution lineage: every audit row carries the turn that ran it and
     // the root it served, read from the live turn state (the receipts
     // pattern), plus the exact tool_use call id where the caller has one.
-    const turnNumber = currentTurnNumber.get(agentId) ?? null;
-    const root = currentTurnRoot.get(agentId) ?? null;
+    const turnNumber = turnContext(agentId)?.turnNumber ?? null;
+    const root = turnContext(agentId)?.root ?? null;
     db.prepare(`
       INSERT INTO audit_log (id, agent_id, action_type, target, result, detail, turn_number, call_id, root_kind, root_id, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))

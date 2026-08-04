@@ -54,7 +54,8 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 
-import { runWithToolCallId, currentTurnRoot } from '../turn-state.js';
+import { runWithToolCallId } from '../turn-state.js';
+import { turnContext } from '../turn-context.js';
 import { classifyToolResult, toolErrorCodeForThrow, type ToolOutcome } from '../tool-outcome.js';
 export { toolResultOf, toolWasBlocked, type ToolOutcome } from '../tool-outcome.js';
 
@@ -190,7 +191,7 @@ async function executeToolInCallContext(agentId: string, toolCall: ToolCall): Pr
       {
         agentId, tool: resolved.name, channel: sendChannel,
         recipientId: outboundRecipientForTool(resolved.name, resolved.args as Record<string, unknown>),
-        conversationId: currentTurnRoot.get(agentId)?.conversationId ?? null,
+        conversationId: turnContext(agentId)?.root?.conversationId ?? null,
       },
       () => dispatchResolved(agentId, toolCall, resolved),
     );

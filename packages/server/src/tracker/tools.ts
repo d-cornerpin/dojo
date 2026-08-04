@@ -57,7 +57,7 @@ import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, isPrimaryAgent, getOwnerName, isPMAgent } from '../config/platform.js';
 import { getAgentRuntime } from '../agent/runtime.js';
 import { postAgentNotice } from '../agent/agent-notice.js';
-import { currentTurnNumber, getTurnReceipts, getWorkOriginForAgent, currentTurnRoot } from '../agent/turn-state.js';
+import { turnContext, getTurnReceipts, getWorkOriginForAgent } from '../agent/turn-context.js';
 import { WORK_EDITABLE_TASK_FIELDS } from '../agent/work-verb-schema.js';
 import { getReceiptsByIds, stampReceiptsTask, type ToolReceiptRow } from '../receipts/store.js';
 import { insertEngineEventIfAbsent, insertMessageIfAbsent } from '../memory/message-store.js';
@@ -683,7 +683,7 @@ function findRecentNearDuplicateProject(
   //     as the creating agent's current turn is THE duplicate, by identity
   //     (source_message_id equality), no clock guessing. The marker+5-minute
   //     window survives only as the pre-spine fallback for rootless rows.
-  const turnRoot = currentTurnRoot.get(creatorId) ?? null;
+  const turnRoot = turnContext(creatorId)?.root ?? null;
   const rootMatch = turnRoot?.sourceMessageId ? db.prepare(`
     SELECT w.id AS id, w.title AS title, ${msToText('w.opened_at')} AS created_at FROM work w
     WHERE ${projectScope('w')} AND w.requester_id = ?
@@ -3471,7 +3471,7 @@ export async function trackerApplyUserValidation(
   // conversation; log + audit on mismatch, never block (legacy escalations
   // carry random uuids).
   try {
-    const root = currentTurnRoot.get(callerAgentId);
+    const root = turnContext(callerAgentId)?.root;
     if (task.validation_thread_id && root?.sourceMessageId) {
       const askRow = db.prepare('SELECT conversation_id FROM messages WHERE id = ?')
         .get(root.sourceMessageId) as { conversation_id: string | null } | undefined;

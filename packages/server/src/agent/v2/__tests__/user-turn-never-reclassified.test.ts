@@ -65,12 +65,15 @@ describe('user turns are NEVER reclassified mid-turn (A2A-handoff floor)', () =>
   }
 
   it('there are exactly the two known re-stamp sites, and both set turnKind a2a behind their union', () => {
-    const stamps = [...loop.matchAll(/currentTurnKind\.set\(agentId, 'a2a'\)/g)];
+    // PHASE-6 T1 spelling: the ten ambient maps became one bag the turn threads
+    // explicitly. The INVARIANT is unchanged and so is this clause's job — two
+    // re-stamp sites, each behind its own union guard.
+    const stamps = [...loop.matchAll(/turnCtx\.kind = 'a2a';/g)];
     // Turn start stamps the ORIGINAL kind (`isA2ATurn ? 'a2a' : 'user'`) via a
     // ternary and is not a re-stamp; the two re-stamps are the literal sets.
     expect(stamps.length).toBe(UNION_DECLS.length);
     for (const site of UNION_DECLS) {
-      const guard = new RegExp(`if \\(${site.name} && currentTurnKind\\.get\\(agentId\\) !== 'a2a'\\) \\{`);
+      const guard = new RegExp(`if \\(${site.name} && turnCtx\\.kind !== 'a2a'\\) \\{`);
       expect(loop).toMatch(guard);
     }
   });

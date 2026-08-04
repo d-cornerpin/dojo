@@ -22,7 +22,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
 import { createLogger } from '../logger.js';
-import { getCurrentToolCallId, currentTurnRoot, noteTurnReceipt, currentTurnConvKey, currentTurnNumber } from '../agent/turn-state.js';
+import { getCurrentToolCallId } from '../agent/turn-state.js';
+import { turnContext, noteTurnReceipt } from '../agent/turn-context.js';
 import { noteReceiptForOutbound } from '../agent/v2/outbound.js';
 
 // RC-12: bound the sent_text copy. The full body already lives in the messages
@@ -163,8 +164,8 @@ export function writeToolReceipt(params: WriteReceiptParams): string {
   // live turn state (engine facts, never model input), so send executors don't
   // have to thread conv_key / turn_number through every call. A missing entry
   // (receipt written outside a turn) leaves the column NULL.
-  const convKey = currentTurnConvKey.get(agentId) ?? null;
-  const turnNumber = currentTurnNumber.get(agentId) ?? null;
+  const convKey = turnContext(agentId)?.convKey ?? null;
+  const turnNumber = turnContext(agentId)?.turnNumber ?? null;
   const boundedSentText = sentText != null && sentText.length > 0
     ? sentText.slice(0, SENT_TEXT_MAX_CHARS)
     : null;
@@ -188,7 +189,7 @@ export function writeToolReceipt(params: WriteReceiptParams): string {
     // P6a: the receipt binds to the EXACT tool_use call and the root the turn
     // serves (live turn state, same pattern as conv_key/turn_number).
     const liveCallId = getCurrentToolCallId(agentId);
-    const liveRoot = currentTurnRoot.get(agentId) ?? null;
+    const liveRoot = turnContext(agentId)?.root ?? null;
     db.prepare(`
       INSERT INTO tool_receipts (
         id, agent_id, tool, tier, verified, basis,

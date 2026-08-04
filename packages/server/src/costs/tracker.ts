@@ -4,7 +4,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
-import { currentModelRequestId } from '../agent/turn-state.js';
+import { turnContext } from '../agent/turn-context.js';
 import { createLogger } from '../logger.js';
 import { checkAlertsAfterCost } from './budget.js';
 import { CHARS_PER_TOKEN } from '../memory/budget.js';
@@ -194,7 +194,7 @@ export function recordCost(params: RecordCostParams): void {
       cacheCreationTokens ?? null,
       // P6b: joins this spend to the router decision that produced it
       // (router_log.request_id). NULL for out-of-turn calls by design.
-      currentModelRequestId.get(agentId) ?? null,
+      turnContext(agentId)?.modelRequestId ?? null,
       // Estimate and divisor travel together: 4-chars/token and 3.5-chars/token rows are
       // different measurements and a trend that mixes them silently is #14's class.
       estimatedInputTokens ?? null,

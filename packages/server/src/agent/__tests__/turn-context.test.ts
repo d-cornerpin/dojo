@@ -1,0 +1,243 @@
+// ════════════════════════════════════════════════════════════════════════════════
+// PHASE-6 T1 — THE BAG'S CONTRACT, AND THE OTHER DIRECTION.
+//
+// The behavioural half of this task lives in `agent/v2/__tests__/integration.test.ts`
+// (the four teardown reads, the `break` and `return` exits, the leak on the error
+// path) — those clauses drive real turns and fail on the defect. This file holds the
+// half that a driven turn cannot show:
+//
+//   * WHAT IS IN THE BAG, by name, so a fact added later must be classified rather
+//     than drift in;
+//   * WHAT IS NOT, and survives the clear — the plan's explicit warning that a
+//     careless collapse sweeps the CROSS-TURN state into an object emptied in
+//     `finally` and thereby deletes the state that is supposed to outlive the turn
+//     (`continuationContext` is stashed by one turn expressly FOR the next one;
+//     `untrackedWorkAcrossTurns` exists because a per-turn counter resetting every
+//     turn WAS the defect). `drainHead`'s retirement into `drain_state` (migration
+//     140, "A Map dies with the process") is the shape those follow — not this one.
+//   * THAT THE TEN MAPS ARE GONE rather than standing beside their replacement,
+//     which is the disease this overhaul exists to remove.
+// ════════════════════════════════════════════════════════════════════════════════
+
+import { describe, it, expect, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+import {
+  openTurnContext, turnContext, endTurnContext, turnConversationScope,
+  getWorkOriginForAgent, noteTurnReceipt, getTurnReceipts,
+  getRecallBudgetUsed, addRecallBudgetUsed, openTurnContextAgents,
+} from '../turn-context.js';
+
+import {
+  turnBoundary, continuationContext, forceA2ATurn, a2aTurnRetries,
+  untrackedWorkAcrossTurns, lastTurnWasA2A,
+} from '../turn-state.js';
+import {
+  activeRuns, pendingWakeups, stoppedAgents, activeAbortControllers, preemptedAgents,
+  backgroundDrains, lastCompactionDividerAt, lastA2APreemptAt, agentStartTimes,
+  turnContinuationCounts, statusHeartbeats, recoveryRunStreak,
+} from '../shared-state.js';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const SRC = path.resolve(HERE, '..', '..');
+const REPO = path.resolve(SRC, '..', '..', '..');
+const read = (p: string): string => readFileSync(path.join(SRC, p), 'utf8');
+
+/** The ten facts the turn owns. Adding an eleventh is a decision: it belongs here
+ *  only if it dies with the turn, and the clause below makes that decision visible. */
+const THE_TURN_OWNS = [
+  'agentId',
+  'kind', 'convKey', 'conversationId', 'imRecipient', 'modelRequestId',
+  'turnNumber', 'root', 'servedWork', 'receiptIds', 'recallTokens',
+];
+
+/** The six in `turn-state.ts` that OUTLIVE the turn on purpose. */
+const TURN_STATE_KEEPS = [
+  'turnBoundary', 'continuationContext', 'forceA2ATurn', 'a2aTurnRetries',
+  'untrackedWorkAcrossTurns', 'lastTurnWasA2A',
+];
+
+/** The names the collapse RETIRED from `turn-state.ts`. Grep-zero with a denominator:
+ *  the plan's own exit gate warns that a grep over one file passes while half the
+ *  surface stands, so the clause names all ten and the file must declare none. */
+const RETIRED_FROM_TURN_STATE = [
+  'currentTurnKind', 'currentTurnConvKey', 'currentTurnConversationId',
+  'currentTurnImRecipient', 'currentModelRequestId', 'currentTurnReceipts',
+  'currentTurnNumber', 'currentTurnRecallTokens', 'currentTurnRoot',
+  'currentTurnServedWork',
+];
+
+beforeEach(() => {
+  for (const a of openTurnContextAgents()) endTurnContext(a);
+});
+
+describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
+  it('CENSUS: the bag holds exactly the ten per-turn facts and nothing else', () => {
+    const ctx = openTurnContext('kevin');
+    expect(Object.keys(ctx).sort()).toEqual([...THE_TURN_OWNS].sort());
+  });
+
+  it('a fresh bag starts empty — which is why no turn-entry clear survives', () => {
+    const first = openTurnContext('kevin');
+    first.kind = 'a2a';
+    first.turnNumber = 41;
+    noteTurnReceipt('kevin', 'r1');
+    addRecallBudgetUsed('kevin', 900);
+
+    const second = openTurnContext('kevin');
+    expect(second).not.toBe(first);
+    expect(second.kind).toBeUndefined();
+    expect(second.turnNumber).toBeUndefined();
+    expect(getTurnReceipts('kevin')).toEqual([]);
+    expect(getRecallBudgetUsed('kevin')).toBe(0);
+  });
+
+  it('ONE CLEAR POINT: endTurnContext removes the bag, and reads answer "outside a turn"', () => {
+    const ctx = openTurnContext('kevin');
+    ctx.root = { kind: 'ask', id: 'msg-1', sourceMessageId: 'msg-1', conversationId: 'conv-1' };
+    ctx.turnNumber = 7;
+    ctx.convKey = 'ck';
+    expect(turnContext('kevin')).toBeDefined();
+
+    endTurnContext('kevin');
+
+    expect(turnContext('kevin')).toBeUndefined();
+    expect(openTurnContextAgents()).not.toContain('kevin');
+    expect(getWorkOriginForAgent('kevin', 'model'))
+      .toEqual({ kind: 'model', sourceMessageId: null, turn: null, convKey: null });
+  });
+
+  it('THE THREE-STATE CONTRACT SURVIVES: no bag / explicit null / a conversation', () => {
+    // E-C1's contract, and flattening it is what bled an unrelated human conversation
+    // into recall on engine/A2A turns. `undefined` = outside a turn (fall back to the
+    // legacy heuristic), `null` = engine/A2A turn, a string = scope to it.
+    expect(turnConversationScope('kevin')).toBeUndefined();
+
+    const ctx = openTurnContext('kevin');
+    expect(turnConversationScope('kevin')).toBeUndefined();   // published nothing yet
+
+    ctx.conversationId = null;
+    expect(turnConversationScope('kevin')).toBeNull();
+
+    ctx.conversationId = 'conv-1';
+    expect(turnConversationScope('kevin')).toBe('conv-1');
+  });
+
+  it('one agent\'s bag is not another\'s', () => {
+    const kevin = openTurnContext('kevin');
+    kevin.kind = 'user';
+    openTurnContext('kelly');
+    expect(turnContext('kelly')!.kind).toBeUndefined();
+    endTurnContext('kelly');
+    expect(turnContext('kevin')!.kind).toBe('user');
+  });
+
+  it('outside a turn, per-turn recorders record nothing rather than a stale entry', () => {
+    // The old maps created an entry lazily for an agent that was not in a turn (a tool
+    // driven for a peer through the a2a transport does exactly this), and that entry
+    // then survived until whenever that agent next went idle. Answering "no turn" is the
+    // same answer `turnNumber` already gave for the same call.
+    noteTurnReceipt('nobody', 'r1');
+    expect(getTurnReceipts('nobody')).toEqual([]);
+    expect(addRecallBudgetUsed('nobody', 500)).toBe(0);
+    expect(getRecallBudgetUsed('nobody')).toBe(0);
+    expect(openTurnContextAgents()).toEqual([]);
+  });
+});
+
+describe('PHASE-6 T1: the other direction — what must NOT be in the bag', () => {
+  it('the eighteen CROSS-TURN carriers survive endTurnContext', () => {
+    const A = 'kevin';
+    openTurnContext(A);
+
+    // Six that live in `turn-state.ts` on purpose.
+    turnBoundary.set(A, '2026-08-04 00:00:00');
+    continuationContext.set(A, { convKey: 'ck', conversationId: 'conv-1', counterparty: {} as never });
+    forceA2ATurn.add(A);
+    a2aTurnRetries.set(A, 1);
+    untrackedWorkAcrossTurns.set(A, { convKey: 'ck', count: 3 });
+    lastTurnWasA2A.add(A);
+
+    // Twelve that live in `shared-state.ts`, shared with the v1 runtime.
+    activeRuns.add(A);
+    pendingWakeups.add(A);
+    stoppedAgents.add(A);
+    activeAbortControllers.set(A, new AbortController());
+    preemptedAgents.add(A);
+    backgroundDrains.add(A);
+    lastCompactionDividerAt.set(A, 1);
+    lastA2APreemptAt.set(A, 2);
+    agentStartTimes.set(A, 3);
+    turnContinuationCounts.set(A, 4);
+    statusHeartbeats.set(A, 0 as unknown as ReturnType<typeof setInterval>);
+    recoveryRunStreak.set(A, { kind: 'k', inputsFingerprint: 'f', count: 1 });
+
+    endTurnContext(A);
+
+    // THE CLAUSE: the turn's bag is gone and every one of the eighteen is still there.
+    // A collapse that swept these in would delete a continuation the NEXT turn is meant
+    // to consume, reset a counter whose whole purpose is to cross turns, and drop an
+    // abort controller mid-flight.
+    expect(turnContext(A)).toBeUndefined();
+    const survivors = {
+      turnBoundary: turnBoundary.has(A),
+      continuationContext: continuationContext.has(A),
+      forceA2ATurn: forceA2ATurn.has(A),
+      a2aTurnRetries: a2aTurnRetries.has(A),
+      untrackedWorkAcrossTurns: untrackedWorkAcrossTurns.has(A),
+      lastTurnWasA2A: lastTurnWasA2A.has(A),
+      activeRuns: activeRuns.has(A),
+      pendingWakeups: pendingWakeups.has(A),
+      stoppedAgents: stoppedAgents.has(A),
+      activeAbortControllers: activeAbortControllers.has(A),
+      preemptedAgents: preemptedAgents.has(A),
+      backgroundDrains: backgroundDrains.has(A),
+      lastCompactionDividerAt: lastCompactionDividerAt.has(A),
+      lastA2APreemptAt: lastA2APreemptAt.has(A),
+      agentStartTimes: agentStartTimes.has(A),
+      turnContinuationCounts: turnContinuationCounts.has(A),
+      statusHeartbeats: statusHeartbeats.has(A),
+      recoveryRunStreak: recoveryRunStreak.has(A),
+    };
+    expect(Object.entries(survivors).filter(([, v]) => !v).map(([k]) => k)).toEqual([]);
+    expect(Object.keys(survivors)).toHaveLength(18);
+
+    for (const m of [turnBoundary, continuationContext, a2aTurnRetries, untrackedWorkAcrossTurns,
+      activeAbortControllers, lastCompactionDividerAt, lastA2APreemptAt, agentStartTimes,
+      turnContinuationCounts, statusHeartbeats, recoveryRunStreak]) m.delete(A);
+    for (const s of [forceA2ATurn, lastTurnWasA2A, activeRuns, pendingWakeups, stoppedAgents,
+      preemptedAgents, backgroundDrains]) s.delete(A);
+  });
+});
+
+describe('PHASE-6 T1: the ten maps are GONE, not standing beside their replacement', () => {
+  it('turn-state.ts declares none of the ten retired per-turn maps', () => {
+    const src = read('agent/turn-state.ts');
+    const still = RETIRED_FROM_TURN_STATE.filter((n) => new RegExp(`export const ${n}\\b`).test(src));
+    expect(still).toEqual([]);
+  });
+
+  it('turn-state.ts declares exactly the six cross-turn carriers', () => {
+    const src = read('agent/turn-state.ts');
+    const declared = [...src.matchAll(/export const (\w+) = new (?:Map|Set)/g)].map((m) => m[1]);
+    expect(declared.sort()).toEqual([...TURN_STATE_KEEPS].sort());
+  });
+
+  it('shared-state.ts still declares its twelve, untouched by this task', () => {
+    const src = read('agent/shared-state.ts');
+    const declared = [...src.matchAll(/export const (\w+) = new (?:Map|Set)/g)].map((m) => m[1]);
+    expect(declared).toHaveLength(12);
+  });
+
+  it('the two ambient-state files are PINNED in ratchets.json', () => {
+    // RE-DERIVED #8: neither was watched, so the collapse target could have grown
+    // unnoticed. A pin is what makes "only shrinks from here" a machine fact.
+    const ratchets = JSON.parse(readFileSync(path.join(REPO, 'ratchets.json'), 'utf8')) as
+      { files: Record<string, number> };
+    expect(ratchets.files['packages/server/src/agent/turn-state.ts']).toBeGreaterThan(0);
+    expect(ratchets.files['packages/server/src/agent/shared-state.ts']).toBeGreaterThan(0);
+    expect(ratchets.files['packages/server/src/agent/turn-context.ts']).toBeGreaterThan(0);
+  });
+});

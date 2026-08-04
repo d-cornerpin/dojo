@@ -17,7 +17,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
-import { currentTurnNumber, currentTurnRoot } from '../turn-state.js';
+import { turnContext } from '../turn-context.js';
 import { resolveOrCreateConversation } from '../../memory/conversations.js';
 import { closeAsksForDelivery, noSuchWorkDetail } from '../../work/store.js';
 import { withUnit } from '../../db/unit.js';
@@ -108,7 +108,7 @@ export function recordDelivery(input: DeliveryInput): LedgerOutcome {
           threadRoot: input.threadRoot ?? null,
         });
       }
-      const root = currentTurnRoot.get(input.agentId);
+      const root = turnContext(input.agentId)?.root;
       db.prepare(`
         INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, recipient_id, recipient_display,
                                 conversation_id, root_kind, root_id, message_id, receipt_id, outcome, detail, created_at, updated_at)
@@ -116,7 +116,7 @@ export function recordDelivery(input: DeliveryInput): LedgerOutcome {
       `).run(
         id,
         input.agentId,
-        currentTurnNumber.get(input.agentId) ?? null,
+        turnContext(input.agentId)?.turnNumber ?? null,
         input.tool,
         input.channel,
         input.recipientId ?? null,
@@ -139,7 +139,7 @@ export function recordDelivery(input: DeliveryInput): LedgerOutcome {
       // must have gone to the ask's OWN conversation.
       closeAsksForDelivery({
         agentId: input.agentId,
-        turnNumber: currentTurnNumber.get(input.agentId) ?? null,
+        turnNumber: turnContext(input.agentId)?.turnNumber ?? null,
         deliveryId: id,
         conversationId,
         tool: input.tool,

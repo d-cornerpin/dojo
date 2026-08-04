@@ -22,7 +22,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { coerceNumberArg } from '../pagination.js';
-import { getRecallBudgetUsed, addRecallBudgetUsed, currentTurnConversationId } from '../../turn-state.js';
+import { getRecallBudgetUsed, addRecallBudgetUsed, turnConversationScope } from '../../turn-context.js';
 import { recallRecentThread } from '../../../memory/recall.js';
 import { memoryGrep, memoryDescribe, memoryExpand } from '../../../memory/retrieval.js';
 import type { ToolHandlerMap } from '../handler.js';
@@ -78,9 +78,7 @@ export const recallHandlers: ToolHandlerMap = {
     // conversation into recall on engine/A2A turns. PHASE-2 T10I: the scope is the
     // conversation's FK; the `.has()` test is the three-state contract (entry+id = that
     // conversation, entry+null = engine/A2A turn, no entry = outside a turn).
-    const turnConversationId = currentTurnConversationId.has(agentId)
-      ? (currentTurnConversationId.get(agentId) ?? null)
-      : undefined;
+    const turnConversationId = turnConversationScope(agentId);
     const content = recallRecentThread(agentId, {
       turnCount,
       includeToolCalls,

@@ -35,7 +35,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { getDb } from '../../../db/connection.js';
-import { currentTurnNumber, currentTurnRoot } from '../../turn-state.js';
+import { turnContext } from '../../turn-context.js';
 import { checkRequired, friendlyDbError } from '../../tool-helpers.js';
 import { terminalDeliveryForTurn } from '../../v2/answered-edge.js';
 import { taskScope } from '../../../work/tracker-view.js';
@@ -496,7 +496,7 @@ export const trackerHandlers: ToolHandlerMap = {
     let isError = false;
     const coErr = checkRequired([{ name: 'description', value: args.description, type: 'string' }]);
     if (coErr) { content = coErr; isError = true; return { content, isError }; }
-    const coTurn = currentTurnNumber.get(agentId) ?? null;
+    const coTurn = turnContext(agentId)?.turnNumber ?? null;
     if (coTurn === null) {
       // Origin is required on the spine, and a commitment's origin is the turn that made
       // it. Refusing here is honest; minting a row with a fabricated turn is not.
@@ -504,7 +504,7 @@ export const trackerHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
-    const coRoot = currentTurnRoot.get(agentId) ?? null;
+    const coRoot = turnContext(agentId)?.root ?? null;
     const coId = openCommitment({
       agentId,
       description: args.description as string,
@@ -549,7 +549,7 @@ export const trackerHandlers: ToolHandlerMap = {
     // 'kept' — and a promise is kept by DELIVERING it. The delivery is resolved from this
     // turn's own transport receipts rather than taken from the model, so there is no
     // argument it can pass that would make an undelivered promise look kept.
-    const crTurn = currentTurnNumber.get(agentId) ?? null;
+    const crTurn = turnContext(agentId)?.turnNumber ?? null;
     const crDelivery = terminalDeliveryForTurn(agentId, crTurn, crRow.conversationId);
     const rr = resolveCommitment(crRow.id, {
       agentId, resultDeliveryId: crDelivery, note: crNote,

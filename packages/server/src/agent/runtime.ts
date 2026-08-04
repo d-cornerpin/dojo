@@ -330,7 +330,8 @@ import {
   statusHeartbeats,
 } from './shared-state.js';
 
-import { turnBoundary, forceA2ATurn, a2aTurnRetries, MAX_A2A_TURN_RETRIES, lastTurnWasA2A, MAX_DRAIN_STUCK, currentTurnKind } from './turn-state.js';
+import { turnBoundary, forceA2ATurn, a2aTurnRetries, MAX_A2A_TURN_RETRIES, lastTurnWasA2A, MAX_DRAIN_STUCK } from './turn-state.js';
+import { turnContext } from './turn-context.js';
 import { bumpDrainLadder, clearDrainLadder } from './drain-state.js';
 import { getWaitingHumanConversations, getPendingEngineEvent, getNextEngineEventRetryAt, quarantineWaitingConversation } from './v2/counterparty.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
@@ -351,7 +352,7 @@ export function startStatusHeartbeat(agentId: string): void {
   if (existing) clearInterval(existing);
   const timer = setInterval(() => {
     try {
-      broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: currentTurnKind.get(agentId) ?? 'user' });
+      broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: turnContext(agentId)?.kind ?? 'user' });
       // D18: heartbeat updated_at while the turn runs. updated_at is otherwise
       // written only at turn START, so recoverStuckAgents (which reaps
       // status='working' rows whose updated_at is stale) would flip a legitimately

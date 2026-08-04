@@ -177,11 +177,11 @@ describe('STRIP-3 — the two conv-key/conversation-id call sites, pinned', () =
     const s = loop();
     // One writer. Two `.set()`s would be two owners of one fact — and the second would be
     // exactly the "patch it later" shape that produced the stale value in the first place.
-    expect(s.match(/currentTurnConversationId\.set\(/g) ?? []).toHaveLength(1);
+    expect(s.match(/turnCtx\.conversationId = /g) ?? []).toHaveLength(1);
     // …and it runs after the repair that can REASSIGN what it publishes. Written as an
     // ordering, because the defect was an ordering: the value was correct, the moment was not.
     const repairAt = s.indexOf('chosenConversationId = resolveOrCreateConversation(');
-    const publishAt = s.indexOf('currentTurnConversationId.set(');
+    const publishAt = s.indexOf('turnCtx.conversationId = ');
     expect(repairAt).toBeGreaterThan(-1);
     expect(publishAt).toBeGreaterThan(repairAt);
   });

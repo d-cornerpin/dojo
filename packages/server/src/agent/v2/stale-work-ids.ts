@@ -26,7 +26,7 @@
 
 import { getDb } from '../../db/connection.js';
 import { CLOSE_OUT_WORK_OPS } from '../../tools/work-verbs.js';
-import type { ServedWork } from '../turn-state.js';
+import type { ServedWork } from '../turn-context.js';
 
 /**
  * The three things a dangling id can be, and they are three and not two.
