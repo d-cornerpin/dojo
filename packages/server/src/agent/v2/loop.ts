@@ -767,7 +767,8 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // Flipped true the first time we push a filler into the active TTS
   // burst so subsequent tool-using iterations in the same turn don't
   // double-fire ("on it ... checking ... give me a sec ...").
-  let voiceFillerFired = false;
+  // PHASE-6 T6 (CUT 8): on the turn's bag — the latch is read and written inside the
+  // `postCallClassify` span and must survive the ITERATION. See the field.
 
   // v2.9.23, phone-call streaming TTS state. When this turn is
   // triggered by a live phone call, we keep a sentence-splitting
@@ -3192,7 +3193,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         // with both local (Kokoro) and cloud (Hume) TTS engines via
         // the engine-agnostic push handle on the voice session.
         if (
-          !voiceFillerFired &&
+          !turnCtx.voiceFillerFired &&
           latestUserSource === 'voice' &&
           (persistedContent ?? '').trim().length === 0
         ) {
@@ -3202,7 +3203,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
             const phrase = pickFillerPhrase();
             const pushed = pushVoiceFiller(agentId, phrase);
             if (pushed) {
-              voiceFillerFired = true;
+              turnCtx.voiceFillerFired = true;
               logger.info('Voice filler pushed before tool execution', {
                 agentId, phrase, toolCount: result.toolCalls.length,
               }, agentId);
@@ -3223,7 +3224,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         // hears "On it" / "One sec" / "Let me check" within ~150 ms
         // of finishing their utterance.
         if (
-          !voiceFillerFired &&
+          !turnCtx.voiceFillerFired &&
           turnCtx.phoneStreamCallSid &&
           inboundChannel === 'phone' &&
           (persistedContent ?? '').trim().length === 0
@@ -3235,7 +3236,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
             const session = getCallSession(turnCtx.phoneStreamCallSid);
             if (session && !session.isEnded()) {
               await session.queueAgentSay(phrase);
-              voiceFillerFired = true;
+              turnCtx.voiceFillerFired = true;
               logger.info('Phone filler pushed before tool execution', {
                 agentId, callSid: turnCtx.phoneStreamCallSid, phrase, toolCount: result.toolCalls.length,
               }, agentId);

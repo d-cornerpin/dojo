@@ -117,6 +117,10 @@ const THE_DRIVER_CARRIES = [
   // redundant-closeout floor, so a lost write double-SENDS the answer.
   'engineStartAckDeliveredThisTurn',
   'deferredDeliveredByAck',
+  // Same tranche, second family: the once-per-turn filler latch. All four of its sites are
+  // inside the span, so it crosses the ITERATION rather than a step — and a step-local would
+  // be reset every round, so the caller hears "on it … checking … give me a sec …" in a row.
+  'voiceFillerFired',
 ];
 
 /** The six in `turn-state.ts` that OUTLIVE the turn on purpose. */

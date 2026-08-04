@@ -417,6 +417,18 @@ export interface TurnContext {
    *  WRITE, and this tranche is the writer. */
   engineStartAckDeliveredThisTurn: boolean;
   deferredDeliveredByAck: boolean;
+
+  /** THE ONCE-PER-TURN FILLER LATCH (v2.9.16 voice, v2.9.23 phone). Flipped true the first
+   *  time a filler phrase is pushed into the active TTS burst or the live call, so the
+   *  subsequent tool-using ITERATIONS of the same turn do not double-fire.
+   *
+   *  ⚠ POPULATION 2 (PHASE-6 T6, CUT 8). All four of its sites sit inside the
+   *  `postCallClassify` span, so it never crosses a STEP boundary — it crosses the LOOP's,
+   *  which is the same boundary seen from the driver, and a step-local would be reset on
+   *  every round. The tree states the failure in its own voice at the declaration:
+   *  *"on it … checking … give me a sec …"*. It is heard rather than thrown, which is why
+   *  it is a field and not a local the module happens to keep. */
+  voiceFillerFired: boolean;
 }
 
 /** The one registry. Keyed by agentId because a turn belongs to an agent and
@@ -465,6 +477,7 @@ export function openTurnContext(agentId: string): TurnContext {
     inboundClassifiedAsWork: false,
     engineStartAckDeliveredThisTurn: false,
     deferredDeliveredByAck: false,
+    voiceFillerFired: false,
   };
   openContexts.set(agentId, ctx);
   return ctx;
