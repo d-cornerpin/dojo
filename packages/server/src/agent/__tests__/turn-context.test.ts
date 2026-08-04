@@ -53,6 +53,21 @@ const THE_TURN_OWNS = [
   'turnNumber', 'root', 'servedWork', 'receiptIds', 'recallTokens',
 ];
 
+/** POPULATION 2 — mutable DRIVER locals that cross a step boundary, carried here
+ *  under RULING P6-R3(1) ("the carrier is the turn's bag … and no second mechanism")
+ *  as PHASE-6 extracts the driver into step packages.
+ *
+ *  ⚠ THE CENSUS BELOW DELIBERATELY STAYS CLOSED, and this list is why it can be. The
+ *  clause's job was never "the bag has exactly ten keys" — it is "a field added later
+ *  must be CLASSIFIED rather than drift in", which is this file's own opening comment.
+ *  A carrier earns a line here only when the extraction that needs it lands, with the
+ *  tranche named; a field that is neither a fact the outside reads nor a named
+ *  crossing still fails, exactly as before. It was T9b's own suite run that caught the
+ *  addition, which is the clause working rather than the clause being in the way. */
+const THE_DRIVER_CARRIES = [
+  'startAckTimer', // PHASE-6 T9b — the F10 timer handle; read AND written by the teardown span
+];
+
 /** The six in `turn-state.ts` that OUTLIVE the turn on purpose. */
 const TURN_STATE_KEEPS = [
   'turnBoundary', 'continuationContext', 'forceA2ATurn', 'a2aTurnRetries',
@@ -74,9 +89,25 @@ beforeEach(() => {
 });
 
 describe('PHASE-6 T1: TurnContext — what the turn owns', () => {
-  it('CENSUS: the bag holds exactly the ten per-turn facts and nothing else', () => {
+  it('CENSUS: the bag holds exactly the classified fields and nothing else', () => {
     const ctx = openTurnContext('kevin');
-    expect(Object.keys(ctx).sort()).toEqual([...THE_TURN_OWNS].sort());
+    expect(Object.keys(ctx).sort()).toEqual([...THE_TURN_OWNS, ...THE_DRIVER_CARRIES].sort());
+  });
+
+  it('the two populations do not overlap, and a carrier is a DRIVER local, not a published fact', () => {
+    // The distinction is what keeps population 2 from becoming a back door: a fact the
+    // outside reads goes through this module's accessors and is named in the first list;
+    // a carrier is driver-internal and is named in the second. A name in both would mean
+    // the classification had stopped meaning anything.
+    expect(THE_TURN_OWNS.filter((k) => THE_DRIVER_CARRIES.includes(k))).toEqual([]);
+    // And the carriers are genuinely unpublished: this module exports no reader for one.
+    const bagSrc = read('agent/turn-context.ts');
+    for (const carrier of THE_DRIVER_CARRIES) {
+      const exportedReaders = [...bagSrc.matchAll(/export function (\w+)/g)]
+        .map((m) => m[1])
+        .filter((fn) => new RegExp(`${fn}[\\s\\S]{0,400}?\\.${carrier}\\b`).test(bagSrc));
+      expect(exportedReaders, `${carrier} is a driver local; nothing outside should read it`).toEqual([]);
+    }
   });
 
   it('a fresh bag starts empty — which is why no turn-entry clear survives', () => {

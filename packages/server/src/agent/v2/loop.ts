@@ -2186,7 +2186,13 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // streams (the working dots cover the wait). Work that begins later than the
   // threshold is covered by the first-tool-call hook at the execution site,
   // which fires this same routine the moment real work starts.
-  let startAckTimer: ReturnType<typeof setTimeout> | null = null;
+  // PHASE-6 T9b (RULING P6-R3(1)): the handle lives on the turn's bag, not in a
+  // driver `let`. It is the ONE mutable local the teardown span both reads and
+  // WRITES, and the teardown span is about to become a module — where a by-value
+  // parameter would carry the handle in and let the `= null` die at the boundary.
+  // `turnCtx.startAckTimer` is a live binding on both sides. Same lifetime: the
+  // timer is armed below, after every exit that returns before the main `try`
+  // opens, so nothing can arm it and skip the teardown that cancels it.
   let anyToolStartedThisTurn = false;
   // RC-4.4: true while a model call is streaming for this turn. The start-ack timer /
   // first-tool hook consults it to add a bounded streaming-race grace before firing, so
@@ -2251,7 +2257,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     }
   };
   if (startAckArmed) {
-    startAckTimer = setTimeout(() => {
+    turnCtx.startAckTimer = setTimeout(() => {
       if (!anyToolStartedThisTurn) {
         // Chat-shaped so far: the model is composing a reply with no tools.
         // Stay silent (dots cover the wait); if tools DO start later, the
@@ -9382,7 +9388,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     // F10: the wall-clock start-ack timer must never outlive its turn. The DB
     // check inside the callback also guards a race where the timer fired just
     // before this clear, but cancelling here is the primary discipline.
-    if (startAckTimer) { clearTimeout(startAckTimer); startAckTimer = null; }
+    if (turnCtx.startAckTimer) { clearTimeout(turnCtx.startAckTimer); turnCtx.startAckTimer = null; }
     // C15: on EVERY exit path (clean reply, decline, MAX_TOOL_LOOPS, spinning/thrash
     // break, exception) tag THIS turn's own assistant/tool rows with the conversation's
     // conv_key. The clean reply/decline exits (~:2851/:5199) already stamp, but the

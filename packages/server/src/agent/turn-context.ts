@@ -77,10 +77,23 @@ export interface ServedWork {
 }
 
 /**
- * Everything the turn in flight knows about itself that code OUTSIDE the loop must
- * be able to read by agentId. (`AgentTurnState` is the loop's own reducer state and
- * is not reachable from the tool executor — that is why this exists beside it, and
- * why the phase-machine steps take `(state, ctx)`.)
+ * Everything the turn in flight knows about itself that must outlive the statement
+ * that produced it. Two populations live here, and the second joined at PHASE-6 T9b:
+ *
+ *   1. FACTS CODE OUTSIDE THE LOOP READS BY AGENT ID — the original ten (T1).
+ *      (`AgentTurnState` is the loop's own reducer state and is not reachable from
+ *      the tool executor, which is why this exists beside it.)
+ *   2. MUTABLE DRIVER LOCALS THAT CROSS A STEP BOUNDARY — RULING P6-R3(1): "the
+ *      carrier is the turn's bag … and no second mechanism." A step package is a
+ *      module, and a module boundary passes VALUES, not BINDINGS; a field on this
+ *      object preserves live-read AND live-WRITE semantics by construction, because
+ *      a property read happens at the moment it is read. The alternative — hand a
+ *      step the value and let its write die at the boundary — is only harmless while
+ *      nobody looks afterwards, which is the reasoning this project bans.
+ *
+ * Both populations have the same lifetime, which is why they share one object rather
+ * than growing a second: `openTurnContext` at the top of the turn, `endTurnContext`
+ * in its `finally`.
  *
  * `undefined` on a field means the same thing the old map meant by having no key.
  */
@@ -147,6 +160,18 @@ export interface TurnContext {
    *  dispatcher returns a short engine notice instead of another dump once the
    *  budget is spent. */
   recallTokens: number;
+
+  /** F10: the handle of the wall-clock start-ack timer armed at turn start, so the
+   *  turn's teardown can cancel it. `null` = not armed, or already cancelled.
+   *
+   *  ⚠ POPULATION 2 (see this interface's own header). It is the FIRST field here
+   *  that no code outside the loop reads — it is a driver local, and it lives on the
+   *  bag because it is the one mutable local the teardown span both READS and WRITES,
+   *  which under RULING P6-R3(1) migrates to the turn's context BEFORE that span is
+   *  extracted. Its lifetime is unchanged and provably so: the timer is armed after
+   *  every exit that returns before the turn's main `try` opens, so there is no path
+   *  that arms it and skips the teardown that cancels it. */
+  startAckTimer: ReturnType<typeof setTimeout> | null;
 }
 
 /** The one registry. Keyed by agentId because a turn belongs to an agent and
@@ -173,6 +198,7 @@ export function openTurnContext(agentId: string): TurnContext {
     servedWork: undefined,
     receiptIds: [],
     recallTokens: 0,
+    startAckTimer: null,
   };
   openContexts.set(agentId, ctx);
   return ctx;
