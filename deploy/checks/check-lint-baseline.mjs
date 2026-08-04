@@ -42,6 +42,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { EFFECT_IMPORT_EXCLUSIONS } from './effect-import-exclusions.mjs';
 
 const ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const BASELINE_REL = 'lint-baseline.json';
@@ -85,15 +86,31 @@ function measureEslint() {
     process.exit(1);
   }
   const counts = {};
+  const errors = [];
+  const restrictedFiles = new Set();
   for (const file of report) {
     for (const m of file.messages) {
       // Parse/config failures arrive with no ruleId; they must never be silently
       // folded into a rule bucket or dropped.
       const key = m.ruleId ?? '(no rule id — parse or config failure)';
       counts[key] = (counts[key] ?? 0) + 1;
+      // Severity 2 is `error`. Before PHASE-5 T8 Step 4 every rule here was
+      // `warn` and this list was always empty; the flip is what gives it
+      // meaning, and Rule 5 below is what makes it refuse.
+      if (m.severity === 2) {
+        errors.push({ file: relToServerSrc(file.filePath), line: m.line, rule: key, message: m.message });
+      }
+      if (key === 'no-restricted-imports') restrictedFiles.add(relToServerSrc(file.filePath));
     }
   }
-  return { counts, filesLinted: report.length };
+  return { counts, filesLinted: report.length, errors, restrictedFiles };
+}
+
+/** `…/packages/server/src/a/b.ts` → `a/b.ts`, the spelling the exclusion list uses. */
+function relToServerSrc(absPath) {
+  const marker = `${path.sep}packages${path.sep}server${path.sep}src${path.sep}`;
+  const at = absPath.indexOf(marker);
+  return at === -1 ? path.relative(ROOT, absPath) : absPath.slice(at + marker.length);
 }
 
 // ── Measurement 2: unused symbols via tsc ──
@@ -248,8 +265,68 @@ for (const rule of baseline.typeAwareRules) {
   }
 }
 
+// ── Rule 5: an eslint ERROR refuses outright, naming the site ──
+// PHASE-5 T8 Step 4. `no-restricted-imports` is `error` over the agent-reachable
+// set: a module an agent can reach that touches fs/proc directly is a hole the
+// facade exists to close, and a count-only ratchet answers it too late (a rise
+// says "the number moved", not "this file, this line"). Every other rule in the
+// config is still `warn`, so this list is empty unless a real error appears.
+const eslintErrors = eslintRun.errors;
+
+// ── Rule 6: the exclusion list is a CENSUS, in both directions ──
+// The list is what makes the flip honest, so it may not rot. An entry naming a
+// file that has no restricted import is a permission nobody is using any more;
+// a file holding one that is NOT on the list is an exclusion nobody wrote down.
+const exclusionProblems = [];
+const KNOWN_CLASSES = new Set(['carrying-machinery', 'agent-triggered', 'platform-internal', 'honest-label', 'named-exclusion']);
+const excludedFiles = new Set();
+for (const entry of EFFECT_IMPORT_EXCLUSIONS) {
+  if (excludedFiles.has(entry.file)) {
+    exclusionProblems.push(`${entry.file}: listed twice — one entry, one reason`);
+  }
+  excludedFiles.add(entry.file);
+  if (!KNOWN_CLASSES.has(entry.klass)) {
+    exclusionProblems.push(`${entry.file}: class "${entry.klass}" is not one of ${[...KNOWN_CLASSES].join(', ')}`);
+  }
+  if (typeof entry.why !== 'string' || entry.why.length < 40) {
+    exclusionProblems.push(`${entry.file}: excluded with no reason — "nobody looked" is not a disposition`);
+  }
+  if (entry.klass === 'honest-label' && (typeof entry.residual !== 'string' || entry.residual.length < 40)) {
+    exclusionProblems.push(`${entry.file}: an honest label must STATE ITS RESIDUAL — a label that hides what it costs is worse than no label`);
+  }
+  if (!fs.existsSync(path.join(ROOT, 'packages', 'server', 'src', entry.file))) {
+    exclusionProblems.push(`${entry.file}: listed but the file does not exist — a stale exclusion cannot be allowed to rot into a permission`);
+  } else if (!eslintRun.restrictedFiles.has(entry.file)) {
+    exclusionProblems.push(`${entry.file}: listed but holds NO restricted import any more — delete the entry, the direction only goes one way`);
+  }
+}
+for (const f of eslintRun.restrictedFiles) {
+  if (!excludedFiles.has(f)) {
+    exclusionProblems.push(`${f}: holds a restricted import and is NOT on the exclusion list`);
+  }
+}
+
 // ── Report ──
 let failed = false;
+
+if (eslintErrors.length) {
+  failed = true;
+  console.error(`✗ ${eslintErrors.length} eslint ERROR(s) — an error-severity rule refuses, it does not ratchet:`);
+  for (const e of eslintErrors) {
+    console.error(`  packages/server/src/${e.file}:${e.line}  [${e.rule}]`);
+    console.error(`     ${e.message.split('\n')[0]}`);
+  }
+  console.error('');
+}
+
+if (exclusionProblems.length) {
+  failed = true;
+  console.error(`✗ ${exclusionProblems.length} problem(s) in the no-restricted-imports exclusion list (deploy/checks/effect-import-exclusions.mjs):`);
+  for (const p of exclusionProblems) console.error(`  ${p}`);
+  console.error('  The list is what makes the flip honest: it must be exactly the set of files that hold one,');
+  console.error('  each with its class and its reason, and every honest label with the residual it carries.');
+  console.error('');
+}
 
 if (risen.length) {
   failed = true;

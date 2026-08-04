@@ -29,11 +29,13 @@
 //       npm run gates         (the ratchet — this is what refuses)
 // ════════════════════════════════════════
 import tseslint from 'typescript-eslint';
+import { EFFECT_IMPORT_EXCLUDED_FILES } from './deploy/checks/effect-import-exclusions.mjs';
 
-// Node builtins that reach the filesystem or spawn processes. ADVISORY until
-// Phase 5, which rebuilds these behind fs/proc brokers — at that point the
-// baseline should be near zero and this rule flips to `error`. Counting them
-// now means Phase 5 starts from a measured surface instead of a guess.
+// Node builtins that reach the filesystem or spawn processes. ENFORCED as of
+// PHASE-5 T8 Step 4: everything an agent can reach performs its fs/proc work
+// through `agent/effects/*`, behind the per-call capability the executor's gate
+// loop mints. The exceptions are a NAMED LIST with a reason each, imported
+// above, and `check-lint-baseline.mjs` censuses that list on every gate run.
 const RESTRICTED_EFFECT_MODULES = [
   'fs',
   'node:fs',
@@ -76,35 +78,39 @@ export default [
       // exact shape of "it said it sent the message and nothing arrived".
       '@typescript-eslint/no-floating-promises': 'warn',
 
-      // fs/proc reached directly instead of through a broker (Phase 5).
+      // fs/proc reached directly instead of through the effect facade.
       //
-      // ⚠ WHAT THIS COUNT IS, AFTER PHASE-5 T7 READ ALL 95 SITES (RULING P5-R12).
-      // The rule counts IMPORT STATEMENTS; the requirement is *nothing an agent
-      // can reach touches fs/proc/net except through a broker*. Those are not the
-      // same measurement, and the classification says why: of the 95 sites, 37
-      // act on a resource the AGENT NAMES (a path, a command, a URL out of tool
-      // arguments), 17 are reachable from a tool call but act on a PLATFORM
-      // LITERAL the agent cannot influence (self-update, voice models, the
-      // tunnel pidfile), and 41 are platform-internal with no tool path at all
-      // (boot, migration, logging, the dashboard's own routes).
+      // ⚠ ENFORCED — PHASE-5 T8 Step 4. This was advisory for the whole of
+      // Phase 5 for a stated reason: the brokers AUTHORIZE a declared effect and
+      // did not PERFORM the I/O, so an authorized handler still had to call `fs`
+      // itself and the rule counted that call's import. RULING P5-R12 recorded
+      // the measurement instead of gaming the number, and T8 built the missing
+      // half — `agent/effects/*` performs the work behind a per-call capability
+      // the gate loop mints from the tool's own declared effects.
       //
-      // The rule cannot be flipped to 'error' without either inventing a
-      // threshold or routing platform machinery through agent-facing brokers,
-      // which would make the number LIE about the surface it exists to measure.
-      // It stays advisory, and the BASELINE keeps the direction enforced: the
-      // count may only fall, and a raise is a reviewed by-hand edit that has to
-      // say what it measured and refused. The flip needs an fs/proc facade that
-      // performs the I/O behind the brokers, which no plan builds today —
-      // recorded in lint-baseline.json's $classification entry with its command.
+      // So the requirement the rule stands for is now expressible: *nothing an
+      // agent can reach touches fs/proc except through the facade*. It is an
+      // ERROR here, and the exceptions are the NAMED list in
+      // `deploy/checks/effect-import-exclusions.mjs` — every entry with its class
+      // and its reason, and every honest-label entry with its stated residual.
+      //
+      // NEVER A DIRECTORY HEURISTIC, and that is measured rather than stylistic:
+      // 33 of the 37 platform-internal files are reachable in the import graph
+      // from `agent/tools/**`, because `logger.ts` and `db/connection.ts` are
+      // reachable from everything. A computed set excludes nearly the whole tree
+      // or nothing at all. The question is what the CALL acts on, not what the
+      // module graph permits — so it is written down, and censused.
       'no-restricted-imports': [
-        'warn',
+        'error',
         {
           paths: RESTRICTED_EFFECT_MODULES.map((name) => ({
             name,
             message:
-              'Direct fs/proc access. The brokers AUTHORIZE a declared effect; they do not perform the I/O, so an ' +
-              'import here is not by itself a hole — see eslint.config.js above this rule and lint-baseline.json ' +
-              '$classification for what the 95 sites actually are. Advisory, and the baseline may only fall.',
+              'Direct fs/proc access from a module an agent can reach. Perform the work through `agent/effects/fs.ts` ' +
+              'or `agent/effects/proc.ts`, which do it only on a resource the per-call capability names — the tool ' +
+              'declares the effect, the gate loop resolves it, the facade carries it. If this really is platform ' +
+              'machinery no agent can influence, add it to deploy/checks/effect-import-exclusions.mjs WITH ITS ' +
+              'REASON; that edit is meant to be seen and reviewed.',
           })),
         },
       ],
@@ -119,6 +125,31 @@ export default [
       // Empty blocks, catch blocks included (allowEmptyCatch stays false): a
       // swallowed error is how a failure becomes a silence.
       'no-empty': 'warn',
+    },
+  },
+  {
+    // ── THE NAMED EXCEPTIONS (PHASE-5 T8 Step 4) ──
+    //
+    // These files keep the import ON PURPOSE, each for a reason written beside
+    // it in `deploy/checks/effect-import-exclusions.mjs`. The severity drops to
+    // `warn` rather than `off` deliberately: `lint-baseline.json` keeps counting
+    // them, so the pin still may only FALL and a class that stops shrinking is
+    // visible. Turning them off would delete the measurement along with the
+    // refusal, and the direction is the thing that has protected this surface
+    // for five phases.
+    files: EFFECT_IMPORT_EXCLUDED_FILES.map((f) => `packages/server/src/${f}`),
+    rules: {
+      'no-restricted-imports': [
+        'warn',
+        {
+          paths: RESTRICTED_EFFECT_MODULES.map((name) => ({
+            name,
+            message:
+              'Named exception, counted but not refused — see deploy/checks/effect-import-exclusions.mjs for this ' +
+              "file's class, its reason, and (for an honest label) the residual it carries.",
+          })),
+        },
+      ],
     },
   },
 ];
