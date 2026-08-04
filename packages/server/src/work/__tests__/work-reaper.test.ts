@@ -57,6 +57,9 @@ import {
   DEADLINES, DEADLINE_IDS, REAPER_KINDS, REAPER_BASE_TICK_MS,
   humanAsksOpen, selfWakeStandDown,
 } from '../work-reaper.js';
+// PHASE-6 GUARD-AUDIT 2026-08-04: the shared engine-corpus derivation (driver + step
+// packages), for the ONE deadline literal below that is declared inside the turn body.
+import { engineText } from '../../agent/v2/__tests__/engine-sources.js';
 
 const REPO = path.resolve(__dirname, '..', '..', '..', '..', '..');
 const SRC = path.join(REPO, 'packages/server/src');
@@ -134,8 +137,19 @@ describe('T9 — the per-kind deadline table has all THIRTEEN cliffs, each with 
     // `CLOSE_OUT_IDLE_MINUTES` is declared INSIDE a function in loop.ts and
     // `STALE_TASK_WINDOW_MINUTES` at module scope; both are read as written text rather than
     // imported, because importing `loop.ts` into a unit test drags the whole engine in.
-    expect(read('agent/v2/loop.ts')).toMatch(/const CLOSE_OUT_IDLE_MINUTES = 10;/);
+    // PHASE-6 GUARD-AUDIT 2026-08-04: `CLOSE_OUT_IDLE_MINUTES` is declared at loop.ts:2296,
+    // INSIDE `runV2TurnBody` (lines 1013-9362), so it travels into `agent/v2/steps/<name>/`
+    // with its tranche. Corpus widened from the driver alone to THE ENGINE (driver + every
+    // step package). Not weaker: the literal must still exist and still be exactly 10; the
+    // widening only lets the clause find it wherever the cut put it, instead of going red for
+    // a reason (the file moved) that has nothing to do with the deadline it guards.
+    expect(engineText()).toMatch(/const CLOSE_OUT_IDLE_MINUTES = 10;/);
     expect(DEADLINES.close_out_idle.ms).toBe(10 * 60_000);
+    // PHASE-6 GUARD-AUDIT 2026-08-04: `STALE_TASK_WINDOW_MINUTES` is declared at loop.ts:560 —
+    // MODULE LEVEL, outside `runV2TurnBody` — so no tranche moves it and this clause CANNOT go
+    // quiet from a step cut. Left reading the driver by path deliberately: naming the one file
+    // that actually holds it is the narrower and therefore stronger corpus, and this module
+    // must not be a reason to widen a clause past its subject.
     expect(read('agent/v2/loop.ts')).toMatch(/const STALE_TASK_WINDOW_MINUTES = 30;/);
     expect(DEADLINES.stale_task_window.ms).toBe(30 * 60_000);
   });

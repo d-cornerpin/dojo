@@ -12,6 +12,9 @@ vi.mock('../../db/connection.js', () => ({
 }));
 
 import { consumeApproval, grantApprovalForSignature } from '../destructive-gate.js';
+// PHASE-6 GUARD-AUDIT 2026-08-04: the shared engine-corpus derivation (driver + step
+// packages). See its header for why a guard must stop naming `agent/v2/loop.ts` by hand.
+import { engineFileContaining } from '../v2/__tests__/engine-sources.js';
 
 beforeEach(() => {
   const db = new Database(':memory:');
@@ -75,9 +78,23 @@ describe('healer approval arm carries full args (P7b conformance)', () => {
     return fs.readFileSync(path.join(srcRoot, rel), 'utf8');
   };
 
-  it('the loop hold passes argsJson into fileHealerApprovalProposal', async () => {
-    const loop = await read('agent/v2/loop.ts');
-    const holdCall = loop.slice(loop.indexOf('fileHealerApprovalProposal({'));
+  it('the engine hold passes argsJson into fileHealerApprovalProposal', () => {
+    // PHASE-6 GUARD-AUDIT 2026-08-04: the corpus became THE ENGINE FILE THAT HOLDS THE CALL,
+    // found through `engineFileContaining` instead of the hard-coded path `agent/v2/loop.ts`.
+    // The hold site sits at loop.ts:7239, INSIDE `runV2TurnBody`, so it travels into
+    // `agent/v2/steps/execute/` with its tranche. Read by path afterwards, `indexOf` would
+    // return -1, `slice(-1)` would hand back the driver's last character and the window would
+    // simply not match — red here, but only by luck, and the same clause pinned to a file that
+    // no longer owns the subject proves nothing about the code that does.
+    //
+    // It must NOT read a concatenated corpus either: this is a WINDOWED clause, and a 600-char
+    // window taken from a join can run off the end of one file and into the next, matching a
+    // pattern that never sat beside its anchor. Pinning to ONE file keeps the window meaning
+    // what it says, and a tranche that separates the call from its `argsJson` argument makes
+    // `engineFileContaining` (or this match) fail LOUDLY.
+    const site = engineFileContaining('fileHealerApprovalProposal({');
+    if (!site) throw new Error('no engine file calls `fileHealerApprovalProposal({` — the hold site was renamed or removed, and this guard refuses to pass over its absence');
+    const holdCall = site.text.slice(site.text.indexOf('fileHealerApprovalProposal({'));
     expect(holdCall.slice(0, 600)).toMatch(/argsJson:\s*JSON\.stringify\(tc\.arguments/);
   });
 

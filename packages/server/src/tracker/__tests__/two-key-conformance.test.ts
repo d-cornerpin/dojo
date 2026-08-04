@@ -46,6 +46,10 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// PHASE-6 GUARD-AUDIT 2026-08-04: the engine's step packages, derived once for every guard
+// that needs them. See the T9b note above `KEY1_FILES`' step arm for why this corpus exists
+// and why deriving it in six places was itself the defect.
+import { stepPackageFiles } from '../../agent/v2/__tests__/engine-sources.js';
 
 const SERVER_SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -91,22 +95,17 @@ function subsystemFiles(dir: string): string[] {
 //
 // So the corpus grows a recursive arm for the step packages, and the eight tranches
 // (seven still to come) are covered by construction rather than one at a time.
-function stepPackageFiles(): string[] {
-  const rel = 'agent/v2/steps';
-  const out: string[] = [];
-  const walk = (dir: string): void => {
-    const abs = path.join(SERVER_SRC, dir);
-    if (!fs.existsSync(abs)) return;
-    for (const e of fs.readdirSync(abs, { withFileTypes: true })) {
-      if (e.isDirectory()) { if (e.name !== '__tests__') walk(`${dir}/${e.name}`); continue; }
-      if (e.name.endsWith('.ts') && !e.name.endsWith('.d.ts') && !e.name.endsWith('.test.ts')) {
-        out.push(`${dir}/${e.name}`);
-      }
-    }
-  };
-  walk(rel);
-  return out;
-}
+//
+// PHASE-6 GUARD-AUDIT 2026-08-04: that recursive arm is UNCHANGED in reach — it is now
+// IMPORTED rather than hand-rolled here. The audit that followed T9b found six guards had
+// each written their own copy of this walk, and six definitions of "the engine's step
+// packages" is six chances for one to drift quietly out of agreement with the rest; the
+// single derivation lives in `agent/v2/__tests__/engine-sources.ts`. It returns the same
+// `packages/server/src`-relative paths this walk did (so `readRel` and the three allow-lists
+// below are untouched), sorted, and it additionally excludes `.spec.ts` and refuses to
+// descend into `node_modules` — strictly tighter, never wider.
+//
+// (`stepPackageFiles` is imported at the top of this file.)
 
 // ────────────────────────────────────────────────────────────────────────────
 // KEY 1 : writers of a TASK's status='complete'

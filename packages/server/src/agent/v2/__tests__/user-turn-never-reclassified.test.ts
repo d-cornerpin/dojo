@@ -26,12 +26,25 @@
 // "NEVER RECLASSIFIED" -- packages/server/src` → 2 hits, both comments in
 // loop.ts; no test file mentions preModelInterAgent or interAgentTurn).
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { engineText } from './engine-sources.js';
 
-const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-const loop = fs.readFileSync(path.join(srcRoot, 'agent/v2/loop.ts'), 'utf8');
+// PHASE-6 GUARD-AUDIT 2026-08-04: the corpus became THE ENGINE — `agent/v2/loop.ts` PLUS
+// every step package under `agent/v2/steps/` — instead of the driver read by path. Both
+// re-stamp sites live inside `runV2TurnBody` (loop.ts:3211 and :4547 at HEAD), i.e. inside
+// the region PHASE-6 is cutting into step packages. Read by path, this whole file would have
+// gone QUIET the turn a tranche took the stamps: `unionLine` would fail loudly, but the two
+// COUNT clauses below would have measured 0 stamps and 0 notices against a driver that no
+// longer holds either, and `toBe(UNION_DECLS.length)` is the only thing standing between
+// that and a green tick on a law nobody is checking. Every clause here is presence, absence
+// or a count over line-anchored regexes, so the join is safe (no clause reads an `indexOf`
+// ORDER across the corpus — the one slice below is INSIDE a single matched line).
+//
+// The identifier stays `loop` because every clause below reads it and the law it holds is
+// unchanged; it now carries the driver AND the steps. COUNTS RE-DERIVED AT THE WIDENING:
+// `turnCtx.kind = 'a2a';` = 2 (both in the driver, none in `steps/`), and
+// `USER TURNS ARE NEVER RECLASSIFIED` = 2 likewise — so widening did not move either number,
+// it only made a stamp added inside a step package visible to them.
+const loop = engineText();
 
 // Every declaration of a turn-kind union in the loop. The law must hold on ALL
 // of them; the count is asserted so a THIRD re-stamp site added later cannot
@@ -45,7 +58,9 @@ const UNION_DECLS = [
 function unionLine(varName: string): string {
   const re = new RegExp(`^\\s*const ${varName} = .*$`, 'm');
   const m = loop.match(re);
-  expect(m, `no declaration of \`${varName}\` found in agent/v2/loop.ts`).not.toBeNull();
+  // PHASE-6 GUARD-AUDIT 2026-08-04: message widened with the corpus — the declaration may
+  // now legitimately live in the driver or in whichever step package owns the stamp.
+  expect(m, `no declaration of \`${varName}\` found anywhere in the engine (agent/v2/loop.ts + agent/v2/steps/**)`).not.toBeNull();
   return (m as RegExpMatchArray)[0];
 }
 

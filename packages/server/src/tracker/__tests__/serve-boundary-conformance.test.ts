@@ -16,6 +16,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { engineText, engineFileWithBoth } from '../../agent/v2/__tests__/engine-sources.js';
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');
@@ -26,19 +27,11 @@ const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');
 // clauses below went red. Their requirement was never "these calls live in loop.ts"; it
 // is "every turn start records its subject and root, and every exit finalizes." Reading
 // the engine rather than one file covers the seven tranches still to come as well.
-const engine = (): string => {
-  const parts = [read('agent/v2/loop.ts')];
-  const walk = (dir: string): void => {
-    if (!fs.existsSync(dir)) return;
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const abs = path.join(dir, e.name);
-      if (e.isDirectory()) { if (e.name !== '__tests__') walk(abs); continue; }
-      if (/\.ts$/.test(e.name) && !/\.(test|spec)\.ts$/.test(e.name)) parts.push(fs.readFileSync(abs, 'utf8'));
-    }
-  };
-  walk(path.join(SRC, 'agent/v2/steps'));
-  return parts.join('\n');
-};
+//
+// PHASE-6 GUARD-AUDIT 2026-08-04: this file's own hand-rolled copy of that walk is gone —
+// the derivation is `agent/v2/__tests__/engine-sources.ts`, shared by every guard that
+// scans the engine, because six copies of a corpus is six places for it to drift.
+const engine = (): string => engineText();
 
 describe('serve boundary (P2)', () => {
   it('getPendingEngineEvent premise-checks before eligibility', () => {
@@ -161,8 +154,11 @@ describe('drive boundary (P2)', () => {
 });
 
 describe('once-per-response guard (P3)', () => {
+  // PHASE-6 GUARD-AUDIT: the once-guard sits at the executor choke point, which is inside
+  // the `execute` tranche — it MOVES. The requirement was never "the guard lives in
+  // loop.ts"; it is "the engine refuses a non-idempotent duplicate". Read the engine.
   it('non-idempotent duplicates are refused at the executor choke point', () => {
-    const loop = read('agent/v2/loop.ts');
+    const loop = engine();
     expect(loop).toMatch(/onceGuardExecuted = new Map/);
     expect(loop).toMatch(/onceGuardExecuted\.has\(loopCheck\.signature\)/);
     expect(loop).toMatch(/Already executed in this response/);
@@ -172,8 +168,12 @@ describe('once-per-response guard (P3)', () => {
   });
 
   it('the guard registers ONLY successful executions (a failed call may retry)', () => {
-    const loop = read('agent/v2/loop.ts');
-    expect(loop).toMatch(/toolResult\.isError !== true[\s\S]{0,200}onceGuardExecuted\.set/);
+    // A PROXIMITY clause, not a presence one: the `.set` must sit within 200 chars of the
+    // success test. Across a concatenated corpus that distance would be measured over a
+    // file join, so the pair is pinned to ONE engine file first — and a tranche that ever
+    // splits them fails loudly here instead of quietly matching across the seam.
+    const home = engineFileWithBoth('toolResult.isError !== true', 'onceGuardExecuted.set');
+    expect(home.text).toMatch(/toolResult\.isError !== true[\s\S]{0,200}onceGuardExecuted\.set/);
   });
 
   it('the engine-scaffold duplicate-project guard keys on ROOT equality first', () => {
@@ -239,7 +239,14 @@ describe('turn record (P4)', () => {
   it('TOMBSTONE: the engine has no privileged same-turn close any more', () => {
     const tools = read('tracker/tools.ts');
     expect(tools).not.toMatch(/export async function closeEngineScaffoldSameTurn/);
-    const loop = read('agent/v2/loop.ts');
+    // ⚠ PHASE-6 GUARD-AUDIT 2026-08-04 — THIS CLAUSE WAS THE QUIET SHAPE, EXACTLY.
+    // A NEGATIVE assertion over a SINGLE-FILE corpus passes for two different reasons and
+    // cannot tell them apart: because the call is absent, or because the corpus stopped
+    // containing the place it would live. `loop.ts` is being drained into step packages,
+    // so a re-introduced privileged close landing in `steps/<name>/` was invisible here —
+    // a tombstone that cannot see the grave. The negative control below reads
+    // `pm-agent.ts`, which is NOT in the engine corpus, so it never covered this gap.
+    const loop = engine();
     expect(loop).not.toMatch(/closeEngineScaffoldSameTurn\(/);
     // NEGATIVE CONTROL of the same shape: the OTHER engine close — the PM ladder's
     // strike-2 receipt close — must still be here, or this clause would pass by the

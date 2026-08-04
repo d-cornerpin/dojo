@@ -45,6 +45,9 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+// PHASE-6 GUARD-AUDIT 2026-08-04: the shared engine-corpus derivation (driver + step
+// packages). See its header for why a guard must stop naming `agent/v2/loop.ts` by hand.
+import { engineText } from '../../agent/v2/__tests__/engine-sources.js';
 
 /** `packages/server/src/work/__tests__` -> the repository root. */
 const REPO = path.resolve(__dirname, '..', '..', '..', '..', '..');
@@ -83,6 +86,24 @@ const stripComments = (s: string): string => s
   .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
   .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length))
   .replace(/^\s*--[^\n]*/gm, (m) => ' '.repeat(m.length));
+
+/**
+ * PHASE-6 GUARD-AUDIT 2026-08-04 — THE ENGINE, comment-stripped, in place of
+ * `src('packages/server/src/agent/v2/loop.ts')`.
+ *
+ * Three clauses below scanned the driver BY PATH for engine-turn / terminal-wake mechanics
+ * that all live inside `runV2TurnBody` and therefore move into `agent/v2/steps/<name>/` as
+ * PHASE-6 cuts its tranches. The dangerous half is the NEGATIVE clauses (`not.toMatch` on the
+ * `'engine'` and `'a2a'` conv_key sentinels): those pass by default over a corpus that no
+ * longer contains the code they forbid, so the sentinel could come back inside a step package
+ * and this file — the gate that exists to stop it coming back — would stay green.
+ *
+ * Widening is strictly stronger in both directions: the negatives now forbid the sentinel
+ * across the driver AND every step package, and the positives must still find their subject,
+ * merely wherever the tranche put it. `stripComments` is applied exactly as `src()` applies
+ * it to one file, so prose about the predicate still never counts as a live one.
+ */
+const engineSrc = (): string => stripComments(engineText());
 
 function measure(): Record<string, number> {
   const out: Record<string, number> = {};
@@ -180,7 +201,10 @@ describe('PHASE-2 T3 — the conv_key claim predicate, resolved site by site', (
     // both read that stamp to tell engine chatter from a human conversation.
     const store = src('packages/server/src/memory/message-store.ts');
     expect(store).not.toMatch(/SET conv_key = 'engine'/);
-    const loop = src('packages/server/src/agent/v2/loop.ts');
+    // PHASE-6 GUARD-AUDIT 2026-08-04: corpus widened from the driver alone to THE ENGINE
+    // (driver + every step package) — the negative below is a `not.toMatch`, and a negative
+    // that stops seeing the code it forbids passes for the wrong reason.
+    const loop = engineSrc();
     expect(loop).not.toMatch(/value: 'engine', expect: null/);
     expect(loop).toMatch(/isEngineTurn \? 'engine'/);
     // The claim and its revert are a matched CAS pair on one column.
@@ -221,7 +245,11 @@ describe('PHASE-2 T3 — the conv_key claim predicate, resolved site by site', (
     // stamp — onto `conversation_id`. The control therefore points at the identity write that
     // genuinely survives, in its current spelling, so this clause still cannot pass by deleting
     // the wrong thing.
-    const loop = src('packages/server/src/agent/v2/loop.ts');
+    // PHASE-6 GUARD-AUDIT 2026-08-04: corpus widened from the driver alone to THE ENGINE
+    // (driver + every step package). Both the sentinel ban and the terminal-wake readers below
+    // sit inside `runV2TurnBody` and move with their tranche; the ban in particular would have
+    // gone quiet, which is the exact silence this negative control was written against.
+    const loop = engineSrc();
     expect(loop).not.toMatch(/value: 'a2a'/);
     expect(loop).toMatch(/stampConversationIdByRowid\(\{ rowid: triggerRow\.rowid, agentId, conversationId: chosenConversationId \}\)/);
     // ⚠ AND THE ONE T4 MISSED. Its own re-point moved `findUnservedTerminalWake` onto the serve
@@ -237,7 +265,12 @@ describe('PHASE-2 T3 — the conv_key claim predicate, resolved site by site', (
   });
 
   it('the pickup claim is a work-state CAS whose LOSER is the D-2 bail', () => {
-    const loop = stripComments(fs.readFileSync(path.join(REPO, 'packages/server/src/agent/v2/loop.ts'), 'utf8'));
+    // PHASE-6 GUARD-AUDIT 2026-08-04: corpus widened from the driver alone to THE ENGINE
+    // (driver + every step package), keeping `stripComments` so prose about the claim is still
+    // never read as the claim. The pickup CAS and its P6b-gated revert are turn-body code and
+    // move with their tranche; these are presence clauses, so the join is safe and a tranche
+    // that deletes rather than moves them still fails here.
+    const loop = engineSrc();
     expect(loop).toMatch(/const res = claimAsk\(triggerWorkId, agentId\)/);
     expect(loop).toMatch(/claimed = res\.kind === 'applied'/);
     expect(loop).toMatch(/pickup claim lost, another process already claimed this trigger/);

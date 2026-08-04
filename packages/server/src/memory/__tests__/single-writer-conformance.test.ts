@@ -205,26 +205,67 @@ describe('single writer for `messages`', () => {
 });
 
 describe('ingest stamping has one owner (OR4)', () => {
+  const AUTH_RE = /\bauthorized\s*:\s*(?!\s*\/\/)/;
+  const CHAN_RE = /resolveOrCreateConversation\s*\(/;
+  // ONE predicate, used by BOTH the offender scan and the stale-entry scan below, so the
+  // two can never disagree about what "is a producer" means.
+  const producesIngest = (rel: string): boolean => {
+    const src = read(rel);
+    // Comment-only mentions do not make a file a producer.
+    const codeOnly = src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    return AUTH_RE.test(codeOnly) || CHAN_RE.test(codeOnly);
+  };
+
   it('no file outside the writer module computes `authorized` or `channel` off-list', () => {
-    const AUTH_RE = /\bauthorized\s*:\s*(?!\s*\/\/)/;
-    const CHAN_RE = /resolveOrCreateConversation\s*\(/;
     const offenders = sourceFiles()
       .filter(f => f !== WRITER_MODULE && f !== 'memory/conversations.ts')
       .filter(f => !PRODUCER_ALLOWLIST.includes(f))
-      .filter(f => {
-        const src = read(f);
-        // Comment-only mentions do not make a file a producer.
-        const codeOnly = src.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
-        return AUTH_RE.test(codeOnly) || CHAN_RE.test(codeOnly);
-      });
+      .filter(producesIngest);
     expect(offenders, 'a NEW ingest producer appeared — stamp through the writer module').toEqual([]);
   });
 
   it('the producer allowlist is the 12-file union plus the funnel, and Sweep A empties it', () => {
     expect(PRODUCER_ALLOWLIST).toContain('agent/v2/inbound-channel.ts');
     expect(PRODUCER_ALLOWLIST).not.toContain('shared/src/origin.ts');
-    const stale = PRODUCER_ALLOWLIST.filter(f => !fs.existsSync(path.join(SRC, f)));
-    expect(stale).toEqual([]);
+    // ⚠ PHASE-6 GUARD-AUDIT 2026-08-04 — THIS STALE CHECK WAS `existsSync` ONLY, AND THAT
+    // IS HALF A CHECK. Its twin on WRITER_ALLOWLIST already re-tests the pattern; this one
+    // did not, and the asymmetry is a hole the decomposition walks straight into.
+    //
+    // `agent/v2/loop.ts` is on this list. PHASE-6 moves the ingest stamping out of the
+    // driver into a step package. On that day the step file correctly becomes an offender
+    // above (loud) — but `loop.ts` KEEPS its exemption here forever, because the file still
+    // exists. An exemption that outlives its reason is not inert: it silently re-permits
+    // the very thing it was granted for, so a later `authorized:` re-appearing in the
+    // driver would pass unremarked.
+    //
+    // Now an entry must still EXIST and still PRODUCE, judged by the same predicate the
+    // offender scan uses. When a tranche moves the stamping, this fails and names the file.
+    //
+    // THE ONE ENTRY THAT IS NOT A PRODUCER, AND IT IS ON THE LIST FOR A DIFFERENT REASON.
+    // Strengthening this clause found it on its first run: `agent/v2/inbound-channel.ts` is
+    // the FUNNEL seven of the eight producers stamp through — a resolver that READS
+    // `authorized` off `inbound_meta` and has never written it. The list has always held
+    // two roles under one name, and `existsSync` could not tell them apart. So the funnel
+    // is declared, with its reason, and its exemption is checked in BOTH directions: it must
+    // be on the list, and it must NOT produce. The day it starts producing, this fails and
+    // the note above it is what has gone stale.
+    const FUNNEL = 'agent/v2/inbound-channel.ts';
+    expect(PRODUCER_ALLOWLIST).toContain(FUNNEL);
+    expect(
+      producesIngest(FUNNEL),
+      `${FUNNEL} is on this list as the FUNNEL, not as a producer — it now stamps, so either ` +
+      'it became a producer (drop the funnel note) or the predicate drifted',
+    ).toBe(false);
+
+    const stale = PRODUCER_ALLOWLIST
+      .filter(f => f !== FUNNEL)
+      .filter(f => !fs.existsSync(path.join(SRC, f)) || !producesIngest(f));
+    expect(
+      stale,
+      'these allowlist entries no longer produce (or no longer exist) — the exemption has ' +
+      'outlived its reason, so delete the entry (and, if the mechanism MOVED, add its new ' +
+      'home instead: an exemption follows the code, never the path it used to live at)',
+    ).toEqual([]);
   });
 });
 

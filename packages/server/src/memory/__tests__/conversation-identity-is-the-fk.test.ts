@@ -21,6 +21,7 @@ import path from 'node:path';
 import type { Message, MessageOrigin } from '@dojo/shared';
 import { scopeToHumanConversation } from '../assembler.js';
 import type { TurnCounterparty } from '../../agent/v2/counterparty.js';
+import { engineFiles as engineFilesFromServerSrc } from '../../agent/v2/__tests__/engine-sources.js';
 
 const REPO = path.resolve(__dirname, '..', '..', '..', '..', '..');
 const src = (rel: string): string => fs.readFileSync(path.join(REPO, rel), 'utf8');
@@ -29,6 +30,22 @@ const stripComments = (s: string): string => s
   .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
   .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length))
   .replace(/^\s*--[^\n]*/gm, (m) => ' '.repeat(m.length));
+
+// PHASE-6 GUARD-AUDIT 2026-08-04 — THE ENGINE'S SOURCE, DERIVED ONCE AND SHARED.
+// The T9b note in the STRIP-3 block below explains WHY the corpus is the driver plus every
+// step package rather than `loop.ts`; the audit's addition is that the walk implementing it
+// is no longer copied into six guards, each free to drift. `engine-sources.ts` returns paths
+// relative to `packages/server/src` while `src()` here takes REPO-relative ones, so the
+// prefix is re-attached at this boundary — `src()` and every clause reading through it are
+// untouched. The shared walk is strictly stricter than the copy it replaces: it recurses
+// into a step's SUB-modules (a step is a DIRECTORY under RULING P6-R1) and it THROWS if the
+// driver has moved, where a hand-rolled walk would have returned a driverless corpus and let
+// every ABSENCE clause below pass on nothing.
+const engineRepoFiles = (): string[] =>
+  engineFilesFromServerSrc().map((rel) => `packages/server/src/${rel}`);
+/** Every engine source, comments blanked, joined. PRESENCE and ABSENCE clauses only — an
+ *  order or window clause must pin itself to ONE file (see the STRIP-3 block). */
+const engineSrc = (): string => engineRepoFiles().map((f) => stripComments(src(f))).join('\n');
 
 const selfOrigin: MessageOrigin = {
   kind: 'self', relation: 'agent', channel: null,
@@ -137,7 +154,15 @@ describe('T10I — the identity readers no longer read messages.conv_key', () =>
   });
 
   it('the recently-answered block and the F9 sibling batch-claim scope on conversation_id', () => {
-    const s = stripComments(src('packages/server/src/agent/v2/loop.ts'));
+    // PHASE-6 GUARD-AUDIT 2026-08-04: THE CORPUS IS THE ENGINE — the driver plus every step
+    // package — not `loop.ts` alone. Both halves needed it, for opposite reasons. The
+    // ABSENCE half (`not.toMatch(/conv_key = \?/)`) is the quiet one: a tranche that carries
+    // the recently-answered block into `agent/v2/steps/` leaves this reading a file the
+    // block is no longer in, and it passes without having looked at the SQL it forbids. The
+    // PRESENCE half would at least fail — but it would fail on a CORRECT tree, which is the
+    // coin-flip this file's own STRIP note refuses. Both are safe over a join: neither reads
+    // a position or a window.
+    const s = engineSrc();
     expect(s).not.toMatch(/conv_key = \?/);
     expect(s).toMatch(/AND conversation_id = \?/);
   });
@@ -171,21 +196,14 @@ describe('STRIP-3 — the two conv-key/conversation-id call sites, pinned', () =
   // requirement was never "these calls live in loop.ts"; it is "the engine still calls
   // them, and still with a conv KEY." So the corpus is the driver plus every step
   // package, which also covers the seven tranches still to come.
-  const engineFiles = (): string[] => {
-    const out = ['packages/server/src/agent/v2/loop.ts'];
-    const rel = 'packages/server/src/agent/v2/steps';
-    const walk = (dir: string): void => {
-      const abs = path.join(REPO, dir);
-      if (!fs.existsSync(abs)) return;
-      for (const e of fs.readdirSync(abs, { withFileTypes: true })) {
-        if (e.isDirectory()) { if (e.name !== '__tests__') walk(`${dir}/${e.name}`); continue; }
-        if (/\.ts$/.test(e.name) && !/\.(test|spec)\.ts$/.test(e.name)) out.push(`${dir}/${e.name}`);
-      }
-    };
-    walk(rel);
-    return out;
-  };
-  const loop = (): string => engineFiles().map((f) => stripComments(src(f))).join('\n');
+  //
+  // PHASE-6 GUARD-AUDIT 2026-08-04: that corpus is UNCHANGED in reach; the walk that
+  // derived it here has been deleted in favour of the single derivation in
+  // `agent/v2/__tests__/engine-sources.ts` (see `engineRepoFiles` / `engineSrc` at the top
+  // of this file). Six guards had each hand-rolled this walk, and six definitions of "the
+  // engine" is six chances for one of them to quietly stop meaning what the others mean.
+  const engineFiles = engineRepoFiles;
+  const loop = engineSrc;
 
   it('the ghosted-ask ladder looks its recorded answer up by conversation ID, never by conv key', () => {
     const s = loop();

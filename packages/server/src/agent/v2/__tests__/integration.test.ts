@@ -328,9 +328,9 @@ vi.mock('../answered-edge.js', async () => {
 });
 
 // Now import the module under test (after mocks are set up)
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+// PHASE-6 GUARD-AUDIT 2026-08-04: `node:fs` / `node:path` / `fileURLToPath` went with the
+// hand-rolled engine walk below — the derivation lives in `engine-sources.ts` now.
+import { engineText } from './engine-sources.js';
 import { runV2Turn } from '../loop.js';
 import { stoppedAgents, recoveryRunStreak, pendingWakeups } from '../../shared-state.js';
 import { turnContext } from '../../turn-context.js';
@@ -399,19 +399,16 @@ function setupTestDb(): Database.Database {
 // pinned to `loop.ts` alone stops seeing its subject the moment that subject moves, and
 // it goes QUIET rather than red. Same widening, same reason, as CUT 1's repair to
 // `engine-steer.test.ts`; the eight tranches behind this one are covered by construction.
-const V2_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+//
+// PHASE-6 GUARD-AUDIT 2026-08-04: the corpus is UNCHANGED in reach; what changed is that
+// it is no longer derived here. The audit found six guards each hand-rolling this same
+// walk, which is six places the definition of "the engine" can drift apart — the same
+// silent-drift defect one level up. `engineText()` is that derivation, made once, and it
+// is strictly stricter than the copy it replaces: it recurses into step SUB-modules (a
+// step is a DIRECTORY under RULING P6-R1) and it THROWS if the driver has moved, where
+// this copy would have quietly returned a corpus with no driver in it.
 function engineSource(): string {
-  const out: string[] = [fs.readFileSync(path.join(V2_DIR, 'loop.ts'), 'utf8')];
-  const walk = (dir: string): void => {
-    if (!fs.existsSync(dir)) return;
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const abs = path.join(dir, e.name);
-      if (e.isDirectory()) { if (e.name !== '__tests__') walk(abs); continue; }
-      if (/\.ts$/.test(e.name) && !/\.(test|spec)\.ts$/.test(e.name)) out.push(fs.readFileSync(abs, 'utf8'));
-    }
-  };
-  walk(path.join(V2_DIR, 'steps'));
-  return out.join('\n');
+  return engineText();
 }
 
 function getBroadcastEventsByType(type: string): unknown[] {

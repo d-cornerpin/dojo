@@ -29,6 +29,7 @@ import {
   DEFAULT_ALWAYS_LOADED_TOOLS,
 } from '../../tools/tool-docs.js';
 import type { ToolDefinition } from '../../agent/tools/types.js';
+import { engineText, engineFileContaining, engineFileWithBoth } from '../../agent/v2/__tests__/engine-sources.js';
 
 const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (rel: string) => fs.readFileSync(path.join(SRC, rel), 'utf8');
@@ -167,7 +168,10 @@ describe('S3 — assembly is PURE (reads only)', () => {
   });
 
   it('the one-shot markers are cleared by the TURN, not the assembly', () => {
-    expect(read('agent/v2/loop.ts')).toContain('clearConsumedOneShotFlags(agentId, ctx.consumedOneShotFlags)');
+    // PHASE-6 GUARD-AUDIT: the clear call sits inside the turn body (the `assemble`
+    // tranche) and moves with it. The requirement is "the TURN clears them", not "loop.ts
+    // contains this call", so the corpus is the engine — driver plus step packages.
+    expect(engineText()).toContain('clearConsumedOneShotFlags(agentId, ctx.consumedOneShotFlags)');
     expect(read('agent/runtime.ts')).toContain('export function clearConsumedOneShotFlags');
     // The assembler REPORTS rather than clears.
     expect(read('memory/assembler.ts')).toContain('consumedOneShotFlags');
@@ -177,7 +181,8 @@ describe('S3 — assembly is PURE (reads only)', () => {
     const td = read('tools/tool-docs.ts');
     expect(td).toContain('export function rehydrateSessionToolsFromHistory');
     expect(td).toContain('rehydratedAgents');
-    expect(read('agent/v2/loop.ts')).toContain('rehydrateSessionToolsFromHistory(agentId)');
+    // PHASE-6 GUARD-AUDIT: the call site is inside the turn body (`preflight`) and moves.
+    expect(engineText()).toContain('rehydrateSessionToolsFromHistory(agentId)');
   });
 
   it('a session reset stays reset — it does not re-import the history it was told to forget', () => {
@@ -193,9 +198,13 @@ describe('RULING P3-R1 — a registered entry with no injection site is impossib
   it('every registered message entry has a live injection site in the loop', async () => {
     const { getMessageEntries } = await import('../../prompt/registry/registry.js');
     await import('../../prompt/registry/entries.js');
-    const loop = read('agent/v2/loop.ts');
+    // PHASE-6 GUARD-AUDIT: the ten `injectRegistryMessage` call sites are spread across the
+    // `assemble` and `callLLM` tranches — they move in TWO different cuts. Read against
+    // `loop.ts` alone this clause would have reported every migrated entry as an orphan
+    // (loud, but a false accusation), and once BOTH tranches had gone it would have
+    // reported them all. The corpus is the engine.
     const injected = new Set(
-      [...loop.matchAll(/injectRegistryMessage\('([^']+)'/g)].map((m) => m[1]),
+      [...engineText().matchAll(/injectRegistryMessage\('([^']+)'/g)].map((m) => m[1]),
     );
     const registered = getMessageEntries().map((e) => e.id);
     expect(registered.length).toBeGreaterThan(0);
@@ -208,8 +217,28 @@ describe('RULING P3-R1 — a registered entry with no injection site is impossib
   });
 
   it('msg.peer-status is injected, and between turn-context and current-time', () => {
-    const loop = read('agent/v2/loop.ts');
-    const at = (id: string) => loop.indexOf(`injectRegistryMessage('${id}'`);
+    // ⚠ PHASE-6 GUARD-AUDIT 2026-08-04 — THE ORDER TRAP, AND THIS CLAUSE WAS SITTING IN IT.
+    //
+    // `at()` was `loop.indexOf(...)`, which returns -1 when a site is absent. Only
+    // `msg.peer-status` had a `toBeGreaterThan(-1)` guard, so if `msg.turn-context` moved
+    // into a step package while `peer-status` stayed, the comparison became `-1 < 4003` —
+    // TRUE, and the near-tail order contract silently stopped being checked.
+    //
+    // Widening to a concatenated corpus would NOT fix it: comparing indices across a join
+    // measures the order the FILES were joined in, not the order the engine executes. So
+    // all three sites are pinned to ONE engine file first. A tranche that splits them
+    // fails LOUDLY here, which is correct — once they are in different modules, position
+    // in a file no longer sequences them and the contract needs re-stating, not re-reading.
+    const needle = (id: string) => `injectRegistryMessage('${id}'`;
+    const home = engineFileWithBoth(needle('msg.turn-context'), needle('msg.current-time'));
+    const peer = engineFileContaining(needle('msg.peer-status'));
+    expect(peer, 'msg.peer-status has no injection site anywhere in the engine').not.toBeNull();
+    expect(
+      peer!.rel,
+      `the near-tail trio is split: turn-context/current-time are in ${home.rel} but ` +
+      `peer-status is in ${peer!.rel}. Their ORDER can no longer be read off file positions.`,
+    ).toBe(home.rel);
+    const at = (id: string) => home.text.indexOf(needle(id));
     expect(at('msg.peer-status')).toBeGreaterThan(-1);
     // The near-tail order 1850 → 1875 → 1900 is a preserved contract (Global Constraints).
     expect(at('msg.turn-context')).toBeLessThan(at('msg.peer-status'));

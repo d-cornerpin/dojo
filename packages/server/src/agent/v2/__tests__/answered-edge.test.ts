@@ -69,6 +69,9 @@ import { abandonUnservableAsks, openAsk, transition } from '../../../work/store.
 import { insertMessage } from '../../../memory/message-store.js';
 import { listTaskLog } from '../../../tracker/task-log.js';
 import { seedTrackerTask } from '../../../work/__tests__/work-fixture.js';
+// PHASE-6 GUARD-AUDIT 2026-08-04: the shared engine-corpus derivation (driver + step
+// packages). See its header for why a guard must stop naming `agent/v2/loop.ts` by hand.
+import { engineSources } from './engine-sources.js';
 
 const AGENT = 'kevin';
 const CONV = 'conv-1';
@@ -706,15 +709,23 @@ describe('1g — the truthful-answer key names the DELIVERY that proves it', () 
     expect(terminalDeliveryForTurn(AGENT, 4, CONV)).toBeNull();
   });
 
-  it('CONFORMANCE: the key has exactly ONE setter in the loop', () => {
-    const src = fs.readFileSync(
-      path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'loop.ts'), 'utf8',
-    );
+  it('CONFORMANCE: the key has exactly ONE setter in the ENGINE', () => {
+    // PHASE-6 GUARD-AUDIT 2026-08-04: the corpus became THE WHOLE ENGINE — the driver plus
+    // every step package — walked FILE BY FILE via `engineSources()`. The setter is at
+    // loop.ts:2048, inside `runV2TurnBody`, so it travels into `agent/v2/steps/preflight/`
+    // with its tranche; a read of `../loop.ts` by path would have been left scanning a file
+    // that no longer contains the fact it is counting writers of. Walking the engine is
+    // STRICTLY STRONGER than the old driver-only scan, not weaker: the property asserted is
+    // still "exactly this one line assigns the key", but it is now measured over the step
+    // packages too, so a SECOND setter appearing in any of them fails here instead of being
+    // invisible. Kept as a per-file walk (not `engineText()`) purely so the line-level filter
+    // is unaffected by how the files are joined.
+    const assignments = engineSources().flatMap((s) => s.text.split('\n'))
+      .filter((l) => /(?<![!=<>])\bterminalAnswerRowId\s*=[^=]/.test(l));
     // Four bare assignments were four writers of one fact, which is how the fact drifts.
     // `noteTerminalAnswer` is the only line that may assign it. (The declaration's
     // initialiser carries a type annotation, so the pattern below does not see it — which
     // is why the expectation is one line and not two.)
-    const assignments = src.split('\n').filter((l) => /(?<![!=<>])\bterminalAnswerRowId\s*=[^=]/.test(l));
     expect(assignments.map((l) => l.trim())).toEqual(['terminalAnswerRowId = rowId;']);
   });
 });
