@@ -245,6 +245,22 @@ export interface TurnContext {
   toolPhaseEndedBySpinBrake: boolean;
   spinBrakeGraceCalls: number;
 
+  /** RC-4.4: true while a model call is streaming for this turn, set around the
+   *  `callModel` await and cleared in that attempt's `finally`.
+   *
+   *  ⚠ POPULATION 2, and it carries a MEASUREMENT rather than a hazard, because the
+   *  measurement is the interesting part. `git grep -nw modelCallInFlight` over
+   *  `packages/server/src` and `packages/dashboard/src` returns THREE hit lines — the
+   *  declaration and the two writes — and NO READER anywhere. Its declaration comment
+   *  still said "the start-ack timer / first-tool hook consults it"; that reader is
+   *  gone, and the sentence is replaced here by what the command says rather than
+   *  carried forward, the same correction CUT 4 made to `deferredUserReplyWithTools`.
+   *  It migrates under RULING P6-R3(1)'s rule so the writes keep working exactly as
+   *  they do today: a relocation does not get to retire a flag. The disposition —
+   *  restore the grace's reader, or retire the flag with positive evidence — is handed
+   *  up, and it is the same class as CUT 4's `engineCompletionAckThisTurn` (H1). */
+  modelCallInFlight: boolean;
+
   ownerAffinityConversationId: string | null;
   ownerAffinityDestination: 'imessage' | null;
 
@@ -307,6 +323,7 @@ export function openTurnContext(agentId: string): TurnContext {
     phoneStreamCallSid: null,
     toolPhaseEndedBySpinBrake: false,
     spinBrakeGraceCalls: 2,
+    modelCallInFlight: false,
     ownerAffinityConversationId: null,
     ownerAffinityDestination: null,
     deferredUserReplyWithTools: null,

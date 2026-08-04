@@ -80,6 +80,9 @@ const THE_DRIVER_CARRIES = [
   // directions, so it is the one family here that by value would be wrong twice over.
   'toolPhaseEndedBySpinBrake',
   'spinBrakeGraceCalls',
+  // Migrated with a MEASUREMENT rather than a hazard: it has no reader anywhere, and a
+  // relocation does not get to retire a flag. See the field's own comment.
+  'modelCallInFlight',
   'ownerAffinityConversationId',
   'ownerAffinityDestination',
   'deferredUserReplyWithTools',

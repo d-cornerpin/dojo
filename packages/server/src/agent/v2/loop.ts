@@ -2208,11 +2208,12 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // timer is armed below, after every exit that returns before the main `try`
   // opens, so nothing can arm it and skip the teardown that cancels it.
   let anyToolStartedThisTurn = false;
-  // RC-4.4: true while a model call is streaming for this turn. The start-ack timer /
-  // first-tool hook consults it to add a bounded streaming-race grace before firing, so
-  // an ack does not land 1s before the model's real reply (the F-11 double-ack). Set
-  // around the callModel await below.
-  let modelCallInFlight = false;
+  // RC-4.4: true while a model call is streaming for this turn, set around the
+  // `callModel` await below. PHASE-6 T5 (CUT 5): MIGRATED to the turn's bag under
+  // RULING P6-R3(1) — the span writes it and the declaration is the driver's. The
+  // comment that stood here claimed the start-ack timer consults it; it does not, and
+  // nothing else does either. The measurement, and what is and is not being claimed
+  // by moving a flag with no reader, are written at the field.
   // RC-4.2: the turn counterparty is another Dojo agent texting over a human channel
   // (an iMessage safe-sender flagged is_agent). Channel-delivered engine acks (start /
   // completion / A2A-handoff) are gated OFF for such a counterparty: another agent does
@@ -3507,7 +3508,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         try {
           // RC-4.4: mark the model call in flight so the start-ack streaming-race grace
           // can defer firing while the reply is still streaming. Cleared in the finally.
-          modelCallInFlight = true;
+          turnCtx.modelCallInFlight = true;
           result = await callModel({
             agentId,
             modelId,
@@ -3708,7 +3709,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         } finally {
           // RC-4.4: the model call for this attempt has settled (success break, retry
           // continue, or throw); it is no longer in flight. A retry sets it true again.
-          modelCallInFlight = false;
+          turnCtx.modelCallInFlight = false;
         }
       }
 
