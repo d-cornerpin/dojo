@@ -2017,7 +2017,21 @@
       "to": 1702,
       "by": "PHASE-6 T0C-W (2026-08-04) — the census wire-throughs + `overdue`, owner-decided",
       "why": "net +1: the due query's four-line WHERE became one `dueScope('w')` call, and three comment lines record that the scheduler and the list filter now answer from one declaration."
-    }
+    },
+    {
+        "path": "packages/server/src/agent/turn-context.ts",
+        "from": 380,
+        "to": 430,
+        "by": "PHASE-6 T5 (CUT 5, 2026-08-04) — the `callLLM` tranche's carrier families under RULING P6-R3(1)",
+        "why": "+50, and all of it is the four carrier fields and the reasoning that belongs AT each site rather than only in a report: the phone-stream family's third local (the one CUT 4 named at its declaration and deferred to this tranche, with the honest label that by value it would be correct today), the spin-brake pair (the one family here whose by-value alternative is wrong in BOTH directions — `execute` latches the flag, `callLLM` reads it a whole iteration later, and `callLLM` writes the grace counter that must survive into the next one), and the in-flight flag, which carries a MEASUREMENT instead of a hazard: `git grep -nw modelCallInFlight` over `packages/server/src` and `packages/dashboard/src` returns three hit lines — the declaration and two writes — and NO reader, so the comment claiming the start-ack timer consults it was false and is replaced by the command's answer. THE ALTERNATIVES WERE MEASURED. (a) Migrate the four fields with one-line comments (+~12): REFUSED — CUT 4 established at this same file that a carrier which claims a hazard it does not have teaches the next reader to discount the ones that do, so each field states which of the two it is; three of these four would have been correct by value today and say so. (b) Leave `modelCallInFlight` in the driver because nothing reads it (+0): REFUSED — a relocation does not get to retire a flag, and non-negotiable #15 forbids resting that on an absence; the finding is handed up instead. (c) Write the reasons into the report only (+0): REFUSED for the reason T9b recorded when it raised this same file — a report is not where the next reader of this field looks. From here this file may only shrink."
+      },
+      {
+        "path": "packages/server/src/agent/v2/steps/step-outcome.ts",
+        "from": 78,
+        "to": 100,
+        "by": "PHASE-6 T5 (CUT 5, 2026-08-04) — the fourth directive, `abandon`",
+        "why": "+22: twelve lines of header explaining `abandon` vs `exit` ONCE for all nine steps, eight lines of the function and its doc, two in the type union. THE REQUIREMENT: the `callLLM` span holds the engine's only two exits that leave the TURN rather than the loop — the stopped and preempted mid-call `return`s, for which finalize does not run — and CUT 4's finalize contract already pins them at exactly two from the driver's side. A module cannot `return` from its caller. THE ALTERNATIVES WERE MEASURED AND REFUSED. (a) Give the `callLLM` step a PRIVATE outcome type carrying its own abandon (+0 here, ~+15 there): refused by this file's own opening sentence — it is deliberately the only thing the nine step packages share, 'so nine tranches cannot grow nine conventions', and a turn-abandoning exit is engine vocabulary, not one step's. (b) Reuse `exit` and let the driver map two reason strings onto a `return`: refused — string-typed control flow, and `exit` means finalize STILL RUNS; the two are behaviourally different, and copying the neighbour's word would have routed a stopped turn through the reply-destination router. (c) Ship the directive without the header paragraph (+10): refused — the difference between leaving the loop and leaving the turn is exactly what a later tranche will get wrong, and this file is where it is written once. This is the FIRST change to the shared contract in five cuts; three of them reused it unchanged. From here this file may only shrink."
+      }
   ],
   "maxNewFileLines": 400,
   "files": {
@@ -2076,16 +2090,20 @@
     "packages/server/src/agent/tools/surface.ts": 657,
     "packages/server/src/agent/tools/types.ts": 338,
     "packages/server/src/agent/tools/util.ts": 371,
-    "packages/server/src/agent/turn-context.ts": 380,
+    "packages/server/src/agent/turn-context.ts": 430,
     "packages/server/src/agent/turn-state.ts": 218,
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 482,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 7884,
+    "packages/server/src/agent/v2/loop.ts": 7342,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 433,
     "packages/server/src/agent/v2/recovery.ts": 605,
     "packages/server/src/agent/v2/state.ts": 610,
+    "packages/server/src/agent/v2/steps/call-llm/index.ts": 198,
+    "packages/server/src/agent/v2/steps/call-llm/model-call.ts": 312,
+    "packages/server/src/agent/v2/steps/call-llm/model-selection.ts": 109,
+    "packages/server/src/agent/v2/steps/call-llm/pre-call-injections.ts": 229,
     "packages/server/src/agent/v2/steer-queue.ts": 275,
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
     "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts": 70,
@@ -2185,7 +2203,7 @@
     "packages/shared/src/ws.ts": 1088,
     "watchdog/src/index.ts": 1198,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 235,
-    "packages/server/src/agent/v2/steps/step-outcome.ts": 78,
+    "packages/server/src/agent/v2/steps/step-outcome.ts": 100,
     "packages/server/src/agent/v2/steps/finalize/index.ts": 171,
     "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 391,
     "packages/server/src/agent/v2/steps/finalize/route-reply.ts": 211,
