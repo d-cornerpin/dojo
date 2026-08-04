@@ -1618,6 +1618,20 @@
       "to": 340,
       "by": "PHASE-5 T8 Step 3 the office door (2026-08-03, T8G) — the fourth named indirection",
       "why": "PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 3(1)(c). +6 lines, 4 of them COMMENT and 1 the resolver entry: `office_local_path` joins INDIRECT_RESOLVERS, pointing at the office door's OWN local-path predicate. No branch was added — it reuses the `via` path mechanic 5 already landed — which is the point: the third application of the same-reader principle needed one table row, not a new mechanism. THE COMMENT EARNS ITS PLACE because this entry is the only one whose resolver answers `null` for a WELL-FORMED argument (a genuine OneDrive id), and a reader who does not know that will read the null as a bug. THE ALTERNATIVE WAS MEASURED: teaching the resolver a `looksLikeAPath` rule of its own instead of calling the handler's (about the same lines) — REFUSED outright, because that is the facade layer growing a predicate the handler does not share, and the two would then be free to disagree about what a call means. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 340."
+    },
+    {
+      "path": "packages/server/src/google/tools-slides.ts",
+      "from": 3011,
+      "to": 3016,
+      "by": "PHASE-5 T8 Step 3 the slides door (2026-08-03, T8G) — the schema documents the property it has always accepted",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R14 + ADDENDUM 2's precedent. +5 lines NET, and the arithmetic is worth reading: the style writer's mkdir + tmp + rename LEFT for the carrying layer (minus 3), 11 fs call sites became facade calls at no cost, 18 declarations were rewritten in place at no cost, and slides_build_slide's `elements` items grew from `{ type: 'object' }` to a four-line object documenting `file_path` (+5, +3 net after the writer's departure). THE DEFECT IT FIXES: every slides_* verb declared effects: [] while SIXTEEN read ~/.dojo/data/slides_styles.json and two write it, and slides_build_slide reads a LOCAL image whose path was documented only in description prose. T1's conformance walk refused args.elements[].file_path until the schema said what the tool has always accepted. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Leave the schema alone and drop the image declaration (minus 5): REFUSED — the read is real and the converted door would refuse it, i.e. kind:'image_local' stops working, and this is the exact defect T8F caught on pdf_create. (b) Document every element kind's properties, not just file_path (+60 or so): REFUSED as scope this task did not measure — the tripwire asks about the resource property, the description already carries the rest, and every added property changes the provider payload and owes another prefix re-blessing. (c) Rule `file_path` inert instead (minus 4): REFUSED — it is a real read of a real file the agent names, the opposite of inert. THE OR7 COST WAS PAID RATHER THAN ASSUMED: both golden gates were RUN on the box before the commit and both PASSED with both references byte-unchanged. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 3016."
+    },
+    {
+      "path": "packages/server/src/agent/effects/fs.ts",
+      "from": 0,
+      "to": 258,
+      "by": "PHASE-5 T8 Step 3 (2026-08-03, T8G) — FIRST PIN, at the growth detector's own instruction",
+      "why": "PHASE-5 T8 Step 3. FIRST PIN, not a raise: check-growth.mjs flagged this file at 258 lines for crossing 60% of the 400-line new-file cap, and its own remedy is to pin it here so the decision is visible and the file is decrease-only from now on. WHY IT GREW: it is the fs half of the effect facade, and it grows by ONE ENTRY PER CONVERTED CATEGORY on purpose — an operation nothing calls is unexercised code pretending to be a lock, so each category brings the operations it drives and a test that drives them. This sitting added a `withFileTypes` overload (the techniques search walk) and a SECOND temp-then-rename entry moved WHOLE out of the slides style writer. THE ALTERNATIVES WERE MEASURED. (a) Split the sync and promises surfaces into two modules (minus about 100 here): REFUSED — the shape is deliberately 1:1 with node:fs so a conversion stays a rename plus an await, and two modules would make a converted call site import two things to replace one. (b) Blend the new temp-rename entry into atomicWriteFile (minus 26): REFUSED — different temp naming, different sync/async shape; merging them would change one caller's behaviour to match the other's, which a relocation may never do. (c) Drop the entry comments (minus 60): REFUSED — every entry's comment says WHAT IS DECLARED versus what is the carry's own implementation detail, and that distinction is the whole difference between a lock and a rename. THE DIRECTION IS ENFORCED FROM HERE: this file may only shrink from 258."
     }
   ],
   "maxNewFileLines": 400,
@@ -1699,7 +1713,7 @@
     "packages/server/src/google/auth.ts": 771,
     "packages/server/src/google/tools-forms.ts": 821,
     "packages/server/src/google/tools-read.ts": 944,
-    "packages/server/src/google/tools-slides.ts": 3011,
+    "packages/server/src/google/tools-slides.ts": 3016,
     "packages/server/src/google/tools-write.ts": 1862,
     "packages/server/src/healer/approval-routing.ts": 496,
     "packages/server/src/healer/diagnostic.ts": 1036,
@@ -1770,6 +1784,7 @@
     "packages/shared/src/types.ts": 527,
     "packages/shared/src/visibility.ts": 881,
     "packages/shared/src/ws.ts": 1088,
-    "watchdog/src/index.ts": 1198
+    "watchdog/src/index.ts": 1198,
+    "packages/server/src/agent/effects/fs.ts": 258
   }
 }
