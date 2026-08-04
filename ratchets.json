@@ -2,6 +2,13 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+          "path": "packages/server/src/agent/tools/definitions.ts",
+          "from": 2749,
+          "to": 2757,
+          "by": "PHASE-5 T12 (2026-08-03) — file_append declares the separator peek it has always performed",
+          "why": "PHASE-5 T12, RULING P5-R14 — the declaration-correction class T8D established on `image_create`. +8 lines, ALL of them the reason comment; the `effects[]` line itself is unchanged in count (one entry becomes two on the same physical line). THE DEFECT IT FIXES: the exit battery `bmse5ef28xy` scenario `edit-existing-doc` recorded `Effect refused: file_append is not authorized for fs_read <path>` — at `ensure_newline`'s DEFAULT against a non-empty file `executeFileAppend` opens the same path for READING to inspect the trailing byte, and the declaration named only the write. A declaration can be honest and still be short by one, and the facade is what found it. It adds NO refusal: gate rows are declared in `tools/gates.ts` and are never derived from `effects[]` (RULING P5-R5), and the read names the SAME file as the write, so nothing widens — held by the clause that refuses a neighbour in both directions. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Drop the reason comment and keep the corrected declaration (+0): REFUSED for the reason every T8 category recorded on this same file — \"we looked and this is what it does\" and \"nobody looked\" must never read the same, and the next reader has to know the correction adds no refusal or it will be re-litigated. The first draft of this comment was TEN lines and was tightened to eight against its sibling `image_create`'s, which is the same correction in the same file; that is the saving taken instead. (b) Reformat the two effects onto separate physical lines like the multi-entry declarations elsewhere in this file (+2): REFUSED — `file_patch`, the tool with the identical two-direction shape on the identical `args.path`, uses the one-line form, and a second spelling of one shape is how a reader stops seeing them as one class. (c) Close the red by widening the grant, excluding the file, or changing the scenario (+0): REFUSED IN ADVANCE by the orchestrator's ruling and by this phase's posture — none of the three states what the code does, and a capability that only works because a grant was widened is the lost capability still lost. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2757."
+    },
+    {
           "path": "packages/server/src/index.ts",
           "from": 1172,
           "to": 1178,
@@ -1738,7 +1745,7 @@
     "packages/server/src/agent/tools/cat/session.ts": 241,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
     "packages/server/src/agent/effects/scopes.ts": 349,
-    "packages/server/src/agent/tools/definitions.ts": 2749,
+    "packages/server/src/agent/tools/definitions.ts": 2757,
     "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/index.ts": 642,
