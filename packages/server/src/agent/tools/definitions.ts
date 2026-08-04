@@ -629,6 +629,11 @@ export const toolDefinitions: ToolDefinition[] = [
     description:
       'Open a canvas in the user\'s right dock, a side panel where you and the user look at a working document together. The dojo interface slides left to make room and the canvas renders on the right. Use this to show the user something you have produced or have on disk: an HTML page, a Markdown doc, a plain-text/code file, a report, a chart, a mockup, or a Word / Excel / PDF document (these render as a formatted preview).\n\nNOTE: any canvas-renderable file already opens in the canvas automatically the moment you create it, writing one with file_write (HTML, Markdown, text, code, JSON, CSV, SVG, ...) and creating a Word / Excel / PDF document all auto-open. You usually do NOT need to call canvas_render at all. Use canvas_render to (re)show an existing file, or to render inline `html` / a `url`.\n\nThree ways to fill it (use ONE):\n  • `path`, the absolute path to a file on disk you wrote with file_write (e.g. "/Users/.../uploads/<agent-id>/report.md"). BEST for documents you will keep editing: HTML renders, Markdown renders formatted, text/code shows monospaced, and the canvas gets a download button. After you call canvas_render({path}), any later file_write / file_patch / file_append to that SAME path auto-refreshes the canvas, you do NOT need to call canvas_render again. For HTML, relative asset paths resolve against the file\'s own folder, so reference local images as <img src="photo.png"> with the image saved next to the .html file and it will render.\n  • `html`, inline HTML markup to render directly (runs sandboxed); no file needed. Inline markup cannot reference local files, embed images as data: URIs or write a file with the image beside it instead.\n  • `url`, content already hosted at a URL (a file_write download URL also works).\n\nExamples:\n  • canvas_render({ title: "Spec", path: "/Users/me/uploads/<agent-id>/spec.md" })\n  • canvas_render({ title: "Q3", html: "<h1>Q3</h1><p>...</p>" })',
     effects: [{ kind: 'fs_read', from: 'args.path' }, { kind: 'net', from: 'args.url' }],
+    // PHASE-6 T0C: `src` is an HTML attribute inside the worked example
+    // (`<img src="photo.png">`), not a parameter of this tool.
+    advertisedNotDeclared: {
+      src: 'an HTML attribute in the inline example markup, not a parameter of this tool',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -977,6 +982,13 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'work_open',
     description: 'Open a new piece of work. `kind` picks what: "project" (multi-step work with tasks), "task" (a single piece of work, optionally scheduled or recurring), "reminder" (something to tell the user at a time), "commitment" (a promise you just made).\n\n**Open a project or task BEFORE starting any work that has a deliverable, requires multiple steps, or takes more than ~3 tool calls.** The work board is your durable plan, it survives compaction, session resets, and agent restarts; your context does not. Source files you read get summarized; work rows do not. For anything beyond a one-shot Q&A, this is your safety net against losing the plan halfway through.\n\nDon\'t try to predict whether you\'ll finish in one push, you usually can\'t, and the failure mode is silent context loss followed by writing the deliverable from your own summarized memory (i.e. confabulating). The cost of opening an entry you didn\'t end up needing is zero. The cost of NOT opening one for work that turns out to be multi-step is 30+ minutes of stalled work, PM pokes, and lost context.\n\n**Cheap to open, just a title and a level is enough.** You don\'t need to know every task upfront. Add tasks incrementally with `work_open(kind="task", project_id=…)` as you discover the shape of the work. If you\'re unsure whether to open one, open one.\n\nASSIGNMENT MATTERS (read once, internalize): nested tasks default `assigned_to=YOU` (the calling agent) when not specified. If apprentices will do the work, either spawn them FIRST and pass their agent_id in each task\'s `assigned_to`, or spawn them with `task_id` pointing at tasks already created here. If neither happens, apprentice work won\'t close out the tasks.\n\n**kind="task"** can run immediately, at a scheduled time, or on a repeating schedule. To schedule: set scheduled_start to an ISO8601 datetime (e.g., "2026-03-20T22:35:00Z"). To repeat: also set repeat_interval and repeat_unit (e.g., repeat_interval=2, repeat_unit="hours" for every 2 hours). Use repeat_end_type="after_count" with repeat_end_value="3" to stop after 3 runs. Use get_current_time to find the current time, then add minutes/hours for the start time. Tasks without scheduled_start run immediately when assigned.\n\n**kind="reminder"** sets a reminder for the user. When the scheduled time arrives, you (the agent) will be woken with the reminder text and should deliver it to the user as a single short chat message in your normal voice, no preamble like "Reminder:" or "Here\'s your reminder", just say the thing. **If the user did not specify a time, call this WITHOUT `when`.** The tool will return an instruction telling you to ask the user. Get their answer, then call `get_current_time` to resolve relative phrases ("in 5 minutes", "tomorrow at 8am"), and re-call with `when` set to the resolved ISO 8601 datetime. Do not invent a time, always ask. Use kind="reminder" whenever the user asks to be reminded of something, NOT kind="task": reminders get a lighter scheduler prompt that produces a natural one-line message instead of the generic "[Scheduled Task, Run #1]" boilerplate.\n\n**kind="commitment"** records a promise you just made, at the moment you make it. When you tell someone "I\'ll do X", "I\'ll send that after Y", or "I\'ll get back to you on this", call this straight away with what you promised in `description`, in your own words. It becomes a tracked item you still owe, shown back to you in the "OPEN WORK" block until it is delivered or dropped. This is bookkeeping, do NOT write a user-facing message about it, and do NOT use it for work you have already finished this turn. Use kind="task" instead when the promise is a piece of project work that belongs on the board.',
     effects: [],
+    // PHASE-6 T0C: `task_id` is `spawn_agent`'s parameter, named here because
+    // the sentence is about how a spawned apprentice picks up work created by
+    // this call. A true cross-tool reference, and the tool that owns it is not
+    // named close enough to the token for the walk's own rule to see it.
+    advertisedNotDeclared: {
+      task_id: "`spawn_agent`'s parameter, referenced because this description explains how a spawned agent picks up work opened here",
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -1134,6 +1146,13 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'work_close_request',
     description: 'Ask for a close you cannot make yourself (Key 1 of the two-key close). `action` picks which ask:\n\n**action="override"** queues an explicit ask for the PM (or the user via dashboard) to force a status change that the engine\'s hard gate refused, OR that you believe the PM\'s last rejection got wrong. Auto-fired by the engine when the hard-gate circuit-breaker trips after 3 consecutive same-task hard-gate rejections by you (in which case you do NOT need to call this yourself, the engine queued it on your behalf). `justification` must be at least 30 characters explaining concretely why the engine/PM was wrong. Rate limit: at most one pending request per (task, you) at a time. Auto-denied after 12 hours if PM does not resolve.\n\n**action="user_verdict"** is only callable on tasks where the engine has flagged a stalemate (after revert_count crossed the per-priority threshold of high=2/normal=3/low=5). It composes a user-facing message describing the stalemate and routes it to the user (direct chat if you are primary, A2A relay through primary otherwise). The user\'s reply becomes the final verdict, applied via work_validate({action:"apply_user_verdict"}).\n\n**action="commitment"** closes an item from the OPEN WORK block once you have actually delivered it, or drops it when it is no longer owed. Call it with the id in [brackets] exactly as shown. Use disposition "kept" the moment you deliver the thing — that only works if the message or file really went out this turn, because a promise is kept by delivering it, not by saying so. Use disposition "dropped" when the person told you to forget it or it no longer applies. If you are unsure whether it is truly done, leave it open — an unfulfilled promise is meant to survive until it is actually fulfilled.',
     effects: [],
+    // PHASE-6 T0C: `high`/`normal`/`low` are the work row's PRIORITY VALUES in
+    // the per-priority threshold table `high=2/normal=3/low=5`, not parameters.
+    advertisedNotDeclared: {
+      high: "a work-row priority VALUE in the revert-count threshold table, not a parameter",
+      normal: "a work-row priority VALUE in the revert-count threshold table, not a parameter",
+      low: "a work-row priority VALUE in the revert-count threshold table, not a parameter",
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -1336,6 +1355,11 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'tunnel',
     description: 'Manage the Cloudflare tunnel for remote access. Pass `action`:\n  - "status": get the current tunnel status + public URL (use when the user asks for the dojo URL or whether remote access is running). The `url` field is what to share; `mode` tells you quick (trycloudflare.com) vs named (custom domain).\n  - "start": start the tunnel (only when the user explicitly asks to start/enable it). Optional `mode`: "quick" for a random URL, "named" for the configured persistent tunnel; defaults to the saved config.\n  - "stop": stop the tunnel (only when the user explicitly asks to stop/disable remote access).\n  - "restart": restart it (useful when stuck or the user wants a fresh URL).',
     effects: [{ kind: 'proc', from: 'derived:cloudflared (spawn; brew install on first use)' }],
+    // PHASE-6 T0C: `url` is a field of this tool's RESULT ("the `url` field is
+    // what to share"), which is the opposite direction from an input parameter.
+    advertisedNotDeclared: {
+      url: "a field of this tool's RESULT, not an input — the description tells the agent which returned value to share",
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -2389,6 +2413,11 @@ export const toolDefinitions: ToolDefinition[] = [
     description:
       'Re-load the session-start vault snapshot mid-conversation: pinned entries + entries tagged `session_context`. Use when the long-term memory has changed (you or the user just added/edited an important entry) and you want it reflected immediately without waiting for the next session reset. Returns the freshly-loaded entries as a snapshot.',
     effects: [],
+    // PHASE-6 T0C: `session_context` is a vault TAG value this tool selects on,
+    // not a parameter the caller passes.
+    advertisedNotDeclared: {
+      session_context: 'a vault entry TAG this tool selects on, not a parameter',
+    },
     input_schema: {
       type: 'object',
       properties: {},

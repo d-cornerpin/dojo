@@ -112,6 +112,44 @@ const MS_WRITE_TOOL_NAMES = new Set(microsoftWriteToolDefinitions.map(t => t.nam
 const MS_READ_TOOL_NAMES = new Set(microsoftReadToolDefinitions.map(t => t.name));
 
 
+/**
+ * THE UNKNOWN-ARGUMENT CENSUS, over the RUNTIME definition surface (PHASE-6 T0C).
+ *
+ * This is the one runtime mechanism that tells a model "that parameter is not in
+ * the schema", and until T0C it was built from `toolDefinitions` — the 112-entry
+ * CORE array — not from `toolDefinitionsByName()`, which is the 438 the platform
+ * can actually expose. It was therefore blind to 326 of 438 definitions: every
+ * Google, Microsoft, Slides, Forms, PDF, Plaud and credentials tool, plus all 117
+ * `user_` twins, could be called with a misspelt parameter and the engine said
+ * nothing. `getAllToolDefinitions()` is the surface the model is shown, so it is
+ * the surface the warning must be measured against — the twins and the injected
+ * `account` property do not exist in the core array at all.
+ *
+ * Extracted rather than inlined so the census clause can drive it: a source-text
+ * assertion that "the fix is still there" is not the same thing as calling it for
+ * a tool outside the core 112 and reading the answer.
+ *
+ * Returns `declared: null` when the name is not a live definition (an alias the
+ * caller has not resolved, a tombstone, a retired name) — the caller warns about
+ * nothing in that case, exactly as before. `__`-prefixed keys are the engine's own
+ * markers (`__malformed_args`) and are never the model's arguments.
+ */
+export function unknownArgsAgainstSchema(
+  name: string,
+  args: Record<string, unknown> | undefined,
+): { declared: ReadonlySet<string> | null; extras: string[] } {
+  const def = toolDefinitionsByName().get(name);
+  if (!def || !def.input_schema || typeof def.input_schema !== 'object') {
+    return { declared: null, extras: [] };
+  }
+  const schema = def.input_schema as { properties?: Record<string, unknown> };
+  const declared = new Set(Object.keys(schema.properties ?? {}));
+  const extras = Object.keys(args ?? {}).filter(
+    (k) => !k.startsWith('__') && !declared.has(k),
+  );
+  return { declared, extras };
+}
+
 // ── Tool Execution ──
 
 // P6a: one tool call = one execution context. Everything below records against
@@ -239,13 +277,8 @@ async function executeToolInner(agentId: string, toolCall: ToolCall): Promise<To
   // agent (and through it, the user) finds out.
   let unknownArgsWarning: string | null = null;
   try {
-    const def = toolDefinitions.find((t) => t.name === name);
-    if (def && def.input_schema && typeof def.input_schema === 'object') {
-      const schema = def.input_schema as { properties?: Record<string, unknown> };
-      const declared = new Set(Object.keys(schema.properties ?? {}));
-      const extras = Object.keys(args ?? {}).filter(
-        (k) => !k.startsWith('__') && !declared.has(k),
-      );
+    const { declared, extras } = unknownArgsAgainstSchema(name, args);
+    if (declared) {
       if (extras.length > 0) {
         // A tool the handler is ABOUT to refuse as not-available must not lead
         // with schema advice: the warning's "check the spelling with

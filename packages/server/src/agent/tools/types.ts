@@ -268,6 +268,28 @@ export interface ToolDefinition {
    * and URLs handed to a PROVIDER to fetch (`slides_add_image.image_url`).
    */
   nonEffects?: Readonly<Record<string, string>>;
+  /**
+   * TOKENS THIS DEFINITION'S OWN TEXT NAMES THAT ARE NOT ITS PARAMETERS, each
+   * with the reason (PHASE-6 T0C, the advertised-vs-actual census).
+   *
+   * The census reads every description string on this definition — the tool's
+   * own and every property's, at any depth — and requires each parameter-shaped
+   * token it advertises (`` `foo` ``, `foo="…"`) to resolve to a real property,
+   * an enum value this tool declares, or a reference to another live tool's
+   * parameter. Anything else is a promise the schema cannot keep, which is the
+   * defect class the owner reported: "descriptions and hints not matching actual
+   * parameters."
+   *
+   * The legitimate exceptions found at T0C are few and each is a different
+   * thing wearing a parameter's shape: an HTML attribute in an example, a
+   * RESULT field, a vault tag value, and — the largest class — an explicit
+   * NEGATIVE advertisement ("there is NO `header_row` field"), which is the
+   * opposite of a false promise and must not be deleted to satisfy a scan.
+   * A ruling for a token this definition no longer advertises, or that it now
+   * declares, is STALE and fails the same clause — so this cannot rot into a
+   * list of excuses.
+   */
+  advertisedNotDeclared?: Readonly<Record<string, string>>;
   /** Per-field declarations that never reach the wire. See `ToolFieldDeclaration`. */
   fields?: Readonly<Record<string, ToolFieldDeclaration>>;
   /**

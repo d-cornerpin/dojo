@@ -857,6 +857,12 @@ export const slidesToolDefinitions: ToolDefinition[] = [
     name: 'slides_build_slide',
     description: 'Build an entire slide from a freeform list of elements in ONE Slides API call. Much faster than chaining slides_add_text_box / slides_add_shape / slides_add_image / etc., because every element creation, styling, text insert, and the slide background are bundled into a single batchUpdate (one HTTP round trip instead of N). Use this when designing a custom slide that doesn\'t match a layout helper. Omit slide_id to create a new slide; pass slide_id to add elements to an existing slide. Each element kind is fully optional — leave kinds out if you don\'t need them. Returns { slide_id, element_ids: [...] } where element_ids is in the same order as the elements you supplied.',
     effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }, { kind: 'fs_read', from: 'args.elements[].file_path' }],
+    // PHASE-6 T0C: `kind` is a key of the ELEMENT OBJECT described in prose
+    // inside `elements[]` (the array's items are free-form by design), not a
+    // top-level parameter of this tool.
+    advertisedNotDeclared: {
+      kind: 'a key of the element object described in prose inside `elements[]`, not a parameter of this tool',
+    },
     input_schema: {
       type: 'object',
       properties: {

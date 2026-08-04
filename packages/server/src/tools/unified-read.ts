@@ -723,6 +723,13 @@ export const EMAIL_SEARCH_TOOL: ToolDefinition = {
   description:
     "[DEFAULT for any 'my email / check email for X' ask] Search EVERY connected mailbox at once (agent + owner, Gmail + Outlook), results labeled by source and merged most-recent-first. Use gmail_search / outlook_search / user_gmail_search / user_outlook_search only when the user names one specific mailbox. There is no `account` parameter here (the merged view spans every mailbox); the per-mailbox tools take one.",
   effects: [],
+  // PHASE-6 T0C: an explicit NEGATIVE advertisement — "There is no `account`
+  // parameter here (the merged view spans every mailbox)". The four Google and
+  // Microsoft families DO have `account`, injected at module load, which is
+  // exactly why this tool says in so many words that it does not.
+  advertisedNotDeclared: {
+    account: 'named only to say it does NOT exist on this merged view — an explicit negative advertisement distinguishing it from the per-mailbox tools that do take it',
+  },
   input_schema: {
     type: 'object',
     properties: {

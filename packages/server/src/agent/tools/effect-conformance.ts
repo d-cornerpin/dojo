@@ -124,6 +124,153 @@ export interface ConformanceProblem {
   detail: string;
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// THE ADVERTISED-VS-DECLARED WALK (PHASE-6 T0C)
+//
+// The owner's report, in his words: "descriptions and hints not matching actual
+// parameters." A tool's description is a PROMISE to the model in exactly the way
+// its `input_schema` is, and nothing checked the two against each other. This
+// walk rides the same 438-definition runtime census the effects walk already
+// runs, because the two surfaces it compares live on the same object: a static
+// scan cannot see the 117 `user_` twins (spread-generated at module load) and
+// under-reports the declared surface by one property on 234 definitions (the
+// `account` parameter is injected at module load by four family modules). A
+// census that greps is a census that lies, in the direction of "no mismatch".
+// ════════════════════════════════════════════════════════════════════════════
+
+/** What the walk needs about the REST of the surface to judge one definition. */
+export interface AdvertisementContext {
+  /** Every live tool name — a description may legitimately name another tool. */
+  toolNames: ReadonlySet<string>;
+  /** Tool name -> its declared property names, so a cross-tool reference resolves. */
+  declaredByTool: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+/**
+ * A token being ADVERTISED as a parameter. Two shapes, both derived from reading
+ * the real corpus rather than invented: a backticked identifier (`` `anchor_time` ``)
+ * and a named argument with a value (`local_time="2026-08-05T13:00"`). Bare words
+ * in prose are deliberately NOT a shape — "pass the title" names no parameter, and
+ * a scan that flagged it would drown its own findings.
+ */
+const ADVERTISED_TOKEN =
+  /`([a-z][a-z0-9]*(?:_[a-z0-9]+)*)`|\b([a-z][a-z0-9]*(?:_[a-z0-9]+)*)\s*=\s*(?:["'“]|true\b|false\b|\d)/g;
+
+/** How far back a tool name may sit and still own the token after it. */
+const CROSS_TOOL_WINDOW = 70;
+
+/** Every description string this definition carries, with where it lives. */
+export function describedStrings(def: Pick<ToolDefinition, 'description' | 'input_schema'>): Array<{ where: string; text: string }> {
+  const out: Array<{ where: string; text: string }> = [];
+  if (typeof def.description === 'string' && def.description) out.push({ where: 'description', text: def.description });
+  const recurse = (node: unknown, prefix: string): void => {
+    const props = (node as { properties?: unknown } | undefined)?.properties;
+    if (!props || typeof props !== 'object') return;
+    for (const [key, raw] of Object.entries(props as Record<string, unknown>)) {
+      const child = raw as { description?: unknown; items?: unknown; properties?: unknown } | undefined;
+      const path = prefix ? `${prefix}.${key}` : key;
+      if (typeof child?.description === 'string' && child.description) {
+        out.push({ where: `properties.${path}.description`, text: child.description });
+      }
+      if (child?.properties) recurse(child, path);
+      if (child?.items) recurse(child.items, `${path}[]`);
+    }
+  };
+  recurse(def.input_schema, '');
+  return out;
+}
+
+/** Every enum value declared anywhere on this definition's schema. */
+export function declaredEnumValues(def: Pick<ToolDefinition, 'input_schema'>): Set<string> {
+  const out = new Set<string>();
+  const recurse = (node: unknown): void => {
+    const props = (node as { properties?: unknown } | undefined)?.properties;
+    if (!props || typeof props !== 'object') return;
+    for (const raw of Object.values(props as Record<string, unknown>)) {
+      const child = raw as { enum?: unknown; items?: unknown; properties?: unknown } | undefined;
+      if (Array.isArray(child?.enum)) for (const v of child.enum) out.add(String(v));
+      if (child?.properties) recurse(child);
+      if (child?.items) recurse(child.items);
+    }
+  };
+  recurse(def.input_schema);
+  return out;
+}
+
+/**
+ * THE WALK. Every parameter-shaped token this definition's own text advertises
+ * resolves to something real, or carries a ruling with a reason.
+ *
+ * Clause 9  every advertised token is (a) a property of THIS tool's schema at any
+ *           depth, (b) an enum VALUE this tool declares, (c) another live tool's
+ *           name, (d) a parameter of another live tool NAMED within the preceding
+ *           70 characters — `work_update(action="get")` in `send_to_agent`'s
+ *           description is a true cross-reference, not a false promise — or (e) a
+ *           ruling in `advertisedNotDeclared` with a non-empty reason.
+ * Clause 9b every ruling still describes the tree: a ruling for a token this
+ *           definition no longer advertises, or that it now declares, is STALE.
+ *           The same anti-rot rule `nonEffects` and the door census already carry.
+ */
+export function checkAdvertisedParameters(def: ToolDefinition, ctx: AdvertisementContext): ConformanceProblem[] {
+  const problems: ConformanceProblem[] = [];
+  const tool = def.name;
+  const push = (clause: string, detail: string): void => { problems.push({ tool, clause, detail }); };
+
+  const declared = new Set(walkSchemaFields(def).map((f) => leafFieldName(f.path)));
+  const enums = declaredEnumValues(def);
+  const rulings = def.advertisedNotDeclared ?? {};
+  const texts = describedStrings(def);
+  const advertised = new Set<string>();
+
+  for (const { where, text } of texts) {
+    ADVERTISED_TOKEN.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = ADVERTISED_TOKEN.exec(text))) {
+      const token = m[1] ?? m[2];
+      if (!token) continue;
+      advertised.add(token);
+      if (declared.has(token) || enums.has(token) || ctx.toolNames.has(token)) continue;
+
+      // (d) a parameter of another tool this sentence has just named.
+      const before = text.slice(Math.max(0, m.index - CROSS_TOOL_WINDOW), m.index);
+      let crossReferenced = false;
+      for (const [other, otherProps] of ctx.declaredByTool) {
+        if (other === tool) continue;
+        if (!before.includes(other)) continue;
+        if (otherProps.has(token)) { crossReferenced = true; break; }
+      }
+      if (crossReferenced) continue;
+
+      const reason = rulings[token];
+      if (reason !== undefined) {
+        if (reason.trim() === '') {
+          push('9 advertised resolves', `advertisedNotDeclared["${token}"] has no reason — a ruling with no reason is silence`);
+        }
+        continue;
+      }
+      push(
+        '9 advertised resolves',
+        `${where} advertises "${token}", which is not a property of this tool's input_schema, ` +
+        `not an enum value it declares, and not another tool's parameter named beside it — ` +
+        `declare it, correct the text, or rule it in advertisedNotDeclared with the reason`,
+      );
+    }
+  }
+
+  for (const [token, reason] of Object.entries(rulings)) {
+    if (declared.has(token)) {
+      push('9b ruling is live', `advertisedNotDeclared["${token}"] is STALE — this tool now DECLARES that property, so the ruling excuses a promise it is keeping`);
+    } else if (!advertised.has(token)) {
+      push('9b ruling is live', `advertisedNotDeclared["${token}"] is STALE — no description on this tool advertises "${token}" any more`);
+    }
+    if (typeof reason !== 'string') {
+      push('9b ruling is live', `advertisedNotDeclared["${token}"] carries no reason string`);
+    }
+  }
+
+  return problems;
+}
+
 /**
  * THE WALK. Returns every problem on one definition; an empty array is a pass.
  *
@@ -249,7 +396,7 @@ export function checkEffectDeclarations(def: ToolDefinition): ConformanceProblem
   }
 
   const schemaJson = JSON.stringify(def.input_schema);
-  for (const forbidden of ['"effects"', '"nonEffects"', '"secret"']) {
+  for (const forbidden of ['"effects"', '"nonEffects"', '"secret"', '"advertisedNotDeclared"']) {
     if (schemaJson.includes(`${forbidden}:`)) {
       push('8 off the wire', `${forbidden} appears inside input_schema, which is serialized to the provider verbatim — declarations are siblings of input_schema, never children (OR7 cache-prefix law)`);
     }
