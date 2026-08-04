@@ -704,6 +704,14 @@ async function main(): Promise<void> {
           error: err instanceof Error ? err.message : String(err),
         });
       }
+
+      // PHASE-6 T0A Step 4 — the compensated-anchor scan. This is the boot that
+      // makes `anchor_time` reach the row again, which is exactly the boot on
+      // which a timezone workaround entered while the door was dropping it stops
+      // being a correction and becomes an error of the same size. One-shot, with
+      // its own denominator and its own reporting; it never rewrites a schedule.
+      const { runAnchorCompensationPass } = await import('./scheduler/anchor-compensation.js');
+      runAnchorCompensationPass();
     }
   }
 
