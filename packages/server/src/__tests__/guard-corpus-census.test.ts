@@ -167,6 +167,16 @@ const DRIVER_BY_PATH: Declaration[] = [
       + 'not where it expects. It cannot go quiet; it can only stop the build.',
   },
   {
+    rel: 'packages/server/src/agent/v2/steps/finalize/__tests__/contract.test.ts',
+    verdict: 'cannot-go-quiet',
+    why: 'Same kind as the teardown contract above, and for the same reason: its SUBJECT IS THE '
+      + "DRIVER'S OWN STRUCTURE. It parses `runV2TurnBody` to prove the finalize step is the LAST "
+      + 'statement of the turn\'s main `try` — which is what makes "every `break` path reaches the '
+      + 'stamping" true by the language rather than by habit — and it counts the two mid-call '
+      + '`return`s that genuinely bypass it. Both questions are only answerable against the driver, '
+      + 'and it `throw`s ("runV2TurnBody not found") rather than passing when the shape moves.',
+  },
+  {
     rel: 'packages/server/src/credentials/__tests__/credential-hydration.test.ts',
     verdict: 'step-aware',
     why: 'The CORPUS is a recursive walk of `packages/server/src`, so a moved call site stays '
