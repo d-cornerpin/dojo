@@ -94,6 +94,13 @@ const THE_DRIVER_CARRIES = [
   'lastAssembledAtIso',
   'assemblerOverheadTokens',
   'freshTailDropWarned',
+  // The F10 start-ack steer's four locals are ONE mechanism split across FOUR spans,
+  // and the request flag is written from the wall-clock TIMER — the by-value test's
+  // own disqualifier, and T2's named live-read case in the tree's own words.
+  'startAckSteerRequested',
+  'startAckSteerArmedThisTurn',
+  'startAckSteersInjected',
+  'startAckSteerInjectedAtLoop',
 ];
 
 /** The six in `turn-state.ts` that OUTLIVE the turn on purpose. */

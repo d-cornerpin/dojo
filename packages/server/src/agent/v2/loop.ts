@@ -1998,10 +1998,11 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // one-shot latch (now the queue entry) and "the detector ran", read by the recurring-
   // dangler hardcap on the branch that deliberately does not steer. Only the first latched.
   let goingIdleDetectorRanThisTurn = false;
-  let startAckSteerRequested = false;
-  let startAckSteerArmedThisTurn = false;
-  let startAckSteersInjected = 0;      // bounded at 2: first steer, one reminder
-  let startAckSteerInjectedAtLoop = 0; // loop index the steer rode; one full response later with nothing delivered = ignored
+  // PHASE-6 T4 (CUT 6): the four F10 start-ack steer locals MOVED to the turn's bag —
+  // one mechanism, split across four spans, and the request flag is written from the
+  // wall-clock TIMER below, which is the by-value test's own disqualifier. The cap
+  // (2: first steer, one reminder) and the loop index the first steer rode are bounded
+  // state, not a snapshot. Reasons at the fields (RULING P6-R3(1)).
   // originIntent stamps a machine-readable marker on the ack row so consumers
   // (the completion-ack cross-turn dedup, the PM poke chain, the F10 replied-
   // check) recognize an engine ack STRUCTURALLY instead of by copy prefix,
@@ -2239,7 +2240,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   `).get(agentId, turnNumber);
   const fireStartAckIfOwed = async (via: 'timer' | 'first-tool'): Promise<void> => {
     try {
-      if (engineStartAckDeliveredThisTurn || startAckSteerRequested || startAckSteerArmedThisTurn || startAckRepliedNow()) return;
+      if (engineStartAckDeliveredThisTurn || turnCtx.startAckSteerRequested || turnCtx.startAckSteerArmedThisTurn || startAckRepliedNow()) return;
       // The captured-narration branch (F10, 2026-07-16) that lived here is
       // GONE (owner production report 2026-07-23: "not a single ack"). It
       // delivered whatever mid-work narration was captured ("Let me look at
@@ -2255,7 +2256,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       // line in its own voice. The old in-flight-call wait is gone for the
       // same reason: the request is inert until the checkpoint, which
       // re-checks startAckRepliedNow at a safe boundary.
-      startAckSteerRequested = true;
+      turnCtx.startAckSteerRequested = true;
       logger.info('v2 F10: start-ack threshold passed with nothing heard; steer requested so the model says it (engine detects, agent speaks)', {
         agentId, turnNumber, via, thresholdMs: ENGINE_START_ACK_AFTER_MS,
       }, agentId);
@@ -3042,14 +3043,14 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
               if (decision.multistep) {
                 // START ACK (NEXT-WAVE item 1), unchanged in requirement and in wording.
                 // RC-4.2: never start-ack an agent-flagged counterparty (ack ping-pong).
-                if (counterparty.kind === 'user' && !counterpartyIsAgentSender && !engineStartAckDeliveredThisTurn && !startAckSteerArmedThisTurn) {
+                if (counterparty.kind === 'user' && !counterpartyIsAgentSender && !engineStartAckDeliveredThisTurn && !turnCtx.startAckSteerArmedThisTurn) {
                   // Owner ruling 2026-07-22 (engine detects, agent speaks): the steer rides
                   // THIS first model call (the messages array is mid-assembly here), so the
                   // model's very first response opens with its own start line. Armed
                   // synchronously so a second site can never double-steer.
-                  startAckSteerArmedThisTurn = true;
-                  startAckSteersInjected = 1;
-                  startAckSteerInjectedAtLoop = state.loopCount;
+                  turnCtx.startAckSteerArmedThisTurn = true;
+                  turnCtx.startAckSteersInjected = 1;
+                  turnCtx.startAckSteerInjectedAtLoop = state.loopCount;
                   // PHASE-4 T3: the 27th steer site — §T0-PINS F derived by single-slot
                   // WRITER and this one pushed straight into the array, the same floor
                   // through a second door. The drain is still in THIS assemble phase.
@@ -3173,10 +3174,10 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       // loop-synchronously. Re-checks startAckRepliedNow so a reply that landed
       // in flight quietly disarms it. (T6: the "another nudge occupies the slot, so defer"
       // half died with the flag — the queue retains both steers.)
-      if (startAckSteerRequested && !startAckSteerArmedThisTurn && !startAckRepliedNow()) {
-        startAckSteerArmedThisTurn = true;
-        startAckSteersInjected = 1;
-        startAckSteerInjectedAtLoop = state.loopCount;
+      if (turnCtx.startAckSteerRequested && !turnCtx.startAckSteerArmedThisTurn && !startAckRepliedNow()) {
+        turnCtx.startAckSteerArmedThisTurn = true;
+        turnCtx.startAckSteersInjected = 1;
+        turnCtx.startAckSteerInjectedAtLoop = state.loopCount;
         state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'start-ack', content: START_ACK_STEER_TEXT, atLoop: state.loopCount }) });
         logger.info('v2 start-ack steer injected; the model speaks the start line itself', {
           agentId, turnNumber,
@@ -3189,14 +3190,14 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         // the ignore: the steer rode call N, call N's response is processed,
         // and nothing was delivered. Remind on the very next boundary; after
         // that the terminal reply is the only remaining voice (never spin).
-        startAckSteersInjected === 1 &&
+        turnCtx.startAckSteersInjected === 1 &&
         !engineStartAckDeliveredThisTurn &&
         // The loop the first steer rode is read off the QUEUE ENTRY that recorded it
         // (falling back to the local for the pre-assemble arming path at :3489).
-        state.loopCount > (steerFiredAtLoop(state.steerQueue, 'start-ack') ?? startAckSteerInjectedAtLoop) &&
+        state.loopCount > (steerFiredAtLoop(state.steerQueue, 'start-ack') ?? turnCtx.startAckSteerInjectedAtLoop) &&
         !startAckRepliedNow()
       ) {
-        startAckSteersInjected = 2;
+        turnCtx.startAckSteersInjected = 2;
         state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, {
           floor: 'start-ack-reminder', atLoop: state.loopCount,
           content: '[Engine hint: reminder, the user has STILL heard nothing from you this turn. Before your next tool call, say one short line to them that you are on it. This is the last reminder.]',
@@ -3545,7 +3546,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
           // nothing double-sends; the terminal reply still lands separately
           // when the work completes.
           if (
-            startAckSteerArmedThisTurn &&
+            turnCtx.startAckSteerArmedThisTurn &&
             !engineStartAckDeliveredThisTurn &&
             turnCtx.deferredUserReplyWithTools &&
             !startAckRepliedNow()
@@ -6852,12 +6853,12 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         counterparty.kind === 'user' &&
         !counterpartyIsAgentSender && // RC-4.2: no start-ack to an agent-flagged sender
         !engineStartAckDeliveredThisTurn &&
-        !startAckSteerArmedThisTurn && !startAckSteerRequested &&
+        !turnCtx.startAckSteerArmedThisTurn && !turnCtx.startAckSteerRequested &&
         result.toolCalls.some((tc) => toolOpKey(tc.name, tc.arguments) === 'work_open:project')
       ) {
         // Owner ruling 2026-07-22 (engine detects, agent speaks): request the
         // steer; the next iteration boundary injects it and the model speaks.
-        startAckSteerRequested = true;
+        turnCtx.startAckSteerRequested = true;
       }
       // F2 (post-D3): the deleted anti-hoarding gate was ALSO the thing that forced
       // task scaffolding at the 6th load; deleting it removed all engine pressure to
@@ -7056,11 +7057,11 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
             // The engine just decided this in-flight work is trackable, so
             // the person who asked hears it is being tracked, once per turn.
             // RC-4.2: never start-ack an agent-flagged counterparty (ack ping-pong).
-            if (counterparty.kind === 'user' && !counterpartyIsAgentSender && !engineStartAckDeliveredThisTurn && !startAckSteerArmedThisTurn && !startAckSteerRequested) {
+            if (counterparty.kind === 'user' && !counterpartyIsAgentSender && !engineStartAckDeliveredThisTurn && !turnCtx.startAckSteerArmedThisTurn && !turnCtx.startAckSteerRequested) {
               // Owner ruling 2026-07-22 (engine detects, agent speaks): request
               // the steer; the next iteration boundary injects it and the model
               // says it is on it mid-work, in its own words.
-              startAckSteerRequested = true;
+              turnCtx.startAckSteerRequested = true;
             }
             // F12.5: the interim name is a cleaned slice of the prompt, so the PM gives it
             // a proper one. ONE row to rename now, not a project and a task, so the handoff

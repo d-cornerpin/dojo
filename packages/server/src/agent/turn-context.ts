@@ -320,6 +320,37 @@ export interface TurnContext {
   lastAssembledAtIso: string | null;
   assemblerOverheadTokens: number;
   freshTailDropWarned: boolean;
+
+  /** F10 START-ACK STEER — four locals of ONE mechanism (owner ruling 2026-07-22,
+   *  "the engine detects, the agent speaks"): the wall-clock timer and the first-tool
+   *  hook only REQUEST the steer, the `assemble` checkpoint ARMS it loop-synchronously,
+   *  and the bounded reminder is IGNORE-keyed off the loop the first steer rode.
+   *
+   *  ⚠ POPULATION 2 (PHASE-6 T4, CUT 6), and this family carries the phase's other
+   *  MEASURED hazard — the one T2's hand-up named in the tree's own words. Three
+   *  reasons, each by command:
+   *    * `startAckSteerRequested` IS WRITTEN FROM A TIMER CALLBACK
+   *      (`fireStartAckIfOwed`, armed from `setTimeout` at turn start), and CUT 3's
+   *      by-value test is "exactly one write site, none inside a timer or callback".
+   *      It fails that test outright: handed by value, a step that reads it after an
+   *      `await` would see the value from before the timer fired, and `assemble` has
+   *      five awaits between its entry and the checkpoint that reads it.
+   *    * THE MECHANISM IS SPLIT ACROSS FOUR SPANS. The timer and the first-tool hook
+   *      live in `preflight` and `execute`; the arming and the reminder live in
+   *      `assemble`; the delivery latch is read in `postCallClassify`. Three of the
+   *      four locals are WRITTEN by `assemble` and read by the other spans.
+   *    * IT IS BOUNDED STATE, NOT A SNAPSHOT. `startAckSteersInjected` is capped at 2
+   *      (first steer, one reminder) and `startAckSteerInjectedAtLoop` records which
+   *      iteration the first one rode. Reset at a module boundary, the cap stops
+   *      binding and the engine nags every iteration — the exact spin the "never spin"
+   *      note at the reminder guards against.
+   *  The four move together because a request with no arming, or a cap with nothing to
+   *  count, is not a mechanism. This also pays part of the `execute` tranche's bill
+   *  forward: two of that span's writes are of `startAckSteerRequested`. */
+  startAckSteerRequested: boolean;
+  startAckSteerArmedThisTurn: boolean;
+  startAckSteersInjected: number;
+  startAckSteerInjectedAtLoop: number;
 }
 
 /** The one registry. Keyed by agentId because a turn belongs to an agent and
@@ -360,6 +391,10 @@ export function openTurnContext(agentId: string): TurnContext {
     lastAssembledAtIso: null,
     assemblerOverheadTokens: 0,
     freshTailDropWarned: false,
+    startAckSteerRequested: false,
+    startAckSteerArmedThisTurn: false,
+    startAckSteersInjected: 0,
+    startAckSteerInjectedAtLoop: 0,
   };
   openContexts.set(agentId, ctx);
   return ctx;
