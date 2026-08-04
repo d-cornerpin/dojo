@@ -173,6 +173,16 @@ function stepFiles(dir: string = STEP_DIR): string[] {
 }
 const stepText = (): string => stepFiles().map((f) => readFileSync(f, 'utf8')).join('\n');
 
+/** Blank comments, keeping line count, so PROSE ABOUT a mechanism is never counted as
+ *  the mechanism. Same idiom as `engine-rider-never-drives-a-turn.test.ts` and
+ *  `conv-key-inventory.test.ts`: a source scan that cannot tell a mechanism from a
+ *  sentence about it is measuring the wrong thing — and this package deliberately
+ *  DESCRIBES the `phase:` write it deleted, so the census below would count the
+ *  description if it did not strip first. */
+const stepCode = (): string => stepText()
+  .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+  .replace(/(^|[^:])\/\/[^\n]*/g, (m, p1: string) => p1 + ' '.repeat(m.length - p1.length));
+
 describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
   it('INPUTS (state, ctx) → ONE outcome, and the FOUR values this span produces come back as its OUTPUT', async () => {
     // With TOOL CALLS, because "the model called no tools" is itself one of this span's
@@ -249,17 +259,26 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     expect(exited.directive).toBe('exit');
     expect(exited.state.phase).toBe(POST_CALL_CLASSIFY_PHASE);
 
-    // ⚠ AND ONE `phase:` WRITE SURVIVES THE MOVE, PINNED HERE RATHER THAN GLOSSED.
-    // The duplicate-final-answer prevention (v2.7.2) sets BOTH
-    // `taskClosedWithTextThisTurn` and `phase: 'done'`. The first is what actually ends
-    // the loop — a set-only flag the `while` head reads, which `steps/step-outcome.ts`
-    // names as the surviving workaround this channel replaces. The second is INERT and
-    // provably so: the block requires a `complete_task` in `result.toolCalls`, so the
-    // step always proceeds, and the driver's own unconditional `advance(state, { phase:
-    // 'execute' })` overwrites it before anything reads it. The count is pinned at ONE
-    // so a second cannot appear quietly, and the fix rides its own commit.
-    expect([...stepText().matchAll(/(?<!\w)phase:\s*'/g)]).toHaveLength(1);
-    expect(stepText()).toMatch(/phase: 'done'/);
+    // And no `phase:` write exists in the package's own source at all.
+    //
+    // ⚠ IT DID WHEN THE SPAN LANDED, AND THE ONE THAT DID WAS A SENTENCE THAT LIED.
+    // The duplicate-final-answer prevention (v2.7.2) set BOTH
+    // `taskClosedWithTextThisTurn` and `phase: 'done'`, and claimed in its own comment
+    // that "the next while-loop check sees phase==='done' and exits". It never did: the
+    // block cannot be reached without tool calls, so the driver's own unconditional
+    // `advance(state, { phase: 'execute' })` overwrote it four statements later, every
+    // time. The LATCH is what ends that turn — a set-only flag the `while` head reads,
+    // which `steps/step-outcome.ts` already names as the surviving workaround this
+    // channel replaces — and it got its first test anywhere in the same commit that
+    // deleted the inert write (PHASE-6 T13's INBOUND: "never left as a sentence that
+    // lies"). Rule 2 of the shared contract now holds here with no exception.
+    expect([...stepCode().matchAll(/(?<!\w)phase:\s*'/g)]).toHaveLength(0);
+    // NON-VACUITY: the stripper is proven to leave real code standing, or the clause
+    // above could pass by blanking the file.
+    expect(stepCode()).toMatch(/taskClosedWithTextThisTurn: true/);
+    // …and the DESCRIPTION of the deleted write is still in the source, unstripped, so
+    // the reason survives even though the mechanism is gone.
+    expect(stepText()).toMatch(/IT NEVER DID/);
   });
 
   it('THE DRIVER ADVANCES INTO IT, at the call site and ahead of the step', () => {

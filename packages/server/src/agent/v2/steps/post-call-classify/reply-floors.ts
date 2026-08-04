@@ -284,13 +284,22 @@ export function runReplyFloors(
     hasSubAgentExit &&
     hasWrapUpText
   ) {
+    // Force loop exit AFTER this iteration's tool execution. The complete_task
+    // tool still runs (it's already in result.toolCalls and processed below this
+    // block); the `while` head then sees the LATCH and exits without calling the
+    // model again.
+    //
+    // ⚠ PHASE-6 T6 (CUT 8): a `phase: 'done'` rode beside the latch here and its
+    // comment claimed the loop head saw it. IT NEVER DID. This block cannot be
+    // reached without tool calls, so the driver's own unconditional
+    // `advance(state, { phase: 'execute' })` overwrote it four statements later on
+    // every path that reaches here — the exact defect `steps/step-outcome.ts` was
+    // written about, one level down. The latch is the mechanism and always was;
+    // the write was deleted with the sentence that misdescribed it, and the latch
+    // got the first test it has ever had in the same commit
+    // (`agent/v2/__tests__/integration.test.ts`, both arms). T13 INBOUND.
     state = advance(state, {
       taskClosedWithTextThisTurn: true,
-      // Force loop exit AFTER this iteration's tool execution. The
-      // complete_task tool still runs (it's already in result.toolCalls
-      // and processed below this block). The next while-loop check
-      // sees phase==='done' and exits without calling the model again.
-      phase: 'done',
     });
     logger.info('v2: sub-agent complete_task + wrap-up text, phase set to done, no second model call', {
       agentId,

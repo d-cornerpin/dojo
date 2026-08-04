@@ -3205,3 +3205,82 @@ describe('PHASE-6 CUT 8: the postCallClassify span kept the RC-13.2 save-claim f
     expect(callModelSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════
+// PHASE-6 CUT 8 (T6) — THE SENTENCE THAT LIED, AND THE LATCH THAT DID THE WORK.
+//
+// The duplicate-final-answer prevention (v2.7.2) ended a turn where the model paired
+// `complete_task` with wrap-up text. It set TWO things and said so in its own comment:
+//
+//     "Force loop exit AFTER this iteration's tool execution. … The next while-loop
+//      check sees phase==='done' and exits without calling the model again."
+//
+// The second sentence is FALSE and has been for as long as the phase machine has
+// existed: this block runs inside `postCallClassify`, and the driver's own
+// unconditional `advance(state, { phase: 'execute' })` overwrites `phase` four
+// statements later, every single time — the block cannot even be reached without tool
+// calls, so the `execute` transition always follows it. What actually ends the loop is
+// `taskClosedWithTextThisTurn`, a set-only flag the `while` head reads, and
+// `steps/step-outcome.ts` already names it as the surviving workaround the exit-request
+// channel replaces.
+//
+// PHASE-6 T13's INBOUND names this class in so many words — "never left as a sentence
+// that lies" — and CUT 8 is the cut that touches this instance of it. So the clause
+// below pins the MECHANISM (which had no test anywhere: `git grep
+// taskClosedWithTextThisTurn` over both repos' test corpora returned nothing) and the
+// step contract's own source census is tightened from ONE `phase:` write to ZERO.
+// ════════════════════════════════════════════════════════════════════════════════
+describe('PHASE-6 CUT 8: a sub-agent that closes with text ends the turn, and the LATCH is what ends it', () => {
+  it('complete_task + wrap-up text: the model is not called again', async () => {
+    let round = 0;
+    callModelSpy.mockImplementation(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          content: 'All done — the report is filed and the numbers check out.',
+          toolCalls: [{ id: 'tc-ct', name: 'complete_task', arguments: { summary: 'done' } }] as ToolCall[],
+          inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
+        };
+      }
+      return { content: 'a second answer nobody asked for', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
+    });
+    executeToolSpy.mockImplementation(async (_a: string, tc: ToolCall) => ({
+      toolCallId: tc.id, name: tc.name, content: 'completed', isError: false,
+    }));
+
+    await runV2Turn('primary');
+
+    // POSITIVE CONTROL: the turn really ran the round that sets the latch.
+    expect(callModelSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
+    // THE CLAUSE: exactly one model call. A latch that stopped binding would produce a
+    // second answer to the same question, which is the whole defect v2.7.2 fixed.
+    expect(callModelSpy).toHaveBeenCalledTimes(1);
+    // …and the tool still ran: the exit is AFTER this iteration's tool execution, not
+    // instead of it.
+    expect(executeToolSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('CONTROL: wrap-up text WITHOUT complete_task does not latch the turn shut', async () => {
+    // Without this arm the clause above passes on a tree where every tool-bearing turn
+    // stops after one round.
+    let round = 0;
+    callModelSpy.mockImplementation(async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          content: 'All done — the report is filed and the numbers check out.',
+          toolCalls: [{ id: 'tc-fr', name: 'file_read', arguments: { path: 'a.txt' } }] as ToolCall[],
+          inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
+        };
+      }
+      return { content: 'here is the answer', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
+    });
+    executeToolSpy.mockImplementation(async (_a: string, tc: ToolCall) => ({
+      toolCallId: tc.id, name: tc.name, content: 'file body', isError: false,
+    }));
+
+    await runV2Turn('primary');
+
+    expect(callModelSpy).toHaveBeenCalledTimes(2);
+  });
+});
