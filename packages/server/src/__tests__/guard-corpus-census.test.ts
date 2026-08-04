@@ -177,6 +177,18 @@ const DRIVER_BY_PATH: Declaration[] = [
       + 'and it `throw`s ("runV2TurnBody not found") rather than passing when the shape moves.',
   },
   {
+    rel: 'packages/server/src/agent/v2/steps/assemble/__tests__/contract.test.ts',
+    verdict: 'cannot-go-quiet',
+    why: 'Same kind as the teardown and finalize contracts above, and NARROWER than either: it '
+      + "reads the driver for exactly one question — that the driver's `advance` into the "
+      + '`assemble` phase sits AHEAD of the call to the step, which is what makes `validate()` '
+      + 'run on the transition by construction. Both `indexOf`s are asserted `> -1` before they '
+      + 'are compared, so an absent site FAILS rather than comparing -1 against a position — the '
+      + 'exact way `prefix-lane-conformance` went quiet before this audit. Widening it to the '
+      + "engine would be wrong on purpose: the question is about the DRIVER's statement order, "
+      + 'and a step package cannot answer it.',
+  },
+  {
     rel: 'packages/server/src/credentials/__tests__/credential-hydration.test.ts',
     verdict: 'step-aware',
     why: 'DECLARED IN BOTH LISTS ON PURPOSE, because it names both halves of the engine: its '

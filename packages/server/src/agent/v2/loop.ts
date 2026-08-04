@@ -55,7 +55,6 @@ import {
 import { parseTechniqueFreshRead } from '@dojo/shared';
 import { deriveOrigin, legacyOriginInputs } from '@dojo/shared';
 
-import { assembleContext } from '../../memory/assembler.js';
 import { getContextWindow } from '../model.js';
 import { executeTool, toolResultOf } from '../tools/index.js';
 import { agentCanSelfCompleteById } from '../tools/util.js';
@@ -81,9 +80,9 @@ import { turnBoundary, forceA2ATurn, lastTurnWasA2A, continuationContext, accumu
 import { openTurnContext, turnContext, endTurnContext, type TurnContext, type TurnRoot } from '../turn-context.js';
 import { persistEngineSteer } from './engine-steer.js';
 import {
-  clearSteerQueue, enqueueSteer, markSteerAttempted, nextSteer,
-  steerFireCount, steerFired, steerFiredAny, steerFiredAtLoop,
-  TRACKER_STEER_FLOORS, type SteerEntry,
+  clearSteerQueue, enqueueSteer,
+  steerFireCount, steerFired, steerFiredAny,
+  TRACKER_STEER_FLOORS,
 } from './steer-queue.js';
 import { findRecentDeliveries, findRecentDeliveriesKeyed, relativeTimeAgo, channelLabel } from './outbound-ledger.js';
 // PHASE-2 T8V: the six work verbs made tool NAMES insufficient to identify an
@@ -111,7 +110,7 @@ import {
 
 // Force-import side-effect: also register the runtime singleton getter so v2
 // can fire self-continuation handleMessage() calls (matches v1 behavior).
-import { getAgentRuntime, clearConsumedOneShotFlags } from '../runtime.js';
+import { getAgentRuntime } from '../runtime.js';
 
 import {
   type AgentTurnState,
@@ -122,14 +121,11 @@ import {
 } from './state.js';
 
 import { partitionTools, type ToolBatch } from './classifiers/concurrency.js';
-import { complexityClassifier } from './classifiers/complexity.js';
 import { loopDetector, RECENT_TOOL_WINDOW, canonicalToolSignature, isNearDuplicateText } from './classifiers/loop.js';
 import { recordToolOutcome, crossTurnFailureNote } from './attempt-record.js';
 // Engine message-injection now flows exclusively through the registry channel
 // (injectRegistryMessage); the legacy pushEngineMessage, detectContextGap, and
 // getPromptAssemblerMode call sites were removed at R7b.
-import { injectRegistryMessage, buildAssemblyContext } from '../../prompt/registry/assembler.js';
-import type { AssemblyContext } from '../../prompt/registry/types.js';
 import { isDestructiveCall, manifestPermitsDestructiveCall, consumeApproval, requestApproval } from '../destructive-gate.js';
 import { recipientIdsMatch } from '../recipient-identity.js';
 import { fileHealerApprovalProposal, markHealerProposalAppliedBySignature, maybeAutoApproveHealerScratch } from '../../healer/approval-routing.js';
@@ -178,8 +174,6 @@ import { detectDeliveryDenial } from './classifiers/grounding.js';
 import { decideClaimedDelivery, claimedDeliverySteer } from './claimed-delivery.js';
 import { recordFloorGhost, MAX_FLOOR_STEER_ATTEMPTS } from './floor-ghost.js';
 import { permissionAlternativeFinder } from './classifiers/permission.js';
-import { semanticTechniqueMatches, SEMANTIC_STRONG_THRESHOLD, buildTechniqueMatchQuery } from './classifiers/technique.js';
-import { listTechniques } from '../../techniques/store.js';
 // PHASE-6 T8: the first step cut out of this driver. `steps/step-outcome.ts`
 // carries the contract every step package shares, including the exit-request
 // channel this call site honours.
@@ -194,6 +188,7 @@ import {
 // Seven of the `while` body's exits live in it, which is why its outcome is honoured
 // at the call site rather than through a field a later step could overwrite.
 import { runPreCallGates, type PreCallGatesContext } from './steps/pre-call-gates/index.js';
+import { runAssemble } from './steps/assemble/index.js';
 // PHASE-6 T9 (CUT 4): the eighth step — everything the turn does after the loop ends
 // and before the exit path. It is the last statement of the main `try`, so it can
 // never ask to exit; the reply-destination resolver and the two safety nets live there.
@@ -565,10 +560,9 @@ const ACK_DEFAULT_TEXT = 'Working on it…';
 // where a texting human starts wondering if they were heard.
 const ENGINE_START_ACK_AFTER_MS = 30000;
 // Owner ruling 2026-07-22 (engine detects, agent speaks): the start ack is no
-// longer engine-composed. This steer hands the mic to the model instead; the
-// capture-site delivery surfaces whatever the model says as the visible ack.
-const START_ACK_STEER_TEXT =
-  '[Engine hint: the user has not heard anything from you yet this turn, and their request is being worked as a tracked job. In your next response, open with ONE short line in your own voice letting them know you are on it, then continue the work. Keep it to a single brief sentence; the full answer comes when the work is done.]';
+// longer engine-composed; the steer hands the mic to the model instead.
+// PHASE-6 T4 (CUT 6): START_ACK_STEER_TEXT MOVED to `steps/assemble/steer-checkpoint.ts`
+// with the two sites that bind it — both were inside this tranche's span.
 // RC-4.4: streaming-race grace. When the start-ack timer / first-tool hook is about to
 // fire but a model call is still streaming, wait up to this long for the real reply to
 // land (startAckRepliedNow suppresses the ack then). Kills the F-11 double-ack (ack at
@@ -639,51 +633,9 @@ function deriveScaffoldTitle(raw: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-// F9 (harness finding): the user EXPLICITLY routed work to the agent's own
-// agents and the floor model silently did it itself, never mentioning the
-// choice. Owner stance (middle): the agent keeps judgment, but the routing
-// instruction must be SURFACED (delegate, or say why not); a silent override
-// must be impossible in practice. This conservative detector recognizes an
-// EXPLICIT routing instruction so the engine can inject the advice-voice steer.
-//
-// Anchor on an imperative delegation VERB + a "your agent(s)/team" object, or
-// the word "delegate" used as a verb, or an explicit "spawn/spin up ... agent".
-// It must NOT fire on mere MENTIONS of agents ("do you have any agents?", "how
-// many agents...", "your agents are great"), so a bare noun reference never
-// matches. Canonical positive (the battery phrase):
-//   "Have one of your agents research it and report back to me."
-const DELEGATION_PATTERNS: readonly RegExp[] = [
-  // Imperative delegation verb targeting the agent's OWN agents/team. Requires
-  // the possessive "your" (optionally "one of your ..."), so "do you have any
-  // agents?" / "have you seen my agent" never match.
-  /\b(have|get|ask|tell|assign|task)\s+(one of\s+)?your\s+(agents?|sub-?agents?|team|helpers?|assistants?)\b/i,
-  // "delegate" as a verb with a work object ("delegate this/it/that", "delegate
-  // the research"). \s after the word excludes "delegated"; a pronoun/the-object
-  // excludes the noun "the delegate for ...".
-  /\bdelegate\s+(this|it|that|these|those|the\b)/i,
-  // "hand this/it (off) to (one of) your/an agent(s)/team". "the team" (not
-  // "your"/"a"/"an") does not match, so "hand this to the team lead" is out.
-  /\bhand\s+(this|it|that|these|those)\s+(off\s+)?to\s+(one of\s+)?(your|an?)\s+(agents?|sub-?agents?|team|helpers?)\b/i,
-  // Explicit "spawn/spin up ... agent" (with an agent object, so "salmon spawn
-  // in the river" and "the spawn point" never match).
-  /\b(spawn|spin ?up|fire ?up|kick ?off)\s+(a |an |another |one )?(new\s+)?(sub-?)?agent\b/i,
-];
-
-/** True when the user text EXPLICITLY routes the work to the agent's agents. */
-function detectExplicitDelegation(text: string): boolean {
-  if (!text) return false;
-  return DELEGATION_PATTERNS.some((re) => re.test(text));
-}
-
-// F9 hint body (shared by the live model-visible injection and the persisted
-// EVENTS-lane row). Advice voice per the precedence ladder (tier-7), never an
-// order. No em-dashes; plain layman language.
-const DELEGATION_HINT_BODY =
-  'the user explicitly asked for this to be delegated to one of your agents. ' +
-  'Either delegate it (spawn_agent for a fresh helper, or send_to_agent to task ' +
-  'an existing one) and synthesize the result back to the user, or, if doing it ' +
-  'yourself is clearly better here, briefly tell the user you are handling it ' +
-  'directly and why. Do not silently override their routing instruction.';
+// PHASE-6 T4 (CUT 6): the F9 delegation matcher — DELEGATION_PATTERNS,
+// detectExplicitDelegation and DELEGATION_HINT_BODY — MOVED to
+// `steps/assemble/delegation-and-attachments.ts` with the one site that binds them.
 
 // F12.5: fire-and-forget PM rename handoff, factored out so BOTH scaffold sites
 // (turn-start classifier and mid-turn engine floor) hand the ugly interim names
@@ -2611,634 +2563,28 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       if (preCallGates.directive === 'continue') continue;
       // ── Phase: assemble context ──
       state = advance(state, { phase: 'assemble' });
-      // Intent companion to attribution: a quick conversational ask ("add a reminder",
-      // "move my 10am") must not spin up a tracked, PM-validated task that then churns.
-      // Classify the trigger, a 'simple' ask from a user is conversational, a 'complex'
-      // one is project work, and pass it so the assembler injects guidance to handle
-      // it directly. (Reuses the complexity classifier that was computed but unconsumed.)
-      const conversationalTurn = counterparty.kind === 'user'
-        && complexityClassifier(lastUserMessageContent ?? '').complexity === 'simple';
-      // Content-preservation for an ACTION-REQUIRED engine-origin A2A message
-      // (Healer QUESTION, PM escalation, destructive-gate approval, all origin_intent
-      // 'a2a_request'). It drives an engine turn, but the EVENTS/awareness lane
-      // truncates each notice to a gist, which would clip the very thing the receiver
-      // must act on (an approval token, the full escalation). Keep THIS event full in
-      // the live tail instead: the assembler leaves the id out of the truncated
-      // awareness block so scopeToEngineTurn's copy is what the model reads. Scoped to
-      // 'a2a_request' only, so scheduler/reminder engine turns are unchanged.
-      let engineEventKeepFullId: string | null = null;
-      if (isEngineTurn && pendingEngineEvent?.originIntent === 'a2a_request') {
-        try {
-          const idRow = db.prepare('SELECT id FROM messages WHERE agent_id = ? AND rowid = ?')
-            .get(agentId, pendingEngineEvent.rowid) as { id: string } | undefined;
-          engineEventKeepFullId = idRow?.id ?? null;
-        } catch { /* best effort, fall back to the truncated awareness gist */ }
-      }
-      // C28 Part 1: one shared turn context, threaded into BOTH assembleContext
-      // (system) AND the message-injection mctx, so the msg.turn-context entry can
-      // read counterparty / othersWaiting / conversationalTurn / isEngineTurn (they
-      // are not recomputed).
-      const sharedTurnContext = { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, isNotificationTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn, engineEventKeepFullId, resolvedReplyChannel: turnCtx.ownerAffinityDestination ?? undefined };
-      // LIVE = RELOAD, pre-model half (incident 2026-07-06): the persisted-output
-      // visibility keys on the six-way interAgentTurn union (computed post-model,
-      // below), but the dashboard's live suppression needs the turn kind BEFORE the
-      // first chunk/tool frame. Stamp here from the union's PRE-MODEL-knowable
-      // terms: the A2A trigger, an agent counterparty, and the background-A2A
-      // condition (mostRecentIsA2A with no unanswered user, which also subsumes the
-      // exchange term). The spontaneous/pure-background terms depend on what the
-      // model does, so the post-model re-stamp below remains as the catch-up for
-      // later phases of the same turn.
-      // USER TURNS ARE NEVER RECLASSIFIED (owner law 2026-07-09): a turn whose
-      // counterparty is a human stays turnKind 'user' for its whole life, no
-      // matter what it does along the way. Without this guard, the recency terms
-      // below flip a user-facing turn to 'a2a' the moment it delegates via
-      // send_to_agent, which hides the working dots + stop button in regular
-      // (non-wordy) mode and buries the rest of the turn's output as inter-agent
-      // traffic (production transcript 2026-07-09).
-      const preModelInterAgent = counterparty.kind !== 'user' && (isA2ATurn || counterparty.kind === 'agent' || (mostRecentIsA2A && !hasUnansweredUser));
-      if (preModelInterAgent && turnCtx.kind !== 'a2a') {
-        turnCtx.kind = 'a2a';
-        broadcast({ type: 'agent:status', agentId, status: 'working', turnKind: 'a2a', userFacing: !!chosenConvKey });
-      }
-      const ctx = await assembleContext(agentId, contextModelId, sharedTurnContext);
-      // ── S3 (PHASE-3 T3): ASSEMBLY IS A READ; THE TURN OWNS THE WRITE. ──
-      // `memory/assembler.ts` used to `UPDATE agents SET config` from inside its own read
-      // path to clear the one-shot A2A-preempt and Stop markers it had just rendered. That
-      // made any probe, retry or dry-run silently consume a marker the user had earned. The
-      // assembler now REPORTS what it consumed and the turn clears it, once, here.
-      clearConsumedOneShotFlags(agentId, ctx.consumedOneShotFlags);
-      // PHASE-3 T3: THE VOLATILE BOUNDARY, recorded for the prefix gate. Everything the
-      // ALLOCATOR produced is the cacheable region; everything the LOOP appends below this
-      // point is the tail-append (`lane.loop-tail`) — the technique hints, the context-gap
-      // and delegation hints, the one-shot pending nudge, the tool note, turn-context,
-      // peer-status and the clock. They are volatile BY DESIGN and re-emitted every
-      // iteration, so a gate that judges them as prefix churn reports the prescribed shape
-      // as a defect, which is why `check-message-prefix` could never go green.
-      const volatileFrom = ctx.messages.length;
-      turnCtx.lastAssembledAtIso = new Date().toISOString(); // F9: see claimAssembledSiblings
-      let systemPrompt = ctx.systemPrompt;
-      const messages = ctx.messages;
-      // ── STRIP (PHASE-3 T7 Step 2, 2026-08-01) — the SETTLED_HINT is DELETED, both branches.
-      // It was ~65 tokens of prose on every turn that actually fires (260 chars; 341 / 86
-      // tokens on the rarer settled-wake wording) telling the model not to re-answer the OTHER
-      // conversations visible above it. Scar-tissue ledger, verbatim: "STRIP. Requirement: a
-      // turn acts only on its root; assembly scopes by id, so there is nothing to warn about."
-      // That is the whole argument and it is now literally true rather than aspirational —
-      // when the hint was written (`8bc7d7a`, 2026-07-10) the window really did carry other
-      // conversations, so the prose was the only thing standing between the model and them.
-      //
-      // requirement preserved, three deep and every layer verified alive at this HEAD:
-      //   1. STRUCTURAL — `memory/assembler.ts scopeToHumanConversation` keeps only THIS
-      //      conversation's rows plus the agent's own output for it. There is no other
-      //      conversation in the window to be warned about, so the warning has no referent.
-      //   2. DETERMINISTIC, WIRED, RUNNING — `checks/check-reanswer-ghost.mjs` (54 delivered
-      //      messages in, 54 out, no model call) is on the kit's prompt-gate roster AND the
-      //      dojo REQUIRED list as of this same task, and it is green in-roster. Note what it
-      //      guards and what it does not: it proves the window is never MISSING history, which
-      //      is the cause the hint was compensating for. It was wired FIRST, on purpose —
-      //      RULING P3-R3 exists because the earlier ruling deleted against a guard nobody had
-      //      checked was running.
-      //   3. BEHAVIOURAL — `settled-work-stays-settled` (kit battery) drives a real delivery,
-      //      closes it, wakes the agent on something unrelated, and asserts zero re-answers
-      //      and zero new artifacts. That is the user-facing property the prose asked for,
-      //      asserted on a real model instead of requested from one.
-      //
-      // The `tagMessageLane('engine.settled-hint')` emission goes with it, and with it the
-      // last `registry-exempt` marker in this file's assembly path: the hint needed the
-      // in-flight array, which is why it could never move behind the registry.
-      // Savings: -65 tokens on the fresh tail of every turn, measured (T7 sitting 1; T6's
-      // 234-receipt distribution recorded `engine.settled-hint 65/65`).
-
-      // FA-M1: record the non-compressible overhead the assembler just produced
-      // (system prompt + the tool-schema/output reserve it also reserves) so the
-      // NEXT iteration's pre-call gate measures the compressible total against the
-      // real compressible budget instead of the full window.
-      // PHASE-3 T4: this used to add the imported `TOOL_AND_OUTPUT_RESERVE` constant, which
-      // is now measured per agent and no longer importable. `ctx.reserveTokens` is the
-      // number the assembler ACTUALLY set aside on the assembly that just ran — the loop
-      // reads the decision instead of re-deriving it, which is the same one-owner move.
-      turnCtx.assemblerOverheadTokens = estimateTokens(systemPrompt) + (ctx.reserveTokens ?? 0);
-
-      // FA-M1: surface the assembler's oldest-fresh-tail eviction. budgetFreshTail
-      // silently dropped older fresh-tail groups to fit the window (live-view loss
-      // where the weakest model needs it most). Emit the existing CONTEXT_HIGH
-      // warning once per turn so the dashboard shows it instead of it being
-      // log-only. The dropped rows are persisted and later summarized (not lost).
-      if (!turnCtx.freshTailDropWarned && (ctx.freshTailDropped ?? 0) > 0) {
-        turnCtx.freshTailDropWarned = true;
-        const dropped = ctx.freshTailDropped ?? 0;
-        logger.warn('assembler evicted oldest fresh-tail messages to fit the window (live-view loss)', {
-          agentId, dropped, contextWindow,
-        }, agentId);
-        try {
-          broadcast({
-            type: 'chat:error',
-            agentId,
-            error: `Agent's memory is full, so it set aside its ${dropped} oldest recent message${dropped === 1 ? '' : 's'} to keep working. Older context is still saved.`,
-            code: 'CONTEXT_HIGH',
-            severity: 'warning',
-            retryable: false,
-          });
-        } catch { /* best effort */ }
-      }
-
-      // One message-injection context for this iteration's §3c entries
-      // (technique, context-gap, tracker-notif, nudge, tool-note, turn-context). The
-      // loop sets mutable fields (the drained steer, technique payload) at each site and
-      // calls injectRegistryMessage, so injection is registry-owned (R8). The
-      // registry is the only assembler path (R7), so this is always built.
-      const mctx: AssemblyContext = buildAssemblyContext(
-        agentId,
-        contextModelId,
-        sharedTurnContext,
-        // The steer starts null: which entry (if any) rides this iteration is the DRAIN's
-        // decision, taken below against the declared precedence table.
-        { loopCount: state.loopCount, turnNumber, lastUserMessageContent: lastUserMessageContent ?? '', pendingSteer: null },
-      );
-
-      // ── Technique matcher (Part VI #5, Phase 5) ──
-      // Replaces v1's "MANDATORY: Check Techniques Before Starting Work"
-      // prompt instruction with engine-side fuzzy matching: when the user
-      // sends a message, the engine matches their intent against published
-      // techniques and surfaces relevant ones in the system prompt. The
-      // agent doesn't have to remember to check the index.
-      //
-      // Only fires:
-      //   - on the first loop iteration of a turn (not per tool call)
-      //   - when there is a last user message (not on auto-continuations,
-      //     A2A wakes, or PM pokes, those carry their own context)
-      //   - not for the PM agent (situation reports land as role='user',
-      //     don't need technique hints injected on every poke tick).
-      if (state.loopCount === 1 && lastUserMessageContent && !isPMAgent(agentId)) {
-        try {
-          const techniques = listTechniques({ state: 'published' }).map((t) => ({
-            id: t.id,
-            name: t.name,
-            description: t.description ?? undefined,
-            tags: t.tags,
-          }));
-          // Match the ask against technique-intent embeddings (remediation
-          // Phase 2). Semantic matching went GREEN on the floor model in
-          // S5.4/S5.5 (0.56/0.68/0.72 strong matches on zero-overlap
-          // phrasings; clean on unrelated pings). The token-overlap matcher
-          // survives only as semanticTechniqueMatches' internal fallback for
-          // when the embedding service is down (recall weakens, never zeroes).
-
-          // Attachment-aware query (remediation Phase 3, S5.1/S5.2): keep the
-          // attachment filename/kind as intent signal, strip pointer
-          // boilerplate so a photo-with-little-text message can still match a
-          // photo technique.
-          const matchQuery = buildTechniqueMatchQuery(lastUserMessageContent);
-          const matches = await semanticTechniqueMatches(matchQuery, techniques);
-          if (matches.length > 0) {
-            // Two modes:
-            //   - STRONG MATCH (score >= 0.5): the engine loads TECHNIQUE.md
-            //     and WRAPS the user's most recent message with the technique
-            //     body, framed as authoritative guidance from the user. The
-            //     wrap is in-message (user-role, adjacent to the ask) rather
-            //     than appended to the system prompt, frontier models weight
-            //     user-role instructions and recent tokens far more than
-            //     buried system-prompt rules. v2.2.8 inlined into the system
-            //     prompt and the model still ignored it; v2.3.2 puts the
-            //     technique where the model actually pays attention.
-            //   - WEAK MATCH (score < 0.5): keep the existing hint behavior
-            //     in the system prompt; agent decides whether to load.
-            //
-            // Cap at one auto-injected technique per turn to keep token cost
-            // bounded. If the technique is too large to inline (>25K chars ≈
-            // 6K tokens), still wrap the user message but with a load-it
-            // instruction instead of the full body.
-            const STRONG_MATCH_THRESHOLD = SEMANTIC_STRONG_THRESHOLD;
-            const MAX_INLINE_CHARS = 25_000;
-            const strongMatch = matches[0].score >= STRONG_MATCH_THRESHOLD ? matches[0] : null;
-            const weakMatches = strongMatch
-              ? matches.slice(1).filter((m) => m.score < STRONG_MATCH_THRESHOLD)
-              : matches;
-
-            let injectedTechniqueId: string | null = null;
-            let techniqueInjection: string | null = null;
-            if (strongMatch) {
-              try {
-                const { getTechniqueDetail, recordTechniqueUsage } = await import('../../techniques/store.js');
-                const detail = getTechniqueDetail(strongMatch.technique.id);
-                if (detail?.instructions && detail.instructions.length > 0) {
-                  const md = detail.instructions;
-                  const tooLarge = md.length > MAX_INLINE_CHARS;
-                  // Audit C12: the old implementation PREPENDED this text into
-                  // the user's own message, so an engine directive borrowed
-                  // tier-1 authority and structurally outranked the user's
-                  // actual words. The preserved reason (v2.2.8 → v2.3.2
-                  // history): adjacency to the ask is what makes the model
-                  // follow the technique; system-prompt placement was ignored.
-                  // So: keep adjacency by injecting a SEPARATE engine-marked
-                  // message right after the ask, framed at its true tier
-                  // (task/technique notes, below the live user message).
-                  const header =
-                    `[DOJO TECHNIQUE, engine-injected. This is technique guidance (precedence: task/technique notes); the user's live message above outranks it wherever they conflict.]`;
-                  if (tooLarge) {
-                    techniqueInjection =
-                      `${header}\nThis task matches the "${strongMatch.technique.name}" technique. The full instructions are too long to inline (${md.length} chars), load it via use_technique('${strongMatch.technique.id}') before doing the work, then follow its steps unless the user said otherwise.`;
-                  } else {
-                    techniqueInjection =
-                      `${header}\nThis task matches the "${strongMatch.technique.name}" technique. Follow the procedure below unless the user's message says otherwise.\n\n` +
-                      `--- TECHNIQUE: ${strongMatch.technique.name} ---\n${md}\n--- END TECHNIQUE ---`;
-                  }
-                  injectedTechniqueId = strongMatch.technique.id;
-                  turnCtx.turnInjectedTechniqueId = strongMatch.technique.id;
-                  try { recordTechniqueUsage(strongMatch.technique.id, agentId); } catch { /* best effort */ }
-                  logger.info('v2 techniqueMatcher: injecting strong-match technique as engine message', {
-                    agentId,
-                    techniqueId: strongMatch.technique.id,
-                    techniqueName: strongMatch.technique.name,
-                    score: strongMatch.score,
-                    contentChars: md.length,
-                    inlinedFully: !tooLarge,
-                  }, agentId);
-                }
-              } catch (loadErr) {
-                logger.warn('v2 techniqueMatcher: strong-match load failed, falling back to hint', {
-                  agentId,
-                  techniqueId: strongMatch.technique.id,
-                  error: loadErr instanceof Error ? loadErr.message : String(loadErr),
-                }, agentId);
-              }
-            }
-
-            // Inject as its own message AFTER the ask (post-assembly, so the
-            // role-merge mutation cannot fuse it into the user's message or a
-            // tool_result). The DB-stored rows are untouched, only this
-            // in-flight model call sees the injection.
-            if (techniqueInjection) {
-              mctx.techniqueStrong = techniqueInjection;
-              injectRegistryMessage('msg.technique-strong', messages, mctx);
-            }
-
-            // Weak matches (and the strong match if its load failed) get the
-            // legacy "consider these" hint.
-            const hintMatches = injectedTechniqueId === null
-              ? matches
-              : weakMatches;
-            if (hintMatches.length > 0) {
-              const lines = hintMatches.map((m) => {
-                const reason = m.score >= 0.6 ? 'strong match' : 'possible match';
-                const desc = m.technique.description ? `, ${m.technique.description}` : '';
-                return `- \`${m.technique.name}\` (${reason})${desc}\n  Load with \`use_technique('${m.technique.id}')\` if applicable.`;
-              });
-              const hintHeader = injectedTechniqueId
-                ? `\n\n## Other Techniques That Might Also Apply\n\n`
-                : `\n\n## Possibly Relevant Techniques\n\n`;
-              const weakHint = hintHeader +
-                `Based on the user's message, the DOJO matched these techniques. Load any that fit the task; ignore otherwise.\n\n` +
-                lines.join('\n');
-              // Inject as a post-tail engine message (NOT appended to the
-              // system prompt). The match-strength wording changes per user
-              // message, so keeping it out of the system prefix preserves
-              // prompt-cache warmth across turns. Mirrors the strong-match
-              // injection above (its own message, after the ask).
-              mctx.techniqueWeakHint = weakHint;
-              injectRegistryMessage('msg.technique-weak', messages, mctx);
-            }
-            logger.debug('v2 techniqueMatcher: surfaced matches', {
-              agentId,
-              matchCount: matches.length,
-              autoInjected: injectedTechniqueId,
-              names: matches.map((m) => m.technique.name),
-            }, agentId);
-          }
-        } catch (err) {
-          // "no such table: techniques" fires during integration test runs
-          // (mocked in-memory DB without the techniques table) and pre-migration
-          // fresh installs. It's not a production failure mode, log at debug,
-          // not warn, so it doesn't pollute the WARN-rate acceptance signal.
-          const msg = err instanceof Error ? err.message : String(err);
-          const isMissingTable = /no such table/i.test(msg);
-          if (isMissingTable) {
-            logger.debug('v2 techniqueMatcher: techniques table not present (expected in tests/fresh DBs)', { agentId }, agentId);
-          } else {
-            logger.warn('v2 techniqueMatcher failed (non-fatal)', { agentId, error: msg }, agentId);
-          }
-        }
-      }
-
-      // ── Context-gap detection (2026-06-15, "ask when stuck") ──
-      // The engine nudges the agent to ASK the user when it can SEE the agent
-      // lacks enough to proceed (v1: an attachment with no instruction),
-      // instead of inferring intent or hoping a weak model notices. Advisory
-      // [Engine hint] via the one engine-message channel; the agent uses
-      // judgment (and ignores it when a task/technique/context covers the gap).
-      // Same fire conditions as the technique matcher: first iteration, real
-      // user message, not the PM.
-      if (state.loopCount === 1 && lastUserMessageContent && !isPMAgent(agentId)) {
-        try {
-          // Same site, same alternation guard, byte-identical injection. Registry
-          // mode renders msg.context-gap (same detectContextGap call) and injects
-          // through the registry channel; legacy mode inline. The guard is the
-          // loop's (it depends on the live messages tail).
-          if (messages.length === 0 || messages[messages.length - 1].role === 'user') {
-            injectRegistryMessage('msg.context-gap', messages, mctx);
-          }
-        } catch { /* advisory only, never block the turn */ }
-      }
-
-      // ── Multi-step detection (v2.3.3) ──
-      // Engine-side detection of prompts that need a tracker project.
-      // When confident (heuristic high, or local-LLM classifier confirms),
-      // create the project + initial task directly so the agent can't
-      // forget to do it. Same lesson as the technique matcher above:
-      // system-prompt instructions don't reliably get followed.
-      //
-      // Same fire conditions as technique matcher: loopCount === 1 with
-      // a real user message (not auto-continuation / A2A / PM poke).
-      //
-      // v2.7.27: skip for the PM agent. The PM's situation reports land as
-      // role='user' messages on its conversation; the classifier was treating
-      // them as multistep user intent and auto-creating tracker projects
-      // titled "Tracker review -- N active tasks:". Polluted the PM's view
-      // every poke tick. PM never wants engine-auto-created projects.
-      // D-B v2: also skip the Healer. It has no tracker tools and never touches
-      // the tracker (its SOUL forbids it), so an engine-opened task it cannot
-      // tend would go stale and trip the PM poke ladder against it, which is
-      // exactly the state a held destructive consent must not leave behind.
-      // P2b: also skip the Dreamer. Its cycle message (wakeupDreamer) is an
-      // engine-synthetic role='user' row, not a user ask; its work is engine-
-      // orchestrated memory maintenance. Auto-scaffolding it manufactured a
-      // tracker project + task on the Dreamer every batch, which then same-turn-
-      // closed and fired a notifyPrimaryAgent completion pair onto the primary's
-      // chat (production transcript 2026-07-17). The tracker is the wrong
-      // instrument for engine-lane maintenance, so the trigger simply skips it.
-      if (state.loopCount === 1 && lastUserMessageContent && !isPMAgent(agentId) && !isHealerAgent(agentId) && !isDreamerAgent(agentId)) {
-        try {
-          const { detectMultistep, getMultistepConfig } = await import('./classifiers/multistep.js');
-          const cfg = getMultistepConfig();
-          if (cfg.enabled) {
-            // Skip if there's a RECENTLY-TENDED active tracker task assigned
-            // to this agent, assume it's still being worked. This avoids
-            // creating a sibling project on a quick follow-up message.
-            //
-            // v3.1.11 (FN-9): narrowed from "any open task" to "an open task
-            // touched within STALE_TASK_WINDOW_MINUTES". The guard exists to
-            // dodge sibling projects on quick follow-ups, and a quick follow-up
-            // lands minutes after the agent last touched the task it is
-            // continuing, so the window keeps that protection intact. But a
-            // STALE open task (abandoned long ago) must NOT suppress, or new
-            // untracked multi-step work rides in under the old task forever
-            // (one of the two disarm holes this fix closes).
-            const db = getDb();
-            const existingTask = db.prepare(`
-              SELECT w.id AS id FROM work w
-              WHERE ${taskScope('w')} AND w.agent_id = ? AND w.state IN ('on_deck', 'claimed', 'paused')
-                AND w.updated_at >= ?
-              LIMIT 1
-            `).get(agentId, Date.now() - STALE_TASK_WINDOW_MINUTES * 60_000) as { id: string } | undefined;
-
-            // F12 (harness finding, wave 2): agent CREATION stores the new agent's
-            // system prompt as both a role='system' row AND a role='user' bootstrap
-            // message (gateway/routes/agents.ts), so this classifier treated every
-            // creation prompt as a user ask and auto-created a junk project, which
-            // the PM then burned turns renaming, and which suppressed legitimate
-            // auto-scaffolding later (existingTask). A bootstrap prompt is exactly
-            // identifiable: the "user" text is byte-identical to a system row.
-            const bootstrapTwin = db.prepare(
-              `SELECT 1 FROM messages WHERE agent_id = ? AND role = 'system' AND content = ? LIMIT 1`,
-            ).get(agentId, lastUserMessageContent);
-            if (!existingTask && !bootstrapTwin) {
-              const decision = await detectMultistep(lastUserMessageContent, agentId, cfg);
-              turnCtx.inboundClassifiedAsWork =
-                decision.multistep || decision.source === 'user_creating_explicitly';
-              logger.info('v2 multistep classifier ran', {
-                agentId,
-                source: decision.source,
-                multistep: decision.multistep,
-                name: decision.name,
-                signals: decision.heuristic.signals,
-              }, agentId);
-
-              // ══════════════════════════════════════════════════════════════════════
-              // THE EMPTY-PROJECT MACHINE IS GONE (PHASE-2 T8c item 3)
-              // ══════════════════════════════════════════════════════════════════════
-              //
-              // This block used to call `createProject` the moment the classifier judged an
-              // inbound "multi-step": a project, a first task, an assignment notice, a
-              // start-ack and a PM rename handoff, all before the model had done anything at
-              // all. Research 03 measured what that produced on a real body — 1,135 of 1,183
-              // projects EMPTY, auto-created and instantly closed — and PHASE-2's exit gates
-              // name the classifier for deletion.
-              //
-              // WHAT IS KEPT, and it is the whole point of keeping the classifier at all:
-              //   * `turnCtx.inboundClassifiedAsWork` — the SIGNAL. It gates the bare-[no-reply]
-              //     refusal below, and the plan says keep it by name.
-              //   * the START ACK. The requirement is "the person who asked hears that this
-              //     is being worked on, once, before the model does anything", and it never
-              //     depended on a project row existing — it only lived here because this was
-              //     where the judgement was made. It now rides the judgement directly.
-              // WHAT IS GONE: the project, its task, the assignment notice for a task the
-              // model never asked for, and the PM rename handoff whose entire job was to give
-              // that auto-named project a better name.
-              //
-              // requirement preserved (the weakest-model guarantee): a model that does real
-              // multi-step work still ends the turn with a work row — that is the >=6 ENGINE
-              // FLOOR below, which opens ONE `work(kind='task')` when nothing else did. The
-              // difference is that the floor fires on OBSERVED WORK rather than on a
-              // prediction made from the first sentence, which is exactly why the classifier's
-              // rows were empty.
-              if (decision.multistep) {
-                // START ACK (NEXT-WAVE item 1), unchanged in requirement and in wording.
-                // RC-4.2: never start-ack an agent-flagged counterparty (ack ping-pong).
-                if (counterparty.kind === 'user' && !counterpartyIsAgentSender && !engineStartAckDeliveredThisTurn && !turnCtx.startAckSteerArmedThisTurn) {
-                  // Owner ruling 2026-07-22 (engine detects, agent speaks): the steer rides
-                  // THIS first model call (the messages array is mid-assembly here), so the
-                  // model's very first response opens with its own start line. Armed
-                  // synchronously so a second site can never double-steer.
-                  turnCtx.startAckSteerArmedThisTurn = true;
-                  turnCtx.startAckSteersInjected = 1;
-                  turnCtx.startAckSteerInjectedAtLoop = state.loopCount;
-                  // PHASE-4 T3: the 27th steer site — §T0-PINS F derived by single-slot
-                  // WRITER and this one pushed straight into the array, the same floor
-                  // through a second door. The drain is still in THIS assemble phase.
-                  state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'start-ack', content: START_ACK_STEER_TEXT, atLoop: state.loopCount }) });
-                }
-              }
-            }
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          const isMissingTable = /no such table/i.test(msg);
-          if (isMissingTable) {
-            logger.debug('v2 multistep: tracker tables not present (expected in tests/fresh DBs)', { agentId }, agentId);
-          } else {
-            logger.warn('v2 multistep classifier failed (non-fatal)', { agentId, error: msg }, agentId);
-          }
-        }
-      }
-
-      // ── F9: explicit-delegation routing hint ───────────────────────────────
-      // The user EXPLICITLY routed work to the agent's own agents ("have one of
-      // your agents research it and report back to me") and the floor model was
-      // observed silently doing the work itself, never mentioning the choice.
-      // Owner stance (middle): keep the agent's judgment, but the routing
-      // instruction must be SURFACED (delegate, or say why not); a silent
-      // override must be impossible in practice. Same guard family as the
-      // multistep classifier: first tool round with a real user message, this
-      // turn is FOR a user (not A2A), not the PM, not the Healer. Skips
-      // engine-shaped messages (an engine notice is not the user delegating).
-      // Advice voice (tier-7), never an order; the agent still decides.
-      if (
-        state.loopCount === 1 &&
-        lastUserMessageContent &&
-        counterparty.kind === 'user' &&
-        !isPMAgent(agentId) &&
-        !isHealerAgent(agentId) &&
-        detectExplicitDelegation(lastUserMessageContent)
-      ) {
-        try {
-          const { looksLikeEngineMessage } = await import('./classifiers/multistep.js');
-          if (!looksLikeEngineMessage(lastUserMessageContent)) {
-            // Model-visible THIS turn: inject the hint right after the user's ask
-            // via the registry channel (same path as msg.tracker-notif). The
-            // colon-bracket "[Engine hint: ...]" form is the live advice voice.
-            mctx.delegationHint = `[Engine hint: ${DELEGATION_HINT_BODY}]`;
-            injectRegistryMessage('msg.delegation-hint', messages, mctx);
-
-            // Persist for later turns: a lane='events' row the EVENTS lane
-            // surfaces next turn. conv_key sentinel 'engine-steer'
-            // keeps it un-selectable as a pending engine event. Label form
-            // ("[Engine hint] body", space not colon) so the events-lane
-            // leading-bracket strip drops only the label and keeps the body; a
-            // single wrapping "[Engine hint: ...]" bracket would be stripped whole.
-            insertEngineEventIfAbsent({
-              work: null,
-              id: uuidv4(),
-              agentId,
-              content: `[Engine hint] ${DELEGATION_HINT_BODY}`,
-              sourceAgentId: null,
-              originIntent: 'delegation_hint',
-              turnNumber,
-            });
-
-            logger.info('v2 F9: explicit-delegation hint fired (user routed the work to the agent\'s agents; injected the delegate-or-say-why steer)', {
-              agentId, turnNumber, loopCount: state.loopCount,
-            }, agentId);
-          }
-        } catch (err) {
-          logger.warn('v2 F9 delegation-hint failed (non-fatal)', {
-            agentId, error: err instanceof Error ? err.message : String(err),
-          }, agentId);
-        }
-      }
-
-      // Inject user-uploaded attachments (images, PDFs) as content blocks.
-      // Without this, the agent never sees images/PDFs the user attached, 
-      // it only sees the text content of those messages and hallucinates.
-      // Same path v1 uses (runtime.ts:1929 in v1).
-      //
-      // v2.3.18: oversized images get downscaled to fit the 5MB model cap
-      // here. Persist a one-shot system note for any FRESH resize so the
-      // user knows what happened (later turns hit the on-disk cache and
-      // stay silent).
-      const { injectAttachmentBlocks } = await import('../runtime.js');
-      // Defensive default, older mocks may return undefined.
-      const freshResizes = injectAttachmentBlocks(messages, agentId) ?? [];
-      if (freshResizes.length > 0) {
-        try {
-          // v2.3.19, rectifier supplies the agent-facing note directly.
-          // Fall back to the legacy size-based formatter for back-compat
-          // when only originalSize/finalSize are present.
-          const { formatBytes } = await import('../image-prep.js');
-          const lines = freshResizes.map((r) => {
-            if (r.note) return r.note;
-            const orig = r.originalSize ?? 0;
-            const fin = r.finalSize ?? 0;
-            return `Image \`${r.filename}\` was downscaled from ${formatBytes(orig)} to ${formatBytes(fin)} to fit the model's 5 MB per-image limit.`;
-          });
-          const noteContent = `[Engine: input preparation]\n${lines.join('\n')}`;
-          const noteId = uuidv4();
-          insertMessageIfAbsent({ id: noteId, agentId, role: 'system', content: noteContent, turnNumber });
-          broadcast({
-            type: 'chat:message',
-            agentId,
-            message: {
-              id: noteId, agentId, role: 'system' as const,
-              content: noteContent,
-              tokenCount: null, modelId: null, cost: null, latencyMs: null,
-              createdAt: new Date().toISOString(),
-            },
-          });
-        } catch (err) {
-          logger.warn('v2: failed to persist image-resize system note (non-fatal)', {
-            agentId, error: err instanceof Error ? err.message : String(err),
-          }, agentId);
-        }
-      }
-
-      // Start-ack steer checkpoint (owner ruling 2026-07-22): the async timer /
-      // first-tool hook only REQUEST the steer; the state write happens here,
-      // loop-synchronously. Re-checks startAckRepliedNow so a reply that landed
-      // in flight quietly disarms it. (T6: the "another nudge occupies the slot, so defer"
-      // half died with the flag — the queue retains both steers.)
-      if (turnCtx.startAckSteerRequested && !turnCtx.startAckSteerArmedThisTurn && !startAckRepliedNow()) {
-        turnCtx.startAckSteerArmedThisTurn = true;
-        turnCtx.startAckSteersInjected = 1;
-        turnCtx.startAckSteerInjectedAtLoop = state.loopCount;
-        state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'start-ack', content: START_ACK_STEER_TEXT, atLoop: state.loopCount }) });
-        logger.info('v2 start-ack steer injected; the model speaks the start line itself', {
-          agentId, turnNumber,
-        }, agentId);
-      } else if (
-        // One bounded reminder, IGNORE-keyed not time-keyed (2026-07-23, chore
-        // battery attempt: the model tool-chained straight past the first
-        // steer, and a time-gated reminder only became eligible ~30s later,
-        // right when the final answer was landing anyway). The engine can SEE
-        // the ignore: the steer rode call N, call N's response is processed,
-        // and nothing was delivered. Remind on the very next boundary; after
-        // that the terminal reply is the only remaining voice (never spin).
-        turnCtx.startAckSteersInjected === 1 &&
-        !engineStartAckDeliveredThisTurn &&
-        // The loop the first steer rode is read off the QUEUE ENTRY that recorded it
-        // (falling back to the local for the pre-assemble arming path at :3489).
-        state.loopCount > (steerFiredAtLoop(state.steerQueue, 'start-ack') ?? turnCtx.startAckSteerInjectedAtLoop) &&
-        !startAckRepliedNow()
-      ) {
-        turnCtx.startAckSteersInjected = 2;
-        state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, {
-          floor: 'start-ack-reminder', atLoop: state.loopCount,
-          content: '[Engine hint: reminder, the user has STILL heard nothing from you this turn. Before your next tool call, say one short line to them that you are on it. This is the last reminder.]',
-        }) });
-        logger.info('v2 start-ack steer reminder injected (first steer ignored, user still waiting)', {
-          agentId, turnNumber,
-        }, agentId);
-      }
-
-      // Drain the steer queue (synthetic user message, never persisted). NO tail-shape
-      // gate: assembler.ts:301 appends a user-role engine line after an assistant
-      // tail, so the old assistant-tail test could never be true and every steer
-      // written after a tool call went undelivered 2026-07-10 → 2026-07-27 (r22).
-      //
-      // PHASE-4 T3: ONE entry per iteration, highest declared precedence first; the rest
-      // wait rather than being overwritten. PUSHED is not DELIVERED (the array is still
-      // mutated below), so the entry leaves the queue at the receipt, not here.
-      let steerAwaitingConfirm: SteerEntry | null = null;
-      const steerToDeliver = nextSteer(state.steerQueue);
-      if (steerToDeliver) {
-        mctx.pendingSteer = steerToDeliver.content;
-        if (injectRegistryMessage('msg.pending-nudge', messages, mctx)) {
-          steerAwaitingConfirm = steerToDeliver;
-        } else {
-          // Push refused (the dedup net saw identical text in the tail). Count the attempt:
-          // three and the entry is ABANDONED, on the record, so it cannot block the queue.
-          state = advance(state, { steerQueue: markSteerAttempted(state.steerQueue, steerToDeliver) });
-        }
-      }
-
-      // Empty-messages guard (preserve v1 behavior at runtime.ts:1014-1020)
-      if (messages.length === 0) {
-        logger.info('v2: assembled context has zero messages, clean exit', {
-          agentId,
-          loopCount: state.loopCount,
-        }, agentId);
-        setAgentStatus(agentId, 'idle');
-        break;
-      }
-
+      // THE EXIT-REQUEST CHANNEL (PHASE-6, `steps/step-outcome.ts`). The step ASKS
+      // by returning; the driver decides here. This step's ONE exit is the
+      // empty-assembled-context clean exit, preserved from v1.
+      // What this step reads from the driver. Built HERE, inside the iteration,
+      // because it runs once per ITERATION and three of its inputs are rewritten
+      // between rounds — a snapshot taken before the `try` would hand iteration
+      // nine the picture iteration one had.
+      const assembled = await runAssemble(state, {
+        agentId, turnCtx, turnNumber, db, contextModelId, contextWindow,
+        counterparty, counterpartyIsAgentSender, chosenConvKey, hasUnansweredUser,
+        isA2ATurn, isEngineTurn, isNotificationTurn, lastUserMessageContent,
+        latestTtsEngine, latestUserSource, mostRecentIsA2A, pendingEngineEvent,
+        waitingConvs, engineStartAckDeliveredThisTurn,
+        // Declared at module level in this file on purpose: a guard pins it there BY
+        // PATH (`work-reaper.test.ts`, the narrower and therefore stronger corpus)
+        // and `execute` reads it too. Handed across, never copied.
+        staleTaskWindowMinutes: STALE_TASK_WINDOW_MINUTES,
+        startAckRepliedNow, setAgentStatus,
+      });
+      state = assembled.state;
+      if (assembled.directive === 'exit') break;
+      const { assembled: ctx, messages, systemPrompt, volatileFrom, modelContext: mctx, steerAwaitingConfirm } = assembled;
       // ── Phase: model call ──
       // (Auto-routing + capability gate + retry-fallback + TRUE streaming.)
       state = advance(state, { phase: 'callLLM' });
