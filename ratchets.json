@@ -1555,6 +1555,27 @@
       "to": 299,
       "by": "PHASE-5 T8 Step 3 (2026-08-03, T8F) — MECHANIC 7, element-property resolution",
       "why": "PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 2 mechanic 7. +14 lines, 10 of them COMMENT: the args.<name>[] branch generalises to args.<name>[].<prop>, so a path one level INSIDE an array element resolves. THE DEFECT IT FIXES is the same family as the array mechanic's and it fails closed in the same wrong place: pdf_create's content blocks carry image { path }, the bare mechanic resolved each ELEMENT as a path, an object element yielded NO grant, and the converted site would have refused a documented, live capability. AN ELEMENT WITHOUT THE PROPERTY GRANTS NOTHING FOR IT, which is what keeps a mixed list — the normal case, since most content blocks are text — narrowed to exactly the elements that name a file. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Add a second branch beside the bare-array one (plus ~8 more): REFUSED — two branches reading the same declaration shape is how one shape comes to mean two things; the bare case is now prop === '' and a clause asserts the bare mechanic is unchanged. (b) Resolve the whole element and let the facade match any property: REFUSED outright — that is the facade gaining a rule of its own (STOP condition 2) and it would grant every path an element happens to carry. (c) Declare the image read as a derived: effect to dodge the resolver: REFUSED — a derived: with no machine scope yields no grant, so it would refuse the capability, and one with a scope cannot express 'anywhere the agent points an image block'. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 299."
+    },
+    {
+      "path": "packages/server/src/agent/effects/scopes.ts",
+      "from": 299,
+      "to": 317,
+      "by": "PHASE-5 T8 Step 3 the techniques door (2026-08-03, T8G) — ADDENDUM 3 application (a), indirect TREE resolution",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 3(1)(a). +18 lines, 13 of them COMMENT or the new resolver's own entry: the `via` branch learns to compose with `scope: { at: 'argTree' }`, so an argument resolved through a named indirection can name a DIRECTORY whose contents are the resource, and `technique_dir` joins INDIRECT_RESOLVERS as the second (and second only) named indirection. THE DEFECT IT FIXES: mechanic 5 resolves an identifier to ONE recorded path, and the techniques cluster's reference — an id, a slug OR a display name — resolves to a directory the tool works INSIDE. No scope template can name that directory, so before this the only honest declaration was prose, which yields no grant at all; converted on prose, `technique_read action=\"search\"` would have found no supporting file and its own catch would have swallowed the refusal into a logged warning. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Add a new EffectScope member (`viaTree`) instead of composing (about the same lines): REFUSED — it would name the argument twice, once in `from` and once in the scope, and two spellings of one fact is how they come to disagree. (b) Duplicate the tree/path push inside the via branch (+7 more): REFUSED and the opposite was taken — both branches now go through ONE `pushResolved`, so the two ways of naming a resource cannot drift apart; that refactor is why the raise is +18 rather than +21. (c) Let the facade match any path under whatever the reference resolved to, without a declared scope: REFUSED outright — that is the facade gaining a rule of its own (STOP condition 2), and `file_read` vs `file_list` already proves the tree has to be DECLARED. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 317."
+    },
+    {
+      "path": "packages/server/src/agent/tools/types.ts",
+      "from": 303,
+      "to": 306,
+      "by": "PHASE-5 T8 Step 3 the techniques door (2026-08-03, T8G) — the second named indirection",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 3(1)(a). +3 lines: `EffectIndirection` gains `technique_dir` and the doc says what makes it different from `attachment_row` — one resolves to a file, the other to a directory whose contents are the resource. THE REASON IT IS A TYPE AND NOT A STRING: a declaration must not be able to invent a way to turn an argument into a resource; it may only point at one the platform already owns, so the set cannot grow by declaration and a new member has to be written here by hand to exist at all. THE ALTERNATIVES WERE MEASURED. (a) Drop the doc addition (+0): REFUSED — the next reader pairing `technique_dir` with no scope gets ONE path and no error, which is the silent-narrowing failure this task exists to prevent; the sentence that says `pair it with scope argTree` is the whole warning. (b) Widen the type to `string` and let the resolver table be the only list (minus 2): REFUSED — the compile-time half is what makes an unknown `via` unwritable rather than merely unresolvable. The addition was written INSIDE the existing comment budget rather than as a new paragraph, which is why it is +3 and not +9. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 306."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2721,
+      "to": 2722,
+      "by": "PHASE-5 T8 Step 3 the techniques door (2026-08-03, T8G) — two false declarations corrected",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 3(1)(a). +1 line net. What changed: `technique_read` and `update_technique` now declare the technique TREE their calls resolve to, and the two RELATIVE names they used to declare as paths — `file` and `files[].path` — are ruled INERT with their reason. THE DEFECT IT FIXES is the PDF door's bare filename again: both arguments are relative names joined onto the technique row's recorded `directory_path`, so resolved as paths of their own they named files relative to the SERVER working directory that neither tool touches, while the real read and the real write went undeclared. Converted as-is, `technique_read action=\"read_file\"` and `update_technique(files:[…])` would have refused their own work. THE ALTERNATIVES WERE MEASURED. (a) Keep the old declarations alongside the new one (+0 lines, since nonEffects would not be needed): REFUSED — a false grant on a cwd-relative path is exactly the resource the tool never touches, and leaving it makes the declaration lie in the widening direction. (b) Put each nonEffects reason on several lines like this file's longest rulings (+4): REFUSED — one line per ruling is the form the other 22 nonEffects entries use. (c) Leave `technique_read`'s effects array multi-line (+2): REFUSED — every other single-effect technique tool in this file uses the one-line form, and a second spelling of one shape is how a reader stops seeing them as one class. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2722."
     }
   ],
   "maxNewFileLines": 400,
@@ -1604,13 +1625,13 @@
     "packages/server/src/agent/tools/cat/media.ts": 896,
     "packages/server/src/agent/tools/cat/session.ts": 241,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
-    "packages/server/src/agent/effects/scopes.ts": 299,
-    "packages/server/src/agent/tools/definitions.ts": 2721,
+    "packages/server/src/agent/effects/scopes.ts": 317,
+    "packages/server/src/agent/tools/definitions.ts": 2722,
     "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/index.ts": 642,
     "packages/server/src/agent/tools/surface.ts": 657,
-    "packages/server/src/agent/tools/types.ts": 303,
+    "packages/server/src/agent/tools/types.ts": 306,
     "packages/server/src/agent/tools/util.ts": 359,
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 482,
