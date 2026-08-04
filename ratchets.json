@@ -2,6 +2,13 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+          "path": "packages/server/src/index.ts",
+          "from": 1172,
+          "to": 1178,
+          "by": "PHASE-5 T10 (2026-08-03) — owner decision D1, the sign-in tokens are encrypted where they are",
+          "why": "+6, and it is one boot step: the pass that seals any Workspace OAuth token still stored in the clear, registered immediately after the legacy-config seed it mirrors so a row the seed has just created is sealed in the same boot. It is a boot step because it CANNOT be a numbered migration — the chain is `.sql`, SQLite has no AES, and the master key is reachable only from TypeScript; the platform already carries this shape twice (the account seed itself, and T6C's secrets-file mode repair). The call site is four lines of comment and two of code: a dynamic import and an awaited call, with NO try/catch, because the conversion owns its own non-fatality (`credentials/seal-existing.ts` never throws — a box whose master key cannot be read must still boot and still serve mail). The gate already earned its keep on this task: the first draft was a near-identical conversion loop copied into `google/accounts.ts` AND `microsoft/accounts.ts`, this ratchet refused the growth, and the duplicate was replaced by one owner with two thin table specs — which is the disease this project exists to remove, caught before it landed. From here this file may only shrink."
+    },
+    {
           "path": "packages/server/src/work/ask-title.ts",
           "from": 246,
           "to": 269,
@@ -1768,7 +1775,7 @@
     "packages/server/src/healer/diagnostic.ts": 1036,
     "packages/server/src/healer/healer-agent.ts": 1170,
     "packages/server/src/healer/injury-recovery.ts": 822,
-    "packages/server/src/index.ts": 1172,
+    "packages/server/src/index.ts": 1178,
     "packages/server/src/memory/assembler.ts": 2612,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 610,
