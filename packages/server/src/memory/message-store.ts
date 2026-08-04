@@ -33,7 +33,7 @@ import {
 } from '@dojo/shared';
 import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
-import { openAsk } from '../work/store.js';
+import { openAsk, askIdForMessage } from '../work/store.js';
 import { NOW_MS, createdAtText } from './store.js';
 import { estimateStoredTokens } from './budget.js';
 
@@ -87,6 +87,12 @@ export interface NewMessage {
   mood?: string | null;
   displayKind?: DisplayKind;
   displayTier?: DisplayTier;
+  /** PHASE-5 T9 (decision D4) — the title for the ask ticket this row may open,
+   *  RESOLVED BEFORE THE TRANSACTION by `insertInboundMessageIfAbsent`. Absent
+   *  means the ticket is written with its own identifier as its title, which is
+   *  content-free by construction. It is NEVER derived from `content` here:
+   *  that mechanism (`content.slice(0, 120)`) is the one T9 removed. */
+  askTitle?: string | null;
 }
 
 export interface Persisted {
@@ -316,6 +322,13 @@ function isOwnerAsk(m: NewMessage, storedContent: string): boolean {
   return o.kind === 'user' && o.authorized;
 }
 
+/** Would this row open an ask ticket? The ONE gate, asked from outside so the ingest door
+ *  can resolve a title BEFORE it opens a transaction (T9). There is no second predicate:
+ *  `persistAndMaybeOpenAsk` asks this same function inside the unit. */
+export function wouldOpenAsk(m: NewMessage): boolean {
+  return isOwnerAsk(m, prepareContent(m.role, m.content).content);
+}
+
 /** The stored row's own facts, then the ticket. Runs inside the caller's transaction. */
 function persistAndMaybeOpenAsk(m: NewMessage, b: ReturnType<typeof bind>, seq: number): string {
   const db = getDb();
@@ -328,7 +341,25 @@ function persistAndMaybeOpenAsk(m: NewMessage, b: ReturnType<typeof bind>, seq: 
       conversationId: m.conversationId ?? null,
       requesterId: m.senderId ?? null,
       openedAt: row.created_ms,
-      title: (b.params.content as string).slice(0, 120),
+      // ── PHASE-5 T9 (decision D4) — THE TITLE IS NOT A COPY OF WHAT WAS TYPED ──
+      //
+      // It was `content.slice(0, 120)`: a cross-store copy of the owner's own words
+      // onto board and broadcast surfaces with their own readers and their own
+      // lifetime. Whatever he typed rode along, including a credential, and at this
+      // seam no tool has been called so no `input_schema` has declared any field as
+      // secret — there is nothing here to key on. So nothing is derived here at all.
+      //
+      // The title arrives already resolved (the system model, asked BEFORE this
+      // transaction opened — `work/ask-title.ts`), and when it did not arrive the
+      // ticket takes ITS OWN IDENTIFIER, which is derived from the message id and
+      // carries nothing a person typed. `askIdForMessage` is the same function
+      // `openAsk` mints the row's id with, so the id exists before the transaction
+      // by construction and the two can never disagree.
+      //
+      // REFUSAL: this fallback is NEVER the 120-character slice. Re-introducing it
+      // on the timeout path would re-open the hole on exactly the messages where the
+      // model was too slow to help.
+      title: m.askTitle ?? askIdForMessage(b.id),
     });
   }
   return row.created_at;

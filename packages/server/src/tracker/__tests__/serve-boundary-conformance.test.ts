@@ -247,8 +247,18 @@ describe('conversations at ingest (P5)', () => {
   // memory/__tests__/single-writer-conformance.test.ts, whose allowlist Sweep A drives
   // to zero; it survives here because it is the only check that ties a producer's
   // conversation RESOLUTION to its WRITE.
+  // PHASE-5 T9 (2026-08-03) — THE WRITE THIS CLAUSE READS GAINED A THIRD SPELLING, and
+  // the assertion follows the requirement to its new address exactly as it already did
+  // for `memory/interagent.ts` -> `agent/a2a-transport.ts` above. Decision D4 made the
+  // ask ticket's title something the system model writes, which must be asked BEFORE the
+  // write opens, so the seven channel producers now reach the single writer through
+  // `insertInboundMessageIfAbsent` — the same synchronous write with the title already
+  // resolved. **NOTHING ABOUT THE REQUIREMENT MOVED:** `conversationId` must still appear
+  // inside the write statement, and the window is unchanged at 400 characters. Seen to
+  // bite after the edit: removing `conversationId` from one producer's call fails this
+  // clause, naming that producer.
   const ATOMIC_CONVERSATION_STAMP =
-    /INTO messages[\s\S]{0,300}conversation_id|insertMessage(?:IfAbsent)?\s*\([\s\S]{0,400}conversationId/;
+    /INTO messages[\s\S]{0,300}conversation_id|insert(?:Inbound)?Message(?:IfAbsent)?\s*\([\s\S]{0,400}conversationId/;
 
   it('every channel producer stamps conversation_id ATOMICALLY in its INSERT', () => {
     const producers = [

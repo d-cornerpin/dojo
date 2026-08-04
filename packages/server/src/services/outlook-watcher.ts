@@ -8,7 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { getDb } from '../db/connection.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
-import { insertMessageIfAbsent } from '../memory/message-store.js';
+import { insertInboundMessageIfAbsent } from '../work/ask-title.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId } from '../config/platform.js';
@@ -366,7 +366,7 @@ async function pollAccount(view: MicrosoftAccountView): Promise<void> {
       // the meta this watcher just computed — never re-derived. recordInboundMeta
       // below still records the full blob. insertMessageIfAbsent keeps the
       // external_message_id de-duplication the INSERT OR IGNORE relied on.
-      insertMessageIfAbsent({
+      await insertInboundMessageIfAbsent({
         id: msgId,
         agentId: primaryId,
         role: 'user',

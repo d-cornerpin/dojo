@@ -13,7 +13,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { getDb } from '../db/connection.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
-import { insertMessageIfAbsent } from '../memory/message-store.js';
+import { insertInboundMessageIfAbsent } from '../work/ask-title.js';
 import { isSenderAuthorized } from '../agent/v2/channel-auth.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
@@ -326,7 +326,7 @@ async function pollForNewMessages(): Promise<void> {
         // below still records the full blob (chatId, chatType, recipientAddress).
         // insertMessageIfAbsent keeps the external_message_id de-duplication that the
         // INSERT OR IGNORE provided.
-        insertMessageIfAbsent({
+        await insertInboundMessageIfAbsent({
           id: msgId,
           agentId: primaryId,
           role: 'user',

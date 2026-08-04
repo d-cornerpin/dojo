@@ -8,6 +8,7 @@ import { createLogger } from '../../logger.js';
 import { getAgentRuntime } from '../../agent/runtime.js';
 import { queueEmbedding } from '../../memory/embeddings.js';
 import { insertMessageIfAbsent } from '../../memory/message-store.js';
+import { insertInboundMessageIfAbsent } from '../../work/ask-title.js';
 import { archiveAgentConversation } from '../../vault/archive.js';
 import { replaceContextItems } from '../../memory/dag.js';
 import { broadcast } from '../ws.js';
@@ -134,7 +135,7 @@ export async function submitUserMessage(
   // meta), so the row is never briefly unstamped: `authorized` is dashMeta's own verdict
   // (the owner's dashboard/voice session), `senderId` is the counterparty identity the
   // conversation just resolved on, and `conversationId` lands in the SAME write.
-  insertMessageIfAbsent({
+  await insertInboundMessageIfAbsent({
     id: messageId,
     agentId,
     role: 'user',

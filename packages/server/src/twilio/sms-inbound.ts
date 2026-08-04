@@ -12,7 +12,7 @@ import os from 'node:os';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db/connection.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
-import { insertMessageIfAbsent } from '../memory/message-store.js';
+import { insertInboundMessageIfAbsent } from '../work/ask-title.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getOwnerName } from '../config/platform.js';
@@ -340,7 +340,7 @@ export async function ingestInboundSms(payload: InboundSmsPayload): Promise<bool
   // still records the full blob (from/to numbers, reply address).
   // insertMessageIfAbsent keeps the MessageSid de-duplication the INSERT OR IGNORE
   // leaned on (the unique index on external_message_id).
-  insertMessageIfAbsent({
+  await insertInboundMessageIfAbsent({
     id: msgId,
     agentId: primaryId,
     role: 'user',

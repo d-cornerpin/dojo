@@ -43,7 +43,7 @@ import { getTwilioConfig } from './auth.js';
 import { getTwilioVoiceSafeCallers } from '../services/channel-safe-senders.js';
 import { addressesMatch } from '../services/imessage-bridge.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
-import { insertMessageIfAbsent } from '../memory/message-store.js';
+import { insertInboundMessageIfAbsent } from '../work/ask-title.js';
 import { recordAtDoor, recordedId } from '../agent/v2/outbound.js';
 
 const logger = createLogger('twilio-call-session');
@@ -515,7 +515,7 @@ export class CallSession {
       // the meta this leg already holds — never re-derived. recordInboundMeta below
       // still records the full blob (call sid, from number, reply address).
       // insertMessageIfAbsent keeps the call-sid de-duplication of INSERT OR IGNORE.
-      insertMessageIfAbsent({
+      await insertInboundMessageIfAbsent({
         id: msgId,
         agentId: primaryId,
         role: 'user',

@@ -35,7 +35,7 @@ import {
   appendTwilioVoiceSafeCaller,
 } from '../../services/channel-safe-senders.js';
 import { getDb } from '../../db/connection.js';
-import { insertMessageIfAbsent } from '../../memory/message-store.js';
+import { insertInboundMessageIfAbsent } from '../../work/ask-title.js';
 import { getTunnelStatus } from '../../services/tunnel.js';
 
 const logger = createLogger('twilio-routes');
@@ -258,7 +258,7 @@ twilioRouter.post('/webhook/voicemail-transcription', async (c) => {
         // caller as sender, and the authorized:false verdict below) are stamped IN the
         // insert, so the row is never briefly unstamped. recordInboundMeta still records
         // the full meta blob for the resolver.
-        insertMessageIfAbsent({
+        await insertInboundMessageIfAbsent({
           id: msgId,
           agentId: primaryId,
           role: 'user',

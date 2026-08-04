@@ -19,7 +19,8 @@ import { v4 as uuidv4 } from 'uuid';
 import Database from 'better-sqlite3';
 import { scrubTechnicalDetail } from '../agent/v2/error-format.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
-import { insertMessageIfAbsent, sweepById } from '../memory/message-store.js';
+import { insertMessageIfAbsent, sweepById, type NewMessage } from '../memory/message-store.js';
+import { resolveInboundAskTitle } from '../work/ask-title.js';
 import { isContentFreeCourtesy } from '../agent/v2/classifiers/inbound-courtesy.js';
 import { appleMessageDateToUnixMs } from './imessage-date.js';
 import { recordAtDoor, withOutboundIfAbsent, PLATFORM_SENDER, recordedId } from '../agent/v2/outbound.js';
@@ -1189,26 +1190,37 @@ export async function processInboundIMessage(
     channel: 'imessage', provider: 'imessage', counterpartyId: sender,
     counterpartyName: senderRecord?.name ?? null, threadRoot: null,
   });
+  // T4/OR4: the routing facts this producer ALREADY decided (inboundMetaObj) are
+  // stamped IN the insert, so the row is never briefly unstamped — `authorized` is
+  // this bridge's own safe-sender verdict, `senderId` the address it arrived from,
+  // and `conversationId` lands in the SAME write. recordInboundMeta below still
+  // records the full meta blob (relation, chatType, senderIsAgent) for the resolver.
+  // INSERT OR IGNORE → insertMessageIfAbsent: the external_message_id de-duplication
+  // is preserved exactly (ON CONFLICT DO NOTHING covers the unique index).
+  const inboundRow: NewMessage = {
+    id: msgId,
+    agentId: primaryId,
+    role: 'user',
+    content: msgContent,
+    attachments: attachmentResult.uploadedFiles.length > 0 ? JSON.stringify(attachmentResult.uploadedFiles) : null,
+    conversationId,
+    externalMessageId: externalMessageId ?? null,
+    channel: inboundMetaObj.channel,
+    senderId: inboundMetaObj.sender,
+    authorized: inboundMetaObj.authorized,
+  };
+  // T9 (D4): the ticket's title is written by the system model, and the model is
+  // asked BEFORE this transaction opens — for the same reason conversation identity
+  // is resolved above it. This bridge owns its own outer transaction (the cursor
+  // advance rides with the row), so it resolves the title itself rather than through
+  // the ingest door; the resolver is the same one, and `null` means the ticket takes
+  // its own identifier.
+  const askTitle = await resolveInboundAskTitle(inboundRow);
   db.transaction(() => {
-    // T4/OR4: the routing facts this producer ALREADY decided (inboundMetaObj) are
-    // stamped IN the insert, so the row is never briefly unstamped — `authorized` is
-    // this bridge's own safe-sender verdict, `senderId` the address it arrived from,
-    // and `conversationId` lands in the SAME write. recordInboundMeta below still
-    // records the full meta blob (relation, chatType, senderIsAgent) for the resolver.
-    // INSERT OR IGNORE → insertMessageIfAbsent: the external_message_id de-duplication
-    // is preserved exactly (ON CONFLICT DO NOTHING covers the unique index).
-    insertMessageIfAbsent({
-      id: msgId,
-      agentId: primaryId,
-      role: 'user',
-      content: msgContent,
-      attachments: attachmentResult.uploadedFiles.length > 0 ? JSON.stringify(attachmentResult.uploadedFiles) : null,
-      conversationId,
-      externalMessageId: externalMessageId ?? null,
-      channel: inboundMetaObj.channel,
-      senderId: inboundMetaObj.sender,
-      authorized: inboundMetaObj.authorized,
-    });
+    // `conversationId` stays spelled in the write itself: identity is stamped
+    // ATOMICALLY with the row (OR4), and the serve-boundary conformance walk reads
+    // exactly this statement.
+    insertMessageIfAbsent({ ...inboundRow, conversationId, ...(askTitle === null ? {} : { askTitle }) });
     recordInboundMeta(msgId, inboundMetaObj);
     if (input.staleSentAtIso) {
       // P5c: the reply-vs-note decision, made structurally at ingest. A stale

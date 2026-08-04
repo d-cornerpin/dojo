@@ -16,7 +16,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
 import { getDb } from '../db/connection.js';
 import { recordInboundMeta } from '../agent/v2/inbound-channel.js';
-import { insertMessageIfAbsent } from '../memory/message-store.js';
+import { insertInboundMessageIfAbsent } from '../work/ask-title.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { getPrimaryAgentId, getOwnerName } from '../config/platform.js';
@@ -426,7 +426,7 @@ async function pollAccount(view: GoogleAccountView): Promise<void> {
       // below still records the full blob (account, subject, provider message id).
       // INSERT OR IGNORE → insertMessageIfAbsent keeps the external_message_id
       // de-duplication exactly as it was.
-      insertMessageIfAbsent({
+      await insertInboundMessageIfAbsent({
         id: msgId,
         agentId: primaryId,
         role: 'user',
