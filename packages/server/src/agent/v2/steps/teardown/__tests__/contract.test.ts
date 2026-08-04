@@ -26,6 +26,36 @@
 // ════════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// ── PHASE-6 T-PROMISE: a TIMEOUT WITH ITS MEASURED REASON, not a re-run ──────────
+// CUT 8 recorded this file (H6) as one of two that intermittently blow vitest's
+// 5,000 ms per-test default when the whole suite runs on a loaded machine — GREEN
+// alone, GREEN in subsets, a TIMEOUT rather than an assertion failure, and the
+// machine's load average above 50 when it fired.
+//
+// THE REASON, MEASURED on a settled machine (`npx vitest run <this file>
+// --reporter=verbose`): the FIRST clause costs 2,857 ms and the nine after it cost
+// 171–204 ms each. So ~2,680 ms — 94% of the first clause's wall time — is the
+// one-time module-graph load of the `teardown` package and everything it imports,
+// paid inside whichever clause happens to run first. It is real work, not a hang,
+// and under the load CUT 8 recorded it expands past 5,000 ms.
+//
+// 15,000 ms is 5.3× the settled first-clause cost, which covers the measured
+// excursion with margin while still failing fast on a genuine hang.
+//
+// REFUSED, and each for a stated reason: (a) a re-run culture, which is what turns
+// a measurable cost into folklore; (b) warming the graph in `beforeAll`, T0B's fix
+// shape — it does not apply here, because the cost is this file's own top-level
+// `import` statements rather than a dynamic import the test controls, so the hook
+// would simply inherit the same seconds against `hookTimeout`; (c) pinning the
+// timeout on the one slow clause, which silently re-arms the moment an edit makes a
+// different clause run first.
+//
+// SEEN TO BITE IN BOTH DIRECTIONS, then reverted: a planted 6,000 ms delay in the
+// first clause PASSED at 8,938 ms with this line, and the same plant with this line
+// commented out FAILED at 5,203 ms carrying vitest's own timeout message. A raise
+// nobody watched fail is a number, not a fix.
+vi.setConfig({ testTimeout: 15_000 });
 import Database from 'better-sqlite3';
 import ts from 'typescript';
 import fs from 'node:fs';

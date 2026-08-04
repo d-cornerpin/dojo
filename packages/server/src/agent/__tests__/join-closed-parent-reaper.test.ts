@@ -14,6 +14,26 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { isOwnerAlertSystemNote } from '@dojo/shared';
 
+// ── PHASE-6 T-PROMISE: a TIMEOUT WITH ITS MEASURED REASON, not a re-run ──────────
+// The second of the two files CUT 8 recorded (H6) as blowing vitest's 5,000 ms
+// per-test default when the whole suite runs on a loaded machine — GREEN alone,
+// GREEN in subsets, a TIMEOUT rather than an assertion failure.
+//
+// THE REASON, MEASURED on a settled machine (`npx vitest run <this file>
+// --reporter=verbose`): the FIRST clause costs 2,458 ms and the seven after it cost
+// 175–182 ms each. ~2,279 ms — 93% of the first clause — is one-time setup: the
+// migration chain run over a fresh temp database plus the first dynamic import of
+// `a2a-transport.js` and its graph. Real work, not a hang, and it expands past
+// 5,000 ms under the load CUT 8 recorded.
+//
+// 15,000 ms is 6.1× the settled first-clause cost. Same three refusals as the
+// teardown contract's twin note, and the same reason for pinning the FILE rather
+// than the clause: which clause pays the setup is an ordering accident. The twin's
+// note carries the two negative controls that proved the raise live and the 5,000 ms
+// default binding; they were run once, on that file, and are cited rather than
+// duplicated here.
+vi.setConfig({ testTimeout: 15_000 });
+
 const mockDb: { current: Database.Database | null } = { current: null };
 
 vi.mock('../../db/connection.js', async () => {
