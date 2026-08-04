@@ -1821,6 +1821,55 @@
       "to": 78,
       "by": "PHASE-6 T8 (2026-08-04) — NEW PIN (the step contract every tranche shares)",
       "why": "NOT A RAISE — a new file at 78. It carries the contract the nine step packages share: the `(state, ctx)` -> `StepOutcome` shape, and the exit-request channel (a step ASKS by returning; the driver honours it at the call site, where nothing downstream can overwrite the request; `exit` carries its reason by construction). Pinned because it is the one file every remaining tranche will touch, and a shared contract that grows unwatched is how nine tranches grow nine conventions — the failure RULING P6-R3(1) exists to prevent. 47 of its 78 lines are the doc stating the rule and citing the defect it replaces (`loop.ts`'s own head comment on mid-body `phase` writes)."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9672,
+      "to": 9362,
+      "by": "PHASE-6 T9b (2026-08-04) — A LOWERING, the second tranche of the decomposition (CUT 2)",
+      "why": "The per-tranche Step 3 tightening, paid at the tranche that earned it. The turn's exit path — the function-level `catch` and `finally` of `runV2TurnBody` (`:9330`-`:9677` at `1cbe8bb`, 348 lines) — left this file for `agent/v2/steps/teardown/`. The MEASURED cut against the phase base is 310 (9672 -> 9362), not the 348 that moved and not the 348 that moved: nine imports the span was the only reader of went with it: the carrier commit before it ADDED 6 lines here (the comment recording why `startAckTimer` now lives on the turn's bag), the two call sites and their import cost 27 back, and a relocation pays for its own seam rather than pretending it does not. TWO ALTERNATIVES MEASURED AND REFUSED, the same two CUT 1 refused and for the same reasons — the measurement was RE-RUN rather than carried: (a) `check-ratchets.mjs --tighten`, which was run and reverted, and which would ALSO have swept FIVE unrelated files' pre-existing slack (`techniques/share-import.ts` -101, `services/transcription.ts` -84, `techniques/store.ts` -75, `agent/tools/cat/fs.ts` -2, `work/store.ts` -2 = 264 lines, the identical set CUT 1 enumerated and left claimable) into a tranche commit that did not earn it; (b) leaving the pin at 9672 for the seven remaining tranches' headroom, which is the decrease-only rule inverted."
+    },
+    {
+      "path": "packages/server/src/agent/v2/state.ts",
+      "from": 578,
+      "to": 610,
+      "by": "PHASE-6 T9b (2026-08-04) — a RAISE, +32, and all 32 are the decision's own reasoning",
+      "why": "THE `TurnPhase` DECISION THE PLAN'S §A OWED, written at the union rather than in a report nobody will read beside the code. The union gained ONE member — `'teardown'`, one line — and 31 lines of why: that `'preflight'` already sat outside the loop so the ninth step was not an exception to any real rule; that `state.phase` has exactly ONE production read (the `while` head) against ten writes, so the new write can break nothing; that a phase-only `advance` cannot newly throw, which matters because this transition also runs on the throw path where a new throw would replace the error being handled; and — the part most likely to be misread later — that this does NOT close T13's gate, because nothing but the loop head reads the field. ALTERNATIVES MEASURED AND REFUSED: (a) putting the reasoning in the step package instead and leaving one bare member here, which is where the next editor of the union would NOT look; (b) recording the decision only in the task report, which is exactly how the plan's own §A note observed that routed items go missing — 'a routed item is not routed until it is in the receiving file'; (c) shortening it by dropping the what-this-does-not-close paragraph, refused because an overclaim about `TurnPhase` being load-bearing is the specific error T13's gate will be read against."
+    },
+    {
+      "path": "packages/server/src/agent/turn-context.ts",
+      "from": 275,
+      "to": 301,
+      "by": "PHASE-6 T9b (2026-08-04) — a RAISE, +26, for RULING P6-R3(1)'s carrier",
+      "why": "The bag becomes the carrier for mutable driver locals that cross a step boundary, which is what RULING P6-R3(1) names it as ('the carrier is the turn's bag … and no second mechanism'). +26 = the `startAckTimer` field and its doc (13), the interface header rewritten to declare TWO populations honestly rather than let a driver local sit silently among facts the outside reads (12), and the initialiser (1). ALTERNATIVES MEASURED AND REFUSED: (a) a second, driver-only state object — forbidden by the ruling in so many words, and it is the adding-without-deleting shape; (b) passing the handle by value into the step, which typechecks and would even clear the timer, but lets the `= null` die at the module boundary — harmless today only because nothing runs afterwards to look, which is the reasoning this project bans and precisely the class T1 found on the four teardown reads; (c) leaving the interface header saying 'everything code OUTSIDE the loop must be able to read', which would have made the file's own doc false the moment the field landed."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/index.ts",
+      "from": null,
+      "to": 219,
+      "by": "PHASE-6 T9b (2026-08-04) — NEW PIN (the ninth step's entry point)",
+      "why": "NOT A RAISE — a new file at 219, under `maxNewFileLines` (400) and under the growth gate's 240 crossing line. Pinned for T1's and CUT 1's stated reason: a phase that moves 8,800 lines into nine unwatched files has not shrunk anything. It carries the two arms (`runTurnRecovery` for the `catch`, `runTurnTeardown` for the `finally`), the `TeardownContext` inputs measured rather than guessed, and the `TurnPhase` decision's summary."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/finalize-record.ts",
+      "from": null,
+      "to": 228,
+      "by": "PHASE-6 T9b (2026-08-04) — NEW PIN (the turn record)",
+      "why": "NOT A RAISE — a new file at 228, legal twice over. It is the P4 turn-record finalize and everything hanging off it: the closeout disposition, the ONE ticket-stamping point, the strike-0 receipt close, the phone reply binding and the per-ask answer stamp. It exists as its own file because the span is 348 lines against a 400-line cap, so the entry point could not hold it — P6-R1's directory shape earning itself rather than being invoked."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts",
+      "from": null,
+      "to": 80,
+      "by": "PHASE-6 T9b (2026-08-04) — NEW PIN (FA-TS4's teardown net)",
+      "why": "NOT A RAISE — a new file at 80. The stranded-`show_to_user` net that holds the v2.9.20 requirement (queued files are never silently lost) and the deliberate refusal to re-push to iMessage/voice from a thrown turn. Split on a seam the block already had."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts",
+      "from": null,
+      "to": 70,
+      "by": "PHASE-6 T9b (2026-08-04) — NEW PIN (C15 + F9)",
+      "why": "NOT A RAISE — a new file at 70. The every-exit-path conv_key tagging (C15) and the assembled-sibling claim with its abort-safety guard (F9). Split on a seam the block already had."
     }
   ],
   "maxNewFileLines": 400,
@@ -1880,17 +1929,21 @@
     "packages/server/src/agent/tools/surface.ts": 657,
     "packages/server/src/agent/tools/types.ts": 338,
     "packages/server/src/agent/tools/util.ts": 371,
-    "packages/server/src/agent/turn-context.ts": 275,
+    "packages/server/src/agent/turn-context.ts": 301,
     "packages/server/src/agent/turn-state.ts": 218,
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 482,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9672,
+    "packages/server/src/agent/v2/loop.ts": 9362,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 433,
     "packages/server/src/agent/v2/recovery.ts": 605,
-    "packages/server/src/agent/v2/state.ts": 578,
+    "packages/server/src/agent/v2/state.ts": 610,
     "packages/server/src/agent/v2/steer-queue.ts": 275,
+    "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
+    "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts": 70,
+    "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 228,
+    "packages/server/src/agent/v2/steps/teardown/index.ts": 219,
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
     "packages/server/src/credentials/secret-fields.ts": 241,
