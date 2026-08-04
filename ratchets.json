@@ -1744,6 +1744,62 @@
       "to": 1285,
       "by": "PHASE-6 T0D Step 2 (2026-08-04) — one import line",
       "why": "PHASE-6 T0D. +1 line: the `noteUnsettled` import, so this file's three `patchWork` sites can consume the door's refusal. NO ALTERNATIVE EXISTS that is not worse: the recorder is one name, in one module, and re-exporting it through a file this one already imports would hide the dependency to save a line. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 1285."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9788,
+      "to": 9808,
+      "by": "PHASE-6 T1 (2026-08-04) — the turn owns its facts and clears them in its own finally",
+      "why": "PHASE-6 T1. +20 lines net. THE DEFECT IT FIXES: ten ambient maps were deleted by one statement inside `setAgentStatus(agentId,'idle')`, and the ordinary end-of-turn idle write sits INSIDE the main `try` while the `finally` that finalizes the turn record opens after it — so on EVERY turn teardown read facts that had already been deleted, silently, through `?.`/`?? null`. Two of `stampTasksAtTurnFinalize`'s four tie predicates were matched against the empty string on every turn the engine has ever run, and two conversation-scoped lookups ran unscoped. WHAT THE +20 IS: ~10 lines of wrapper (`openTurnContext` / `try` / `runV2TurnBody(agentId, turnCtx)` / `finally` / `endTurnContext`, plus the renamed body signature), ~5 lines turning a bare `catch {}` into a bound-and-logged one, and the rest pointer comments; the idle-write clear and the two turn-entry clears were DELETED. THE ALTERNATIVES WERE MEASURED. (a) Put the clear at the END of the teardown `finally` instead of a wrapper (saves ~10): REFUSED — two exits `return` before the body's `try` opens (the pickup-claim-lost bails, one human and one engine) and would leak the bag on both, and a clear inside the block that READS the bag has to be hand-ordered after four reads forever, which is the exact fragility that produced the defect. (b) Re-indent the 8,800-line body into the new `try` instead of splitting the function (saves ~4): REFUSED — it would make an 8,800-line whitespace diff out of a change that must be provably byte-faithful, in the phase whose next nine tasks depend on that proof. (c) Keep the bare `catch {}` (saves 5): REFUSED — the task's own instruction is that the silent degrade becomes a loud, tested behaviour or is removed with its reason. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 9808, and T12's tripwire reads the DRIVER'S RESIDUAL, which is `runV2TurnBody` and is now smaller by the wrapper."
+    },
+    {
+      "path": "packages/server/src/memory/assembler.ts",
+      "from": 2612,
+      "to": 2615,
+      "by": "PHASE-6 T1 (2026-08-04) — one aliased import and its reason",
+      "why": "PHASE-6 T1. +3 lines: the turn-context import (which cannot share the turn-state line, being a different module) plus a 2-line note that it is ALIASED — `turnContext` already means `PromptTurnContext` throughout this file, an assembly's per-turn INPUTS, and the two turn-shaped things must not be confused at the eleven sites that use the parameter. NO ALTERNATIVE IS BETTER: dropping the note saves 2 and re-creates the ambiguity the typechecker caught here in the first place; renaming the module's export would spread the awkwardness to nineteen other files that read it perfectly. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2615."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1415,
+      "to": 1416,
+      "by": "PHASE-6 T1 (2026-08-04) — one import line",
+      "why": "PHASE-6 T1. +1: `turnContext` now comes from `agent/turn-context.js` while `turnBoundary` and the A2A carriers stay in `agent/turn-state.js` — two modules, two import lines. NO ALTERNATIVE EXISTS that is not worse: re-exporting one through the other to save a line would hide the dependency, which is the shim habit this overhaul removes. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 1416."
+    },
+    {
+      "path": "packages/server/src/agent/tools/index.ts",
+      "from": 675,
+      "to": 676,
+      "by": "PHASE-6 T1 (2026-08-04) — one import line",
+      "why": "PHASE-6 T1. +1: same split as runtime.ts — `runWithToolCallId` stays in `turn-state.js` (its AsyncLocalStorage scope is one tool EXECUTION, narrower than a turn, and deliberately not moved), `turnContext` comes from `turn-context.js`. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 676."
+    },
+    {
+      "path": "packages/server/src/agent/tools/util.ts",
+      "from": 370,
+      "to": 371,
+      "by": "PHASE-6 T1 (2026-08-04) — one import line",
+      "why": "PHASE-6 T1. +1: same split, same reason — `getCurrentToolCallId` stays with the async-context mechanism, the turn's facts come from the bag. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 371."
+    },
+    {
+      "path": "packages/server/src/agent/turn-state.ts",
+      "from": null,
+      "to": 218,
+      "by": "PHASE-6 T1 (2026-08-04) — NEW PIN (the plan's RE-DERIVED #8: neither ambient-state file was watched)",
+      "why": "PHASE-6 T1. NOT A RAISE — a first pin, and the file SHRANK to earn it (338 -> 218 as the ten per-turn maps left for `turn-context.ts`). The plan's own instruction: 'Neither turn-state.ts nor shared-state.ts is in ratchets.json — T1 must add the pin or the collapse target can grow unwatched.' Both sat under `maxNewFileLines` (400) and were therefore invisible to the decrease-only rule while half the ambient surface lived in them. Pinned at their measured size, which is a far tighter watch than the 400 cap: what is left here is the CROSS-TURN state, and it may only shrink."
+    },
+    {
+      "path": "packages/server/src/agent/shared-state.ts",
+      "from": null,
+      "to": 90,
+      "by": "PHASE-6 T1 (2026-08-04) — NEW PIN (RE-DERIVED #8)",
+      "why": "PHASE-6 T1. NOT A RAISE and NOT A CHANGE — this file is byte-untouched by T1, which is the finding: all twelve of its maps/sets are process-level and none belongs in a bag cleared in `finally`. It is pinned because the plan's exit gate needs a denominator ('a grep-zero over one file would pass while half the surface stood') and because an unpinned file under the 400 cap can grow 310 lines unwatched."
+    },
+    {
+      "path": "packages/server/src/agent/turn-context.ts",
+      "from": null,
+      "to": 275,
+      "by": "PHASE-6 T1 (2026-08-04) — NEW PIN (the collapse target itself)",
+      "why": "PHASE-6 T1. NOT A RAISE — a new file at 275, well under `maxNewFileLines` (400) and therefore already legal; pinned anyway so the thing the ten maps collapsed INTO is watched at least as tightly as the two they came from. Its content is the ten fields with the comments that moved with them, plus the lifecycle (`openTurnContext` / `turnContext` / `endTurnContext`) and the reason the clear lives in `runV2Turn`'s wrapper rather than the teardown `finally`."
     }
   ],
   "maxNewFileLines": 400,
@@ -1779,12 +1835,15 @@
     "packages/server/src/agent/browser.ts": 412,
     "packages/server/src/agent/destructive-gate.ts": 583,
     "packages/server/src/agent/effects/capability.ts": 308,
+    "packages/server/src/agent/effects/fs.ts": 258,
+    "packages/server/src/agent/effects/scopes.ts": 349,
     "packages/server/src/agent/model.ts": 2621,
     "packages/server/src/agent/pdf-tools.ts": 1055,
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 317,
-    "packages/server/src/agent/runtime.ts": 1415,
+    "packages/server/src/agent/runtime.ts": 1416,
+    "packages/server/src/agent/shared-state.ts": 90,
     "packages/server/src/agent/spawner.ts": 1425,
     "packages/server/src/agent/tools/cat/agents.ts": 1285,
     "packages/server/src/agent/tools/cat/comms.ts": 843,
@@ -1793,18 +1852,19 @@
     "packages/server/src/agent/tools/cat/media.ts": 896,
     "packages/server/src/agent/tools/cat/session.ts": 241,
     "packages/server/src/agent/tools/cat/tracker.ts": 848,
-    "packages/server/src/agent/effects/scopes.ts": 349,
     "packages/server/src/agent/tools/definitions.ts": 2786,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
-    "packages/server/src/agent/tools/index.ts": 675,
+    "packages/server/src/agent/tools/index.ts": 676,
     "packages/server/src/agent/tools/surface.ts": 657,
     "packages/server/src/agent/tools/types.ts": 338,
-    "packages/server/src/agent/tools/util.ts": 370,
+    "packages/server/src/agent/tools/util.ts": 371,
+    "packages/server/src/agent/turn-context.ts": 275,
+    "packages/server/src/agent/turn-state.ts": 218,
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 482,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9788,
+    "packages/server/src/agent/v2/loop.ts": 9808,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 433,
     "packages/server/src/agent/v2/recovery.ts": 605,
@@ -1832,7 +1892,7 @@
     "packages/server/src/healer/healer-agent.ts": 1170,
     "packages/server/src/healer/injury-recovery.ts": 822,
     "packages/server/src/index.ts": 1186,
-    "packages/server/src/memory/assembler.ts": 2612,
+    "packages/server/src/memory/assembler.ts": 2615,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 610,
     "packages/server/src/memory/budget.ts": 308,
@@ -1885,9 +1945,9 @@
     "packages/server/src/voice/model-manager.ts": 583,
     "packages/server/src/voice/stt-service.ts": 538,
     "packages/server/src/voice/voice-ws.ts": 2299,
+    "packages/server/src/work/ask-title.ts": 297,
     "packages/server/src/work/occurrences.ts": 426,
     "packages/server/src/work/override-requests.ts": 247,
-    "packages/server/src/work/ask-title.ts": 297,
     "packages/server/src/work/store.ts": 1741,
     "packages/server/src/work/tracker-store.ts": 530,
     "packages/server/src/work/tracker-view.ts": 509,
@@ -1898,7 +1958,6 @@
     "packages/shared/src/types.ts": 527,
     "packages/shared/src/visibility.ts": 881,
     "packages/shared/src/ws.ts": 1088,
-    "watchdog/src/index.ts": 1198,
-    "packages/server/src/agent/effects/fs.ts": 258
+    "watchdog/src/index.ts": 1198
   }
 }
