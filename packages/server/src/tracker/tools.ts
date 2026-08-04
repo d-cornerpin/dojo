@@ -171,7 +171,17 @@ function scheduleEchoLines(scheduledStartIso: string | null, nextRunIso: string 
     lines.push(`Next run (local): ${formatTimeForAgent(nextRunIso)}`);
   }
   if (scheduledStartIso || nextRunIso) {
-    lines.push('If this local time is NOT what the user asked for, re-call with the corrected time (or pass local_time="YYYY-MM-DDThh:mm" and let the engine do the timezone conversion).');
+    // PHASE-6 T0C: this echo used to end "…or pass local_time="YYYY-MM-DDThh:mm"
+    // and let the engine do the timezone conversion" — on the SUCCESS path of
+    // every scheduled create and edit, i.e. the most-read line this file has.
+    // `local_time` is declared on no tool and forwarded by no door, so a model
+    // that obeyed got the unknown-argument warning and a silently dropped field.
+    // The conversion itself is real and reachable over HTTP; WIRING IT THROUGH to
+    // the agent door is handed up, because declaring a new parameter on
+    // `work_open`/`work_update` moves the cache-prefix reference file and that is
+    // a reviewed re-blessing (OR7). Until then this line names only what an agent
+    // can actually do.
+    lines.push('If this local time is NOT what the user asked for, re-call with the corrected time as an ISO 8601 UTC instant (call get_current_time first if you need to anchor a relative time).');
   }
   return lines;
 }
@@ -1281,10 +1291,12 @@ export function reminderCreate(agentId: string, args: Record<string, unknown>): 
     return (
       'ASK_USER: This reminder needs a time. Ask the user when they would like to be ' +
       'reminded ("in 5 minutes", "tomorrow at 8am", "every Monday at 9am"). ' +
-      'Once they answer, either call get_current_time to anchor relative times and re-call ' +
-      'work_open(kind="reminder") with `when` set to the resolved ISO 8601 datetime, OR pass ' +
-      'local_time="YYYY-MM-DDThh:mm" (24-hour wall clock) and let the engine do the timezone ' +
-      'conversion. Do NOT create the reminder yet.'
+      // PHASE-6 T0C: the `local_time` alternative was removed from this text —
+      // see the note on `scheduleEchoLines`. It is undeclared and unforwarded, so
+      // the branch it pointed at is unreachable from here.
+      'Once they answer, call get_current_time to anchor relative times and re-call ' +
+      'work_open(kind="reminder") with `when` set to the resolved ISO 8601 datetime. ' +
+      'Do NOT create the reminder yet.'
     );
   }
 
@@ -1297,7 +1309,8 @@ export function reminderCreate(agentId: string, args: Record<string, unknown>): 
       `Error: when="${when}" is not a parseable datetime, so this reminder would never fire. ` +
       `Resolve the relative time yourself: call get_current_time, add the offset ` +
       `(e.g. "in 2 minutes" = current UTC + 2 minutes), then re-call work_open(kind="reminder") with an ` +
-      `ISO 8601 UTC timestamp, e.g. when="2026-07-03T16:38:00Z". Or pass local_time="YYYY-MM-DDThh:mm".`
+      // PHASE-6 T0C: "Or pass local_time=…" removed — undeclared, unforwarded.
+      `ISO 8601 UTC timestamp, e.g. when="2026-07-03T16:38:00Z".`
     );
   }
 
@@ -2264,8 +2277,17 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
         return (
           `Error: this edit restores the description to the task's ORIGINAL text byte-for-byte, over a later edit that changed it. ` +
           `That is usually an accidental revert of intended work (a stale copy overwriting the current description). ` +
-          `If you really mean to roll the description back to the original ask, re-call with revert_to_original=true. ` +
-          `Otherwise, edit from the CURRENT description instead of pasting the original back.`
+          // PHASE-6 T0C: this line used to say "re-call with
+          // revert_to_original=true" — the refusal named an escape hatch the
+          // agent-facing door seals, because `revert_to_original` is declared on
+          // no tool. A model that obeyed got the unknown-argument warning, the
+          // flag dropped, and the identical refusal again. The flag is read at
+          // `:2263`/`:2349` and remains reachable over HTTP; DECLARING it on
+          // `work_update` is handed up (it moves the cache-prefix reference file
+          // — a reviewed re-blessing, OR7). This text now names only the route an
+          // agent can actually take.
+          `If you really mean to roll the description back, edit from the CURRENT description and write the original wording into it yourself — ` +
+          `this tool has no revert flag.`
         );
       }
     }
