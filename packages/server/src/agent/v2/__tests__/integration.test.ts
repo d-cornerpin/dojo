@@ -2861,3 +2861,111 @@ describe('PHASE-6 CUT 5: a turn that dies with no answer hands the ask back — 
     expect(kinds(before.id)).toContain('rearm_refused');
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════
+// PHASE-6 CUT 6 (T4, `assemble`) — THE TWO GUARDS IN THIS SPAN THAT HAD NO TEST.
+//
+// Non-negotiable #2 in its strict form: a guard's requirement is written down
+// BEFORE its code is touched. Both clauses below landed GREEN on the UNMOVED
+// tree, and both were proven non-vacuous by a planted fault on the guard's own
+// condition (recorded in the task report).
+//
+// How they were found, by command rather than by eye:
+//   grep -rl freshTailDropWarned            packages/server/src --include='*.test.ts'  → nothing
+//   grep -rl 'zero messages, clean exit'    packages/server/src --include='*.test.ts'  → nothing
+//
+// WHY THESE TWO AND NOT ANOTHER PAIR:
+//   * the fresh-tail eviction warning is a ONE-SHOT LATCH ACROSS ITERATIONS
+//     (`freshTailDropWarned`), and this cut migrates that latch off the driver's
+//     stack onto the turn's bag. A by-value hand-off would reset it every
+//     iteration and the user would get the same "memory is full" banner on every
+//     round of a long turn. The clause below is the one a botched carrier fails.
+//   * the empty-context clean exit is this span's ONLY loop exit, so it is the
+//     exit-request channel's entire subject for this tranche. Preserved from v1
+//     (`runtime.ts:1014-1020`) and never asserted anywhere until now.
+// ════════════════════════════════════════════════════════════════════════════════
+
+describe('PHASE-6 CUT 6: the assemble span kept two guards nobody tested', () => {
+  const contextHighErrors = (): Array<{ code?: string; error?: string }> =>
+    (getBroadcastEventsByType('chat:error') as Array<{ code?: string; error?: string }>)
+      .filter((e) => e.code === 'CONTEXT_HIGH');
+
+  const evictionWarns = (): unknown[] =>
+    loggerWarnSpy.mock.calls.filter((c) => String(c[0]).includes('assembler evicted oldest fresh-tail messages'));
+
+  it('FA-M1: the fresh-tail eviction warning fires ONCE PER TURN, not once per iteration', async () => {
+    // Every assembly of this turn reports an eviction — which is the real shape:
+    // the window is still full on the next round, so the assembler drops again.
+    assembleContextMock.mockImplementation(async () => ({
+      systemPrompt: '<system prompt>',
+      messages: [{ role: 'user', content: 'hello' }] as Array<Record<string, unknown>>,
+      freshTailDropped: 3,
+    }));
+    // Two iterations: a tool call, then the answer.
+    let n = 0;
+    callModelSpy.mockImplementation(async () => {
+      n += 1;
+      if (n === 1) {
+        return {
+          content: '', toolCalls: [{ id: 'tc1', name: 'file_read', arguments: { path: 'a.txt' } }] as ToolCall[],
+          inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
+        };
+      }
+      return { content: 'done', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
+    });
+    executeToolSpy.mockResolvedValue({ toolCallId: 'tc1', name: 'file_read', content: 'ok', isError: false });
+
+    await runV2Turn('primary');
+
+    // POSITIVE CONTROL for the latch: the turn really did assemble more than once,
+    // so "fired once" is a latch and not an artefact of a single-pass turn.
+    expect(assembleContextMock.mock.calls.length).toBeGreaterThan(1);
+    expect(contextHighErrors()).toHaveLength(1);
+    expect(evictionWarns()).toHaveLength(1);
+    // The banner names the count it set aside, pluralised — the user-facing half.
+    expect(contextHighErrors()[0].error).toContain('3 oldest recent messages');
+  });
+
+  it('FA-M1 control: an assembly that dropped nothing says nothing', async () => {
+    // The clause a tree that broadcasts unconditionally fails.
+    callModelSpy.mockResolvedValue({
+      content: 'Hello back!', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
+    });
+
+    await runV2Turn('primary');
+
+    expect(contextHighErrors()).toHaveLength(0);
+    expect(evictionWarns()).toHaveLength(0);
+  });
+
+  it('the empty-context clean exit: zero assembled messages ends the turn without calling the model', async () => {
+    // Preserved from v1 (`runtime.ts:1014-1020`). An assembler that returns nothing
+    // must not be handed to a provider — the turn stops, idle, and says why.
+    assembleContextMock.mockImplementation(async () => ({
+      systemPrompt: '<system prompt>',
+      messages: [] as Array<Record<string, unknown>>,
+    }));
+    callModelSpy.mockResolvedValue({
+      content: 'should never be produced', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
+    });
+
+    await runV2Turn('primary');
+
+    expect(assembleContextMock).toHaveBeenCalled();   // it got as far as assembling
+    expect(callModelSpy).not.toHaveBeenCalled();      // and no further
+    const agent = mockDb.current!.prepare('SELECT status FROM agents WHERE id = ?').get('primary') as { status: string };
+    expect(agent.status).toBe('idle');
+  });
+
+  it('the empty-context control: one assembled message and the model IS called', async () => {
+    // Without this arm the clause above passes on a tree where the turn never
+    // reaches assembly at all, which is the vacuous way to be green.
+    callModelSpy.mockResolvedValue({
+      content: 'Hello back!', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
+    });
+
+    await runV2Turn('primary');
+
+    expect(callModelSpy).toHaveBeenCalledTimes(1);
+  });
+});
