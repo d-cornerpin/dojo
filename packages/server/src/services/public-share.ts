@@ -81,6 +81,11 @@ function copyDirRecursive(src: string, dest: string): void {
 //     that name as a relative path.
 //   - Path traversal attempts ("../../../etc/passwd") and refs that
 //     resolve outside shareDir are skipped with a warning.
+//   - An asset on the sensitive-files block list is REFUSED (PHASE-5 T9B, the
+//     owner's decision): a page may not pull a secret in as an asset and put it
+//     at an unauthenticated URL. Held by
+//     `__tests__/public-share-assets-sensitive.test.ts`, which carries the
+//     negative controls with equal weight.
 //   - Bounded: at most 200 assets, 50MB total. Anything past the cap is
 //     skipped with a warning.
 
@@ -163,6 +168,24 @@ function rewriteHtmlWithInlinedAssets(htmlPath: string, shareDir: string): Asset
         skippedCount++;
         return null;
       }
+    }
+
+    // PHASE-5 T9B — the third population at this door (owner-decided 2026-08-03).
+    // An asset the page NAMES is published exactly like a file the directory walk
+    // sweeps in (:56) and like the entry file itself (:318): its bytes land under
+    // OUT_DIR and the gateway serves them with no sign-in. Same sanctioned check,
+    // same order — asked on the RESOLVED path before anything stats, reads or
+    // copies it. Both spellings are asked because the publish family's own door
+    // (`brokers/fs.ts:shareDeny`) has asked both since PHASE-5 T2: a `..` segment
+    // and a symlink are two ways of writing the same filename.
+    const lexicalSource = path.resolve(absSource);
+    let realSource = lexicalSource;
+    try { realSource = fs.realpathSync(lexicalSource); } catch { /* missing or unresolvable — the lexical answer stands */ }
+    if (isSensitivePath(lexicalSource) || (realSource !== lexicalSource && isSensitivePath(realSource))) {
+      logger.warn('Public share: skipped a sensitive asset named by the shared page', { ref });
+      warnings.push(`Skipped asset on the sensitive-files block list: ${ref}`);
+      skippedCount++;
+      return null;
     }
 
     if (copied.has(absSource)) {

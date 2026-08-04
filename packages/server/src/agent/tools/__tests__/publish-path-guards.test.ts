@@ -32,6 +32,21 @@
 //   platform-named      the path is a platform literal the agent cannot
 //                       influence; the clause proves the caller set, so this
 //                       disposition cannot quietly acquire an agent-named one.
+//
+// ── THE SECOND PUBLISH PRIMITIVE, AND ITS OWN CENSUS (PHASE-5 T9B) ──────────
+// `registerSharedFile()` is not the only door. `createPublicShare()` copies
+// files into `~/.dojo/out/<slug>/`, which `gateway/server.ts` serves at
+// `/share/<slug>/…` WITHOUT a sign-in — so every site that puts a file into that
+// tree publishes it just as surely. The owner decided this half on the same day
+// and in the same words ("Close it now"), and the residual it closes is the one
+// T8H handed up: the HTML asset inliner reached any file the page NAMED and had
+// no denial, while the two other sites at that door had one.
+//
+// The second census below is the same instrument pointed at that door: every
+// byte-placing call inside the share-tree owner is enumerated with a disposition
+// and a reason, each guarded row must ask the sanctioned check BEFORE its copy
+// inside its own enclosing scope, and the owner set is asserted so a NEW module
+// cannot start writing the share tree without appearing here.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { describe, it, expect, vi } from 'vitest';
@@ -169,6 +184,97 @@ const AUTO_OPEN_CALLERS: ReadonlyArray<{ file: string; reason: string }> = [
   },
 ];
 
+/** The source slice from a function/closure header to its matching `}`. Returns
+ *  '' when the header is gone, which the clauses assert on rather than skip —
+ *  a census that silently stops finding its own anchors is the failure mode
+ *  three Phase-5 instruments were repaired for. */
+function enclosingScope(src: string, header: string): string {
+  const start = src.indexOf(header);
+  if (start === -1) return '';
+  let depth = 1;
+  for (let i = start + header.length; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) return src.slice(start, i + 1);
+  }
+  return '';
+}
+
+/** Occurrences of `token` on non-comment, non-import lines of one file. */
+function occurrencesIn(relFile: string, token: string): Array<{ line: string }> {
+  const found: Array<{ line: string }> = [];
+  for (const raw of fs.readFileSync(path.join(SRC, relFile), 'utf8').split('\n')) {
+    const line = raw.trim();
+    if (!line.includes(token)) continue;
+    if (line.startsWith('import ') || line.startsWith('export {') || line.startsWith('*') || line.startsWith('//')) continue;
+    found.push({ line });
+  }
+  return found;
+}
+
+// ── THE SECOND PRIMITIVE'S CENSUS (PHASE-5 T9B) ─────────────────────────────
+const SHARE_TREE_OWNER = 'services/public-share.ts';
+const SHARE_TREE_GUARD = 'isSensitivePath(';
+
+/** Calls that put a file into the share tree. `mkdirSync` is not one — it makes
+ *  a directory, it does not publish bytes. */
+const BYTE_PLACING_CALLS = ['copyFileSync(', 'writeFileSync('] as const;
+
+/** Every byte-placing call inside the share-tree owner, read at T9B by opening
+ *  each one AND the code that produces the path it copies. */
+const SHARE_TREE_CENSUS: ReadonlyArray<{
+  line: string;
+  occurrences: number;
+  member: string;
+  /** The enclosing function/closure, by its own header line. The guard must be
+   *  asked INSIDE this scope — a check somewhere else in the file is not a
+   *  check on this path. */
+  scope: string;
+  disposition: 'isSensitivePath';
+  reason: string;
+}> = [
+  {
+    line: 'else if (entry.isFile()) fs.copyFileSync(srcPath, destPath);',
+    occurrences: 1,
+    member: 'the directory walk — a file swept in as a passenger',
+    scope: 'function copyDirRecursive(src: string, dest: string): void {',
+    disposition: 'isSensitivePath',
+    reason: 'PHASE-0 T10: a directory share must not sweep a secret in with it, because the tool-level gate only ever sees the directory the agent named.',
+  },
+  {
+    line: 'fs.copyFileSync(absSource, destAbs);',
+    occurrences: 1,
+    member: 'the HTML asset inliner — a file the shared PAGE names',
+    scope: 'const tryCopyAsset = (ref: string): string | null => {',
+    disposition: 'isSensitivePath',
+    reason: 'THE MEMBER THIS TASK ADDED (PHASE-5 T9B). A page\'s src/href/url() references reach any file on the machine, so an asset is a third population of exactly the shape the other two rows already refuse.',
+  },
+  {
+    line: "fs.writeFileSync(path.join(shareDir, entry), result.rewritten, 'utf-8');",
+    occurrences: 1,
+    member: 'the HTML entry file itself',
+    scope: 'export function createPublicShare(input: CreatePublicShareInput): PublicShareResult {',
+    disposition: 'isSensitivePath',
+    reason: 'PHASE-0 T10: the entry file is the path the caller named, and this refusal belongs to the FUNCTION so no future caller can publish a secret by not knowing about the tool-level gate.',
+  },
+  {
+    line: 'fs.copyFileSync(src, path.join(shareDir, entry));',
+    occurrences: 1,
+    member: 'the non-HTML entry file',
+    scope: 'export function createPublicShare(input: CreatePublicShareInput): PublicShareResult {',
+    disposition: 'isSensitivePath',
+    reason: 'the same function-level refusal as the HTML entry, on the same path, ahead of any share-directory work.',
+  },
+];
+
+/** Every production module that names the share tree, read at T9B. Only the
+ *  owner WRITES it; the gateway reads it back out. A new name here is a new
+ *  publish surface and must be read before it is recorded. */
+const SHARE_TREE_MODULES: ReadonlyArray<{ file: string; role: 'owner' | 'reader' | 'caller'; reason: string }> = [
+  { file: 'services/public-share.ts', role: 'owner', reason: 'declares OUT_DIR and is the only module that copies files into it.' },
+  { file: 'gateway/server.ts', role: 'reader', reason: 'serves /share/:slug/* out of OUT_DIR without a sign-in — it reads the tree, it never writes it. This route is WHY the census exists.' },
+  { file: 'agent/tools/cat/comms.ts', role: 'caller', reason: 'share_publicly, whose own sharePathGuard call is recorded in GUARD_CALLERS below.' },
+];
+
 /** Every production call of the sanctioned guard, read at T8 — so the family is
  *  enumerable from BOTH ends and a guard cannot quietly disappear either. */
 const GUARD_CALLERS: ReadonlyArray<{ file: string; tool: string }> = [
@@ -285,5 +391,77 @@ describe('the publish family is complete, and the census says so from source', (
       const src = fs.readFileSync(path.join(SRC, g.file), 'utf8');
       expect(src.includes(`sharePathGuard(agentId, ${g.tool}`), `${g.file} calls the guard as recorded`).toBe(true);
     }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// THE SECOND DOOR: the unauthenticated share tree (PHASE-5 T9B).
+// ════════════════════════════════════════════════════════════════════════════
+describe('the share tree is complete too, and the census says so from source', () => {
+  it('every byte-placing call in the share-tree owner is in the census — a new one fails naming itself', () => {
+    const measured = new Map<string, number>();
+    for (const token of BYTE_PLACING_CALLS) {
+      for (const s of occurrencesIn(SHARE_TREE_OWNER, token)) {
+        measured.set(s.line, (measured.get(s.line) ?? 0) + 1);
+      }
+    }
+    expect(measured.size, 'the walk must find byte-placing calls at all').toBeGreaterThan(0);
+
+    const recorded = new Map(SHARE_TREE_CENSUS.map((c) => [c.line, c.occurrences]));
+
+    const unrecorded = [...measured.keys()].filter((k) => !recorded.has(k));
+    expect(
+      unrecorded,
+      `a call that puts a file into ${SHARE_TREE_OWNER}'s share tree with no census row: read it, ` +
+      'give it a disposition and a reason, and add it — never delete this clause',
+    ).toEqual([]);
+
+    const vanished = [...recorded.keys()].filter((k) => !measured.has(k));
+    expect(vanished, 'a census row whose call is gone: remove the row in the same change').toEqual([]);
+
+    for (const [line, n] of recorded) {
+      expect(measured.get(line), `${line} — occurrence count moved`).toBe(n);
+    }
+  });
+
+  it('every share-tree row asks the sanctioned check BEFORE its copy, inside its own scope', () => {
+    const src = fs.readFileSync(path.join(SRC, SHARE_TREE_OWNER), 'utf8');
+    for (const c of SHARE_TREE_CENSUS) {
+      const scope = enclosingScope(src, c.scope);
+      expect(scope.length, `${c.member} — the recorded scope header is gone; re-anchor it, never drop the row`).toBeGreaterThan(0);
+
+      const guard = scope.indexOf(SHARE_TREE_GUARD);
+      const copy = scope.indexOf(c.line);
+      expect(guard, `${c.member} must ask ${SHARE_TREE_GUARD} inside its own scope`).toBeGreaterThan(-1);
+      expect(copy, `${c.member}'s publishing call must still be in that scope`).toBeGreaterThan(-1);
+      expect(guard, `${c.member} must ask the check BEFORE it publishes the file`).toBeLessThan(copy);
+
+      expect(c.reason.length, `${c.member} row has no reason`).toBeGreaterThan(20);
+      expect(c.member.length, `a share-tree row has no member`).toBeGreaterThan(0);
+    }
+  });
+
+  it('the refusal is the SAME one the two older sites run — one check, three populations', () => {
+    const src = fs.readFileSync(path.join(SRC, SHARE_TREE_OWNER), 'utf8');
+    // Imported from the guard module, not re-implemented locally: one owner for
+    // the question, which is what makes "the same check" true rather than said.
+    expect(/import \{ isSensitivePath \} from '\.\.\/agent\/path-guards\.js';/.test(src)).toBe(true);
+    expect(occurrencesIn(SHARE_TREE_OWNER, SHARE_TREE_GUARD).length).toBe(SHARE_TREE_CENSUS.length - 1);
+  });
+
+  it('only the recorded modules name the share tree at all', () => {
+    const measured = [...new Set([
+      ...callSites('OUT_DIR').map((s) => s.file),
+      ...callSites('createPublicShare(').map((s) => s.file),
+    ])].sort();
+    expect(
+      measured,
+      'a module that names the unauthenticated share tree and is not recorded: read it and record its role',
+    ).toEqual(SHARE_TREE_MODULES.map((m) => m.file).sort());
+    for (const m of SHARE_TREE_MODULES) expect(m.reason.length, `${m.file} row has no reason`).toBeGreaterThan(20);
+    expect(
+      SHARE_TREE_MODULES.filter((m) => m.role === 'owner').map((m) => m.file),
+      'exactly one module owns the share tree',
+    ).toEqual([SHARE_TREE_OWNER]);
   });
 });
