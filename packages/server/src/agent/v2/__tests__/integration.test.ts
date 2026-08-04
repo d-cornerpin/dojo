@@ -327,12 +327,34 @@ vi.mock('../answered-edge.js', async () => {
   };
 });
 
+// ════════════════════════════════════════════════════════════════════════════════
+// PHASE-6 CUT 3 — THE STEER, OBSERVED AT THE ARGUMENT.
+//
+// A PASS-THROUGH, exactly like the two above: the real queue still runs, so nothing
+// else in this file changes behaviour. It exists because the mid-turn compaction
+// recap (P47) is enqueued and the turn then BREAKS, so the recap never reaches a
+// model call this turn and there is no other observation point for its CONTENT.
+// The content is the whole guard — "this is still the SAME turn, do not re-apologize"
+// is the sentence the seven-apologies incident is about.
+// ════════════════════════════════════════════════════════════════════════════════
+const enqueueSteerSpy = vi.fn();
+vi.mock('../steer-queue.js', async () => {
+  const actual = await vi.importActual<typeof import('../steer-queue.js')>('../steer-queue.js');
+  return {
+    ...actual,
+    enqueueSteer: (...args: Parameters<typeof actual.enqueueSteer>) => {
+      enqueueSteerSpy(...args);
+      return actual.enqueueSteer(...args);
+    },
+  };
+});
+
 // Now import the module under test (after mocks are set up)
 // PHASE-6 GUARD-AUDIT 2026-08-04: `node:fs` / `node:path` / `fileURLToPath` went with the
 // hand-rolled engine walk below — the derivation lives in `engine-sources.ts` now.
 import { engineText } from './engine-sources.js';
 import { runV2Turn } from '../loop.js';
-import { stoppedAgents, recoveryRunStreak, pendingWakeups } from '../../shared-state.js';
+import { stoppedAgents, recoveryRunStreak, pendingWakeups, turnContinuationCounts } from '../../shared-state.js';
 import { turnContext } from '../../turn-context.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
@@ -452,6 +474,8 @@ beforeEach(() => {
   stoppedAgents.clear();
   recoveryRunStreak.clear();
   pendingWakeups.clear();
+  turnContinuationCounts.clear();
+  enqueueSteerSpy.mockClear();
   stampTasksSpy.mockClear();
   terminalDeliveryForTurnSpy.mockClear();
   pauseDriveWorkWaitingOnOwnerSpy.mockClear();
@@ -2390,5 +2414,207 @@ describe('F10: the wall-clock start-ack timer never outlives its turn', () => {
     } finally {
       w.restore();
     }
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
+// PHASE-6 CUT 3 (`preCallGates`) — THE TURN-TIME BUDGET AND ITS MID-TURN RECAP.
+//
+// WHY THIS LANDS BEFORE ANYTHING MOVES. Non-negotiable #2: a guard's requirement is
+// written down as a test before its code is touched. `git grep -l` over the whole
+// suite found NO test naming `MAX_TURN_AUTO_CONTINUATIONS`, `TURN_TIME_BUDGET_MS` or
+// `compaction-recap` — the entire turn-time-budget branch of `preCallGates`, including
+// the recap the PHASE-6 plan names by hand ("mid-turn compaction recap (P47 — the
+// seven-apologies defect) asserted"), was untested. These clauses are GREEN on the
+// unmoved tree; the tranche moves the code under them.
+//
+// WHAT THE RECAP IS FOR, in the incident's own terms (2026-07-23, the owner's .19
+// transcript): a MID-TURN rebuild can evict the model's own in-turn speech while the
+// trigger message stays pinned, so every rebuilt context reads as "the user just said
+// this and I have not responded" and the model re-acknowledges from scratch — seven
+// near-identical apologies in one long turn. The recap is the engine handing over the
+// receipts it holds: same turn, this many tool calls, and whether the person has
+// already been acknowledged.
+//
+// THE RECAP IS ALSO THIS TRANCHE'S CROSSING TEST, and it is deliberately split into
+// the half that can be DRIVEN and the half that can only be READ.
+//   · DRIVEN: the tool-call count comes off `state`, live. Two arms (one round vs
+//     two) fail on any relocation that hands the step a stale turn state.
+//   · READ: the ack sentence is chosen from three flags, two of which
+//     (`deferredDeliveredByAck`, `engineStartAckDeliveredThisTurn`) are mutable
+//     locals of the DRIVER that this span reads. Reaching their true arm needs the
+//     start-ack steer to have already fired mid-turn, which this fixture cannot
+//     stage honestly, so the true arm is held by a source clause over the ENGINE's
+//     own corpus instead — stated as such rather than dressed up as behaviour.
+// ════════════════════════════════════════════════════════════════════════════════
+describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the turn its own receipts', () => {
+  /**
+   * Move the engine's clock forward WITHOUT fake timers (the loop's own `setTimeout`
+   * paths must keep working). `state.turnStartMs` is captured from `new Date()` during
+   * preflight, so a `Date.now` offset applied later reads as "this turn has been
+   * running that long".
+   */
+  function controllableClock(): { jump: (ms: number) => void; restore: () => void } {
+    const real = Date.now.bind(Date);
+    let offset = 0;
+    const spy = vi.spyOn(Date, 'now').mockImplementation(() => real() + offset);
+    return { jump: (ms: number) => { offset += ms; }, restore: () => spy.mockRestore() };
+  }
+
+  const TURN_TIME_BUDGET_MS = 15 * 60 * 1000;
+
+  /** Recap steer contents, in order. */
+  function recaps(): string[] {
+    return enqueueSteerSpy.mock.calls
+      .map((c) => c[1] as { floor: string; content: string })
+      .filter((r) => r.floor === 'compaction-recap')
+      .map((r) => r.content);
+  }
+
+  /**
+   * Run `rounds` tool rounds, cross the turn-time budget between the last round and the
+   * next loop head, and let `preCallGates` meet it.
+   *
+   * `continuationsAlready` is seeded from INSIDE the first tool call on purpose, and the
+   * reason is a measured one: preflight deletes the counter for any turn that claims work
+   * (`loop.ts:1203` — a turn that picks up fresh work is not a continuation), so a value
+   * set before `runV2Turn` would be wiped before the gate ever read it.
+   */
+  async function runAcrossTheBudget(
+    opts: { batch?: number; continuationsAlready?: number } = {},
+  ): Promise<void> {
+    const batch = opts.batch ?? 1;
+    let call = 0;
+    callModelSpy.mockImplementation(async () => {
+      call++;
+      return call === 1
+        ? {
+          content: '',
+          toolCalls: Array.from({ length: batch }, (_, i) => (
+            { id: `tc-${i}`, name: 'file_read', arguments: { path: `/tmp/${i}.txt` } }
+          )),
+          inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
+        }
+        : { content: 'done', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
+    });
+    const clock = controllableClock();
+    let executed = 0;
+    executeToolSpy.mockImplementation(async (_agentId: string, toolCall: ToolCall) => {
+      executed++;
+      if (executed === 1 && opts.continuationsAlready !== undefined) {
+        turnContinuationCounts.set('primary', opts.continuationsAlready);
+      }
+      // The budget can only be crossed BETWEEN iterations — the gate is read once per
+      // loop head — so the jump rides the LAST tool of the round.
+      if (executed === batch) clock.jump(TURN_TIME_BUDGET_MS + 60_000);
+      return { toolCallId: toolCall.id, name: toolCall.name, content: 'file body', isError: false };
+    });
+    try {
+      await runV2Turn('primary');
+    } finally {
+      clock.restore();
+    }
+  }
+
+  it('POSITIVE CONTROL: a turn that stays inside the budget compacts nothing and recaps nothing', async () => {
+    // Without this the clauses below could all pass on a tree where the recap fires
+    // unconditionally, which would be a worse defect than not firing at all.
+    callModelSpy.mockResolvedValue({
+      content: 'OK', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
+    });
+
+    await runV2Turn('primary');
+
+    expect(checkAndCompactSpy).not.toHaveBeenCalled();
+    expect(recaps()).toEqual([]);
+    expect(pendingWakeups.has('primary')).toBe(false);
+  });
+
+  it('crossing the budget forces a compaction, recaps the SAME turn, and parks for a continuation', async () => {
+    await runAcrossTheBudget();
+
+    // The rebuild really happened — the recap is a consequence of it, not of the clock.
+    expect(checkAndCompactSpy).toHaveBeenCalledWith(
+      'primary', expect.any(String), expect.any(Number), expect.objectContaining({ force: true }),
+    );
+
+    const r = recaps();
+    expect(r).toHaveLength(1);
+    // The three things the 2026-07-23 incident needed said, asserted rather than summarised.
+    expect(r[0]).toContain('memory was just compacted MID-TURN');
+    expect(r[0]).toContain('This is still the SAME turn');
+    expect(r[0]).toContain('Do NOT re-introduce yourself, re-acknowledge, or re-apologize');
+
+    // The turn parks rather than dying: the person is told, and a wakeup is queued so
+    // the work resumes on a fresh turn.
+    const sys = mockDb.current!
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .all() as Array<{ content: string }>;
+    expect(sys[0].content).toMatch(/This turn ran for \d+ minutes[\s\S]*continuing on a fresh turn \(1 of 3\)/);
+    expect(pendingWakeups.has('primary')).toBe(true);
+  });
+
+  it('the recap\'s tool-call number is read LIVE off the turn state', async () => {
+    // MEASURED, and recorded here because it is not what the sentence claims: the number
+    // is `state.toolCalls.length`, which holds the LAST model response's batch (loop.ts
+    // sets it from `result.toolCalls` on every round), while the wording says "so far this
+    // turn you have made N tool call(s)". Two rounds of one tool each still reports 1.
+    // That is a WORDING question and it is NOT this tranche's to answer — a relocation
+    // does not get to change what the engine says. It is named so the next reader does not
+    // "fix" it inside a move, and so the clause below asserts the real mechanism.
+    //
+    // Why the clause is worth its keep anyway: two arms that differ only in the live turn
+    // state make a STALE state visible. A relocation that handed the gate a snapshot taken
+    // at turn start would report the same number twice.
+    await runAcrossTheBudget({ batch: 1 });
+    expect(recaps()[0]).toContain('made 1 tool call(s)');
+
+    enqueueSteerSpy.mockClear();
+    checkAndCompactSpy.mockClear();
+    pendingWakeups.clear();
+    turnContinuationCounts.clear();
+    mockDb.current = setupTestDb();
+
+    await runAcrossTheBudget({ batch: 2 });
+    expect(recaps()[0]).toContain('made 2 tool call(s)');
+  });
+
+  it('the ack sentence is ABSENT when nobody has acknowledged the person — and the engine reads exactly the three flags that could say otherwise', async () => {
+    await runAcrossTheBudget();
+    expect(recaps()[0]).not.toContain('ALREADY heard your acknowledgment');
+
+    // The TRUE arm is held here rather than driven, and the corpus is the ENGINE's own
+    // source (driver + every step package), so this keeps holding after the tranche moves.
+    // Two of the three are mutable locals of the DRIVER that this span only reads; a
+    // relocation that dropped them, or replaced one with a constant, fails this clause.
+    const cond = engineText().match(/state\.surfacedReplyThisTurn \|\| deferredDeliveredByAck \|\| engineStartAckDeliveredThisTurn/g) ?? [];
+    expect(cond).toHaveLength(1);
+    expect(engineText()).toContain('ALREADY heard your acknowledgment');
+  });
+
+  it('a forced compaction that THROWS produces no recap — the receipts describe a rebuild that happened', async () => {
+    checkAndCompactSpy.mockRejectedValueOnce(new Error('summarizer down'));
+
+    await runAcrossTheBudget();
+
+    expect(checkAndCompactSpy).toHaveBeenCalled();
+    expect(recaps()).toEqual([]);
+    // The turn still parks — the branch is best-effort about the rebuild, never about
+    // the continuation.
+    expect(pendingWakeups.has('primary')).toBe(true);
+  });
+
+  it('past MAX_TURN_AUTO_CONTINUATIONS the turn STOPS instead: no compaction, no recap, and the person is told', async () => {
+    await runAcrossTheBudget({ continuationsAlready: 3 });
+
+    expect(checkAndCompactSpy).not.toHaveBeenCalled();
+    expect(recaps()).toEqual([]);
+    expect(pendingWakeups.has('primary')).toBe(false);
+    // The counter is CLEARED at the cap, so a later turn starts the ladder again.
+    expect(turnContinuationCounts.has('primary')).toBe(false);
+    const sys = mockDb.current!
+      .prepare("SELECT content FROM messages WHERE agent_id = 'primary' AND role = 'system' ORDER BY rowid DESC LIMIT 1")
+      .all() as Array<{ content: string }>;
+    expect(sys[0].content).toMatch(/running for about 60 minutes without finishing/);
   });
 });
