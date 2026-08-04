@@ -3284,3 +3284,144 @@ describe('PHASE-6 CUT 8: a sub-agent that closes with text ends the turn, and th
     expect(callModelSpy).toHaveBeenCalledTimes(2);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════
+// BUG-2 — THE LANE SEPARATION AT THE PRE-TURN CLOSE-OUT GATE.
+//
+// PHASE-6 T2 (CUT 9) Step 1a: THE GUARD IN THIS SPAN WITH NO TEST ANYWHERE, found by
+// command rather than by eye. `git grep -ln BUG-2` over every `__tests__` directory in
+// this repo exits 1, and over the WHOLE kit repo exits 1. `git grep -ln "REQUIRED
+// close-out"` over every `__tests__` directory exits 1 — no test in either repo drives
+// the pre-turn close-out gate at all. The kit names the literal in exactly one place,
+// `behavioral/invariants.mjs`'s ENGINE_REFUSAL_SIGNATURES, which is a list used to
+// RECOGNISE an engine refusal in a transcript; no scenario asserts this guard.
+//
+// WHAT IT PROTECTS, in the words of the incident recorded at its own site: armed on a
+// conversation turn, the gate "(a) DELETED the agent's just-streamed reply and (b)
+// REFUSED the tool calls the agent needed to answer, both silent-drop / blocked-turn
+// failures (inv 2, inv 6) on the weak-model floor". Task close-out is Lane 2/3
+// machinery; the lane-separation law says it has no business running in the middle of
+// a Lane-1 conversation about something else. The mechanism is ONE ternary:
+//
+//     const danglingRows = triggerRow ? [] : [...inProgressDanglers, ...strandedRows];
+//
+// The clauses drive `runV2Turn` end to end and read the ENFORCEMENT, not the arming
+// flag: a gate that armed but never bit, or bit but never armed, is a different tree
+// from the one this guard describes.
+// ════════════════════════════════════════════════════════════════════════════════
+describe('BUG-2: the pre-turn close-out gate never arms on a turn a human is waiting on', () => {
+  /** The engine's own idle window; asserted against its declaration by the provenance
+   *  clause below, so a fixture that has drifted off the real threshold fails loudly
+   *  instead of quietly seeding a dangler the gate was never going to see. */
+  const CLOSE_OUT_IDLE_MINUTES = 10;
+
+  /** A task this agent claimed and has not touched since well before the window — the
+   *  exact row shape `(1) Tasks the agent is in_progress on` selects. */
+  function seedDangler(id = 'w-dangler'): void {
+    const stale = Date.now() - (CLOSE_OUT_IDLE_MINUTES + 20) * 60_000;
+    mockDb.current!.prepare(
+      `INSERT INTO work (id, agent_id, kind, requester, root_kind, root_id, state, intent,
+                         wakes, closes_thread, title, opened_at, updated_at)
+       VALUES (?, 'primary', 'task', 'owner', 'tracker', ?, 'claimed',
+               'action', 1, 0, 'the abandoned one', ?, ?)`,
+    ).run(id, id, stale, stale);
+  }
+
+  /** The model reaches straight for a NON-tracker tool, then answers. That first call is
+   *  what the armed gate refuses and what the disarmed gate must let through. */
+  function callsANonTrackerToolThenAnswers(): void {
+    const call: ToolCall = { id: 'tc-gate', name: 'get_current_time', arguments: {} };
+    callModelSpy
+      .mockResolvedValueOnce({
+        content: '', toolCalls: [call], inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
+      })
+      .mockResolvedValue({
+        content: 'done', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
+      });
+    executeToolSpy.mockResolvedValue({
+      toolCallId: 'tc-gate', name: 'get_current_time', content: '12:00', isError: false,
+    });
+  }
+
+  const gateRows = (): number => (mockDb.current!.prepare(
+    `SELECT COUNT(*) AS n FROM messages WHERE agent_id = 'primary' AND role = 'system'
+       AND content LIKE '[System: REQUIRED close-out%'`,
+  ).get() as { n: number }).n;
+
+  const refusedCloseOut = (): boolean => executeToolSpy.mock.results.length === 0
+    ? broadcastSpy.mock.calls.some((c) => {
+      const e = c[0] as { type?: string; result?: string };
+      return e.type === 'chat:tool_result' && typeof e.result === 'string'
+        && e.result.includes('Refused: engine close-out gate');
+    })
+    : broadcastSpy.mock.calls.some((c) => {
+      const e = c[0] as { type?: string; result?: string };
+      return e.type === 'chat:tool_result' && typeof e.result === 'string'
+        && e.result.includes('Refused: engine close-out gate');
+    });
+
+  it('PROVENANCE: the idle window seeded here is the engine\'s own declaration', () => {
+    // Over the ENGINE's source — the driver plus every step package — so this clause
+    // follows the code through the cut instead of going quiet when it moves.
+    expect(engineSource()).toMatch(
+      new RegExp(`const CLOSE_OUT_IDLE_MINUTES = ${CLOSE_OUT_IDLE_MINUTES};`),
+    );
+  });
+
+  it('POSITIVE CONTROL: on a background turn the gate ARMS and REFUSES the non-tracker call', async () => {
+    // Nothing is waiting: the seeded ask is claimed, so this turn has no trigger row and
+    // is exactly the Lane 2/3 turn close-out enforcement is FOR. Without this control a
+    // green BUG-2 clause below could mean "the gate never fires at all", which is the
+    // opposite finding.
+    expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
+    seedDangler();
+    callsANonTrackerToolThenAnswers();
+
+    await runV2Turn('primary');
+
+    expect(gateRows()).toBe(1);
+    expect(refusedCloseOut()).toBe(true);
+    expect(executeToolSpy).not.toHaveBeenCalled();
+  });
+
+  it('BUG-2: the SAME dangler on a turn serving a waiting human neither arms nor refuses', async () => {
+    // The only difference from the control is that a person is waiting — the seeded ask
+    // is left unclaimed, so the turn picks it up and `triggerRow` is set. The dangler is
+    // identical and just as stale. This is the clause a tree without the ternary fails,
+    // and the failure it fails on is the recorded one: the reply deleted and the tools
+    // the agent needed to answer refused.
+    seedDangler();
+    callsANonTrackerToolThenAnswers();
+
+    await runV2Turn('primary');
+
+    expect(gateRows()).toBe(0);
+    expect(refusedCloseOut()).toBe(false);
+    // And the tool the agent needed in order to answer actually RAN.
+    expect(executeToolSpy).toHaveBeenCalledTimes(1);
+    expect((executeToolSpy.mock.calls[0][1] as ToolCall).name).toBe('get_current_time');
+  });
+
+  it('F2.4: a recent gate row suppresses the duplicate INSERT and STILL arms enforcement', async () => {
+    // Queued wakeups re-arm this gate on every attempt (three duplicate inserts observed
+    // in 20s). The dedupe skips the redundant row — and the half that is easy to lose is
+    // that enforcement is armed ANYWAY, because the arming happens before the row does.
+    // A dedupe written as an early return passes the first assertion and fails the second.
+    expect(claimAsk(askIdForMessage('msg-user-1'), 'primary').kind).toBe('applied');
+    seedDangler();
+    mockDb.current!.prepare(
+      `INSERT INTO messages (id, agent_id, role, content, turn_number, created_at)
+       VALUES ('msg-gate-recent', 'primary', 'system', '[System: REQUIRED close-out, you have abandoned work on the tracker.]', 1,
+               (unixepoch('now') * 1000))`,
+    ).run();
+    callsANonTrackerToolThenAnswers();
+
+    await runV2Turn('primary');
+
+    // No SECOND row: the one that exists is the seeded one.
+    expect(gateRows()).toBe(1);
+    // …and the gate still bit.
+    expect(refusedCloseOut()).toBe(true);
+    expect(executeToolSpy).not.toHaveBeenCalled();
+  });
+});
