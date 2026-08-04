@@ -79,7 +79,12 @@ describe('tool registry (PHASE-5 T1 Step 2)', () => {
     // 3(3)) refused it until the declaration named what it reads. It is the
     // first tool whose resource is resolved from the CALL'S OWN AGENT IDENTITY
     // rather than from any argument (ADDENDUM 3(1)(b)).
-    expect(cov.effectful).toBe(128);
+    // T8 Step 3, the slides door: 128 → 145, the largest single correction the
+    // task has made. Every `slides_*` verb declared `effects: []` while ~16 read
+    // the persisted deck style off disk and two write it; export_pngs writes a
+    // PNG per slide into the agent's uploads dir; build_slide reads a local image
+    // one level inside an element. The census is doing its job.
+    expect(cov.effectful).toBe(145);
     // PHASE-5 T3, and this number corrects an assumption rather than confirming
     // one: `proc` is 18, not 1. T1 already declared `proc` on 17 tools that run
     // a subprocess with no shell and no resource argument (all eight Plaud verbs

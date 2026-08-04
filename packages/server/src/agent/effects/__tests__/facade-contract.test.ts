@@ -1136,4 +1136,75 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     });
     expect(grantsCover(g, { op: 'fs_read', path: img, real: img })).toBe(true);
   });
+
+  it('CATEGORY CONVERTED: the slides door reads and writes through the facade', () => {
+    const src = fs.readFileSync(path.join(SRC, 'google/tools-slides.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(src), 'the slides door must not hold node:fs').toBe(false);
+    expect(src.includes('effectFs.'), 'it reaches the disk through the facade').toBe(true);
+  });
+
+  it('THE STYLE STORE IS DECLARED PER VERB — a shared file every deck verb reads', () => {
+    // ~20 `slides_*` verbs read the persisted deck style and 2 write it, and
+    // every one of them declared `effects: []`. Converted as-is, the first read
+    // would have been refused and every deck would have silently fallen back to
+    // the default preset — a capability loss with no error anywhere. The store is
+    // a FIXED path, so it needs no mechanic at all; what it needs is the
+    // declaration on each verb that touches it.
+    const store = path.join(os.homedir(), '.dojo', 'data', 'slides_styles.json');
+    const READERS = ['slides_add_slide', 'slides_get_style', 'slides_add_text_box', 'slides_add_bullet_list',
+      'slides_add_shape', 'slides_add_line', 'slides_populate_table', 'slides_layout_title',
+      'slides_layout_section', 'slides_layout_content', 'slides_layout_two_column',
+      'slides_layout_image', 'slides_layout_comparison', 'slides_build_slide'];
+    const WRITERS = ['slides_create_presentation', 'slides_set_style'];
+    for (const tool of [...READERS, ...WRITERS]) {
+      const grants = grantsForCall(AGENT, effectsFor(tool), { presentation_id: 'deck-1' });
+      expect(grantsCover(grants, { op: 'fs_read', path: store, real: store }), `${tool} may read the style store`).toBe(true);
+      expect(grantsCover(grants, { op: 'fs_write', path: store, real: store }), `${tool} write`).toBe(WRITERS.includes(tool));
+      // …and nothing else in the same directory, which is what makes it a path.
+      const sibling = path.join(os.homedir(), '.dojo', 'data', 'dojo.db');
+      expect(grantsCover(grants, { op: 'fs_read', path: sibling, real: sibling }), `${tool} reaches no sibling`).toBe(false);
+    }
+    // A verb that does NOT touch the store still declares nothing for it, which
+    // is what keeps this a measurement rather than a blanket.
+    const preset = grantsForCall(AGENT, effectsFor('slides_list_presets'), {});
+    expect(grantsCover(preset, { op: 'fs_read', path: store, real: store }), 'slides_list_presets never reads it').toBe(false);
+  });
+
+  it('the style store writer owns its OWN temp-then-rename, kept separate from mechanic 6\'s', async () => {
+    // RULING P5-R15 ADDENDUM mechanic 6's PRINCIPLE, applied to a DIFFERENT
+    // mechanism: this writer names its temp `<target>.tmp` where `file_patch`'s
+    // names it `.<base>.patch-<ts>-<rand>.tmp`, and it mkdir -p's the parent
+    // first. It moved into the carrying layer WHOLE rather than being blended
+    // into the existing entry — two mechanisms, two entries, no third spelling.
+    const dir = path.join(scratch, 'store-dir');
+    const target = path.join(dir, 'styles.json');
+    await inCall([{ kind: 'fs_write', at: 'path', lexical: target, real: target }], 'slides_set_style', () => {
+      effectFs.writeFileViaTmpSiblingSync(target, '{"deck":1}', 'utf-8');
+    });
+    expect(fs.readFileSync(target, 'utf8')).toBe('{"deck":1}');
+    expect(fs.readdirSync(dir), 'no temp file survives a successful write').toEqual(['styles.json']);
+    // The DECLARED resource is the TARGET; the temp sibling is never a second grant.
+    await expect(
+      inCall([], 'slides_set_style', () => { effectFs.writeFileViaTmpSiblingSync(target, 'x', 'utf-8'); }),
+    ).rejects.toThrow(EffectNotAuthorized);
+  });
+
+  it('slides_export_pngs and slides_build_slide DECLARE what they really touch', () => {
+    const uploads = path.join(os.homedir(), '.dojo', 'uploads', AGENT);
+    const png = path.join(uploads, 'slide-1.png');
+    const exportGrants = grantsForCall(AGENT, effectsFor('slides_export_pngs'), { presentation_id: 'deck-1' });
+    expect(grantsCover(exportGrants, { op: 'fs_mkdir', path: uploads, real: uploads }), 'it may create its uploads dir').toBe(true);
+    expect(grantsCover(exportGrants, { op: 'fs_write', path: png, real: png }), 'it may write each exported PNG').toBe(true);
+    const other = path.join(os.homedir(), '.dojo', 'uploads', 'someone-else', 'x.png');
+    expect(grantsCover(exportGrants, { op: 'fs_write', path: other, real: other }), 'never another agent uploads dir').toBe(false);
+    // `slides_build_slide` uploads a LOCAL image named one level inside an
+    // element (mechanic 7); a non-image element grants nothing for it.
+    const img = path.join(scratch, 'logo.png');
+    const buildGrants = grantsForCall(AGENT, effectsFor('slides_build_slide'), {
+      presentation_id: 'deck-1',
+      elements: [{ kind: 'text_box', text: 'hi' }, { kind: 'image_local', file_path: img }],
+    });
+    expect(grantsCover(buildGrants, { op: 'fs_read', path: img, real: img }), 'it may read the local image').toBe(true);
+    expect(grantsCover(buildGrants, { op: 'fs_read', path: outOfScope, real: outOfScope }), 'and no other').toBe(false);
+  });
 });

@@ -173,9 +173,17 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // declaration was corrected at the site.
     // T8 Step 3 moves both by ONE a third time: `canvas_read` declared
     // `effects: []` and has always read the file on the agent's own canvas.
+    // T8 Step 3, the slides door: +17 in one category, and it is the largest
+    // single correction this task has made. Every `slides_*` verb declared
+    // `effects: []` while ~16 of them read the PERSISTED DECK STYLE off disk and
+    // two write it; `slides_export_pngs` writes a PNG per slide into the agent's
+    // uploads directory; `slides_build_slide` reads a local image named one level
+    // inside an element. Converted as-is, the first style read would have been
+    // refused and every deck would have silently fallen back to the default
+    // preset — a capability loss with no error anywhere.
     const effectful = BASE.filter((d) => d.effects.length > 0);
-    expect(effectful.length).toBe(108);
-    expect(ALL.filter((d) => d.effects.length > 0).length).toBe(128);
+    expect(effectful.length).toBe(125);
+    expect(ALL.filter((d) => d.effects.length > 0).length).toBe(145);
     // T8 Step 3 moves this by EIGHT, and the tripwire is what earned it:
     // `pdf_create.filename` and the seven `output_filename` siblings are BARE
     // NAMES, not paths. Their old `fs_write from: args.<name>` declaration

@@ -159,6 +159,33 @@ export async function atomicWriteFile(
   }
 }
 
+/**
+ * WRITE A FILE THROUGH A `<target>.tmp` SIBLING — mechanic 6's PRINCIPLE applied
+ * to a SECOND, DIFFERENT mechanism (PHASE-5 T8 Step 3).
+ *
+ * The slides style store's own writer moved here WHOLE: same `mkdir -p` of the
+ * parent, same `<target>.tmp` name, same rename, same synchronous shape. It is a
+ * separate entry rather than a call into `atomicWriteFile` on purpose — that one
+ * names its temp `.<base>.patch-<ts>-<rand>.tmp` and is async, and blending two
+ * mechanisms into one entry would change one caller's behaviour to match the
+ * other's, which a relocation may never do.
+ *
+ * **The declared resource is the TARGET**, for the same reason as the async
+ * entry: the sibling's name is derived from the target and lives in the target's
+ * directory, so it cannot be aimed anywhere the target is not.
+ */
+export function writeFileViaTmpSiblingSync(
+  target: string,
+  data: string,
+  encoding: BufferEncoding,
+): void {
+  check('fs_write', target);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const tmp = `${target}.tmp`;
+  fs.writeFileSync(tmp, data, encoding);
+  fs.renameSync(tmp, target);
+}
+
 // ── The promises surface, same rules ────────────────────────────────────────
 //
 // The two overloaded entries are declared as functions rather than object

@@ -8,7 +8,7 @@
 // positions are in points (pt); EMUs are hidden internally.
 // ════════════════════════════════════════
 
-import fs from 'node:fs';
+import * as effectFs from '../agent/effects/fs.js';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
@@ -208,8 +208,8 @@ type StyleStore = Record<string, DeckStyle>;
 
 function readStyleStore(): StyleStore {
   try {
-    if (!fs.existsSync(STYLE_STORE_PATH)) return {};
-    const raw = fs.readFileSync(STYLE_STORE_PATH, 'utf-8');
+    if (!effectFs.existsSync(STYLE_STORE_PATH)) return {};
+    const raw = effectFs.readFileSync(STYLE_STORE_PATH, 'utf-8');
     return JSON.parse(raw) as StyleStore;
   } catch {
     return {};
@@ -217,10 +217,10 @@ function readStyleStore(): StyleStore {
 }
 
 function writeStyleStore(store: StyleStore): void {
-  fs.mkdirSync(path.dirname(STYLE_STORE_PATH), { recursive: true });
-  const tmp = STYLE_STORE_PATH + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(store, null, 2), 'utf-8');
-  fs.renameSync(tmp, STYLE_STORE_PATH);
+  // The mkdir -p, the `<target>.tmp` sibling and the rename moved WHOLE into the
+  // carrying layer (PHASE-5 T8 Step 3, on mechanic 6's principle). Same shape,
+  // same naming; the declared resource is the store itself.
+  effectFs.writeFileViaTmpSiblingSync(STYLE_STORE_PATH, JSON.stringify(store, null, 2), 'utf-8');
 }
 
 function resolveStyle(input: unknown): DeckStyle {
@@ -411,7 +411,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_create_presentation',
     description: 'Create a new Google Slides presentation with a DeckStyle applied. Default dimensions are 720×405pt (16:9 widescreen, renders at 1920×1080 pixels). Pass width_pt/height_pt to override. The style is persisted per-presentation and used by every subsequent slides_* call automatically. Replaces the old slides_create tool.',
-    effects: [],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }, { kind: 'fs_write', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -426,7 +426,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_set_style',
     description: 'Set or update the active DeckStyle for an existing presentation. Persists to disk so all later tool calls use the new fonts, colors, and spacing.',
-    effects: [],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }, { kind: 'fs_write', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -439,7 +439,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_get_style',
     description: 'Return the current active DeckStyle for a presentation as JSON.',
-    effects: [],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -459,7 +459,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_add_slide',
     description: 'Add a new slide to a presentation using a predefined layout. Applies the deck style background automatically.',
-    effects: [],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -533,7 +533,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_add_text_box',
     description: 'Place a styled text box on a slide. The role determines which DeckStyle properties are applied (title, heading, body, subtitle, caption).',
-    effects: [],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -550,7 +550,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_add_bullet_list',
     description: 'Create a text box containing a bulleted list. Prefix items with \\t to nest.',
-    effects: [],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -680,7 +680,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_add_shape',
     description: 'Create a shape on a slide. Common shape_types: RECTANGLE, ROUND_RECTANGLE, ELLIPSE, TRIANGLE, DIAMOND, HEXAGON, PENTAGON, ARROW_RIGHT, STAR, CLOUD, CHEVRON, CALLOUT_RECTANGLE, FLOW_CHART_PROCESS, FLOW_CHART_DECISION.',
-    effects: [],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -699,7 +699,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_add_line',
     description: 'Draw a straight line on a slide.',
-    effects: [],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -737,7 +737,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_populate_table',
     description: 'Fill an entire table from a 2D array of strings. Optionally styles the first row with bold text and an accent background.',
-    effects: [],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -754,7 +754,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_layout_title',
     description: 'Create a fully formatted title slide with centered title and subtitle. Optionally uses an image URL as the background.',
-    effects: [],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     nonEffects: {
       'background_image_url': 'handed to the Google Slides API, which fetches it from Google\'s own network; this platform never dereferences it',
     },
@@ -772,7 +772,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_layout_section',
     description: 'Create a section divider slide with a large heading on the accent-colored background.',
-    effects: [],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -786,7 +786,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_layout_content',
     description: 'The workhorse slide: title at top, body content below. If both text/bullets and an image are provided, automatically splits into two columns based on image_position (right, left, bottom, full).',
-    effects: [],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     nonEffects: {
       'image_url': 'handed to the Google Slides API, which fetches it from Google\'s own network; this platform never dereferences it',
     },
@@ -806,7 +806,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_layout_two_column',
     description: 'Create a two-column slide. Each column object may contain text, bullets, image_url, or image_drive_id.',
-    effects: [],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -821,7 +821,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_layout_image',
     description: 'Create a slide dominated by a large image with an optional caption below.',
-    effects: [],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     nonEffects: {
       'image_url': 'handed to the Google Slides API, which fetches it from Google\'s own network; this platform never dereferences it',
     },
@@ -840,7 +840,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_layout_comparison',
     description: 'Create a side-by-side comparison slide with 2-4 items. Each item: {heading, points, image_url?}.',
-    effects: [],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -856,7 +856,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_build_slide',
     description: 'Build an entire slide from a freeform list of elements in ONE Slides API call. Much faster than chaining slides_add_text_box / slides_add_shape / slides_add_image / etc., because every element creation, styling, text insert, and the slide background are bundled into a single batchUpdate (one HTTP round trip instead of N). Use this when designing a custom slide that doesn\'t match a layout helper. Omit slide_id to create a new slide; pass slide_id to add elements to an existing slide. Each element kind is fully optional — leave kinds out if you don\'t need them. Returns { slide_id, element_ids: [...] } where element_ids is in the same order as the elements you supplied.',
-    effects: [],
+    effects: [{ kind: 'fs_read', from: 'fixed:~/.dojo/data/slides_styles.json' }, { kind: 'fs_read', from: 'args.elements[].file_path' }],
     input_schema: {
       type: 'object',
       properties: {
@@ -868,7 +868,12 @@ export const slidesToolDefinitions: ToolDefinition[] = [
         elements: {
           type: 'array',
           description: 'Array of elements to place on the slide. Each element is one of these kinds (all kinds are optional — include only what you need):\n- { kind: "rect", x_pt, y_pt, width_pt, height_pt, fill_hex, outline_hex?, outline_weight_pt?, text? } — solid filled rectangle, optional outline and body-styled text\n- { kind: "shape", shape_type, x_pt, y_pt, width_pt, height_pt, fill_hex?, outline_hex?, outline_weight_pt?, text? } — any Slides shape_type (RECTANGLE, ROUND_RECTANGLE, ELLIPSE, TRIANGLE, DIAMOND, etc.)\n- { kind: "text_box", x_pt, y_pt, width_pt, height_pt, text, role?, color_hex?, size?, font?, bold?, italic?, underline?, line_spacing? } — styled text (role: title/heading/body/subtitle/caption; the role-specific properties from the deck style are applied first, then per-call overrides)\n- { kind: "bullet_list", x_pt, y_pt, width_pt, height_pt, items, role? } — bulleted list, prefix items with \\t to nest\n- { kind: "image_url", x_pt, y_pt, width_pt, height_pt, image_url } — image from a publicly accessible URL\n- { kind: "image_drive", x_pt, y_pt, width_pt, height_pt, drive_file_id } — image from a Drive file\n- { kind: "image_local", x_pt, y_pt, width_pt, height_pt, file_path } — image from a local path; uploads to Drive transparently\n- { kind: "line", x1_pt, y1_pt, x2_pt, y2_pt, color_hex?, weight_pt?, dash_style? } — straight line (dash_style: SOLID, DOT, DASH, DASH_DOT, LONG_DASH)',
-          items: { type: 'object' },
+          items: {
+            type: 'object',
+            properties: {
+              file_path: { type: 'string', description: 'For kind="image_local": absolute path to a local image file. It is uploaded to Drive transparently before placement.' },
+            },
+          },
         },
       },
       required: ['presentation_id', 'elements'],
@@ -904,7 +909,7 @@ export const slidesToolDefinitions: ToolDefinition[] = [
   {
     name: 'slides_export_pngs',
     description: 'Export Google Slides as individual PNG files so a vision-capable agent can actually look at how the slides render. Returns a list of {slide_index, page_id, path, width, height}. After this tool returns, call file_read on each path to load the image into context. REQUIRES A VISION-CAPABLE MODEL — if your model lacks vision the tool will refuse rather than waste an export, and you should either ask the user to switch your model or delegate the review to a vision-capable peer. Tip: export only the slides you need (slide_indices) rather than the whole deck, since each loaded image consumes a lot of context tokens.',
-    effects: [],
+    effects: [{ kind: 'fs_write', from: 'derived:the calling agent uploads directory', scope: { at: 'tree', template: '~/.dojo/uploads/<agentId>' } }],
     input_schema: {
       type: 'object',
       properties: {
@@ -1519,12 +1524,12 @@ export async function executeGoogleSlidesTool(
         const heightPt = args.height_pt as number;
 
         // 1. Read the local file
-        if (!fs.existsSync(filePath)) {
+        if (!effectFs.existsSync(filePath)) {
           return err(`Local file not found: ${filePath}`);
         }
         let fileContent: Buffer;
         try {
-          fileContent = fs.readFileSync(filePath);
+          fileContent = effectFs.readFileSync(filePath);
         } catch (readErr) {
           return err(`Could not read local file ${filePath}: ${readErr instanceof Error ? readErr.message : String(readErr)}`);
         }
@@ -2370,13 +2375,13 @@ export async function executeGoogleSlidesTool(
           if (!filePath) {
             return err(`elements[${i}] (image_local) is missing file_path`);
           }
-          if (!fs.existsSync(filePath)) {
+          if (!effectFs.existsSync(filePath)) {
             return err(`elements[${i}] (image_local): file not found at ${filePath}`);
           }
           const driveName = (el.drive_name as string | undefined) ?? path.basename(filePath);
           uploadPromises.push((async () => {
             try {
-              const fileContent = fs.readFileSync(filePath);
+              const fileContent = effectFs.readFileSync(filePath);
               const boundary = `---dojo-build-slide-upload-${i}---`;
               const metadata = JSON.stringify({ name: driveName });
               const head = [
@@ -2773,7 +2778,7 @@ export async function executeGoogleSlidesTool(
         // file_read permissions on this path follow whatever the agent has,
         // typically '*' for primary or the agent's own uploads dir.
         const recipientDir = path.join(os.homedir(), '.dojo', 'uploads', agentId);
-        if (!fs.existsSync(recipientDir)) fs.mkdirSync(recipientDir, { recursive: true });
+        if (!effectFs.existsSync(recipientDir)) effectFs.mkdirSync(recipientDir, { recursive: true });
 
         // 4. For each slide, request a thumbnail URL then download the PNG bytes.
         // The Slides thumbnail endpoint returns a temporary signed contentUrl
@@ -2822,7 +2827,7 @@ export async function executeGoogleSlidesTool(
             const buf = Buffer.from(await imgResp.arrayBuffer());
             const filename = `slides_${presentationId.slice(0, 8)}_${ts}_${String(index).padStart(3, '0')}.png`;
             const outPath = path.join(recipientDir, filename);
-            fs.writeFileSync(outPath, buf);
+            effectFs.writeFileSync(outPath, buf);
             exported.push({
               slide_index: index,
               page_id: pageId,
