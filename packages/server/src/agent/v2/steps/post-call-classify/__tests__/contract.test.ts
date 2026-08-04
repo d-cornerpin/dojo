@@ -266,7 +266,7 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     // `taskClosedWithTextThisTurn` and `phase: 'done'`, and claimed in its own comment
     // that "the next while-loop check sees phase==='done' and exits". It never did: the
     // block cannot be reached without tool calls, so the driver's own unconditional
-    // `advance(state, { phase: 'execute' })` overwrote it four statements later, every
+    // `advance(turnCtx.state!, { phase: 'execute' })` overwrote it four statements later, every
     // time. The LATCH is what ends that turn — a set-only flag the `while` head reads,
     // which `steps/step-outcome.ts` already names as the surviving workaround this
     // channel replaces — and it got its first test anywhere in the same commit that
@@ -285,8 +285,8 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     // `validate()` runs on the transition by construction, because the advance is an
     // `advance` and it is the DRIVER's statement, not the step's.
     const driver = readFileSync(path.resolve(__dirname, '../../../loop.ts'), 'utf8');
-    const advanceAt = driver.indexOf("advance(state, { phase: 'postCallClassify' })");
-    const callAt = driver.indexOf('runPostCallClassify(state,');
+    const advanceAt = driver.indexOf("advance(turnCtx.state!, { phase: 'postCallClassify' })");
+    const callAt = driver.indexOf('runPostCallClassify(turnCtx.state!,');
     expect(advanceAt).toBeGreaterThan(-1);
     expect(callAt).toBeGreaterThan(-1);
     expect(advanceAt).toBeLessThan(callAt);

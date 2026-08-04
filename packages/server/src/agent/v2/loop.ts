@@ -679,7 +679,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     if (triggerWorkId) {
       try {
         noteUnsettled(revertAskClaimOnAbort(
-          triggerWorkId, state.nonIdempotentCallsThisTurn,
+          triggerWorkId, turnCtx.state!.nonIdempotentCallsThisTurn,
           'turn aborted with no answer; handing the ask back to the waiting set (N-1)',
         ), 'v2: ask hand-back on abort', { workId: triggerWorkId });
       } catch { /* best effort, recovery, never block the abort */ }
@@ -697,7 +697,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     // the event, that would duplicate it; a read-only turn re-arms safely.
     if (claimedEngineEvent != null) {
       try {
-        if (state.nonIdempotentCallsThisTurn === 0) {
+        if (turnCtx.state!.nonIdempotentCallsThisTurn === 0) {
           const reverted = releaseEngineEventByRowid({
             rowid: claimedEngineEvent.rowid, agentId, turnNumber: claimedEngineEvent.turnNumber,
           });
@@ -1272,7 +1272,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   const initialPendingTechniqueAck: import('./state.js').AgentTurnState['pendingTechniqueAck'] = null;
 
   // Initial state
-  let state = initState({
+  turnCtx.state = initState({
     agentId,
     contextWindow,
     isAutoRouted,
@@ -1308,10 +1308,10 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // turn can't strand a reminder as "processed"; bounded by the 5-attempt lifecycle.
   const reArmIfStrandedNoAnswer = () => {
     if (
-      !state.lastAssistantTextForIM &&
-      !state.surfacedReplyThisTurn &&
-      !Object.values(state.explicitSendThisTurn).some(Boolean) &&
-      state.nonIdempotentCallsThisTurn === 0
+      !turnCtx.state!.lastAssistantTextForIM &&
+      !turnCtx.state!.surfacedReplyThisTurn &&
+      !Object.values(turnCtx.state!.explicitSendThisTurn).some(Boolean) &&
+      turnCtx.state!.nonIdempotentCallsThisTurn === 0
     ) {
       revertTriggerStampOnAbort();
     }
@@ -1577,26 +1577,26 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
           async () => sendResponseViaIMessage(text, agentId, counterparty.senderId!, false),
         );
         if (delivered) persistRoutingMarker(`iMessage to ${delivered.name}`);
-      } else if (counterparty.kind === 'user' && counterparty.channel === 'phone' && state.inboundContext?.phoneCallSid) {
+      } else if (counterparty.kind === 'user' && counterparty.channel === 'phone' && turnCtx.state!.inboundContext?.phoneCallSid) {
         const { getCallSession } = await import('../../twilio/call-session.js');
-        const session = getCallSession(state.inboundContext.phoneCallSid);
+        const session = getCallSession(turnCtx.state!.inboundContext.phoneCallSid);
         if (session && !session.isEnded()) {
           await withOutboundAsync(
             {
               agentId, tool: 'engine-ack', channel: 'phone',
-              recipientId: state.inboundContext.phoneFromNumber ?? counterparty.senderId ?? null,
+              recipientId: turnCtx.state!.inboundContext.phoneFromNumber ?? counterparty.senderId ?? null,
               conversationId: turnCtx.root?.conversationId ?? null,
             },
             () => session.queueAgentSay(text),
           );
-          persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', state.inboundContext.phoneFromNumber ?? counterparty.senderId ?? '(unknown)')}`);
+          persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', turnCtx.state!.inboundContext.phoneFromNumber ?? counterparty.senderId ?? '(unknown)')}`);
         }
-      } else if (counterparty.kind === 'user' && counterparty.channel === 'sms' && state.inboundContext?.smsFromNumber) {
+      } else if (counterparty.kind === 'user' && counterparty.channel === 'sms' && turnCtx.state!.inboundContext?.smsFromNumber) {
         const { sendSms } = await import('../../twilio/client.js');
         const { getDefaultFromNumber } = await import('../../twilio/auth.js');
-        const fromNumber = state.inboundContext?.smsToNumber ?? getDefaultFromNumber();
+        const fromNumber = turnCtx.state!.inboundContext?.smsToNumber ?? getDefaultFromNumber();
         if (fromNumber) {
-          const smsTo = state.inboundContext.smsFromNumber;
+          const smsTo = turnCtx.state!.inboundContext.smsFromNumber;
           await withOutboundAsync(
             {
               agentId, tool: 'engine-ack', channel: 'sms', recipientId: smsTo,
@@ -1675,7 +1675,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // the flag set during the loop. When the agent truly did nothing on
   // any channel, both are false and the engine still speaks.
   const startAckRepliedNow = (): boolean =>
-    Object.values(state.explicitSendThisTurn).some(Boolean) ||
+    Object.values(turnCtx.state!.explicitSendThisTurn).some(Boolean) ||
     !!db.prepare(`
     SELECT 1 FROM messages
     WHERE agent_id = ? AND role = 'assistant' AND turn_number = ?
@@ -1800,7 +1800,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     // turn, and by the PM poke chain (where closeout enforcement belongs).
     const danglingRows = triggerRow ? [] : [...inProgressDanglers, ...strandedRows];
     if (danglingRows.length > 0) {
-      state = advance(state, {
+      turnCtx.state = advance(turnCtx.state!, {
         danglingTaskIds: danglingRows.map((r) => r.id),
         nudgedForCloseOutThisTurn: true,
       });
@@ -1965,7 +1965,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         ? new Date((lastRecall.created_at.includes('Z') ? lastRecall.created_at : lastRecall.created_at + 'Z')).getTime()
         : 0;
       if (nudgeTs > recallTs) {
-        state = advance(state, { awaitingPostCompactRecall: true });
+        turnCtx.state = advance(turnCtx.state!, { awaitingPostCompactRecall: true });
         logger.info('v2: post-compaction recall flag armed', { agentId }, agentId);
       }
     }
@@ -2045,22 +2045,22 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     // sees it and exits, after the current iteration's close-out tool
     // has already run.
     while (
-      state.phase !== 'done' &&
-      state.loopCount < MAX_TOOL_LOOPS &&
-      !state.taskClosedWithTextThisTurn
+      turnCtx.state!.phase !== 'done' &&
+      turnCtx.state!.loopCount < MAX_TOOL_LOOPS &&
+      !turnCtx.state!.taskClosedWithTextThisTurn
     ) {
-      state = advance(state, { loopCount: state.loopCount + 1, phase: 'preCallGates' });
+      turnCtx.state = advance(turnCtx.state!, { loopCount: turnCtx.state!.loopCount + 1, phase: 'preCallGates' });
 
       // THE EXIT-REQUEST CHANNEL (PHASE-6, `steps/step-outcome.ts`). The step ASKS
       // by returning; the driver decides here, where nothing downstream can
       // overwrite the request — which is the whole defect the comment at this
       // loop's head describes about mid-body `phase` writes.
-      const preCallGates = await runPreCallGates(state, preCallGatesContext());
-      state = preCallGates.state;
+      const preCallGates = await runPreCallGates(turnCtx.state!, preCallGatesContext());
+      turnCtx.state = preCallGates.state;
       if (preCallGates.directive === 'exit') break;
       if (preCallGates.directive === 'continue') continue;
       // ── Phase: assemble context ──
-      state = advance(state, { phase: 'assemble' });
+      turnCtx.state = advance(turnCtx.state!, { phase: 'assemble' });
       // THE EXIT-REQUEST CHANNEL (PHASE-6, `steps/step-outcome.ts`). The step ASKS
       // by returning; the driver decides here. This step's ONE exit is the
       // empty-assembled-context clean exit, preserved from v1.
@@ -2068,7 +2068,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       // because it runs once per ITERATION and three of its inputs are rewritten
       // between rounds — a snapshot taken before the `try` would hand iteration
       // nine the picture iteration one had.
-      const assembled = await runAssemble(state, {
+      const assembled = await runAssemble(turnCtx.state!, {
         agentId, turnCtx, turnNumber, db, contextModelId, contextWindow,
         counterparty, counterpartyIsAgentSender, chosenConvKey, hasUnansweredUser,
         isA2ATurn, isEngineTurn, isNotificationTurn, lastUserMessageContent,
@@ -2080,12 +2080,12 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         staleTaskWindowMinutes: STALE_TASK_WINDOW_MINUTES,
         startAckRepliedNow, setAgentStatus,
       });
-      state = assembled.state;
+      turnCtx.state = assembled.state;
       if (assembled.directive === 'exit') break;
       const { assembled: ctx, messages, systemPrompt, volatileFrom, modelContext: mctx, steerAwaitingConfirm } = assembled;
       // ── Phase: model call ──
       // (Auto-routing + capability gate + retry-fallback + TRUE streaming.)
-      state = advance(state, { phase: 'callLLM' });
+      turnCtx.state = advance(turnCtx.state!, { phase: 'callLLM' });
       // THE EXIT-REQUEST CHANNEL (PHASE-6, `steps/step-outcome.ts`), and this step
       // is the one that can ask to leave the TURN rather than the loop: `abandon`
       // is honoured by RETURNING, so finalize does not run and only the `finally`
@@ -2101,8 +2101,8 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         steerAwaitingConfirm,
         revertTriggerStampOnAbort, setAgentStatus,
       };
-      const callLLM = await runCallLLM(state, callLLMContext);
-      state = callLLM.state;
+      const callLLM = await runCallLLM(turnCtx.state!, callLLMContext);
+      turnCtx.state = callLLM.state;
       if (callLLM.directive === 'abandon') return;
       if (callLLM.directive === 'exit') break;
       if (callLLM.directive === 'continue') continue;
@@ -2117,12 +2117,12 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         turnCtx.spinBrakeGraceCalls -= 1;
         if (turnCtx.spinBrakeGraceCalls < 0) {
           logger.warn('v2: spin brake grace exhausted, concluding the turn', { agentId, turnNumber }, agentId);
-          state = advance(state, { phase: 'done' });
+          turnCtx.state = advance(turnCtx.state!, { phase: 'done' });
         }
       }
 
       // ── Phase: post-call classification ──
-      state = advance(state, { phase: 'postCallClassify' });
+      turnCtx.state = advance(turnCtx.state!, { phase: 'postCallClassify' });
       // THE EXIT-REQUEST CHANNEL (PHASE-6, `steps/step-outcome.ts`). The step ASKS by
       // returning; the driver decides here. This step has the MOST conversions of any
       // tranche in the phase — SEVEN exits and SEVENTEEN continues, every one of them a
@@ -2130,7 +2130,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       // test pins both counts rather than trusting a reader to notice a twenty-fifth.
       // Built HERE, inside the iteration, because two of its inputs (the model result
       // and the message id) are produced by `callLLM` in this same round.
-      const classified = await runPostCallClassify(state, {
+      const classified = await runPostCallClassify(turnCtx.state!, {
         agentId, turnCtx, turnNumber, db, agent, counterparty, counterpartyIsAgentSender,
         chosenConvKey, hasUnansweredUser, triggerRow, isA2ATurn, isEngineTurn,
         isHumanContinuation, mostRecentIsA2A, mostRecentInbound, pendingEngineEvent,
@@ -2145,7 +2145,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         reArmIfStrandedNoAnswer, noteTerminalAnswer, deliverEngineUserAck,
         persistAndBroadcastSystemRow, startAckRepliedNow,
       });
-      state = classified.state;
+      turnCtx.state = classified.state;
       if (classified.directive === 'exit') break;
       if (classified.directive === 'continue') continue;
       const {
@@ -2183,7 +2183,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       // its intent is served there, so it was removed in v3.1.11 (FN-9).
 
       // ── Phase: execute tools (partitioned) ──
-      state = advance(state, { phase: 'execute' });
+      turnCtx.state = advance(turnCtx.state!, { phase: 'execute' });
       // THE EXIT-REQUEST CHANNEL (PHASE-6, `steps/step-outcome.ts`). The step ASKS
       // by returning; the driver decides here. This step has the MOST ways out of
       // any tranche — FIVE exits and ONE continue — and every one of them was a
@@ -2194,7 +2194,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       // because four of its inputs (the model result, the persisted text, the
       // XML-fallback verdict and the model id the persist used) are produced by
       // `postCallClassify` in this same round.
-      const executed = await runExecute(state, {
+      const executed = await runExecute(turnCtx.state!, {
         agentId, turnCtx, turnNumber, db, agent, counterparty, counterpartyIsAgentSender,
         chosenConvKey, hasUnansweredUser, triggerRow, triggerWorkId, triggerConversationId,
         turnStartedAt, persistRoutingMarker,
@@ -2214,17 +2214,17 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         engineStartAckAfterMs: ENGINE_START_ACK_AFTER_MS,
         setAgentStatus,
       });
-      state = executed.state;
+      turnCtx.state = executed.state;
       if (executed.directive === 'exit') break;
       if (executed.directive === 'continue') continue;
       const { turnToolResults } = executed;
 
       // ── Phase: post-execution gates ──
-      state = advance(state, { phase: 'postExecution' });
-      const postExecution = runPostExecution(state, {
+      turnCtx.state = advance(turnCtx.state!, { phase: 'postExecution' });
+      const postExecution = runPostExecution(turnCtx.state!, {
         agentId, turnNumber, result, turnToolResults, broadcast,
       });
-      state = postExecution.state;
+      turnCtx.state = postExecution.state;
       // THE EXIT-REQUEST CHANNEL (PHASE-6, `steps/step-outcome.ts`). The step ASKS
       // by returning; the driver decides here, where nothing downstream can
       // overwrite the request — which is the whole defect the comment at this
@@ -2235,7 +2235,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       // Loop continues, model will see tool results and respond
     }
 
-    if (state.loopCount >= MAX_TOOL_LOOPS) {
+    if (turnCtx.state!.loopCount >= MAX_TOOL_LOOPS) {
       // Matches v1 runtime.ts:1683-1707. Hit the soft tool-loop cap but
       // (presumably) still making progress, auto-continue with a fresh
       // turn instead of dead-stopping. The continuity brief + tracker
@@ -2284,8 +2284,8 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     // MODEL says the completion in its own words.
 
     // ── Phase: finalize ──
-    state = advance(state, { phase: 'finalize' });
-    state = (await runFinalize(state, finalizeContext())).state;
+    turnCtx.state = advance(turnCtx.state!, { phase: 'finalize' });
+    turnCtx.state = (await runFinalize(turnCtx.state!, finalizeContext())).state;
     // THE EXIT-REQUEST CHANNEL (PHASE-6, `steps/step-outcome.ts`). `finalize` is the
     // last statement of the turn's main `try`: there is no iteration to continue and
     // no loop left to break, so it always `proceed`s and the driver has nothing to
@@ -2294,12 +2294,12 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     // PHASE-6 T9b: the recovery arm of the exit path. The driver keeps the
     // language construct — a module cannot express catch/finally on its
     // caller's behalf — and the step owns the body.
-    state = (await runTurnRecovery(state, teardownContext(), err)).state;
+    turnCtx.state = (await runTurnRecovery(turnCtx.state!, teardownContext(), err)).state;
   } finally {
     // PHASE-6 T9b: the arm that runs on EVERY exit path, and the transition
     // INTO the ninth phase. The advance is HERE, at the call site and ahead
     // of the step, so validate() runs on it and the step never writes phase.
-    state = advance(state, { phase: TEARDOWN_PHASE });
-    state = (await runTurnTeardown(state, teardownContext())).state;
+    turnCtx.state = advance(turnCtx.state!, { phase: TEARDOWN_PHASE });
+    turnCtx.state = (await runTurnTeardown(turnCtx.state!, teardownContext())).state;
   }
 }

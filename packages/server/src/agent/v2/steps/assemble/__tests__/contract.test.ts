@@ -213,8 +213,8 @@ describe('PHASE-6 CUT 6: the `assemble` step\'s contract', () => {
     // `validate()` runs on the transition by construction, because the advance is an
     // `advance` and it is the DRIVER's statement, not the step's.
     const driver = readFileSync(path.resolve(__dirname, '../../../loop.ts'), 'utf8');
-    const advanceAt = driver.indexOf("advance(state, { phase: 'assemble' })");
-    const callAt = driver.indexOf('runAssemble(state,');
+    const advanceAt = driver.indexOf("advance(turnCtx.state!, { phase: 'assemble' })");
+    const callAt = driver.indexOf('runAssemble(turnCtx.state!,');
     expect(advanceAt).toBeGreaterThan(-1);
     expect(callAt).toBeGreaterThan(-1);
     expect(advanceAt).toBeLessThan(callAt);

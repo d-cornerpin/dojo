@@ -225,7 +225,7 @@ describe('the recorded transition', () => {
     // established and every tranche inherits. A step that advanced its own phase
     // would be validating a transition it had already taken.
     const src = fs.readFileSync(LOOP_TS, 'utf8');
-    expect(src).toMatch(/state = advance\(state, \{ phase: TEARDOWN_PHASE \}\)/);
+    expect(src).toMatch(/turnCtx\.state = advance\(turnCtx\.state!, \{ phase: TEARDOWN_PHASE \}\)/);
   });
 
   it('`teardown` IS a member of the TurnPhase union — the exit path has a declared phase', () => {

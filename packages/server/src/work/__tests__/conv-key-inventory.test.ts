@@ -275,7 +275,7 @@ describe('PHASE-2 T3 — the conv_key claim predicate, resolved site by site', (
     expect(loop).toMatch(/claimed = res\.kind === 'applied'/);
     expect(loop).toMatch(/pickup claim lost, another process already claimed this trigger/);
     // The revert is P6b-gated at the REVERT, not at each caller that remembers to check.
-    expect(loop).toMatch(/revertAskClaimOnAbort\(\s*triggerWorkId, state\.nonIdempotentCallsThisTurn/);
+    expect(loop).toMatch(/revertAskClaimOnAbort\(\s*triggerWorkId, turnCtx\.state!\.nonIdempotentCallsThisTurn/);
   });
 
   it('SELF-TEST: the scanner sees a planted predicate and ignores a commented one', () => {

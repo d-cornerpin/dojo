@@ -152,10 +152,10 @@ describe('PHASE-6 CUT 4: the finalize step\'s contract', () => {
     // The advance must be the statement immediately before the call: that is what makes
     // `validate()` run on this transition, and it is why the step may not write `phase`.
     const src = readFileSync(DRIVER, 'utf8');
-    const callAt = src.indexOf('runFinalize(state, finalizeContext())');
+    const callAt = src.indexOf('runFinalize(turnCtx.state!, finalizeContext())');
     expect(callAt).toBeGreaterThan(0);
     const before = src.slice(0, callAt);
-    const advanceAt = before.lastIndexOf("advance(state, { phase: 'finalize' })");
+    const advanceAt = before.lastIndexOf("advance(turnCtx.state!, { phase: 'finalize' })");
     expect(advanceAt).toBeGreaterThan(0);
     // Nothing but the call site's own line between them.
     expect(before.slice(advanceAt).split('\n').length).toBeLessThanOrEqual(2);
@@ -179,7 +179,7 @@ describe('PHASE-6 CUT 4: the finalize step\'s contract', () => {
     // (a) THIS STEP IS THE LAST STATEMENT OF THAT `try`. Everything the loop can do
     //     ends up here, because there is nothing after it.
     const last = tryStmt.tryBlock.statements[tryStmt.tryBlock.statements.length - 1];
-    expect(last.getText(sf)).toContain('runFinalize(state, finalizeContext())');
+    expect(last.getText(sf)).toContain('runFinalize(turnCtx.state!, finalizeContext())');
 
     // (b) EVERY `break` OF THE LOOP IS INSIDE THAT `try` — the language, not a habit.
     let whileStmt: ts.WhileStatement | null = null;

@@ -125,6 +125,15 @@ const THE_DRIVER_CARRIES = [
   // and the branch that reads it is the one that deliberately does NOT steer — so a reset
   // latch produces an EXTRA engine nudge on a turn that was already nudged.
   'goingIdleDetectorRanThisTurn',
+  // PHASE-6 T2 (CUT 9) — the LAST tranche's one written crossing, and the crossing the
+  // ruling was written about. T2 handed this span back rather than guess: seven closures
+  // declared in `preflight` read live crossing mutable state. Eight cuts drained six of
+  // them; the seventh is what they all read THROUGH. Three still read it live, each a
+  // guard with its incident at its own site — the wall-clock start-ack timer (by value it
+  // acks a person who was already answered), the stranded-ask re-arm (by value every abort
+  // looks like a clean retry, so an ask is re-served AFTER the side effect), and the
+  // engine-event revert (the same counter, the other half). See the field's own comment.
+  'state',
 ];
 
 /** The six in `turn-state.ts` that OUTLIVE the turn on purpose. */

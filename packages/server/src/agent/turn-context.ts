@@ -49,6 +49,11 @@
 // cross-turn ones follow; it is not this module's shape.
 // ════════════════════════════════════════════════════════════════════════════════
 
+// TYPE-ONLY, and deliberately the only import in this module: it erases at compile
+// time, so the dependency-free runtime shape this file has always had is unchanged
+// and no cycle is created (`v2/state.ts` imports nothing from `agent/`).
+import type { AgentTurnState } from './v2/state.js';
+
 // ── Lanes & lineage spine (P1, 2026-07-21) ──
 // The ROOT of the current turn: the one origin this turn is serving. Set at trigger
 // claim (human pickup / engine-event claim / A2A wake). Writers of work records
@@ -441,6 +446,46 @@ export interface TurnContext {
    *  where the detector HAD run — and that branch exists to hold a nudge back, so the
    *  silent direction is an extra engine nudge on a turn already nudged. */
   goingIdleDetectorRanThisTurn: boolean;
+
+  /** THE TURN'S REDUCER STATE — the loop's own `AgentTurnState`, which was a driver
+   *  `let` from the day v2 was written. `null` until `preflight` builds it with
+   *  `initState`; never `null` again for the rest of the turn.
+   *
+   *  ⚠ POPULATION 2 (PHASE-6 T2, CUT 9) — and it is the crossing the whole ruling was
+   *  written about. T2 measured this span BEFORE anything moved and handed it back
+   *  rather than guess: **seven closures declared in `preflight` read live crossing
+   *  mutable state, and two write it.** Eight cuts of carrier migrations have since
+   *  drained six of the seven — the two writers went to `startAckSteerRequested` (CUT 6)
+   *  and to a local whose only reader is now inside the same package — and what is left
+   *  is the one they all ultimately read THROUGH: `state` itself. THREE closures still
+   *  read it live, and every one is a guard with its incident recorded at its own site:
+   *
+   *    · `startAckRepliedNow` reads `state.explicitSendThisTurn`, and `loop.ts` says why
+   *      in its own words: *"`state` is read at fire time, so this sees the flag set
+   *      during the loop."* It is called from the WALL-CLOCK TIMER armed at turn start.
+   *      By value the timer reads the state as it was BORN — every `explicitSendThisTurn`
+   *      false — so a turn whose agent already relayed the answer through a send TOOL is
+   *      acked anyway: the observed double-ack, and the stray "On it" after a relay.
+   *    · `reArmIfStrandedNoAnswer` reads four fields that all move during the turn, and
+   *      its own comment names the correctness-critical one: a break AFTER a real side
+   *      effect must never re-serve the ask. By value `nonIdempotentCallsThisTurn` is
+   *      frozen at 0, so every abort looks like a clean retry and the ask is handed back
+   *      after the email was sent — the DUPLICATE EFFECT the P6b clause exists to refuse.
+   *    · `revertTriggerStampOnAbort` reads the same counter for the engine-event half.
+   *
+   *  A module boundary passes VALUES, not BINDINGS, so a `preflight` package that kept
+   *  `state` as a module local would freeze all three at `initState`'s value — silently,
+   *  with nothing thrown, on every turn. On the bag the read happens at the moment it is
+   *  read, which is exactly what the driver `let` gave them.
+   *
+   *  ⚠ IT IS ONE OWNER, NOT A MIRROR, AND THAT IS THE POINT. There is no driver `let`
+   *  beside this field: the driver's own reads and writes go through it, at exactly the
+   *  statements that assigned `state` before. A step still takes `state` as a PARAMETER
+   *  and returns the state it advanced (`steps/step-outcome.ts` — unchanged, and the
+   *  eight landed tranches are untouched); the driver assigns the result HERE. So during
+   *  a step this field holds what the driver's local held: the value as of that step's
+   *  entry. Every observation point is identical to the mechanism it replaces. */
+  state: AgentTurnState | null;
 }
 
 /** The one registry. Keyed by agentId because a turn belongs to an agent and
@@ -491,6 +536,9 @@ export function openTurnContext(agentId: string): TurnContext {
     deferredDeliveredByAck: false,
     voiceFillerFired: false,
     goingIdleDetectorRanThisTurn: false,
+    // `preflight` builds it with `initState` a few hundred statements in; before that
+    // there genuinely is no turn state, which is the one thing this field cannot lie about.
+    state: null,
   };
   openContexts.set(agentId, ctx);
   return ctx;
