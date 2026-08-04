@@ -73,7 +73,13 @@ describe('tool registry (PHASE-5 T1 Step 2)', () => {
     // `tools/index-generator.ts` refused it until the declaration was corrected
     // at the site. The census is doing its job — a tool that gains a TRUE
     // effect shows up here by exactly its own count.
-    expect(cov.effectful).toBe(127);
+    // T8 Step 3 a third time, 127 → 128: `canvas_read` declared `effects: []`
+    // and has always probed, stat-ed and read the file on the agent's own
+    // canvas; the 3-way split of `agent/canvas-view.ts` (RULING P5-R15 ADDENDUM
+    // 3(3)) refused it until the declaration named what it reads. It is the
+    // first tool whose resource is resolved from the CALL'S OWN AGENT IDENTITY
+    // rather than from any argument (ADDENDUM 3(1)(b)).
+    expect(cov.effectful).toBe(128);
     // PHASE-5 T3, and this number corrects an assumption rather than confirming
     // one: `proc` is 18, not 1. T1 already declared `proc` on 17 tools that run
     // a subprocess with no shell and no resource argument (all eight Plaud verbs

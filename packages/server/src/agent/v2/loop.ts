@@ -8713,7 +8713,7 @@ export async function runV2Turn(agentId: string): Promise<void> {
           // the canvas, so the link must still ride along to the channel. Hence
           // the split: channel delivery covers every undelivered URL; the
           // dashboard link bubble is suppressed for the doc currently on canvas.
-          const { getCurrentCanvas } = await import('../canvas-view.js');
+          const { getCurrentCanvas } = await import('../canvas-state.js');
           const { drainTurnLinkArtifacts } = await import('../pending-attachments.js');
           const currentCanvasPath = getCurrentCanvas(agentId)?.path ?? null;
           const replyText = state.lastAssistantTextForIM;

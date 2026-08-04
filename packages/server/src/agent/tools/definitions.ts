@@ -695,7 +695,12 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'canvas_read',
     description:
       'Look at what is currently shown in the user\'s right-dock canvas, use this when the user asks you to look at / read / check / review what is on the canvas. It views whatever you most recently opened there (with canvas_render or open_browser): an HTML page or website is screenshotted and described, an image is examined directly, and a markdown/text/code file is returned as text. Works even if your own model cannot see images (it falls back to the configured vision model). Pass an optional `prompt` to ask something specific (e.g. "does the chart axis start at zero?", "summarize the page", "is the header centered?"). To read a specific file/URL/HTML, open it first with canvas_render (or open_browser), then call canvas_read.',
-    effects: [],
+    // It has always probed, stat-ed and read the file on this agent's canvas and
+    // declared nothing (RULING P5-R14: corrected at the site). No path argument
+    // exists to name — the schema has none and the call site passes none — so the
+    // CALL'S OWN AGENT IDENTITY resolves it, through the handler's own reader
+    // (RULING P5-R15 ADDENDUM 3(1)(b)).
+    effects: [{ kind: 'fs_read', from: 'derived:the file currently shown on this agent\'s canvas', scope: { at: 'agentResolved', via: 'agent_canvas_file' } }],
     input_schema: {
       type: 'object',
       properties: {

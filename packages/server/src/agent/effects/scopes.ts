@@ -41,6 +41,7 @@ import {
 } from '../tools/types.js';
 import { resolveAttachmentPath } from '../../services/attachment-resolve.js';
 import { techniqueDirectory } from '../../techniques/technique-dir.js';
+import { canvasFilePath } from '../canvas-state.js';
 import { attachCallCapability, mintCallCapability, type ResourceGrant } from './capability.js';
 
 /**
@@ -88,6 +89,10 @@ export const INDIRECT_RESOLVERS: Readonly<Record<EffectIndirection, IndirectReso
    *  it names the TREE the tool works inside; that is the whole difference from
    *  `attachment_row`, which resolves to one file. */
   technique_dir: techniqueDirectory,
+  /** The file on THIS agent's canvas, read with the handler's own reader —
+   *  RULING P5-R15 ADDENDUM 3(1)(b). Reached through `scope: { at: 'agentResolved' }`,
+   *  which hands it the calling agent's id instead of an argument value. */
+  agent_canvas_file: canvasFilePath,
 };
 
 // `EffectScope` is declared on the registry leaf (`tools/types.ts`) beside the
@@ -277,6 +282,18 @@ export function grantsForCall(
     if (effect.from.startsWith(EFFECT_FROM_DERIVED)) {
       const scope: EffectScope | undefined = effect.scope;
       if (!scope) continue; // branch (A) not declared yet → no grant, fail closed
+      // The CALL'S OWN AGENT IDENTITY is the key (ADDENDUM 3(1)(b)): no argument
+      // names the resource, because the agent named it on an earlier call and the
+      // platform recorded it. Same named table, same fail-closed rules — an
+      // unknown `via` or an agent with nothing recorded grants nothing.
+      if (scope.at === 'agentResolved') {
+        const resolve = resolvers[scope.via] as IndirectResolver | undefined;
+        const row = resolve ? resolve(agentId) : null;
+        if (!row || !fsKind) continue;
+        const recorded = resolvePathArg(row.path);
+        if (recorded.ok) pushResolved(grants, fsKind, recorded.value, false);
+        continue;
+      }
       if (scope.at === 'program') {
         if (CARRIED_PROGRAMS[scope.program] === undefined) continue;
         grants.push({ kind: 'proc', program: scope.program, display: scope.program });

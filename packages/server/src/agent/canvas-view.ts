@@ -16,8 +16,7 @@
 // works even when the calling agent can't see images itself.
 // ════════════════════════════════════════
 
-import fs from 'node:fs';
-import os from 'node:os';
+import * as effectFs from './effects/fs.js';
 import path from 'node:path';
 import { chromium } from 'playwright';
 import { createLogger } from '../logger.js';
@@ -25,131 +24,9 @@ import { callModel } from './model.js';
 import { getEffectiveVisionModel } from '../services/vision-model.js';
 import { inlineHtmlAssets } from '../services/canvas-html.js';
 import { renderOfficeToHtml, isOfficeRenderable } from '../services/office-render.js';
-import { broadcast } from '../gateway/ws.js';
-import { getDb } from '../db/connection.js';
+import { getCurrentCanvas, resolveHome, type CanvasState } from './canvas-state.js';
 
 const logger = createLogger('canvas-view');
-
-export interface CanvasState {
-  kind: 'canvas' | 'iframe' | 'screenshot';
-  html?: string;
-  url?: string;
-  path?: string;
-  title?: string;
-  /** screenshot: the original website URL behind the captured PNG. */
-  sourceUrl?: string;
-}
-
-// The canvas is PER AGENT: each agent owns its own dock slot, keyed by agentId.
-// A background agent finishing a delegated job opens ITS slot; the dashboard
-// shows only the slot of the agent the user is currently viewing (client-side,
-// off the agentId stamped on every dock event), so a background open can never
-// replace the viewed agent's canvas. Updated whenever an agent opens something.
-// (No GC of per-agent rows when an agent is deleted; that's an accepted choice
-// at this scale, one small config row per agent.)
-const currentCanvasByAgent = new Map<string, CanvasState>();
-
-// Live re-render: watch the file currently shown in an agent's canvas and tell
-// the client to re-fetch whenever it changes on disk, NO MATTER how it was
-// edited. The proper edit tools (file_write/file_patch, office_*) already ping
-// the canvas, but weak models routinely reach for shell hacks instead (sed -i,
-// python-docx, a heredoc redirect). Those bypass the in-tool ping, so without a
-// disk watcher the canvas would show stale content after such an edit. Polling
-// stat() (vs fs.watch) catches in-place writes AND atomic rename-replaces, on
-// every platform. One watcher PER AGENT, and the canvas:updated it emits carries
-// the agentId, so an edit to agent B's file can never refresh agent A's canvas.
-const watchedPathByAgent = new Map<string, string>();
-function stopCanvasWatch(agentId: string): void {
-  const watched = watchedPathByAgent.get(agentId);
-  if (watched) {
-    try { fs.unwatchFile(watched); } catch { /* best effort */ }
-    watchedPathByAgent.delete(agentId);
-  }
-}
-function startCanvasWatch(agentId: string, filePath: string): void {
-  if (watchedPathByAgent.get(agentId) === filePath) return;
-  stopCanvasWatch(agentId);
-  try {
-    fs.watchFile(filePath, { interval: 700 }, (curr, prev) => {
-      if (curr.mtimeMs !== prev.mtimeMs) {
-        try { broadcast({ type: 'canvas:updated', agentId, data: { path: filePath } }); } catch { /* best effort */ }
-      }
-    });
-    watchedPathByAgent.set(agentId, filePath);
-  } catch { /* best effort, never let watching break a canvas open */ }
-}
-
-// Canvas status: once a canvas exists it is either OPEN (dock showing) or
-// COLLAPSED (minimised to the edge handle; content retained). Persisted to the
-// DB so the canvas survives a browser refresh, a server restart, and follows the
-// user from one device to another (the dashboard reads GET /api/canvas on mount).
-// Per agent, like the canvas state itself.
-export type CanvasStatus = 'open' | 'collapsed';
-const canvasStatusByAgent = new Map<string, CanvasStatus>();
-const hydratedAgents = new Set<string>();
-// One config row per agent: `current_canvas:<agentId>`.
-const canvasConfigKey = (agentId: string): string => `current_canvas:${agentId}`;
-
-function persistCanvas(agentId: string): void {
-  try {
-    const state = currentCanvasByAgent.get(agentId) ?? null;
-    const value = state
-      ? JSON.stringify({ state, status: canvasStatusByAgent.get(agentId) ?? 'collapsed' })
-      : '';
-    getDb().prepare(
-      `INSERT INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
-    ).run(canvasConfigKey(agentId), value);
-  } catch { /* best effort, never let persistence break a canvas open */ }
-}
-
-// Lazily rehydrate one agent's in-memory canvas from the DB on first access, so a
-// server restart doesn't drop an open canvas the user expects to still be there.
-function hydrateCanvas(agentId: string): void {
-  if (hydratedAgents.has(agentId)) return;
-  hydratedAgents.add(agentId);
-  try {
-    const row = getDb().prepare('SELECT value FROM config WHERE key = ?')
-      .get(canvasConfigKey(agentId)) as { value: string } | undefined;
-    if (row?.value) {
-      const parsed = JSON.parse(row.value) as { state: CanvasState; status: CanvasStatus };
-      if (parsed?.state) {
-        currentCanvasByAgent.set(agentId, parsed.state);
-        canvasStatusByAgent.set(agentId, parsed.status === 'open' ? 'open' : 'collapsed');
-        if (parsed.state.kind === 'canvas' && parsed.state.path) startCanvasWatch(agentId, parsed.state.path);
-      }
-    }
-  } catch { /* best effort */ }
-}
-
-export function setCurrentCanvas(agentId: string, state: CanvasState | null): void {
-  hydrateCanvas(agentId);
-  if (state) currentCanvasByAgent.set(agentId, state);
-  else currentCanvasByAgent.delete(agentId);
-  // Opening a canvas always brings it to the OPEN state (the agent put something
-  // there for the user to see). Clearing it resets to collapsed.
-  canvasStatusByAgent.set(agentId, state ? 'open' : 'collapsed');
-  if (state?.kind === 'canvas' && state.path) startCanvasWatch(agentId, state.path);
-  else stopCanvasWatch(agentId);
-  persistCanvas(agentId);
-}
-export function getCurrentCanvas(agentId: string): CanvasState | null {
-  hydrateCanvas(agentId);
-  return currentCanvasByAgent.get(agentId) ?? null;
-}
-/** Full persisted shape for the dashboard's load-on-mount (GET /api/canvas). */
-export function getPersistedCanvas(agentId: string): { state: CanvasState; status: CanvasStatus } | null {
-  hydrateCanvas(agentId);
-  const state = currentCanvasByAgent.get(agentId);
-  return state ? { state, status: canvasStatusByAgent.get(agentId) ?? 'collapsed' } : null;
-}
-/** Update just the open/collapsed status (user collapsed or re-opened the dock). */
-export function setCanvasStatus(agentId: string, status: CanvasStatus): void {
-  hydrateCanvas(agentId);
-  if (!currentCanvasByAgent.has(agentId)) return;
-  canvasStatusByAgent.set(agentId, status);
-  persistCanvas(agentId);
-}
 
 const IMAGE_MIME: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -162,12 +39,6 @@ const TEXT_EXTS = new Set([
   '.ini', '.env',
 ]);
 const TEXT_MAX_BYTES = 200 * 1024;
-
-function resolveHome(p: string): string {
-  if (p === '~') return os.homedir();
-  if (p.startsWith('~/')) return path.join(os.homedir(), p.slice(2));
-  return p;
-}
 
 // Render an HTML string or a URL to a PNG screenshot via headless Chromium.
 async function renderToPng(opts: { html?: string; url?: string }): Promise<Buffer> {
@@ -257,20 +128,20 @@ export async function viewCanvas(agentId: string, args: Record<string, unknown>)
     // File-backed canvas: branch by type.
     if (target.path) {
       const filePath = resolveHome(target.path);
-      if (!fs.existsSync(filePath)) {
+      if (!effectFs.existsSync(filePath)) {
         return `Error: the canvas file no longer exists on disk (${filePath}).`;
       }
       const ext = path.extname(filePath).toLowerCase();
 
       // Image -> feed the pixels straight to the vision model.
       if (IMAGE_MIME[ext]) {
-        const base64 = (await fs.promises.readFile(filePath)).toString('base64');
+        const base64 = (await effectFs.promises.readFile(filePath)).toString('base64');
         return await describeImage(agentId, base64, IMAGE_MIME[ext], prompt);
       }
       // Text / markdown / code -> return the text (more accurate than a shot).
       if (TEXT_EXTS.has(ext)) {
-        const stat = await fs.promises.stat(filePath);
-        let text = await fs.promises.readFile(filePath, 'utf-8');
+        const stat = await effectFs.promises.stat(filePath);
+        let text = await effectFs.promises.readFile(filePath, 'utf-8');
         let truncated = '';
         if (stat.size > TEXT_MAX_BYTES) {
           text = text.slice(0, TEXT_MAX_BYTES);

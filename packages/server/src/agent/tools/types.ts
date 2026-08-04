@@ -147,7 +147,7 @@ export interface ToolEffect {
  * turn an argument into a resource has to be written here by hand to exist at
  * all, so the set cannot grow by declaration.
  */
-export type EffectIndirection = 'attachment_row' | 'technique_dir';
+export type EffectIndirection = 'attachment_row' | 'technique_dir' | 'agent_canvas_file';
 
 /**
  * WHERE A DERIVED EFFECT ACTS, declared so it can be checked.
@@ -181,7 +181,17 @@ export type EffectScope =
    * resolved and authorized, so it needs no template of its own, and it can
    * never be wider than the directory the agent named and the gate allowed.
    */
-  | { readonly at: 'argTree' };
+  | { readonly at: 'argTree' }
+  /**
+   * THE CALL'S OWN AGENT IDENTITY RESOLVES A PER-AGENT RECORDED RESOURCE
+   * (PHASE-5 T8, RULING P5-R15 ADDENDUM 3(1)(b)). `canvas_read` is the whole
+   * class: its schema names no path and its call site passes none, because the
+   * file it reads is the one this agent put on its own canvas EARLIER. There is
+   * no argument to resolve, so the identity of the call is the key and the named
+   * resolver is the handler's own reader; an agent with nothing recorded
+   * resolves to nothing and gets no grant.
+   */
+  | { readonly at: 'agentResolved'; readonly via: EffectIndirection };
 
 /** Prefixes `from` may carry. Exported so the walk and the brokers share one list. */
 export const EFFECT_FROM_ARGS = 'args.';

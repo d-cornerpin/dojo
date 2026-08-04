@@ -357,7 +357,7 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     // Mechanic 5's equivalent of `CARRIED_PROGRAMS`'s census: a new way to turn
     // an argument into a resource has to be written into the table by hand to
     // exist at all, so the set cannot grow by declaration.
-    expect(Object.keys(INDIRECT_RESOLVERS)).toEqual(['attachment_row', 'technique_dir']);
+    expect(Object.keys(INDIRECT_RESOLVERS)).toEqual(['attachment_row', 'technique_dir', 'agent_canvas_file']);
     for (const resolve of Object.values(INDIRECT_RESOLVERS)) {
       expect(typeof resolve, 'every indirection resolves through a real reader').toBe('function');
     }
@@ -972,5 +972,75 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     // paths — the state flip is a DB update — so the declaration named an effect
     // that did not exist rather than one that was missing.
     expect(effectsFor('technique_finalize')?.some((e) => e.kind === 'fs_write'), 'it writes no file').toBe(false);
+  });
+
+  it('APPLICATION (b): the CALL\'S OWN AGENT IDENTITY resolves the per-agent recorded resource', () => {
+    // RULING P5-R15 ADDENDUM 3(1)(b). `canvas_read` takes a `prompt` and nothing
+    // else — its schema has no path at all, and its one production call site
+    // passes `{ prompt }`. The file it reads is the one the agent put on its own
+    // canvas EARLIER, recorded per agent, so there is no argument to resolve and
+    // a declaration in terms of arguments cannot describe it. The identity of the
+    // call is the resolution key, read through the same function the handler
+    // reads the canvas with.
+    const shown = path.join(scratch, 'report.html');
+    const declaration: ToolEffect = {
+      kind: 'fs_read', from: 'derived:the file currently on this agent canvas',
+      scope: { at: 'agentResolved', via: 'agent_canvas_file' },
+    };
+    const seen: string[] = [];
+    const grants = grantsForCall(AGENT, [declaration], { prompt: 'what is this' }, {
+      attachment_row: () => null,
+      technique_dir: () => null,
+      agent_canvas_file: (id) => { seen.push(id); return id === AGENT ? { path: shown } : null; },
+    });
+    expect(seen, 'the resolver is asked about THIS call\'s agent, nobody else').toEqual([AGENT]);
+    expect(grantsCover(grants, { op: 'fs_read', path: shown, real: shown }), 'it may read what it put there').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_stat', path: shown, real: shown }), 'it may probe it first').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: outOfScope, real: outOfScope }), 'and no other file').toBe(false);
+    // A read of the canvas is not a licence to overwrite it.
+    expect(grantsCover(grants, { op: 'fs_write', path: shown, real: shown })).toBe(false);
+    // An agent with NOTHING on its canvas gets no grant at all, which leaves the
+    // handler's own "nothing is open in the canvas" message intact.
+    expect(grantsForCall('someone-else', [declaration], {}, {
+      attachment_row: () => null, technique_dir: () => null, agent_canvas_file: () => null,
+    })).toEqual([]);
+  });
+
+  it('3-WAY SPLIT: the canvas viewer, its per-agent state, and the disk watcher are three modules', () => {
+    // RULING P5-R15 ADDENDUM 3(3). One module held three things: the
+    // dispatch-only VIEWER (4 fs sites), the per-agent canvas STATE (no fs), and
+    // a file WATCHER whose callback fires from a polling timer — outside any
+    // dispatch, for a path both tools and HTTP routes can set. Splitting three
+    // ways is what makes each classification true of what the module does.
+    const viewer = fs.readFileSync(path.join(SRC, 'agent/canvas-view.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(viewer), 'the viewer must not hold node:fs').toBe(false);
+    expect(viewer.includes('effectFs.'), 'it reads the canvas through the facade').toBe(true);
+    const state = fs.readFileSync(path.join(SRC, 'agent/canvas-state.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(state), 'the state surface touches no file at all').toBe(false);
+    // The WATCH pair keeps `node:fs` and is named in the flip's excluded list with
+    // its measured reason — dual-reached and platform-timed. It is two calls in
+    // one small module rather than two calls inside a 300-line one, which is the
+    // whole point of splitting three ways instead of two.
+    const watch = fs.readFileSync(path.join(SRC, 'agent/canvas-watch.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(watch), 'the watcher keeps its import, honestly').toBe(true);
+    expect((watch.match(/fs\.(watchFile|unwatchFile)\(/g) ?? []).length, 'and holds exactly the watch pair').toBe(2);
+    expect(watch.includes('effectFs.'), 'it does not pretend to be carried').toBe(false);
+  });
+
+  it('canvas_read DECLARES the canvas file it has always read', () => {
+    // It declared `effects: []` and has always probed, stat-ed and read the file
+    // on the agent's canvas. Same class as `open_browser` and `history_get`:
+    // RULING P5-R14, corrected at the site, adding no refusal because gate rows
+    // are declared in `tools/gates.ts` and never derived from `effects[]`.
+    const shown = path.join(scratch, 'deck.pdf');
+    const grants = grantsForCall(AGENT, effectsFor('canvas_read'), { prompt: 'x' }, {
+      attachment_row: () => null, technique_dir: () => null, agent_canvas_file: () => ({ path: shown }),
+    });
+    expect(grantsCover(grants, { op: 'fs_read', path: shown, real: shown })).toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: outOfScope, real: outOfScope })).toBe(false);
+    expect(
+      effectsFor('canvas_read')?.some((e) => e.scope?.at === 'agentResolved'),
+      'canvas_read must declare the per-agent canvas it reads',
+    ).toBe(true);
   });
 });

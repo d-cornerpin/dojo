@@ -171,9 +171,11 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // `load_tool_docs` reads the generated tool-doc file off disk and declared
     // nothing, so the surface split (RULING P5-R15 part 2) refused it until the
     // declaration was corrected at the site.
+    // T8 Step 3 moves both by ONE a third time: `canvas_read` declared
+    // `effects: []` and has always read the file on the agent's own canvas.
     const effectful = BASE.filter((d) => d.effects.length > 0);
-    expect(effectful.length).toBe(107);
-    expect(ALL.filter((d) => d.effects.length > 0).length).toBe(127);
+    expect(effectful.length).toBe(108);
+    expect(ALL.filter((d) => d.effects.length > 0).length).toBe(128);
     // T8 Step 3 moves this by EIGHT, and the tripwire is what earned it:
     // `pdf_create.filename` and the seven `output_filename` siblings are BARE
     // NAMES, not paths. Their old `fs_write from: args.<name>` declaration

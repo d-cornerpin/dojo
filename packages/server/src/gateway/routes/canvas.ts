@@ -14,7 +14,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import type { AppEnv } from '../server.js';
-import { getPersistedCanvas, setCanvasStatus } from '../../agent/canvas-view.js';
+import { getPersistedCanvas, setCanvasStatus } from '../../agent/canvas-state.js';
 import { broadcast } from '../ws.js';
 
 export const canvasRouter = new Hono<AppEnv>();

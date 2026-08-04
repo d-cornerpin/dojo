@@ -31,7 +31,7 @@ import { getCurrentToolCallId, currentTurnNumber, currentTurnRoot } from '../tur
 import { redactHandedCredentials } from '../../credentials/secret-values.js';
 import { broadcast } from '../../gateway/ws.js';
 import { queueCanvasDoc } from '../pending-attachments.js';
-import { setCurrentCanvas, getCurrentCanvas } from '../canvas-view.js';
+import { setCurrentCanvas, getCurrentCanvas } from '../canvas-state.js';
 
 /**
  * THE TOOLBOX LOGGER, shared rather than re-created per module.
