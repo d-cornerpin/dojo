@@ -387,6 +387,36 @@ export interface TurnContext {
    *  would read as chatter and the steer would never fire. It migrates under RULING
    *  P6-R3(1)'s rule, with that consequence measured rather than assumed. */
   inboundClassifiedAsWork: boolean;
+
+  /** THE ACK-DELIVERY PAIR — "the person has already heard from us this turn", in the two
+   *  units the engine records it in: the engine delivered a start-ack line (`…Delivered…`),
+   *  and the start-ack carried the deferred answer as the turn's user-visible reply
+   *  (`deferred…`). They are ONE mechanism: both are written four lines apart in the same
+   *  block of `postCallClassify`, and every reader that consults one consults the other.
+   *
+   *  ⚠ POPULATION 2 (PHASE-6 T6, CUT 8), and the first of the pair fails CUT 3's by-value
+   *  test OUTRIGHT rather than by rule: `engineStartAckDeliveredThisTurn` is READ INSIDE
+   *  THE WALL-CLOCK TIMER CALLBACK (`fireStartAckIfOwed`, armed from `setTimeout` at turn
+   *  start), which asks "has the ack already been delivered?" before firing one. Handed by
+   *  value the timer would capture `false` at arm time and keep reading `false` forever, so
+   *  a turn that delivered its ack and then ran long would fire a SECOND ack — the double-ack
+   *  the F10 lifecycle exists to prevent, silently, with nothing thrown.
+   *
+   *  `deferredDeliveredByAck` clears CUT 3's test on its write site (one write, straight-line)
+   *  and still migrates, because it is written by `postCallClassify` and read by the
+   *  redundant-closeout floor and the terminal promotion — including on LATER ITERATIONS of
+   *  the same turn, through `pre-call-gates` and `execute`. Left a driver local while its
+   *  writer moved out, the step would write a copy nobody sees: every later reader would keep
+   *  reading `false` and the answer would double-send, which is the exact thing it gates.
+   *
+   *  CUT 5/6/7 kept both by value on positive evidence, and their own entries recorded the
+   *  condition that has now changed: the evidence was that the write sites are inside
+   *  `postCallClassify` and nothing could write them while another step ran. That is the
+   *  argument for a READER, and it still holds — the reader steps go on taking a value read
+   *  off this bag at their call site, once per iteration. What cannot ride by value is the
+   *  WRITE, and this tranche is the writer. */
+  engineStartAckDeliveredThisTurn: boolean;
+  deferredDeliveredByAck: boolean;
 }
 
 /** The one registry. Keyed by agentId because a turn belongs to an agent and
@@ -433,6 +463,8 @@ export function openTurnContext(agentId: string): TurnContext {
     startAckSteerInjectedAtLoop: 0,
     anyToolStartedThisTurn: false,
     inboundClassifiedAsWork: false,
+    engineStartAckDeliveredThisTurn: false,
+    deferredDeliveredByAck: false,
   };
   openContexts.set(agentId, ctx);
   return ctx;

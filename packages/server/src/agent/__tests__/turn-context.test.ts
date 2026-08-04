@@ -109,6 +109,14 @@ const THE_DRIVER_CARRIES = [
   // timer callback: by value the timer reads `false` forever and a long working turn
   // takes the "chat-shaped, stay quiet" branch, so the waiting person hears nothing.
   'anyToolStartedThisTurn',
+  // PHASE-6 T6 (CUT 8) — the `postCallClassify` tranche's ack-delivery pair, and the FIFTH
+  // and SIXTH locals of the same F10 mechanism. `engineStartAckDeliveredThisTurn` is READ
+  // inside the wall-clock timer callback that decides whether to fire an ack at all, so by
+  // value the timer reads `false` after the ack was delivered and the person is acked TWICE.
+  // `deferredDeliveredByAck` is written beside it and gates the terminal promotion and the
+  // redundant-closeout floor, so a lost write double-SENDS the answer.
+  'engineStartAckDeliveredThisTurn',
+  'deferredDeliveredByAck',
 ];
 
 /** The six in `turn-state.ts` that OUTLIVE the turn on purpose. */

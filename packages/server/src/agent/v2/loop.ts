@@ -1451,7 +1451,9 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // an assistant-role message (a real thing the agent said), NOT engine
   // suppression of the model's own reply. Fires only for user counterparties;
   // A2A / engine turns never reach the classifier that calls it.
-  let engineStartAckDeliveredThisTurn = false;
+  // PHASE-6 T6 (CUT 8): the delivery latch and its partner `deferredDeliveredByAck` MOVED to
+  // the turn's bag — `postCallClassify` WRITES both and the wall-clock timer READS the first
+  // at fire time, which by value would double-ack. Reasons at the fields (RULING P6-R3(1)).
   // Start-ack steer lifecycle (owner ruling 2026-07-22): requested (async-safe
   // intent set by the timer/first-tool hook) -> armed (steer injected at a loop
   // boundary, state write is loop-synchronous) -> delivered (the model's own
@@ -1515,7 +1517,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // True when the start-ack already delivered the deferred text as the turn's
   // user-visible answer; gates the terminal promotion and the redundant-closeout
   // floor so the answer can never double-send.
-  let deferredDeliveredByAck = false;
+  // PHASE-6 T6 (CUT 8): on the turn's bag with its partner — see the field.
   // Identical-call brake state (2026-07-17): consecutive identical failing
   // tool calls this turn, keyed by exact call signature. See identical-call-brake.ts.
   const identicalCallState: RepeatCallState = new Map();
@@ -1709,7 +1711,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   `).get(agentId, turnNumber);
   const fireStartAckIfOwed = async (via: 'timer' | 'first-tool'): Promise<void> => {
     try {
-      if (engineStartAckDeliveredThisTurn || turnCtx.startAckSteerRequested || turnCtx.startAckSteerArmedThisTurn || startAckRepliedNow()) return;
+      if (turnCtx.engineStartAckDeliveredThisTurn || turnCtx.startAckSteerRequested || turnCtx.startAckSteerArmedThisTurn || startAckRepliedNow()) return;
       // The captured-narration branch (F10, 2026-07-16) that lived here is
       // GONE (owner production report 2026-07-23: "not a single ack"). It
       // delivered whatever mid-work narration was captured ("Let me look at
@@ -2040,12 +2042,17 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // `engineStartAckDeliveredThisTurn` and `deferredDeliveredByAck` by the post-call
   // classifier, and this step runs once per ITERATION — so a snapshot taken before
   // the `try` would hand iteration nine the picture iteration one had.
+  // PHASE-6 T6 (CUT 8): the latter two now live on the turn's bag, so the closure reads
+  // THEM off the bag. The per-iteration property this note is about is unchanged — the
+  // read still happens at the call site — and the bag is what makes it true now that the
+  // step that WRITES them is a module of its own.
   // `setAgentStatus` and `detectTaskThrashing` are passed rather than imported so a
   // step never points back at the driver (CUT 2's `stopStatusHeartbeat` precedent).
   const preCallGatesContext = (): PreCallGatesContext => ({
     agentId, turnNumber, contextWindow, contextModelId, configuredModelId, isAutoRouted,
     counterparty, assemblerOverheadTokens: turnCtx.assemblerOverheadTokens,
-    engineStartAckDeliveredThisTurn, deferredDeliveredByAck,
+    engineStartAckDeliveredThisTurn: turnCtx.engineStartAckDeliveredThisTurn,
+    deferredDeliveredByAck: turnCtx.deferredDeliveredByAck,
     engineBlockEscapeHatch: ENGINE_BLOCK_ESCAPE_HATCH,
     broadcast, setAgentStatus, stashContinuationIfHuman, detectTaskThrashing,
   });
@@ -2091,7 +2098,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         counterparty, counterpartyIsAgentSender, chosenConvKey, hasUnansweredUser,
         isA2ATurn, isEngineTurn, isNotificationTurn, lastUserMessageContent,
         latestTtsEngine, latestUserSource, mostRecentIsA2A, pendingEngineEvent,
-        waitingConvs, engineStartAckDeliveredThisTurn,
+        waitingConvs, engineStartAckDeliveredThisTurn: turnCtx.engineStartAckDeliveredThisTurn,
         // Declared at module level in this file on purpose: a guard pins it there BY
         // PATH (`work-reaper.test.ts`, the narrower and therefore stronger corpus)
         // and `execute` reads it too. Handed across, never copied.
@@ -2410,15 +2417,15 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
           // when the work completes.
           if (
             turnCtx.startAckSteerArmedThisTurn &&
-            !engineStartAckDeliveredThisTurn &&
+            !turnCtx.engineStartAckDeliveredThisTurn &&
             turnCtx.deferredUserReplyWithTools &&
             !startAckRepliedNow()
           ) {
-            engineStartAckDeliveredThisTurn = true;
+            turnCtx.engineStartAckDeliveredThisTurn = true;
             deliveredAsStartLine = true;
             const startLine = turnCtx.deferredUserReplyWithTools.trim();
             turnCtx.deferredUserReplyWithTools = null;
-            deferredDeliveredByAck = true;
+            turnCtx.deferredDeliveredByAck = true;
             // Fresh id on purpose: messageId already holds this iteration's
             // persisted tool_use row, so reusing it makes the INSERT no-op and
             // the ack line never reaches the DB (caught by the ack scenario).
@@ -2814,7 +2821,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         isBareNoReply &&
         triggerRow &&
         !state.surfacedReplyThisTurn &&
-        !deferredDeliveredByAck &&
+        !turnCtx.deferredDeliveredByAck &&
         turnCtx.deferredUserReplyWithTools &&
         turnCtx.deferredUserReplyWithTools.trim().length > 0
       ) {
@@ -2861,7 +2868,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         // silence stands, loudly logged, and the ladder owns the follow-up.
         const ghostedWorkAsk =
           isBareNoReply && !!triggerRow && turnCtx.inboundClassifiedAsWork &&
-          !state.surfacedReplyThisTurn && !deferredDeliveredByAck;
+          !state.surfacedReplyThisTurn && !turnCtx.deferredDeliveredByAck;
         if (ghostedWorkAsk && !steerFired(state.steerQueue, 'ghosted-ask')) {
           broadcast({ type: 'chat:chunk', agentId, messageId, content: '', done: true });
           // T9: was an EMPTY chat:message meaning "drop this bubble" — an event named
@@ -4525,8 +4532,10 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       const executed = await runExecute(state, {
         agentId, turnCtx, turnNumber, db, agent, counterparty, counterpartyIsAgentSender,
         chosenConvKey, hasUnansweredUser, triggerRow, triggerWorkId, triggerConversationId,
-        turnStartedAt, persistRoutingMarker, engineStartAckDeliveredThisTurn,
-        deferredDeliveredByAck, identicalCallState, reminderLaneRefusedSigs,
+        turnStartedAt, persistRoutingMarker,
+        engineStartAckDeliveredThisTurn: turnCtx.engineStartAckDeliveredThisTurn,
+        deferredDeliveredByAck: turnCtx.deferredDeliveredByAck,
+        identicalCallState, reminderLaneRefusedSigs,
         startAckArmed, startAckArmedAtMs, fireStartAckIfOwed,
         result, messageId, persistedContent, interAgentTurn, hasXmlFallbackTools,
         effectiveModelIdForPersist,

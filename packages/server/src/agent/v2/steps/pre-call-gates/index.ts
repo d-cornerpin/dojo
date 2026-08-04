@@ -40,6 +40,15 @@
 // site is the same value the lexical block would have read. The tranches that WRITE
 // them (`assemble`, `postCallClassify`) are the ones that will owe the migration.
 //
+// ⚠ BOTH TRANCHES HAVE NOW PAID, AND THIS STEP'S SIDE OF IT DID NOT CHANGE.
+// `assemblerOverheadTokens` moved to the bag at CUT 6 and the ack-delivery pair at CUT 8,
+// each because the span that WRITES it became a module and a module cannot write a caller's
+// local. The reading half above still stands and is still the reason this interface keeps
+// three plain booleans/numbers: the driver's context closure reads them off the bag once per
+// iteration and hands the VALUE down, which is what the "nothing can write them while this
+// step is awaited" evidence licenses. Nothing here reads a stale copy, because nothing here
+// outlives the iteration that built it.
+//
 // TWO ARE FUNCTIONS THE DRIVER OWNS, passed rather than imported — CUT 2's precedent
 // for `stopStatusHeartbeat`, and for the same reason: importing them from `loop.ts`
 // would point a step back at the driver. `stashContinuationIfHuman` is additionally a
