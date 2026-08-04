@@ -1583,6 +1583,27 @@
       "to": 2736,
       "by": "PHASE-5 T8 Step 3 SURFACE SPLIT 2 (2026-08-03, T8G) — the two imported-technique setup declarations corrected",
       "why": "PHASE-5 T8 Step 3, RULING P5-R15 part 2 + ADDENDUM 3(1)(a). +14 lines, 11 of them COMMENT. What changed: technique_set_placeholder gains the fs_read it has always performed, technique_finalize loses an fs_write NO code path performs and gains the fs_read it does, and both resolve their technique reference through the named indirection instead of prose. THE DEFECTS THEY FIX. (a) technique_set_placeholder reads the staged IMPORT_MANIFEST.json and every file the placeholder appears in BEFORE it substitutes, and declared only the write — converted as-is, the very first read would have been refused and the tool would have reported 'not imported, no placeholders' for a technique that has them. (b) technique_finalize declared fs_write on the technique directory; its only paths read the files to confirm no placeholder remains and delete the staged manifest, and its state flip is a DATABASE update — so the entry named an effect that does not exist while the read went undeclared. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Drop the reason comments (minus 11): REFUSED — the fs_write REMOVAL is the one edit in this task that takes a declaration away, and a later reader who cannot see why will restore it; the comment is the record that it was measured rather than forgotten. (b) Keep the fs_write and give it the tree scope (minus 6): REFUSED — that mints a live write grant for a write the tool never performs, which is precisely the false-grant class this sitting corrected twice already. (c) Declare the delete on the one manifest file instead of the tree (+0): REFUSED as unexpressible rather than undesirable — no authorized mechanic names a fixed file INSIDE a resolved directory, so the tree is the tightest honest scope, and the comment records that rather than letting it look chosen. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2736."
+    },
+    {
+      "path": "packages/server/src/agent/effects/scopes.ts",
+      "from": 317,
+      "to": 334,
+      "by": "PHASE-5 T8 Step 3 the canvas 3-way split (2026-08-03, T8G) — ADDENDUM 3(1)(b), the call's own agent identity as the resolution key",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 3(1)(b). +17 lines, 9 of them COMMENT: the derived-scope branch learns `at: 'agentResolved'`, which hands the named resolver the CALLING AGENT'S ID instead of an argument value, and `agent_canvas_file` joins INDIRECT_RESOLVERS as the third named indirection. THE DEFECT IT FIXES: canvas_read's schema names no path and its one production call site passes none, because the file it reads is the one the agent put on its own canvas EARLIER — so every mechanic that starts from an argument is blind to it, and prose yields no grant, which means the converted viewer would have refused the tool's ONLY use. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Give canvas_read a `path` argument to declare (about the same lines): REFUSED — it would be a new tool surface invented to satisfy a declaration, and C27 deliberately REMOVED the path/url/html targets from this tool. (b) Grant the whole uploads tree instead (minus 10): REFUSED — the canvas can show a file anywhere the agent opened one, so the honest scope is not a tree at all, and a tree wide enough would authorize reads the tool never makes. (c) Let the facade look the canvas up itself when a read is refused: REFUSED outright — that is the facade gaining a rule of its own (STOP condition 2). THE DIRECTION IS STILL ENFORCED: this file may only shrink from 334."
+    },
+    {
+      "path": "packages/server/src/agent/tools/types.ts",
+      "from": 306,
+      "to": 316,
+      "by": "PHASE-5 T8 Step 3 the canvas 3-way split (2026-08-03, T8G) — the agentResolved scope and the third named indirection",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 3(1)(b). +10 lines, 8 of them the doc on the new EffectScope member. What it buys: a declaration can say `the resource is what THIS AGENT recorded earlier` in a form the executor can resolve, instead of prose that resolves to nothing. THE REASON IT IS A SCOPE AND NOT A NEW `from` PREFIX: `from` answers WHERE the resource is named and the honest answer here is `nowhere in this call`, so the prose `derived:` stays and the machine-checkable half rides beside it exactly as RULING P5-R14 branch (A) designed — the prose survives, and 'we looked at this' still never reads the same as 'nobody looked'. THE ALTERNATIVES WERE MEASURED. (a) Reuse `via` on the effect with an empty `from` (minus 8): REFUSED — `via` is documented as resolving an ARGUMENT, and overloading it to sometimes mean the agent id is how one field comes to mean two things. (b) Drop the doc (minus 8): REFUSED — the member is the only one in the union whose key is not in the call's arguments, and a reader who misses that will look for the argument it names. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 316."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2736,
+      "to": 2741,
+      "by": "PHASE-5 T8 Step 3 the canvas 3-way split (2026-08-03, T8G) — canvas_read declares what it reads",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R14 + P5-R15 ADDENDUM 3(1)(b). +5 lines, 4 of them the reason. THE DEFECT IT FIXES: canvas_read declared `effects: []` and has always probed, stat-ed and read the file on the agent's canvas — the third tool this task has caught declaring nothing for a read it has always performed (after history_get and load_tool_docs). Converted as-is the viewer would have refused its own only use. It adds NO refusal: gate rows are declared in tools/gates.ts and are never derived from effects[] (RULING P5-R5). THE ALTERNATIVES WERE MEASURED. (a) Drop the reason comment (minus 4): REFUSED — this is the first declaration in the file whose resource comes from the agent's identity rather than an argument, and without the reason a later reader will look for the argument it names and 'fix' it. (b) Leave effects: [] and convert anyway: REFUSED — that is the tool refusing every call it has ever served. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2741."
     }
   ],
   "maxNewFileLines": 400,
@@ -1632,13 +1653,13 @@
     "packages/server/src/agent/tools/cat/media.ts": 896,
     "packages/server/src/agent/tools/cat/session.ts": 241,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
-    "packages/server/src/agent/effects/scopes.ts": 317,
-    "packages/server/src/agent/tools/definitions.ts": 2736,
+    "packages/server/src/agent/effects/scopes.ts": 334,
+    "packages/server/src/agent/tools/definitions.ts": 2741,
     "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/index.ts": 642,
     "packages/server/src/agent/tools/surface.ts": 657,
-    "packages/server/src/agent/tools/types.ts": 306,
+    "packages/server/src/agent/tools/types.ts": 316,
     "packages/server/src/agent/tools/util.ts": 359,
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 482,
