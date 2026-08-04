@@ -197,10 +197,13 @@ import { detectDeliveryDenial } from './classifiers/grounding.js';
 import { decideClaimedDelivery, claimedDeliverySteer } from './claimed-delivery.js';
 import { recordFloorGhost, MAX_FLOOR_STEER_ATTEMPTS } from './floor-ghost.js';
 import { outboundRoot, describeOutboundRoot } from './outbound-root.js';
-import { progressClassifier, buildSpinningNudge } from './classifiers/progress.js';
 import { permissionAlternativeFinder } from './classifiers/permission.js';
 import { semanticTechniqueMatches, SEMANTIC_STRONG_THRESHOLD, buildTechniqueMatchQuery } from './classifiers/technique.js';
 import { listTechniques } from '../../techniques/store.js';
+// PHASE-6 T8: the first step cut out of this driver. `steps/step-outcome.ts`
+// carries the contract every step package shares, including the exit-request
+// channel this call site honours.
+import { runPostExecution } from './steps/post-execution/index.js';
 
 const logger = createLogger('v2-loop');
 
@@ -8327,155 +8330,16 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
 
       // ── Phase: post-execution gates ──
       state = advance(state, { phase: 'postExecution' });
-
-      // ── Repetition detection (matches v1 runtime.ts:1622-1634) ──
-      // If the model produces the SAME text + SAME tool calls as the last
-      // iteration, it's stuck. Nudge once. If still repeating, break with
-      // STUCK_REPEATING. The loopDetector catches duplicate-tool-call
-      // patterns; this catches duplicate-FULL-response patterns including
-      // text-only responses.
-      const currentResponseSig =
-        (result.content ?? '') +
-        '|' +
-        result.toolCalls
-          .map((tc) => `${tc.name}:${JSON.stringify(tc.arguments)}`)
-          .sort()
-          .join(',');
-      if (state.lastResponseSig === currentResponseSig) {
-        if (!steerFired(state.steerQueue, 'repetition')) {
-          logger.warn('v2: agent repeating itself, nudging on next iteration', {
-            loopCount: state.loopCount,
-          }, agentId);
-          state = advance(state, {
-            steerQueue: enqueueSteer(state.steerQueue, {
-              floor: 'repetition', atLoop: state.loopCount,
-              // FN-8: complete_task is not available to every agent, so don't
-              // name it here where the filtered tool list isn't in scope. Point
-              // at work_update(action="status") (universally available) instead.
-              content:
-                '[System: You are repeating yourself, your last two responses were identical. ' +
-                'Try a different approach. If the task is complete, mark it done (e.g. work_update(action="status")) and stop. ' +
-                'If you need help, explain what you are stuck on.]',
-            }),
-          });
-          continue;
-        }
-        logger.warn('v2: breaking tool loop, agent still repeating after nudge', {
-          loopCount: state.loopCount,
-        }, agentId);
-        broadcast({
-          type: 'chat:error',
-          agentId,
-          error: 'Agent got stuck repeating itself. Send a follow-up to redirect it.',
-          code: 'STUCK_REPEATING',
-          severity: 'warning',
-          retryable: true,
-        });
-        break;
-      }
-      state = advance(state, { lastResponseSig: currentResponseSig });
-
-      // Permission denial counter
-      const allBlocked = turnToolResults.every((tr) => tr.isError && tr.content.includes('[BLOCKED]'));
-      if (allBlocked && turnToolResults.length > 0) {
-        state = advance(state, {
-          consecutivePermissionDenials: state.consecutivePermissionDenials + turnToolResults.length,
-        });
-      } else if (turnToolResults.length > 0) {
-        state = advance(state, { consecutivePermissionDenials: 0 });
-      }
-
-      // ── No-results detection (matches v1 runtime.ts:1658-1678) ──
-      // When search tools (vault_search, history_search, web_search, etc.)
-      // repeatedly return "No results found" / "not in memory", the agent
-      // is probably looking for something that doesn't exist. Nudge once,
-      // then break with a NO_RESULTS error if it persists.
-      const allNoResults =
-        turnToolResults.length > 0 &&
-        turnToolResults.every(
-          (tr) =>
-            tr.content.includes('No results found') ||
-            tr.content.includes('not in memory'),
-        );
-      if (allNoResults && turnToolResults.every((tr) => !tr.isError)) {
-        const nextNoResultsCount = state.consecutiveNoResultTools + 1;
-        if (nextNoResultsCount >= 2) {
-          if (!steerFired(state.steerQueue, 'no-results')) {
-            logger.warn('v2: consecutive empty search results, nudging on next iteration', {
-              loopCount: state.loopCount,
-              consecutiveNoResultTools: nextNoResultsCount,
-            }, agentId);
-            state = advance(state, {
-              steerQueue: enqueueSteer(state.steerQueue, {
-                floor: 'no-results', atLoop: state.loopCount,
-                content:
-                  '[System: Multiple searches returned no results. The information may not exist in memory. ' +
-                  'Try responding based on what you already know, or ask the user for clarification.]',
-              }),
-              consecutiveNoResultTools: 0,
-            });
-            continue;
-          }
-          // Already nudged, break with NO_RESULTS error
-          logger.warn('v2: breaking tool loop, still no results after nudge', {
-            loopCount: state.loopCount,
-          }, agentId);
-          broadcast({
-            type: 'chat:error',
-            agentId,
-            error: 'Agent stopped, searches kept coming up empty. The info may not be in memory yet.',
-            code: 'NO_RESULTS',
-            severity: 'warning',
-            retryable: true,
-          });
-          break;
-        }
-        state = advance(state, { consecutiveNoResultTools: nextNoResultsCount });
-      } else if (turnToolResults.length > 0) {
-        state = advance(state, { consecutiveNoResultTools: 0 });
-      }
-
-      // Spinning detection (Part XVIII §F, engine asks model before breaking)
-      const progressDecision = progressClassifier({
-        toolCallsExecutedThisTurn: state.toolCallsExecutedThisTurn,
-        consecutiveSmallDeltas: 0, // Phase 4 will track this
-        consecutivePermissionDenials: state.consecutivePermissionDenials,
-        consecutiveNoResultTools: 0, // Phase 4 will track this
-        // PHASE-4 T3: the counter IS the latch, and it is now read off the queue's own
-        // entries rather than a state field only this floor ever wrote.
-        spinningNudgeCount: steerFireCount(state.steerQueue, 'spinning'),
-        loopCount: state.loopCount,
+      const postExecution = runPostExecution(state, {
+        agentId, turnNumber, result, turnToolResults, broadcast,
       });
-      if (!progressDecision.progressing) {
-        // If we've already nudged 3 times and the agent kept going, break.
-        if (progressDecision.signals?.includes('nudge cap')) {
-          logger.warn('v2: spinning nudge cap reached, breaking', { agentId }, agentId);
-          break;
-        }
-        // Otherwise inject a nudge and continue once.
-        // FN-8: the nudge only names complete_task for agents that can actually
-        // self-complete; a persistent agent gets "explain the block in your
-        // reply" wording instead of being pointed at a tool the guard refuses.
-        const nudgeText = buildSpinningNudge({
-          toolCallsExecutedThisTurn: state.toolCallsExecutedThisTurn,
-          consecutiveSmallDeltas: 0,
-          consecutivePermissionDenials: state.consecutivePermissionDenials,
-          consecutiveNoResultTools: 0,
-          spinningNudgeCount: steerFireCount(state.steerQueue, 'spinning'),
-          loopCount: state.loopCount,
-        }, agentCanSelfCompleteById(agentId));
-        // RC-19: via persistEngineSteer so the "you seem stuck, here is what to do"
-        // question reaches the model (the steer queue) AND keeps its dashboard row. The
-        // comment above ("engine asks model before breaking") only works if the model
-        // actually hears the question; the bare role='system' row the assembler strips
-        // meant it never did. The ignored-nudge count is the queue's own fire count, keyed
-        // per loop: this floor is deliberately NOT one-shot (cap MAX_SPINNING_NUDGES).
-        state = persistEngineSteer(
-          state,
-          { agentId, content: nudgeText, turnNumber, floor: 'spinning', key: `loop-${state.loopCount}`, atLoop: state.loopCount },
-          { broadcast },
-        );
-      }
+      state = postExecution.state;
+      // THE EXIT-REQUEST CHANNEL (PHASE-6, `steps/step-outcome.ts`). The step ASKS
+      // by returning; the driver decides here, where nothing downstream can
+      // overwrite the request — which is the whole defect the comment at this
+      // loop's head describes about mid-body `phase` writes.
+      if (postExecution.directive === 'exit') break;
+      if (postExecution.directive === 'continue') continue;
 
       // Loop continues, model will see tool results and respond
     }

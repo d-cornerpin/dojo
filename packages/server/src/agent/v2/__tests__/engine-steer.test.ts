@@ -348,6 +348,36 @@ describe('the steer queue is the SOLE steer writer (T6 exit clause, landed early
   const loopSrc = () => fs.readFileSync(LOOP_TS, 'utf8');
   const codeLines = (src: string) => src.split('\n').filter((l) => !isCommentLine(l));
 
+  // PHASE-6 T8: THE GUARD'S TARGET MOVED, SO THE GUARD MOVES WITH IT (the same
+  // repair PHASE-1 T4 recorded above for the system-row scan). Phase 6 cuts the
+  // driver into step packages under `agent/v2/steps/`, and the first cut took
+  // three steer floors (`repetition`, `no-results`, `spinning`) out of loop.ts.
+  // A scan that reads only loop.ts would have reported those floors as
+  // "declared but never used" — which is what it did, before this widened — and
+  // worse, it would have stopped seeing their `steerQueue:` writes entirely.
+  // The requirement was never "the sites are in loop.ts"; it is "every declared
+  // floor has a real site, and every site goes through the module." So the
+  // corpus is the ENGINE'S source: the driver, the steer helper, and every step
+  // package. The eight tranches behind the first are covered by construction.
+  const STEPS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../steps');
+  const stepSources = (): string => {
+    const out: string[] = [];
+    const walk = (dir: string) => {
+      if (!fs.existsSync(dir)) return;
+      for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        const abs = path.join(dir, e.name);
+        if (e.isDirectory()) { if (e.name !== '__tests__') walk(abs); continue; }
+        if (/\.tsx?$/.test(e.name) && !/\.(test|spec)\.tsx?$/.test(e.name)) out.push(fs.readFileSync(abs, 'utf8'));
+      }
+    };
+    walk(STEPS_DIR);
+    return out.join('\n');
+  };
+  const engineSrc = () =>
+    loopSrc() + '\n' +
+    fs.readFileSync(path.join(SERVER_SRC, 'agent/v2/engine-steer.ts'), 'utf8') + '\n' +
+    stepSources();
+
   it('ONE DOOR: exactly one drain site in loop.ts', () => {
     const hits = codeLines(loopSrc()).filter((l) => l.includes("injectRegistryMessage('msg.pending-nudge'"));
     expect(hits.length).toBe(1);
@@ -357,7 +387,7 @@ describe('the steer queue is the SOLE steer writer (T6 exit clause, landed early
     // A site that builds a queue by hand would bypass the latch AND the precedence table,
     // which is exactly how 26 sites came to own one string between them.
     const SANCTIONED = /(enqueueSteer|markSteerDelivered|markSteerAttempted|clearSteerQueue|emptySteerQueue)\(/;
-    const src = loopSrc() + '\n' + fs.readFileSync(path.join(SERVER_SRC, 'agent/v2/engine-steer.ts'), 'utf8');
+    const src = engineSrc();
     // A `steerQueue:` line either NAMES a module function on the same line, or opens a
     // multi-line call whose function is the line above it (`steerQueue: enqueueSteer({`
     // wrapped by the formatter). Both shapes are accepted; a raw object or spread is not.
@@ -408,7 +438,7 @@ describe('the steer queue is the SOLE steer writer (T6 exit clause, landed early
     // The vacuity guard that matters most: a precedence table full of ids nobody enqueues
     // is a table that documents nothing. The compiler already refuses an UNDECLARED id
     // (the union is the table's own keys), so what needs proving is the other direction.
-    const src = loopSrc() + fs.readFileSync(path.join(SERVER_SRC, 'agent/v2/engine-steer.ts'), 'utf8');
+    const src = engineSrc();
     const used = new Set([...src.matchAll(/floor: '([a-z0-9-]+)'/g)].map((m) => m[1]));
     const declared = STEER_PRECEDENCE.map((f) => f.id);
     expect(declared.filter((id) => !used.has(id))).toEqual([]);
