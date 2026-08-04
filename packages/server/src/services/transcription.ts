@@ -18,7 +18,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
+// PHASE-5 T8 Step 3 (RULING P5-R15 ADDENDUM 4(1)) — the transcode mechanism
+// moved into the carrying layer WHOLE. Its fs reach was entirely a temp PAIR in
+// `os.tmpdir()` under platform-generated names, which no declaration can name;
+// what the tool declares is the PROGRAM, carried under branch (B).
+import { decodeToWav16kMono, extractAudioFromVideo } from '../agent/effects/transcode.js';
 import { createLogger } from '../logger.js';
 import { getDb } from '../db/connection.js';
 import { getProviderCredential } from '../config/loader.js';
@@ -125,40 +129,6 @@ function localEngineToSttModelKey(engine: LocalTranscriptionEngine): string {
   return engine === 'whisper' ? DEFAULT_WHISPER : 'moonshine-base';
 }
 
-// Decode an arbitrary audio buffer (mp3, m4a, opus, etc.) to 16kHz
-// mono 16-bit PCM WAV via ffmpeg. Both Moonshine and the whisper.cpp
-// engines expect RIFF/WAVE PCM in this shape; phone-mode bypasses
-// this because Twilio already streams raw PCM, but uploaded files
-// can be anything.
-async function decodeToWav16kMono(bytes: Buffer, sourceExt: string): Promise<Buffer> {
-  const inPath = path.join(os.tmpdir(), `dojo-stt-in-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${sourceExt || '.bin'}`);
-  const outPath = path.join(os.tmpdir(), `dojo-stt-out-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`);
-  fs.writeFileSync(inPath, bytes);
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const proc = spawn('ffmpeg', [
-        '-y', '-loglevel', 'error',
-        '-i', inPath,
-        '-ar', '16000',  // 16 kHz sample rate (Whisper / Moonshine default)
-        '-ac', '1',       // mono
-        '-c:a', 'pcm_s16le', // signed 16-bit little-endian PCM
-        outPath,
-      ]);
-      let stderr = '';
-      proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-      proc.on('error', (err) => reject(new Error(`ffmpeg failed to spawn: ${err.message}`)));
-      proc.on('exit', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`ffmpeg exited ${code}: ${stderr.slice(0, 400)}`));
-      });
-    });
-    return fs.readFileSync(outPath);
-  } finally {
-    try { fs.unlinkSync(inPath); } catch { /* tmp cleanup is best-effort */ }
-    try { fs.unlinkSync(outPath); } catch { /* tmp cleanup is best-effort */ }
-  }
-}
-
 // Detect whether a buffer is already a RIFF/WAVE PCM file we can hand
 // straight to the local engines. Saves a tmp ffmpeg round-trip for
 // the common case of agents uploading a WAV recording.
@@ -180,40 +150,6 @@ function isVideoInput(mimeType: string, filename: string): boolean {
   if (mimeType.toLowerCase().startsWith('video/')) return true;
   const ext = path.extname(filename || '').toLowerCase();
   return VIDEO_EXTENSIONS.has(ext);
-}
-
-// Extract the audio track from a video buffer as 16-bit PCM WAV. The
-// caller hands this wav buffer onward — local engines see it as
-// already-PCM and skip their own ffmpeg pass; cloud providers accept
-// wav uniformly.
-async function extractAudioFromVideo(bytes: Buffer, sourceExt: string): Promise<Buffer> {
-  const inPath = path.join(os.tmpdir(), `dojo-stt-vid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${sourceExt || '.bin'}`);
-  const outPath = path.join(os.tmpdir(), `dojo-stt-vid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`);
-  fs.writeFileSync(inPath, bytes);
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const proc = spawn('ffmpeg', [
-        '-y', '-loglevel', 'error',
-        '-i', inPath,
-        '-vn',            // strip video stream
-        '-ar', '16000',   // 16 kHz (Whisper / Moonshine default)
-        '-ac', '1',        // mono
-        '-c:a', 'pcm_s16le',
-        outPath,
-      ]);
-      let stderr = '';
-      proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-      proc.on('error', (err) => reject(new Error(`ffmpeg failed to spawn: ${err.message}`)));
-      proc.on('exit', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`ffmpeg video demux exited ${code}: ${stderr.slice(0, 400)}`));
-      });
-    });
-    return fs.readFileSync(outPath);
-  } finally {
-    try { fs.unlinkSync(inPath); } catch { /* tmp cleanup is best-effort */ }
-    try { fs.unlinkSync(outPath); } catch { /* tmp cleanup is best-effort */ }
-  }
 }
 
 async function transcribeLocal(

@@ -17,7 +17,7 @@
 // that spawns.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promisify } from 'node:util';
 import { requireAuthorized } from './capability.js';
 
@@ -45,4 +45,25 @@ export async function execFileAuthorized(
 ): Promise<{ stdout: string; stderr: string }> {
   requireAuthorized({ op: 'proc', program: file });
   return execFileAsync(file, [...argv], options);
+}
+
+/**
+ * `spawn(file, argv)` behind the same capability — the STREAMING form.
+ *
+ * `execFileAuthorized` buffers both streams and resolves once; a converted
+ * mechanism that reads `stderr` as it arrives, or that waits on `exit` itself,
+ * needs the process object rather than its output. Both forms ask the SAME
+ * question of the SAME capability, so the streaming door is not a second door:
+ * the program still has to be one the gate loop resolved from this call's own
+ * declaration.
+ *
+ * No shell, exactly as `execFile` uses none — `spawn` without `shell: true`
+ * hands argv straight to `execve`.
+ */
+export function spawnAuthorized(
+  file: string,
+  argv: readonly string[],
+): ChildProcessWithoutNullStreams {
+  requireAuthorized({ op: 'proc', program: file });
+  return spawn(file, [...argv]);
 }

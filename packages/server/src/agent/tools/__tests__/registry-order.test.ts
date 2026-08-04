@@ -94,7 +94,14 @@ describe('tool registry (PHASE-5 T1 Step 2)', () => {
     // RULING P5-R5 holding: a declared effect that no ladder row gated gets no
     // new refusal, it gets recorded. `shell` is 1 (the new door) and
     // `applescript` is 1 (`applescript_run`).
-    expect(cov.byKind.proc).toBe(18);
+    // T8 Step 3 (T8H), 18 → 19: `transcribe_audio` decodes or demuxes EVERY
+    // source it accepts through ffmpeg before an engine sees it, and declared no
+    // `proc` effect at all. The transcode moved into the carrying layer whole
+    // (RULING P5-R15 ADDENDUM 4(1)) and the program it spawns is now declared,
+    // out of the named `CARRIED_PROGRAMS` list. It is the FIRST branch-(B)
+    // declaration in the tree, and it adds no refusal — `gates.ts` still gives
+    // row 3 to the name `exec` and to nothing else (P5-R5).
+    expect(cov.byKind.proc).toBe(19);
     expect(cov.byKind.shell).toBe(1);
     expect(cov.byKind.applescript).toBe(1);
     expect(cov.byKind.spawn).toBe(1);

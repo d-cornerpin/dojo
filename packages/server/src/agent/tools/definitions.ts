@@ -1799,10 +1799,18 @@ export const toolDefinitions: ToolDefinition[] = [
     // declare. `via` names the indirection instead, and the gate loop resolves
     // it with the same reader the handler uses. A stale id resolves to nothing,
     // grants nothing, and the handler keeps its own error.
+    // PHASE-5 T8 Step 3 (T8H) — THE TRANSCODER, DECLARED (RULING P5-R15
+    // ADDENDUM 4(1), branch (B)). Every source this tool accepts is decoded or
+    // demuxed through ffmpeg before an engine ever sees it, and that spawn was
+    // declared nowhere. Its argv is two paths the platform generates in its own
+    // temp directory, which no scope template can name — so the PROGRAM is what
+    // the declaration honestly carries, out of the named `CARRIED_PROGRAMS`
+    // list, and the temp pair belongs to the carrying layer.
     effects: [
       { kind: 'fs_read', from: 'args.attachment_id', via: 'attachment_row' },
       { kind: 'fs_read', from: 'args.path' },
       { kind: 'net', from: 'args.url' },
+      { kind: 'proc', from: 'derived:ffmpeg, to decode or demux the source into 16 kHz mono PCM WAV', scope: { at: 'program', program: 'ffmpeg' } },
     ],
     input_schema: {
       type: 'object',

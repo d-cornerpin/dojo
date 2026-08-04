@@ -60,12 +60,21 @@ import { attachCallCapability, mintCallCapability, type ResourceGrant } from './
  * census — every entry needs a reason, and a new one has to be written here by
  * hand to exist at all.
  *
- * It starts EMPTY because no converted call site needs one yet: the two exec
- * doors declare `args.argv` / `args.script`, which is branch (A). Entries land
- * with the categories that need them (`plaud/client.ts`'s `npx`,
- * `services/tunnel.ts`'s `cloudflared`, `services/transcription.ts`'s spawn).
+ * Entries land with the categories that need them, one at a time and never
+ * pre-emptively (`plaud/client.ts`'s `npx` and `services/tunnel.ts`'s
+ * `cloudflared` are the shapes still outside the converted set).
  */
-export const CARRIED_PROGRAMS: Readonly<Record<string, string>> = {};
+export const CARRIED_PROGRAMS: Readonly<Record<string, string>> = {
+  /**
+   * `transcribe_audio` decodes and demuxes its source through ffmpeg — RULING
+   * P5-R15 ADDENDUM 4(1). The tool declares the PROGRAM because its argv is
+   * built by the carry itself out of two paths the platform generates in its
+   * own temp directory, which no scope template can name; the source audio, the
+   * only resource the agent chose, is declared separately and resolved the
+   * ordinary way. The argv is audited rather than matched.
+   */
+  ffmpeg: 'the transcoder transcribe_audio spawns to reach 16 kHz mono PCM WAV; its argv is two platform-generated temp paths, so the PROGRAM is what the declaration can honestly name',
+};
 
 /**
  * HOW AN IDENTIFIER ARGUMENT BECOMES A RESOURCE — RULING P5-R15 ADDENDUM

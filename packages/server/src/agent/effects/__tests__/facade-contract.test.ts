@@ -36,6 +36,7 @@ import { runWithToolCallId } from '../../turn-state.js';
 import { grantsForCall, expandScopeTemplate, CARRIED_PROGRAMS, INDIRECT_RESOLVERS } from '../scopes.js';
 import { effectsFor } from '../../tools/registry.js';
 import { execFileAuthorized } from '../proc.js';
+import { decodeToWav16kMono, extractAudioFromVideo } from '../transcode.js';
 import * as effectFs from '../fs.js';
 import { runProcess } from '../../tools/process-run.js';
 import type { ToolEffect } from '../../tools/types.js';
@@ -1206,5 +1207,104 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     });
     expect(grantsCover(buildGrants, { op: 'fs_read', path: img, real: img }), 'it may read the local image').toBe(true);
     expect(grantsCover(buildGrants, { op: 'fs_read', path: outOfScope, real: outOfScope }), 'and no other').toBe(false);
+  });
+
+  // ── THE TEMP-WORKSPACE CARRY — RULING P5-R15 ADDENDUM 4(1) ────────────────
+  //
+  // Mechanic 6's principle, one step wider. `atomicWriteFile` owns a temp
+  // SIBLING of a declared target; this owns a temp PAIR in the platform's own
+  // temp directory, which no declaration can name (`expandScopeTemplate`
+  // expands `~`, `<agentId>` and `{args.<dotted>}`, and the platform temp
+  // directory is none of the three). The mechanism moved into the carrying
+  // layer WHOLE — same names, same order, same cleanup, errors rethrown
+  // unchanged — and the temp files are the carry's own implementation detail,
+  // never a second grant. The PROGRAM is what the call declares, and it rides
+  // branch (B) as the first `CARRIED_PROGRAMS` member.
+
+  /** A real 8 kHz mono 16-bit PCM WAV, built in memory, for ffmpeg to chew on. */
+  function tinyWav(): Buffer {
+    const samples = 800;
+    const data = Buffer.alloc(samples * 2);
+    for (let i = 0; i < samples; i++) data.writeInt16LE(Math.round(3000 * Math.sin(i / 8)), i * 2);
+    const header = Buffer.alloc(44);
+    header.write('RIFF', 0, 'ascii');
+    header.writeUInt32LE(36 + data.length, 4);
+    header.write('WAVEfmt ', 8, 'ascii');
+    header.writeUInt32LE(16, 16);
+    header.writeUInt16LE(1, 20);   // PCM
+    header.writeUInt16LE(1, 22);   // mono
+    header.writeUInt32LE(8000, 24);
+    header.writeUInt32LE(8000 * 2, 28);
+    header.writeUInt16LE(2, 32);
+    header.writeUInt16LE(16, 34);
+    header.write('data', 36, 'ascii');
+    header.writeUInt32LE(data.length, 40);
+    return Buffer.concat([header, data]);
+  }
+
+  const ffmpegGrant: ResourceGrant = { kind: 'proc', program: 'ffmpeg', display: 'ffmpeg' };
+  const tmpWorkspaceFiles = (): string[] =>
+    fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('dojo-stt-'));
+
+  it('CATEGORY CONVERTED: the transcription service spawns nothing and holds no temp workspace', () => {
+    const src = fs.readFileSync(path.join(SRC, 'services/transcription.ts'), 'utf8');
+    expect(/^import .*['"]node:child_process['"]/m.test(src), 'it must not spawn').toBe(false);
+    expect(src.includes("from '../agent/effects/transcode.js'"), 'it transcodes through the carrying layer').toBe(true);
+    // …and `child_process` still lives in exactly ONE facade module, which is
+    // what keeps the streaming spawn from becoming a second door.
+    expect(filesContaining("from 'node:child_process'", path.join(SRC, 'agent', 'effects')))
+      .toEqual(['agent/effects/proc.ts']);
+  });
+
+  it('BRANCH (B): ffmpeg is a NAMED carried program, and a declaration cannot add another', () => {
+    expect(Object.keys(CARRIED_PROGRAMS), 'the census list gained its first member').toContain('ffmpeg');
+    expect(CARRIED_PROGRAMS['ffmpeg'].length, 'carried with a reason, never a bare name').toBeGreaterThan(20);
+    // The generic census above already requires a reason per entry; this is the
+    // other half — a program NOT on the list still grants nothing.
+    const rogue = grantsForCall(
+      AGENT,
+      [{ kind: 'proc', from: 'derived:x', scope: { at: 'program', program: 'ffprobe' } } as ToolEffect],
+      {},
+    );
+    expect(rogue).toEqual([]);
+  });
+
+  it('transcribe_audio DECLARES the program it spawns, and the grant is that program alone', () => {
+    const grants = grantsForCall(AGENT, effectsFor('transcribe_audio'), { path: '/tmp/x.mp3' });
+    expect(grantsCover(grants, { op: 'proc', program: 'ffmpeg' }), 'the declared transcoder').toBe(true);
+    expect(grantsCover(grants, { op: 'proc', program: '/bin/sh' }), 'and nothing else').toBe(false);
+    expect(grantsCover(grants, { op: 'proc', program: 'ffprobe' }), 'not even its sibling').toBe(false);
+  });
+
+  it('THE CARRY ASKS: with no authorization the transcode refuses, and leaves no workspace behind', async () => {
+    const before = tmpWorkspaceFiles();
+    await expect(decodeToWav16kMono(tinyWav(), '.wav')).rejects.toBeInstanceOf(EffectNotAuthorized);
+    await expect(extractAudioFromVideo(tinyWav(), '.mp4')).rejects.toBeInstanceOf(EffectNotAuthorized);
+    expect(tmpWorkspaceFiles(), 'the cleanup runs on the refusal path too').toEqual(before);
+  });
+
+  it('THE TEMP FILES ARE NEVER GRANTS: the program grant alone carries the whole workspace', async () => {
+    // If the temp pair were routed through the facade this would refuse: the
+    // call declares a program and nothing else, and no declaration in this
+    // platform can name `os.tmpdir()`. It succeeds, end to end, on the real
+    // transcoder — which is what makes the carry a carry rather than a rename.
+    const before = tmpWorkspaceFiles();
+    const out = await inCall([ffmpegGrant], 'transcribe_audio', () => decodeToWav16kMono(tinyWav(), '.wav'));
+    expect(out.subarray(0, 4).toString('ascii'), 'a real RIFF came back').toBe('RIFF');
+    expect(out.subarray(8, 12).toString('ascii')).toBe('WAVE');
+    expect(out.readUInt32LE(24), 'resampled to the 16 kHz the local engines want').toBe(16000);
+    expect(out.readUInt16LE(22), 'and to mono').toBe(1);
+    expect(tmpWorkspaceFiles(), 'both temp files are unlinked on the success path').toEqual(before);
+  });
+
+  it('…and the ERROR the caller sees is the one it always saw, rethrown unchanged', async () => {
+    // Relocation purity: the caller's `catch` renders these strings into the
+    // tool result the model reads, so the prose is part of the behaviour.
+    await inCall([ffmpegGrant], 'transcribe_audio', async () => {
+      await expect(decodeToWav16kMono(Buffer.from('not audio at all'), '.bin'))
+        .rejects.toThrow(/^ffmpeg exited /);
+      await expect(extractAudioFromVideo(Buffer.from('not a video at all'), '.bin'))
+        .rejects.toThrow(/^ffmpeg video demux exited /);
+    });
   });
 });
