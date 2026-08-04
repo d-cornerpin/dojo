@@ -1462,7 +1462,8 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // PHASE-4 T3: `nudgedForGoingIdleWithInProgressThisTurn` carried TWO jobs — the steer's
   // one-shot latch (now the queue entry) and "the detector ran", read by the recurring-
   // dangler hardcap on the branch that deliberately does not steer. Only the first latched.
-  let goingIdleDetectorRanThisTurn = false;
+  // PHASE-6 T6 (CUT 8): on the turn's bag — read and written inside the `postCallClassify`
+  // span, and it must survive the ITERATION. See the field.
   // PHASE-6 T4 (CUT 6): the four F10 start-ack steer locals MOVED to the turn's bag —
   // one mechanism, split across four spans, and the request flag is written from the
   // wall-clock TIMER below, which is the by-value test's own disqualifier. The cap
@@ -3596,7 +3597,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         // (the gate's own message + dispatcher already covers the case)
         // or the add-notes-stop nudge just fired (we just told them).
         if (
-          !goingIdleDetectorRanThisTurn &&
+          !turnCtx.goingIdleDetectorRanThisTurn &&
           !steerFired(state.steerQueue, 'add-notes-stop') &&
           !state.nudgedForCloseOutThisTurn
         ) {
@@ -3727,7 +3728,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
             // safely get the agent to continue or formally close the task. Build
             // to the weak-model floor: never rely on a re-prompt doing the right
             // thing.
-            goingIdleDetectorRanThisTurn = true;
+            turnCtx.goingIdleDetectorRanThisTurn = true;
             const alreadyRepliedThisTurn = !!(persistedContent && persistedContent.trim().length > 0);
             if (alreadyRepliedThisTurn) {
               logger.info('v2 going-idle-with-in_progress: agent already replied this turn, skipping re-prompt, engine reconciles the dangling task', {
@@ -3781,7 +3782,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         // schedule is never terminally completed by a missed close-out; fail
         // THIS run and keep the schedule alive.
         if (
-          goingIdleDetectorRanThisTurn &&
+          turnCtx.goingIdleDetectorRanThisTurn &&
           persistedContent && persistedContent.trim().length > 0
         ) {
           const recurringDanglers = db.prepare(`

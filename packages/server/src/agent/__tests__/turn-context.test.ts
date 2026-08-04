@@ -121,6 +121,10 @@ const THE_DRIVER_CARRIES = [
   // inside the span, so it crosses the ITERATION rather than a step — and a step-local would
   // be reset every round, so the caller hears "on it … checking … give me a sec …" in a row.
   'voiceFillerFired',
+  // Same tranche, third family: "the going-idle detector ran". Also an ITERATION crossing,
+  // and the branch that reads it is the one that deliberately does NOT steer — so a reset
+  // latch produces an EXTRA engine nudge on a turn that was already nudged.
+  'goingIdleDetectorRanThisTurn',
 ];
 
 /** The six in `turn-state.ts` that OUTLIVE the turn on purpose. */

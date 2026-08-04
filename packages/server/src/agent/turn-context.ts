@@ -429,6 +429,18 @@ export interface TurnContext {
    *  *"on it … checking … give me a sec …"*. It is heard rather than thrown, which is why
    *  it is a field and not a local the module happens to keep. */
   voiceFillerFired: boolean;
+
+  /** THE GOING-IDLE DETECTOR'S "IT RAN" LATCH. PHASE-4 T3 split
+   *  `nudgedForGoingIdleWithInProgressThisTurn`'s TWO jobs apart — the steer's one-shot
+   *  latch (now the queue entry) and this one, "the detector ran", read by the
+   *  recurring-dangler hardcap on the branch that deliberately does NOT steer.
+   *
+   *  ⚠ POPULATION 2 (PHASE-6 T6, CUT 8). Like the filler latch it crosses the ITERATION
+   *  rather than a step: all three of its sites are inside the `postCallClassify` span.
+   *  Reset each round, the reconciliation branch that reads it would see `false` on a turn
+   *  where the detector HAD run — and that branch exists to hold a nudge back, so the
+   *  silent direction is an extra engine nudge on a turn already nudged. */
+  goingIdleDetectorRanThisTurn: boolean;
 }
 
 /** The one registry. Keyed by agentId because a turn belongs to an agent and
@@ -478,6 +490,7 @@ export function openTurnContext(agentId: string): TurnContext {
     engineStartAckDeliveredThisTurn: false,
     deferredDeliveredByAck: false,
     voiceFillerFired: false,
+    goingIdleDetectorRanThisTurn: false,
   };
   openContexts.set(agentId, ctx);
   return ctx;
