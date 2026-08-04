@@ -16,8 +16,19 @@
 // rows written by the same code.
 // ════════════════════════════════════════════════════════════════════════════
 
-import fs from 'node:fs';
 import path from 'node:path';
+// PHASE-5 T8 Step 3, and this module converted LAST on purpose. Its three
+// filesystem PROBES run on the CALLER's grant — they are helpers, not tools —
+// and all three answer their own `catch` with `null` / `{ opened: false }`,
+// which is the right shape for a missing file and would be the WRONG shape for
+// a refusal: the user would simply stop getting a download link or an
+// "Open in canvas" chip, with no error anywhere. So it converted only after
+// every caller's declaration was corrected, the ten call sites were enumerated
+// and asserted covered (`agent/effects/__tests__/facade-contract.test.ts`), and
+// the behaviour itself was pinned as an oracle that passed BEFORE the
+// conversion and passes identically after it
+// (`__tests__/canvas-chip-survives.test.ts`).
+import * as effectFs from '../effects/fs.js';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
@@ -144,7 +155,7 @@ export function registerSharedFile(agentId: string, filePath: string): string | 
       '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     };
     const mimeType = mimeMap[ext] ?? 'application/octet-stream';
-    const stat = fs.statSync(filePath);
+    const stat = effectFs.statSync(filePath);
     const db = getDb();
     db.prepare(`
       INSERT OR IGNORE INTO shared_files (id, agent_id, file_path, filename, mime_type, size, created_at)
@@ -265,7 +276,7 @@ export function queueCanvasDocAttachment(agentId: string, filePath: string, down
     if (!CANVAS_VIEWABLE_EXTS.has(ext)) return;
     const fileId = downloadUrl?.match(/\/download\/([^/?#]+)/)?.[1];
     if (!fileId) return;
-    const stat = fs.statSync(filePath);
+    const stat = effectFs.statSync(filePath);
     const category = ext === '.pdf' ? 'pdf'
       : ext === '.docx' || ext === '.xlsx' || ext === '.xls' || ext === '.xlsm' ? 'office'
       : 'text';
@@ -322,7 +333,7 @@ export function syncCanvasAfterWrite(agentId: string, filePath: string, download
 // .docx via show_to_user is a useless download chip, not a preview).
 export function openFileInCanvas(agentId: string, filePath: string): { opened: boolean } {
   try {
-    if (!fs.existsSync(filePath)) return { opened: false };
+    if (!effectFs.existsSync(filePath)) return { opened: false };
     // Already showing this exact file (e.g. an in-place edit to the open doc)?
     // Just refresh it rather than re-opening, the canvas re-fetches/re-renders.
     const cur = getCurrentCanvas(agentId);

@@ -488,17 +488,14 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     const src = fs.readFileSync(path.join(SRC, 'agent/tools/cat/fs.ts'), 'utf8');
     expect(/^import .*['"]node:fs['"]/m.test(src), 'the file door must not hold node:fs').toBe(false);
     expect(src.includes('effectFs.'), 'it reaches the disk through the facade').toBe(true);
-    // The toolbox tree now has exactly ONE remaining direct holder, and it is
-    // NAMED rather than allowed by a pattern: `agent/tools/util.ts` converts
-    // LAST because its three probes run on the CALLER's grant — every tool that
-    // hands it a path must declare that path first — and because its own
-    // `catch` returns null, so a premature conversion would narrow silently
-    // (no download URL, no canvas chip) instead of refusing loudly. When it
-    // converts, this list becomes empty and the toolbox grep-zero is complete.
+    // The toolbox tree's grep-zero is now COMPLETE — `agent/tools/util.ts` was
+    // the last direct holder and converted at T8H, after every caller's
+    // declaration was corrected. The list is asserted empty in the util census
+    // below; here it stays as the file door's own half of the same fact.
     expect(
       filesContaining("from 'node:fs'", path.join(SRC, 'agent', 'tools')),
-      'agent/tools/** reaches the disk through the facade except the named last file',
-    ).toEqual(['agent/tools/util.ts']);
+      'agent/tools/** reaches the disk through the facade, with no named exception left',
+    ).toEqual([]);
   });
 
   it('MECHANIC 6: the atomic write owns its temp sibling, and the DECLARED resource is the target', async () => {
@@ -1296,6 +1293,87 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(out.readUInt32LE(24), 'resampled to the 16 kHz the local engines want').toBe(16000);
     expect(out.readUInt16LE(22), 'and to mono').toBe(1);
     expect(tmpWorkspaceFiles(), 'both temp files are unlinked on the success path').toEqual(before);
+  });
+
+  // ── THE SHARED UTIL PROBES, CONVERTED LAST ───────────────────────────────
+  //
+  // `agent/tools/util.ts` is not a tool: it is the helper every category leans
+  // on, and its three fs probes run on the CALLER's grant. All three answer
+  // their own `catch` with `null` / `{ opened: false }`, so a refusal there
+  // would be indistinguishable from "the file is not there" — the user would
+  // just stop getting a download link or an "Open in canvas" chip, silently.
+  // That is why it converted after every caller's declaration was corrected,
+  // and why the two clauses below are a CENSUS rather than a spot check: the
+  // call sites are read out of the source, and every one of their tools is
+  // asserted to declare the path it hands the helpers.
+
+  it('CATEGORY CONVERTED: the toolbox holds NO node:fs at all now', () => {
+    const src = fs.readFileSync(path.join(SRC, 'agent/tools/util.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(src), 'the shared util must not hold node:fs').toBe(false);
+    expect(src.includes('effectFs.'), 'it probes through the facade').toBe(true);
+    // The whole toolbox tree, both families, which is the per-category grep-zero
+    // the lint flip rests on for `agent/tools/**`.
+    expect(filesContaining("from 'node:fs'", path.join(SRC, 'agent', 'tools')), 'no fs').toEqual([]);
+    expect(filesContaining("from 'node:child_process'", path.join(SRC, 'agent', 'tools')), 'no proc').toEqual([]);
+  });
+
+  it('EVERY CALLER of the util probes declares the path it hands them', () => {
+    // The census: a new caller has to appear here to exist, so the next module
+    // that reaches for a download URL cannot quietly hand it a path its own
+    // declaration never named.
+    const callers = new Set([
+      ...filesContaining('registerSharedFile('), ...filesContaining('openFileInCanvas('),
+      ...filesContaining('queueCanvasDocAttachment('), ...filesContaining('syncCanvasAfterWrite('),
+    ].filter((f) => f !== 'agent/tools/util.ts'));
+    expect([...callers].sort(), 'the probe callers, enumerated from source').toEqual([
+      'agent/tools/cat/canvas.ts', 'agent/tools/cat/comms.ts', 'agent/tools/cat/fs.ts',
+      'agent/tools/cat/office.ts', 'agent/tools/index.ts',
+    ]);
+
+    const uploads = path.join(os.homedir(), '.dojo', 'uploads', AGENT);
+    const named = path.join(scratch, 'named-by-the-agent.md');
+    const stat = (p: string): { op: 'fs_stat'; path: string; real: string } =>
+      ({ op: 'fs_stat', path: p, real: p });
+
+    // (1) The tools that hand over the path the AGENT named in an argument.
+    for (const tool of ['canvas_render', 'share_file', 'file_write', 'file_append', 'file_patch']) {
+      const grants = grantsForCall(AGENT, effectsFor(tool), { path: named, content: 'x' });
+      expect(grantsCover(grants, stat(named)), `${tool} may probe the file it was given`).toBe(true);
+      expect(grantsCover(grants, stat(outOfScope)), `${tool} probes nothing else`).toBe(false);
+    }
+
+    // (2) `show_to_user` hands over EITHER the file it was given or the copy it
+    //     made in the calling agent's uploads dir — both declared, neither wider.
+    const show = grantsForCall(AGENT, effectsFor('show_to_user'), { file_paths: [named] });
+    expect(grantsCover(show, stat(named)), 'the source it was given').toBe(true);
+    expect(grantsCover(show, stat(path.join(uploads, '1700000000_shot.png'))), 'the copy it made').toBe(true);
+
+    // (3) `open_browser` hands over the screenshot it just wrote.
+    const browser = grantsForCall(AGENT, effectsFor('open_browser'), { url: 'https://example.com' });
+    const shot = path.join(os.homedir(), '.dojo', 'data', 'canvas-shots', 'abc.png');
+    expect(grantsCover(browser, stat(shot)), 'open_browser may probe its own screenshot').toBe(true);
+
+    // (4) The office tools the canvas auto-opens: the create half writes into
+    //     uploads, the edit half saves back to the path (or file_id) it was given.
+    for (const tool of ['office_create_word_document', 'office_create_spreadsheet']) {
+      const grants = grantsForCall(AGENT, effectsFor(tool), { filename: 'Report.docx' });
+      expect(grantsCover(grants, stat(path.join(uploads, 'Report.docx'))), `${tool} probes its own output`).toBe(true);
+    }
+    for (const tool of ['office_append_to_word_document', 'office_replace_in_word_document',
+      'office_insert_in_word_document', 'office_delete_block_in_word_document',
+      'office_write_spreadsheet_range', 'office_append_spreadsheet_rows',
+      'office_add_sheet', 'office_delete_sheet']) {
+      const grants = grantsForCall(AGENT, effectsFor(tool), { path: named });
+      expect(grantsCover(grants, stat(named)), `${tool} probes the document it edited`).toBe(true);
+    }
+
+    // (5) The executor's own PDF interceptor, which opens the produced PDF in
+    //     the canvas from INSIDE the dispatch — so it holds the call's capability.
+    for (const tool of ['pdf_create', 'pdf_merge', 'pdf_extract_pages', 'pdf_rotate_pages',
+      'pdf_reorder_pages', 'pdf_delete_pages', 'pdf_watermark', 'pdf_fill_form']) {
+      const grants = grantsForCall(AGENT, effectsFor(tool), { path: named, output_filename: 'out.pdf' });
+      expect(grantsCover(grants, stat(path.join(uploads, 'out.pdf'))), `${tool} probes the pdf it produced`).toBe(true);
+    }
   });
 
   it('…and the ERROR the caller sees is the one it always saw, rethrown unchanged', async () => {
