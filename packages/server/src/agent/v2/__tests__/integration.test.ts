@@ -2969,3 +2969,106 @@ describe('PHASE-6 CUT 6: the assemble span kept two guards nobody tested', () =>
     expect(callModelSpy).toHaveBeenCalledTimes(1);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════
+// PHASE-6 CUT 7 (T7, `execute`) — THE A2A RE-SEND CAP GETS THE FIRST TEST IT HAS
+// EVER HAD, GREEN ON THE UNMOVED TREE, BEFORE THE SPAN MOVES.
+//
+// How it was found, by command rather than by eye:
+//   git grep -l A2A_SEND_CAP_PER_RECIPIENT -- 'packages/server/src/*__tests__*'  → nothing
+//   git grep -l A2A_SEND_CAP_PER_RECIPIENT   (the whole kit repo)                → nothing
+//
+// WHY THIS GUARD: the plan names it as one of this tranche's three carried duties
+// ("`execute`: once-guard + brake stay at the executor choke point; A2A send cap
+// carried"), it is the only one of the three with no test anywhere, and it carries
+// its incident at its own site — "observed: 29 send_to_agent calls to one agent in
+// a single turn". Non-negotiable #2 in its strict form: the requirement is written
+// down before the code is touched.
+//
+// WHAT THE REQUIREMENT IS, in the guard's own terms: inter-agent replies are
+// ASYNCHRONOUS, so an agent that gets no instant answer re-sends the same ask
+// REWORDED — which defeats the content-signature dedup, because every rewording is
+// a new signature. The cap is per RECIPIENT per TURN, set well above any genuine
+// multi-send, and different recipients are independent.
+// ════════════════════════════════════════════════════════════════════════════════
+describe('PHASE-6 CUT 7: the execute span kept the A2A re-send cap nobody tested', () => {
+  /** The rewording defect, exactly: same tool, same recipient, a different body each
+   *  time — so the loop detector's signature dedup never sees a repeat. */
+  const sendTo = (to: string, n: number): ToolCall =>
+    ({ id: `tc-${to}-${n}`, name: 'send_to_agent', arguments: { to_agent: to, message: `ask number ${n} about the report` } } as ToolCall);
+
+  const toolResultBroadcasts = (): string[] =>
+    (getBroadcastEventsByType('chat:tool_result') as Array<{ tool?: string; result?: string }>)
+      .filter((e) => e.tool === 'send_to_agent')
+      .map((e) => String(e.result ?? ''));
+
+  const sendsExecuted = (): number =>
+    executeToolSpy.mock.calls.filter((c) => (c[1] as ToolCall)?.name === 'send_to_agent').length;
+
+  function answerAfter(calls: ToolCall[]): void {
+    let n = 0;
+    callModelSpy.mockImplementation(async () => {
+      n += 1;
+      if (n === 1) {
+        return { content: '', toolCalls: calls, inputTokens: 100, outputTokens: 5, stopReason: 'tool_use' };
+      }
+      return { content: 'sent', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
+    });
+    executeToolSpy.mockImplementation(async (_agentId: string, tc: ToolCall) => ({
+      toolCallId: tc.id, name: tc.name, content: 'queued', isError: false,
+    }));
+  }
+
+  it('the SIXTH send to one recipient is refused and never reaches the tool', async () => {
+    // The cap is 5 per recipient per turn. Six reworded sends to one agent: five run,
+    // the sixth is refused BEFORE execution — no side effect, no provider cost.
+    answerAfter([1, 2, 3, 4, 5, 6].map((n) => sendTo('alice', n)));
+
+    await runV2Turn('primary');
+
+    expect(sendsExecuted()).toBe(5);
+    const refusals = toolResultBroadcasts().filter((r) => r.includes('already sent'));
+    expect(refusals).toHaveLength(1);
+    // The refusal names the recipient and the cap, and says WHY re-sending cannot help.
+    expect(refusals[0]).toContain('"alice"');
+    expect(refusals[0]).toContain('5 messages this turn');
+    expect(refusals[0]).toContain('ASYNCHRONOUS');
+  });
+
+  it('DIFFERENT RECIPIENTS ARE INDEPENDENT — the cap is per recipient, not per turn', async () => {
+    // The clause a per-TURN cap would fail: alice is at her limit, bob has sent nothing,
+    // and bob's message must go through. Without this arm, tightening the cap into a
+    // per-turn budget would pass the clause above.
+    answerAfter([...[1, 2, 3, 4, 5].map((n) => sendTo('alice', n)), sendTo('bob', 1)]);
+
+    await runV2Turn('primary');
+
+    expect(sendsExecuted()).toBe(6);
+    expect(toolResultBroadcasts().filter((r) => r.includes('already sent'))).toHaveLength(0);
+  });
+
+  it('POSITIVE CONTROL: five sends to one recipient all go through', async () => {
+    // Without this arm the first clause passes on a tree that refuses everything.
+    answerAfter([1, 2, 3, 4, 5].map((n) => sendTo('alice', n)));
+
+    await runV2Turn('primary');
+
+    expect(sendsExecuted()).toBe(5);
+    expect(toolResultBroadcasts().filter((r) => r.includes('already sent'))).toHaveLength(0);
+  });
+
+  it('THE REFUSAL IS A RESULT, NOT A TURN-ENDER: the model gets the refusal back and answers', async () => {
+    // The cap refuses ONE call; it does not break the loop. On a turn whose
+    // counterparty is a person, the agent still owes them an answer, and the engine
+    // hands the refusal back as a tool result so the model can end its turn in text.
+    answerAfter([1, 2, 3, 4, 5, 6].map((n) => sendTo('alice', n)));
+
+    await runV2Turn('primary');
+
+    expect(callModelSpy).toHaveBeenCalledTimes(2);
+    const assistant = mockDb.current!
+      .prepare("SELECT content FROM messages WHERE role = 'assistant' ORDER BY rowid DESC LIMIT 1")
+      .get() as { content: string } | undefined;
+    expect(assistant?.content).toBe('sent');
+  });
+});
