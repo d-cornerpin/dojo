@@ -1975,6 +1975,48 @@
       "to": 90,
       "by": "PHASE-6 T9 (2026-08-04) — NEW PIN (G-SUP-2 — the answer that rode with a tool call)",
       "why": "NOT A RAISE — a new file at 90, under `maxNewFileLines` (400). Pinned for T1 and CUT 1 stated reason: a phase that moves 8,800 lines into nine unwatched files has not shrunk anything."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2786,
+      "to": 2816,
+      "by": "PHASE-6 T0C-W (2026-08-04) — the census wire-throughs + `overdue`, owner-decided",
+      "why": "the five new DECLARED properties and their descriptions — `local_time`+`local_timezone` on `work_open`, those two plus `revert_to_original` on `work_update`. This is the owner-decided capability itself; there is no version of declaring a parameter that adds no lines to the file that declares parameters."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/tracker.ts",
+      "from": 848,
+      "to": 875,
+      "by": "PHASE-6 T0C-W (2026-08-04) — the census wire-throughs + `overdue`, owner-decided",
+      "why": "the three door forwards (`work_open:task`, `work_open:reminder`, `work_update:edit`) and the `filter:\"overdue\"` route. ALTERNATIVE MEASURED AND REFUSED: moving the forward lists into their own module would land the ratchet elsewhere and re-create the two-lists defect T0A closed — a forward list that lives away from the door it serves is exactly how `anchor_time` was advertised and dropped."
+    },
+    {
+      "path": "packages/server/src/work/tracker-view.ts",
+      "from": 509,
+      "to": 533,
+      "by": "PHASE-6 T0C-W (2026-08-04) — the census wire-throughs + `overdue`, owner-decided",
+      "why": "`dueScope()` — the single declaration of what \"overdue\" means, with the two live meanings it reconciles recorded at the declaration. ALTERNATIVE MEASURED AND REFUSED: the reason could live only in the report, but a predicate whose justification is not at its site is the class of thing the next reader re-derives wrongly; the comment was cut from 30 lines to 17 instead."
+    },
+    {
+      "path": "packages/server/src/tracker/tools.ts",
+      "from": 4438,
+      "to": 4455,
+      "by": "PHASE-6 T0C-W (2026-08-04) — the census wire-throughs + `overdue`, owner-decided",
+      "why": "the `overdue` render branch (which NAMES the filter, so an empty answer cannot read as an ignored filter) plus the three model-facing texts T0C had to strike and this task made true again."
+    },
+    {
+      "path": "packages/server/src/tracker/schema.ts",
+      "from": 1056,
+      "to": 1064,
+      "by": "PHASE-6 T0C-W (2026-08-04) — the census wire-throughs + `overdue`, owner-decided",
+      "why": "`listTasks`'s `overdue` option, answering from `dueScope()` rather than from a second copy of the predicate."
+    },
+    {
+      "path": "packages/server/src/scheduler/runner.ts",
+      "from": 1701,
+      "to": 1702,
+      "by": "PHASE-6 T0C-W (2026-08-04) — the census wire-throughs + `overdue`, owner-decided",
+      "why": "net +1: the due query's four-line WHERE became one `dueScope('w')` call, and three comment lines record that the scheduler and the list filter now answer from one declaration."
     }
   ],
   "maxNewFileLines": 400,
@@ -2026,8 +2068,8 @@
     "packages/server/src/agent/tools/cat/healer.ts": 288,
     "packages/server/src/agent/tools/cat/media.ts": 896,
     "packages/server/src/agent/tools/cat/session.ts": 241,
-    "packages/server/src/agent/tools/cat/tracker.ts": 848,
-    "packages/server/src/agent/tools/definitions.ts": 2786,
+    "packages/server/src/agent/tools/cat/tracker.ts": 875,
+    "packages/server/src/agent/tools/definitions.ts": 2816,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/index.ts": 676,
@@ -2097,7 +2139,7 @@
     "packages/server/src/prompt/registry/entries.ts": 524,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 300,
-    "packages/server/src/scheduler/runner.ts": 1701,
+    "packages/server/src/scheduler/runner.ts": 1702,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/gmail-watcher.ts": 592,
     "packages/server/src/services/image-generation.ts": 483,
@@ -2115,8 +2157,8 @@
     "packages/server/src/tools/unified-read.ts": 761,
     "packages/server/src/tools/work-verbs.ts": 373,
     "packages/server/src/tracker/pm-agent.ts": 2086,
-    "packages/server/src/tracker/schema.ts": 1056,
-    "packages/server/src/tracker/tools.ts": 4438,
+    "packages/server/src/tracker/schema.ts": 1064,
+    "packages/server/src/tracker/tools.ts": 4455,
     "packages/server/src/twilio/call-session.ts": 884,
     "packages/server/src/twilio/sms-inbound.ts": 406,
     "packages/server/src/vault/archive.ts": 304,
@@ -2133,7 +2175,7 @@
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/store.ts": 1741,
     "packages/server/src/work/tracker-store.ts": 530,
-    "packages/server/src/work/tracker-view.ts": 509,
+    "packages/server/src/work/tracker-view.ts": 533,
     "packages/server/src/work/work-reaper.ts": 523,
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
