@@ -1870,6 +1870,41 @@
       "to": 70,
       "by": "PHASE-6 T9b (2026-08-04) — NEW PIN (C15 + F9)",
       "why": "NOT A RAISE — a new file at 70. The every-exit-path conv_key tagging (C15) and the assembled-sibling claim with its abort-safety guard (F9). Split on a seam the block already had."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9362,
+      "to": 8783,
+      "by": "PHASE-6 T3 (2026-08-04) — A LOWERING, the third tranche of the decomposition (CUT 3)",
+      "why": "The per-tranche Step 3 tightening, paid at the tranche that earned it. The pre-call gates (`:2568`-`:3164` at `c1ad4d5`, 597 lines) left this file for `agent/v2/steps/pre-call-gates/`. The MEASURED cut is 579 (9362 -> 8783), not the 597 that moved, and the difference is stated rather than smoothed: the call site and its import cost 12 back, the context closure and its note cost 17, and SIX imports the span was the only reader of went out WITH the code (`OWNER_ALERT_HEADS_UP_PREFIX`, `backgroundDrains`, `compactionGate`, `setTrackerStatus`/`upholdClaim`, and the whole `memory/compaction.js` line) along with the five constants the ladder and the budget own. A relocation pays for its own seam. TWO ALTERNATIVES MEASURED AND REFUSED — the same two CUT 1 and CUT 2 refused, and the measurement was RE-RUN rather than carried: (a) `check-ratchets.mjs --tighten`, which was run and reverted, and which would ALSO have swept the identical FIVE unrelated files' pre-existing slack (`techniques/share-import.ts` -101, `services/transcription.ts` -84, `techniques/store.ts` -75, `agent/tools/cat/fs.ts` -2, `work/store.ts` -2 = 264 lines, still claimable and still someone else's to claim); (b) leaving the pin at 9362 for the six remaining tranches' headroom, which is the decrease-only rule inverted."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/index.ts",
+      "from": null,
+      "to": 162,
+      "by": "PHASE-6 T3 (2026-08-04) — NEW PIN (the first step's entry point)",
+      "why": "NOT A RAISE — a new file at 162, under `maxNewFileLines` (400) and under the growth gate's 240 crossing line. Pinned for T1's and CUT 1's stated reason: a phase that moves 8,800 lines into nine unwatched files has not shrunk anything. It carries the stop/preempt checks, the ORDER the three sub-modules run in, and the twelve measured inputs — including the written record of why three mutable driver locals ride by value rather than migrating to the turn's bag."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts",
+      "from": null,
+      "to": 392,
+      "by": "PHASE-6 T3 (2026-08-04) — NEW PIN (the thrash ladder)",
+      "why": "NOT A RAISE — a new file at 392, under the 400 cap. It is the LARGEST single seam this span had and it is not divisible without cutting through the ladder itself: the drift computation, the soft nudge, the terminal auto-block and the per-signature gate all read the same three thresholds and the same steer latch. Splitting the block from the gate would put THRASH_GATE_BREAKER_LIMIT in one file and its only other reader in another. It is 8 lines under the cap, which is deliberate rather than lucky: the ladder's three numbers came with it and its OR2 notes came with it, and both are the reason this file may not simply be trimmed to look comfortable. It is ALSO seeded into `deploy/checks/growth-baseline.json` in the same commit, because it is the first step file to cross the growth gate's 240-line visibility line and the detector cannot watch a file it has never met (GUARD-AUDIT F7)."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts",
+      "from": null,
+      "to": 197,
+      "by": "PHASE-6 T3 (2026-08-04) — NEW PIN (the compaction gate + the gap drain)",
+      "why": "NOT A RAISE — a new file at 197. The pre-call compaction gate's four decisions (<90 noop / 90-96 warn / 96-99 emergency / >=99 block, all copied verbatim) and the routine gap-based drain that must stay fire-and-forget (v2.5.14: it was once awaited through a summarizer whose only bound was an SDK default). Split on a seam the block already had."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts",
+      "from": null,
+      "to": 152,
+      "by": "PHASE-6 T3 (2026-08-04) — NEW PIN (the turn-time budget and its recap)",
+      "why": "NOT A RAISE — a new file at 152. The 15-minute checkpoint, the 3-crossing ladder, and the mid-turn compaction recap that answers the 2026-07-23 seven-apologies incident. Its requirement landed as six clauses in `agent/v2/__tests__/integration.test.ts` BEFORE this file existed, green on the unmoved tree — the branch had no test anywhere in the suite."
     }
   ],
   "maxNewFileLines": 400,
@@ -1934,7 +1969,7 @@
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 482,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9362,
+    "packages/server/src/agent/v2/loop.ts": 8783,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 433,
     "packages/server/src/agent/v2/recovery.ts": 605,
@@ -1943,6 +1978,10 @@
     "packages/server/src/agent/v2/steps/teardown/attachment-flush.ts": 80,
     "packages/server/src/agent/v2/steps/teardown/conversation-tagging.ts": 70,
     "packages/server/src/agent/v2/steps/teardown/finalize-record.ts": 228,
+    "packages/server/src/agent/v2/steps/pre-call-gates/context-gates.ts": 197,
+    "packages/server/src/agent/v2/steps/pre-call-gates/index.ts": 162,
+    "packages/server/src/agent/v2/steps/pre-call-gates/thrash-gate.ts": 392,
+    "packages/server/src/agent/v2/steps/pre-call-gates/turn-budget.ts": 152,
     "packages/server/src/agent/v2/steps/teardown/index.ts": 219,
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
