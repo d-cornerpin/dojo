@@ -2,60 +2,60 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
-          "path": "packages/server/src/agent/tools/definitions.ts",
-          "from": 2749,
-          "to": 2757,
-          "by": "PHASE-5 T12 (2026-08-03) — file_append declares the separator peek it has always performed",
-          "why": "PHASE-5 T12, RULING P5-R14 — the declaration-correction class T8D established on `image_create`. +8 lines, ALL of them the reason comment; the `effects[]` line itself is unchanged in count (one entry becomes two on the same physical line). THE DEFECT IT FIXES: the exit battery `bmse5ef28xy` scenario `edit-existing-doc` recorded `Effect refused: file_append is not authorized for fs_read <path>` — at `ensure_newline`'s DEFAULT against a non-empty file `executeFileAppend` opens the same path for READING to inspect the trailing byte, and the declaration named only the write. A declaration can be honest and still be short by one, and the facade is what found it. It adds NO refusal: gate rows are declared in `tools/gates.ts` and are never derived from `effects[]` (RULING P5-R5), and the read names the SAME file as the write, so nothing widens — held by the clause that refuses a neighbour in both directions. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Drop the reason comment and keep the corrected declaration (+0): REFUSED for the reason every T8 category recorded on this same file — \"we looked and this is what it does\" and \"nobody looked\" must never read the same, and the next reader has to know the correction adds no refusal or it will be re-litigated. The first draft of this comment was TEN lines and was tightened to eight against its sibling `image_create`'s, which is the same correction in the same file; that is the saving taken instead. (b) Reformat the two effects onto separate physical lines like the multi-entry declarations elsewhere in this file (+2): REFUSED — `file_patch`, the tool with the identical two-direction shape on the identical `args.path`, uses the one-line form, and a second spelling of one shape is how a reader stops seeing them as one class. (c) Close the red by widening the grant, excluding the file, or changing the scenario (+0): REFUSED IN ADVANCE by the orchestrator's ruling and by this phase's posture — none of the three states what the code does, and a capability that only works because a grant was widened is the lost capability still lost. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2757."
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2749,
+      "to": 2757,
+      "by": "PHASE-5 T12 (2026-08-03) — file_append declares the separator peek it has always performed",
+      "why": "PHASE-5 T12, RULING P5-R14 — the declaration-correction class T8D established on `image_create`. +8 lines, ALL of them the reason comment; the `effects[]` line itself is unchanged in count (one entry becomes two on the same physical line). THE DEFECT IT FIXES: the exit battery `bmse5ef28xy` scenario `edit-existing-doc` recorded `Effect refused: file_append is not authorized for fs_read <path>` — at `ensure_newline`'s DEFAULT against a non-empty file `executeFileAppend` opens the same path for READING to inspect the trailing byte, and the declaration named only the write. A declaration can be honest and still be short by one, and the facade is what found it. It adds NO refusal: gate rows are declared in `tools/gates.ts` and are never derived from `effects[]` (RULING P5-R5), and the read names the SAME file as the write, so nothing widens — held by the clause that refuses a neighbour in both directions. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Drop the reason comment and keep the corrected declaration (+0): REFUSED for the reason every T8 category recorded on this same file — \"we looked and this is what it does\" and \"nobody looked\" must never read the same, and the next reader has to know the correction adds no refusal or it will be re-litigated. The first draft of this comment was TEN lines and was tightened to eight against its sibling `image_create`'s, which is the same correction in the same file; that is the saving taken instead. (b) Reformat the two effects onto separate physical lines like the multi-entry declarations elsewhere in this file (+2): REFUSED — `file_patch`, the tool with the identical two-direction shape on the identical `args.path`, uses the one-line form, and a second spelling of one shape is how a reader stops seeing them as one class. (c) Close the red by widening the grant, excluding the file, or changing the scenario (+0): REFUSED IN ADVANCE by the orchestrator's ruling and by this phase's posture — none of the three states what the code does, and a capability that only works because a grant was widened is the lost capability still lost. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2757."
     },
     {
-          "path": "packages/server/src/index.ts",
-          "from": 1172,
-          "to": 1178,
-          "by": "PHASE-5 T10 (2026-08-03) — owner decision D1, the sign-in tokens are encrypted where they are",
-          "why": "+6, and it is one boot step: the pass that seals any Workspace OAuth token still stored in the clear, registered immediately after the legacy-config seed it mirrors so a row the seed has just created is sealed in the same boot. It is a boot step because it CANNOT be a numbered migration — the chain is `.sql`, SQLite has no AES, and the master key is reachable only from TypeScript; the platform already carries this shape twice (the account seed itself, and T6C's secrets-file mode repair). The call site is four lines of comment and two of code: a dynamic import and an awaited call, with NO try/catch, because the conversion owns its own non-fatality (`credentials/seal-existing.ts` never throws — a box whose master key cannot be read must still boot and still serve mail). The gate already earned its keep on this task: the first draft was a near-identical conversion loop copied into `google/accounts.ts` AND `microsoft/accounts.ts`, this ratchet refused the growth, and the duplicate was replaced by one owner with two thin table specs — which is the disease this project exists to remove, caught before it landed. From here this file may only shrink."
+      "path": "packages/server/src/index.ts",
+      "from": 1172,
+      "to": 1178,
+      "by": "PHASE-5 T10 (2026-08-03) — owner decision D1, the sign-in tokens are encrypted where they are",
+      "why": "+6, and it is one boot step: the pass that seals any Workspace OAuth token still stored in the clear, registered immediately after the legacy-config seed it mirrors so a row the seed has just created is sealed in the same boot. It is a boot step because it CANNOT be a numbered migration — the chain is `.sql`, SQLite has no AES, and the master key is reachable only from TypeScript; the platform already carries this shape twice (the account seed itself, and T6C's secrets-file mode repair). The call site is four lines of comment and two of code: a dynamic import and an awaited call, with NO try/catch, because the conversion owns its own non-fatality (`credentials/seal-existing.ts` never throws — a box whose master key cannot be read must still boot and still serve mail). The gate already earned its keep on this task: the first draft was a near-identical conversion loop copied into `google/accounts.ts` AND `microsoft/accounts.ts`, this ratchet refused the growth, and the duplicate was replaced by one owner with two thin table specs — which is the disease this project exists to remove, caught before it landed. From here this file may only shrink."
     },
     {
-          "path": "packages/server/src/work/ask-title.ts",
-          "from": 269,
-          "to": 297,
-          "by": "PHASE-6 T0B (2026-08-04) — the owner's flip: the ticket files ID-FIRST and the model's title replaces it",
-          "why": "+28, measured as +18 comment/blank and +10 code (`git diff -U0` on the file, added lines classified by whether the trimmed line starts with a comment marker). THE ARM THIS CHANGE DELETED IS BIGGER THAN THE ONE IT ADDED — `ASK_TITLE_TIMEOUT_MS`, the `Promise.race`, its timer and `finally`, the duplicated late-rejection catch that existed only because of the race, and `resolveInboundAskTitle` are all gone; the file still grows because two mechanisms replaced one. The 10 code lines are `retitleIfStillUnnamed` (the guarded write: read and patch in ONE unit, writing only over the identifier the ticket was filed with, so a rename that landed while the model was thinking WINS) and `replaceAskTitleFromModel` (the fire-and-forget job the door and the one outer-transaction producer both start). THREE ALTERNATIVES WERE MEASURED AND REFUSED. (1) Move `retitleIfStillUnnamed` into `work/tracker-store.ts` beside `patchWork`: relocates ~14 lines into another pinned file and splits one job across two modules — pure relocation is exactly what retired the deletion-ratio gate (roadmap #7), and `one owner per job` says the ask-title machinery stays in the module named for it. (2) Cut the header's nine measured samples: those numbers ARE the record of the cost this commit removed (2296-5198 ms, median 3622, driven through the live seam), and the work order requires that record be kept — deleting the measurement to hit a line count is the exact failure the no-quota rule exists to prevent. (3) Cut the `NOTHING HERE IS UNBOUNDED BY THE DELETION` paragraph: it is the POSITIVE evidence that removing the bound did not create an unbounded call (the Ollama path's 300 s fetch timeout and the stream watchdog's 90 s/60 s abort, both independent of any caller signal) — non-negotiable #15 refuses a deletion that rests on an absence, and that paragraph is what keeps this one from doing so. From here this file may only shrink."
+      "path": "packages/server/src/work/ask-title.ts",
+      "from": 269,
+      "to": 297,
+      "by": "PHASE-6 T0B (2026-08-04) — the owner's flip: the ticket files ID-FIRST and the model's title replaces it",
+      "why": "+28, measured as +18 comment/blank and +10 code (`git diff -U0` on the file, added lines classified by whether the trimmed line starts with a comment marker). THE ARM THIS CHANGE DELETED IS BIGGER THAN THE ONE IT ADDED — `ASK_TITLE_TIMEOUT_MS`, the `Promise.race`, its timer and `finally`, the duplicated late-rejection catch that existed only because of the race, and `resolveInboundAskTitle` are all gone; the file still grows because two mechanisms replaced one. The 10 code lines are `retitleIfStillUnnamed` (the guarded write: read and patch in ONE unit, writing only over the identifier the ticket was filed with, so a rename that landed while the model was thinking WINS) and `replaceAskTitleFromModel` (the fire-and-forget job the door and the one outer-transaction producer both start). THREE ALTERNATIVES WERE MEASURED AND REFUSED. (1) Move `retitleIfStillUnnamed` into `work/tracker-store.ts` beside `patchWork`: relocates ~14 lines into another pinned file and splits one job across two modules — pure relocation is exactly what retired the deletion-ratio gate (roadmap #7), and `one owner per job` says the ask-title machinery stays in the module named for it. (2) Cut the header's nine measured samples: those numbers ARE the record of the cost this commit removed (2296-5198 ms, median 3622, driven through the live seam), and the work order requires that record be kept — deleting the measurement to hit a line count is the exact failure the no-quota rule exists to prevent. (3) Cut the `NOTHING HERE IS UNBOUNDED BY THE DELETION` paragraph: it is the POSITIVE evidence that removing the bound did not create an unbounded call (the Ollama path's 300 s fetch timeout and the stream watchdog's 90 s/60 s abort, both independent of any caller signal) — non-negotiable #15 refuses a deletion that rests on an absence, and that paragraph is what keeps this one from doing so. From here this file may only shrink."
     },
     {
-          "path": "packages/server/src/work/ask-title.ts",
-          "from": 246,
-          "to": 269,
-          "by": "PHASE-5 T9 (2026-08-03) — the bounded wait's number is measured, not inherited",
-          "why": "+23, and every line of it is the measurement that corrected an inherited number plus the failure mode that correction exposed. The timeout started at the voice opener's 1500 ms and DRIVING it on the box showed that value never fires: nine samples through the live seam ran 2296-5198 ms, median 3622. The header now carries those nine numbers, the command that produced them, and why 5000 ms (the platform's other existing system-model bound) is where it landed — because a threshold with no measurement beside it is a rumour, and this file is where the next reader will look for it. The remaining lines are a log line for a failure mode observed on the box: a system model answering with nothing at all fell back correctly and SILENTLY, and a mechanism whose failure mode is silence rots without anyone finding out. From here this file may only shrink."
+      "path": "packages/server/src/work/ask-title.ts",
+      "from": 246,
+      "to": 269,
+      "by": "PHASE-5 T9 (2026-08-03) — the bounded wait's number is measured, not inherited",
+      "why": "+23, and every line of it is the measurement that corrected an inherited number plus the failure mode that correction exposed. The timeout started at the voice opener's 1500 ms and DRIVING it on the box showed that value never fires: nine samples through the live seam ran 2296-5198 ms, median 3622. The header now carries those nine numbers, the command that produced them, and why 5000 ms (the platform's other existing system-model bound) is where it landed — because a threshold with no measurement beside it is a rumour, and this file is where the next reader will look for it. The remaining lines are a log line for a failure mode observed on the box: a system model answering with nothing at all fell back correctly and SILENTLY, and a mechanism whose failure mode is silence rots without anyone finding out. From here this file may only shrink."
     },
     {
-          "path": "packages/server/src/gateway/routes/chat.ts",
-          "from": 484,
-          "to": 485,
-          "by": "PHASE-5 T9 (2026-08-03) — decision D4, the tracker title is written by the system model",
-          "why": "+1, and it is one import line. This route is the dashboard's inbound producer and now reaches the writer through the ingest door (`work/ask-title.ts`), while still importing `insertMessageIfAbsent` from the writer for its two session-divider rows, which are not a person's message and open no ticket. Two modules is two import statements; there is no line to trade for it and collapsing the divider writes into the door would send rows through a model call they must never make. From here this file may only shrink."
+      "path": "packages/server/src/gateway/routes/chat.ts",
+      "from": 484,
+      "to": 485,
+      "by": "PHASE-5 T9 (2026-08-03) — decision D4, the tracker title is written by the system model",
+      "why": "+1, and it is one import line. This route is the dashboard's inbound producer and now reaches the writer through the ingest door (`work/ask-title.ts`), while still importing `insertMessageIfAbsent` from the writer for its two session-divider rows, which are not a person's message and open no ticket. Two modules is two import statements; there is no line to trade for it and collapsing the divider writes into the door would send rows through a model call they must never make. From here this file may only shrink."
     },
     {
-          "path": "packages/server/src/services/imessage-bridge.ts",
-          "from": 2312,
-          "to": 2314,
-          "by": "PHASE-6 T0B (2026-08-04) — the owner's flip: this producer starts the replacement post-commit instead of resolving a title above its write",
-          "why": "+2, and the +2 IS the reason text. T9's lift is unwound here: the `await resolveInboundAskTitle(...)` above the transaction and the `...(askTitle === null ? {} : { askTitle })` spread inside it are both DELETED, and one `void replaceAskTitleFromModel(inboundRow, msgId)` is added in the post-commit block the file already had. Net +2 after a 6-line comment stating why this ONE producer starts the job itself rather than through the shared door — it owns an outer `db.transaction` because the poll cursor advances with the row. THE ALTERNATIVE MEASURED AND REFUSED: dropping that comment saves 6 and clears the ceiling, but it is the only thing standing between a later reader and the conclusion that this site BYPASSES the ingest door — which is precisely the rot the producer-conformance walk exists to catch, and the walk names this file by hand. Two lines is the honest price of not making that walk's reason invisible. From here this file may only shrink."
+      "path": "packages/server/src/services/imessage-bridge.ts",
+      "from": 2312,
+      "to": 2314,
+      "by": "PHASE-6 T0B (2026-08-04) — the owner's flip: this producer starts the replacement post-commit instead of resolving a title above its write",
+      "why": "+2, and the +2 IS the reason text. T9's lift is unwound here: the `await resolveInboundAskTitle(...)` above the transaction and the `...(askTitle === null ? {} : { askTitle })` spread inside it are both DELETED, and one `void replaceAskTitleFromModel(inboundRow, msgId)` is added in the post-commit block the file already had. Net +2 after a 6-line comment stating why this ONE producer starts the job itself rather than through the shared door — it owns an outer `db.transaction` because the poll cursor advances with the row. THE ALTERNATIVE MEASURED AND REFUSED: dropping that comment saves 6 and clears the ceiling, but it is the only thing standing between a later reader and the conclusion that this site BYPASSES the ingest door — which is precisely the rot the producer-conformance walk exists to catch, and the walk names this file by hand. Two lines is the honest price of not making that walk's reason invisible. From here this file may only shrink."
     },
     {
-          "path": "packages/server/src/services/imessage-bridge.ts",
-          "from": 2300,
-          "to": 2312,
-          "by": "PHASE-5 T9 (2026-08-03) — decision D4, the tracker title is written by the system model",
-          "why": "+12. This is the ONE inbound producer that owns an outer `db.transaction` of its own — the poll cursor advances with the row, so there is no crash window in which the cursor is past a row that was never persisted. The title must be resolved BEFORE that transaction opens (the model call may never be held inside a write), so the message literal is lifted into a `NewMessage`-typed local above it and the resolver is called there, exactly as `resolveOrCreateConversation` already is on the line above. That lift is the whole cost: the literal gains its `const` and closing lines, plus the requirement stated where a later reader will need it. `conversationId` stays spelled inside the write statement itself so the serve-boundary conformance walk still reads atomic identity stamping at this site. Routing it through the shared door instead would have meant the door opening a transaction the bridge already owns. From here this file may only shrink."
+      "path": "packages/server/src/services/imessage-bridge.ts",
+      "from": 2300,
+      "to": 2312,
+      "by": "PHASE-5 T9 (2026-08-03) — decision D4, the tracker title is written by the system model",
+      "why": "+12. This is the ONE inbound producer that owns an outer `db.transaction` of its own — the poll cursor advances with the row, so there is no crash window in which the cursor is past a row that was never persisted. The title must be resolved BEFORE that transaction opens (the model call may never be held inside a write), so the message literal is lifted into a `NewMessage`-typed local above it and the resolver is called there, exactly as `resolveOrCreateConversation` already is on the line above. That lift is the whole cost: the literal gains its `const` and closing lines, plus the requirement stated where a later reader will need it. `conversationId` stays spelled inside the write statement itself so the serve-boundary conformance walk still reads atomic identity stamping at this site. Routing it through the shared door instead would have meant the door opening a transaction the bridge already owns. From here this file may only shrink."
     },
     {
-          "path": "packages/server/src/memory/message-store.ts",
-          "from": 981,
-          "to": 1012,
-          "by": "PHASE-5 T9 (2026-08-03) — decision D4, the tracker title is written by the system model",
-          "why": "+31, and the mechanism it replaces was DELETED in the same change: `title: content.slice(0, 120)` is gone from `persistAndMaybeOpenAsk`. COMPRESSION WAS TAKEN WHERE IT EXISTED, and it is why this is +31 and not +80: the ingest door (`insertInboundMessageIfAbsent`, `resolveInboundAskTitle`) and the whole model lane live in the NEW file `packages/server/src/work/ask-title.ts` (246 lines, under maxNewFileLines and therefore unpinned), not here. That placement is a graph fact rather than a tidiness preference — this module is the single SYNCHRONOUS writer for `messages`, and giving it an import of the model layer would point the write side at the router; the dependency runs one way, the door reaches for the writer. WHAT REMAINS HERE IS THE PART THAT CANNOT LIVE ANYWHERE ELSE: the `askTitle` field on `NewMessage` with its refusal (never derived from content), `wouldOpenAsk` — the ONE ask gate, exported so the door can ask it before opening a transaction rather than a second predicate being written — and the replaced `title:` line carrying the requirement, the refusal (the fallback is never the slice) and why the ticket's own identifier is available before the transaction. The alternative that would have held this ceiling is leaving the owner's typed words being copied into `work.title`, which is the task. From here this file may only shrink."
+      "path": "packages/server/src/memory/message-store.ts",
+      "from": 981,
+      "to": 1012,
+      "by": "PHASE-5 T9 (2026-08-03) — decision D4, the tracker title is written by the system model",
+      "why": "+31, and the mechanism it replaces was DELETED in the same change: `title: content.slice(0, 120)` is gone from `persistAndMaybeOpenAsk`. COMPRESSION WAS TAKEN WHERE IT EXISTED, and it is why this is +31 and not +80: the ingest door (`insertInboundMessageIfAbsent`, `resolveInboundAskTitle`) and the whole model lane live in the NEW file `packages/server/src/work/ask-title.ts` (246 lines, under maxNewFileLines and therefore unpinned), not here. That placement is a graph fact rather than a tidiness preference — this module is the single SYNCHRONOUS writer for `messages`, and giving it an import of the model layer would point the write side at the router; the dependency runs one way, the door reaches for the writer. WHAT REMAINS HERE IS THE PART THAT CANNOT LIVE ANYWHERE ELSE: the `askTitle` field on `NewMessage` with its refusal (never derived from content), `wouldOpenAsk` — the ONE ask gate, exported so the door can ask it before opening a transaction rather than a second predicate being written — and the replaced `title:` line carrying the requirement, the refusal (the fallback is never the slice) and why the ticket's own identifier is available before the transaction. The alternative that would have held this ceiling is leaving the owner's typed words being copied into `work.title`, which is the task. From here this file may only shrink."
     },
     {
       "path": "packages/server/src/tools/unified-read.ts",
@@ -1709,6 +1709,41 @@
       "to": 370,
       "by": "PHASE-5 T8 Step 3 the shared util probes (2026-08-03, T8H) — the LAST agent-named toolbox file converts",
       "why": "PHASE-5 T8 Step 3. +11 lines, ALL of them the import comment, and the three probes converted at zero line cost (`fs.statSync` -> `effectFs.statSync` twice, `fs.existsSync` -> `effectFs.existsSync` once). THE COMMENT IS THE POINT AND IS WHY IT IS NOT DELETED: this module is NOT a tool, its probes run on the CALLER's grant, and all three answer their own `catch` with null / { opened: false } — so a refusal here is indistinguishable from a missing file and the user simply stops getting a download link or an Open-in-canvas chip with no error anywhere. A reader who does not know that will convert the next such helper without an oracle. The comment names both artifacts that hold it: the before/after behaviour oracle and the call-site census. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Say it in the test files only (minus 11): REFUSED — the hazard is at the CALL, and the next person to add a probe here reads this file, not a test in another directory. (b) Convert without the comment and let the tests speak (minus 11): REFUSED for the same reason plus one more — the tests assert WHAT holds, not WHY the shape is dangerous, and the why is the part that stops the next silent narrowing. (c) Split the three probes into their own leaf so this file shrinks (minus about 40 here, plus about 60 there): REFUSED — the probes are used by five modules that already import this one, so a split adds an import to every caller and a module to the graph to move a number, which is the bookkeeping move P5-R12 forbids. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 370."
+    },
+    {
+      "path": "packages/server/src/work/tracker-store.ts",
+      "from": 503,
+      "to": 530,
+      "by": "PHASE-6 T0D Step 2 (2026-08-04) — the attribute door gets its G1",
+      "why": "PHASE-6 T0D. +27 lines: 15 comment / 19 code / 7 deleted. THE DEFECT IT FIXES: `patchWork` was a bare `UPDATE work SET ... WHERE id = ?` returning `number`, with the three absences the survey named — no existence check, no log, no outcome type — so a write against a task id from an earlier session did nothing and told nobody at 49 of its 51 call sites. `0` also meant BOTH \"you named no field\" and \"that row does not exist\", and `updateTask` asserted the second either way. The code half is the three-arm outcome, the empty-patch existence probe and `refuseNoSuchWork`. NO `input_schema` LINE IS TOUCHED and both reference files are byte-unmoved. THE ALTERNATIVES WERE MEASURED. (a) Move `refuseNoSuchWork` into `work/outcome.ts` (minus 4): REFUSED — it is the DOOR's own refusal, built beside the door that emits it, and moving four lines to another file to make a number smaller is the relocation roadmap non-negotiable #7 says a ratchet must not reward. (b) Drop the comment explaining why `changes === 0` needs no probing SELECT (minus 8): REFUSED — that is the fact that makes the gate free on the hot path, and the next reader who does not know it adds a SELECT to a function the scheduler calls twelve times a tick. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 530."
+    },
+    {
+      "path": "packages/server/src/tracker/schema.ts",
+      "from": 1010,
+      "to": 1056,
+      "by": "PHASE-6 T0D Step 3 (2026-08-04) — the title fallback, decided in writing at the mechanism",
+      "why": "PHASE-6 T0D. +46 lines: 42 comment / 19 code / 15 deleted. Step 3 owes a DECISION IN WRITING on the title fallback — the class's second open half, where a dead id that matches a live row's title resolves to that other row. It STANDS: it is the 2026-07-17 PM 189-call spin's fix, and the hazard MEASURES ZERO on the real body (340 tracker rows, 0 with an id-shaped title, 0 whose title equals another row's id; T0B's 37 id-titled ask rows are `kind='ask'` and outside the resolver's scope by construction). The code half is `triedTitle` on the not_found arm and the clause that renders it, plus `updateTask`'s branch reading the door's outcome instead of a number. THE ALTERNATIVES WERE MEASURED. (a) Put the decision in the task report only (minus about 28): REFUSED — this plan's own routing repair says a routed item is not routed until it is in the receiving file, and a decision that lives only in a report is how the last one got lost. The mechanism is where the next person deciding to delete it will be standing. (b) Cut the measurement and keep the incident (minus 8): REFUSED — non-negotiable #15: \"it is scoped so it is probably fine\" is the absence-as-evidence move, and the counts are what turn it into a verdict. (c) Bake the fact into the message instead of carrying `triedTitle` (minus 6): REFUSED — a message that claims a lookup happened when it did not is the same dishonesty, one layer up, that this task is closing at the doors, and the unscoped control proves it does not. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 1056."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 9774,
+      "to": 9788,
+      "by": "PHASE-6 T0D Step 2 (2026-08-04) — the turn stops carrying dead ids",
+      "why": "PHASE-6 T0D. +14 lines: 12 comment / 33 code / 31 deleted, at three sites. THE DEFECT IT FIXES: the close-out list reclassified DELETED ids as live on-deck stragglers and then refused every tool call naming them, and the served-work map was published even when its row read came back empty. THE +14 IS THE PRUNE ITSELF — two `advance` calls with their log lines — and the three inline queries it replaced moved OUT to `agent/v2/stale-work-ids.ts`, which is the direction this phase is going in. THE ALTERNATIVES WERE MEASURED. (a) Keep the long-form reasoning here (plus 14 more): REFUSED and already acted on — the first draft of this change was +28 and the comments were cut to pointers, because the module is where the mechanism lives and where a reader will look. (b) Move the state mutation into the module too (minus about 10): REFUSED — `advance` is the turn's own reducer and moving state writes out of the loop is PHASE-6 T1's `TurnContext` work; doing it here would pre-empt that task and make its collapse harder to prove byte-faithful. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 9788, and T12's tripwire still reads the driver's residual."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/tracker.ts",
+      "from": 840,
+      "to": 848,
+      "by": "PHASE-6 T0D Step 2 (2026-08-04) — `work_update:reassign` stops saying a write landed when it did not",
+      "why": "PHASE-6 T0D. +8 lines: 6 comment / 4 code / 2 deleted. THE DEFECT IT FIXES: both reassign branches discarded the door's answer and went on to tell the model \"Task X reassigned to Y\" about a row resolved and re-read moments earlier — so a row deleted in between produced a confident lie. These are the two sites in the whole sweep that get a BRANCH rather than the recorder, because a model is waiting on the answer. THE ALTERNATIVES WERE MEASURED. (a) Use `noteUnsettled` here like the other 47 sites (minus 4): REFUSED — recording a refusal in a log the model cannot read, then telling it the opposite, is the honesty defect this overhaul exists to remove. (b) Drop the comment (minus 6): REFUSED — it is the only place that says WHY these two differ from the other 47, and without it the next sweep flattens them back. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 848."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/agents.ts",
+      "from": 1284,
+      "to": 1285,
+      "by": "PHASE-6 T0D Step 2 (2026-08-04) — one import line",
+      "why": "PHASE-6 T0D. +1 line: the `noteUnsettled` import, so this file's three `patchWork` sites can consume the door's refusal. NO ALTERNATIVE EXISTS that is not worse: the recorder is one name, in one module, and re-exporting it through a file this one already imports would hide the dependency to save a line. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 1285."
     }
   ],
   "maxNewFileLines": 400,
@@ -1751,13 +1786,13 @@
     "packages/server/src/agent/provider-error.ts": 317,
     "packages/server/src/agent/runtime.ts": 1415,
     "packages/server/src/agent/spawner.ts": 1425,
-    "packages/server/src/agent/tools/cat/agents.ts": 1284,
+    "packages/server/src/agent/tools/cat/agents.ts": 1285,
     "packages/server/src/agent/tools/cat/comms.ts": 843,
     "packages/server/src/agent/tools/cat/fs.ts": 848,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
     "packages/server/src/agent/tools/cat/media.ts": 896,
     "packages/server/src/agent/tools/cat/session.ts": 241,
-    "packages/server/src/agent/tools/cat/tracker.ts": 840,
+    "packages/server/src/agent/tools/cat/tracker.ts": 848,
     "packages/server/src/agent/effects/scopes.ts": 349,
     "packages/server/src/agent/tools/definitions.ts": 2786,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
@@ -1769,7 +1804,7 @@
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 482,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 9774,
+    "packages/server/src/agent/v2/loop.ts": 9788,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 433,
     "packages/server/src/agent/v2/recovery.ts": 605,
@@ -1837,7 +1872,7 @@
     "packages/server/src/tools/unified-read.ts": 761,
     "packages/server/src/tools/work-verbs.ts": 373,
     "packages/server/src/tracker/pm-agent.ts": 2086,
-    "packages/server/src/tracker/schema.ts": 1010,
+    "packages/server/src/tracker/schema.ts": 1056,
     "packages/server/src/tracker/tools.ts": 4438,
     "packages/server/src/twilio/call-session.ts": 884,
     "packages/server/src/twilio/sms-inbound.ts": 406,
@@ -1854,7 +1889,7 @@
     "packages/server/src/work/override-requests.ts": 247,
     "packages/server/src/work/ask-title.ts": 297,
     "packages/server/src/work/store.ts": 1741,
-    "packages/server/src/work/tracker-store.ts": 503,
+    "packages/server/src/work/tracker-store.ts": 530,
     "packages/server/src/work/tracker-view.ts": 509,
     "packages/server/src/work/work-reaper.ts": 523,
     "packages/shared/src/markers.ts": 286,
