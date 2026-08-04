@@ -1576,6 +1576,13 @@
       "to": 2722,
       "by": "PHASE-5 T8 Step 3 the techniques door (2026-08-03, T8G) — two false declarations corrected",
       "why": "PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 3(1)(a). +1 line net. What changed: `technique_read` and `update_technique` now declare the technique TREE their calls resolve to, and the two RELATIVE names they used to declare as paths — `file` and `files[].path` — are ruled INERT with their reason. THE DEFECT IT FIXES is the PDF door's bare filename again: both arguments are relative names joined onto the technique row's recorded `directory_path`, so resolved as paths of their own they named files relative to the SERVER working directory that neither tool touches, while the real read and the real write went undeclared. Converted as-is, `technique_read action=\"read_file\"` and `update_technique(files:[…])` would have refused their own work. THE ALTERNATIVES WERE MEASURED. (a) Keep the old declarations alongside the new one (+0 lines, since nonEffects would not be needed): REFUSED — a false grant on a cwd-relative path is exactly the resource the tool never touches, and leaving it makes the declaration lie in the widening direction. (b) Put each nonEffects reason on several lines like this file's longest rulings (+4): REFUSED — one line per ruling is the form the other 22 nonEffects entries use. (c) Leave `technique_read`'s effects array multi-line (+2): REFUSED — every other single-effect technique tool in this file uses the one-line form, and a second spelling of one shape is how a reader stops seeing them as one class. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2722."
+    },
+    {
+      "path": "packages/server/src/agent/tools/definitions.ts",
+      "from": 2722,
+      "to": 2736,
+      "by": "PHASE-5 T8 Step 3 SURFACE SPLIT 2 (2026-08-03, T8G) — the two imported-technique setup declarations corrected",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R15 part 2 + ADDENDUM 3(1)(a). +14 lines, 11 of them COMMENT. What changed: technique_set_placeholder gains the fs_read it has always performed, technique_finalize loses an fs_write NO code path performs and gains the fs_read it does, and both resolve their technique reference through the named indirection instead of prose. THE DEFECTS THEY FIX. (a) technique_set_placeholder reads the staged IMPORT_MANIFEST.json and every file the placeholder appears in BEFORE it substitutes, and declared only the write — converted as-is, the very first read would have been refused and the tool would have reported 'not imported, no placeholders' for a technique that has them. (b) technique_finalize declared fs_write on the technique directory; its only paths read the files to confirm no placeholder remains and delete the staged manifest, and its state flip is a DATABASE update — so the entry named an effect that does not exist while the read went undeclared. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Drop the reason comments (minus 11): REFUSED — the fs_write REMOVAL is the one edit in this task that takes a declaration away, and a later reader who cannot see why will restore it; the comment is the record that it was measured rather than forgotten. (b) Keep the fs_write and give it the tree scope (minus 6): REFUSED — that mints a live write grant for a write the tool never performs, which is precisely the false-grant class this sitting corrected twice already. (c) Declare the delete on the one manifest file instead of the tree (+0): REFUSED as unexpressible rather than undesirable — no authorized mechanic names a fixed file INSIDE a resolved directory, so the tree is the tightest honest scope, and the comment records that rather than letting it look chosen. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2736."
     }
   ],
   "maxNewFileLines": 400,
@@ -1626,7 +1633,7 @@
     "packages/server/src/agent/tools/cat/session.ts": 241,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
     "packages/server/src/agent/effects/scopes.ts": 317,
-    "packages/server/src/agent/tools/definitions.ts": 2722,
+    "packages/server/src/agent/tools/definitions.ts": 2736,
     "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
     "packages/server/src/agent/tools/index.ts": 642,
