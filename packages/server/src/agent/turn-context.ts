@@ -201,6 +201,21 @@ export interface TurnContext {
    *  migrate together. */
   phoneStreamFlushedAny: boolean;
 
+  /** v2.9.23: the live phone call this turn is streaming TTS into, or `null` when the
+   *  turn did not arrive on the phone. Resolved ONCE, before the loop, from the
+   *  inbound context.
+   *
+   *  ⚠ POPULATION 2, and the THIRD local of the phone-stream mechanism — the one CUT 4
+   *  deliberately left behind with its reason written at the declaration, because it
+   *  did not cross the `finalize` boundary and migrating it there would have been this
+   *  tranche's work done inside that one. It crosses `callLLM` (the streaming callback
+   *  gates on it and the retry path clears the buffer through it) and `postCallClassify`
+   *  (the voice filler), so it migrates here, with its family. Honestly labelled: it is
+   *  written ONCE, in straight-line driver code, so a by-value copy would be correct
+   *  today; it moves under RULING P6-R3(1)'s rule, not under a measured hazard. What it
+   *  buys is that one mechanism's three locals now live in one place. */
+  phoneStreamCallSid: string | null;
+
   /** RC-10 / P5c: the owner-affinity promotion, resolved ONCE at turn start and read
    *  at the turn's reply-destination decision. `ownerAffinityDestination` is
    *  `'imessage'` only when affinity resolved AND the per-conversation cooldown
@@ -274,6 +289,7 @@ export function openTurnContext(agentId: string): TurnContext {
     startAckTimer: null,
     phoneStreamBuffer: '',
     phoneStreamFlushedAny: false,
+    phoneStreamCallSid: null,
     ownerAffinityConversationId: null,
     ownerAffinityDestination: null,
     deferredUserReplyWithTools: null,

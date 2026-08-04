@@ -72,6 +72,10 @@ const THE_DRIVER_CARRIES = [
   // under RULING P6-R3(1)'s rule rather than under a hazard, and each field says which.
   'phoneStreamBuffer',
   'phoneStreamFlushedAny',
+  // PHASE-6 T5 (CUT 5) — the `callLLM` tranche's crossings. The phone-stream family is
+  // COMPLETED here: its third local crosses this span and the next one, which is exactly
+  // what CUT 4's deferral note said would happen.
+  'phoneStreamCallSid',
   'ownerAffinityConversationId',
   'ownerAffinityDestination',
   'deferredUserReplyWithTools',
