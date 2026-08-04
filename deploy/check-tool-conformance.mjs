@@ -360,7 +360,39 @@ const tierErrors = [];
   }
 }
 
-const allErrors = [...listErrors, ...canaryErrors, ...sendErrors, ...exhaustErrors, ...contentErrors, ...tierErrors];
+// ── (g) PHASE-6 T0C: THE ADVERTISED SURFACE AGREES WITH THE DECLARED ONE ──
+// The release-time twin of `agent/tools/__tests__/effects-conformance.test.ts`'s
+// clause 9. It reads the BUILT DIST for the same reason the unit clause reads the
+// runtime objects: the 117 `user_` twins are spread-generated at module load and
+// the `account` property is injected into four families at module load, so a
+// source scan under-reports the declared surface on 234 of 438 definitions and
+// cannot see the twins at all. A census that greps is a census that lies, and it
+// lies in the direction of "no mismatch found".
+const advertErrors = [];
+{
+  const defsMod = await imp('server/dist/agent/tools/definitions.js');
+  const walkMod = await imp('server/dist/agent/tools/effect-conformance.js');
+  if (!defsMod?.getAllToolDefinitions || !walkMod?.checkAdvertisedParameters) {
+    advertErrors.push(
+      'could not load the built tool definitions or the advertised-vs-declared walk from dist — ' +
+      'this check cannot silently pass, because a census that did not run is not a census.',
+    );
+  } else {
+    const all = defsMod.getAllToolDefinitions();
+    if (!Array.isArray(all) || all.length < 400) {
+      advertErrors.push(`the runtime definition surface came back as ${Array.isArray(all) ? all.length : typeof all} — expected the full 438; the dist import is wrong.`);
+    } else {
+      const declaredByTool = new Map(
+        all.map((d) => [d.name, new Set(walkMod.walkSchemaFields(d).map((f) => f.path.split('.').pop().replace(/\[\]$/, '')))]),
+      );
+      const ctx = { toolNames: new Set(all.map((d) => d.name)), declaredByTool };
+      const problems = all.flatMap((d) => walkMod.checkAdvertisedParameters(d, ctx));
+      for (const p of problems) advertErrors.push(`${p.tool} [clause ${p.clause}] ${p.detail}`);
+    }
+  }
+}
+
+const allErrors = [...listErrors, ...canaryErrors, ...sendErrors, ...exhaustErrors, ...contentErrors, ...tierErrors, ...advertErrors];
 if (allErrors.length) {
   fail(`a tool-name list drifted from the real tool surface:\n    ` + allErrors.join('\n    '));
 }
@@ -371,6 +403,7 @@ console.log(
   `${REGISTRY.size} registry tools all accounted for (SEND_TO_PEOPLE deny / NA ledger), ` +
   `receipt tiers + user_ send-twin parity exhaustive, ` +
   `${contentHits.size} content-bearing tools all loop-signature-classified, ` +
-  `reachesPeople declarations equal SEND_TO_PEOPLE bases`,
+  `reachesPeople declarations equal SEND_TO_PEOPLE bases, ` +
+  `every parameter the descriptions advertise is one the schema declares`,
 );
 process.exit(0);
