@@ -64,7 +64,25 @@ function schemaOf(name: string): Record<string, unknown> {
 //   work_update 7,008 → 6,310 (−698: seven paraphrases replaced by routing + a pointer)
 // Net −693 wire chars on the two verbs' input_schema, on every turn, forever.
 const S2_BASELINE_CHARS = { work_open: 5623, work_update: 7008 };
-const BASELINE_CHARS = { work_open: 5628, work_update: 6310 };
+const N1_BASELINE_CHARS = { work_open: 5628, work_update: 6310 };
+
+// ── PHASE-6 T0C-W — THE PIN MOVES, AND IT MOVES UPWARD ON PURPOSE ───────────────────────
+// The owner decided to wire the census seeds through the agent door ("Yes, wire both"),
+// on the trade-off stated: `work_open` gains `local_time` + `local_timezone`, `work_update`
+// gains those two plus `revert_to_original`, and each is cached-prefix bytes on every turn
+// forever. Measured, not estimated:
+//   work_open   5,628 → 6,327  (+699)
+//   work_update 6,310 → 7,058  (+748)
+//   ── total                    +1,447 chars on the two verbs' input_schema
+// That is the whole diff. It bought three things that were ADVERTISED AND UNREACHABLE:
+// the wall-clock schedule input the tool's own success echo told the model to use, the
+// same on reminders, and the escape hatch the exact-revert refusal named. `tz` was NOT
+// declared — a second spelling of `local_timezone` would have cost more bytes for no new
+// capability, so its declaration is retired and its read kept (the ruling lives in
+// `agent/tools/__tests__/effects-conformance.test.ts`).
+// This is the change the golden re-bless of `checks/golden/cache-prefix.kevin.txt`
+// records, and the numbers here are the same ones the prefix differ counts.
+const BASELINE_CHARS = { work_open: 6327, work_update: 7058 };
 
 describe('S2 + N1 — the shared declaration, and the wording said once', () => {
   const open = schemaOf('work_open');
@@ -73,6 +91,24 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
   it('serialises to exactly the measured byte count — the tools array is cached-prefix bytes', () => {
     expect(JSON.stringify(open).length).toBe(BASELINE_CHARS.work_open);
     expect(JSON.stringify(upd).length).toBe(BASELINE_CHARS.work_update);
+  });
+
+  it('T0C-W — the wire-through cost is EXACTLY the five new properties, and it is measured', () => {
+    // The pin above says "these are the bytes". This one says WHY they moved, so a later
+    // reader cannot mistake a coaching-text creep for the owner's decided +1,447. Anything
+    // that lands here without adding a declared property is a rewording nobody approved.
+    expect(BASELINE_CHARS.work_open - N1_BASELINE_CHARS.work_open).toBe(699);
+    expect(BASELINE_CHARS.work_update - N1_BASELINE_CHARS.work_update).toBe(748);
+    const po = (open as { properties: Record<string, unknown> }).properties;
+    const pu = (upd as { properties: Record<string, unknown> }).properties;
+    expect(Object.keys(po)).toContain('local_time');
+    expect(Object.keys(po)).toContain('local_timezone');
+    expect(Object.keys(pu)).toContain('local_time');
+    expect(Object.keys(pu)).toContain('local_timezone');
+    expect(Object.keys(pu)).toContain('revert_to_original');
+    // The retirement, pinned on the wire side too: `tz` never reaches the tools array.
+    expect(Object.keys(po), 'work_open declares the retired `tz` alias').not.toContain('tz');
+    expect(Object.keys(pu), 'work_update declares the retired `tz` alias').not.toContain('tz');
   });
 
   it('preserves KEY ORDER on every shared property — stringify emits insertion order', () => {
@@ -119,8 +155,11 @@ describe('S2 + N1 — the shared declaration, and the wording said once', () => 
     // every field still reads differently on the two verbs because each verb still says
     // its own thing about it.
     expect(differing).toBe(17);
+    // N1's saving is measured against N1's OWN baseline. T0C-W later added +1,447 of new
+    // declared capability on top; keeping the two arithmetics separate is what stops a
+    // later reader reading the growth as "N1 was undone".
     expect(S2_BASELINE_CHARS.work_open + S2_BASELINE_CHARS.work_update
-      - (BASELINE_CHARS.work_open + BASELINE_CHARS.work_update)).toBe(693);
+      - (N1_BASELINE_CHARS.work_open + N1_BASELINE_CHARS.work_update)).toBe(693);
   });
 
   it('N1 — the seven collapsed fields say their meaning ONCE across the two verbs', () => {

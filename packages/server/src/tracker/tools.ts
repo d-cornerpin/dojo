@@ -171,17 +171,13 @@ function scheduleEchoLines(scheduledStartIso: string | null, nextRunIso: string 
     lines.push(`Next run (local): ${formatTimeForAgent(nextRunIso)}`);
   }
   if (scheduledStartIso || nextRunIso) {
-    // PHASE-6 T0C: this echo used to end "…or pass local_time="YYYY-MM-DDThh:mm"
-    // and let the engine do the timezone conversion" — on the SUCCESS path of
-    // every scheduled create and edit, i.e. the most-read line this file has.
-    // `local_time` is declared on no tool and forwarded by no door, so a model
-    // that obeyed got the unknown-argument warning and a silently dropped field.
-    // The conversion itself is real and reachable over HTTP; WIRING IT THROUGH to
-    // the agent door is handed up, because declaring a new parameter on
-    // `work_open`/`work_update` moves the cache-prefix reference file and that is
-    // a reviewed re-blessing (OR7). Until then this line names only what an agent
-    // can actually do.
-    lines.push('If this local time is NOT what the user asked for, re-call with the corrected time as an ISO 8601 UTC instant (call get_current_time first if you need to anchor a relative time).');
+    // PHASE-6 T0C-W: the hint is TRUE again, and this is the line that made it worth
+    // wiring. T0C had to strip the `local_time` alternative from the success echo on
+    // every scheduled create and edit — the most-read line in this file — because the
+    // field was declared on no tool and forwarded by no door, so a model that obeyed got
+    // the unknown-argument warning and a silently dropped field. Both work verbs now
+    // declare it and all three doors forward it, so the cheaper route is offered again.
+    lines.push('If this local time is NOT what the user asked for, re-call with the corrected time — either as an ISO 8601 UTC instant, or as local_time="YYYY-MM-DDThh:mm" and let the engine do the timezone conversion.');
   }
   return lines;
 }
@@ -1291,11 +1287,11 @@ export function reminderCreate(agentId: string, args: Record<string, unknown>): 
     return (
       'ASK_USER: This reminder needs a time. Ask the user when they would like to be ' +
       'reminded ("in 5 minutes", "tomorrow at 8am", "every Monday at 9am"). ' +
-      // PHASE-6 T0C: the `local_time` alternative was removed from this text —
-      // see the note on `scheduleEchoLines`. It is undeclared and unforwarded, so
-      // the branch it pointed at is unreachable from here.
+      // PHASE-6 T0C-W: the wall-clock alternative is offered again — declared on
+      // work_open and forwarded by this door since this task. See scheduleEchoLines.
       'Once they answer, call get_current_time to anchor relative times and re-call ' +
-      'work_open(kind="reminder") with `when` set to the resolved ISO 8601 datetime. ' +
+      'work_open(kind="reminder") with `when` set to the resolved ISO 8601 datetime, ' +
+      'or with local_time="YYYY-MM-DDThh:mm" if they named a plain clock time. ' +
       'Do NOT create the reminder yet.'
     );
   }
@@ -1309,8 +1305,9 @@ export function reminderCreate(agentId: string, args: Record<string, unknown>): 
       `Error: when="${when}" is not a parseable datetime, so this reminder would never fire. ` +
       `Resolve the relative time yourself: call get_current_time, add the offset ` +
       `(e.g. "in 2 minutes" = current UTC + 2 minutes), then re-call work_open(kind="reminder") with an ` +
-      // PHASE-6 T0C: "Or pass local_time=…" removed — undeclared, unforwarded.
-      `ISO 8601 UTC timestamp, e.g. when="2026-07-03T16:38:00Z".`
+      // PHASE-6 T0C-W: the alternative is reachable again — declared and forwarded.
+      `ISO 8601 UTC timestamp, e.g. when="2026-07-03T16:38:00Z". ` +
+      `Or pass local_time="YYYY-MM-DDThh:mm" and let the engine resolve the zone.`
     );
   }
 
@@ -2277,17 +2274,15 @@ export function trackerEditTask(agentId: string, args: Record<string, unknown>):
         return (
           `Error: this edit restores the description to the task's ORIGINAL text byte-for-byte, over a later edit that changed it. ` +
           `That is usually an accidental revert of intended work (a stale copy overwriting the current description). ` +
-          // PHASE-6 T0C: this line used to say "re-call with
-          // revert_to_original=true" — the refusal named an escape hatch the
-          // agent-facing door seals, because `revert_to_original` is declared on
-          // no tool. A model that obeyed got the unknown-argument warning, the
-          // flag dropped, and the identical refusal again. The flag is read at
-          // `:2263`/`:2349` and remains reachable over HTTP; DECLARING it on
-          // `work_update` is handed up (it moves the cache-prefix reference file
-          // — a reviewed re-blessing, OR7). This text now names only the route an
-          // agent can actually take.
-          `If you really mean to roll the description back, edit from the CURRENT description and write the original wording into it yourself — ` +
-          `this tool has no revert flag.`
+          // PHASE-6 T0C-W: the escape hatch is REACHABLE and this line names it again.
+          // T0C had to strike it: the refusal told the model to re-call with
+          // `revert_to_original=true` while the flag was declared on no tool, so a model
+          // that obeyed got the unknown-argument warning, the flag dropped, and the
+          // identical refusal back — a loop the guard itself created. `work_update` now
+          // declares it and the edit door forwards it. The GUARD IS UNCHANGED: without
+          // the flag this refusal still fires, which is the whole point of an
+          // acknowledgement rather than an option.
+          `If you really mean to roll the description back, re-call with revert_to_original=true.`
         );
       }
     }
@@ -2612,6 +2607,13 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
     const scope = args.scope as 'tasks' | 'projects' | 'all' | undefined ?? 'all';
     const filterAssignedTo = args.assignedTo as string | undefined;
     const filterStatus = args.status as string | undefined;
+    // PHASE-6 T0C-W: the tracker layer takes the DECLARED enum value rather than a new
+    // internal boolean. A private option name here (`overdue: true`) would be a
+    // handler-read parameter no tool declares — the exact class T0C's read census exists
+    // to catch — and it would have needed a ruling to excuse it. Speaking `filter` keeps
+    // one vocabulary from the wire to the query and leaves the census with nothing to
+    // forgive.
+    const overdue = args.filter === 'overdue';
     const verbose = args.verbose as boolean | undefined;
     const parts: string[] = [];
     let totalShown = 0;
@@ -2642,7 +2644,22 @@ export function trackerListActive(agentId: string, args: Record<string, unknown>
     }
 
     if (scope === 'tasks' || scope === 'all') {
-      if (filterStatus) {
+      // PHASE-6 T0C-W: `filter:"overdue"` was on `work_update`'s declared enum for months
+      // with no branch behind it — it fell through to the unfiltered list, so an agent
+      // asking for overdue work got the whole board and no sign its filter was ignored.
+      // The set is `dueScope()`'s, the same declaration the scheduler's due query answers
+      // from; the HEADING NAMES THE FILTER so an empty answer reads as "nothing is
+      // overdue" rather than as a filter that did nothing.
+      if (overdue) {
+        const late = listTasks({ overdue: true, assignedTo: filterAssignedTo });
+        if (late.length > 0) {
+          parts.push(`Overdue Tasks (${late.length}) — scheduled to run, still waiting:`);
+          for (const t of late) parts.push(taskRow(t as Parameters<typeof taskRow>[0]));
+          totalShown += late.length;
+        } else {
+          parts.push('No overdue tasks: nothing scheduled has come due without firing.');
+        }
+      } else if (filterStatus) {
         const filtered = listTasks({ status: filterStatus, assignedTo: filterAssignedTo });
         if (filtered.length > 0) {
           parts.push(`${filterStatus.replace('_', ' ')} Tasks (${filtered.length}):`);

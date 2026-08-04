@@ -16,7 +16,7 @@ import { retireEngineEventsForRun, retireEngineEventsForTask } from '../agent/v2
 import { getDb } from '../db/connection.js';
 import { withUnit } from '../db/unit.js';
 import {
-  taskScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
+  taskScope, dueScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
   validatedExpr, awaitingUserVerdictExpr, pendingCloseRequestExpr, statusToState, type TrackerStatus,
 } from '../work/tracker-view.js';
 import { staleOverrideRequests, resolveOverrideRequest } from '../work/override-requests.js';
@@ -626,11 +626,12 @@ export async function checkScheduledTasks(): Promise<void> {
   // threshold, ask the user via primary chat (and iMessage if available).
   await sweepUnvalidatedTasksForUserEscalation();
 
+  // PHASE-6 T0C-W: this WHERE was the tree's most literal statement of what "overdue"
+  // means, so it IS `dueScope()` now — the one declaration `work_update(filter:"overdue")`
+  // also answers from. Same SQL, same rows; the 1.5× escalation below stays this site's own.
   const dueTasks = db.prepare(`
     SELECT ${scheduleRowColumns('w')} FROM work w
-    WHERE ${taskScope('w')} AND w.next_run_at <= ?
-      AND w.schedule_status = 'waiting'
-      AND w.is_paused = 0
+    WHERE ${taskScope('w')} AND ${dueScope('w')}
     ORDER BY w.next_run_at ASC
   `).all(nowMs) as Array<Record<string, unknown>>;
 

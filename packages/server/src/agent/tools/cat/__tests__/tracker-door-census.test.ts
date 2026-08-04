@@ -86,6 +86,9 @@ const SPECS: DoorSpec[] = [
       title: 'Task/Project only — a reminder is identified by `what`',
       description: 'Task/Project only',
       goal: 'Task only — a reminder has no definition of done to compare a result against',
+      // NOTE: `local_time`/`local_timezone` are NOT listed here — the reminder door
+      // forwards both (PHASE-6 T0C-W). A reason for them would be a stale reason and
+      // this suite's own anti-rot clause would fail on it.
       project_id: 'Task only — reminders do not hang off a project',
       assigned_to: 'Task only — a reminder fires for the owner, not an assignee',
       assigned_to_group: 'Task only — group assignment is a tracker-task concept',
@@ -122,6 +125,8 @@ const SPECS: DoorSpec[] = [
       repeat_end_type: 'Task only',
       repeat_end_value: 'Task only',
       anchor_time: 'Task only — a project carries no next_run_at to anchor',
+      local_time: 'Task/Reminder only — it resolves into `scheduled_start`, and a project has no schedule of its own',
+      local_timezone: 'Task/Reminder only — the zone `local_time` is resolved in; a project passes neither',
     },
   },
   {

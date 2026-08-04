@@ -1045,6 +1045,20 @@ export const toolDefinitions: ToolDefinition[] = [
         repeat_end_type: workProp('repeat_end_type', 'When to stop repeating. For repeating work that should stop after N runs, set repeat_end_type="after_count" and repeat_end_value="N". If omitted, it repeats forever.'),
         repeat_end_value: workProp('repeat_end_value', WORK_FIELD_TEXT.repeat_end_value.canonical),
         anchor_time: workProp('anchor_time', WORK_FIELD_TEXT.anchor_time.canonical),
+        // ── PHASE-6 T0C-W — the wall-clock pair, declared (owner-decided) ──────────────
+        // Inline rather than in `WORK_SHARED_PROPERTIES` on purpose: that module holds the
+        // SEVENTEEN structurally-identical properties and its byte test exists to prove
+        // S2/N1 moved no wire bytes, so growing it blurs the measurement it was built for.
+        // These two also differ across the verbs (work_open introduces the mechanic,
+        // work_update routes it) — the same reason `what`/`when`/`filter` are inline.
+        local_time: {
+          type: 'string',
+          description: 'Task/Reminder only. The wall-clock time you MEAN, with NO timezone offset: "YYYY-MM-DDThh:mm" (24-hour), e.g. "2026-07-16T21:00" for 9 PM. Use this INSTEAD of scheduled_start whenever the user names a clock time — the engine converts it with the scheduler\'s own timezone rules, so doing UTC arithmetic yourself (the single most common scheduling error) is never your job. scheduled_start wins if you pass both.',
+        },
+        local_timezone: {
+          type: 'string',
+          description: 'Optional partner to local_time: the IANA zone to resolve it in, e.g. "America/Los_Angeles". Omit to use the box timezone, which is what you want unless the user named a different one.',
+        },
         allow_duplicate: {
           type: 'boolean',
           description: 'Set true to bypass the near-duplicate guard. The engine refuses creation if you already opened a similarly-titled project in the last 60 minutes (task: 5 minutes) — it catches the post-compaction "I forgot I already opened this" failure mode and runaway loops where an error causes duplicates instead of recovery. Only override when the new work is genuinely unrelated work that happens to share keywords.',
@@ -1122,7 +1136,23 @@ export const toolDefinitions: ToolDefinition[] = [
         repeat_end_type: workProp('repeat_end_type', 'action="edit": how the recurrence ends.'),
         repeat_end_value: workProp('repeat_end_value', WORK_FIELD_TEXT.repeat_end_value.onUpdate),
         anchor_time: workProp('anchor_time', WORK_FIELD_TEXT.anchor_time.onUpdate),
-        filter: { type: 'string', enum: ['all', 'mine', 'blocked', 'overdue'], description: 'action="list": filter to apply (default: all).' },
+        // ── PHASE-6 T0C-W — the wall-clock pair and the revert acknowledgement ─────────
+        // See work_open for why these are inline. Each line is this verb's ROUTING plus a
+        // pointer, never a restatement of work_open's wording — N1's shape, applied to
+        // three new properties rather than paid twice.
+        local_time: {
+          type: 'string',
+          description: 'action="edit": set the schedule from a wall-clock time instead of an ISO instant (see work_open). Counts as an editable field on its own.',
+        },
+        local_timezone: {
+          type: 'string',
+          description: 'action="edit": IANA zone to resolve local_time in (see work_open).',
+        },
+        revert_to_original: {
+          type: 'boolean',
+          description: 'action="edit": acknowledge that a description edit restoring the task\'s ORIGINAL text byte-for-byte, over a later edit, is intended. The engine refuses that write without this flag because it is usually a stale copy overwriting current work. Pass true only when you really mean to roll the description back.',
+        },
+        filter: { type: 'string', enum: ['all', 'mine', 'blocked', 'overdue'], description: 'action="list": filter to apply (default: all). "overdue" = scheduled to have run by now and still waiting (not paused).' },
         verbose: { type: 'boolean', description: 'action="list": if true, include each task\'s description (truncated to 200 chars). Default false (compact rows).' },
       },
       required: [],

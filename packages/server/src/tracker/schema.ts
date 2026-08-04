@@ -19,7 +19,7 @@ import { broadcast } from '../gateway/ws.js';
 import { writeTaskLog } from './task-log.js';
 import { isDashboardHiddenAgent, isPMAgent } from '../config/platform.js';
 import {
-  taskRowColumns, projectRowColumns, taskScope, projectScope,
+  taskRowColumns, projectRowColumns, taskScope, projectScope, dueScope,
   statusToState, type TrackerStatus,
 } from '../work/tracker-view.js';
 import {
@@ -865,12 +865,20 @@ export function listTasks(filter?: {
   assignedTo?: string;
   priority?: string;
   projectId?: string;
+  /** PHASE-6 T0C-W: restrict to the overdue set — `dueScope()`'s single declaration of
+   *  what the word means. See its header for the two live meanings it reconciles. */
+  overdue?: boolean;
 }): Task[] {
   const db = getDb();
 
   const conditions: string[] = [TASK_WHERE];
   const params: unknown[] = [];
 
+  // Ordered before the optional filters so the `?` this fragment emits binds first.
+  if (filter?.overdue) {
+    conditions.push(dueScope('work'));
+    params.push(Date.now());
+  }
   if (filter?.status) {
     conditions.push('work.state = ?');
     params.push(statusToState(filter.status));

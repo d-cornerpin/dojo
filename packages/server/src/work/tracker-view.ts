@@ -145,6 +145,30 @@ export const taskScope = (a = 'w'): string =>
 export const projectScope = (a = 'w'): string =>
   `${a}.kind = 'project' AND ${a}.root_kind IN ${TRACKER_ROOT_KINDS}`;
 
+/**
+ * PHASE-6 T0C-W — **WHAT "OVERDUE" MEANS, DECLARED ONCE.** Emits exactly ONE `?`, the
+ * now-instant in epoch ms; `a` is the caller's table alias.
+ *
+ * Two live meanings existed and inventing a third inside a list filter was the banned
+ * move: `scheduler/runner.ts` (recurring, has fired, >1.5× its interval late → auto-pause
+ * and ask) and `tracker/pm-agent.ts` (active and waiting, >5 min late → a PM advisory).
+ * Neither is a meaning of the word: each is THIS predicate plus its own noise floor, sized
+ * to the cost of the action it takes — and runner.ts computes this predicate LITERALLY, as
+ * the `dueTasks` query it lays the 1.5× test on top of. Measured on boundary rows spanning
+ * both thresholds, neither site selects a row this predicate does not. The thresholds
+ * belong to the ACTIONS; the word belongs here, with no threshold at all.
+ *
+ * BOTH paused clauses are load-bearing: `work/tracker-store.ts` (`syncSchedulePause`) sets
+ * `is_paused = 1` WITHOUT touching `schedule_status`, so a row can be paused while its
+ * status still reads `'waiting'`. runner excludes it by the flag, pm-agent by its own
+ * active-status filter — only a predicate carrying both agrees with both.
+ *
+ * Reconciliation + containment measurement: `tracker/__tests__/census-wire-through-seam.test.ts`.
+ */
+export const dueScope = (a = 'w'): string =>
+  `${a}.next_run_at IS NOT NULL AND ${a}.next_run_at <= ?`
+  + ` AND ${a}.schedule_status = 'waiting' AND ${a}.is_paused = 0`;
+
 
 /** `root_kind` for rows this platform opens from now on. Migrated rows keep `'legacy'`;
  *  both are in scope, and the pair is the whole enumeration. */

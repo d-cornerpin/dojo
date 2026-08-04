@@ -244,6 +244,12 @@ export const trackerHandlers: ToolHandlerMap = {
         // so a fixed wall-clock cadence was unreachable at creation and every schedule
         // drifted by its own run duration. Held by tracker-door-census.test.ts.
         anchor_time: args.anchor_time as string | undefined,
+        // PHASE-6 T0C-W (seed 1): the wall-clock pair. `trackerCreateTask` has converted
+        // these into `scheduled_start` since RC-18 so the model never does UTC math; the
+        // door dropped both, leaving the conversion HTTP-only while this tool's own
+        // success echo told the model to use it.
+        local_time: args.local_time as string | undefined,
+        local_timezone: args.local_timezone as string | undefined,
         // Group assignment
         assigned_to_group: args.assigned_to_group as string | undefined,
         // Override for the near-duplicate guard
@@ -337,6 +343,11 @@ export const trackerHandlers: ToolHandlerMap = {
         repeat_end_value: args.repeat_end_value,
         repeat_days_of_week: repeatDaysOfWeek,
         anchor_time: args.anchor_time,
+        // PHASE-6 T0C-W (seed 1): `reminderCreate` accepts a wall clock as an alternative
+        // to `when` and hands it to trackerCreateTask; the door dropped it, so the
+        // ASK_USER text that offered it named a field the model could not reach.
+        local_time: args.local_time,
+        local_timezone: args.local_timezone,
       });
     } catch (err) {
       content = friendlyDbError(err, 'work_open(kind="reminder")');
@@ -414,6 +425,17 @@ export const trackerHandlers: ToolHandlerMap = {
     for (const k of WORK_EDITABLE_TASK_FIELDS) {
       if (args[k] !== undefined) editArgs[k] = args[k];
     }
+    // PHASE-6 T0C-W — three seeds that are NOT editable fields, so they must stay OUT of
+    // `WORK_EDITABLE_TASK_FIELDS` (which renders the `Editable:` refusal byte-for-byte,
+    // pinned at 417 chars by T0A). `local_time`/`local_timezone` are an alternative
+    // SPELLING of `scheduled_start` — `trackerEditTask` converts them before it reads any
+    // editable field, so one of them satisfies the "at least one editable field" check by
+    // itself, which is precisely the refusal a wall-clock-only edit used to get.
+    // `revert_to_original` is an ACKNOWLEDGEMENT: the guard is unchanged and still refuses
+    // without it; what changed is that its named escape hatch is reachable through here.
+    for (const k of ['local_time', 'local_timezone', 'revert_to_original'] as const) {
+      if (args[k] !== undefined) editArgs[k] = args[k];
+    }
     // v2.5.3, normalize and forward repeat_days_of_week so agents can
     // change the day-of-week list on an existing recurring task without
     // having to delete and recreate it. Mirrors the create-side
@@ -484,6 +506,11 @@ export const trackerHandlers: ToolHandlerMap = {
       content = trackerListActive(agentId, { scope: 'tasks', assignedTo: agentId, verbose });
     } else if (listFilter === 'blocked') {
       content = trackerListActive(agentId, { scope: 'tasks', status: 'blocked', verbose });
+    } else if (listFilter === 'overdue') {
+      // PHASE-6 T0C-W: the fourth declared enum value finally has a branch. It used to
+      // fall to the `else` and return the UNFILTERED list — the worst kind of unimplemented,
+      // because the answer looked like an answer.
+      content = trackerListActive(agentId, { scope: 'tasks', filter: 'overdue', verbose });
     } else {
       content = trackerListActive(agentId, { scope: 'all', verbose });
     }

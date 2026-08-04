@@ -117,10 +117,12 @@ const READ_BUT_UNDECLARED_RULED: Readonly<Record<string, string>> = {
   js: 'not a parameter — an ES module specifier (`from \'./args.js\'`) that the read scan sees as `args.js`',
   __malformed_args: 'the engine\'s own marker for unparseable tool-call JSON, stripped by the same `__` rule the unknown-arg warning uses',
   command: 'the LEGACY exec spelling, read at `agent/brokers/exec-seam.ts` on purpose and with its reason at the site: `exec` declares `argv` since PHASE-5 T3, and a replayed transcript or a stored approval row can still carry `{command}`. Declaring it would re-advertise the shell door this phase closed',
-  local_time: 'PHASE-6 T0C seed 1, HANDED UP: read at `tracker/tools.ts` and fully supported end to end, declared on no tool and forwarded by no door. Declaring it moves the cache-prefix reference file, which is a reviewed re-blessing and the owner\'s call',
-  local_timezone: 'PHASE-6 T0C seed 1, HANDED UP — see `local_time`',
-  tz: 'PHASE-6 T0C seed 1, HANDED UP — see `local_time`. Also the name of the zero-reader spine column T0A dispositioned to SWEEP-F',
-  revert_to_original: 'PHASE-6 T0C seed 2, HANDED UP: the byte-identical-revert refusal at `tracker/tools.ts` names it as the escape hatch and no door can forward it. Declaring it moves the cache-prefix reference file',
+  // PHASE-6 T0C-W: `local_time`, `local_timezone` and `revert_to_original` were RULED
+  // here as hand-ups and are now DECLARED on the work verbs and forwarded at every door
+  // that can use them, so their entries are gone rather than reworded — the anti-rot
+  // clause below would have failed on them, which is exactly how a closed hand-up is
+  // supposed to be noticed.
+  tz: 'PHASE-6 T0C-W: the DECLARATION is retired, the READ is kept. `tz` is a pure alias for `local_timezone` with no capability of its own, and a second declared spelling of one field costs cached-prefix bytes on every turn forever while telling the model nothing new. The read (`args.local_timezone ?? args.tz`) stays because HTTP callers already spell it `tz` and deleting it would narrow what works today (#15). Also the name of the zero-reader spine column T0A dispositioned to SWEEP-F',
 };
 
 /**
@@ -138,11 +140,12 @@ const READ_BUT_UNDECLARED_RULED: Readonly<Record<string, string>> = {
  * declaration — the comparison target is still the 438.
  */
 const HANDLER_TEXT_RULED: Readonly<Record<string, { sites: number; reason: string }>> = {
-  local_time: {
-    sites: 3,
-    reason:
-      'PHASE-6 T0C: the three surviving `local_time=` sites are all inside `resolveLocalWallClock` — reachable ONLY when the caller already passed the field, i.e. over HTTP, where it works end to end. The three MODEL-FACING sites were corrected in this task: the success echo on every scheduled create AND edit, the ASK_USER text, and the unparseable-`when` error. THE COUNT IS THE PIN: re-add one and this clause fails, which is the whole point — `local_time` is declared on no tool and forwarded by no door, so a model that obeyed got the unknown-argument warning and a silently dropped field. (`local_timezone` needs no entry: its one remaining site says "Pass local_timezone (IANA…)" in prose rather than `name=value` shape, and the READ census rules it instead.)',
-  },
+  // PHASE-6 T0C-W: `local_time`'s entry is GONE, and its deletion is the record of the
+  // fix. T0C ruled it at three sites and pinned the count precisely so a re-added
+  // model-facing mention would fail this clause. The field is now DECLARED on both work
+  // verbs, so the anti-rot check below (`declared.has(n)`) retires the ruling by force
+  // and the three corrected texts were restored to naming it. A ruling that has become
+  // unnecessary is deleted, never kept as a comfortable excuse.
   awaiting_user_verdict: { sites: 1, reason: 'a WORK-ROW state flag reported to the model ("while awaiting_user_verdict=1 the PM will leave this task alone"), not a parameter it is being asked to pass' },
   complete_validated: { sites: 1, reason: 'a work-row state flag reported in a no-op notice, not a parameter' },
   blocked_validated: { sites: 1, reason: 'a work-row state flag reported in a no-op notice, not a parameter' },
