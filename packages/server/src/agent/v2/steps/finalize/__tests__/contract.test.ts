@@ -201,10 +201,22 @@ describe('PHASE-6 CUT 4: the finalize step\'s contract', () => {
     };
     walk((whileStmt as ts.WhileStatement).statement, false);
 
-    // The DENOMINATOR. 19 ways the loop can stop, every one of them a `break` that
-    // falls out of the loop and into this step. A new exit shape changes this number,
+    // The DENOMINATOR, and it is now read in TWO halves because PHASE-6 is draining
+    // the driver into step packages. A new exit shape changes one of these numbers,
     // which is the point: it must be looked at rather than discovered later.
-    expect(breaks.length).toBe(19);
+    //
+    // ⚠ PHASE-6 CUT 7 MOVED SIX OF THEM AND THE HALF THAT REPLACED THEM IS PINNED
+    // BELOW, not dropped. The `execute` span held five `break`s and one `break outer`;
+    // in the step they are `requestExit(...)` calls, and the driver honours all five
+    // with ONE `break` at the call site. So the driver's own count falls 19 → 13 while
+    // the number of ways the loop can stop is unchanged — and the step-side half is
+    // counted over the ENGINE so it cannot go quiet as the remaining tranches move.
+    expect(breaks.length).toBe(13);
+    // The step-side half: every `requestExit` in every step package. Each one is a way
+    // out of the loop that the driver honours with one of the `break`s above, and each
+    // one still lands in this step.
+    const stepExitSites = [...engineText().matchAll(/requestExit\(state,/g)].length;
+    expect(stepExitSites).toBe(16);
     const tryStart = sf.getLineAndCharacterOfPosition(tryStmt.getStart(sf)).line + 1;
     const tryEnd = sf.getLineAndCharacterOfPosition(tryStmt.tryBlock.getEnd()).line + 1;
     for (const b of breaks) {

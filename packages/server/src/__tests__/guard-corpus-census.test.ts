@@ -167,6 +167,17 @@ const DRIVER_BY_PATH: Declaration[] = [
       + 'not where it expects. It cannot go quiet; it can only stop the build.',
   },
   {
+    rel: 'packages/server/src/agent/v2/steps/execute/__tests__/contract.test.ts',
+    verdict: 'cannot-go-quiet',
+    why: 'It reads the driver for exactly ONE question — that the `advance` into `execute` sits '
+      + 'AHEAD of the call site, which is what makes `validate()` run on the transition and what '
+      + 'lets the step be forbidden from writing `phase` at all. That is a question about the '
+      + "DRIVER's own statement order and a step package cannot answer it. Both `indexOf`s are "
+      + 'asserted `> -1` before they are compared, so a driver that stopped calling this step '
+      + 'fails here rather than passing on two -1s. Widening the corpus to the engine would be '
+      + 'wrong on purpose: it would let the call site move into a step and still pass.',
+  },
+  {
     rel: 'packages/server/src/agent/v2/steps/finalize/__tests__/contract.test.ts',
     verdict: 'cannot-go-quiet',
     why: 'Same kind as the teardown contract above, and for the same reason: its SUBJECT IS THE '

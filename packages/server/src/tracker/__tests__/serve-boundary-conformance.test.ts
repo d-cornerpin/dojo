@@ -172,7 +172,17 @@ describe('once-per-response guard (P3)', () => {
     // success test. Across a concatenated corpus that distance would be measured over a
     // file join, so the pair is pinned to ONE engine file first — and a tranche that ever
     // splits them fails loudly here instead of quietly matching across the seam.
-    const home = engineFileWithBoth('toolResult.isError !== true', 'onceGuardExecuted.set');
+    //
+    // ⚠ PHASE-6 CUT 7 NARROWED THE NEEDLE AND DID NOT WIDEN THE CLAUSE. `execute` became a
+    // step package, and `toolResult.isError !== true` — a bare idiom, not this guard's own
+    // text — now appears in TWO of its files, so `engineFileWithBoth` refused to name a
+    // single home (which is that helper working). The needle is now the once-guard's OWN
+    // success test, membership set and all: it is unique in the engine, it is the exact
+    // condition this clause is about, and a second copy of it would still fail loudly here.
+    const home = engineFileWithBoth(
+      '(FIRE_AND_FORGET_GEN_TOOLS.has(tc.name) || SEND_TO_PEOPLE_SET.has(tc.name)) && toolResult.isError !== true',
+      'onceGuardExecuted.set',
+    );
     expect(home.text).toMatch(/toolResult\.isError !== true[\s\S]{0,200}onceGuardExecuted\.set/);
   });
 
