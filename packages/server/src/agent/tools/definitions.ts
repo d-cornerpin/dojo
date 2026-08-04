@@ -2255,7 +2255,15 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'technique_set_placeholder',
     description: 'Fill in a {{NEEDS_FROM_USER:LABEL}} placeholder across an imported technique\'s files with a value the user provided. Use this during the setup conversation that follows a technique import: read the IMPORT_MANIFEST.json + README.md in the technique\'s directory, ask the user for each placeholder one at a time, then call this tool with the answer. After every placeholder is filled, call technique_finalize.',
-    effects: [{ kind: 'fs_write', from: 'derived:every file of the technique directory named by args.technique' }],
+    // It READS the staged manifest and every file the placeholder appears in
+    // before it substitutes, and declared only the write (RULING P5-R14: the
+    // declaration is corrected at the site). The reference resolves to the
+    // technique's recorded directory through the same read the handler performs
+    // — RULING P5-R15 ADDENDUM 3(1)(a); no template can name that directory.
+    effects: [
+      { kind: 'fs_read', from: 'args.technique', via: 'technique_dir', scope: { at: 'argTree' } },
+      { kind: 'fs_write', from: 'args.technique', via: 'technique_dir', scope: { at: 'argTree' } },
+    ],
     fields: {
       'value': { secret: true },
     },
@@ -2272,9 +2280,15 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'technique_finalize',
     description: 'Finalize an imported technique once every placeholder has been filled in. Removes the staged IMPORT_MANIFEST.json and flips the technique\'s state from needs_setup → draft so it can be published. Only valid after every technique_set_placeholder call has been made; will refuse if any markers remain.',
+    // What it really does: READS the technique's files to confirm no placeholder
+    // remains, then DELETES the staged IMPORT_MANIFEST.json. The `fs_write` it
+    // used to declare was never performed by any of its paths — the state flip is
+    // a database update — so that entry named an effect that did not exist. The
+    // tree is the tightest scope the authorized mechanics can express for a file
+    // inside a resolved directory, and it is recorded rather than widened quietly.
     effects: [
-      { kind: 'fs_write', from: 'derived:the technique directory named by args.technique' },
-      { kind: 'fs_delete', from: 'derived:the staged IMPORT_MANIFEST.json of that technique directory' },
+      { kind: 'fs_read', from: 'args.technique', via: 'technique_dir', scope: { at: 'argTree' } },
+      { kind: 'fs_delete', from: 'args.technique', via: 'technique_dir', scope: { at: 'argTree' } },
     ],
     input_schema: {
       type: 'object',

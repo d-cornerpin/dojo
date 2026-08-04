@@ -917,4 +917,60 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     expect(grantsCover(grants, { op: 'fs_write', path: false_, real: false_ }), 'the bare relative name grants nothing').toBe(false);
     expect(grantsCover(grants, { op: 'fs_write', path: outOfScope, real: outOfScope }), 'and nothing outside the technique').toBe(false);
   });
+
+  it('SURFACE SPLIT: the imported-technique setup surface is its own module and reaches disk through the facade', () => {
+    // RULING P5-R15 part 2. `techniques/share-import.ts` held one `node:fs`
+    // import serving two populations: the package IMPORT, whose only caller is
+    // the dashboard upload route, and the placeholder SETUP surface, whose only
+    // caller is the technique tool-handler module. The two partition perfectly by
+    // enclosing function — 10 sites on the import side, 8 on the setup side, and
+    // only a module-private manifest TYPE is shared, which crosses as a type-only
+    // import and therefore not at runtime at all.
+    const setup = fs.readFileSync(path.join(SRC, 'techniques/import-setup.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(setup), 'the setup surface must not hold node:fs').toBe(false);
+    expect(setup.includes('effectFs.'), 'it reaches the disk through the facade').toBe(true);
+    // …and each half has exactly the callers its classification claims.
+    expect(filesContaining('importTechnique('), 'the import half is reached by the dashboard route alone')
+      .toEqual(['gateway/routes/techniques.ts', 'techniques/share-import.ts']);
+    expect(filesContaining('applyPlaceholderToTechnique('), 'the setup half is reached by the tool handlers alone')
+      .toEqual(['techniques/import-setup.ts', 'techniques/tools.ts']);
+    expect(filesContaining('finalizeImportedTechnique('))
+      .toEqual(['techniques/import-setup.ts', 'techniques/tools.ts']);
+  });
+
+  it('technique_set_placeholder DECLARES the READ it has always performed, not only the write', () => {
+    // It reads the staged manifest and every file the placeholder appears in
+    // before it substitutes — and declared only `fs_write`. Converted as-is the
+    // first read would have been refused. RULING P5-R14: the declaration is
+    // corrected AT THE SITE with its reason, and it adds no refusal because gate
+    // rows are declared in `tools/gates.ts`, never derived from `effects[]`.
+    const dir = path.join(scratch, 'technique-delta');
+    fs.mkdirSync(dir, { recursive: true });
+    const staged = path.join(dir, 'IMPORT_MANIFEST.json');
+    const target = path.join(dir, 'config', 'settings.json');
+    const grants = grantsForCall(AGENT, effectsFor('technique_set_placeholder'), {
+      technique: 'delta', label: 'API_KEY', value: 'x',
+    }, { attachment_row: () => null, technique_dir: () => ({ path: dir }) });
+    expect(grantsCover(grants, { op: 'fs_read', path: staged, real: staged }), 'it may read the staged manifest').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: target, real: target }), 'it may read a file the placeholder is in').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_write', path: target, real: target }), 'it may write the substitution back').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: outOfScope, real: outOfScope }), 'and nothing outside the technique').toBe(false);
+    expect(grantsCover(grants, { op: 'fs_write', path: outOfScope, real: outOfScope })).toBe(false);
+  });
+
+  it('technique_finalize DECLARES what it really does — it reads and deletes, and never wrote', () => {
+    const dir = path.join(scratch, 'technique-epsilon');
+    fs.mkdirSync(dir, { recursive: true });
+    const staged = path.join(dir, 'IMPORT_MANIFEST.json');
+    const grants = grantsForCall(AGENT, effectsFor('technique_finalize'), { technique: 'epsilon' }, {
+      attachment_row: () => null, technique_dir: () => ({ path: dir }),
+    });
+    expect(grantsCover(grants, { op: 'fs_read', path: staged, real: staged }), 'it may read to confirm no placeholder remains').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_delete', path: staged, real: staged }), 'it may remove the staged manifest').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_delete', path: outOfScope, real: outOfScope }), 'and nothing outside the technique').toBe(false);
+    // The `fs_write` it used to declare was never performed by any of its code
+    // paths — the state flip is a DB update — so the declaration named an effect
+    // that did not exist rather than one that was missing.
+    expect(effectsFor('technique_finalize')?.some((e) => e.kind === 'fs_write'), 'it writes no file').toBe(false);
+  });
 });

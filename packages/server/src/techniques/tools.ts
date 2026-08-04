@@ -24,7 +24,7 @@ import {
   applyPlaceholderToTechnique,
   findRemainingPlaceholders,
   finalizeImportedTechnique,
-} from './share-import.js';
+} from './import-setup.js';
 import {
   type DependencyManifest,
   emptyDependencyManifest,
