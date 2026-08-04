@@ -212,11 +212,14 @@ describe('PHASE-5 T6C (4): the plaintext-credential surface is enumerated, pinne
   // Every entry carries a disposition. A new credential-shaped TEXT column
   // fails this clause until it declares which of the three it is.
   const DECLARED_PLAINTEXT_SURFACE: Record<string, string> = {
-    // LIVE PLAINTEXT CREDENTIALS — the real OAuth material, 4 populated columns
-    // across 4 rows on the dev body. T6C measured these rather than encrypting
-    // them; the measurement and the reason are in the T6C AS-BUILT. OWNER.
-    '071_workspace_accounts.sql:access_token': 'LIVE PLAINTEXT — google_accounts + microsoft_accounts OAuth access tokens',
-    '071_workspace_accounts.sql:refresh_token': 'LIVE PLAINTEXT — google_accounts + microsoft_accounts OAuth refresh tokens',
+    // SEALED AT REST — the real OAuth material. T6C measured these and left them
+    // in the clear, handing the decision up; the owner took it (decision D1) and
+    // PHASE-5 T10 encrypted them IN PLACE, through the one at-rest owner, without
+    // moving them into `agent_credentials` (RULING P5-R13 — that refusal is
+    // permanent). The disposition changed here in the same commit as the code.
+    // The clauses that hold it: `credentials/__tests__/token-at-rest.test.ts`.
+    '071_workspace_accounts.sql:access_token': 'SEALED AT REST (T10/D1) — google_accounts + microsoft_accounts OAuth access tokens',
+    '071_workspace_accounts.sql:refresh_token': 'SEALED AT REST (T10/D1) — google_accounts + microsoft_accounts OAuth refresh tokens',
     // NOT A CREDENTIAL — one-shot nonces bound to a single held call. They
     // authorise one action on this box; they authenticate to nothing.
     '069_destructive_approvals.sql:token': 'NOT A CREDENTIAL — one-shot approval nonce bound to a specific held call',
@@ -249,14 +252,25 @@ describe('PHASE-5 T6C (4): the plaintext-credential surface is enumerated, pinne
       const text = fs.readFileSync(path.join(SRC, file), 'utf-8');
       const lines = text.split('\n');
 
-      // ONE decode point: the row mapper, both fields, nowhere else.
-      const decode = lines.filter(l => /(?:accessToken|refreshToken):\s*r\.(?:access|refresh)_token/.test(l));
+      // ONE decode point: the row mapper, both fields, nowhere else — and since
+      // T10/D1 the mapper OPENS the value rather than passing the column through.
+      // The clause moved with the code and got STRICTER: it is no longer enough
+      // for the two fields to come from the two columns, they must come through
+      // the one at-rest owner.
+      const decode = lines.filter(l => /(?:accessToken|refreshToken):\s*openSecretColumn\(r\.(?:access|refresh)_token/.test(l));
       expect(decode).toHaveLength(2);
       expect(text).toMatch(/function rowToAccount\(/);
+      // A raw pass-through of either column would be an unencrypted read path.
+      expect(lines.filter(l => /(?:accessToken|refreshToken):\s*r\.(?:access|refresh)_token/.test(l))).toHaveLength(0);
 
-      // TWO write points, and both are declarations rather than statements.
+      // TWO write points, and both are declarations rather than statements. Both
+      // SEAL since T10/D1 — a write that skipped the seal would put plaintext
+      // back on the disk, so the encode side is pinned the same way.
       expect(text).toMatch(/INSERT INTO (?:google|microsoft)_accounts[\s\S]{0,400}access_token, refresh_token/);
+      expect(text).toMatch(/sealSecretColumn\(acc\.accessToken \?\? null\), sealSecretColumn\(acc\.refreshToken \?\? null\),/);
       expect(text).toMatch(/accessToken: 'access_token', refreshToken: 'refresh_token',/);
+      expect(text).toMatch(/accessToken: v => sealSecretColumn\(v as string \| null\),/);
+      expect(text).toMatch(/refreshToken: v => sealSecretColumn\(v as string \| null\),/);
 
       // No ad-hoc UPDATE of a token column anywhere in the file.
       expect(text).not.toMatch(/SET\s+(?:access_token|refresh_token)\s*=/);
@@ -275,6 +289,19 @@ describe('PHASE-5 T6C (4): the plaintext-credential surface is enumerated, pinne
     //     reconnect cards by `refresh_token IS NOT NULL AND != ''`. It reads no
     //     token, but it is the one place outside the mappers that runs SQL
     //     against these columns, so encrypting them later has to answer for it.
+    //     T10/D1 DID answer for it: a sealed value is non-empty and an empty one
+    //     is left empty, so the predicate selects exactly the rows it did before
+    //     (`token-at-rest.test.ts` drives that on a three-row body).
+    //   credentials/seal-existing.ts — ADDED BY T10/D1. The one-owner conversion
+    //     pass. It SELECTs the two columns to find the ones still in the clear,
+    //     and hands what it finds to each provider's own update function — it
+    //     never writes a token column itself, which is why the two write points
+    //     pinned above are still two.
+    //   credentials/at-rest.ts — ADDED BY T10/D1. It names the columns only in
+    //     the header prose that explains why the sealed triple is serialised into
+    //     one TEXT field instead of the three columns twilio_config got. It runs
+    //     no SQL. It is in the list because this clause keys on the NAMES, and
+    //     scoping it out by directory is exactly the heuristic the phase refuses.
     // Eight further files name the account TABLES (counts, existence checks)
     // and touch no token — which is why this clause keys on the COLUMNS.
     const namers = sourceFiles()
@@ -282,6 +309,8 @@ describe('PHASE-5 T6C (4): the plaintext-credential surface is enumerated, pinne
       .map(rel)
       .sort();
     expect(namers).toEqual([
+      'credentials/at-rest.ts',
+      'credentials/seal-existing.ts',
       'google/accounts.ts',
       'google/auth.ts',
       'microsoft/accounts.ts',

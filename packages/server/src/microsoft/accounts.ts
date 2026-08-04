@@ -13,6 +13,7 @@
 import crypto from 'node:crypto';
 import { getDb } from '../db/connection.js';
 import { patchAssignments } from '../db/patch.js';
+import { isSealedText, openSecretColumn, sealSecretColumn } from '../credentials/at-rest.js';
 import { createLogger } from '../logger.js';
 import { bumpToolConfigGeneration } from '../agent/tool-config-generation.js';
 
@@ -68,8 +69,9 @@ function rowToAccount(r: MicrosoftAccountRow): MicrosoftAccount {
     accountType: r.account_type,
     enabled: r.enabled === 1,
     connected: r.connected === 1,
-    accessToken: r.access_token,
-    refreshToken: r.refresh_token,
+    // D1 (PHASE-5 T10): the ONE decode point for this table's OAuth material.
+    accessToken: openSecretColumn(r.access_token, 'microsoft_accounts.access_token'),
+    refreshToken: openSecretColumn(r.refresh_token, 'microsoft_accounts.refresh_token'),
     tokenExpiresAt: r.token_expires_at,
     grantedScopes: r.granted_scopes,
     enabledServices: r.enabled_services,
@@ -228,7 +230,9 @@ export function insertMicrosoftAccount(acc: NewMicrosoftAccount): MicrosoftAccou
     id, acc.kind, position, acc.email ?? null, acc.accountType ?? null,
     acc.enabled === false ? 0 : 1,
     acc.connected ? 1 : 0,
-    acc.accessToken ?? null, acc.refreshToken ?? null, acc.tokenExpiresAt ?? null,
+    // D1: encode point 1 of 2 — the INSERT column list.
+    sealSecretColumn(acc.accessToken ?? null), sealSecretColumn(acc.refreshToken ?? null),
+    acc.tokenExpiresAt ?? null,
     acc.grantedScopes ?? null, acc.enabledServices ?? null,
     acc.watchEmail ? 1 : 0, acc.sendEmail ? 1 : 0, acc.lastVerifiedAt ?? null,
   );
@@ -259,7 +263,10 @@ const COLUMN: Record<string, string> = {
 const ENCODE: Record<string, (v: unknown) => unknown> = {
   email: v => v, accountType: v => v,
   enabled: v => (v ? 1 : 0), connected: v => (v ? 1 : 0),
-  accessToken: v => v, refreshToken: v => v,
+  // D1: encode point 2 of 2 — the partial-update encoder map. No `?? null` here,
+  // deliberately, for the M7 reason stated directly above.
+  accessToken: v => sealSecretColumn(v as string | null),
+  refreshToken: v => sealSecretColumn(v as string | null),
   tokenExpiresAt: v => v, grantedScopes: v => v,
   enabledServices: v => v, watchEmail: v => (v ? 1 : 0),
   sendEmail: v => (v ? 1 : 0), lastVerifiedAt: v => v,

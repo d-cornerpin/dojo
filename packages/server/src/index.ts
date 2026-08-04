@@ -417,6 +417,12 @@ async function main(): Promise<void> {
     });
   }
 
+  // 3a0b. D1 (PHASE-5 T10): seal any Workspace OAuth token still stored in the
+  //       clear. AFTER the seed, so a row the seed just created from the legacy
+  //       keys is sealed in the same boot. It never throws — it owns that.
+  const { sealWorkspaceTokensAtRest } = await import('./credentials/seal-existing.js');
+  await sealWorkspaceTokensAtRest();
+
   // 3a. Load saved migration checks (if any from a recent import)
   try {
     const { loadSavedChecks } = await import('./migration/checks.js');
