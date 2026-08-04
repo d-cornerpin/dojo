@@ -1116,6 +1116,60 @@ describe('runV2Turn integration', () => {
     expect(noResultsErrors).toHaveLength(0);
   });
 
+  it('PRESERVATION: the repetition detector nudges once, then breaks with STUCK_REPEATING', async () => {
+    // The post-execution gates' first floor (v1 runtime.ts:1622-1634): when the
+    // model produces the SAME text AND the SAME tool calls two iterations running
+    // it is stuck. The engine nudges ONCE through the steer queue; if the next
+    // iteration is identical again it breaks with a STUCK_REPEATING chat:error.
+    // The loopDetector catches duplicate TOOL-CALL patterns — this catches
+    // duplicate FULL responses, which is why it is a separate floor.
+    //
+    // PHASE-6 T8: this guard had NO test of its own (`git grep STUCK_REPEATING`
+    // over the suite = 0 hits before this clause). It is written here BEFORE the
+    // gates are relocated into `agent/v2/steps/post-execution/`, so the
+    // requirement is held by a test that passed on the tree the move starts from
+    // — non-negotiable #2, the guard converted before its code is touched.
+    let modelCallCount = 0;
+    callModelSpy.mockImplementation(async () => {
+      modelCallCount++;
+      // Byte-identical every iteration: same text, same tool name, same arguments.
+      // Only the call id varies, and the signature deliberately ignores it.
+      return {
+        content: 'Let me check that again.',
+        toolCalls: [
+          { id: `tc-${modelCallCount}`, name: 'history_search', arguments: { pattern: 'same' } },
+        ],
+        inputTokens: 100,
+        outputTokens: 5,
+        stopReason: 'tool_use',
+      };
+    });
+    executeToolSpy.mockImplementation(async (_agentId, toolCall) => ({
+      toolCallId: toolCall.id,
+      name: toolCall.name,
+      content: 'Found 3 matching messages: ...',
+      isError: false,
+    }));
+
+    await runV2Turn('primary');
+
+    // iter 1 records the signature; iter 2 matches it and fires the one-shot nudge,
+    // then CONTINUES; iter 3 matches it again with the steer already fired and
+    // BREAKS. A fourth call would mean the break never happened.
+    expect(modelCallCount).toBe(3);
+
+    const stuckErrors = (getBroadcastEventsByType('chat:error') as Array<{ code?: string }>).filter(
+      (e) => e.code === 'STUCK_REPEATING',
+    );
+    expect(stuckErrors).toHaveLength(1);
+
+    // Both transitions, not just the terminal one: the nudge fired on iteration 2.
+    const nudged = loggerWarnSpy.mock.calls.some((c) =>
+      String(c[0]).includes('agent repeating itself, nudging on next iteration'),
+    );
+    expect(nudged).toBe(true);
+  });
+
   it('PRESERVATION #38: empty after tool calls is a clean end-of-turn (no toast)', async () => {
     // Carve-out from v1 runtime.ts:1167-1171, if the agent already executed
     // tool calls this turn and now returns empty, that's a legitimate end.
