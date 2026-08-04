@@ -1707,8 +1707,10 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // dashboard-default turns (the only promotion case) all belong to the owner's
   // one dashboard conversation per agent, the same identity the chat route
   // stamps, so resolve that row lazily inside the promotion guard.
-  let ownerAffinityConversationId: string | null = null;
-  let ownerAffinityDestination: 'imessage' | null = null;
+  // PHASE-6 T9 (CUT 4), RULING P6-R3(1): both live on the turn's bag — the pair is one
+  // mechanism (the destination is meaningless without the conversation its cooldown is
+  // keyed to) and both cross into the `finalize` span, which decides the reply's
+  // destination and records the promotion. Written once each, here, in straight-line code.
   {
     const destinationWouldBeDashboard =
       counterparty.channel !== 'imessage' && counterparty.channel !== 'teams' &&
@@ -1721,11 +1723,11 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         const affinity = resolveOwnerAffinityChannel(agentId, { imessageBridgeConfigured: bridgeConfigured });
         if (affinity === 'imessage') {
           const { resolveOrCreateConversation } = await import('../../memory/conversations.js');
-          ownerAffinityConversationId = resolveOrCreateConversation(agentId, {
+          turnCtx.ownerAffinityConversationId = resolveOrCreateConversation(agentId, {
             channel: 'dashboard', provider: null, counterpartyId: 'owner', threadRoot: null,
           });
-          if (affinityPromotionAllowed(agentId, ownerAffinityConversationId)) {
-            ownerAffinityDestination = 'imessage';
+          if (affinityPromotionAllowed(agentId, turnCtx.ownerAffinityConversationId)) {
+            turnCtx.ownerAffinityDestination = 'imessage';
           }
         }
       } catch { /* best effort; a resolution failure just leaves the reply on the dashboard */ }
@@ -2616,7 +2618,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       // (system) AND the message-injection mctx, so the msg.turn-context entry can
       // read counterparty / othersWaiting / conversationalTurn / isEngineTurn (they
       // are not recomputed).
-      const sharedTurnContext = { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, isNotificationTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn, engineEventKeepFullId, resolvedReplyChannel: ownerAffinityDestination ?? undefined };
+      const sharedTurnContext = { latestUserSource, ttsEngine: latestTtsEngine, isA2ATurn, isEngineTurn, isNotificationTurn, counterparty, othersWaiting: Math.max(0, waitingConvs.length - 1), conversationalTurn, engineEventKeepFullId, resolvedReplyChannel: turnCtx.ownerAffinityDestination ?? undefined };
       // LIVE = RELOAD, pre-model half (incident 2026-07-06): the persisted-output
       // visibility keys on the six-way interAgentTurn union (computed post-model,
       // below), but the dashboard's live suppression needs the turn kind BEFORE the
@@ -8145,7 +8147,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         // 2), and the model-initiated imessage_send TOOL path is a separate, explicit
         // act that never reaches here.
         const affinityRefused = affinityPromotionRefusedNoBasis({
-          ownerAffinityChannel: ownerAffinityDestination,
+          ownerAffinityChannel: turnCtx.ownerAffinityDestination,
           inboundChannel: state.inboundChannel,
           presence: presenceNow,
         });
@@ -8154,7 +8156,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
             agentId, turnNumber, convKey: chosenConvKey ?? null, presence: presenceNow,
           }, agentId);
         }
-        const effectiveOwnerAffinity = affinityRefused ? null : ownerAffinityDestination;
+        const effectiveOwnerAffinity = affinityRefused ? null : turnCtx.ownerAffinityDestination;
         const destination = counterparty.kind === 'agent'
           ? 'dashboard'
           : resolveReplyDestination({
@@ -8175,7 +8177,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
         // never starts a cooldown) AND the owner is not away; the per-conversation
         // cooldown starts now.
         if (destination === 'imessage' && effectiveOwnerAffinity === 'imessage' && presenceNow !== 'away') {
-          recordAffinityPromotion(agentId, ownerAffinityConversationId);
+          recordAffinityPromotion(agentId, turnCtx.ownerAffinityConversationId);
         }
 
         // ── Settled-context hold (phantom-outreach fix, 2026-07-18) ──

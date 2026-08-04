@@ -200,6 +200,23 @@ export interface TurnContext {
    *  hazard as `phoneStreamBuffer` above; the two are one mechanism's state and
    *  migrate together. */
   phoneStreamFlushedAny: boolean;
+
+  /** RC-10 / P5c: the owner-affinity promotion, resolved ONCE at turn start and read
+   *  at the turn's reply-destination decision. `ownerAffinityDestination` is
+   *  `'imessage'` only when affinity resolved AND the per-conversation cooldown
+   *  allowed the promotion; `ownerAffinityConversationId` is the conversation ROW the
+   *  cooldown is keyed by, which the promotion record needs at turn end.
+   *
+   *  ⚠ POPULATION 2, and honestly labelled: unlike the phone-stream pair these are
+   *  written ONCE each, in straight-line driver code before the loop opens
+   *  (`loop.ts`'s affinity block), so a by-value copy would be correct TODAY. They
+   *  migrate under RULING P6-R3(1)'s rule rather than under a measured hazard — the
+   *  ruling's own words are "a mutable local that crosses a step boundary migrates",
+   *  and the alternative is a per-tranche judgment call that nine tranches would take
+   *  nine different ways. The pair moves together because it is one mechanism: the
+   *  destination is meaningless without the conversation its cooldown is keyed to. */
+  ownerAffinityConversationId: string | null;
+  ownerAffinityDestination: 'imessage' | null;
 }
 
 /** The one registry. Keyed by agentId because a turn belongs to an agent and
@@ -229,6 +246,8 @@ export function openTurnContext(agentId: string): TurnContext {
     startAckTimer: null,
     phoneStreamBuffer: '',
     phoneStreamFlushedAny: false,
+    ownerAffinityConversationId: null,
+    ownerAffinityDestination: null,
   };
   openContexts.set(agentId, ctx);
   return ctx;

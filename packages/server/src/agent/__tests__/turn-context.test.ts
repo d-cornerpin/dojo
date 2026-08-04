@@ -72,6 +72,8 @@ const THE_DRIVER_CARRIES = [
   // under RULING P6-R3(1)'s rule rather than under a hazard, and each field says which.
   'phoneStreamBuffer',
   'phoneStreamFlushedAny',
+  'ownerAffinityConversationId',
+  'ownerAffinityDestination',
 ];
 
 /** The six in `turn-state.ts` that OUTLIVE the turn on purpose. */
