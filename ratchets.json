@@ -1646,6 +1646,13 @@
       "to": 2749,
       "by": "PHASE-5 T8 Step 3 the transcode carry (2026-08-03, T8H) — the undeclared transcoder, declared",
       "why": "PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 4(1). +8 lines: ONE effect line on `transcribe_audio` and 7 lines of comment saying why the declaration names a PROGRAM rather than a resource. THE DEFECT IT FIXES: every source this tool accepts — attachment, path or url — is decoded or demuxed through ffmpeg before any engine sees it, and the definition declared no `proc` effect at all, so the spawn was invisible to the gate loop and the converted carry would have refused the tool's own transcode. NO `input_schema` LINE IS TOUCHED, so the tools array does not move and no prefix re-blessing is owed. THE ALTERNATIVES WERE MEASURED. (a) Declare it with prose only, no `scope` (minus 1): REFUSED — a `derived:` with no scope yields NO grant by design, so the tool would still refuse its own transcode; the prose survives as the `from`, which is the point of the sibling. (b) Drop the comment (minus 7): REFUSED — this is the FIRST branch-(B) declaration in the tree and the next reader has to know why a program is declarable here and an argv is not, or the list grows by imitation. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2749."
+    },
+    {
+      "path": "packages/server/src/agent/tools/util.ts",
+      "from": 359,
+      "to": 370,
+      "by": "PHASE-5 T8 Step 3 the shared util probes (2026-08-03, T8H) — the LAST agent-named toolbox file converts",
+      "why": "PHASE-5 T8 Step 3. +11 lines, ALL of them the import comment, and the three probes converted at zero line cost (`fs.statSync` -> `effectFs.statSync` twice, `fs.existsSync` -> `effectFs.existsSync` once). THE COMMENT IS THE POINT AND IS WHY IT IS NOT DELETED: this module is NOT a tool, its probes run on the CALLER's grant, and all three answer their own `catch` with null / { opened: false } — so a refusal here is indistinguishable from a missing file and the user simply stops getting a download link or an Open-in-canvas chip with no error anywhere. A reader who does not know that will convert the next such helper without an oracle. The comment names both artifacts that hold it: the before/after behaviour oracle and the call-site census. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Say it in the test files only (minus 11): REFUSED — the hazard is at the CALL, and the next person to add a probe here reads this file, not a test in another directory. (b) Convert without the comment and let the tests speak (minus 11): REFUSED for the same reason plus one more — the tests assert WHAT holds, not WHY the shape is dangerous, and the why is the part that stops the next silent narrowing. (c) Split the three probes into their own leaf so this file shrinks (minus about 40 here, plus about 60 there): REFUSED — the probes are used by five modules that already import this one, so a split adds an import to every caller and a module to the graph to move a number, which is the bookkeeping move P5-R12 forbids. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 370."
     }
   ],
   "maxNewFileLines": 400,
@@ -1702,7 +1709,7 @@
     "packages/server/src/agent/tools/index.ts": 642,
     "packages/server/src/agent/tools/surface.ts": 657,
     "packages/server/src/agent/tools/types.ts": 316,
-    "packages/server/src/agent/tools/util.ts": 359,
+    "packages/server/src/agent/tools/util.ts": 370,
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 482,
     "packages/server/src/agent/v2/counterparty.ts": 921,
