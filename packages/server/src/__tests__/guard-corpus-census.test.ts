@@ -179,11 +179,11 @@ const DRIVER_BY_PATH: Declaration[] = [
   {
     rel: 'packages/server/src/credentials/__tests__/credential-hydration.test.ts',
     verdict: 'step-aware',
-    why: 'The CORPUS is a recursive walk of `packages/server/src`, so a moved call site stays '
-      + 'in scope. The driver is named only in the EXPECTATION `expect(callers).toEqual('
-      + "['agent/v2/loop.ts'])` — a positive closed set. When hydration moves, the walk finds it "
-      + 'at its new path and the equality fails LOUDLY with both paths printed, which is the '
-      + 'guard working: "exactly one caller, and here is which" is the requirement.',
+    why: 'DECLARED IN BOTH LISTS ON PURPOSE, because it names both halves of the engine: its '
+      + 'expectation is a closed set of ENGINE paths and it walks the WHOLE of '
+      + '`packages/server/src` rather than importing the shared derivation. The full reason — '
+      + 'including why `engineText()` would be the WRONG corpus here — is on its entry in '
+      + 'STEPS_BY_PATH below.',
   },
   {
     rel: 'packages/server/src/memory/__tests__/single-writer-conformance.test.ts',
@@ -219,6 +219,20 @@ const DRIVER_BY_PATH: Declaration[] = [
  * hand-rolled copy of the engine walk is how the corpus starts drifting again.
  */
 const STEPS_BY_PATH: Declaration[] = [
+  {
+    rel: 'packages/server/src/credentials/__tests__/credential-hydration.test.ts',
+    verdict: 'step-aware',
+    why: 'It names BOTH halves of the engine by path, and it does NOT import the shared '
+      + 'derivation, deliberately: its corpus is a recursive walk of the WHOLE of '
+      + '`packages/server/src`, because the requirement is "there is exactly ONE caller of '
+      + '`hydrateCredentialsInMessages` ANYWHERE", and `engineText()` would narrow that to the '
+      + "engine and stop seeing a second call site in the assembler — the exact regression this "
+      + 'guard exists to catch. The engine paths appear only in the EXPECTATION, as a closed set '
+      + "`['agent/v2/loop.ts', 'agent/v2/steps/']`. PHASE-6 CUT 5 is when that mattered: the call "
+      + 'site moved into `steps/call-llm/model-call.ts`, the clause failed LOUDLY with both paths '
+      + 'printed, and the set was WIDENED while the COUNT was not — a second call site anywhere '
+      + 'still fails it, proven by planting one.',
+  },
   {
     rel: 'packages/server/src/agent/v2/__tests__/engine-sources.ts',
     verdict: 'step-aware',

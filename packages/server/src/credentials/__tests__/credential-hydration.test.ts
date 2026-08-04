@@ -205,8 +205,12 @@ describe('the seam cannot quietly spread', () => {
       .map((f) => path.relative(srcRoot, f))
       .filter((f) => f !== 'credentials/secret-values.ts')
       .sort();
+    // The closed set is written as plain paths, not as a pattern, so the guard-corpus
+    // census can still SEE that this clause names the driver — and it caught the first
+    // draft, which hid both paths inside a regex, on its very next run.
+    const ENGINE = ['agent/v2/loop.ts', 'agent/v2/steps/'];
     expect(callers).toHaveLength(1);
-    expect(callers[0]).toMatch(/^agent\/v2\/(loop\.ts$|steps\/)/);
+    expect(ENGINE.some((prefix) => callers[0] === prefix || callers[0].startsWith(prefix))).toBe(true);
   });
 
   it('is absent from the assembler, so assembly is byte-identical whatever is held', () => {
