@@ -1804,6 +1804,7 @@
     "packages/server/src/prompt/assembler.ts": 1405,
     "packages/server/src/prompt/registry/entries.ts": 524,
     "packages/server/src/router/scorer.ts": 505,
+    "packages/server/src/scheduler/anchor-compensation.ts": 300,
     "packages/server/src/scheduler/runner.ts": 1701,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/gmail-watcher.ts": 592,
