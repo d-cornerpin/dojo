@@ -232,6 +232,19 @@ export interface TurnContext {
    *  all, so no timer closes over it today. Recorded here because a position defended
    *  by a reason that stopped being true is how the next reader inherits a false one. */
   deferredUserReplyWithTools: string | null;
+
+  /** Remediation Phase 5 (5a): the technique injected into THIS turn, so the turn's
+   *  outcome is written back to its usage row — success at the clean end, failure on
+   *  the recovery arm.
+   *
+   *  ⚠ POPULATION 2. One write, straight-line (the strong-match injection), so by
+   *  value would be correct today; it migrates under RULING P6-R3(1)'s rule. It is the
+   *  one carrier in this tranche that an ALREADY-EXTRACTED step also reads: the
+   *  teardown package takes it as a readonly context field, and the driver's
+   *  `teardownContext()` closure now feeds that field from here. The landed tranche is
+   *  untouched — a carrier feeding a context field is the same value it always fed,
+   *  read one property later. */
+  turnInjectedTechniqueId: string | null;
 }
 
 /** The one registry. Keyed by agentId because a turn belongs to an agent and
@@ -264,6 +277,7 @@ export function openTurnContext(agentId: string): TurnContext {
     ownerAffinityConversationId: null,
     ownerAffinityDestination: null,
     deferredUserReplyWithTools: null,
+    turnInjectedTechniqueId: null,
   };
   openContexts.set(agentId, ctx);
   return ctx;

@@ -75,6 +75,7 @@ const THE_DRIVER_CARRIES = [
   'ownerAffinityConversationId',
   'ownerAffinityDestination',
   'deferredUserReplyWithTools',
+  'turnInjectedTechniqueId',
 ];
 
 /** The six in `turn-state.ts` that OUTLIVE the turn on purpose. */

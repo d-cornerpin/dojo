@@ -1829,7 +1829,9 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
 
   // Remediation Phase 5 (5a): if a technique gets injected this turn, the
   // turn's outcome (completed vs errored) is written back to its usage row.
-  let turnInjectedTechniqueId: string | null = null;
+  // PHASE-6 T9 (CUT 4), RULING P6-R3(1): on the turn's bag — it crosses into the
+  // `finalize` span (the success write-back) and the teardown package already takes it
+  // as a context field, which the driver closure below now feeds from the bag.
 
   // D6: the technique-acknowledgement gate no longer blocks (the hard gate was
   // removed, see the tool loop) and is per-turn only. Do NOT hydrate it from
@@ -2543,7 +2545,8 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   const teardownContext = (): TeardownContext => ({
     agentId, turnCtx, turnNumber, db,
     chosenConvKey, chosenConversationId, lastAssembledAtIso,
-    terminalAnswerRowId, triggerWorkId, toolPhaseEndedBySpinBrake, turnInjectedTechniqueId,
+    terminalAnswerRowId, triggerWorkId, toolPhaseEndedBySpinBrake,
+    turnInjectedTechniqueId: turnCtx.turnInjectedTechniqueId,
     counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
     inboundChannel, inboundContext,
     reArmIfStrandedNoAnswer, stopStatusHeartbeat,
@@ -2827,7 +2830,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
                       `--- TECHNIQUE: ${strongMatch.technique.name} ---\n${md}\n--- END TECHNIQUE ---`;
                   }
                   injectedTechniqueId = strongMatch.technique.id;
-                  turnInjectedTechniqueId = strongMatch.technique.id;
+                  turnCtx.turnInjectedTechniqueId = strongMatch.technique.id;
                   try { recordTechniqueUsage(strongMatch.technique.id, agentId); } catch { /* best effort */ }
                   logger.info('v2 techniqueMatcher: injecting strong-match technique as engine message', {
                     agentId,
@@ -8766,10 +8769,10 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     // turn as well as every 30s).
 
     // 5a: the injected technique's usage row learns the turn's outcome.
-    if (turnInjectedTechniqueId) {
+    if (turnCtx.turnInjectedTechniqueId) {
       try {
         const { recordTechniqueOutcome } = await import('../../techniques/store.js');
-        recordTechniqueOutcome(turnInjectedTechniqueId, agentId, true);
+        recordTechniqueOutcome(turnCtx.turnInjectedTechniqueId, agentId, true);
       } catch { /* best effort */ }
     }
 
