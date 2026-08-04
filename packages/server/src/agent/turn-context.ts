@@ -352,6 +352,28 @@ export interface TurnContext {
   startAckSteersInjected: number;
   startAckSteerInjectedAtLoop: number;
 
+  /** THE F10 FIRST-TOOL LATCH — the fifth local of that same mechanism, and the ONE
+   *  mutable crossing the `execute` span WRITES.
+   *
+   *  ⚠ POPULATION 2 (PHASE-6 T7, CUT 7), and it carries a MEASURED hazard rather than
+   *  the rule. The latch is written at the first tool dispatch of the turn (inside the
+   *  `execute` span) and READ from the wall-clock timer callback armed at turn start:
+   *  the timer asks "did any tool start?" to decide between staying quiet on a
+   *  chat-shaped turn and firing the start-ack for a working one. `loop.ts` states the
+   *  property about this same family in its own words — *"`state` is read at fire
+   *  time"* — and this local is the other half of that sentence.
+   *
+   *  HANDED BY VALUE THE FAILURE IS SILENT AND USER-VISIBLE: the timer would capture
+   *  `false` at arm time and keep reading `false` forever, so a turn that ran tools for
+   *  longer than `ENGINE_START_ACK_AFTER_MS` would take the "chat-shaped, stay quiet"
+   *  branch and the person waiting would hear NOTHING — the exact absence F10 exists to
+   *  prevent. Nothing throws and no test that does not drive a timer would see it.
+   *
+   *  It also completes the family: the request flag, the arming, the cap and the loop
+   *  stamp came over at CUT 6 as `assemble`'s crossings, and CUT 6's own note recorded
+   *  that this tranche would pay the rest. */
+  anyToolStartedThisTurn: boolean;
+
   /** Ghosted-work-ask floor (2026-07-22): the multistep classifier's verdict on THIS
    *  turn's inbound — was a WORK ask made, as opposed to chatter — so the `[no-reply]`
    *  handling can tell a silence that is never valid from one that is fine.
@@ -409,6 +431,7 @@ export function openTurnContext(agentId: string): TurnContext {
     startAckSteerArmedThisTurn: false,
     startAckSteersInjected: 0,
     startAckSteerInjectedAtLoop: 0,
+    anyToolStartedThisTurn: false,
     inboundClassifiedAsWork: false,
   };
   openContexts.set(agentId, ctx);

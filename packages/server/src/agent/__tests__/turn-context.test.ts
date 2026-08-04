@@ -104,6 +104,11 @@ const THE_DRIVER_CARRIES = [
   // Written once, straight-line, INSIDE the span and read by `postCallClassify` — the
   // silent direction is that a ghosted work ask reads as chatter and never steers.
   'inboundClassifiedAsWork',
+  // PHASE-6 T7 (CUT 7) — the `execute` tranche's ONE written crossing, and it COMPLETES
+  // the F10 family above. Written at the first tool dispatch, READ from the wall-clock
+  // timer callback: by value the timer reads `false` forever and a long working turn
+  // takes the "chat-shaped, stay quiet" branch, so the waiting person hears nothing.
+  'anyToolStartedThisTurn',
 ];
 
 /** The six in `turn-state.ts` that OUTLIVE the turn on purpose. */

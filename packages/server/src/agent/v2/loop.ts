@@ -2155,7 +2155,13 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // `turnCtx.startAckTimer` is a live binding on both sides. Same lifetime: the
   // timer is armed below, after every exit that returns before the main `try`
   // opens, so nothing can arm it and skip the teardown that cancels it.
-  let anyToolStartedThisTurn = false;
+  // PHASE-6 T7 (RULING P6-R3(1)): the FIRST-TOOL LATCH lives on the bag too, and it
+  // is the ONE mutable crossing the `execute` span WRITES. It is written at the first
+  // tool dispatch and read HERE, inside the timer callback, at fire time — so by value
+  // the timer would read `false` forever and a long working turn would take the
+  // "chat-shaped, stay quiet" branch while the person heard nothing. The hazard, and
+  // why it completes the F10 family CUT 6 started, are written at the field.
+  //   → `turnCtx.anyToolStartedThisTurn`
   // RC-4.4: true while a model call is streaming for this turn, set around the
   // `callModel` await below. PHASE-6 T5 (CUT 5): MIGRATED to the turn's bag under
   // RULING P6-R3(1) — the span writes it and the declaration is the driver's. The
@@ -2221,7 +2227,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   };
   if (startAckArmed) {
     turnCtx.startAckTimer = setTimeout(() => {
-      if (!anyToolStartedThisTurn) {
+      if (!turnCtx.anyToolStartedThisTurn) {
         // Chat-shaped so far: the model is composing a reply with no tools.
         // Stay silent (dots cover the wait); if tools DO start later, the
         // first-tool-call hook delivers the ack then. Delivered-flag stays
@@ -5537,8 +5543,8 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
           // beginning. If the user has already been waiting past the ack
           // threshold (a slow model that thought before acting), speak now;
           // under the threshold the armed timer handles it.
-          if (!anyToolStartedThisTurn) {
-            anyToolStartedThisTurn = true;
+          if (!turnCtx.anyToolStartedThisTurn) {
+            turnCtx.anyToolStartedThisTurn = true;
             if (startAckArmed && !engineStartAckDeliveredThisTurn &&
                 Date.now() - startAckArmedAtMs > ENGINE_START_ACK_AFTER_MS) {
               void fireStartAckIfOwed('first-tool');
