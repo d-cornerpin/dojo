@@ -1249,6 +1249,7 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
   it('CATEGORY CONVERTED: the transcription service spawns nothing and holds no temp workspace', () => {
     const src = fs.readFileSync(path.join(SRC, 'services/transcription.ts'), 'utf8');
     expect(/^import .*['"]node:child_process['"]/m.test(src), 'it must not spawn').toBe(false);
+    expect(/^import .*['"]node:fs['"]/m.test(src), 'and it must hold no filesystem of its own').toBe(false);
     expect(src.includes("from '../agent/effects/transcode.js'"), 'it transcodes through the carrying layer').toBe(true);
     // …and `child_process` still lives in exactly ONE facade module, which is
     // what keeps the streaming spawn from becoming a second door.

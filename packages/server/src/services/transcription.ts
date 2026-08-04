@@ -15,9 +15,7 @@
 // fetches an https URL with a 50 MB cap and hands the buffer here.
 // ════════════════════════════════════════
 
-import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
 // PHASE-5 T8 Step 3 (RULING P5-R15 ADDENDUM 4(1)) — the transcode mechanism
 // moved into the carrying layer WHOLE. Its fs reach was entirely a temp PAIR in
 // `os.tmpdir()` under platform-generated names, which no declaration can name;
@@ -237,13 +235,16 @@ async function transcribeCloud(
       ? `${baseUrl}/audio/transcriptions`
       : `${baseUrl}/v1/audio/transcriptions`;
 
-  // Write the buffer to a tmp file because the multipart form helper
-  // in undici's fetch likes a File-shaped Blob with a stable filename.
-  const tmpPath = path.join(os.tmpdir(), `dojo-stt-${Date.now()}-${req.filename}`);
-  fs.writeFileSync(tmpPath, req.audio);
-
   const start = Date.now();
   try {
+    // The body is assembled from the buffer this function was handed. A tmp copy
+    // of the whole audio used to be written here and unlinked in the `finally`
+    // below with nothing ever reading it; its comment claimed the multipart
+    // helper wanted a file with a stable filename, and the filename is the third
+    // argument to `append`. Deleted at PHASE-5 T8 (RULING P5-R15 ADDENDUM 4(2))
+    // on positive evidence, held by `__tests__/transcription-cloud-form.test.ts`:
+    // the body carries every byte under the field and filename the provider
+    // expects, and the cloud path now touches the filesystem zero times.
     const form = new FormData();
     form.append('file', new Blob([req.audio], { type: req.mimeType || 'audio/mpeg' }), req.filename);
     form.append('model', apiModelId);
@@ -296,8 +297,6 @@ async function transcribeCloud(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, error: `Cloud transcription failed: ${message}`, code: 'HTTP_ERROR' };
-  } finally {
-    try { fs.unlinkSync(tmpPath); } catch { /* tmp cleanup is best-effort */ }
   }
 }
 
