@@ -357,7 +357,7 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     // Mechanic 5's equivalent of `CARRIED_PROGRAMS`'s census: a new way to turn
     // an argument into a resource has to be written into the table by hand to
     // exist at all, so the set cannot grow by declaration.
-    expect(Object.keys(INDIRECT_RESOLVERS)).toEqual(['attachment_row']);
+    expect(Object.keys(INDIRECT_RESOLVERS)).toEqual(['attachment_row', 'technique_dir']);
     for (const resolve of Object.values(INDIRECT_RESOLVERS)) {
       expect(typeof resolve, 'every indirection resolves through a real reader').toBe('function');
     }
@@ -807,5 +807,114 @@ describe('the capability cannot be forged, and the facade holds no judgement', (
     // …and nothing else under the same parent, which is what makes it a scope.
     const sibling = path.join(os.homedir(), '.dojo', 'data', 'dojo.db');
     expect(grantsCover(grants, { op: 'fs_write', path: sibling, real: sibling }), 'the scope is the shots dir alone').toBe(false);
+  });
+
+  it('APPLICATION (a): a reference resolves to the TREE of its recorded directory, and to nothing else', () => {
+    // RULING P5-R15 ADDENDUM 3(1)(a). Mechanic 5 resolves an identifier to ONE
+    // recorded path; the techniques cluster names a DIRECTORY the tool works
+    // inside. The reference an agent passes is an id, a slug OR a display name,
+    // resolved through the same DB read the handler performs, so no template
+    // scope can name the directory — the resolution has to be the platform's own.
+    const dir = path.join(scratch, 'technique-alpha');
+    fs.mkdirSync(path.join(dir, 'templates'), { recursive: true });
+    const nested = path.join(dir, 'templates', 'brief.md');
+    fs.writeFileSync(nested, '# brief\n');
+    const declaration: ToolEffect = { kind: 'fs_read', from: 'args.name', via: 'technique_dir', scope: { at: 'argTree' } };
+    const grants = grantsForCall(AGENT, [declaration], { name: 'Alpha Technique' }, {
+      attachment_row: () => null,
+      technique_dir: (ref) => (ref === 'Alpha Technique' ? { path: dir } : null),
+    });
+    expect(grantsCover(grants, { op: 'fs_read', path: dir, real: dir }), 'the directory itself').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: nested, real: nested }), 'and what is nested inside it').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: outOfScope, real: outOfScope }), 'and nothing outside it').toBe(false);
+    // A read of the tree is not a licence to write it — the kinds stay separate.
+    expect(grantsCover(grants, { op: 'fs_write', path: nested, real: nested })).toBe(false);
+    // …and the SAME indirection without the tree scope is still ONE path, which
+    // is what makes `argTree` a declaration rather than a habit.
+    const one = grantsForCall(AGENT, [{ kind: 'fs_read', from: 'args.name', via: 'technique_dir' } as ToolEffect], { name: 'Alpha Technique' }, {
+      attachment_row: () => null,
+      technique_dir: () => ({ path: dir }),
+    });
+    expect(grantsCover(one, { op: 'fs_read', path: nested, real: nested }), 'no tree was declared').toBe(false);
+  });
+
+  it('…and a reference that resolves to NOTHING yields no grant, so the handler keeps its own error', () => {
+    // `resolveTechniqueRef` already answers a bad reference with its own message
+    // ("Technique X not found. Use list_techniques…") and the handler returns
+    // before it touches disk. A stale reference must never become a bare refusal.
+    const e = [{ kind: 'fs_read', from: 'args.name', via: 'technique_dir', scope: { at: 'argTree' } } as ToolEffect];
+    const lookup = { attachment_row: (): null => null, technique_dir: (): null => null };
+    expect(grantsForCall(AGENT, e, { name: 'no-such-technique' }, lookup)).toEqual([]);
+    expect(grantsForCall(AGENT, e, {}, lookup), 'absent argument').toEqual([]);
+    expect(grantsForCall(AGENT, e, { name: 42 }, lookup), 'non-string reference').toEqual([]);
+  });
+
+  it('CATEGORY CONVERTED: the techniques door reads and writes through the facade', () => {
+    const src = fs.readFileSync(path.join(SRC, 'techniques/tools.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(src), 'the techniques door must not hold node:fs').toBe(false);
+    expect(src.includes('effectFs.'), 'it reaches the disk through the facade').toBe(true);
+  });
+
+  it('ONE RESOLUTION POINT: the gate loop and the handler ask the same reader the same question', () => {
+    // The same-reader principle is structural here, not hoped: the identity read
+    // (`resolveTechniqueRef` → the recorded row) lives in ONE leaf the gate loop
+    // can import without dragging the store's own fs, embeddings and broadcast
+    // into every dispatch's module graph, and the store re-exports it so no
+    // consumer moved.
+    const leaf = fs.readFileSync(path.join(SRC, 'techniques/technique-dir.ts'), 'utf8');
+    expect(/^import .*['"]node:fs['"]/m.test(leaf), 'the resolution leaf holds no fs of its own').toBe(false);
+    expect(filesContaining('function resolveTechniqueRef('), 'the reference reader exists in exactly one place')
+      .toEqual(['techniques/technique-dir.ts']);
+    expect(filesContaining('function techniqueDirectory('), 'and so does the reference → directory mapping')
+      .toEqual(['techniques/technique-dir.ts']);
+  });
+
+  it('technique_read DECLARES the technique tree it walks, so its search keeps finding supporting files', () => {
+    // The handler's own `catch` around the walk turns a refusal into a logged
+    // warning and NO hits — the `file_list` failure mode exactly: converted on a
+    // single-path grant, `action="search"` would silently stop matching every
+    // supporting file and nothing anywhere would fail.
+    const dir = path.join(scratch, 'technique-beta');
+    fs.mkdirSync(path.join(dir, 'sub'), { recursive: true });
+    const support = path.join(dir, 'sub', 'server.py');
+    const grants = grantsForCall(AGENT, effectsFor('technique_read'), { name: 'beta', action: 'search', query: 'x' }, {
+      attachment_row: () => null,
+      technique_dir: () => ({ path: dir }),
+    });
+    expect(grantsCover(grants, { op: 'fs_read', path: dir, real: dir }), 'it may list the directory').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: support, real: support }), 'it may read a nested supporting file').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_stat', path: support, real: support }), 'it may probe one').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_read', path: outOfScope, real: outOfScope }), 'and nothing outside the technique').toBe(false);
+    // A read is not a licence to write: `technique_read` writes nothing.
+    expect(grantsCover(grants, { op: 'fs_write', path: support, real: support })).toBe(false);
+    // The indirection is DECLARED on the tool, so a later edit cannot drop it silently.
+    expect(
+      effectsFor('technique_read')?.some((x) => x.via === 'technique_dir' && x.scope?.at === 'argTree'),
+      'technique_read must declare the technique-directory tree',
+    ).toBe(true);
+  });
+
+  it('update_technique DECLARES the technique tree it writes, never the relative name it was given', () => {
+    // `files[].path` is a RELATIVE path inside the technique directory. Resolved
+    // as a path of its own it named a file in the server's working directory the
+    // tool never touches, while the real write — `<technique dir>/<that name>` —
+    // went undeclared. Same class as the PDF door's bare filename, and the
+    // conversion is what forced it into the open.
+    const dir = path.join(scratch, 'technique-gamma');
+    fs.mkdirSync(dir, { recursive: true });
+    const written = path.join(dir, 'templates', 'brief.md');
+    const grants = grantsForCall(AGENT, effectsFor('update_technique'), {
+      name: 'gamma', change_summary: 'x', files: [{ path: 'templates/brief.md', content: 'hi' }],
+    }, {
+      attachment_row: () => null,
+      technique_dir: () => ({ path: dir }),
+    });
+    expect(grantsCover(grants, { op: 'fs_mkdir', path: path.dirname(written), real: path.dirname(written) }), 'it may create the subdirectory').toBe(true);
+    expect(grantsCover(grants, { op: 'fs_write', path: written, real: written }), 'it may write the supporting file').toBe(true);
+    // …and never the cwd-relative resolution of the same name, which is what the
+    // declaration used to say and what it never touched.
+    const false_ = path.resolve('templates/brief.md');
+    expect(grantsCover(grants, { op: 'fs_write', path: false_, real: false_ }), 'the bare relative name grants nothing').toBe(false);
+    expect(grantsCover(grants, { op: 'fs_write', path: outOfScope, real: outOfScope }), 'and nothing outside the technique').toBe(false);
   });
 });

@@ -2,7 +2,7 @@
 // Technique Agent Tools
 // ════════════════════════════════════════
 
-import fs from 'node:fs';
+import * as effectFs from '../agent/effects/fs.js';
 import path from 'node:path';
 import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
@@ -356,8 +356,8 @@ export function executeUpdateTechnique(agentId: string, _agentName: string, clas
   if (files) {
     for (const file of files) {
       const filePath = path.join(technique.directoryPath, file.path);
-      fs.mkdirSync(path.dirname(filePath), { recursive: true });
-      fs.writeFileSync(filePath, file.content, 'utf-8');
+      effectFs.mkdirSync(path.dirname(filePath), { recursive: true });
+      effectFs.writeFileSync(filePath, file.content, 'utf-8');
     }
   }
 
@@ -675,7 +675,7 @@ function formatSearch(technique: { name: string; directoryPath: string; instruct
     try {
       const dir = technique.directoryPath;
       const walk = (subdir: string) => {
-        const entries = fs.readdirSync(path.join(dir, subdir), { withFileTypes: true });
+        const entries = effectFs.readdirSync(path.join(dir, subdir), { withFileTypes: true });
         for (const entry of entries) {
           if (hits.length >= SEARCH_MAX_HITS) return;
           const rel = subdir ? path.join(subdir, entry.name) : entry.name;
@@ -684,7 +684,7 @@ function formatSearch(technique: { name: string; directoryPath: string; instruct
             walk(rel);
           } else if (entry.isFile() && entry.name !== 'TECHNIQUE.md' && entry.name !== 'metadata.json') {
             try {
-              const buf = fs.readFileSync(path.join(dir, rel));
+              const buf = effectFs.readFileSync(path.join(dir, rel));
               // Skip binary files (best-effort heuristic)
               if (buf.includes(0)) continue;
               searchOne(rel, buf.toString('utf-8'));
@@ -743,12 +743,12 @@ function formatReadFile(technique: { name: string; directoryPath: string }, args
   if (!full.startsWith(technique.directoryPath)) {
     return `Error: file path escapes the technique directory.`;
   }
-  if (!fs.existsSync(full)) {
+  if (!effectFs.existsSync(full)) {
     return `Error: file "${normalized}" not found in "${technique.name}". Use action="list_files" to see available files.`;
   }
   let contents: string;
   try {
-    contents = fs.readFileSync(full, 'utf-8');
+    contents = effectFs.readFileSync(full, 'utf-8');
   } catch (err) {
     return `Error reading "${normalized}": ${err instanceof Error ? err.message : String(err)}.`;
   }

@@ -2122,10 +2122,10 @@ export const toolDefinitions: ToolDefinition[] = [
   {
     name: 'technique_read',
     description: 'Read a technique with surgical precision instead of slurping the whole thing. Five actions: (1) outline [default], returns headings, line ranges, char counts, and supporting files; never truncates; ALWAYS your first call when consulting a technique. (2) section, read one section by section_name="<title>" (case-insensitive substring match) or lines="start-end"; oversize sections require explicit line ranges. (3) search, query="<term>" greps TECHNIQUE.md AND all supporting files, returns matches with file + line number + surrounding context; best path through a huge technique. (4) list_files, list the technique\'s supporting files. (5) read_file, read one supporting file by file="<path>", optional lines="start-end".\n\nWhen you read a technique, apply what it says rather than falling back to cached memory (agents used to read techniques and then ignore them). You MAY optionally call technique_acknowledge afterward to record that you engaged, but it is not required and no tools are blocked. Pattern: technique_read (one or more times to load what you need), then do the work.',
-    effects: [
-      { kind: 'fs_read', from: 'args.file' },
-      { kind: 'fs_read', from: 'derived:the technique directory named by args.name' },
-    ],
+    effects: [{ kind: 'fs_read', from: 'args.name', via: 'technique_dir', scope: { at: 'argTree' } }],
+    nonEffects: {
+      file: 'a RELATIVE path INSIDE the technique directory — the handler refuses an absolute path or a traversal at the site before it opens anything. Resolved as a path of its own it would name a file relative to the server working directory, which this tool never touches; the real read is covered by the technique-tree effect above',
+    },
     input_schema: {
       type: 'object',
       properties: {
@@ -2173,13 +2173,14 @@ export const toolDefinitions: ToolDefinition[] = [
     name: 'update_technique',
     description: 'Update a technique\'s display name, description, instructions, files, or dependency manifest. Instruction changes create a version snapshot; metadata-only changes (display_name / description / dependencies) do not. **Trainer agent only**, non-trainer callers get refused with a redirect.\n\nFile-reference validation runs the same way as save_technique: if `instructions` references a path that isn\'t in the support dir AND isn\'t declared in dependencies, the update is refused.',
     effects: [
-      { kind: 'fs_write', from: 'args.files[].path' },
+      { kind: 'fs_write', from: 'args.name', via: 'technique_dir', scope: { at: 'argTree' } },
       { kind: 'net', from: 'args.dependencies.repos[].url' },
       { kind: 'fs_write', from: 'args.dependencies.repos[].install_to' },
       { kind: 'net', from: 'args.dependencies.models_or_assets[].url' },
       { kind: 'fs_write', from: 'args.dependencies.models_or_assets[].destination' },
     ],
     nonEffects: {
+      'files[].path': 'a RELATIVE path INSIDE the technique directory, joined onto the technique row\'s recorded `directory_path` before anything is written. Resolved as a path of its own it named a file relative to the server working directory, which this tool never touches, while the real write went undeclared; the real write is covered by the technique-tree effect above',
       'dependencies.language_packages[].install_in': 'a package-manager working directory recorded in the manifest for the importing trainer to act on later; this call writes nothing there',
     },
     input_schema: {

@@ -40,6 +40,7 @@ import {
   type ToolEffect, type EffectScope, type EffectIndirection,
 } from '../tools/types.js';
 import { resolveAttachmentPath } from '../../services/attachment-resolve.js';
+import { techniqueDirectory } from '../../techniques/technique-dir.js';
 import { attachCallCapability, mintCallCapability, type ResourceGrant } from './capability.js';
 
 /**
@@ -82,6 +83,11 @@ export type IndirectResolver = (id: string) => { path: string } | null;
 export const INDIRECT_RESOLVERS: Readonly<Record<EffectIndirection, IndirectResolver>> = {
   /** `transcribe_audio`'s `attachment_id` → the path `messages.attachments` records for it. */
   attachment_row: resolveAttachmentPath,
+  /** A technique reference (id, slug or display name) → the `directory_path` its
+   *  row records — RULING P5-R15 ADDENDUM 3(1)(a). With `scope: { at: 'argTree' }`
+   *  it names the TREE the tool works inside; that is the whole difference from
+   *  `attachment_row`, which resolves to one file. */
+  technique_dir: techniqueDirectory,
 };
 
 // `EffectScope` is declared on the registry leaf (`tools/types.ts`) beside the
@@ -130,6 +136,25 @@ function fsKindOf(kind: string): 'fs_read' | 'fs_write' | 'fs_delete' | null {
 }
 
 /**
+ * ONE resolved path becomes ONE grant — a TREE when the declaration says the
+ * effect covers what is INSIDE it (`scope: { at: 'argTree' }`), otherwise the
+ * single file it names. Written once because both ways of naming a resource —
+ * the argument itself, and an argument resolved through a named indirection —
+ * mean the same thing once the path is known.
+ */
+function pushResolved(
+  grants: ResourceGrant[], kind: 'fs_read' | 'fs_write' | 'fs_delete',
+  value: { lexical: string; real: string }, tree: boolean,
+): void {
+  if (!tree) {
+    grants.push({ kind, at: 'path', lexical: value.lexical, real: value.real });
+    return;
+  }
+  grants.push({ kind, at: 'tree', root: value.lexical });
+  if (value.real !== value.lexical) grants.push({ kind, at: 'tree', root: value.real });
+}
+
+/**
  * THE RESOURCES THIS CALL IS AUTHORIZED TO TOUCH.
  *
  * Called by the executor's gate loop AFTER every gate has answered, so a refused
@@ -171,9 +196,11 @@ export function grantsForCall(
         const row = resolve(id);
         if (!row) continue;
         const recorded = resolvePathArg(row.path);
-        if (recorded.ok) {
-          grants.push({ kind: fsKind, at: 'path', lexical: recorded.value.lexical, real: recorded.value.real });
-        }
+        // `argTree` COMPOSES with the indirection: what the reference resolved to
+        // is a DIRECTORY and the effect covers what is inside it (ADDENDUM 3(1)(a)
+        // — a technique's supporting files). Without it the indirection still
+        // names exactly ONE file, which keeps the tree a declaration, not a habit.
+        if (recorded.ok) pushResolved(grants, fsKind, recorded.value, effect.scope?.at === 'argTree');
         continue;
       }
 
@@ -214,20 +241,11 @@ export function grantsForCall(
       const raw = readArgPath(args, dotted);
       if (fsKind) {
         const resolved = resolvePathArg(raw);
-        if (resolved.ok) {
-          // `scope: { at: 'argTree' }` — the argument names a DIRECTORY and the
-          // effect covers what is inside it (`file_list` stats every entry).
-          // The root is the resolved argument, so this can never be wider than
-          // the directory the agent named and the gate loop already authorized.
-          if (effect.scope?.at === 'argTree') {
-            grants.push({ kind: fsKind, at: 'tree', root: resolved.value.lexical });
-            if (resolved.value.real !== resolved.value.lexical) {
-              grants.push({ kind: fsKind, at: 'tree', root: resolved.value.real });
-            }
-          } else {
-            grants.push({ kind: fsKind, at: 'path', lexical: resolved.value.lexical, real: resolved.value.real });
-          }
-        }
+        // `scope: { at: 'argTree' }` — the argument names a DIRECTORY and the
+        // effect covers what is inside it (`file_list` stats every entry). The
+        // root is the resolved argument, so this can never be wider than the
+        // directory the agent named and the gate loop already authorized.
+        if (resolved.ok) pushResolved(grants, fsKind, resolved.value, effect.scope?.at === 'argTree');
       } else if (effect.kind === 'proc') {
         const resolved = resolveArgvArg(raw);
         if (resolved.ok) {

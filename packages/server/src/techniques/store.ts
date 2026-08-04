@@ -20,6 +20,15 @@ import {
   validateTechniqueFileReferences,
   formatValidationRefusal,
 } from './dependencies.js';
+// The reference → row → directory read lives in its own leaf so the executor's
+// gate loop can perform it before it mints a call's capability, without pulling
+// this module's fs, embeddings and broadcast into every dispatch's graph
+// (PHASE-5 T8, RULING P5-R15 ADDENDUM 3(1)(a)). Re-exported below, so nothing
+// that imported these names from the store had to move.
+import { getTechnique, resolveTechniqueRef, rowToTechnique, type TechniqueMetadata } from './technique-dir.js';
+
+export { getTechnique, resolveTechniqueRef, techniqueDirectory } from './technique-dir.js';
+export type { TechniqueMetadata } from './technique-dir.js';
 
 const logger = createLogger('technique-store');
 
@@ -45,26 +54,6 @@ function ensureTechniquesDir(): void {
 }
 
 // ── Types ──
-
-export interface TechniqueMetadata {
-  id: string;
-  name: string;
-  description: string | null;
-  state: 'draft' | 'review' | 'published' | 'disabled' | 'archived' | 'needs_setup';
-  authorAgentId: string | null;
-  authorAgentName: string | null;
-  tags: string[];
-  directoryPath: string;
-  enabled: boolean;
-  version: number;
-  usageCount: number;
-  lastUsedAt: string | null;
-  buildProjectId: string | null;
-  buildSquadId: string | null;
-  createdAt: string;
-  updatedAt: string;
-  publishedAt: string | null;
-}
 
 export interface TechniqueDetail extends TechniqueMetadata {
   instructions: string | null; // Current TECHNIQUE.md content
@@ -228,48 +217,6 @@ export function createTechnique(params: CreateTechniqueParams): TechniqueMetadat
   broadcast({ type: 'technique:created', data: { id, name: params.displayName, state } });
 
   return getTechnique(id)!;
-}
-
-export function getTechnique(id: string): TechniqueMetadata | null {
-  const db = getDb();
-  const row = db.prepare('SELECT * FROM techniques WHERE id = ?').get(id) as Record<string, unknown> | undefined;
-  if (!row) return null;
-  return rowToTechnique(row);
-}
-
-// Resolve a user/agent-supplied technique reference to the canonical slug id.
-// Accepts: exact id ("v-e-brew"), the original name agents passed at save time
-// ("V-E-Brew" or "V E Brew"), or any case variant. Mirrors the slugification
-// in createTechnique so a name → slug → row lookup works without callers
-// having to know the slug rules.
-//
-// Without this, agents who saved a technique as "V-E-Brew" got "Technique not
-// found" when they tried to use_technique({name:"V-E-Brew"}) — they had to
-// remember to pass the slug "v-e-brew" instead. Friendly error suggests the
-// list_techniques tool when nothing matches.
-function slugifyTechniqueName(input: string): string {
-  return input.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-');
-}
-
-export function resolveTechniqueRef(value: string): { ok: true; id: string } | { ok: false; error: string } {
-  if (!value) return { ok: false, error: 'Error: technique name is required.' };
-  const db = getDb();
-  // 1. Exact id (the slug)
-  let row = db.prepare('SELECT id FROM techniques WHERE id = ?').get(value) as { id: string } | undefined;
-  if (row) return { ok: true, id: row.id };
-  // 2. Slugified input (covers "V-E-Brew" → "v-e-brew" and similar)
-  const slug = slugifyTechniqueName(value);
-  if (slug !== value) {
-    row = db.prepare('SELECT id FROM techniques WHERE id = ?').get(slug) as { id: string } | undefined;
-    if (row) return { ok: true, id: row.id };
-  }
-  // 3. Display name, case-insensitive
-  row = db.prepare('SELECT id FROM techniques WHERE name = ? COLLATE NOCASE LIMIT 1').get(value) as { id: string } | undefined;
-  if (row) return { ok: true, id: row.id };
-  return {
-    ok: false,
-    error: `Technique "${value}" not found. Use list_techniques to see what's available, or save_technique to create one.`,
-  };
 }
 
 export function getTechniqueDetail(id: string): TechniqueDetail | null {
@@ -565,28 +512,6 @@ export function recordTechniqueUsage(techniqueId: string, agentId: string, agent
 }
 
 // ── Helpers ──
-
-function rowToTechnique(row: Record<string, unknown>): TechniqueMetadata {
-  return {
-    id: row.id as string,
-    name: row.name as string,
-    description: row.description as string | null,
-    state: row.state as TechniqueMetadata['state'],
-    authorAgentId: row.author_agent_id as string | null,
-    authorAgentName: row.author_agent_name as string | null,
-    tags: JSON.parse((row.tags as string) || '[]'),
-    directoryPath: row.directory_path as string,
-    enabled: Boolean(row.enabled),
-    version: row.version as number,
-    usageCount: row.usage_count as number,
-    lastUsedAt: row.last_used_at as string | null,
-    buildProjectId: row.build_project_id as string | null,
-    buildSquadId: row.build_squad_id as string | null,
-    createdAt: row.created_at as string,
-    updatedAt: row.updated_at as string,
-    publishedAt: row.published_at as string | null,
-  };
-}
 
 function getFileTree(dirPath: string): Array<{ path: string; size: number; isDirectory: boolean }> {
   const results: Array<{ path: string; size: number; isDirectory: boolean }> = [];

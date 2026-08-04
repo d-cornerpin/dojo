@@ -64,9 +64,14 @@ export function readFileSync(target: fs.PathLike, encoding?: BufferEncoding): st
   return encoding === undefined ? fs.readFileSync(target) : fs.readFileSync(target, encoding);
 }
 
-export function readdirSync(target: fs.PathLike): string[] {
+export function readdirSync(target: fs.PathLike, options: { withFileTypes: true }): fs.Dirent[];
+export function readdirSync(target: fs.PathLike): string[];
+export function readdirSync(
+  target: fs.PathLike,
+  options?: { withFileTypes: true },
+): string[] | fs.Dirent[] {
   check('fs_read', target);
-  return fs.readdirSync(target);
+  return options === undefined ? fs.readdirSync(target) : fs.readdirSync(target, options);
 }
 
 // ── Writes ──────────────────────────────────────────────────────────────────

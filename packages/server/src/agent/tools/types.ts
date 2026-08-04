@@ -138,13 +138,16 @@ export interface ToolEffect {
 }
 
 /**
- * The named indirections a declaration may point at. One entry today.
- *
- * A LIST rather than a shape, for the reason `CARRIED_PROGRAMS` is a list: a
- * new way to turn an argument into a resource has to be written here by hand to
- * exist at all, so the set cannot grow by declaration.
+ * The named indirections a declaration may point at. `attachment_row` resolves
+ * an id to ONE recorded file; `technique_dir` resolves a technique reference (an
+ * id, a slug OR a display name) to the directory its row records, which no scope
+ * template can name — RULING P5-R15 ADDENDUM 3(1)(a); pair it with
+ * `scope: { at: 'argTree' }` when the tool works INSIDE that directory. A LIST
+ * rather than a shape, for the reason `CARRIED_PROGRAMS` is a list: a new way to
+ * turn an argument into a resource has to be written here by hand to exist at
+ * all, so the set cannot grow by declaration.
  */
-export type EffectIndirection = 'attachment_row';
+export type EffectIndirection = 'attachment_row' | 'technique_dir';
 
 /**
  * WHERE A DERIVED EFFECT ACTS, declared so it can be checked.

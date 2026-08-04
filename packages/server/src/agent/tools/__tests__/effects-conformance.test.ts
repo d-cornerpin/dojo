@@ -181,7 +181,14 @@ describe('effects-declaration conformance walk (PHASE-5 T1)', () => {
     // touches, while the real write went undeclared. With the real target now
     // declared (the agent uploads tree), clause 6 asked what the name itself is
     // — and `inert, with the reason` is the true answer.
-    expect(BASE.filter((d) => d.nonEffects).length).toBe(22);
+    // T8 Step 3 moves it by ONE more, and it is the same class a third time:
+    // `technique_read.file` is a RELATIVE name inside the technique directory,
+    // not a path. With the real read declared (the technique tree the reference
+    // resolves to — RULING P5-R15 ADDENDUM 3(1)(a)), clause 6 asked what the
+    // relative name itself is, and `inert, with the reason` is the true answer.
+    // `update_technique.files[].path` is the same correction, on a definition
+    // that already carried a ruling, so it moves no count here.
+    expect(BASE.filter((d) => d.nonEffects).length).toBe(23);
 
     const kindsInUse = new Set(BASE.flatMap((d) => d.effects.map((e) => e.kind)));
     // `fs_delete` and `spawn` are single-member classes today; since T3 so are
