@@ -1,19 +1,5 @@
 {
-  "_comment": [
-    "Growth baseline for deploy/checks/check-growth.mjs. Refreshed with --record,",
-    "in a gate-side-only commit, deliberately. A file more than 25% above its entry",
-    "here fails; an unpinned file that was at or below 60% of ratchets.json",
-    "maxNewFileLines and is now above it fails. Re-record roughly every 30 days.",
-    "",
-    "PHASE-6 GUARD-AUDIT F7 (seeded 2026-08-04 by CUT 3): every file under",
-    "packages/server/src/agent/v2/steps/ is listed, including the six CUT 1 and CUT 2",
-    "created before this rule was written. The detector cannot watch a file it has",
-    "never met, and a phase whose whole shape is moving 8,800 lines into new step",
-    "packages would otherwise grow them unwatched. CUT 3 is the first tranche whose",
-    "entry crossed the 60% visibility line (thrash-gate.ts at 392), which is what made",
-    "the gap visible; the six earlier ones are seeded in the same commit rather than",
-    "left as a smaller instance of the same hole. Each remaining cut adds its own."
-  ],
+  "_comment": "Growth baseline for deploy/checks/check-growth.mjs. Refreshed with --record,,in a gate-side-only commit, deliberately. A file more than 25% above its entry,here fails; an unpinned file that was at or below 60% of ratchets.json,maxNewFileLines and is now above it fails. Re-record roughly every 30 days.,,PHASE-6 GUARD-AUDIT F7 (seeded 2026-08-04 by CUT 3): every file under,packages/server/src/agent/v2/steps/ is listed, including the six CUT 1 and CUT 2,created before this rule was written. The detector cannot watch a file it has,never met, and a phase whose whole shape is moving 8,800 lines into new step,packages would otherwise grow them unwatched. CUT 3 is the first tranche whose,entry crossed the 60% visibility line (thrash-gate.ts at 392), which is what made,the gap visible; the six earlier ones are seeded in the same commit rather than,left as a smaller instance of the same hole. Each remaining cut adds its own. | PHASE-6 CUT 4 (2026-08-04): the eight files of  seeded at their landing sizes, per GUARD-AUDIT F7 — the growth detector cannot watch a file it has never met, and one of these (channel-push.ts, 391) is above the 240-line visibility line. Seeded at the cut that created them, as CUT 3 seeded all ten of its predecessors.",
   "recordedAt": "2026-08-01",
   "recordedAtCommit": "621304a",
   "windowDays": 30,
@@ -475,6 +461,14 @@
     "packages/shared/src/ws.ts": 1082,
     "watchdog/src/auto-rollback.ts": 197,
     "watchdog/src/index.ts": 1198,
-    "packages/server/src/agent/scope.ts": 332
+    "packages/server/src/agent/scope.ts": 332,
+    "packages/server/src/agent/v2/steps/finalize/index.ts": 171,
+    "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 391,
+    "packages/server/src/agent/v2/steps/finalize/route-reply.ts": 211,
+    "packages/server/src/agent/v2/steps/finalize/completion-ack.ts": 147,
+    "packages/server/src/agent/v2/steps/finalize/stranded-attachments.ts": 122,
+    "packages/server/src/agent/v2/steps/finalize/link-backstop.ts": 113,
+    "packages/server/src/agent/v2/steps/finalize/close-the-loop.ts": 94,
+    "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts": 90
   }
 }

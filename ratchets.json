@@ -1905,6 +1905,76 @@
       "to": 152,
       "by": "PHASE-6 T3 (2026-08-04) — NEW PIN (the turn-time budget and its recap)",
       "why": "NOT A RAISE — a new file at 152. The 15-minute checkpoint, the 3-crossing ladder, and the mid-turn compaction recap that answers the 2026-07-23 seven-apologies incident. Its requirement landed as six clauses in `agent/v2/__tests__/integration.test.ts` BEFORE this file existed, green on the unmoved tree — the branch had no test anywhere in the suite."
+    },
+    {
+      "path": "packages/server/src/agent/v2/loop.ts",
+      "from": 8783,
+      "to": 7884,
+      "by": "PHASE-6 T9 (2026-08-04) — A LOWERING, the fourth tranche of the decomposition (CUT 4)",
+      "why": "The per-tranche Step 3 tightening, paid at the tranche that earned it. The finalize phase (`:7856`-`:8782` at `0942fd9`, 927 lines) left this file for `agent/v2/steps/finalize/`. The MEASURED cut is 899 (8783 -> 7884), not the 927 that moved, and the difference is stated rather than smoothed: the call site and its four-line note cost 5 back, the context closure and its own note cost 11, and SIXTEEN orphaned imports went out WITH the code (`writeToolReceipt`, `pendingWakeups`, `recoveryRunStreak`, `recordAffinityPromotion`, `affinityPromotionRefusedNoBasis`, `recordHeld`, `recordedId`, the whole `outbound-root.js` line and the `Message` type), found by the lint-baseline gate counting +11 TS6133 / +2 TS6196 / +1 TS6192 and fixed at the cause rather than by raising a pin. A relocation pays for its own seam. TWO ALTERNATIVES MEASURED AND REFUSED — the same two CUT 1, CUT 2 and CUT 3 refused, and the measurement was RE-RUN rather than carried: (a) `check-ratchets.mjs --tighten`, which was run and reverted, and which would ALSO have swept the identical FIVE unrelated files pre-existing slack (`techniques/share-import.ts` -101, `services/transcription.ts` -84, `techniques/store.ts` -75, `agent/tools/cat/fs.ts` -2, `work/store.ts` -2 = 264 lines, still claimable and still someone else to claim); (b) leaving the pin at 8783 for the five remaining tranches headroom, which is the decrease-only rule inverted."
+    },
+    {
+      "path": "packages/server/src/agent/turn-context.ts",
+      "from": 301,
+      "to": 380,
+      "by": "PHASE-6 T9 (2026-08-04) — A RAISE, and the whole of it is RULING P6-R3(1) carriers",
+      "why": "A RAISE, deliberate and counted. The finalize span crossed EIGHT mutable driver locals; six migrated to the turn bag family by family before anything moved (P6-R3(1): \"the carrier is the turn bag … and no second mechanism\"), and each field carries the reasoning that belongs at its own site — including, for the phone-stream pair, the MEASUREMENT that its by-value alternative is unsafe (written from the model onChunk callback, and the span writes the buffer), and for the other four the honest label that they migrate under the rule rather than under a hazard. +79 lines, of which the six field declarations are 6 and the rest is that reasoning plus the initialisers. THE ALTERNATIVE REFUSED: writing the reasons only into a report, which is how the next reader inherits a rule with no reason attached — the same failure this cut CORRECTED on `deferredUserReplyWithTools`, whose declaration comment defended its position with a reason that had stopped being true."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/index.ts",
+      "from": null,
+      "to": 171,
+      "by": "PHASE-6 T9 (2026-08-04) — NEW PIN (the entry point, the measured context, the ORDER and the tail)",
+      "why": "NOT A RAISE — a new file at 171, under `maxNewFileLines` (400). Pinned for T1 and CUT 1 stated reason: a phase that moves 8,800 lines into nine unwatched files has not shrunk anything."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/channel-push.ts",
+      "from": null,
+      "to": 391,
+      "by": "PHASE-6 T9 (2026-08-04) — NEW PIN (the settled-context hold and the five channel branches)",
+      "why": "NOT A RAISE — a new file at 391, under `maxNewFileLines` (400) though ABOVE the growth gate 240-line visibility line, which is why every file of this package is seeded into `growth-baseline.json` in this same commit. Pinned for T1 and CUT 1 stated reason: a phase that moves 8,800 lines into nine unwatched files has not shrunk anything."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/route-reply.ts",
+      "from": null,
+      "to": 211,
+      "by": "PHASE-6 T9 (2026-08-04) — NEW PIN (the reply-destination resolver — and the kit instrument anchor)",
+      "why": "NOT A RAISE — a new file at 211, under `maxNewFileLines` (400). Pinned for T1 and CUT 1 stated reason: a phase that moves 8,800 lines into nine unwatched files has not shrunk anything."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/completion-ack.ts",
+      "from": null,
+      "to": 147,
+      "by": "PHASE-6 T9 (2026-08-04) — NEW PIN (the scaffolded-work completion detection)",
+      "why": "NOT A RAISE — a new file at 147, under `maxNewFileLines` (400). Pinned for T1 and CUT 1 stated reason: a phase that moves 8,800 lines into nine unwatched files has not shrunk anything."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/stranded-attachments.ts",
+      "from": null,
+      "to": 122,
+      "by": "PHASE-6 T9 (2026-08-04) — NEW PIN (the show_to_user end-of-turn safety net)",
+      "why": "NOT A RAISE — a new file at 122, under `maxNewFileLines` (400). Pinned for T1 and CUT 1 stated reason: a phase that moves 8,800 lines into nine unwatched files has not shrunk anything."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/link-backstop.ts",
+      "from": null,
+      "to": 113,
+      "by": "PHASE-6 T9 (2026-08-04) — NEW PIN (the file download-link backstop)",
+      "why": "NOT A RAISE — a new file at 113, under `maxNewFileLines` (400). Pinned for T1 and CUT 1 stated reason: a phase that moves 8,800 lines into nine unwatched files has not shrunk anything."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/close-the-loop.ts",
+      "from": null,
+      "to": 94,
+      "by": "PHASE-6 T9 (2026-08-04) — NEW PIN (the A2A ack-and-ghost completion report)",
+      "why": "NOT A RAISE — a new file at 94, under `maxNewFileLines` (400). Pinned for T1 and CUT 1 stated reason: a phase that moves 8,800 lines into nine unwatched files has not shrunk anything."
+    },
+    {
+      "path": "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts",
+      "from": null,
+      "to": 90,
+      "by": "PHASE-6 T9 (2026-08-04) — NEW PIN (G-SUP-2 — the answer that rode with a tool call)",
+      "why": "NOT A RAISE — a new file at 90, under `maxNewFileLines` (400). Pinned for T1 and CUT 1 stated reason: a phase that moves 8,800 lines into nine unwatched files has not shrunk anything."
     }
   ],
   "maxNewFileLines": 400,
@@ -1964,12 +2034,12 @@
     "packages/server/src/agent/tools/surface.ts": 657,
     "packages/server/src/agent/tools/types.ts": 338,
     "packages/server/src/agent/tools/util.ts": 371,
-    "packages/server/src/agent/turn-context.ts": 301,
+    "packages/server/src/agent/turn-context.ts": 380,
     "packages/server/src/agent/turn-state.ts": 218,
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 482,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 8783,
+    "packages/server/src/agent/v2/loop.ts": 7884,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 433,
     "packages/server/src/agent/v2/recovery.ts": 605,
@@ -2073,6 +2143,14 @@
     "packages/shared/src/ws.ts": 1088,
     "watchdog/src/index.ts": 1198,
     "packages/server/src/agent/v2/steps/post-execution/index.ts": 235,
-    "packages/server/src/agent/v2/steps/step-outcome.ts": 78
+    "packages/server/src/agent/v2/steps/step-outcome.ts": 78,
+    "packages/server/src/agent/v2/steps/finalize/index.ts": 171,
+    "packages/server/src/agent/v2/steps/finalize/channel-push.ts": 391,
+    "packages/server/src/agent/v2/steps/finalize/route-reply.ts": 211,
+    "packages/server/src/agent/v2/steps/finalize/completion-ack.ts": 147,
+    "packages/server/src/agent/v2/steps/finalize/stranded-attachments.ts": 122,
+    "packages/server/src/agent/v2/steps/finalize/link-backstop.ts": 113,
+    "packages/server/src/agent/v2/steps/finalize/close-the-loop.ts": 94,
+    "packages/server/src/agent/v2/steps/finalize/deferred-recovery.ts": 90
   }
 }
