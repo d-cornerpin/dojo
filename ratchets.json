@@ -1604,6 +1604,20 @@
       "to": 2741,
       "by": "PHASE-5 T8 Step 3 the canvas 3-way split (2026-08-03, T8G) — canvas_read declares what it reads",
       "why": "PHASE-5 T8 Step 3, RULING P5-R14 + P5-R15 ADDENDUM 3(1)(b). +5 lines, 4 of them the reason. THE DEFECT IT FIXES: canvas_read declared `effects: []` and has always probed, stat-ed and read the file on the agent's canvas — the third tool this task has caught declaring nothing for a read it has always performed (after history_get and load_tool_docs). Converted as-is the viewer would have refused its own only use. It adds NO refusal: gate rows are declared in tools/gates.ts and are never derived from effects[] (RULING P5-R5). THE ALTERNATIVES WERE MEASURED. (a) Drop the reason comment (minus 4): REFUSED — this is the first declaration in the file whose resource comes from the agent's identity rather than an argument, and without the reason a later reader will look for the argument it names and 'fix' it. (b) Leave effects: [] and convert anyway: REFUSED — that is the tool refusing every call it has ever served. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 2741."
+    },
+    {
+      "path": "packages/server/src/microsoft/tools-office.ts",
+      "from": 3471,
+      "to": 3496,
+      "by": "PHASE-5 T8 Step 3 the office door (2026-08-03, T8G) — the conversion, the one predicate, and three bare-filename corrections",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 3(1)(c). +25 lines net, and it is a DELETION plus a set of declarations: the duplicated local-path predicate (7 lines) left for its own leaf, 14 fs call sites became facade calls at no line cost, and the declarations grew — 11 edit tools gained the `args.file_id` effect their handlers have always honoured, and the three create tools gained the uploads-tree effect plus a one-line `filename` inert ruling each. THE DEFECTS THEY FIX. (a) The edit tools accept a local .docx/.xlsx in EITHER `path` or `file_id` and declared only the first, so a converted door would refuse every call where the model put the path in file_id — which is the common case the resolver was written for. (b) `filename` on the three create tools is a BARE NAME the handler sanitises before writing into ~/.dojo/uploads/<agentId>; declared as a path it named a file in the server working directory these tools never touch while the real write went undeclared, so converted as-is every create tool would have refused its own output. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Declare `args.file_id` as a plain fs effect with no indirection (minus 11): REFUSED — it mints a live grant resolving a genuine OneDrive id as a cwd-relative path, i.e. a false grant on every cloud call, which is the exact class this sitting corrected three times. (b) Put the predicate in this file and let the gate loop import it here (minus 55 in the new leaf, +0 here): REFUSED — the executor would then pull docx, ExcelJS, JSZip and the Graph client into every dispatch's module graph to ask a two-line question, the same refusal T8E recorded for the STT engines. (c) Share ONE nonEffects reason constant across the three create tools (minus 2): REFUSED — nonEffects is read PER DEFINITION by the T1 conformance walk and the reason IS the ruling; a shared constant makes three rulings look like one. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 3496."
+    },
+    {
+      "path": "packages/server/src/agent/effects/scopes.ts",
+      "from": 334,
+      "to": 340,
+      "by": "PHASE-5 T8 Step 3 the office door (2026-08-03, T8G) — the fourth named indirection",
+      "why": "PHASE-5 T8 Step 3, RULING P5-R15 ADDENDUM 3(1)(c). +6 lines, 4 of them COMMENT and 1 the resolver entry: `office_local_path` joins INDIRECT_RESOLVERS, pointing at the office door's OWN local-path predicate. No branch was added — it reuses the `via` path mechanic 5 already landed — which is the point: the third application of the same-reader principle needed one table row, not a new mechanism. THE COMMENT EARNS ITS PLACE because this entry is the only one whose resolver answers `null` for a WELL-FORMED argument (a genuine OneDrive id), and a reader who does not know that will read the null as a bug. THE ALTERNATIVE WAS MEASURED: teaching the resolver a `looksLikeAPath` rule of its own instead of calling the handler's (about the same lines) — REFUSED outright, because that is the facade layer growing a predicate the handler does not share, and the two would then be free to disagree about what a call means. THE DIRECTION IS STILL ENFORCED: this file may only shrink from 340."
     }
   ],
   "maxNewFileLines": 400,
@@ -1653,7 +1667,7 @@
     "packages/server/src/agent/tools/cat/media.ts": 896,
     "packages/server/src/agent/tools/cat/session.ts": 241,
     "packages/server/src/agent/tools/cat/tracker.ts": 837,
-    "packages/server/src/agent/effects/scopes.ts": 334,
+    "packages/server/src/agent/effects/scopes.ts": 340,
     "packages/server/src/agent/tools/definitions.ts": 2741,
     "packages/server/src/agent/tools/effect-conformance.ts": 259,
     "packages/server/src/agent/tools/gate-eval.ts": 304,
@@ -1705,7 +1719,7 @@
     "packages/server/src/memory/summary-clean-stock.ts": 69,
     "packages/server/src/memory/summary-rebuild.ts": 458,
     "packages/server/src/microsoft/auth.ts": 623,
-    "packages/server/src/microsoft/tools-office.ts": 3471,
+    "packages/server/src/microsoft/tools-office.ts": 3496,
     "packages/server/src/microsoft/tools-read.ts": 1631,
     "packages/server/src/microsoft/tools-write.ts": 2131,
     "packages/server/src/migration/checks.ts": 537,
