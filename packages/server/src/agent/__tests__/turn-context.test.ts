@@ -66,6 +66,12 @@ const THE_TURN_OWNS = [
  *  addition, which is the clause working rather than the clause being in the way. */
 const THE_DRIVER_CARRIES = [
   'startAckTimer', // PHASE-6 T9b — the F10 timer handle; read AND written by the teardown span
+  // PHASE-6 T9 (CUT 4) — the `finalize` tranche's crossings. The phone-stream pair is
+  // the one family whose by-value alternative is measurably UNSAFE (written from the
+  // model's onChunk CALLBACK, and the buffer is WRITTEN by the span); the rest cross
+  // under RULING P6-R3(1)'s rule rather than under a hazard, and each field says which.
+  'phoneStreamBuffer',
+  'phoneStreamFlushedAny',
 ];
 
 /** The six in `turn-state.ts` that OUTLIVE the turn on purpose. */

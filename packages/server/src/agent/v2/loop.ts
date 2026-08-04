@@ -1320,9 +1320,13 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // `CallSession.queueAgentSay` ASAP so audio starts playing on the
   // first sentence instead of waiting for the whole model output.
   // Cuts perceived latency by ~70 % on multi-sentence replies.
+  // PHASE-6 T9 (CUT 4), RULING P6-R3(1): the BUFFER and the FLUSHED latch are on the
+  // turn's bag, because both are written from the model's `onChunk` CALLBACK below
+  // and the `finalize` span both reads and WRITES the buffer — a module boundary
+  // passes values, so a by-value copy would take a stale tail and drop the clear.
+  // `phoneStreamCallSid` stays a driver local: it does not cross the `finalize`
+  // boundary, and migrating what this tranche does not need is `callLLM`'s work.
   let phoneStreamCallSid: string | null = null;
-  let phoneStreamBuffer = '';
-  let phoneStreamFlushedAny = false;
 
   // v3.0.9, inbound channel + reply context resolved in ONE place
   // (inbound-channel.ts). Priority: structured metadata (messages.inbound_meta,
@@ -3535,7 +3539,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
               // Twilio CallSession's TTS queue instead of the voice
               // WS stream.
               if (phoneStreamCallSid) {
-                phoneStreamBuffer += chunk;
+                turnCtx.phoneStreamBuffer += chunk;
                 // Boundary: sentence-end punctuation followed by
                 // whitespace. Sentence-level keeps the synth boundary
                 // clean for both Kokoro and Hume.
@@ -3543,13 +3547,13 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
                 let last = 0;
                 const re = /[.!?\n]+\s+/g;
                 let m: RegExpExecArray | null;
-                while ((m = re.exec(phoneStreamBuffer)) !== null) {
+                while ((m = re.exec(turnCtx.phoneStreamBuffer)) !== null) {
                   const end = m.index + m[0].length;
-                  const part = phoneStreamBuffer.slice(last, end).trim();
+                  const part = turnCtx.phoneStreamBuffer.slice(last, end).trim();
                   if (part) flushParts.push(part);
                   last = end;
                 }
-                if (last > 0) phoneStreamBuffer = phoneStreamBuffer.slice(last);
+                if (last > 0) turnCtx.phoneStreamBuffer = turnCtx.phoneStreamBuffer.slice(last);
                 if (flushParts.length > 0) {
                   // B-2 (comms-audit): set the streamed flag SYNCHRONOUSLY the moment
                   // we decide to flush, BEFORE the detached async IIFE. The old code
@@ -3562,7 +3566,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
                   // turn-end (the only path that reads this flag, after re-checking
                   // !session / isEnded()), it was live at IIFE time too and the parts
                   // WERE enqueued. There is no live-call-hears-silence window here.
-                  phoneStreamFlushedAny = true;
+                  turnCtx.phoneStreamFlushedAny = true;
                   // v2.10.1, queueAgentSay is now just an enqueue
                   // (the CallSession runs a single-flight drain
                   // worker), so synchronous push is fine and order
@@ -3673,7 +3677,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
           // over ever leaving the caller without the final answer. Audio
           // already handed to queueAgentSay stays committed by design;
           // there is no dequeue and none should be added.
-          if (phoneStreamCallSid) { phoneStreamBuffer = ''; phoneStreamFlushedAny = false; }
+          if (phoneStreamCallSid) { turnCtx.phoneStreamBuffer = ''; turnCtx.phoneStreamFlushedAny = false; }
           modelId = fallback.modelId;
           state = advance(state, { modelId });
         } finally {
@@ -8433,7 +8437,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
           // it gets spoken back over the same call.
           // v2.9.23, if streaming TTS already flushed sentences via
           // onChunk above, we ONLY queue whatever tail remains in
-          // phoneStreamBuffer. If nothing was streamed (e.g. the
+          // turnCtx.phoneStreamBuffer. If nothing was streamed (e.g. the
           // model returned in one shot, or onChunk never fired) we
           // fall back to the original one-shot push so we never
           // silently drop the reply.
@@ -8448,11 +8452,11 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
               logger.warn('v2.9.18: phone auto-reply skipped - call already ended', {
                 agentId, callSid: state.inboundContext.phoneCallSid,
               }, agentId);
-            } else if (phoneStreamFlushedAny) {
+            } else if (turnCtx.phoneStreamFlushedAny) {
               // Streaming path took care of the body. Flush the
               // remaining tail (final sentence without trailing
               // punctuation-plus-whitespace) if any.
-              const tail = phoneStreamBuffer.trim();
+              const tail = turnCtx.phoneStreamBuffer.trim();
               if (tail) {
                 // PHASE-2 T5: the phone door records per UTTERANCE, so the whole reply is
                 // declared as one scope and its sentences fold into one row. A reply spoken
@@ -8465,7 +8469,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
                   },
                   () => session.queueAgentSay(tail),
                 );
-                phoneStreamBuffer = '';
+                turnCtx.phoneStreamBuffer = '';
               }
               persistRoutingMarker(`phone call to ${resolveRecipientDisplay('phone', state.inboundContext.phoneFromNumber ?? '(unknown)')}`);
               logger.info('v2.9.23: routed reply via phone TTS (streamed)', {

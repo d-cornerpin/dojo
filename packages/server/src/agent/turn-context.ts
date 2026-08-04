@@ -172,6 +172,34 @@ export interface TurnContext {
    *  every exit that returns before the turn's main `try` opens, so there is no path
    *  that arms it and skips the teardown that cancels it. */
   startAckTimer: ReturnType<typeof setTimeout> | null;
+
+  /** v2.9.23 phone-call streaming TTS — the sentence-splitting buffer the model's
+   *  `onChunk` callback fills, holding the CURRENT stream's unsent tail (the sent
+   *  prefix is stripped as each sentence flushes to `CallSession.queueAgentSay`).
+   *
+   *  ⚠ POPULATION 2, and the ONE carrier in the `finalize` tranche whose by-value
+   *  alternative was measured UNSAFE rather than merely against the rule. Two
+   *  reasons, both by command:
+   *    * IT IS WRITTEN FROM A CALLBACK, not from straight-line driver code
+   *      (`loop.ts`'s `onChunk`: `+= chunk`, then the sent-prefix strip). CUT 3's
+   *      by-value test is "exactly one write site, none inside a timer or
+   *      callback"; this family fails that test in its own words.
+   *    * THE FINALIZE SPAN WRITES IT — the tail flush clears the buffer once the
+   *      remaining sentence has been queued. Handed by value, that clear would die
+   *      at the module boundary, harmless only while nobody looks afterwards.
+   *  `phoneStreamCallSid`, the third local of the same mechanism, deliberately did
+   *  NOT migrate here: it does not cross the `finalize` boundary, and migrating a
+   *  local this tranche does not need is the next tranche's work (`callLLM` owns
+   *  it). */
+  phoneStreamBuffer: string;
+
+  /** v2.9.23 / B-2: latched SYNCHRONOUSLY the moment the streaming path decides to
+   *  flush, so the turn-end phone route knows the body was already spoken and does
+   *  not fall to the one-shot full-reply fallback (the caller hearing the reply
+   *  TWICE was the incident). ⚠ POPULATION 2, same family and same callback-write
+   *  hazard as `phoneStreamBuffer` above; the two are one mechanism's state and
+   *  migrate together. */
+  phoneStreamFlushedAny: boolean;
 }
 
 /** The one registry. Keyed by agentId because a turn belongs to an agent and
@@ -199,6 +227,8 @@ export function openTurnContext(agentId: string): TurnContext {
     receiptIds: [],
     recallTokens: 0,
     startAckTimer: null,
+    phoneStreamBuffer: '',
+    phoneStreamFlushedAny: false,
   };
   openContexts.set(agentId, ctx);
   return ctx;
