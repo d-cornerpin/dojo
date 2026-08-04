@@ -230,6 +230,21 @@ export interface TurnContext {
    *  and the alternative is a per-tranche judgment call that nine tranches would take
    *  nine different ways. The pair moves together because it is one mechanism: the
    *  destination is meaningless without the conversation its cooldown is keyed to. */
+  /** Terminal spin-brake state (owner ruling 2026-07-19), the two halves of one
+   *  mechanism: `toolPhaseEndedBySpinBrake` latches when a signature has been refused
+   *  TERMINAL_AT times and the whole tool phase is over for the turn;
+   *  `spinBrakeGraceCalls` is the small allowance of further model iterations the
+   *  ruling grants for converging to text.
+   *
+   *  ⚠ POPULATION 2, and the pair is genuinely SPLIT ACROSS TWO SPANS, which is why it
+   *  cannot ride by value: `execute` LATCHES the flag and `callLLM` READS it one
+   *  iteration later, while `callLLM` WRITES the grace counter that must survive the
+   *  next iteration. Two step boundaries, opposite directions, one mechanism — a
+   *  by-value copy on either side loses a write the other side has to see. The pair
+   *  moves together because a grace with no latch to spend it on is not a mechanism. */
+  toolPhaseEndedBySpinBrake: boolean;
+  spinBrakeGraceCalls: number;
+
   ownerAffinityConversationId: string | null;
   ownerAffinityDestination: 'imessage' | null;
 
@@ -290,6 +305,8 @@ export function openTurnContext(agentId: string): TurnContext {
     phoneStreamBuffer: '',
     phoneStreamFlushedAny: false,
     phoneStreamCallSid: null,
+    toolPhaseEndedBySpinBrake: false,
+    spinBrakeGraceCalls: 2,
     ownerAffinityConversationId: null,
     ownerAffinityDestination: null,
     deferredUserReplyWithTools: null,

@@ -76,6 +76,10 @@ const THE_DRIVER_CARRIES = [
   // COMPLETED here: its third local crosses this span and the next one, which is exactly
   // what CUT 4's deferral note said would happen.
   'phoneStreamCallSid',
+  // The spin-brake pair is split across the `execute` and `callLLM` spans in OPPOSITE
+  // directions, so it is the one family here that by value would be wrong twice over.
+  'toolPhaseEndedBySpinBrake',
+  'spinBrakeGraceCalls',
   'ownerAffinityConversationId',
   'ownerAffinityDestination',
   'deferredUserReplyWithTools',

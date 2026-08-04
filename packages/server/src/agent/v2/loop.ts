@@ -2065,8 +2065,11 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   // goes terminal, the whole tool phase is over for this turn; every further
   // tool call returns a short note without executing, and after a small grace
   // of model iterations the loop concludes. The model's TEXT is never touched.
-  let toolPhaseEndedBySpinBrake = false;
-  let spinBrakeGraceCalls = 2;
+  // PHASE-6 T5 (CUT 5): both MIGRATED to the turn's bag under RULING P6-R3(1). This is
+  // the one carrier family in this tranche whose by-value alternative is measurably
+  // wrong in BOTH directions — the flag is latched in `execute` and read in `callLLM`,
+  // the grace is written in `callLLM` and must survive into the next iteration. The
+  // grace's initial value (2) moved with it, to the field's own initialiser.
   // `loopBlockFiredThisTurn` — DELETED, PHASE-2 T6 (C9; T1 adjudication #3). verdict: STRIP.
   // One assignment, zero reads (re-derived at this HEAD across packages/server,
   // packages/dashboard, watchdog and the tests), plus a docblock still describing its
@@ -2558,7 +2561,8 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
   const teardownContext = (): TeardownContext => ({
     agentId, turnCtx, turnNumber, db,
     chosenConvKey, chosenConversationId, lastAssembledAtIso,
-    terminalAnswerRowId, triggerWorkId, toolPhaseEndedBySpinBrake,
+    terminalAnswerRowId, triggerWorkId,
+    toolPhaseEndedBySpinBrake: turnCtx.toolPhaseEndedBySpinBrake,
     turnInjectedTechniqueId: turnCtx.turnInjectedTechniqueId,
     counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
     inboundChannel, inboundContext,
@@ -3808,9 +3812,9 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       // instant note without executing; allow a small grace of model
       // iterations to converge to text, then conclude the turn. The model's
       // text is never suppressed, whatever it has said stands.
-      if (toolPhaseEndedBySpinBrake && result.toolCalls.length > 0) {
-        spinBrakeGraceCalls -= 1;
-        if (spinBrakeGraceCalls < 0) {
+      if (turnCtx.toolPhaseEndedBySpinBrake && result.toolCalls.length > 0) {
+        turnCtx.spinBrakeGraceCalls -= 1;
+        if (turnCtx.spinBrakeGraceCalls < 0) {
           logger.warn('v2: spin brake grace exhausted, concluding the turn', { agentId, turnNumber }, agentId);
           state = advance(state, { phase: 'done' });
         }
@@ -6743,7 +6747,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
           // already failed REFUSE_AT times this turn is not executed again
           // (no side effects, no provider cost); the refusal text is the result.
           const brakeSig = identicalCallSignature(tc.name, tc.arguments);
-          const refusal = toolPhaseEndedBySpinBrake
+          const refusal = turnCtx.toolPhaseEndedBySpinBrake
             ? '[Engine: the tool phase for this turn ended after an identical call was refused repeatedly. No further tools will run this turn. Answer in text with what you have.]'
             : checkIdenticalCallRefusal(identicalCallState, brakeSig);
           try {
@@ -6753,9 +6757,9 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
               // is deliberately unmarked — argument in `agent/tool-outcome.ts`'s header.
               toolResult = toolResultOf(classifyToolResult({
                 toolCallId: tc.id, name: tc.name, content: refusal, isError: true,
-                ...(toolPhaseEndedBySpinBrake ? { errorCode: 'TIMEOUT' as const } : {}),
+                ...(turnCtx.toolPhaseEndedBySpinBrake ? { errorCode: 'TIMEOUT' as const } : {}),
               }));
-              if (!toolPhaseEndedBySpinBrake) {
+              if (!turnCtx.toolPhaseEndedBySpinBrake) {
                 logger.warn('v2: identical-call brake refused re-execution', {
                   agentId, tool: tc.name, sig: brakeSig.slice(0, 120),
                 }, agentId);
@@ -6763,7 +6767,7 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
                   // Refused, taught, and resubmitted unchanged three times:
                   // nothing real is blocked (nothing was executing); stop
                   // paying for attempts that cannot succeed. Text untouched.
-                  toolPhaseEndedBySpinBrake = true;
+                  turnCtx.toolPhaseEndedBySpinBrake = true;
                   logger.warn('v2: spin brake TERMINAL, tool phase ended for this turn (identical refused call resubmitted repeatedly)', {
                     agentId, tool: tc.name, sig: brakeSig.slice(0, 200),
                   }, agentId);
