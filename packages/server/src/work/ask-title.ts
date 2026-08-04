@@ -54,11 +54,27 @@
 // scope, and it is a check ON TOP OF the model's answer, not a filter that
 // makes the model's answer safe.
 //
-// ── THE TWO BOUNDS ARE THE PLATFORM'S OWN, NOT NEW NUMBERS ──
-// Both are taken from the one system-model caller that already sits on a path a
-// person is waiting on — the voice opener, `voice/voice-ws.ts:1250-1251`
-// (`OPENER_TIMEOUT_MS = 1500`, `OPENER_MAX_CHARS = 80`). Ingest is that same
-// shape: someone is holding still until their message lands.
+// ── THE TWO BOUNDS: ONE MEASURED, ONE THE PLATFORM'S OWN ──
+// The length cap is `OPENER_MAX_CHARS = 80` from the voice opener
+// (`voice/voice-ws.ts:1251`), the platform's other short model-written string.
+//
+// THE TIMEOUT WAS NOT INHERITED — IT WAS MEASURED, because the inherited one was
+// wrong. This started at the voice opener's 1500 ms and that number never fires:
+// driven on the box 2026-08-03 through this exact path (POST /api/chat/kevin/
+// messages, wall clock at the caller, system tier = the floor model), NINE
+// samples ran 2296 / 2577 / 2847 / 3246 / 3622 / 3670 / 3727 / 4215 / 5198 ms —
+// median 3622, max 5198. At 1500 ms every inbound ask would take the fallback and
+// the decision would be dead on arrival.
+//
+// 5000 ms is where it sits, and it is the platform's OTHER existing system-model
+// bound (`multistepLLMClassify`'s default, `agent/v2/classifiers/multistep.ts`)
+// rather than a number invented here. Against those nine samples it would have
+// produced a real title on eight and taken the content-free fallback on one,
+// which is the designed graceful path and not a failure.
+//
+// THE COST IS REAL AND IT IS THE OWNER'S ACCEPTED TRADE: an inbound ask now waits
+// for its title before its row lands. Nothing else waits — a message that opens
+// no ticket never calls a model at all.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { createLogger } from '../logger.js';
@@ -70,7 +86,7 @@ import {
 const logger = createLogger('ask-title');
 
 /** How long ingest will wait for the system model before falling back. */
-export const ASK_TITLE_TIMEOUT_MS = 1500;
+export const ASK_TITLE_TIMEOUT_MS = 5000;
 
 /** The longest title written. */
 export const ASK_TITLE_MAX_CHARS = 80;
@@ -106,7 +122,14 @@ export function acceptModelTitle(agentId: string, raw: string | null | undefined
   t = t.replace(/^["'`“”‘’]+/, '').replace(/["'`“”‘’]+$/, '');
   t = t.replace(/\s+/g, ' ').trim();
   if (t.length > ASK_TITLE_MAX_CHARS) t = t.slice(0, ASK_TITLE_MAX_CHARS).trim();
-  if (t.length === 0) return null;
+  if (t.length === 0) {
+    // Observed on the box: a system model can answer with nothing at all. The
+    // fallback is correct and the ticket is fine — but a fallback nobody can see
+    // is a mechanism that can rot in silence, so it says so.
+    logger.warn('ask title: the system model answered with nothing usable '
+      + '(falling back to the ticket id)', { agentId, answeredChars: raw.length });
+    return null;
+  }
 
   // THE CHECK. The instruction above asked the model not to copy values; this
   // is what makes that a property rather than a hope. If the platform's own
