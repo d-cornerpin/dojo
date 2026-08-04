@@ -2,6 +2,27 @@
   "$comment": "Size ratchets (PHASE-0 T2). Every path below may only SHRINK: check-ratchets.mjs fails the build when a listed file exceeds its pinned line count (wc -l, i.e. newlines). Seeded 2026-07-27 at commit 8a37099 from measured wc -l on a clean, instrument-free tree. Entries: every tracked *.ts/*.tsx under packages/*/src/ or watchdog/src/ (excluding __tests__, *.test.*, *.spec.*, db/migrations) that already exceeded maxNewFileLines. The 15 files the overhaul plan names are all here; the rest were seeded because the new-file rule would otherwise fail them on day one. To LOWER entries after real deletion: node deploy/checks/check-ratchets.mjs --tighten. To RAISE one, or to add a new file above the cap, edit this file BY HAND in a gate-side-only commit — that edit is meant to be seen and reviewed. No tool raises a number.",
   "$raises": [
     {
+          "path": "packages/server/src/gateway/routes/chat.ts",
+          "from": 484,
+          "to": 485,
+          "by": "PHASE-5 T9 (2026-08-03) — decision D4, the tracker title is written by the system model",
+          "why": "+1, and it is one import line. This route is the dashboard's inbound producer and now reaches the writer through the ingest door (`work/ask-title.ts`), while still importing `insertMessageIfAbsent` from the writer for its two session-divider rows, which are not a person's message and open no ticket. Two modules is two import statements; there is no line to trade for it and collapsing the divider writes into the door would send rows through a model call they must never make. From here this file may only shrink."
+    },
+    {
+          "path": "packages/server/src/services/imessage-bridge.ts",
+          "from": 2300,
+          "to": 2312,
+          "by": "PHASE-5 T9 (2026-08-03) — decision D4, the tracker title is written by the system model",
+          "why": "+12. This is the ONE inbound producer that owns an outer `db.transaction` of its own — the poll cursor advances with the row, so there is no crash window in which the cursor is past a row that was never persisted. The title must be resolved BEFORE that transaction opens (the model call may never be held inside a write), so the message literal is lifted into a `NewMessage`-typed local above it and the resolver is called there, exactly as `resolveOrCreateConversation` already is on the line above. That lift is the whole cost: the literal gains its `const` and closing lines, plus the requirement stated where a later reader will need it. `conversationId` stays spelled inside the write statement itself so the serve-boundary conformance walk still reads atomic identity stamping at this site. Routing it through the shared door instead would have meant the door opening a transaction the bridge already owns. From here this file may only shrink."
+    },
+    {
+          "path": "packages/server/src/memory/message-store.ts",
+          "from": 981,
+          "to": 1012,
+          "by": "PHASE-5 T9 (2026-08-03) — decision D4, the tracker title is written by the system model",
+          "why": "+31, and the mechanism it replaces was DELETED in the same change: `title: content.slice(0, 120)` is gone from `persistAndMaybeOpenAsk`. COMPRESSION WAS TAKEN WHERE IT EXISTED, and it is why this is +31 and not +80: the ingest door (`insertInboundMessageIfAbsent`, `resolveInboundAskTitle`) and the whole model lane live in the NEW file `packages/server/src/work/ask-title.ts` (246 lines, under maxNewFileLines and therefore unpinned), not here. That placement is a graph fact rather than a tidiness preference — this module is the single SYNCHRONOUS writer for `messages`, and giving it an import of the model layer would point the write side at the router; the dependency runs one way, the door reaches for the writer. WHAT REMAINS HERE IS THE PART THAT CANNOT LIVE ANYWHERE ELSE: the `askTitle` field on `NewMessage` with its refusal (never derived from content), `wouldOpenAsk` — the ONE ask gate, exported so the door can ask it before opening a transaction rather than a second predicate being written — and the replaced `title:` line carrying the requirement, the refusal (the fallback is never the slice) and why the ticket's own identifier is available before the transaction. The alternative that would have held this ceiling is leaving the owner's typed words being copied into `work.title`, which is the task. From here this file may only shrink."
+    },
+    {
       "path": "packages/server/src/tools/unified-read.ts",
       "from": 753,
       "to": 754,
@@ -1723,7 +1744,7 @@
     "packages/server/src/costs/tracker.ts": 541,
     "packages/server/src/credentials/secret-fields.ts": 241,
     "packages/server/src/gateway/routes/agents.ts": 858,
-    "packages/server/src/gateway/routes/chat.ts": 484,
+    "packages/server/src/gateway/routes/chat.ts": 485,
     "packages/server/src/gateway/routes/config.ts": 2530,
     "packages/server/src/gateway/routes/memory.ts": 632,
     "packages/server/src/gateway/routes/setup-deps.ts": 513,
@@ -1748,7 +1769,7 @@
     "packages/server/src/memory/compaction.ts": 1335,
     "packages/server/src/memory/deliveries-lane.ts": 240,
     "packages/server/src/memory/lanes.ts": 711,
-    "packages/server/src/memory/message-store.ts": 981,
+    "packages/server/src/memory/message-store.ts": 1012,
     "packages/server/src/memory/recall.ts": 510,
     "packages/server/src/memory/retrieval.ts": 591,
     "packages/server/src/memory/summary-clean-stock.ts": 69,
@@ -1766,7 +1787,7 @@
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/gmail-watcher.ts": 592,
     "packages/server/src/services/image-generation.ts": 483,
-    "packages/server/src/services/imessage-bridge.ts": 2300,
+    "packages/server/src/services/imessage-bridge.ts": 2312,
     "packages/server/src/services/outlook-watcher.ts": 517,
     "packages/server/src/services/teams-watcher.ts": 461,
     "packages/server/src/services/transcription.ts": 443,
@@ -1795,6 +1816,7 @@
     "packages/server/src/voice/voice-ws.ts": 2299,
     "packages/server/src/work/occurrences.ts": 426,
     "packages/server/src/work/override-requests.ts": 247,
+    "packages/server/src/work/ask-title.ts": 246,
     "packages/server/src/work/store.ts": 1741,
     "packages/server/src/work/tracker-store.ts": 503,
     "packages/server/src/work/tracker-view.ts": 509,
