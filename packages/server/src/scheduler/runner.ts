@@ -14,6 +14,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { retireEngineEventsForRun, retireEngineEventsForTask } from '../agent/v2/counterparty.js';
 import { getDb } from '../db/connection.js';
+import { HARD_STUCK_THRESHOLD_MINUTES } from '../agent/stuck-thresholds.js';
 import { withUnit } from '../db/unit.js';
 import {
   taskScope, dueScope, msToText, tsToMs, STATE_TO_STATUS_SQL, scheduleRowColumns,
@@ -1313,10 +1314,8 @@ function cleanupOrphanedRuns(): void {
 function cleanupStaleRuns(): void {
   const db = getDb();
   const AGENT_IDLE_THRESHOLD_MINUTES = 30;
-  // Hard threshold for force-recovery: any recurring task in_progress longer
-  // than this without activity is structurally stuck regardless of which
-  // schedule_status combination got it there. v2.3.8.
-  const HARD_STUCK_THRESHOLD_MINUTES = 120;
+  // PHASE-6 T10: the value and its v2.3.8 reasoning live in `agent/stuck-thresholds.ts`
+  // beside the other three stuck cliffs. Unchanged at 120; enforced here.
 
   // ── RC-17.4: the orphaned-occurrence sweep ──
   // The recovery machinery below keys on TASKS (schedule_status='running'),

@@ -14,6 +14,7 @@ import { prepareImageForModel } from './image-prep.js';
 import { rectifyAttachment } from './input-rectification.js';
 import { runV2Turn } from './v2/loop.js';
 import { writeAgentStatus } from './agent-status.js';
+import { STUCK_AGENT_THRESHOLD_MINUTES } from './stuck-thresholds.js';
 
 // One-shot dedup so the "model does not support tools" banner only fires once
 // per (agent, model) pair for the lifetime of the server process. Without
@@ -1278,11 +1279,10 @@ function scheduleEngineEventRetryWake(agentId: string, wake: (agentId: string) =
 // the finally block clears it, the agent stays stuck. This periodic check
 // resets agents that have been 'working' for too long (10+ minutes).
 const STUCK_AGENT_CHECK_MS = 5 * 60 * 1000; // Check every 5 minutes
-// D18: comfortably above the legal turn budget (15 min) x (1 + up to 3
-// continuations) plus overshoot, so a long-but-live turn is never reaped. The
-// 30s heartbeat keeps updated_at fresh, and the activeRuns guard below is the
-// real safety, this threshold only catches a genuinely dead process's rows.
-const STUCK_AGENT_THRESHOLD_MINUTES = 75;
+// PHASE-6 T10: the value and its D18 reasoning now live in `agent/stuck-thresholds.ts`
+// beside the other three stuck cliffs, so the four answers to "how long before this counts
+// as stuck" can be read together. The number is unchanged and this is still where it is
+// enforced — the table declares, the site decides.
 
 function recoverStuckAgents(): void {
   try {

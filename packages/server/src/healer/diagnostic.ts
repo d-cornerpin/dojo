@@ -13,6 +13,7 @@
 // ════════════════════════════════════════
 
 import { getDb } from '../db/connection.js';
+import { HEALER_WORKING_STUCK_MINUTES, DORMANT_THRESHOLD_DAYS } from '../agent/stuck-thresholds.js';
 import { createLogger } from '../logger.js';
 import { v4 as uuidv4 } from 'uuid';
 import { getVaultStats, getPoisonedArchiveStats } from '../vault/store.js';
@@ -139,7 +140,8 @@ function getAgentStatusAnomalies(): DiagnosticItem[] {
       AND status != 'terminated'
   `).all() as Array<{ id: string; name: string; status: string; updated_at: string }>;
 
-  const DORMANT_THRESHOLD_MS = 7 * 86400000;
+  // PHASE-6 T10: from the ONE stuck-threshold table (7 days, unchanged).
+  const DORMANT_THRESHOLD_MS = DORMANT_THRESHOLD_DAYS * 86400000;
   for (const agent of troubled) {
     // Check if this agent is dormant (no messages in 7+ days).
     // EXCEPTION: if the agent's status was updated recently (e.g., a server
@@ -194,11 +196,14 @@ function getAgentStatusAnomalies(): DiagnosticItem[] {
     }
   }
 
-  // Agents stuck in working state
+  // Agents stuck in working state.
+  // PHASE-6 T10: this was a bare `'-10 minutes'` SQL literal — the Healer's duplicate stuck
+  // detector, duplicating a number that had no name to duplicate. It reads the ONE table now;
+  // the value is unchanged and is the same cliff `healer-agent.ts`'s self-watchdog uses.
   const stuck = db.prepare(`
     SELECT id, name, updated_at FROM agents
     WHERE status = 'working'
-      AND updated_at < datetime('now', '-10 minutes')
+      AND updated_at < datetime('now', '-${HEALER_WORKING_STUCK_MINUTES} minutes')
   `).all() as Array<{ id: string; name: string; updated_at: string }>;
 
   for (const agent of stuck) {

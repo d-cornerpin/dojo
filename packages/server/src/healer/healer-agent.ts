@@ -12,6 +12,7 @@
 
 import fs from 'node:fs';
 import { CHARS_PER_TOKEN } from '../memory/budget.js'; // PHASE-3 T2: was a private 3 (§T0-C #6)
+import { HEALER_WORKING_STUCK_MINUTES } from '../agent/stuck-thresholds.js';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -360,7 +361,8 @@ const HEALER_PERMISSIONS = JSON.stringify({
 // This is engine-level, deterministic, no LLM cost.
 
 const HEALER_WATCHDOG_INTERVAL_MS = 5 * 60 * 1000;
-const HEALER_WORKING_STUCK_MINUTES = 10;
+// PHASE-6 T10: read from the ONE stuck-threshold table, where its reason sits beside the
+// engine reaper's 75 minutes it deliberately disagrees with.
 let healerWatchdogTimer: ReturnType<typeof setInterval> | null = null;
 
 function runHealerSelfWatchdog(): void {

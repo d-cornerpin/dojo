@@ -63,6 +63,8 @@ import { sweepByRowid } from '../memory/message-store.js';
 // is read from the module that owns it, so the boot sweep's exclusion window cannot drift
 // away from the eligibility gate it mirrors.
 import { ENGINE_EVENT_MAX_ATTEMPTS } from '../agent/v2/counterparty.js';
+// PHASE-6 T10: the four stuck cliffs live in one leaf table; this row reads the one it shares.
+import { STUCK_AGENT_THRESHOLD_MINUTES } from '../agent/stuck-thresholds.js';
 
 const logger = createLogger('work-reaper');
 
@@ -156,10 +158,13 @@ export const DEADLINES: Readonly<Record<DeadlineId, Deadline>> = {
     carriedFrom: 'APPROVAL_TTL_MINUTES = 60 — agent/destructive-gate.ts',
   },
   stuck_agent_threshold: {
-    id: 'stuck_agent_threshold', ms: 75 * MIN,
+    // PHASE-6 T10: READ from the one stuck-threshold table rather than restated here, so the
+    // two copies of 75 cannot drift apart at all — the anti-drift clause below now asserts an
+    // identity instead of an agreement, which is strictly stronger.
+    id: 'stuck_agent_threshold', ms: STUCK_AGENT_THRESHOLD_MINUTES * MIN,
     reason:
       'An agent row reading `working` for longer than this is a dead process\'s row, not a long turn: comfortably above the 15-minute turn budget times up to four continuations plus overshoot, with the 30s heartbeat and the in-process activeRuns guard as the real safety.',
-    carriedFrom: 'STUCK_AGENT_THRESHOLD_MINUTES = 75 — agent/runtime.ts',
+    carriedFrom: 'STUCK_AGENT_THRESHOLD_MINUTES = 75 — agent/stuck-thresholds.ts (was agent/runtime.ts until PHASE-6 T10)',
   },
   engine_event_expiry: {
     id: 'engine_event_expiry', ms: 6 * HOUR,

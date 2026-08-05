@@ -115,8 +115,12 @@ describe('T9 — the per-kind deadline table has all THIRTEEN cliffs, each with 
       .toBe(constantAt('agent/destructive-gate.ts', 'STALE_PENDING_MINUTES') * 60_000);
     expect(DEADLINES.approval_ttl.ms)
       .toBe(constantAt('agent/destructive-gate.ts', 'APPROVAL_TTL_MINUTES') * 60_000);
+    // PHASE-6 T10 moved this constant to the one stuck-threshold table, and THIS CLAUSE IS
+    // HOW THE MOVE WAS FOUND — it went red with "provenance is stale", named the file, and
+    // was repaired to the new site rather than deleted. The table now READS the constant, so
+    // the assertion is an identity; it stays because a future site change re-arms it.
     expect(DEADLINES.stuck_agent_threshold.ms)
-      .toBe(constantAt('agent/runtime.ts', 'STUCK_AGENT_THRESHOLD_MINUTES') * 60_000);
+      .toBe(constantAt('agent/stuck-thresholds.ts', 'STUCK_AGENT_THRESHOLD_MINUTES') * 60_000);
     expect(DEADLINES.engine_event_expiry.ms)
       .toBe(constantAt('agent/v2/counterparty.ts', 'ENGINE_EVENT_EXPIRY_HOURS') * 3_600_000);
     expect(DEADLINES.stale_request.ms)
