@@ -70,33 +70,89 @@ function split(agentId: string, currentConversationId: string | null): { current
   return { current, other: other.slice(0, CROSS_CONV_OVERFLOW_MAX) };
 }
 
+const HEADER = 'OPEN WORK (still owed; close each one when it is delivered):';
+
 /**
  * The compact numbered OPEN WORK block for the volatile lane, or null when nothing is owed.
  *
  * Keyed on `conversation_id` rather than on a `conv_key` string — the deleted block compared
  * conv_key values, which is the column that also carried the claim/park sigils, so a parked
  * row silently changed which conversation its loops belonged to.
+ *
+ * ── WHAT A BOUND BUDGET IS ALLOWED TO DROP (SWEEP-A TB4) ────────────────────────────────
+ *
+ * THE DEFECT. This block used to fill the budget in `opened_at ASC` order and `break` on the
+ * first line that did not fit, replacing everything after it with a bare `…`. A commitment made
+ * during the turn that is running has the LARGEST `opened_at` in its conversation, so it always
+ * sorted LAST and was always the FIRST line discarded. The surface whose entire job is to carry
+ * an obligation into the next turn was structurally guaranteed to drop the freshest one.
+ *
+ * MEASURED, not argued: full battery `bmsgc3l0cnb` scored `promise-survives-the-turn` at 1 of 3
+ * — the platform RECORDED the promise on all three attempts and the model saw it on turn 2 only
+ * on the attempt with the shortest queue. `work/__tests__/open-work-budget.test.ts` replays all
+ * three attempts from the box's own rows and reproduces PASS/FAIL/FAIL exactly.
+ *
+ * It also inverted this budget's own stated reason. The cap exists so a BACKLOG cannot eat the
+ * volatile lane; what actually happened is that the backlog ate the block.
+ *
+ * THE RULE NOW, and its price stated rather than hidden. The budget is unchanged (600 chars) and
+ * the cross-conversation cap is unchanged (3 rows) — no threshold is invented and the lane does
+ * not grow. When the budget binds, rows give way in a DECLARED order instead of by accident:
+ * the cross-conversation overflow first (it is overflow, and it is labelled as such), then the
+ * OLDEST rows of the current conversation. An obligation past the ageing horizon already has its
+ * own surface (`buildAgedWorkBriefSection`, requirement 4b: ageing demotes, it never closes);
+ * the row the running turn just created has no other way into the next turn at all.
+ * And an elision is never silent again: it SAYS how many rows it did not show.
+ *
+ * This rides the TAIL (`agent/v2/steps/call-llm/pre-call-injections.ts`, lane `engine.open-work`
+ * inside the protected `lane.loop-tail`), so nothing here touches the cached prompt prefix.
  */
 export function buildOpenWorkInjection(agentId: string, currentConversationId: string | null): string | null {
   const { current, other } = split(agentId, currentConversationId);
   if (current.length === 0 && other.length === 0) return null;
 
-  let n = 1;
-  const render = (o: Obligation, crossConv: boolean): string => {
-    const what = o.kind === 'ask' ? 'they asked' : 'you promised';
-    const marker = crossConv ? ' [other conversation]' : '';
-    return `${n++}. [${o.id}] ${what}: ${o.title ?? '(no description)'} (${party(o)}, ${relativeAge(o.openedAt)})${marker}`;
-  };
+  const what = (o: Obligation): string => (o.kind === 'ask' ? 'they asked' : 'you promised');
+  const body = (o: Obligation, crossConv: boolean): string =>
+    `[${o.id}] ${what(o)}: ${o.title ?? '(no description)'} (${party(o)}, ${relativeAge(o.openedAt)})${crossConv ? ' [other conversation]' : ''}`;
 
-  let block = 'OPEN WORK (still owed; close each one when it is delivered):';
-  for (const line of [...current.map((o) => render(o, false)), ...other.map((o) => render(o, true))]) {
-    if (block.length + 1 + line.length > INJECTION_MAX_CHARS) {
-      block += '\n…';
-      break;
-    }
-    block += `\n${line}`;
+  // Candidates in DISPLAY order (current conversation first, each oldest→newest), paired with
+  // the order they GIVE WAY in: cross-conversation overflow first, then the oldest current rows.
+  const shown = [
+    ...current.map((o) => ({ o, crossConv: false })),
+    ...other.map((o) => ({ o, crossConv: true })),
+  ];
+  const dropOrder = [
+    ...other.map((o) => ({ o, crossConv: true })),
+    ...current.map((o) => ({ o, crossConv: false })),
+  ];
+
+  const kept = new Set(shown);
+  const byRow = new Map(shown.map((e) => [e.o, e]));
+  const lengthOf = (entries: Array<{ o: Obligation; crossConv: boolean }>): number =>
+    entries.reduce((sum, e, i) => sum + 1 + `${i + 1}. `.length + body(e.o, e.crossConv).length, HEADER.length);
+
+  let dropped = 0;
+  for (const e of dropOrder) {
+    if (lengthOf(shown.filter((x) => kept.has(x))) <= INJECTION_MAX_CHARS) break;
+    // The newest row of the current conversation is never given away: it is the one the running
+    // turn just made, and dropping it is the defect this rule exists to stop.
+    if (kept.size === 1) break;
+    kept.delete(byRow.get(e.o)!);
+    dropped += 1;
   }
-  return block;
+
+  let n = 1;
+  const lines = shown.filter((e) => kept.has(e)).map((e) => {
+    const prefix = `${n++}. `;
+    const text = body(e.o, e.crossConv);
+    // A single row longer than the whole budget is shown ABBREVIATED, never dropped: the id the
+    // model needs to close it is at the front, and an abbreviated obligation beats a lost one.
+    const room = INJECTION_MAX_CHARS - HEADER.length - 1 - prefix.length;
+    return prefix + (text.length > room && room > 1 ? `${text.slice(0, room - 1)}…` : text);
+  });
+
+  const tail = dropped > 0 ? `\n… and ${dropped} more open item${dropped === 1 ? '' : 's'} not shown` : '';
+  return `${HEADER}\n${lines.join('\n')}${tail}`;
 }
 
 /**
