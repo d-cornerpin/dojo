@@ -217,6 +217,28 @@ function qualifyingDelivery(
     { id: string; tool: string } | undefined) ?? null;
 }
 
+/**
+ * THE SAME EVIDENCE READ, EXPOSED — SWEEP-A TB3.
+ *
+ * The remediation pass has to know whether an ask was answered before it can dispose of a row
+ * that is already TERMINAL (`abandoned`, or `done` on a receipt that turns out to be a chip),
+ * and `settleAsk` refuses terminal rows by design. Rather than let the pass re-state the rule
+ * — a second decider, which is the disease this arc exists to cure — the authority's OWN
+ * predicate is exported and the pass asks it.
+ *
+ * It is a READ. It decides nothing and writes nothing: the state change still goes through
+ * `settleAsk`, and the pass supplies only SCOPE (which row, which turn). DESIGN §5 states the
+ * requirement in the same words — *"the split uses the same evidence predicate as the
+ * authority itself, so remediation and forward behaviour cannot disagree."*
+ */
+export function askAnswerEvidence(
+  workId: string, turnNumber: number | null,
+): { id: string; tool: string } | null {
+  const ask = readAsk(workId);
+  if (!ask || ask.kind !== 'ask') return null;
+  return qualifyingDelivery(ask, turnNumber);
+}
+
 /** The fifth narrowing, as a SQL fragment so the delivery arm and the join arm cannot drift
  *  apart. Literal by construction (the list is a frozen tuple of lowercase identifiers), so
  *  the statement still prepares under the schema-conformance walk. */
@@ -261,7 +283,14 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   // already happened and stays in the history. A judge that reads the event log will still see
   // it. The row is honest from the turn boundary onward, not retroactively — undoing the
   // RECORD would be the forgery this spine exists to refuse.
-  if (ask.state === 'done' && ctx.at === 'finalize' && joinOutstanding(ask)) {
+  //
+  // ⚠ SWEEP-A TB3 — AND AT BOOT, FOR THE SAME SHAPE THE SAME TURN LEFT BEHIND. Finalize is
+  // where this arm belongs, and a process killed between the delegation and the finalize
+  // never reaches it: the row survives the crash `done` with its join unresolved, which is
+  // bug 2's own state with nobody left to correct it. The boot reconciler already exists for
+  // turns that died mid-lifecycle and already carries the bound — thirty minutes, dead turn —
+  // so the crash window is that arm's scope widened by one shape, never a second mechanism.
+  if (ask.state === 'done' && (ctx.at === 'finalize' || ctx.at === 'boot') && joinOutstanding(ask)) {
     const undo = transition(workId, {
       to: 'open', by: 'engine', actorId: 'ask-settlement', expectedState: 'done',
       evidenceRef: ask.result_delivery_id ?? undefined,
@@ -682,8 +711,17 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
  *
  * Trigger and window are carried verbatim: boot only, ≤30 minutes, dead turns.
  * Relocated from `work/store.ts` with the decision it now shares.
+ *
+ * ── SWEEP-A TB3: THE CRASH WINDOW, THE FOURTH OUTCOME ──
+ * A turn that CLOSED an ask and then DELEGATED under it is handed back at its own boundary
+ * (TB2's ordering arm). A turn killed between those two moments never reaches its boundary,
+ * so the row survives the crash `done` with an unresolved join — the exact state every safety
+ * net downstream is blind to, and the state bug 2 was about. Same trigger, same window, same
+ * dead-turn predicate; only the scope is one shape wider, and the row leaves `done` on the
+ * first look so it can never be adjudicated twice.
  */
-export function reconcileOrphanedClaims(): { reArmed: number; held: number; closed: number } {
+export function reconcileOrphanedClaims():
+{ reArmed: number; held: number; closed: number; handedBack: number } {
   const db = getDb();
   const since = Date.now() - ORPHAN_CLAIM_WINDOW_MINUTES * 60 * 1000;
   const answered = db.prepare(`
@@ -719,8 +757,33 @@ export function reconcileOrphanedClaims(): { reArmed: number; held: number; clos
     if (res === null) held++;
     else if (res.kind === 'applied') reArmed++;
   }
-  if (reArmed > 0 || held > 0 || closed > 0) {
-    logger.warn('boot reconciliation of orphaned ask claims', { reArmed, held, closed });
+  // ── THE CRASH WINDOW (SWEEP-A TB3) ──
+  // `claimed_by_turn` was NULLed by the close, so the serving turn is re-identified through
+  // the receipt the close points at — the same re-identification `settleAsksAtTurnFinalize`
+  // performs for the same shape, written the same way on purpose.
+  const crashed = db.prepare(`
+    SELECT w.id AS id, w.agent_id AS agent_id, d.turn_number AS turn_number
+      FROM work w
+      JOIN deliveries d ON d.id = w.result_delivery_id AND d.agent_id = w.agent_id
+                       AND d.outcome = 'delivered'
+      JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = d.turn_number
+     WHERE w.kind = 'ask' AND w.state = 'done'
+       AND (w.remaining_children > 0 OR w.compile_pending = 1)
+       AND w.updated_at >= ?
+       AND t.ended_at IS NULL
+     GROUP BY w.id
+  `).all(since) as Array<{ id: string; agent_id: string; turn_number: number | null }>;
+  let handedBack = 0;
+  for (const c of crashed) {
+    const s = settleAsk(c.id, {
+      agentId: c.agent_id, turnNumber: c.turn_number,
+      at: 'boot', actorId: 'boot-reconciliation',
+    });
+    if (s.verdict === 'held' || s.verdict === 'reopened') handedBack++;
   }
-  return { reArmed, held, closed };
+
+  if (reArmed > 0 || held > 0 || closed > 0 || handedBack > 0) {
+    logger.warn('boot reconciliation of orphaned ask claims', { reArmed, held, closed, handedBack });
+  }
+  return { reArmed, held, closed, handedBack };
 }

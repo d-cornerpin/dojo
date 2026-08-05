@@ -39,7 +39,7 @@ vi.mock('../../db/connection.js', async () => {
 
 import { runMigrations } from '../../db/migrations.js';
 import { askIdForMessage, claimAsk, stampClaimingTurn, openDelegationJoin } from '../store.js';
-import { settleAsk, settleAsksForDelivery, settleAsksAtTurnFinalize } from '../ask-settlement.js';
+import { settleAsk, settleAsksForDelivery, settleAsksAtTurnFinalize, reconcileOrphanedClaims } from '../ask-settlement.js';
 import { insertMessage } from '../../memory/message-store.js';
 import { assembledContextAsks } from '../../agent/v2/counterparty.js';
 
@@ -418,5 +418,118 @@ describe('invocation (b): the turn-finalize adjudicator', () => {
     const r = settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 4 });
     expect(r.held).toBe(1);
     expect(workFor('m-1').state).toBe('blocked');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// THE CRASH WINDOW — SWEEP-A TB3 Step 5.
+//
+// TB2's ordering arm hands back an ask that a turn closed and THEN delegated under. It runs
+// at TURN FINALIZE, so a process killed between the delegation and the finalize leaves the
+// row exactly as bug 2 left it: `done`, with an unresolved join, and every safety net
+// downstream blind to it — "the nets did not fail, they were never given anything to catch".
+//
+// The boot reconciler already exists for precisely this class of leftover (a turn that died
+// mid-lifecycle) and already carries the bound that stops it storming: the SAME thirty-minute
+// window, and the same dead-turn predicate. This is that arm's scope widened by one shape,
+// not a new mechanism and not a new bound.
+//
+// WHY IT CANNOT STORM, structurally rather than by hope:
+//   * the window is 30 minutes on `updated_at` — a crash is seconds-to-minutes old;
+//   * the serving turn must be DEAD (`turns.ended_at IS NULL`) — a turn that finalized was
+//     already adjudicated by the finalize arm;
+//   * a row is adjudicated ONCE: the hand-back moves it out of `done`, so the scope query
+//     cannot see it again;
+//   * and the ladder's own per-row lifetime bound (3 re-drives + 2 stuck notices) governs
+//     everything that happens to the row afterwards. This arm adds no drive of its own.
+// ════════════════════════════════════════════════════════════════════════
+
+describe('the crash window: a `done` ask with an unresolved join whose turn never finished', () => {
+  /** A turn that STARTED and never ended — the crash signature. */
+  const deadTurn = (n: number): void => {
+    mockDb.current!.prepare(
+      `INSERT OR REPLACE INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered)
+       VALUES (?, ?, datetime('now','-120 seconds'), NULL, NULL, 0)`,
+    ).run(AGENT, n);
+  };
+  const finishedTurn = (n: number): void => {
+    mockDb.current!.prepare(
+      `INSERT OR REPLACE INTO turns (agent_id, turn_number, started_at, ended_at, exit_reason, answered)
+       VALUES (?, ?, datetime('now','-120 seconds'), datetime('now','-60 seconds'), 'answered', 1)`,
+    ).run(AGENT, n);
+  };
+  /** The shape the crash leaves: closed on this turn's own delivery, then delegated under. */
+  const closedThenDelegated = (messageId: string, turn: number): string => {
+    claimedAsk(messageId, turn);
+    seedDelivery(`d-${messageId}`, { turn });
+    const id = askIdForMessage(messageId);
+    expect(settleAsk(id, { agentId: AGENT, turnNumber: turn, at: 'delivery' }).verdict).toBe('closed');
+    openDelegationJoin({
+      agentId: AGENT, parentWorkId: id,
+      threads: [{ threadId: `th-${messageId}`, assigneeAgent: 'peer' }],
+      replyConversationId: CONV, ttlAt: Date.now() + 600_000,
+    });
+    expect(workFor(messageId).state).toBe('done');
+    return id;
+  };
+
+  it('POSITIVE: the boot reconciler hands it back and HOLDS it — the nets get something to catch', () => {
+    closedThenDelegated('m-1', 4);
+    deadTurn(4);
+    const r = reconcileOrphanedClaims();
+    expect(r.handedBack).toBe(1);
+    expect(workFor('m-1').state).toBe('blocked');
+    // The record is not falsified: the close is still in the log, followed by the undo.
+    expect(transitionsFor('m-1').map((t) => t.to)).toEqual(['claimed', 'done', 'open', 'blocked']);
+  });
+
+  it('NEGATIVE CONTROL, one detail different — the turn FINALIZED: the finalize arm owned it, boot does not', () => {
+    closedThenDelegated('m-1', 4);
+    finishedTurn(4);
+    const r = reconcileOrphanedClaims();
+    expect(r.handedBack).toBe(0);
+    expect(workFor('m-1').state).toBe('done');
+  });
+
+  it('NEGATIVE CONTROL, one detail different — no unresolved join: a closed ask stays closed', () => {
+    claimedAsk('m-1', 4);
+    seedDelivery('d-1', { turn: 4 });
+    settleAsk(askIdForMessage('m-1'), { agentId: AGENT, turnNumber: 4, at: 'delivery' });
+    deadTurn(4);
+    const r = reconcileOrphanedClaims();
+    expect(r.handedBack).toBe(0);
+    expect(workFor('m-1').state).toBe('done');
+  });
+
+  it('THE WINDOW BOUNDS IT — a row last touched over 30 minutes ago is history, not a crash', () => {
+    closedThenDelegated('m-1', 4);
+    deadTurn(4);
+    mockDb.current!.prepare('UPDATE work SET updated_at = ? WHERE id = ?')
+      .run(Date.now() - 31 * 60 * 1000, askIdForMessage('m-1'));
+    const r = reconcileOrphanedClaims();
+    expect(r.handedBack).toBe(0);
+    expect(workFor('m-1').state).toBe('done');
+  });
+
+  it('ADJUDICATED ONCE — a second boot over the same body moves nothing and writes nothing', () => {
+    closedThenDelegated('m-1', 4);
+    deadTurn(4);
+    expect(reconcileOrphanedClaims().handedBack).toBe(1);
+    const events = (mockDb.current!.prepare(
+      'SELECT count(*) AS c FROM work_events WHERE work_id = ?',
+    ).get(askIdForMessage('m-1')) as { c: number }).c;
+    expect(reconcileOrphanedClaims().handedBack).toBe(0);
+    expect((mockDb.current!.prepare(
+      'SELECT count(*) AS c FROM work_events WHERE work_id = ?',
+    ).get(askIdForMessage('m-1')) as { c: number }).c).toBe(events);
+  });
+
+  it('NO STORM at N=5 — five seeded crash rows are each adjudicated exactly once, in one pass', () => {
+    for (let i = 1; i <= 5; i++) { closedThenDelegated(`m-${i}`, 10 + i); deadTurn(10 + i); }
+    const r = reconcileOrphanedClaims();
+    expect(r.handedBack).toBe(5);
+    for (let i = 1; i <= 5; i++) expect(workFor(`m-${i}`).state).toBe('blocked');
+    // and the second pass is a no-op — bounded, not repeated
+    expect(reconcileOrphanedClaims().handedBack).toBe(0);
   });
 });

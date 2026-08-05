@@ -516,6 +516,33 @@ async function main(): Promise<void> {
     } catch (err) {
       logger.warn('Boot unservable-ask sweep failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
     }
+    // 4b1c. SWEEP-A TB3 — THE ONE-SHOT ASK-LEDGER REMEDIATION (migration `158`,
+    // `STABLE-BRIDGE.md` Entry 39). TB1 and TB2 stopped the ledger writing bad rows; this
+    // corrects the ones already written, on every box that crosses this build.
+    //
+    // ⚠ THE POSITION IS LOAD-BEARING and it is DESIGN §5's requirement, not a convenience:
+    //   * AFTER the staleness sweep above, so the rows this pass hands back are never met by
+    //     the reboot-swarm guard on the boot that created them (the guard is untouched);
+    //   * BEFORE the re-drain below, so the same boot that hands an ask back is the boot that
+    //     serves it — nothing stale is left for a later reboot to meet.
+    // It is a no-op on a box that has already run it (the `config` row disarms itself), and
+    // it never runs twice.
+    try {
+      const { runArmedAskRemediation } = await import('./work/ask-remediation.js');
+      const remediation = runArmedAskRemediation();
+      if (remediation) {
+        logger.warn(
+          'Boot: ask-ledger remediation ran (SWEEP-A TB3) — '
+          + `stuck-claimed ${remediation.stuckClaimed.candidates} (closed ${remediation.stuckClaimed.closed}, held ${remediation.stuckClaimed.held}, handed back ${remediation.stuckClaimed.reopened}); `
+          + `answered-then-abandoned corrected ${remediation.answeredThenAbandoned.corrected}; `
+          + `compile-pending flags cleared ${remediation.compilePendingOrphans.cleared}/${remediation.compilePendingOrphans.candidates}; `
+          + `chip receipts ${remediation.chipReceipts.candidates} (re-pointed ${remediation.chipReceipts.repointed}, handed back ${remediation.chipReceipts.reopened}, ambiguous ${remediation.chipReceipts.handedUp}). `
+          + `${remediation.reopenedIds.length} ask(s) are owed again and the re-drain below is what serves them.`,
+        );
+      }
+    } catch (err) {
+      logger.warn('Boot ask-ledger remediation failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   // 4b2. Re-drain unanswered conversations after restart (comms-audit D-1).
