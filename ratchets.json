@@ -2392,6 +2392,8 @@
     "packages/shared/src/ws.ts": 1088,
     "watchdog/src/index.ts": 1198,
     "packages/server/src/agent/agent-status.ts": 160,
-    "packages/server/src/agent/stuck-thresholds.ts": 112
+    "packages/server/src/agent/stuck-thresholds.ts": 112,
+    "packages/server/src/agent/error-loop-state.ts": 141,
+    "packages/server/src/agent/errors.ts": 217
   }
 }
