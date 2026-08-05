@@ -564,6 +564,22 @@ export const trackerHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
+    // ── SWEEP-A TB1: THE ASK BRANCH IS NARROWED OUT (`DESIGN-2BUGS/DESIGN.md` §1b, row 4) ──
+    // This tool is the agent's PROMISE LEDGER: commitments IT makes, closed by IT. It reaches
+    // asks because asks and commitments deliberately share one obligation frame, and on
+    // 2026-08-05 it was measured closing an owner's ask straight out of the OPEN WORK block
+    // (probe B3: `open -> done`, "commitment kept", pointing at another ask's delivery). An
+    // owner's ask is not the model's to close — the record that answers it closes it.
+    // The refusal is steerable and names what actually decides, because a model that cannot
+    // tell why it was refused invents a second way to try.
+    if (crRow.kind === 'ask') {
+      content = `Not closed: "${crRow.title ?? crRow.id}" is something the owner asked YOU for, not a `
+        + 'promise you made. It closes itself the moment an answer is delivered for it — the '
+        + 'delivery record is what marks it done, at send time and again when the turn ends. '
+        + 'Answer it and it will tick off on its own; there is nothing to call here.';
+      isError = true;
+      return { content, isError };
+    }
     const crNote = (args.note as string | undefined)?.trim() || null;
     if (String(args.disposition) === 'dropped') {
       const dr = dismissCommitment(crRow.id, {

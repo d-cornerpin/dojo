@@ -356,6 +356,7 @@ import { engineText } from './engine-sources.js';
 import { runV2Turn } from '../loop.js';
 import { stoppedAgents, recoveryRunStreak, pendingWakeups, turnContinuationCounts } from '../../shared-state.js';
 import { turnContext } from '../../turn-context.js';
+import { recordDelivery } from '../deliveries.js';
 import { runMigrations } from '../../../db/migrations.js';
 import { insertMessage } from '../../../memory/message-store.js';
 import { claimAsk, askIdForMessage } from '../../../work/store.js';
@@ -2912,6 +2913,27 @@ describe('PHASE-6 CUT 4: the deferred answer is recovered at finalize (G-SUP-2)'
 //     and records the refusal as a work event, because re-firing would send the
 //     email twice. The loop's own words: "a turn that performed a side effect
 //     must never re-fire" (07 §2c, ledger P6b-1).
+//
+// ⚠ SWEEP-A TB1 (2026-08-05) — THE SECOND ARM'S DIRECTION WAS REVERSED BY THE OWNER, and
+// these clauses are updated rather than deleted because the ABORT-PATH refusal itself is
+// untouched. His governing ruling: "the user asks the agent to do something and it does it.
+// Period." — an ambiguous or absent answer errs toward SERVING THE ASK AGAIN, never toward
+// silence or a parked ticket. `revertAskClaimOnAbort` still refuses to re-arm mid-abort and
+// still writes `rearm_refused`, so the fact that the turn acted is recorded exactly as
+// before; but at the TURN BOUNDARY the settlement authority (`work/ask-settlement.ts`) now
+// adjudicates every ask the turn held, and an ask with no delivery behind it goes back to
+// `open` whatever the turn did. The residual the owner accepted, stated out loud: a
+// non-idempotent call on a turn that then delivered NOTHING can be repeated by the re-serve.
+// The structural invariant that makes it necessary: no ask may remain `claimed` by a
+// finalized turn — that is the fossil class, 36 stuck rows on this box.
+//
+// ⚠ AND THE POSITIVE CONTROL NEEDED A REAL RECEIPT. This file mocks `gateway/ws.js`, and the
+// real `broadcast` is what calls `recordDashboardDelivery` — so no turn in this harness has
+// ever written a `deliveries` row, and "a turn that answered" was indistinguishable from "a
+// turn that said something into a void". That did not matter while the ask's fate keyed on
+// the model call succeeding; it decides the answer now, because the RECORD decides. The
+// control below restores that one production seam for its own turn, which is the honest
+// shape: the discriminator is the receipt, not the model's success.
 // ════════════════════════════════════════════════════════════════════════════
 describe('PHASE-6 CUT 5: a turn that dies with no answer hands the ask back — unless it already acted', () => {
   /** The ask the seeded user message opened, and the state the spine holds it in. */
@@ -2929,9 +2951,31 @@ describe('PHASE-6 CUT 5: a turn that dies with no answer hands the ask back — 
 
   const kinds = (workId: string): string[] => eventsFor(workId).map((e) => e.kind);
 
-  it('POSITIVE CONTROL: a turn that ANSWERS does not hand its ask back', async () => {
-    // The control a tree that re-arms unconditionally fails. Same seeded ask, same
-    // engine, and the only difference is that the model call succeeded.
+  // The receipt seam below is installed per-test, so it must be taken back off per-test:
+  // `mockClear` (the file-wide beforeEach) forgets the CALLS and keeps the IMPLEMENTATION,
+  // which would silently give the next clause a receipt it is supposed to be missing.
+  beforeEach(() => { broadcastSpy.mockReset(); });
+
+  /** The one production seam this file mocks away: `gateway/ws.js:broadcast` is what calls
+   *  `recordDashboardDelivery`, so without it a turn's reply leaves no receipt. Restored for
+   *  the clause whose whole subject is "did the person actually get an answer". */
+  function recordDeliveriesLikeProduction(): void {
+    broadcastSpy.mockImplementation((event: unknown) => {
+      const e = event as { type?: string; agentId?: string; message?: { id?: string; role?: string } };
+      if (e?.type !== 'chat:message' || e.message?.role !== 'assistant' || !e.agentId) return;
+      recordDelivery({
+        agentId: e.agentId, tool: 'dashboard', channel: 'dashboard', recipientId: 'owner',
+        messageId: e.message.id ?? null, outcome: 'delivered',
+        conversationId: turnContext(e.agentId)?.root?.conversationId ?? null,
+      });
+    });
+  }
+
+  it('POSITIVE CONTROL: a turn that ANSWERS AND DELIVERS does not hand its ask back', async () => {
+    // The control a tree that re-arms unconditionally fails. Same seeded ask, same engine;
+    // the difference is that this turn's reply reached the person and left the receipt that
+    // proves it. Under one settlement authority that receipt IS the discriminator.
+    recordDeliveriesLikeProduction();
     callModelSpy.mockResolvedValue({
       content: 'Here you go.', toolCalls: [] as ToolCall[],
       inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
@@ -2939,8 +2983,26 @@ describe('PHASE-6 CUT 5: a turn that dies with no answer hands the ask back — 
 
     await runV2Turn('primary');
 
-    expect(askRow().state).not.toBe('open');
+    expect(askRow().state).toBe('done');
     expect(kinds(askRow().id)).not.toContain('rearm_refused');
+    const receipt = mockDb.current!.prepare(
+      "SELECT result_delivery_id AS d FROM work WHERE id = ?",
+    ).get(askRow().id) as { d: string | null };
+    expect(receipt.d, 'a closed ask points at the delivery that answered it').toBeTruthy();
+  });
+
+  it('NEGATIVE CONTROL: the same successful turn with NO receipt hands the ask back', async () => {
+    // The same model call, the same content, and the only difference is that nothing recorded
+    // the send. The record decides, not the model: the person is still waiting, so the ask
+    // returns to the waiting set rather than being marked served on a promise.
+    callModelSpy.mockResolvedValue({
+      content: 'Here you go.', toolCalls: [] as ToolCall[],
+      inputTokens: 100, outputTokens: 5, stopReason: 'end_turn',
+    });
+
+    await runV2Turn('primary');
+
+    expect(askRow().state).toBe('open');
   });
 
   it('THE HAND-BACK: a model call that gives up returns the ask to the waiting set', async () => {
@@ -2964,11 +3026,12 @@ describe('PHASE-6 CUT 5: a turn that dies with no answer hands the ask back — 
     expect(kinds(before.id)).not.toContain('rearm_refused');
   });
 
-  it('THE REFUSAL IS THE RULE: a turn that already SENT something holds the ask and says so', async () => {
-    // One successful send, then the model dies. Re-arming here would re-run a turn
-    // that already reached a person — the duplicate-send defect P6b-1 records. The ask
-    // is HELD, and the refusal is written to the work record so a held ask is a fact
-    // somebody can find rather than silence.
+  it('THE REFUSAL IS RECORDED, AND THE TURN BOUNDARY STILL HANDS THE ASK BACK', async () => {
+    // One successful send, then the model dies. The abort arm still REFUSES to re-arm and
+    // writes `rearm_refused`, so "this turn already acted" stays a fact somebody can find —
+    // that half is untouched. What changed is the turn BOUNDARY: the owner ruled on
+    // 2026-08-05 that an ask with no answer behind it is served again rather than parked, and
+    // no ask may outlive its turn `claimed`. So the row ends `open`, carrying both records.
     let n = 0;
     callModelSpy.mockImplementation(async () => {
       n += 1;
@@ -2988,8 +3051,10 @@ describe('PHASE-6 CUT 5: a turn that dies with no answer hands the ask back — 
     await runV2Turn('primary');
 
     expect(n).toBe(2);                                   // positive control: it did die on the second call
-    expect(askRow().state).toBe('claimed');              // held, not handed back
-    expect(kinds(before.id)).toContain('rearm_refused');
+    expect(kinds(before.id)).toContain('rearm_refused'); // P6b's abort refusal, unchanged
+    expect(askRow().state).toBe('open');                 // …and the boundary hands it back anyway
+    // The invariant the reversal exists for: nothing is left claimed by a turn that is over.
+    expect(askRow().state).not.toBe('claimed');
   });
 });
 

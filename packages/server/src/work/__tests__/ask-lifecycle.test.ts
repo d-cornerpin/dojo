@@ -40,9 +40,13 @@ vi.mock('../../db/connection.js', async () => {
 
 import { runMigrations } from '../../db/migrations.js';
 import {
-  transition, askIdForMessage, claimAsk, stampClaimingTurn, revertAskClaimOnAbort,
-  closeAsksForDelivery, reconcileOrphanedClaims, openAsk,
+  transition, askIdForMessage, claimAsk, stampClaimingTurn, revertAskClaimOnAbort, openAsk,
 } from '../store.js';
+// SWEEP-A TB1: the send-time close and the boot reconcile are INVOCATIONS of the one
+// settlement authority now (`work/ask-settlement.ts`). The requirements below are unchanged
+// and are asserted at their new address; the predicate's own arms live in
+// `ask-settlement.test.ts`.
+import { settleAsksForDelivery, reconcileOrphanedClaims } from '../ask-settlement.js';
 import { insertMessage, insertMessageIfAbsent } from '../../memory/message-store.js';
 import { getWaitingHumanConversations } from '../../agent/v2/counterparty.js';
 
@@ -95,17 +99,32 @@ beforeEach(() => {
     `INSERT INTO conversations (id, agent_id, channel, counterparty_id)
      VALUES ('conv-1', ?, 'dashboard', 'owner'), ('conv-2', ?, 'imessage', '+15550000')`,
   ).run(AGENT, AGENT);
-  // A stand-in delivery id for the close tests, which pass agent/turn/conversation as
-  // ARGUMENTS and never read this row's own columns.
+  // A stand-in delivery for the close tests.
   // PHASE-2 T5: its turn_number moved 4 -> 1. It used to say "turn 4 delivered into conv-1",
   // and T5's boot reconciliation reads exactly that edge — so the fixture was silently
   // asserting that the crash tests' turn 4 had already answered the owner, which is the
-  // opposite of what those tests set up. Nothing else in this file reads the column.
+  // opposite of what those tests set up.
+  // SWEEP-A TB1: it is a REAL ROW to the close tests now, not a stand-in id. The authority
+  // reads its evidence off the ledger rather than trusting the caller's arguments — one
+  // evidence read, at all three of its moments — so a delivery that does not exist on the
+  // turn being adjudicated closes nothing, which is what these tests want anyway.
   db.prepare(
     `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome)
      VALUES ('d-1', ?, 1, 'auto-route', 'dashboard', 'conv-1', 'delivered')`,
   ).run(AGENT);
 });
+
+/** A delivery row on the ledger for a given turn. The authority's evidence is the RECORD. */
+function seedDelivery(
+  id: string,
+  over: { turn?: number; tool?: string; conversationId?: string; outcome?: string } = {},
+): void {
+  const o = { turn: 4, tool: 'auto-route', conversationId: 'conv-1', outcome: 'delivered', ...over };
+  mockDb.current!.prepare(
+    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome, created_at)
+     VALUES (?, ?, ?, ?, 'dashboard', ?, ?, datetime('now', '+5 seconds'))`,
+  ).run(id, AGENT, o.turn, o.tool, o.conversationId, o.outcome);
+}
 
 // ════════════════════════════════════════════════════════════════════════
 // 1. THE ASK IS BORN WITH THE MESSAGE
@@ -265,13 +284,14 @@ describe('quick asks auto-close on their delivery', () => {
   });
 
   it('a delivered reply to the ask own conversation closes it, pointing at the delivery', () => {
-    expect(closeAsksForDelivery({
-      agentId: AGENT, turnNumber: 4, deliveryId: 'd-1',
+    seedDelivery('d-answer');
+    expect(settleAsksForDelivery({
+      agentId: AGENT, turnNumber: 4, deliveryId: 'd-answer',
       conversationId: 'conv-1', tool: 'auto-route', outcome: 'delivered',
     })).toBe(1);
     const w = workFor('m-1')!;
     expect(w.state).toBe('done');
-    expect(w.result_delivery_id).toBe('d-1');
+    expect(w.result_delivery_id).toBe('d-answer');
     expect(w.closed_at).not.toBeNull();
   });
 
@@ -281,7 +301,8 @@ describe('quick asks auto-close on their delivery', () => {
     };
     // a held/failed/suppressed outcome is not an answer
     for (const outcome of ['held', 'failed', 'suppressed'] as const) {
-      expect(closeAsksForDelivery({ agentId: AGENT, turnNumber: 4, deliveryId: 'd-1',
+      seedDelivery(`d-${outcome}`, { outcome });
+      expect(settleAsksForDelivery({ agentId: AGENT, turnNumber: 4, deliveryId: `d-${outcome}`,
         conversationId: 'conv-1', tool: 'auto-route', outcome })).toBe(0);
       stays(`outcome=${outcome} must not close the ask`);
     }
@@ -289,25 +310,30 @@ describe('quick asks auto-close on their delivery', () => {
     // "the engine saying 'on it'"; the lane's one surviving caller delivers the MODEL's own
     // opening line early, and the exclusion is right either way: an opening line is not the
     // answer to the question.)
-    expect(closeAsksForDelivery({ agentId: AGENT, turnNumber: 4, deliveryId: 'd-1',
+    seedDelivery('d-ack', { tool: 'engine-ack' });
+    expect(settleAsksForDelivery({ agentId: AGENT, turnNumber: 4, deliveryId: 'd-ack',
       conversationId: 'conv-1', tool: 'engine-ack', outcome: 'delivered' })).toBe(0);
     stays('an engine start-ack must not close the ask');
     // an email to a THIRD PARTY sent while working on the owner ask is not its answer
-    expect(closeAsksForDelivery({ agentId: AGENT, turnNumber: 4, deliveryId: 'd-1',
+    seedDelivery('d-third', { conversationId: 'conv-2', tool: 'gmail_send' });
+    expect(settleAsksForDelivery({ agentId: AGENT, turnNumber: 4, deliveryId: 'd-third',
       conversationId: 'conv-2', tool: 'gmail_send', outcome: 'delivered' })).toBe(0);
     stays('a delivery to another conversation must not close the ask');
     // another turn's delivery is not this turn's answer
-    expect(closeAsksForDelivery({ agentId: AGENT, turnNumber: 99, deliveryId: 'd-1',
+    seedDelivery('d-99', { turn: 99 });
+    expect(settleAsksForDelivery({ agentId: AGENT, turnNumber: 99, deliveryId: 'd-99',
       conversationId: 'conv-1', tool: 'auto-route', outcome: 'delivered' })).toBe(0);
     stays('a different turn\'s delivery must not close the ask');
     // ...and the same call with the one offending detail corrected DOES close it.
-    expect(closeAsksForDelivery({ agentId: AGENT, turnNumber: 4, deliveryId: 'd-1',
+    seedDelivery('d-ok');
+    expect(settleAsksForDelivery({ agentId: AGENT, turnNumber: 4, deliveryId: 'd-ok',
       conversationId: 'conv-1', tool: 'auto-route', outcome: 'delivered' })).toBe(1);
     expect(workFor('m-1')!.state).toBe('done');
   });
 
   it('a closed ask never appears on the project board — the board reads task and project', () => {
-    closeAsksForDelivery({ agentId: AGENT, turnNumber: 4, deliveryId: 'd-1',
+    seedDelivery('d-answer');
+    settleAsksForDelivery({ agentId: AGENT, turnNumber: 4, deliveryId: 'd-answer',
       conversationId: 'conv-1', tool: 'auto-route', outcome: 'delivered' });
     const board = mockDb.current!.prepare(
       "SELECT count(*) AS c FROM work WHERE kind IN ('task','project')",

@@ -337,7 +337,7 @@ export function runTurnClosures(
       //
       // So the `engine-ack` tool value survives, and it means something narrower and true:
       // this is the model's opening line pushed EARLY, ahead of its answer. That is why the
-      // two `NON_ANSWERING_*` sets still exclude it (`answered-edge.ts`, `work/store.ts`) —
+      // two `NON_ANSWERING_*` sets still exclude it (`answered-edge.ts`, `work/ask-settlement.ts`) —
       // not because the engine spoke, but because a start-ack is not an ANSWER, and closing
       // an ask on one would mark a question answered before anybody looked at it.
       if (counterparty.kind === 'user' && counterparty.channel === 'imessage' && counterparty.senderId) {

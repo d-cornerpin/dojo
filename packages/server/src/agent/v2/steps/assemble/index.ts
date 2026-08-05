@@ -186,7 +186,7 @@ export async function runAssemble(stateIn: AgentTurnState, ctxIn: AssembleContex
   // iteration, so a gate that judges them as prefix churn reports the prescribed shape
   // as a defect, which is why `check-message-prefix` could never go green.
   const volatileFrom = ctx.messages.length;
-  turnCtx.lastAssembledAtIso = new Date().toISOString(); // F9: see claimAssembledSiblings
+  turnCtx.lastAssembledAtIso = new Date().toISOString(); // F9: see assembledContextAsks
   let systemPrompt = ctx.systemPrompt;
   const messages = ctx.messages;
   // ── STRIP (PHASE-3 T7 Step 2, 2026-08-01) — the SETTLED_HINT is DELETED, both branches.

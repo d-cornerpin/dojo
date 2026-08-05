@@ -239,7 +239,11 @@ describe('STRIP-3 — the two conv-key/conversation-id call sites, pinned', () =
     // Enumerated by STRIP-2 so nobody sweeps them up with the two real defects: these four
     // take a conv KEY on purpose and compare against `conversationKey()` output.
     const s = loop();
-    expect(s).toMatch(/claimAssembledSiblings\(/);
+    // SWEEP-A TB1: the teardown batch-claim `claimAssembledSiblings(` became the READ
+    // `assembledContextAsks(` — same conv KEY argument, same window, no state write. This
+    // clause's subject is the ARGUMENT TYPE (a conv key, compared against `conversationKey()`
+    // output), and that is exactly what survived the conversion; the name moved with it.
+    expect(s).toMatch(/assembledContextAsks\(/);
     expect(s).toMatch(/accumulateUntrackedWorkAcrossTurns\(/);
     expect(stripComments(src('packages/server/src/agent/v2/counterparty.ts')))
       .toMatch(/quarantineWaitingConversation\(agentId: string, convKey: string/);

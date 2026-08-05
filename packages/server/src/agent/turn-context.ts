@@ -291,7 +291,7 @@ export interface TurnContext {
    *  or callback"; these pass THAT test and fail the one that matters, because the
    *  span WRITES them and something outside it READS the write:
    *    * `lastAssembledAtIso` is stamped by the assembly and read by the turn's
-   *      TEARDOWN closure (F9's `claimAssembledSiblings` — the sibling user rows of
+   *      TEARDOWN closure (F9's assembled-context set — the sibling user rows of
    *      this conversation created before the assembly instant were IN the window and
    *      are claimed at turn end) and by the owed-mid-turn-arrivals check. Handed by
    *      value the stamp would die at the module boundary and every turn would claim

@@ -19,7 +19,8 @@ import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import { turnContext } from '../turn-context.js';
 import { resolveOrCreateConversation } from '../../memory/conversations.js';
-import { closeAsksForDelivery, noSuchWorkDetail } from '../../work/store.js';
+import { noSuchWorkDetail } from '../../work/store.js';
+import { settleAsksForDelivery } from '../../work/ask-settlement.js';
 import { withUnit } from '../../db/unit.js';
 import type { LedgerOutcome } from './delivery-outcome.js';
 export { deliveryIdOf, recordedId, type LedgerOutcome } from './delivery-outcome.js';
@@ -66,7 +67,7 @@ export interface DeliveryInput {
  *
  * PHASE-4 T2 — THE ROW AND THE CLOSE ARE ONE UNIT, and this is the plan's own flagship
  * cluster ("deliver + receipt + work.done atomic"). It was TWO transactions: the INSERT
- * committed on its own, then `closeAsksForDelivery` opened a second one. A failure between
+ * committed on its own, then the ask close opened a second one. A failure between
  * them left a `deliveries` row no work row could ever point at, while the ask it answered
  * stayed `claimed` — and since `work.state='done'` REQUIRES `result_delivery_id`
  * (migration `135`'s CHECK plus G7), the whole "done means delivered" law rested on those
@@ -134,10 +135,13 @@ export function recordDelivery(input: DeliveryInput): LedgerOutcome {
       // a row, so no send path has to remember to do it and none can claim a close it cannot
       // point at (`work.state='done'` requires `result_delivery_id`, enforced by the DDL AND
       // by `transition()`'s own gate).
-      // Narrowed three ways, each a negative control in work/__tests__/ask-lifecycle.test.ts:
-      // the send must have succeeded, it must belong to the turn holding the claim, and it
-      // must have gone to the ask's OWN conversation.
-      closeAsksForDelivery({
+      // Narrowed four ways, each a negative control in work/__tests__/ask-settlement.test.ts:
+      // the send must have succeeded, it must belong to the turn holding the claim, it must
+      // have gone to the ask's OWN conversation, and it must postdate the ask's arrival.
+      // SWEEP-A TB1: the DECISION is the settlement authority's — `work/ask-settlement.ts` —
+      // and this is its invocation (a). The call stays inside this transaction, so the
+      // delivery row and the close it causes still commit together (PHASE-4 T2's unit).
+      settleAsksForDelivery({
         agentId: input.agentId,
         turnNumber: turnContext(input.agentId)?.turnNumber ?? null,
         deliveryId: id,

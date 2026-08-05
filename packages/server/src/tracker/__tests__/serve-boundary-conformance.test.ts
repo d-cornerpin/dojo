@@ -224,8 +224,14 @@ describe('turn record (P4)', () => {
     const store = read('memory/message-store.ts');
     expect(store).toMatch(/SET served_by_turn = \? WHERE rowid = \?/);
     expect(store).toMatch(/SET answer_message_id = @answerMessageId[\s\S]{0,200}served_by_turn = @servedByTurn/);
-    const cp = read('agent/v2/counterparty.ts');
-    expect(cp).toMatch(/recordServingTurnByRowid\(\{/);
+    // SWEEP-A TB1: the sibling stamp MOVED, and where it moved to is the point. It used to
+    // ride `counterparty.ts:claimAssembledSiblings`, which stamped the row and claimed the
+    // ticket as two writes at teardown — and the claim then outlived its turn, which is the
+    // fossil bug. The stamp is now written by the settlement authority as PART of closing the
+    // ask, so "this turn answered this row" and "this ask is settled" are one act and cannot
+    // disagree. Same function, same column, same COALESCE; a different owner.
+    const authority = read('work/ask-settlement.ts');
+    expect(authority).toMatch(/recordServingTurnByRowid\(\{/);
     // PHASE-2 T10I: `claimRowByRowid` SHRANK into `recordServingTurnByRowid` — it no longer
     // writes the conversation identity, because a sibling USER row's `conversation_id` was
     // already resolved by its own producer at ingest and a second writer for one fact is the

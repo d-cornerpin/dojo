@@ -675,65 +675,35 @@ export function revertAskClaimOnAbort(
   return r;
 }
 
-/** Tools whose delivery is NOT an answer to the ask that is open.
- *
- *  ⚠ OR2-PROVISIONAL: CLOSED, PHASE-4 T4 (2026-08-02). The marker said T4 would remove the
- *  `engine-ack` lane entirely. It removed the ENGINE'S PROSE from it instead: the lane's one
- *  surviving caller delivers the model's own opening line early, which is the shape OR2
- *  wants. The exclusion stands for the reason it always really had — a START-ACK IS NOT AN
- *  ANSWER — and closing an ask on one would mark a question answered before anybody looked
- *  at it. Kept in step with `answered-edge.ts`'s `NON_ANSWERING_TOOLS` by the conformance
- *  test beside it. */
-const NON_ANSWERING_DELIVERY_TOOLS = new Set(['engine-ack']);
-
-export interface DeliveryCloseInput {
-  agentId: string;
-  turnNumber: number | null;
-  deliveryId: string;
-  conversationId: string | null;
-  tool: string;
-  outcome: string;
-}
-
-/**
- * A quick ask is done when something was DELIVERED for it — never because a model said so.
- *
- * Three narrowings, each of which is a negative control in the test file: the delivery must
- * have succeeded, it must belong to the turn that holds the claim, and it must have gone to
- * the ask's OWN conversation (an email to a third party sent while working on the owner's
- * question is not its answer).
- *
- * PHASE-2 T5 makes deliveries universal; until it lands, the paths that record nothing
- * (dashboard bubbles above all) leave their ask `claimed` rather than `done`. That is
- * visible and inert — a claimed ask is out of the waiting set, so nobody is re-answered —
- * and it is stated here rather than in a plan file.
- */
-export function closeAsksForDelivery(p: DeliveryCloseInput): number {
-  if (p.outcome !== 'delivered') return 0;
-  if (p.turnNumber == null || p.conversationId == null) return 0;
-  if (NON_ANSWERING_DELIVERY_TOOLS.has(p.tool)) return 0;
-  const rows = getDb().prepare(
-    `SELECT id FROM work
-      WHERE agent_id = ? AND kind = 'ask' AND state = 'claimed'
-        AND claimed_by_turn = ? AND conversation_id = ?`,
-  ).all(p.agentId, p.turnNumber, p.conversationId) as Array<{ id: string }>;
-  let closed = 0;
-  for (const r of rows) {
-    const res = transition(r.id, {
-      to: 'done', by: 'agent', actorId: p.agentId, resultDeliveryId: p.deliveryId,
-      expectedState: 'claimed', reason: `delivered via ${p.tool}`,
-    });
-    if (res.kind === 'applied') closed++;
-  }
-  return closed;
-}
+// ⚠ DEMOLISHED HERE, SWEEP-A TB1 (`DESIGN-2BUGS/DESIGN.md` §1b, rows 1 and 3): the two ask
+// closers that used to live at this point in the file are gone, and their decision is one
+// function in `work/ask-settlement.ts`.
+//
+//   * `closeAsksForDelivery` (send time, in the delivery transaction) — verdict KEEP as the
+//     authority's delivery arm.
+//     requirement preserved: "a quick ask is done when something was DELIVERED for it —
+//     never because a model said so" IS the authority's rule; the three narrowings (the send
+//     succeeded, it belongs to the claiming turn, it went to the ask's OWN conversation) and
+//     the `engine-ack` exclusion survive verbatim as negative controls in
+//     `__tests__/ask-settlement.test.ts`, and the solo lifecycle still closes AT SEND TIME
+//     through `settleAsksForDelivery`, called from the same statement inside `recordDelivery`.
+//     Its header's claimed-forever trade-off ("visible and inert") is REVERSED by the owner's
+//     2026-08-05 governing-priority ruling, which is recorded in the authority's own header.
+//   * `reconcileOrphanedClaims` (boot, ≤30 min, dead turns) — verdict KEEP, same trigger and
+//     the same window, moved to sit beside the decision it now shares.
+//     requirement preserved: identical trigger, identical window, three outcomes unchanged
+//     (closed-on-the-delivery / re-armed / P6b-held); only the answered arm's DECISION is now
+//     the authority's. `ORPHAN_CLAIM_WINDOW_MINUTES` moved with it, value untouched.
+//
+// `NON_ANSWERING_DELIVERY_TOOLS` moved with the closer it belonged to and is unchanged; it is
+// still kept in step with `agent/v2/answered-edge.ts`'s `NON_ANSWERING_TOOLS`.
 
 /**
  * 2b, CAUSE 3 — an ask NOBODY CAN EVER SERVE OR CLOSE gets an honest terminal state.
  *
  * Two shapes, both structural and both unservable by construction:
- *   * no conversation identity — `closeAsksForDelivery` matches on the conversation, so a
- *     ticket without one can never be closed by any delivery, ever;
+ *   * no conversation identity — the settlement authority matches evidence on the
+ *     conversation, so a ticket without one can never be closed by any delivery, ever;
  *   * the root message is GONE — a cleared history or a terminated agent takes the row the
  *     obligation was FOR, and nothing can be served against a message nobody can read.
  *
@@ -780,83 +750,6 @@ export function abandonUnservableAsks(agentId?: string): { abandoned: number; id
     });
   }
   return { abandoned: ids.length, ids };
-}
-
-/** How far back a boot reconciliation will reach. Carried verbatim from the pickup-stamp
- *  reconciliation it replaces (`index.ts` 4b1): a claim stranded by a genuine crash is
- *  seconds-to-minutes old, and anything older is history a restart must not re-answer. */
-export const ORPHAN_CLAIM_WINDOW_MINUTES = 30;
-
-/**
- * Crash test B, the durable half: a process killed between the CLAIM and the EFFECT.
- *
- * The claim is in the database and the turn is not, so on restart the ask reads as being
- * served by a turn that will never finish. Two outcomes and no third:
- *   * the dead turn recorded ZERO effectful calls -> hand the ask back, the person is
- *     served again (no orphan claims);
- *   * it recorded some            -> HOLD it, because the effect already happened and a
- *     second turn would repeat it (no duplicate effects).
- *
- * `turns.effectful_calls` is what makes this decidable after the process is gone, which is
- * why T3 writes it as the effects happen instead of only at turn end.
- */
-export function reconcileOrphanedClaims(): { reArmed: number; held: number; closed: number } {
-  const db = getDb();
-  const since = now() - ORPHAN_CLAIM_WINDOW_MINUTES * 60 * 1000;
-  // PHASE-2 T5 — THE OTHER HALF OF THE REKEY, which `index.ts` named as owed here.
-  //
-  // T3 removed the string inference (a later row happening to carry the same conv_key) and
-  // put this on the two recorded turn facts. What it could not read yet was the DELIVERY
-  // EDGE, because before T5 the dashboard path recorded no delivery at all — so this query
-  // deliberately did not ask "was it answered", only "did the turn finish and had it acted".
-  //
-  // Deliveries are universal now, so the answered edge is readable and it is a THIRD outcome,
-  // not a tweak to the other two: a process killed between the send and the close leaves an
-  // ask that was genuinely ANSWERED sitting at `claimed`. Handing it back re-answers a
-  // question the person already had answered; holding it strands it forever. It is closed,
-  // pointing at the delivery that answered it — the same evidence `closeAsksForDelivery`
-  // would have used had the process lived one more statement.
-  const answered = db.prepare(`
-    SELECT w.id AS id, d.id AS delivery_id, d.tool AS tool
-      FROM work w
-      JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = w.claimed_by_turn
-      JOIN deliveries d ON d.agent_id = w.agent_id AND d.turn_number = w.claimed_by_turn
-                       AND d.conversation_id = w.conversation_id AND d.outcome = 'delivered'
-     WHERE w.kind = 'ask' AND w.state = 'claimed' AND w.updated_at >= ?
-       AND t.ended_at IS NULL
-       AND d.tool NOT IN (${[...NON_ANSWERING_DELIVERY_TOOLS].map(() => '?').join(', ')})
-     GROUP BY w.id
-  `).all(since, ...NON_ANSWERING_DELIVERY_TOOLS) as Array<{ id: string; delivery_id: string; tool: string }>;
-  let closed = 0;
-  for (const a of answered) {
-    const res = transition(a.id, {
-      to: 'done', by: 'agent', actorId: 'boot-reconciliation', resultDeliveryId: a.delivery_id,
-      expectedState: 'claimed',
-      reason: `boot reconciliation: the claiming turn delivered via ${a.tool} and was killed before it could close`,
-    });
-    if (res.kind === 'applied') closed++;
-  }
-
-  const rows = db.prepare(`
-    SELECT w.id AS id, COALESCE(t.effectful_calls, 0) AS effectful_calls
-      FROM work w
-      LEFT JOIN turns t ON t.agent_id = w.agent_id AND t.turn_number = w.claimed_by_turn
-     WHERE w.kind = 'ask' AND w.state = 'claimed' AND w.updated_at >= ?
-       AND (t.turn_number IS NULL OR t.ended_at IS NULL)
-  `).all(since) as Array<{ id: string; effectful_calls: number }>;
-  let reArmed = 0; let held = 0;
-  for (const r of rows) {
-    const res = revertAskClaimOnAbort(
-      r.id, r.effectful_calls,
-      'boot reconciliation: the claiming turn never finished (process killed between claim and effect)',
-    );
-    if (res === null) held++;
-    else if (res.kind === 'applied') reArmed++;
-  }
-  if (reArmed > 0 || held > 0 || closed > 0) {
-    logger.warn('boot reconciliation of orphaned ask claims', { reArmed, held, closed });
-  }
-  return { reArmed, held, closed };
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -1257,9 +1150,12 @@ export function dueJoins(nowMs: number, limit = 25): JoinState[] {
  * whole of issues-log #19.
  *
  * WHY THE POPULATION EXISTS AT ALL. The parent ask closes on the reply the agent sends the owner
- * (T5's `closeAsksForDelivery`) and the join opens in the SAME turn: in the event log
- * `join_opened` lands AFTER the `claimed -> done` transition. A `done` parent with a live
- * countdown is therefore the NORMAL product of every delegating turn, not an exotic state.
+ * (T5's send-time closer, now the settlement authority's delivery arm) and the join opens in the
+ * SAME turn: in the event log `join_opened` lands AFTER the `claimed -> done` transition. A
+ * `done` parent with a live countdown was therefore the NORMAL product of every delegating turn.
+ * (SWEEP-A TB1 gives the authority a HOLD arm — an ask with delegated work outstanding goes
+ * `blocked`, never `done` — and TB2 finishes the ordering so this population empties at source.
+ * The finder stays until it is measured empty on a lived-in body.)
  * `dueJoins` above and `openJoins` below both carry `state NOT IN ('done','failed','abandoned')`
  * on the parent, so neither ever yielded one — T11 measured 14 delegated pieces sitting `open`
  * 8–13 HOURS past their TTL under 13 such parents, with the fail-closed owner notice never sent.
@@ -1581,11 +1477,33 @@ export function openCommitment(p: OpenCommitmentInput): string | null {
  * There is no "the model says so" path, deliberately. `transition()`'s G7 refuses `done`
  * without a delivery that RESOLVES, so a promise cannot be closed by announcing it — which is
  * the single behaviour every honesty floor in this tree exists to prevent.
+ *
+ * ── NARROWED, SWEEP-A TB1 (`DESIGN-2BUGS/DESIGN.md` §1b, row 4) ──
+ * A COMMITMENT is the agent's own promise, and closing it is the agent's. An ASK is the
+ * owner's, and it is closed by the RECORD — the settlement authority — never by the model
+ * saying so. The two kinds deliberately share one obligation frame (`OBLIGATION_KINDS`), so
+ * the model's close tool could reach an ask id straight out of the OPEN WORK block, and on
+ * 2026-08-05 it was measured doing exactly that (verify report §5.2, probe ask B3: one
+ * transition `open -> done`, reason "commitment kept", pointing at another ask's delivery).
+ * The refusal is HERE, at the writer, so it cannot be forgotten at a door.
+ * requirement preserved: the one real case the tool caught — an ask answered inside a turn
+ * that never claimed it — is covered STRUCTURALLY by `work/ask-settlement.ts`, which
+ * adjudicates every ask that entered the turn's context at finalize; `ask-settlement.test.ts`
+ * carries that exact shape ("THE B3 SHAPE") as a clause.
  */
 export function resolveCommitment(
   workId: string,
   p: { agentId: string; resultDeliveryId: string | null; note?: string | null },
 ): WorkOutcome {
+  const kind = (getDb().prepare('SELECT kind FROM work WHERE id = ?').get(workId) as
+    { kind: WorkKind } | undefined)?.kind;
+  if (kind === 'ask') {
+    return {
+      kind: 'refused', workId, reason: 'ask-not-a-commitment',
+      detail: 'an owner ask is closed by the delivery record that answers it, not by a close '
+        + 'call — the settlement authority does it at the delivery and again at turn end',
+    };
+  }
   return transition(workId, {
     to: 'done', by: 'agent', actorId: p.agentId,
     reason: p.note && p.note.trim() ? `commitment kept: ${p.note.trim()}` : 'commitment kept',

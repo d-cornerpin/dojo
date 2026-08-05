@@ -25,6 +25,8 @@ import { setAnswerMessageId } from '../../../../memory/message-store.js';
 import { taskScope } from '../../../../work/tracker-view.js';
 import { setTrackerStatus, patchWork } from '../../../../work/tracker-store.js';
 import { joinState, noteUnsettled } from '../../../../work/store.js';
+import { settleAsksAtTurnFinalize } from '../../../../work/ask-settlement.js';
+import { assembledContextAsks } from '../../counterparty.js';
 import {
   pauseDriveWorkWaitingOnOwner, stillClaimedWork, terminalDeliveryForTurn,
 } from '../../answered-edge.js';
@@ -39,7 +41,8 @@ export async function finalizeTurnRecord(
   ctx: TeardownContext,
 ): Promise<void> {
   const {
-    agentId, turnCtx, turnNumber, chosenConvKey, terminalAnswerRowId, triggerWorkId,
+    agentId, turnCtx, turnNumber, chosenConvKey, chosenConversationId, lastAssembledAtIso,
+    terminalAnswerRowId, triggerWorkId,
     toolPhaseEndedBySpinBrake, counterparty, isA2ATurn, isEngineTurn, turnStartedAt,
     inboundChannel, inboundContext, db,
   } = ctx;
@@ -99,6 +102,32 @@ export async function finalizeTurnRecord(
       // only when the turn produced no answer AND executed zero non-idempotent calls.
       state.nonIdempotentCallsThisTurn,
     );
+    // ── SWEEP-A TB1 — THE FINAL ADJUDICATOR OF EVERY OWNER ASK THIS TURN TOUCHED ──
+    //
+    // Invocation (b) of the settlement authority (`work/ask-settlement.ts`), and the moment
+    // the structural invariant is made true: NO ASK REMAINS `claimed` BY A FINALIZED TURN.
+    // Its subject is every ask the turn CLAIMED plus every ask that entered its ASSEMBLED
+    // CONTEXT — the set the F9 batch-claim used to write to, now read and handed over. Each
+    // one is closed against the delivery that answered it, HELD when delegated work is still
+    // outstanding, or handed back `open` because the person is still waiting.
+    //
+    // IT RUNS HERE, BEFORE THE ANSWER STAMP BELOW, and the order is load-bearing:
+    // `setAnswerMessageId` keys on `served_by_turn`, and the settlement is what writes that
+    // column for the assembled rows. Adjudicating afterwards would leave those asks with a
+    // receipt on the ticket and no answer stamp on the message.
+    //
+    // Best-effort like everything else on this arm — the turn record is already written — but
+    // LOUD: a failure here is a person's ask left in whatever state the turn abandoned it in.
+    try {
+      const assembled = (chosenConvKey && chosenConversationId && lastAssembledAtIso)
+        ? assembledContextAsks(agentId, chosenConvKey, lastAssembledAtIso)
+        : [];
+      settleAsksAtTurnFinalize({ agentId, turnNumber, assembled });
+    } catch (err) {
+      logger.warn('v2: the turn-finalize ask adjudication FAILED — an owner ask may be left mid-flight', {
+        agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
+      }, agentId);
+    }
     // ── PHASE-2 T6 (C3) — THE TURN RECORD'S FIRST READER, AND THE DISPOSITION ──
     // R-0's finding paid: `finalizeTurn` has always written the true outcome and nothing
     // read it. Read here, one statement after it is written. 1c enumerates what is still
@@ -219,7 +248,8 @@ export async function finalizeTurnRecord(
       } catch { /* best effort */ }
     }
     // Per-ask outcome: every row this turn served records the reply that answered
-    // it (sibling rows were stamped served_by_turn in claimAssembledSiblings above).
+    // it (sibling rows were stamped served_by_turn by the settlement authority above, as
+    // part of closing them — see the adjudication block and its ordering note).
     // T6: one call — this was two, once per physical store.
     if (answerRow) {
       setAnswerMessageId({ agentId, servedByTurn: turnNumber, answerMessageId: answerRow.id });

@@ -15,7 +15,6 @@ import { getOwnerName } from '../../config/platform.js';
 import { getDb } from '../../db/connection.js';
 import { createLogger } from '../../logger.js';
 import {
-  recordServingTurnByRowid,
   createdAtText,
   recordDeliveryAttempt,
   rehomeUndeliveredCreatedAt,
@@ -251,16 +250,34 @@ export function quarantineWaitingConversation(agentId: string, convKey: string):
 }
 
 /**
- * F9 (harness finding, wave 2): narrow batch-claim at turn teardown. Sibling
- * user rows of the SAME conversation that arrived BEFORE the turn's final
- * context assembly were inside the context the reply was generated from (the
- * per-iteration reassembly pulls them into the fresh tail), so the reply
- * answered them too. Claiming them stops the drain from re-serving the same
- * answer (observed: a 1s two-message burst got the identical answer delivered
- * twice). Rows arriving AFTER the final assembly stay NULL and get their own
- * turn, preserving OPEN-12 ("a genuinely newer message is served next").
+ * THE ASSEMBLED-CONTEXT SET: the asks that were IN FRONT OF THE MODEL when this turn wrote
+ * its reply. Sibling user rows of the SAME conversation that arrived BEFORE the turn's final
+ * context assembly were inside the context the reply was generated from (the per-iteration
+ * reassembly pulls them into the fresh tail), so the reply answered them too. Rows arriving
+ * AFTER the final assembly are deliberately absent and get their own turn, preserving OPEN-12
+ * ("a genuinely newer message is served next").
+ *
+ * ── CONVERTED FROM A WRITER TO A READ, SWEEP-A TB1 (`DESIGN-2BUGS/DESIGN.md` §1b, row 2) ──
+ * This was `claimAssembledSiblings`, and it moved rows `open -> claimed` at teardown with the
+ * reason "answered as a sibling inside this turn's assembled context". Its recorded intent was
+ * F9: a 1-second two-message burst got the IDENTICAL answer delivered twice, and the claim
+ * stopped the drain re-serving an already-answered sibling. The owner's 2026-08-05 causal
+ * correction is why the WRITE had to go: that double answer was itself a symptom of the
+ * missing closure fact — the agent did not know it had already answered because the
+ * settlement was never recorded — so the claim was a patch over the same seam as the fossil
+ * bug, and it converted the double-answer symptom into the stranded-`claimed` symptom (the
+ * claim landed AFTER the only closer scoped to that turn had already swept, so nothing could
+ * ever close the row again).
+ *
+ * requirement preserved: no ask is answered twice. Under one settlement authority that is not
+ * a mechanism at all — it is the record being correct. The answer's delivery CLOSES every ask
+ * it settled, with the receipt on the row and `served_by_turn` stamped as part of the same
+ * settlement, so the drain has nothing left to re-serve. This function reports the set; the
+ * authority decides and writes. It performs no transition, and the census asserts that.
  */
-export function claimAssembledSiblings(agentId: string, convKey: string, assembledAtIso: string, turnNumber?: number | null): number {
+export function assembledContextAsks(
+  agentId: string, convKey: string, assembledAtIso: string,
+): Array<{ workId: string; rowid: number }> {
   const db = getDb();
   const sessionStart = sessionStartOf(agentId);
   const rows = db.prepare(
@@ -269,33 +286,22 @@ export function claimAssembledSiblings(agentId: string, convKey: string, assembl
       WHERE ${WAITING_HUMAN_CANDIDATE_WHERE}
         AND m.created_at <= (unixepoch(@assembledAt) * 1000)`,
   ).all({ agentId, sessionStart, assembledAt: assembledAtIso }) as Array<WaitingConversation['latest']>;
-  // P4: siblings record WHICH turn served them (forward link) on BOTH rows — the ticket's
-  // claim takes them out of the waiting set, and the message's conv_key/served_by_turn is
-  // the conversation-identity half, which stays first-class (07 §3l) and is what
-  // conversation-scoped recall reads.
-  let n = 0;
+  const set: Array<{ workId: string; rowid: number }> = [];
   for (const r of rows) {
     const o = originOfCandidate(r);
     if (o.kind !== 'user') continue;
     if (conversationKey(o.channel, o.senderId, o.senderName, o.threadId) !== convKey) continue;
-    const res = transition(r.work_id, {
-      to: 'claimed', by: 'agent', actorId: agentId, expectedState: 'open',
-      claimedByTurn: turnNumber ?? null,
-      reason: 'answered as a sibling inside this turn\'s assembled context',
-    });
-    if (res.kind !== 'applied') continue;
-    recordServingTurnByRowid({ agentId, rowid: r.rowid, servedByTurn: turnNumber ?? null });
-    n++;
+    set.push({ workId: r.work_id, rowid: r.rowid });
   }
-  return n;
+  return set;
 }
 
 /**
  * F3 (owed mid-turn interrupt): the AUTHORIZED-human user rows of THIS turn's
  * conversation that arrived AFTER the turn started and were pulled into the
- * answered context (so the teardown batch-claim, claimAssembledSiblings, is about
- * to mark them served), yet may never have been addressed. A READ-ONLY sibling of
- * claimAssembledSiblings: it scopes to the SAME set the claim takes (this
+ * answered context (so the settlement authority, fed by `assembledContextAsks`,
+ * is about to adjudicate them), yet may never have been addressed. A sibling of
+ * that read: it scopes to the SAME set (this
  * conversation, conv_key NULL, unswept, not engine, not A2A, created_at <= the
  * turn's final assembly), reusing the identical conversationKey logic, then
  * NARROWS to genuine mid-turn arrivals (created_at > turnStartedAt) so the turn's
@@ -316,7 +322,7 @@ export function getOwedMidTurnArrivals(
 ): Array<{ rowid: number; content: string }> {
   const db = getDb();
   const sessionStart = sessionStartOf(agentId);
-  // Same window claimAssembledSiblings uses (<= the final assembly), plus the
+  // Same window `assembledContextAsks` uses (<= the final assembly), plus the
   // strict turnStartedAt lower bound so only mid-turn arrivals qualify.
   const rows = db.prepare(
     `SELECT ${WAITING_COLS}

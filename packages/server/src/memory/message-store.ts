@@ -293,7 +293,7 @@ function isOwnerAsk(m: NewMessage, storedContent: string): boolean {
   //     agent/v2/loop.ts (~:700)   the [ENGINE RENAME REQUEST] posted to the PM
   //     agent/spawner.ts:381       a spawned agent's kickoff instruction
   // Each opened an owner ask ticket that NOBODY CAN EVER SERVE OR CLOSE: no conversation
-  // identity, so no delivery can match it, and `closeAsksForDelivery` cannot fire.
+  // identity, so no delivery can match it, and the settlement authority cannot fire.
   //
   // MEASURED on this box before the change (READONLY), and this is the whole evidence:
   //     SELECT channel, sender_id IS NOT NULL, inbound_meta IS NOT NULL,
@@ -669,7 +669,8 @@ export function tagTurnOutputConversationId(
  *
  *  ── SHRINK (PHASE-2 T10I). This used to stamp the conversation identity here too
  *  (`SET conv_key = @convKey, served_by_turn = …`). It does not any more, and the reason is
- *  positive rather than tidy-up: its ONE caller is `claimAssembledSiblings`, whose rows are
+ *  positive rather than tidy-up: its ONE caller is the settlement authority (SWEEP-A TB1;
+ *  it was `claimAssembledSiblings` before), whose rows are
  *  sibling USER rows in the conversation being served — and a user row's `conversation_id` was
  *  already resolved by its own producer at ingest. Writing it again from the turn's side was a
  *  second writer for a fact that already had one, and on a lived-in body the two could

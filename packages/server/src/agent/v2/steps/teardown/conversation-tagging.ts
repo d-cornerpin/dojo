@@ -12,15 +12,11 @@
 // used here are the ones the block already had, not new ones.
 // ════════════════════════════════════════
 
-import { createLogger } from '../../../../logger.js';
 import { tagTurnOutputConversationId } from '../../../../memory/message-store.js';
-import { claimAssembledSiblings } from '../../counterparty.js';
 import type { TeardownContext } from './index.js';
 
-const logger = createLogger('v2-loop');
-
 export function tagTurnOutputs(ctx: TeardownContext): void {
-  const { agentId, turnNumber, chosenConvKey, chosenConversationId, lastAssembledAtIso, db } = ctx;
+  const { agentId, turnNumber, chosenConvKey, chosenConversationId } = ctx;
 
   // C15: on EVERY exit path (clean reply, decline, MAX_TOOL_LOOPS, spinning/thrash
   // break, exception) tag THIS turn's own assistant/tool rows with the conversation's
@@ -37,34 +33,21 @@ export function tagTurnOutputs(ctx: TeardownContext): void {
     try {
       if (chosenConversationId) tagTurnOutputConversationId({ agentId, turnNumber, conversationId: chosenConversationId });
     } catch { /* best effort, turn teardown must not throw */ }
-    // F9: claim same-conversation sibling user rows that were inside this
-    // turn's final assembled context (they got answered by this reply); a
-    // burst's second message no longer earns a duplicate answer. Human
-    // conversations only, never the engine sentinel. (PHASE-2 T4: the park/relayed sentinel
-    // tests that stood beside it are gone with the namespace — a chosen conv key could only
-    // ever be a real conversation or 'engine', and nothing writes a join into this column.)
-    // PHASE-2 T10I: the `chosenConvKey !== 'engine'` guard is GONE and it is not a
-    // widening. It excluded the engine SENTINEL — a fake conversation key — from a claim
-    // that only ever applies to a human conversation's sibling rows. `chosenConversationId`
-    // cannot be a sentinel: an events-lane rider has no conversation, so an engine turn
-    // reaches here with null and the condition below excludes it structurally instead of
-    // by name. (Asserted: the sentinel value can no longer be produced.)
-    if (
-      lastAssembledAtIso &&
-      chosenConversationId
-    ) {
-      try {
-        // Abort-safety: only claim siblings when this turn actually persisted
-        // an ANSWER for this conversation. A no-answer abort must leave them
-        // NULL so the drain re-serves them (never silently dropped).
-        const answered = db.prepare(
-          `SELECT 1 FROM messages WHERE agent_id = ? AND turn_number = ? AND role = 'assistant' AND conversation_id = ? LIMIT 1`,
-        ).get(agentId, turnNumber, chosenConversationId);
-        const claimed = answered ? claimAssembledSiblings(agentId, chosenConvKey, lastAssembledAtIso, turnNumber) : 0;
-        if (claimed > 0) {
-          logger.info('F9 batch-claim: claimed sibling rows answered by this turn', { agentId, convKey: chosenConvKey, claimed }, agentId);
-        }
-      } catch { /* best effort, turn teardown must not throw */ }
-    }
   }
+  // ── SWEEP-A TB1: THE F9 BATCH-CLAIM IS GONE FROM HERE, AND IT IS NOT A LOSS ──
+  // This block used to move the same-conversation sibling asks `open -> claimed` (reason
+  // "answered as a sibling inside this turn's assembled context") so the drain would not
+  // re-serve a question the reply had already answered. It ran at teardown, which is AFTER
+  // the send-time closer had already swept for this turn — so every row it claimed was left
+  // `claimed` for ever, and the dedup patch became the fossil bug (36 stuck rows measured on
+  // this box; reproduced 4/4 by the kit scenario `ask-burst-always-settles`).
+  // requirement preserved: no ask is answered twice — now as a PROPERTY rather than a marker.
+  // The set is read (`counterparty.ts:assembledContextAsks`), and `finalize-record.ts` hands
+  // it to the settlement authority, which CLOSES each row against the delivery that answered
+  // it and stamps `served_by_turn` in the same settlement. A closed ask is not in the waiting
+  // set, so there is nothing to re-serve; and an ask with no delivery behind it goes back to
+  // `open`, visible, instead of being marked served on a promise.
+  // The abort-safety gate this block carried ("only claim when the turn persisted an ANSWER")
+  // is preserved and strengthened: the authority's gate is the DELIVERY RECEIPT itself, so a
+  // no-answer abort leaves every sibling servable.
 }

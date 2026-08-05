@@ -10,7 +10,8 @@ import { resetWorkingAgentsToIdleAtBoot } from './agent/agent-status.js';
 import { runMigrations } from './db/migrations.js';
 // PHASE-2 T9: `sweepByRowid` and `transition` left this file with the boot staleness sweep,
 // which now lives in `work/work-reaper.ts` beside the other obligation sweeps.
-import { reconcileOrphanedClaims, abandonUnservableAsks } from './work/store.js';
+import { abandonUnservableAsks } from './work/store.js';
+import { reconcileOrphanedClaims } from './work/ask-settlement.js';
 import { loadSecrets } from './config/loader.js';
 import { createServer } from './gateway/server.js';
 import { broadcast } from './gateway/ws.js';

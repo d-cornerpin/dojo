@@ -50,7 +50,7 @@ export async function runOwedInterrupt(
   // A quick question that lands WHILE a turn is running is NOT an interrupt:
   // its wakeup row sits conv_key NULL and rides into the running turn's
   // per-iteration reassembled tail (runtime.ts). At teardown,
-  // claimAssembledSiblings claims every same-conversation user row that was in
+  // the assembled-context set covers every same-conversation user row that was in
   // the answered context (conv_key NULL, created_at <= the final assembly) so a
   // burst can't earn a duplicate answer, a requirement we KEEP intact. The gap
   // it leaves: "in context when we answered" is treated as "was answered", so a

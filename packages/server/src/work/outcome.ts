@@ -80,7 +80,12 @@ export type TransitionGate =
   // PHASE-2 T4: the two refusals the fan-out join owes. Both were caller-side `if`s in the
   // string machine and both are structural here, so no caller can forget them.
   | 'not-a-join-child'
-  | 'empty-piece';
+  | 'empty-piece'
+  // SWEEP-A TB1: the commitment door refusing an OWNER ASK. Asks and commitments share one
+  // obligation frame on purpose, so the model's own close tool could reach an ask id out of
+  // the OPEN WORK block — measured doing it on 2026-08-05. An ask is closed by the record
+  // that answers it (`work/ask-settlement.ts`), so the door refuses, steerably.
+  | 'ask-not-a-commitment';
 
 /** The two reasons that are not gates: G4's "already there" and G3's lost race. */
 export type WorkOutcomeReason = TransitionGate | 'already-in-state' | 'state-conflict';

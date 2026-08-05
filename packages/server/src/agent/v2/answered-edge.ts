@@ -52,7 +52,7 @@ const logger = createLogger('answered-edge');
  *  one surviving caller delivers the MODEL'S own opening line early (`loop.ts:4582`,
  *  `startLine`), which §T0-PINS E names as the shape OR2 wants. The exclusion stands on its
  *  own footing now — a START-ACK IS NOT AN ANSWER, whoever wrote it. Kept in step with
- *  `work/store.ts`'s `NON_ANSWERING_DELIVERY_TOOLS` by the conformance test beside it. */
+ *  `work/ask-settlement.ts`'s `NON_ANSWERING_DELIVERY_TOOLS` by the conformance test beside it. */
 const NON_ANSWERING_TOOLS = ["'engine-ack'"];
 
 // ════════════════════════════════════════════════════════════════════════════════

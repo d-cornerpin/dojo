@@ -139,7 +139,8 @@ export function runTurnTrigger(
     : (waitingConvs[0]?.oldest?.conversation_id ?? null);
   // F9: timestamp of the turn's most recent context assembly; sibling user rows
   // of the same conversation created before this instant were IN the assembled
-  // context and are claimed at teardown (see claimAssembledSiblings).
+  // context and are adjudicated at turn finalize (see assembledContextAsks and
+  // work/ask-settlement.ts).
   // PHASE-6 T4 (CUT 6): MOVED to the turn's bag with its two siblings — the
   // `assemble` span writes it and the teardown closure reads it, so a by-value
   // hand-off would lose the stamp. Reason at the field (RULING P6-R3(1)).
