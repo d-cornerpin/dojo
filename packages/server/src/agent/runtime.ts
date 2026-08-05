@@ -15,6 +15,8 @@ import { rectifyAttachment } from './input-rectification.js';
 import { runV2Turn } from './v2/loop.js';
 import { writeAgentStatus } from './agent-status.js';
 import { STUCK_AGENT_THRESHOLD_MINUTES } from './stuck-thresholds.js';
+// PHASE-6 T10 Step 1d: the storm law's own predicate, read from the spine.
+import { selfWakeStandDown } from '../work/work-reaper.js';
 
 // One-shot dedup so the "model does not support tools" banner only fires once
 // per (agent, model) pair for the lifetime of the server process. Without
@@ -714,11 +716,23 @@ class AgentRuntime {
           // many people were waiting when it fired. Taking it once also means a future edit
           // that deletes the stand-down branch still leaves the number on the record — the
           // clause bites on the fault instead of going quiet with it.
-          const waitingHumans = getWaitingHumanConversations(agentId).length;
-          if (waitingHumans > 0) {
+          //
+          // PHASE-6 T10 Step 1d — AND IT IS NOW THE RIGHT NUMBER. This read was
+          // `getWaitingHumanConversations(agentId).length`: CONVERSATIONS, deduped by
+          // conversation key, logged under a field called `humanAsksOpen`. Fifteen open asks
+          // in one thread were `1`, and PHASE-5's exit battery caught it stamping `0` against
+          // a spine holding fifteen — the first thing the `calm` property ever measured.
+          // `selfWakeStandDown` reads the spine directly (`work` rows, kind='ask',
+          // state='open'), which is the count the field name has always claimed and the count
+          // the battery cross-checks against. It also stands down on an UNREADABLE spine
+          // (`-1`), which a conversation count could not express: not knowing whether somebody
+          // is waiting must never read as "nobody is". `getWaitingHumanConversations` keeps
+          // every other caller — it answers WHICH conversations, which no count can.
+          const { standDown, humanAsksOpen: openAsks } = selfWakeStandDown(agentId);
+          if (standDown) {
             clearDrainLadder(agentId, 'unserved_wake');
             logger.info('unserved-wake drain: standing down, a human is waiting', {
-              agentId, humanAsksOpen: waitingHumans,
+              agentId, humanAsksOpen: openAsks,
             }, agentId);
             throw { __skipWakeDrain: true };
           }
@@ -749,11 +763,11 @@ class AgentRuntime {
             if (stuck < 2) {
               pendingWakeups.add(agentId);
               logger.info('unserved-wake drain: leftover wake/engine event after turn end; queuing immediate re-run', {
-                agentId, head, stuck, humanAsksOpen: waitingHumans,
+                agentId, head, stuck, humanAsksOpen: openAsks,
               }, agentId);
             } else {
               logger.warn('unserved-wake drain: head not advancing after re-runs; standing down to the periodics', {
-                agentId, head, stuck, humanAsksOpen: waitingHumans,
+                agentId, head, stuck, humanAsksOpen: openAsks,
               }, agentId);
             }
           } else {

@@ -397,11 +397,25 @@ describe('T9 — the DERIVED drain bound is a refused design, and it stays refus
     expect(read('agent/drain-state.ts')).toMatch(/INSERT INTO drain_state/);
   });
 
-  it('and the storm law it sits beside is still read from the spine', () => {
+  it('and the storm law it sits beside is NOW read from the spine — this clause\'s title came true', () => {
     // NEGATIVE CONTROL for the two clauses above: they must not pass by the drain block
     // having been deleted wholesale.
+    //
+    // ⚠ PHASE-6 T10 Step 1d — RE-POINTED, AND THE OLD PIN WAS ASSERTING THE DEFECT.
+    // This clause was written to say the storm law is "read from the spine" and then pinned
+    // `getWaitingHumanConversations(agentId).length` — which is not the spine at all: it is
+    // a CONVERSATION count off `messages`, deduped by conversation key, logged under a field
+    // called `humanAsksOpen`. The title was true of the intent and false of the code, and
+    // PHASE-5's exit battery is what caught the gap (`humanAsksOpen=0` against a spine
+    // holding fifteen). The drain now asks `selfWakeStandDown`, which IS the spine predicate
+    // this file exports, so the two halves finally say the same thing.
+    //
+    // The pin is kept, not deleted: it is what made the change impossible to make quietly,
+    // and it does the same job for the next one.
     const rt = read('agent/runtime.ts');
-    expect(rt).toMatch(/getWaitingHumanConversations\(agentId\)\.length/);
-    expect(rt).toMatch(/humanAsksOpen: waitingHumans/);
+    expect(rt).toMatch(/const \{ standDown, humanAsksOpen: openAsks \} = selfWakeStandDown\(agentId\)/);
+    expect(rt).toMatch(/humanAsksOpen: openAsks,/);
+    // …and the conversation reader is STILL here, for the drain that needs the head itself.
+    expect(rt).toMatch(/const waiting = getWaitingHumanConversations\(agentId\)/);
   });
 });
