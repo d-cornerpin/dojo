@@ -291,9 +291,23 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   // turns that died mid-lifecycle and already carries the bound — thirty minutes, dead turn —
   // so the crash window is that arm's scope widened by one shape, never a second mechanism.
   if (ask.state === 'done' && (ctx.at === 'finalize' || ctx.at === 'boot') && joinOutstanding(ask)) {
+    // ⚠ SWEEP-A TB6 — AND IT DROPS THE RECEIPT IT IS UNDOING. `evidenceRef` names the
+    // delivery so the undo can be audited (and G6 requires the engine to point at something);
+    // `clearResultDelivery` takes the row off it. Those are two different jobs: the event is
+    // the RECORD of what was undone and stays, the column is CURRENT STATE — "the delivery
+    // this row is settled on" — and a row that has just been handed back is settled on
+    // nothing. Without the clear the row went back to `open`/`blocked` still pointing at a
+    // superseded receipt (TB5 §Q5, `ask:fa74a65f`: 4 m 55 s of it, and the correct settlement
+    // landed 114 s after the window). Two readers were measurably wrong for that whole time:
+    // the kit's (e2) clause read the stale pointer as the ask's receipt, and
+    // `owedSendObligations` — the claimed-delivery floor's "is this person still owed an
+    // answer" query — EXCLUDED the row, because it filters `result_delivery_id IS NULL` on the
+    // belief (stated in its own comment) that a non-`done` row cannot carry one. It can, and
+    // this was how.
     const undo = transition(workId, {
       to: 'open', by: 'engine', actorId: 'ask-settlement', expectedState: 'done',
       evidenceRef: ask.result_delivery_id ?? undefined,
+      clearResultDelivery: true,
       reason: 'handed back: this turn closed the ask and THEN delegated the work under it — '
         + 'the delivery it closed on answered nothing, and the delegated pieces are still out',
     });

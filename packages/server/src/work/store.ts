@@ -135,6 +135,27 @@ export interface TransitionInput {
   evidenceRef?: string | null;
   /** The delivery that makes `done` true. `done` is unreachable without one. */
   resultDeliveryId?: string | null;
+  /**
+   * UNSETTLE the row: drop `result_delivery_id` as part of this move. Only meaningful on a
+   * NON-terminal `to`, and it exists because `resultDeliveryId: null` cannot say this — the
+   * binding below reads `?? row.result_delivery_id`, so an explicit null is indistinguishable
+   * from "not supplied" and several callers already pass one believing otherwise.
+   *
+   * SWEEP-A TB6 (TB5 hand-up HU-1). The column is CURRENT STATE — "the delivery this row is
+   * settled on" — not history, and `closed_at`, its other half in the DDL's own
+   * `state='done'` pair, is already cleared on every non-terminal move by the CASE above it.
+   * A row that has been handed back is settled on nothing, and until this existed it kept
+   * pointing at the receipt of the close that was undone (measured: 4 m 55 s on
+   * `ask:fa74a65f`, battery `bmsgh439cdv`). The EVENT record is untouched: the undo carries
+   * the receipt in its own `evidence_ref`, because undoing the RECORD would be the forgery
+   * this spine exists to refuse.
+   *
+   * Deliberately opt-in rather than "clear on every non-terminal move": the wider rule would
+   * silently change every tracker status edit and every retask in the same commit, and those
+   * paths have their own owners. See the TB6 report for the census of callers that pass an
+   * explicit null today and get a no-op.
+   */
+  clearResultDelivery?: boolean;
   claim?: Claim;
   /** The result this transition carries, recorded on the ROW in the same transaction as the
    *  state change. A delegated piece's delivered text lands here (PHASE-2 T4, requirement
@@ -421,7 +442,9 @@ export function transition(workId: string, input: TransitionInput): WorkOutcome 
       input.to,
       terminal ? 1 : 0,
       at,
-      input.to === 'done' ? deliveryId : (input.resultDeliveryId ?? row.result_delivery_id),
+      input.to === 'done'
+        ? deliveryId
+        : (input.clearResultDelivery ? null : (input.resultDeliveryId ?? row.result_delivery_id)),
       input.to === 'claimed' ? (input.claimedByTurn ?? null) : null,
       input.note ?? null,
       terminal ? 1 : 0,

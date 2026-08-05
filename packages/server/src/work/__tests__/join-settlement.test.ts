@@ -47,7 +47,8 @@ vi.mock('../../db/connection.js', async () => {
 
 import { runMigrations } from '../../db/migrations.js';
 import {
-  askIdForMessage, claimAsk, stampClaimingTurn, openDelegationJoin, landPiece,
+  askIdForMessage, claimAsk, stampClaimingTurn, openDelegationJoin, landPiece, transition,
+  owedSendObligations,
 } from '../store.js';
 import {
   settleAsk, settleAsksForDelivery, settleAsksAtTurnFinalize, settleAskOnJoin,
@@ -236,6 +237,114 @@ describe('(i-b) the OTHER ordering — the turn answered FIRST and delegated aft
     const path = transitionsFor(askId).map((t) => t.to);
     expect(path).toEqual(['claimed', 'done', 'open', 'blocked']);
     expect(transitionsFor(askId)[2].reason).toMatch(/closed the ask and THEN delegated/);
+  });
+
+  // ── SWEEP-A TB6 (TB5 hand-up HU-1): THE HAND-BACK CLEARS THE RECEIPT IT UNDOES ─────────
+  //
+  // MEASURED, battery `bmsgh439cdv` attempt 2, `ask:fa74a65f`: the boundary handed the row
+  // back correctly (`done -> open -> blocked`, 68 ms after the close) but passed only
+  // `evidenceRef`, and `store.ts`'s UPDATE preserved `result_delivery_id` on every non-`done`
+  // move. The row then sat NON-TERMINAL for 4 m 55 s still pointing at the settlement receipt
+  // of the close that had been undone, and the real compiled settlement (`8cb25bbf`) landed
+  // 114 s after the test window. The kit's clause (e2) read the superseded pointer and judged
+  // the receipt 9.9 s early.
+  //
+  // The EVENT record is history and stays — undoing it would be the forgery this spine exists
+  // to refuse, and the undo's own `evidence_ref` names the receipt it undid, which is asserted
+  // below. `result_delivery_id` is not history: it is CURRENT STATE, "the delivery this row is
+  // settled on", and an unsettled row is settled on nothing.
+  it('a handed-back ask carries NO result_delivery_id, and the undo still names the receipt', () => {
+    const askId = claimedAsk('m-1', 7);
+    seedDelivery('d-reply', { turn: 7, displayKind: 'agent-text' });
+    settleAsksForDelivery({
+      agentId: AGENT, turnNumber: 7, deliveryId: 'd-reply', conversationId: CONV,
+      tool: 'dashboard', outcome: 'delivered',
+    });
+    expect(workRow(askId).result_delivery_id, 'premise: the close really did stamp a receipt')
+      .toBe('d-reply');
+    openJoin(askId, 2);
+
+    settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 7 });
+
+    const row = workRow(askId);
+    expect(row.state).toBe('blocked');
+    expect(row.result_delivery_id, 'a non-terminal row must not point at a settlement receipt')
+      .toBeNull();
+    // The record is not falsified: the undo transition still carries the receipt it undid.
+    const undo = (mockDb.current!.prepare(
+      `SELECT payload FROM work_events WHERE work_id = ? AND kind = 'transition' ORDER BY id`,
+    ).all(askId) as Array<{ payload: string }>)
+      .map((r) => JSON.parse(r.payload) as { to: string; evidence_ref: string | null })
+      .find((t) => t.to === 'open');
+    expect(undo?.evidence_ref).toBe('d-reply');
+  });
+
+  it('and the RE-CLOSE repopulates it — clearing does not make the row uncloseable', () => {
+    const askId = claimedAsk('m-1', 7);
+    seedDelivery('d-reply', { turn: 7, displayKind: 'agent-text' });
+    settleAsksForDelivery({
+      agentId: AGENT, turnNumber: 7, deliveryId: 'd-reply', conversationId: CONV,
+      tool: 'dashboard', outcome: 'delivered',
+    });
+    const kids = openJoin(askId, 2);
+    settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 7 });
+    expect(workRow(askId).result_delivery_id).toBeNull();
+
+    landAll(kids);
+    seedDelivery('d-compiled', { turn: 9, displayKind: 'agent-text', offsetSeconds: 5, content: 'HARBOR-0 and HARBOR-1' });
+    const r = settleAskOnJoin(askId, { agentId: AGENT, reason: 'the compile answered the owner' });
+
+    expect(r.verdict).toBe('closed');
+    const row = workRow(askId);
+    expect(row.state).toBe('done');
+    expect(row.result_delivery_id, 'the row is settled on the COMPILED delivery, not the undone one')
+      .toBe('d-compiled');
+  });
+
+  it('THE READER THE STALE POINTER WAS SILENCING: the handed-back ask is OWED again', () => {
+    // `owedSendObligations` is the claimed-delivery floor's "does this person have an answer
+    // outstanding" query. It filters `w.result_delivery_id IS NULL`, and its own comment says
+    // that clause is redundant because "`state <> 'done'` already implies it by the DDL's own
+    // CHECK". The CHECK says `done` IMPLIES a receipt — not the converse — so a handed-back
+    // row carried one, and the floor read the owner as already answered while the ask was
+    // still owed. This is the clause that would have caught that, driven both ways.
+    const askId = claimedAsk('m-1', 7);
+    seedDelivery('d-reply', { turn: 7, displayKind: 'agent-text' });
+    settleAsksForDelivery({
+      agentId: AGENT, turnNumber: 7, deliveryId: 'd-reply', conversationId: CONV,
+      tool: 'dashboard', outcome: 'delivered',
+    });
+    expect(owedSendObligations(AGENT).map((o) => o.id), 'a genuinely answered ask is not owed')
+      .not.toContain(askId);
+
+    openJoin(askId, 2);
+    settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 7 });
+
+    expect(workRow(askId).state).toBe('blocked');
+    expect(owedSendObligations(AGENT).map((o) => o.id), 'handed back means owed again')
+      .toContain(askId);
+  });
+
+  it('the DDL\'s done-requires-receipt rule is UNTOUCHED — a cleared row cannot close on nothing', () => {
+    // The clear must not become a back door into a `done` with no delivery behind it. G7 and
+    // `CHECK (state <> 'done' OR result_delivery_id IS NOT NULL)` both still refuse.
+    const askId = claimedAsk('m-1', 7);
+    seedDelivery('d-reply', { turn: 7, displayKind: 'agent-text' });
+    settleAsksForDelivery({
+      agentId: AGENT, turnNumber: 7, deliveryId: 'd-reply', conversationId: CONV,
+      tool: 'dashboard', outcome: 'delivered',
+    });
+    openJoin(askId, 2);
+    settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 7 });
+    expect(workRow(askId).result_delivery_id).toBeNull();
+
+    const refused = transition(askId, {
+      to: 'done', by: 'agent', actorId: AGENT,
+      reason: 'closing it out with nothing to point at',
+    });
+    expect(refused.kind).toBe('refused');
+    expect((refused as { reason: string }).reason).toBe('done-requires-delivery');
+    expect(workRow(askId).state).toBe('blocked');
   });
 
   it('NEGATIVE CONTROL: an ask this turn closed with NO delegation under it is left alone', () => {
