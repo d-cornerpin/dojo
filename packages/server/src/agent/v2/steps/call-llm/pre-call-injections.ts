@@ -92,6 +92,7 @@ export async function injectAndRecord(
   // question it asked. Rebuilt each iteration with the rest of this block, so a
   // single copy lands per model call.
   if (counterparty.kind === 'user') {
+    const pendConvId = turnCtx.root?.conversationId ?? null;
     try {
       // RECENT OUTBOUND (RC-12 item 7): the last N sends in 24h, engine-verified.
       // Survives scoping (receipts are not conversation rows), so a denial or a
@@ -119,7 +120,6 @@ export async function injectAndRecord(
       // window; quoting a row the tail already carries would duplicate it.) When the
       // echo writer dies the predicate stops matching and the lane carries the job
       // whole — nothing else about this site changes.
-      const pendConvId = turnCtx.root?.conversationId ?? null;
       mctx.deliveriesLane = renderDeliveriesLaneMessage({
         agentId,
         conversationId: pendConvId,
@@ -133,48 +133,66 @@ export async function injectAndRecord(
         ),
       });
       injectRegistryMessage('msg.deliveries', messages, mctx);
-
-      // OPEN WORK (PHASE-2 T7): what this agent still OWES — the current
-      // conversation's open asks and commitments first, then up to 3 from other
-      // conversations labelled as such. Reads the work spine directly; the rows
-      // are created when the obligation is made (4a), so nothing here parses a
-      // summary or matches prose. Aged rows are excluded and go to the daily
-      // brief instead (4b: ageing demotes, it never closes). Same volatile lane
-      // as the outbound facts above, so it never breaks the prompt-cache prefix.
-      //
-      // Keyed on `conversation_id`, not on `conv_key`: the deleted block compared
-      // conv_key strings, which is the column that also carried the claim token
-      // and the park sigils, so a parked row changed which party its items
-      // belonged to.
-      const openWorkBlock = buildOpenWorkInjection(agentId, pendConvId);
-      if (openWorkBlock) pushEngineMessage(messages, openWorkBlock, 'engine.open-work'); // registry-exempt(2026-07-16): the open-work block reads conv-scoped rows mid-iteration; migrate with the volatile-injection registry refactor
-
-      // RECENTLY ANSWERED (ticket-stamps plan A4, owner-approved): the
-      // last few asks of THIS conversation that already have answers,
-      // read from the per-ask answer stamps (mig 113), so answered-ness
-      // survives compaction structurally and the model never re-answers
-      // a settled question. Bounded: 3 lines; human turns; volatile lane.
-      if (turnCtx.conversationId) {
-        try {
-          const answeredAsks = db.prepare(
-            `SELECT content, created_at FROM messages
-              WHERE agent_id = ? AND conversation_id = ? AND role = 'user'
-                AND answer_message_id IS NOT NULL
-              ORDER BY created_at DESC LIMIT 3`,
-          ).all(agentId, turnCtx.conversationId) as Array<{ content: string; created_at: string }>;
-          if (answeredAsks.length > 0) {
-            const lines = answeredAsks.map((a) => {
-              const excerpt = a.content.replace(/^\[[^\]]*\]\s*/g, '').trim().slice(0, 90);
-              return `- answered ${relativeTimeAgo(a.created_at)}: "${excerpt}"`;
-            });
-            pushEngineMessage(messages, `RECENTLY ANSWERED in this conversation (engine record; do NOT re-execute this work. If asked about it again, a brief restatement of the answer's content is fine, or point at the earlier answer; never silence, and never re-run the work itself):\n${lines.join('\n')}`, 'engine.recently-answered'); // registry-exempt(2026-07-22): reads per-iteration conv-scoped answer stamps; migrate with the volatile-injection registry refactor
-          }
-        } catch { /* best effort */ }
-      }
     } catch (err) {
       logger.debug('RC-12/RC-1 volatile outbound injection failed (non-fatal)', {
         agentId, error: err instanceof Error ? err.message : String(err),
       }, agentId);
+    }
+
+    // OPEN WORK (PHASE-2 T7): what this agent still OWES — the current
+    // conversation's open asks and commitments first, then up to 3 from other
+    // conversations labelled as such. Reads the work spine directly; the rows
+    // are created when the obligation is made (4a), so nothing here parses a
+    // summary or matches prose. Aged rows are excluded and go to the daily
+    // brief instead (4b: ageing demotes, it never closes). Same volatile lane
+    // as the outbound facts above, so it never breaks the prompt-cache prefix.
+    //
+    // Keyed on `conversation_id`, not on `conv_key`: the deleted block compared
+    // conv_key strings, which is the column that also carried the claim token
+    // and the park sigils, so a parked row changed which party its items
+    // belonged to.
+    //
+    // ── PHASE-6 T13: THIS INJECTION HAS ITS OWN SCOPE, AND ITS OWN FAILURE IS LOUD ──
+    // It used to sit inside the best-effort `try` above, under a `catch` that logs at
+    // DEBUG and swallows — so a throw in the recent-outbound ledger read or in the
+    // deliveries render silently took "what you still owe" off the model's desk, and
+    // `buildOpenWorkInjection` was never even CALLED. That is not an equivalence of
+    // concerns: those two are enrichments, and this is the mechanism a promise survives
+    // a turn BY (`promise-survives-the-turn`'s `inFrontOfModel` clause is exactly this
+    // block's own rendering). Whether that swallow fired on the scenario's own red is
+    // NOT claimed here — the catch logged at debug, so no record exists either way.
+    // What is fixed is that the injection had no independent failure path.
+    // WARN, not debug: a person is owed something and the model cannot see it.
+    try {
+      const openWorkBlock = buildOpenWorkInjection(agentId, pendConvId);
+      if (openWorkBlock) pushEngineMessage(messages, openWorkBlock, 'engine.open-work'); // registry-exempt(2026-07-16): the open-work block reads conv-scoped rows mid-iteration; migrate with the volatile-injection registry refactor
+    } catch (err) {
+      logger.warn('OPEN WORK injection FAILED — work this agent owes is NOT in front of the model this call', {
+        agentId, turnNumber, error: err instanceof Error ? err.message : String(err),
+      }, agentId);
+    }
+
+    // RECENTLY ANSWERED (ticket-stamps plan A4, owner-approved): the
+    // last few asks of THIS conversation that already have answers,
+    // read from the per-ask answer stamps (mig 113), so answered-ness
+    // survives compaction structurally and the model never re-answers
+    // a settled question. Bounded: 3 lines; human turns; volatile lane.
+    if (turnCtx.conversationId) {
+      try {
+        const answeredAsks = db.prepare(
+          `SELECT content, created_at FROM messages
+            WHERE agent_id = ? AND conversation_id = ? AND role = 'user'
+              AND answer_message_id IS NOT NULL
+            ORDER BY created_at DESC LIMIT 3`,
+        ).all(agentId, turnCtx.conversationId) as Array<{ content: string; created_at: string }>;
+        if (answeredAsks.length > 0) {
+          const lines = answeredAsks.map((a) => {
+            const excerpt = a.content.replace(/^\[[^\]]*\]\s*/g, '').trim().slice(0, 90);
+            return `- answered ${relativeTimeAgo(a.created_at)}: "${excerpt}"`;
+          });
+          pushEngineMessage(messages, `RECENTLY ANSWERED in this conversation (engine record; do NOT re-execute this work. If asked about it again, a brief restatement of the answer's content is fine, or point at the earlier answer; never silence, and never re-run the work itself):\n${lines.join('\n')}`, 'engine.recently-answered'); // registry-exempt(2026-07-22): reads per-iteration conv-scoped answer stamps; migrate with the volatile-injection registry refactor
+        }
+      } catch { /* best effort */ }
     }
   }
 
