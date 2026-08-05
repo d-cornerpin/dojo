@@ -108,15 +108,28 @@ export async function runTurnTimeBudget(
       // did; hand them over so the rebuilt context cannot forget.
       // T6: slot-gate dead with the flag. §T0-PINS F's `:2871`, the named victim.
       {
+        // PHASE-6 T13 (CUT 3's H1): the number is the TURN's, because the sentence says
+        // "so far this turn". It was `state.toolCalls.length` — the LAST model response's
+        // batch, which `callLLM` overwrites from `result.toolCalls` every round — so a turn
+        // of two rounds of one tool each said "so far this turn ... 1".
+        //
+        // `toolResults` is the turn's own ledger and it is the right number here for a
+        // measured reason, not an aesthetic one: it has ONE writer (`steps/execute/index.ts`
+        // concatenates the round's results once, AFTER the batch settles), it is never reset
+        // mid-turn, and it is therefore immune to the parallel-safe batch's known
+        // last-writer-wins semantics — which `toolCallsExecutedThisTurn` is NOT. Measured:
+        // one round of two parallel `file_read`s executes twice and leaves that counter at
+        // 1 (CUT 7's §13 note, and the span's own comment: those parallel writes "can
+        // silently fail to stick"). Swapping one wrong number for another is not a fix.
         const recap =
-          `[Engine recap: memory was just compacted MID-TURN. This is still the SAME turn. So far this turn you have made ${state.toolCalls.length} tool call(s)` +
+          `[Engine recap: memory was just compacted MID-TURN. This is still the SAME turn. So far this turn you have made ${state.toolResults.length} tool call(s)` +
           (state.surfacedReplyThisTurn || deferredDeliveredByAck || engineStartAckDeliveredThisTurn
             ? ' and the user has ALREADY heard your acknowledgment'
             : '') +
           '. Continue the work exactly where it stands. Do NOT re-introduce yourself, re-acknowledge, or re-apologize; pick up from the last tool result.]';
         state = advance(state, { steerQueue: enqueueSteer(state.steerQueue, { floor: 'compaction-recap', content: recap, atLoop: state.loopCount }) });
         logger.info('v2 mid-turn compaction recap injected (turn continuity across the rebuild)', {
-          agentId, turnNumber, toolCallsSoFar: state.toolCalls.length,
+          agentId, turnNumber, toolCallsSoFar: state.toolResults.length,
         }, agentId);
       }
     } catch (compErr) {

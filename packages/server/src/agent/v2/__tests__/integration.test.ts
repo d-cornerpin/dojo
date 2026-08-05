@@ -2555,17 +2555,9 @@ describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the 
   });
 
   it('the recap\'s tool-call number is read LIVE off the turn state', async () => {
-    // MEASURED, and recorded here because it is not what the sentence claims: the number
-    // is `state.toolCalls.length`, which holds the LAST model response's batch (loop.ts
-    // sets it from `result.toolCalls` on every round), while the wording says "so far this
-    // turn you have made N tool call(s)". Two rounds of one tool each still reports 1.
-    // That is a WORDING question and it is NOT this tranche's to answer — a relocation
-    // does not get to change what the engine says. It is named so the next reader does not
-    // "fix" it inside a move, and so the clause below asserts the real mechanism.
-    //
-    // Why the clause is worth its keep anyway: two arms that differ only in the live turn
-    // state make a STALE state visible. A relocation that handed the gate a snapshot taken
-    // at turn start would report the same number twice.
+    // Two arms that differ only in the live turn state make a STALE state visible. A
+    // relocation that handed the gate a snapshot taken at turn start would report the same
+    // number twice.
     await runAcrossTheBudget({ batch: 1 });
     expect(recaps()[0]).toContain('made 1 tool call(s)');
 
@@ -2577,6 +2569,61 @@ describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the 
 
     await runAcrossTheBudget({ batch: 2 });
     expect(recaps()[0]).toContain('made 2 tool call(s)');
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // PHASE-6 T13 — THE COUNT MEANS WHAT ITS OWN SENTENCE SAYS (CUT 3's H1).
+  //
+  // The recap reads "So far this turn you have made N tool call(s)" and N was
+  // `state.toolCalls.length` — the LAST model response's batch, which `callLLM` sets
+  // from `result.toolCalls` on every round. On a turn of two rounds of one tool each
+  // the sentence said "so far this turn" over the number 1. The single-round arms
+  // above could not see it: with one round the batch and the turn total are the same
+  // number, which is exactly how the defect survived being tested.
+  //
+  // A user-facing sentence that misstates its own number is an honesty defect, and the
+  // fix is the number, not the wording: the recap exists to hand the model the receipts
+  // of what THIS TURN already did (2026-07-23, the seven-apologies transcript), so the
+  // turn total is the number the sentence was always asking for. `state
+  // .toolCallsExecutedThisTurn` already IS that count — one owner, incremented once per
+  // executed call in `steps/execute/post-result.ts`, and bounds-checked by `state.ts`'s
+  // own runaway guard. Nothing new was declared to fix this.
+  // ══════════════════════════════════════════════════════════════════════════════
+  it('THE UNIT: on a MULTI-BATCH turn the recap counts the TURN, not the last batch', async () => {
+    // Two rounds of one tool each. The turn made 2 tool calls; the last batch was 1.
+    let call = 0;
+    callModelSpy.mockImplementation(async () => {
+      call++;
+      return call <= 2
+        ? {
+          content: '',
+          toolCalls: [{ id: `tc-r${call}`, name: 'file_read', arguments: { path: `/tmp/r${call}.txt` } }],
+          inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
+        }
+        : { content: 'done', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' };
+    });
+    const clock = controllableClock();
+    let executed = 0;
+    executeToolSpy.mockImplementation(async (_agentId: string, toolCall: ToolCall) => {
+      executed++;
+      // Cross the budget only after the SECOND round, so the gate meets a turn whose
+      // total (2) and whose last batch (1) are different numbers.
+      if (executed === 2) clock.jump(TURN_TIME_BUDGET_MS + 60_000);
+      return { toolCallId: toolCall.id, name: toolCall.name, content: 'file body', isError: false };
+    });
+    try {
+      await runV2Turn('primary');
+    } finally {
+      clock.restore();
+    }
+
+    expect(executed).toBe(2);
+    const r = recaps();
+    expect(r).toHaveLength(1);
+    // The sentence and the number are read together, in one assertion, because the
+    // defect was precisely that they disagreed.
+    expect(r[0]).toContain('So far this turn you have made 2 tool call(s)');
+    expect(r[0]).not.toContain('made 1 tool call(s)');
   });
 
   it('the ack sentence is ABSENT when nobody has acknowledged the person — and the engine reads exactly the three flags that could say otherwise', async () => {
