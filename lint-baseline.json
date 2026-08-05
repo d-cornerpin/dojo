@@ -44,14 +44,14 @@
     "$comment": "Findings by TypeScript diagnostic code, from tsconfig.lint.json (noUnusedLocals + noUnusedParameters). That config is consumed ONLY by `npm run lint:types` — never by the build and never by `npm run typecheck` — so the unused-symbol population is counted without breaking either. TS6133 = declared but never read; TS6192 = all imports in a declaration unused; TS6196 = declared but never used (type position). 116 of the 118 sit in packages/server; the other 2 are in packages/shared, which the server program pulls in through its project reference.",
     "command": "node_modules/.bin/tsc -p tsconfig.lint.json --noEmit",
     "counts": {
-      "TS6133": 114,
+      "TS6133": 108,
       "TS6192": 1,
       "TS6196": 3
     },
-    "total": 118
+    "total": 112
   },
   "typeAwareRules": [
     "@typescript-eslint/no-floating-promises"
   ],
-  "grandTotal": 224
+  "grandTotal": 219
 }
