@@ -331,6 +331,31 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
 // error one layer up, and it is why `compile_resolved` had been written 0 times ever.
 // ════════════════════════════════════════════════════════════════════════════════
 
+/**
+ * THE TURN THAT DELEGATED, from the row's own `claim_turn` event. `null` when the ask was
+ * never claimed (the B3 shape), in which case this narrowing simply does not apply.
+ *
+ * ⚠ WHY THE COMPILED ANSWER MUST COME FROM A LATER TURN, and it is a MEASUREMENT, not a
+ * theory. Run `bmsg278e0k2`, `ask:de4b50c5` (2026-08-05 12:25): the tool-chip narrowing worked
+ * and the hold fired on the status line at 12:25:36 — but the two toy workers came back one
+ * second later (12:25:37), and the delegating turn's SECOND status line at 12:25:40 postdated
+ * `join_complete`, so the join arm read *"I'll compile the final report once they're back"* as
+ * the compiled report and closed the ask. The timing clause passed and the system stopped
+ * driving — which is Bug 2 wearing a slightly later hat.
+ *
+ * A turn cannot compile an answer out of pieces that had not come back when it started. The
+ * delegation exit ENDS the turn that opened the join (`steps/execute/delegation-exit.ts`), so
+ * the compile is always a later turn's work; and the engine's own relay records
+ * `turn_number = NULL` (verified on delivery `42559251`), which is why NULL qualifies.
+ */
+function delegatingTurn(workId: string): number | null {
+  const r = getDb().prepare(
+    `SELECT json_extract(payload, '$.turn_number') AS t FROM work_events
+      WHERE work_id = ? AND kind = 'claim_turn' ORDER BY id DESC LIMIT 1`,
+  ).get(workId) as { t: number | null } | undefined;
+  return r?.t ?? null;
+}
+
 /** When the join's countdown reached zero, from the row's own event. `null` when it never
  *  did — in which case there is no compiled anything and nothing can qualify. */
 function joinCompletedAt(workId: string): number | null {
@@ -343,29 +368,41 @@ function joinCompletedAt(workId: string): number | null {
 /** The compiled answer's receipt, or null. One statement, whether the caller named a delivery
  *  or not — a named one is CHECKED against the same predicate, never trusted. */
 function compiledDelivery(
-  ask: AskRow, completedAtMs: number, named: string | null | undefined,
+  ask: AskRow, completedAtMs: number, named: string | null | undefined, afterTurn: number | null,
 ): { id: string; tool: string } | null {
   const db = getDb();
   const excluded = [...NON_ANSWERING_DELIVERY_TOOLS];
   const floorSec = Math.floor(completedAtMs / 1000);
+  // The delegating turn's own bubbles are not the compiled answer. NULL qualifies: the engine
+  // relay records no turn, and it IS a compiled delivery.
+  const laterTurn = afterTurn == null ? '' : 'AND (d.turn_number IS NULL OR d.turn_number > @afterTurn)';
+  const bind = (extra: Record<string, unknown>): Record<string, unknown> => {
+    const o: Record<string, unknown> = { agentId: ask.agent_id, floorSec, ...extra };
+    excluded.forEach((t, i) => { o[`x${i}`] = t; });
+    if (afterTurn != null) o.afterTurn = afterTurn;
+    return o;
+  };
+  const excludedSql = excluded.map((_, i) => `@x${i}`).join(', ');
   if (named) {
     return (db.prepare(
       `SELECT d.id AS id, d.tool AS tool FROM deliveries d
-        WHERE d.id = ? AND d.agent_id = ? AND d.outcome = 'delivered'
-          AND d.tool NOT IN (${excluded.map(() => '?').join(', ')})
+        WHERE d.id = @named AND d.agent_id = @agentId AND d.outcome = 'delivered'
+          AND d.tool NOT IN (${excludedSql})
           AND ${NOT_A_TOOL_CHIP}
-          AND unixepoch(d.created_at) >= ?`,
-    ).get(named, ask.agent_id, ...excluded, floorSec) as { id: string; tool: string } | undefined) ?? null;
+          AND unixepoch(d.created_at) >= @floorSec
+          ${laterTurn}`,
+    ).get(bind({ named })) as { id: string; tool: string } | undefined) ?? null;
   }
   if (ask.conversation_id == null) return null;
   return (db.prepare(
     `SELECT d.id AS id, d.tool AS tool FROM deliveries d
-      WHERE d.agent_id = ? AND d.conversation_id = ? AND d.outcome = 'delivered'
-        AND d.tool NOT IN (${excluded.map(() => '?').join(', ')})
+      WHERE d.agent_id = @agentId AND d.conversation_id = @conv AND d.outcome = 'delivered'
+        AND d.tool NOT IN (${excludedSql})
         AND ${NOT_A_TOOL_CHIP}
-        AND unixepoch(d.created_at) >= ?
+        AND unixepoch(d.created_at) >= @floorSec
+        ${laterTurn}
       ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
-  ).get(ask.agent_id, ask.conversation_id, ...excluded, floorSec) as
+  ).get(bind({ conv: ask.conversation_id })) as
     { id: string; tool: string } | undefined) ?? null;
 }
 
@@ -388,7 +425,11 @@ function settleOnJoin(
   } else {
     boundaryMs = ask.opened_at;
   }
-  const evidence = compiledDelivery(ask, boundaryMs, ctx.deliveryId);
+  // The late-answer arm has no delegating-turn constraint: its whole situation is that the
+  // countdown never completed and an answer arrived out of band, on whatever turn carried it.
+  const evidence = compiledDelivery(
+    ask, boundaryMs, ctx.deliveryId, basis === 'compiled' ? delegatingTurn(ask.id) : null,
+  );
   if (!evidence) {
     return out('unchanged', basis === 'compiled'
       ? 'the compiled answer has not landed for the owner yet'

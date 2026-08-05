@@ -264,6 +264,44 @@ describe('(ii) the join settles through the authority, on the COMPILED delivery'
     expect(workRow(askId).state).not.toBe('done');
   });
 
+  it('NEGATIVE: the DELEGATING TURN own late status line is not the compiled answer (run bmsg278e0k2)', () => {
+    // MEASURED SHAPE, ask:de4b50c5: two toy workers came back ONE SECOND after the status
+    // line held the ask, and the same turn's next bubble postdated `join_complete`. Without
+    // this narrowing the join arm read "I'll compile the report once they're back" as the
+    // report, closed the ask, and the system stopped driving.
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 2);
+    landAll(kids);
+    seedDelivery('d-late-status', { turn: 7, displayKind: 'agent-text', offsetSeconds: 5 });
+    const r = settleAskOnJoin(askId, { agentId: AGENT, reason: 'x' });
+    expect(r.verdict).toBe('unchanged');
+    expect(workRow(askId).state).not.toBe('done');
+    expect(workRow(askId).compile_pending).toBe(1);
+  });
+
+  it('POSITIVE CONTROL (same shape, one detail changed): the SAME delivery from a LATER turn IS', () => {
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 2);
+    landAll(kids);
+    seedDelivery('d-report', { turn: 8, displayKind: 'agent-text', offsetSeconds: 5 });
+    const r = settleAskOnJoin(askId, { agentId: AGENT, reason: 'x' });
+    expect(r.verdict).toBe('closed');
+    expect(r.deliveryId).toBe('d-report');
+  });
+
+  it('POSITIVE: the ENGINE relay records no turn at all, and that qualifies', () => {
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 2);
+    landAll(kids);
+    mockDb.current!.prepare(
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome, created_at)
+       VALUES ('d-relay', ?, NULL, 'a2a-join-relay', 'dashboard', ?, 'delivered', datetime('now', '+5 seconds'))`,
+    ).run(AGENT, CONV);
+    const r = settleAskOnJoin(askId, { agentId: AGENT, deliveryId: 'd-relay', reason: 'engine relay' });
+    expect(r.verdict).toBe('closed');
+    expect(r.deliveryId).toBe('d-relay');
+  });
+
   it('NEGATIVE: an explicit receipt that is a tool-turn chip is refused as the compiled answer', () => {
     const askId = claimedAsk('m-1', 7);
     const kids = openJoin(askId, 2);
