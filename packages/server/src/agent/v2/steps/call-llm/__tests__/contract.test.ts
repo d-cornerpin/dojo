@@ -86,7 +86,7 @@ const revertTriggerStampOnAbortSpy = vi.fn();
 function ctxFor(overrides: Partial<CallLLMContext> = {}): CallLLMContext {
   return {
     agentId: 'kevin',
-    turnCtx: { agentId: 'kevin', conversationId: 'conv-1', modelCallInFlight: false } as CallLLMContext['turnCtx'],
+    turnCtx: { agentId: 'kevin', conversationId: 'conv-1' } as CallLLMContext['turnCtx'],
     turnNumber: 7,
     db: null as unknown as CallLLMContext['db'],
     counterparty: { kind: 'user', id: 'owner', displayName: 'Owner' } as unknown as CallLLMContext['counterparty'],

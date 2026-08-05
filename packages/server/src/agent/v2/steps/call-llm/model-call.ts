@@ -88,7 +88,6 @@ export async function callWithRetryAndFallback(
     try {
       // RC-4.4: mark the model call in flight so the start-ack streaming-race grace
       // can defer firing while the reply is still streaming. Cleared in the finally.
-      turnCtx.modelCallInFlight = true;
       result = await callModel({
         agentId,
         modelId,
@@ -289,7 +288,6 @@ export async function callWithRetryAndFallback(
     } finally {
       // RC-4.4: the model call for this attempt has settled (success break, retry
       // continue, or throw); it is no longer in flight. A retry sets it true again.
-      turnCtx.modelCallInFlight = false;
     }
   }
 

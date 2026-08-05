@@ -511,6 +511,43 @@ describe('TOMBSTONE 7 — the F3 runway tripwire (the turn record audits the rou
   });
 });
 
+describe('TOMBSTONE 8 — the engine-composed START ack and its RC-4.4 streaming grace', () => {
+  it('ABSENT: all three members of the mechanism are gone from production code', () => {
+    for (const ident of ['ACK_DEFAULT_TEXT', 'ENGINE_START_ACK_STREAM_GRACE_MS', 'modelCallInFlight']) {
+      expect(
+        productionHits(ident),
+        `${ident} is back. The engine composing its own ack in the agent's voice is what `
+        + 'owner ruling 2026-07-22 (OR2) removed; the grace and the in-flight flag existed '
+        + 'only to time that sentence.',
+      ).toEqual([]);
+    }
+  });
+
+  it('ABSENT: no engine site composes the ack\'s own words', () => {
+    expect(
+      engineMatches(/Working on it/),
+      'the engine is speaking in the agent\'s voice again — OR2 forbids exactly this.',
+    ).toEqual([]);
+  });
+
+  it('REPLACEMENT: the person still hears something while they wait, and the AGENT says it', () => {
+    // The steer that hands the model the mic, and its two live binding sites.
+    const checkpoint = engineFile('agent/v2/steps/assemble/steer-checkpoint.ts');
+    expect(checkpoint.code).toMatch(/export const START_ACK_STEER_TEXT/);
+    expect(
+      engineMatches(/START_ACK_STEER_TEXT/).length,
+      'the start-ack steer lost its binding sites — the ack floor would be silent, not '
+      + 'agent-voiced',
+    ).toBeGreaterThanOrEqual(2);
+    // The wall-clock floor that decides WHEN, still live and still read by the executor.
+    expect(productionHits('ENGINE_START_ACK_AFTER_MS').length).toBeGreaterThan(0);
+    expect(engineMatches(/engineStartAckAfterMs/).length).toBeGreaterThanOrEqual(2);
+    // And the double-ack the deleted grace was written against: the REAL reply is what
+    // suppresses the ack, so there is no engine sentence left to race.
+    expect(productionHits('startAckRepliedNow').length).toBeGreaterThan(0);
+  });
+});
+
 // ════════════════════════════════════════════════════════════════════════════════════════
 // THE RECORD ITSELF — research 16's law, applied to the notes rather than the code.
 //
@@ -519,7 +556,7 @@ describe('TOMBSTONE 7 — the F3 runway tripwire (the turn record audits the rou
 // reversals list exists to prevent, so the notes are load-bearing and this clause says so.
 // ════════════════════════════════════════════════════════════════════════════════════════
 
-describe('the seven tombstone NOTES survive, each in the engine, each naming its removal', () => {
+describe('the tombstone NOTES survive, each in the engine, each naming its removal', () => {
   // Phrases are matched against the notes UNWRAPPED — leading `//` markers dropped and
   // whitespace collapsed — so a re-flow of a comment block cannot fail this clause. What it
   // polices is the SENTENCE, which is the record; where the line breaks fall is not.
@@ -531,6 +568,7 @@ describe('the seven tombstone NOTES survive, each in the engine, each naming its
     { n: 5, what: 'start-ack as a loop-boundary check', phrase: 'the start-ack floor is the wall-clock timer armed at turn start' },
     { n: 6, what: 'going-idle deliverable_shown stamp', phrase: 'going-idle deliverable_shown stamp that lived here was DELETED' },
     { n: 7, what: 'F3 runway tripwire', phrase: 'the F3 runway tripwire (a log-only guard on the guard) was DELETED' },
+    { n: 8, what: 'engine-composed start ack + RC-4.4 grace', phrase: 'the ENGINE-COMPOSED start ack and its RC-4.4 streaming-race grace were DELETED' },
   ];
 
   /** Comment markers dropped, whitespace collapsed — the sentence, free of its wrapping. */
@@ -539,7 +577,7 @@ describe('the seven tombstone NOTES survive, each in the engine, each naming its
     .replace(/[`*]/g, '')
     .replace(/\s+/g, ' ');
 
-  it('all seven are present', () => {
+  it('all of them are present', () => {
     const raw = unwrap(engineSources().map((s) => s.text).join('\n'));
     const missing = NOTES.filter((t) => !raw.includes(t.phrase)).map((t) => `${t.n} — ${t.what}`);
     expect(
@@ -549,8 +587,11 @@ describe('the seven tombstone NOTES survive, each in the engine, each naming its
     ).toEqual([]);
   });
 
-  it('the list is SEVEN — the survey\'s number, not the plan\'s five', () => {
-    expect(NOTES.length).toBe(7);
-    expect(new Set(NOTES.map((t) => t.n)).size).toBe(7);
+  // The count is pinned so a tombstone cannot be quietly dropped, and it MOVES only when
+  // a removal adds one — never to make a clause pass. T11 corrected the plan's five to the
+  // survey's SEVEN; T13's own demolition (the engine-composed start ack) is the EIGHTH.
+  it('the list is EIGHT — the survey\'s seven plus T13\'s own demolition', () => {
+    expect(NOTES.length).toBe(8);
+    expect(new Set(NOTES.map((t) => t.n)).size).toBe(8);
   });
 });

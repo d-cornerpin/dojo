@@ -134,7 +134,6 @@ const STALE_TASK_WINDOW_MINUTES = 30;
 const MAX_TOOL_LOOPS = 75;                     // matches v1
 // PHASE-6 T3: TURN_TIME_BUDGET_MS (15 min) and MAX_TURN_AUTO_CONTINUATIONS (3) went
 // with the budget checkpoint to `steps/pre-call-gates/turn-budget.ts`, unchanged.
-const ACK_DEFAULT_TEXT = 'Working on it…';
 // Elapsed-based start-ack floor (F10). The classifier and scaffold acks key off
 // call accounting (project-worthy classification / 6 work calls), which can land
 // long after the person started waiting or, on a quiet-phrased ask, never. This
@@ -151,15 +150,30 @@ const ENGINE_START_ACK_AFTER_MS = 30000;
 // longer engine-composed; the steer hands the mic to the model instead.
 // PHASE-6 T4 (CUT 6): START_ACK_STEER_TEXT MOVED to `steps/assemble/steer-checkpoint.ts`
 // with the two sites that bind it — both were inside this tranche's span.
-// RC-4.4: streaming-race grace. When the start-ack timer / first-tool hook is about to
-// fire but a model call is still streaming, wait up to this long for the real reply to
-// land (startAckRepliedNow suppresses the ack then). Kills the F-11 double-ack (ack at
-// +12s, model reply at +13s) while keeping the guarantee: a stalled model still gets the
-// ack after the grace expires.
-// Cap on waiting out an in-flight model call before the ack may speak anyway.
-// Generous on purpose (the wait usually ends in the reply landing, which
-// silences the ack entirely); the stream-idle watchdog owns truly hung calls.
-const ENGINE_START_ACK_STREAM_GRACE_MS = 60000;
+// ── TOMBSTONE 8 (PHASE-6 T13): the ENGINE-COMPOSED start ack and its RC-4.4
+// streaming-race grace were DELETED — the whole mechanism, all three members.
+//
+// What stood here: `ACK_DEFAULT_TEXT` ('Working on it…'), the words the engine spoke
+// in the agent's voice; `ENGINE_START_ACK_STREAM_GRACE_MS` (60s), the cap on waiting
+// out an in-flight model call before those words went out anyway; and
+// `modelCallInFlight` on the turn's bag, the flag that grace consulted. The grace
+// existed to kill the F-11 double-ack — the engine acking at +12s and the model's real
+// reply landing at +13s.
+//
+// requirement preserved: THE PERSON WHO ASKED HEARS SOMETHING WHILE THEY WAIT, and it
+// is the agent who says it. Owner ruling 2026-07-22 (engine detects, agent speaks —
+// OR2) replaced the engine's own sentence with a steer that hands the model the mic:
+// `START_ACK_STEER_TEXT` on the `start-ack` floor (`steps/assemble/steer-checkpoint.ts`,
+// bound at two live sites). The wall-clock floor that decides WHEN is
+// `ENGINE_START_ACK_AFTER_MS` (30s, owner directive 2026-07-17), live and read by the
+// executor's own first-tool hook. And the double-ack the grace was written against
+// cannot recur through this path at all: `startAckRepliedNow` — 26 live sites — is the
+// real reply suppressing the ack, so there is no engine sentence left to race.
+//
+// The three were kept through nine tranches under relocation purity (a move does not
+// get to retire a flag) and retired HERE, on positive evidence rather than absence:
+// the mechanism that replaced them is NAMED and LIVE (#15's first form), not merely
+// un-found. `tombstones.test.ts` TOMBSTONE 8 holds both halves.
 
 // ── Task-thrash detector ──
 // Catches the "agent re-runs the SAME canonical tool call over and over"

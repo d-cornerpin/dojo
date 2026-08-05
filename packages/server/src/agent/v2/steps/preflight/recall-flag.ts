@@ -10,8 +10,15 @@
 // (`steps/execute/dispatch-bookkeeping.ts`) clears the flag and sets a second one,
 // under a comment saying the auto-injection it existed for was REMOVED at v2.7.10.
 // There is no test for it in either repo. It MOVES UNCHANGED — a relocation does not
-// get to retire a flag (#15, CUT 5's `modelCallInFlight` precedent) — and the
-// retirement is T13's, with the reader named.
+// get to retire a flag (#15, CUT 5's `modelCallInFlight` precedent, which T13 retired
+// on positive evidence: see TOMBSTONE 8).
+//
+// ⚠ T13's VERDICT ON THIS ONE IS **KEEP**, and the reason is the difference between the
+// two. `modelCallInFlight` had NO reader and a NAMED LIVE successor. This flag HAS a
+// live reader — `steps/execute/dispatch-bookkeeping.ts` clears it and sets a second
+// flag — so retiring it is not a demolition, it is a decision about what that reader
+// should do instead, and #15's bar ("when the positive evidence cannot be produced, the
+// thing stays") is not met by an absence of tests. Still owned, still unretired.
 //
 // The section OUTPUTS NOTHING. It only advances the state.
 // ════════════════════════════════════════
