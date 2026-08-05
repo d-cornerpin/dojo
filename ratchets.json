@@ -2157,6 +2157,13 @@
       "to": 1172,
       "by": "PHASE-6 T10 Step 1c (2026-08-04) — one stuck-threshold table, read at every enforcing site",
       "why": "PHASE-6 T10 Step 1c — the ONE stuck-threshold table. The four cliffs (75 min reaper · 10 min Healer · 7 d dormant · 120 min orphan-run) became declared constants with owners in `agent/stuck-thresholds.ts`, and every enforcing site now READS them. The growth is the import plus the note recording what moved and what deliberately did NOT (the 5-minute CHECK INTERVAL and the MAX_DRAIN_STUCK count — 'unifying an interval with a threshold is the named error'). NO VALUE CHANGED: the clause `the four values are the four the tree already had` asserts all four, and the two `working` cliffs are asserted to still DISAGREE so a later tidy-up cannot merge 10 into 75. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Leave the constants where they were: that IS the triplication research 09 recorded, and this task found a FIFTH occurrence a `_THRESHOLD` grep cannot see — a bare `'-10 minutes'` SQL literal in the Healer's own stuck detector, duplicating a number that had no name to duplicate. (b) Drop the notes to pay for the lines: the note is the record of the refusal, and deleting it is how the next worker re-attempts the merge. (c) Shave prose elsewhere in the file: a line count driving a code change is what roadmap #7 forbids by name. The pins may only fall from here."
+    },
+    {
+      "path": "packages/server/src/agent/runtime.ts",
+      "from": 1416,
+      "to": 1430,
+      "by": "PHASE-6 T10 Step 1d (2026-08-04) — the drain reads the spine, and the note says why",
+      "why": "+14 lines: 2 are imports (`selfWakeStandDown`, `STUCK_AGENT_THRESHOLD_MINUTES`) and 12 are the note recording WHY the read changed. The code itself is one line longer — a destructuring replacing an assignment. THE DEFECT IT FIXES: the drain logged a field called `humanAsksOpen` whose value was `getWaitingHumanConversations(agentId).length` — CONVERSATIONS, deduped by conversation key. Fifteen open asks in one thread read as `1`, and PHASE-5's exit battery caught it stamping 0 against a spine holding fifteen. The kit's `calm` clause cross-checks that stamped number against the spine and fails on an under-count, so the law was being judged on a number that could not be right. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Rename the log field to match the conversation count: REFUSED IN ADVANCE by the plan, and it would retire the only measurement the you-come-first law has. (b) Change a cap so the scenario passes: refused in advance by the plan; no bound is in this diff. (c) Drop the note to pay for the lines: the note is what stops the next worker re-pointing it back at the cheaper-looking read, and this file already carries three landmine notes for the same reason. The pin may only fall from here."
     }
   ],
   "maxNewFileLines": 400,
@@ -2199,7 +2206,7 @@
     "packages/server/src/agent/pending-attachments.ts": 267,
     "packages/server/src/agent/permissions.ts": 145,
     "packages/server/src/agent/provider-error.ts": 317,
-    "packages/server/src/agent/runtime.ts": 1416,
+    "packages/server/src/agent/runtime.ts": 1430,
     "packages/server/src/agent/shared-state.ts": 90,
     "packages/server/src/agent/spawner.ts": 1425,
     "packages/server/src/agent/tools/cat/agents.ts": 1285,
