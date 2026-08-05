@@ -348,12 +348,20 @@ describe('IT RUNS ON EVERY EXIT PATH — and that is the language\'s guarantee, 
     expect(d.returnsInsideTry).toBeGreaterThan(0);  // the scan found something
   });
 
-  it('THE KNOWN EXCEPTIONS ARE EXACTLY TWO, so a third cannot appear silently', () => {
+  it('THE KNOWN EXCEPTION IS EXACTLY ONE, so a second cannot appear silently', () => {
     // The pickup-claim-lost bails (one human, one engine) return BEFORE the main try
     // opens and therefore never reach teardown. T1 recorded them as the reason the
     // turn's bag is cleared in `runV2Turn`'s wrapper rather than in this block, and
     // they are also why the F10 timer is armed AFTER them rather than before.
+    //
+    // ⚠ PHASE-6 T2 (CUT 9) MOVED BOTH OF THEM AND THE COUNT FELL 2 → 1. They are inside
+    // the `preflight` span, so they are now that step's two `abandon` sites and the driver
+    // honours BOTH through the ONE `return` this clause still counts. The census did not
+    // shrink — it moved: `steps/preflight/__tests__/contract.test.ts` pins the other half
+    // at TWO and pins the SUM, so a future cut cannot pass by moving the two numbers in
+    // step with each other. The requirement is unchanged: an exit that skips teardown must
+    // be countable, and there must be no third.
     const d = readDriver();
-    expect(d.returnsBeforeTry).toBe(2);
+    expect(d.returnsBeforeTry).toBe(1);
   });
 });

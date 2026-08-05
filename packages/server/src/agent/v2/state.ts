@@ -15,6 +15,17 @@ import { emptySteerQueue, type SteerQueue } from './steer-queue.js';
 // ── Types ──
 
 export type TurnPhase =
+  // ⚠ PHASE-6 T2 (CUT 9) — THE ONE MEMBER NO CALL SITE ADVANCES INTO, and the ninth
+  // member's own note below already leaned on that fact ("`'preflight'` is seeded by
+  // `initState` and runs before the main `try` opens"). It is stated here rather than
+  // left implicit, because it is the one place the phase discipline every other tranche
+  // asserts — the driver advances INTO a step's phase ahead of the call, so `validate()`
+  // runs on the transition — is met by CONSTRUCTION instead of by a call site. There is
+  // no transition to validate: `initState` below SEEDS this value, and it validates the
+  // state it built. The step still never writes `phase` (its contract test holds a
+  // comment-stripped census over the whole package at ZERO), so the rule the property
+  // exists to protect is unchanged; only the reason it holds is different, and a reader
+  // looking for the missing `advance` should find this instead of a gap.
   | 'preflight'        // initial: read agent, build trigger context
   | 'preCallGates'     // compaction gate, time budget, stop/preempt checks
   | 'assemble'         // build messages + system prompt

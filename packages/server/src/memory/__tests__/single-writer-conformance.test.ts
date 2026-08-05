@@ -113,9 +113,21 @@ const WRITER_ALLOWLIST: string[] = [];
 // replaced, not simply removed — the peer-A2A conversation resolve it performed moved to
 // `agent/a2a-transport.ts`, the site that was calling the shim. Same producer, one fewer
 // indirection; the list length is unchanged and Sweep A's burn-down is not quietly shortened.
+//
+// ⚠ PHASE-6 T2 (CUT 9): `agent/v2/loop.ts` LEAVES for the same reason, and this is the
+// day the strengthened stale check below was written FOR — it fired, named the file, and
+// this is the repair it asked for. The driver's two conversation resolves moved out with
+// the `preflight` span: the DOOR-TIME pickup repair is now
+// `steps/preflight/turn-trigger.ts` and the owner-affinity conversation row is now
+// `steps/preflight/counterparty-and-record.ts`. The exemption FOLLOWS THE CODE, so the
+// entry is replaced by its two new homes rather than deleted (which would have left the
+// offender scan red) or kept (which would have re-permitted an `authorized:` reappearing
+// in a driver that no longer stamps anything).
 const PRODUCER_ALLOWLIST: string[] = [
   'agent/a2a-transport.ts', 'agent/v2/deliveries.ts', 'agent/v2/inbound-channel.ts',
-  'agent/v2/loop.ts', 'gateway/routes/chat.ts', 'gateway/routes/twilio.ts',
+  'agent/v2/steps/preflight/turn-trigger.ts',
+  'agent/v2/steps/preflight/counterparty-and-record.ts',
+  'gateway/routes/chat.ts', 'gateway/routes/twilio.ts',
   'scheduler/runner.ts', 'services/gmail-watcher.ts', 'services/imessage-bridge.ts',
   'services/outlook-watcher.ts', 'services/teams-watcher.ts', 'twilio/call-session.ts',
   'twilio/sms-inbound.ts',

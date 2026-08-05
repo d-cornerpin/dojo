@@ -221,15 +221,6 @@ const DRIVER_BY_PATH: Declaration[] = [
       + 'STEPS_BY_PATH below.',
   },
   {
-    rel: 'packages/server/src/memory/__tests__/single-writer-conformance.test.ts',
-    verdict: 'cannot-go-quiet',
-    why: 'The driver appears only as a PRODUCER_ALLOWLIST entry. Its stale check was '
-      + '`existsSync` alone until this audit — half a check, and the half that mattered. It now '
-      + 'also re-tests that each entry STILL PRODUCES, using the same predicate as the offender '
-      + 'scan, so when ingest stamping rides a tranche out the exemption fails and names itself '
-      + 'instead of silently outliving its reason.',
-  },
-  {
     rel: 'packages/server/src/work/__tests__/work-reaper.test.ts',
     verdict: 'cannot-go-quiet',
     why: 'One clause deliberately keeps the driver as its corpus: `STALE_TASK_WINDOW_MINUTES` is '
@@ -273,6 +264,23 @@ const STEPS_BY_PATH: Declaration[] = [
     verdict: 'step-aware',
     why: 'THE derivation itself — the one place `agent/v2/steps` is walked. Every other guard '
       + 'imports from here rather than growing its own copy.',
+  },
+  {
+    rel: 'packages/server/src/memory/__tests__/single-writer-conformance.test.ts',
+    verdict: 'step-aware',
+    why: 'IT MOVED FROM DRIVER_BY_PATH TO THIS LIST AT PHASE-6 CUT 9, AND THAT MOVE IS THE '
+      + 'AUDIT WORKING RATHER THAN A RE-CATEGORISATION. Its stale check was `existsSync` alone '
+      + 'until this audit — half a check, and the half that mattered — and it was strengthened '
+      + 'to re-test that each PRODUCER_ALLOWLIST entry STILL PRODUCES, using the same predicate '
+      + 'as the offender scan, precisely so that the day ingest stamping rode a tranche out of '
+      + 'the driver the exemption would fail and name itself. CUT 9 is that day: the two '
+      + 'conversation resolves left `agent/v2/loop.ts` with the `preflight` span, the clause '
+      + 'went red and named the file, and the entry was re-pointed at the two step files that '
+      + 'now hold them. It grows NO walk of its own — the allowlist is a literal list of paths '
+      + 'in the EXPECTATION, and the corpus it scans is a walk of the whole of '
+      + '`packages/server/src`, which follows moved code by construction. An exemption must '
+      + 'name the file it exempts, so `engineText()` would be the wrong corpus here: it would '
+      + 'let a NEW producer appear outside the engine unremarked.',
   },
   {
     rel: 'packages/server/src/__tests__/marker-ownership.test.ts',

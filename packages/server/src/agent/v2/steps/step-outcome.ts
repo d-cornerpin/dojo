@@ -53,6 +53,17 @@
 // `continue` abandons the rest of the ITERATION, `proceed` runs the steps after
 // it. For the tail step they coincide, and the vocabulary still carries both so
 // the tranches behind it do not have to invent the distinction later.
+//
+// ── THE ONE STEP THAT DOES NOT TAKE `state` (PHASE-6 T2 / CUT 9) ──
+// `preflight` runs BEFORE the state exists — it is the step that MAKES it — so it
+// cannot take `(state, ctx)` and its outcome cannot carry an advanced state. Both
+// of its exits are `abandon`s taken before `initState` has run, so there is no
+// state to hand back on those arms either. `PreflightOutcome` is that shape, and
+// it lives HERE rather than as a private channel inside the package on this file's
+// own opening sentence: the exit vocabulary is the one thing the nine packages
+// share, and a step that invents its own is how nine tranches grow nine
+// conventions. The `abandon` arm keeps the shared rule — a reason is required by
+// construction — and the driver honours it the same way: by RETURNING.
 // ════════════════════════════════════════
 
 import type { AgentTurnState } from '../state.js';
@@ -97,4 +108,33 @@ export function requestExit(state: AgentTurnState, reason: string): StepOutcome 
  */
 export function abandonTurn(state: AgentTurnState, reason: string): StepOutcome {
   return { directive: 'abandon', state, reason };
+}
+
+/**
+ * What `preflight` hands back. TWO directives and no more: the step either
+ * produced everything the rest of the turn reads, or it asked the driver to leave
+ * the TURN before the state existed. There is no `exit` arm because there is no
+ * loop yet to leave, and no `state` on either arm because this step publishes the
+ * state it makes to the turn's bag (`turnCtx.state`) rather than returning it —
+ * the carrier has to be LIVE, since three closures this span declares read it at
+ * fire time from a wall-clock timer and from later steps.
+ */
+export type PreflightOutcome<Outputs> =
+  | { readonly directive: 'proceed'; readonly outputs: Outputs }
+  | { readonly directive: 'abandon'; readonly reason: string };
+
+/** Hand back everything the rest of the turn reads from this span. */
+export function preflightProceed<T>(outputs: T): PreflightOutcome<T> {
+  return { directive: 'proceed', outputs };
+}
+
+/**
+ * Ask the driver to leave the TURN, and say why. Same rule as `abandonTurn`: the
+ * reason is required by construction. The driver honours it by RETURNING — and
+ * here that return is before the main `try` has opened, so neither finalize nor
+ * the teardown `finally` runs, which is exactly what the two bare `return`s this
+ * replaces did.
+ */
+export function preflightAbandon<T>(reason: string): PreflightOutcome<T> {
+  return { directive: 'abandon', reason };
 }

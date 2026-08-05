@@ -726,7 +726,15 @@ describe('1g — the truthful-answer key names the DELIVERY that proves it', () 
     // `noteTerminalAnswer` is the only line that may assign it. (The declaration's
     // initialiser carries a type annotation, so the pattern below does not see it — which
     // is why the expectation is one line and not two.)
-    expect(assignments.map((l) => l.trim())).toEqual(['terminalAnswerRowId = rowId;']);
+    //
+    // PHASE-6 T2 (CUT 9): the move landed and the audit's widened corpus is what caught the
+    // key travelling. The REQUIREMENT is untouched — exactly one line in the whole engine
+    // assigns this key — and only the needle's spelling moved with the code: the local is
+    // now a field on `PreflightScratch`, because §9's `teardownContext` reads it LIVE after
+    // every statement of the turn has had its chance to set it, so the setter writes
+    // `sc.terminalAnswerRowId`. A driver-only scan would now be counting writers in a file
+    // that no longer holds the fact; this one counts them where the fact lives.
+    expect(assignments.map((l) => l.trim())).toEqual(['sc.terminalAnswerRowId = rowId;']);
   });
 });
 
