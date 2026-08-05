@@ -49,7 +49,9 @@ import { runMigrations } from '../../db/migrations.js';
 import {
   askIdForMessage, claimAsk, stampClaimingTurn, openDelegationJoin, landPiece,
 } from '../store.js';
-import { settleAsk, settleAsksForDelivery, settleAskOnJoin } from '../ask-settlement.js';
+import {
+  settleAsk, settleAsksForDelivery, settleAsksAtTurnFinalize, settleAskOnJoin,
+} from '../ask-settlement.js';
 import {
   JOIN_REDRIVE_BOUND, STUCK_NOTICE_RETRY_BOUND, JOIN_DRIVE_ENTRY,
   joinDriveCount, recordJoinDrive, nextJoinDriveRung,
@@ -209,6 +211,57 @@ describe('(i) a delegating turn ends with the owner ask NON-TERMINAL', () => {
     // The kit judge reads HISTORY: a `done` that is later undone is still a premature close.
     expect(transitionsFor(askId).filter((t) => t.to === 'done')).toHaveLength(0);
     expect(transitionsFor(askId).at(-1)!.reason).toMatch(/delegated work is still outstanding/);
+  });
+});
+
+describe('(i-b) the OTHER ordering — the turn answered FIRST and delegated after', () => {
+  it('the turn boundary hands the closed ask back and HOLDS it (run bmsg2ufve1q, ask:b66cbb75)', () => {
+    // MEASURED SHAPE: a genuine prose status line at +19 s closed the ask; the model only
+    // issued its `send_to_agent` calls at +40 s. At the close there was no delegated work in
+    // existence, so no evidence predicate could have known. At the TURN BOUNDARY there is.
+    const askId = claimedAsk('m-1', 7);
+    seedDelivery('d-reply', { turn: 7, displayKind: 'agent-text' });
+    settleAsksForDelivery({
+      agentId: AGENT, turnNumber: 7, deliveryId: 'd-reply', conversationId: CONV,
+      tool: 'dashboard', outcome: 'delivered',
+    });
+    expect(workRow(askId).state).toBe('done');
+    openJoin(askId, 2);
+
+    const r = settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 7 });
+    expect(r.held).toBe(1);
+    const row = workRow(askId);
+    expect(row.state).toBe('blocked');
+    expect(row.remaining_children).toBe(2);
+    const path = transitionsFor(askId).map((t) => t.to);
+    expect(path).toEqual(['claimed', 'done', 'open', 'blocked']);
+    expect(transitionsFor(askId)[2].reason).toMatch(/closed the ask and THEN delegated/);
+  });
+
+  it('NEGATIVE CONTROL: an ask this turn closed with NO delegation under it is left alone', () => {
+    const askId = claimedAsk('m-1', 7);
+    seedDelivery('d-reply', { turn: 7, displayKind: 'agent-text' });
+    settleAsksForDelivery({
+      agentId: AGENT, turnNumber: 7, deliveryId: 'd-reply', conversationId: CONV,
+      tool: 'dashboard', outcome: 'delivered',
+    });
+    const r = settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 7 });
+    expect(r).toEqual({ closed: 0, held: 0, reopened: 0 });
+    expect(workRow(askId).state).toBe('done');
+    expect(transitionsFor(askId).map((t) => t.to)).toEqual(['claimed', 'done']);
+  });
+
+  it('NEGATIVE CONTROL: another TURN\'s closed-and-delegated ask is not this turn\'s to touch', () => {
+    const askId = claimedAsk('m-1', 7);
+    seedDelivery('d-reply', { turn: 7, displayKind: 'agent-text' });
+    settleAsksForDelivery({
+      agentId: AGENT, turnNumber: 7, deliveryId: 'd-reply', conversationId: CONV,
+      tool: 'dashboard', outcome: 'delivered',
+    });
+    openJoin(askId, 2);
+    const r = settleAsksAtTurnFinalize({ agentId: AGENT, turnNumber: 9 });
+    expect(r).toEqual({ closed: 0, held: 0, reopened: 0 });
+    expect(workRow(askId).state).toBe('done');
   });
 });
 

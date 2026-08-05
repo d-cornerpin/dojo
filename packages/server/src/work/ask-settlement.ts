@@ -169,12 +169,13 @@ interface AskRow {
   remaining_children: number | null;
   compile_pending: number;
   claimed_by_turn: number | null;
+  result_delivery_id: string | null;
 }
 
 function readAsk(workId: string): AskRow | undefined {
   return getDb().prepare(
     `SELECT id, agent_id, kind, state, conversation_id, opened_at, root_id,
-            remaining_children, compile_pending, claimed_by_turn
+            remaining_children, compile_pending, claimed_by_turn, result_delivery_id
        FROM work WHERE id = ?`,
   ).get(workId) as AskRow | undefined;
 }
@@ -240,6 +241,45 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   const ask = readAsk(workId);
   if (!ask) return out('unchanged', 'no such work row');
   if (ask.kind !== 'ask') return out('unchanged', `not an ask (kind=${ask.kind})`);
+
+  // ── THE ORDERING ARM (SWEEP-A TB2). A turn that ANSWERED and then DELEGATED. ──
+  //
+  // The chip narrowing above kills the premature close whenever the model delegates before it
+  // speaks — the join is open by the time the real reply lands, so the hold arm fires and the
+  // row is never terminal. It cannot help the other ordering. MEASURED, run `bmsg2ufve1q`
+  // `ask:b66cbb75`: the model wrote a genuine prose status line at +19 s and only issued its
+  // `send_to_agent` calls at +40 s, so at the instant of the close there was no delegated work
+  // in existence and no evidence any was coming.
+  //
+  // At the TURN BOUNDARY there is. The join is on the row, and the ticket says `done` on a
+  // delivery that answered nothing — the exact state every safety net downstream is blind to.
+  // So the boundary hands it back: two recorded moves, `done -> open` (the only legal exit
+  // from `done`, and it needs the engine actor pointing at the receipt it is undoing) and then
+  // the ordinary HOLD. The person's ask is OWED again and the ladder can drive it.
+  //
+  // ⚠ WHAT THIS DOES NOT DO, stated rather than left to be discovered: the `done` transition
+  // already happened and stays in the history. A judge that reads the event log will still see
+  // it. The row is honest from the turn boundary onward, not retroactively — undoing the
+  // RECORD would be the forgery this spine exists to refuse.
+  if (ask.state === 'done' && ctx.at === 'finalize' && joinOutstanding(ask)) {
+    const undo = transition(workId, {
+      to: 'open', by: 'engine', actorId: 'ask-settlement', expectedState: 'done',
+      evidenceRef: ask.result_delivery_id ?? undefined,
+      reason: 'handed back: this turn closed the ask and THEN delegated the work under it — '
+        + 'the delivery it closed on answered nothing, and the delegated pieces are still out',
+    });
+    if (undo.kind === 'applied') {
+      logger.warn('ask handed back at the turn boundary: it was closed and then delegated under', {
+        agentId: ask.agent_id, workId, remaining: ask.remaining_children,
+        compilePending: ask.compile_pending, turnNumber: ctx.turnNumber,
+      }, ask.agent_id);
+      const held = settleAsk(workId, ctx);
+      return held.verdict === 'unchanged'
+        ? out('reopened', 'handed back after a close-then-delegate turn')
+        : held;
+    }
+  }
+
   if (isTerminal(ask.state)) return out('unchanged', `already ${ask.state}`);
 
   // ── THE JOIN ARM (SWEEP-A TB2). The delegated job's own settlement, on the same rule. ──
@@ -574,10 +614,28 @@ export interface FinalizeSettlementResult { closed: number; held: number; reopen
  */
 export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSettlementResult {
   const result: FinalizeSettlementResult = { closed: 0, held: 0, reopened: 0 };
-  const claimed = getDb().prepare(
+  const db = getDb();
+  const claimed = db.prepare(
     `SELECT id FROM work
       WHERE agent_id = ? AND kind = 'ask' AND state = 'claimed' AND claimed_by_turn = ?`,
   ).all(p.agentId, p.turnNumber) as Array<{ id: string }>;
+  // SWEEP-A TB2 — the third scope: an ask THIS TURN CLOSED that now carries a delegation.
+  // `claimed_by_turn` is nulled by the close, so the turn is re-identified through the receipt
+  // the close points at. Narrow by construction: it can only ever match a row this turn's own
+  // delivery closed, and only while delegated work under it is outstanding.
+  const closedThenDelegated = db.prepare(
+    `SELECT w.id AS id FROM work w
+      WHERE w.agent_id = ? AND w.kind = 'ask' AND w.state = 'done'
+        AND (w.remaining_children > 0 OR w.compile_pending = 1)
+        AND w.result_delivery_id IN (
+          -- the outcome filter is redundant here (the receipt on the row can only ever have
+          -- come from a delivered row) and it is written anyway: the enumeration guard in
+          -- owner-close-receipt.test.ts requires EVERY production reader of this table to
+          -- carry it, and a reader that is safe by argument rather than by predicate is the
+          -- shape that guard exists to refuse.
+          SELECT d.id FROM deliveries d
+           WHERE d.agent_id = ? AND d.turn_number = ? AND d.outcome = 'delivered')`,
+  ).all(p.agentId, p.agentId, p.turnNumber) as Array<{ id: string }>;
 
   const seen = new Set<string>();
   const tally = (v: AskSettlementVerdict): void => {
@@ -585,7 +643,7 @@ export function settleAsksAtTurnFinalize(p: FinalizeSettlementInput): FinalizeSe
     else if (v === 'held') result.held++;
     else if (v === 'reopened') result.reopened++;
   };
-  for (const r of claimed) {
+  for (const r of [...claimed, ...closedThenDelegated]) {
     if (seen.has(r.id)) continue;
     seen.add(r.id);
     tally(settleAsk(r.id, { agentId: p.agentId, turnNumber: p.turnNumber, at: 'finalize' }).verdict);
