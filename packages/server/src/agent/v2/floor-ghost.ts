@@ -129,18 +129,47 @@ export function recordFloorGhost(input: FloorGhostInput, deps: FloorGhostDeps): 
   // 2 — THE PLATFORM'S OWN VOICE. `role='system'` + the owner-alert prefix. This is the one
   //     sanctioned way the platform addresses the owner directly, and the dashboard's own
   //     allowlist is keyed on the prefix taken FROM the shared constant, never retyped.
+  //
+  //     ⚠ AND IT IS ANNOUNCED (SWEEP-A TB4). Battery `bmsgc3l0cnb` tripped
+  //     `BROADCAST_EQUALS_ROW` for the first time in that invariant's life on this exact row:
+  //     user-visible, written, and never put on the wire, so the owner met a platform fault
+  //     only by reloading the page (research 17's D4, "reload-only rows"). The row was never
+  //     the problem — the missing half was the announcement, and the health frame below is a
+  //     DIFFERENT surface that names no message id and cannot stand in for it.
+  //     The announcement rides the ONE path every other owner-lane system row rides — an
+  //     ordinary `chat:message` beside the write, exactly as `destructive-gate.ts`'s expiry
+  //     notice, `scheduler/runner.ts`'s skipped-reminder heads-up and `a2a-transport.ts`'s
+  //     platform-voice join notice do it. No new mechanism: `broadcast()`'s own seam
+  //     (`gateway/ws.ts:stampPersistedRow`) then stamps content, `createdAt` and the row
+  //     itself off the database, so the frame and the row cannot disagree. The dashboard door
+  //     reads `role === 'assistant'` (`v2/outbound.ts:424`) and so records NO delivery for a
+  //     system note — a platform alert is not an answer and must never close an ask.
+  //     OR2 is untouched: same sentence, same voice, same moment; only the wire is new.
   let noticeId: string | null = uuidv4();
+  const content = `${OWNER_ALERT_HEADS_UP_PREFIX} ${ownerLine}`;
+  let persisted: ReturnType<typeof insertMessageIfAbsent> = null;
   try {
-    insertMessageIfAbsent({
-      id: noticeId, agentId, role: 'system',
-      content: `${OWNER_ALERT_HEADS_UP_PREFIX} ${ownerLine}`,
-      turnNumber,
-    });
+    persisted = insertMessageIfAbsent({ id: noticeId, agentId, role: 'system', content, turnNumber });
   } catch (err) {
     noticeId = null;
     logger.warn('floor ghost: the owner-visible system note could not be written (non-fatal)', {
       agentId, floor, error: err instanceof Error ? err.message : String(err),
     }, agentId);
+  }
+  // Announced only when a row was actually written. A frame for an id with no row behind it is
+  // the OTHER half of the same defect (an "orphan broadcast": live-only, gone on refresh), and
+  // trading one for the other would be no fix at all.
+  if (noticeId && persisted) {
+    try {
+      deps.broadcast({
+        type: 'chat:message', agentId,
+        message: {
+          id: noticeId, agentId, role: 'system', content,
+          tokenCount: null, modelId: null, cost: null, latencyMs: null,
+          createdAt: persisted.createdAt,
+        },
+      });
+    } catch { /* the row is the durable half; a frame that could not go out is not fatal */ }
   }
 
   // 3 — THE HEALTH SURFACE.

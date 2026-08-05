@@ -157,6 +157,118 @@ describe('the PLATFORM’S OWN VOICE — never the agent’s', () => {
   });
 });
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// THE ANNOUNCEMENT — SWEEP-A TB4, and it is a RED the full battery found.
+//
+// Battery `bmsgc3l0cnb` tripped `BROADCAST_EQUALS_ROW` for the FIRST TIME IN THE INVARIANT'S
+// LIFE on this module's own row: *"1 SILENT INSERT(S): a user-visible row was written and
+// never announced on chat:message, interagent:message or chat:workingnote (reload-only;
+// appears out of nowhere on refresh)"* — message `94f56e36-f107-42ab-bde6-c585e2a2dc62`,
+// `role=system / lane=owner / display_kind=owner-alert`, written by TB2's ladder at rung 6.
+//
+// The row was ALWAYS user-visible; what was missing was the wire. Part 2 of this module wrote
+// it and part 3 broadcast a `chat:error` — a health frame, on a different channel, carrying no
+// message id — so the owner learned about a platform fault only by reloading the page. That is
+// research 17's D4 ("reload-only rows") exactly, on the one surface whose whole job is to be
+// noticed.
+//
+// WHAT IS AND IS NOT CHANGED. The OR2 boundary is untouched: the platform still says the same
+// sentence, still as `role='system'`, still only when the ladder's bound is spent. Only WHERE
+// it is announced changed — it now rides the SAME `chat:message` frame every other owner-lane
+// system row rides (`destructive-gate.ts:notifyOwnerApprovalExpired`,
+// `scheduler/runner.ts:postSkippedReminderHeadsUp`, `a2a-transport.ts`'s platform-voice join
+// notice), which is the one announce path for these rows and gets the ws seam's row stamp for
+// free. No new mechanism, no second broadcast path, and the health frame stays exactly as it
+// was — the two surfaces answer different questions.
+//
+// The clauses below are the kit invariant's own three, in miniature and offline: every
+// user-visible row this call wrote is announced under ITS OWN id (clause 3), no frame is
+// emitted for an id with no row (clause 1), and the announcement is not an assistant bubble.
+// ════════════════════════════════════════════════════════════════════════════════════════
+describe('THE ANNOUNCEMENT — the platform’s own voice reaches the socket, not just the table', () => {
+  /** Every id a `chat:message` frame announced, in emission order. */
+  const announced = (): string[] => frames
+    .filter((f) => f.type === 'chat:message')
+    .map((f) => (f as { message?: { id?: string } }).message?.id)
+    .filter((id): id is string => typeof id === 'string');
+
+  /** Every row this call wrote that the display taxonomy calls user-visible. */
+  const userVisibleRows = (): Array<{ id: string; role: string; content: string; display_kind: string }> =>
+    mockDb.current!.prepare(
+      `SELECT id, role, content, display_kind FROM messages
+        WHERE agent_id = ? AND display_tier = 'user-visible' ORDER BY rowid`,
+    ).all(AGENT) as Array<{ id: string; role: string; content: string; display_kind: string }>;
+
+  it('the owner-alert row is ANNOUNCED on chat:message under its own id', () => {
+    workRow(WORK);
+    const rec = ghost();
+    expect(rec.noticeId).not.toBeNull();
+    expect(announced()).toContain(rec.noticeId!);
+  });
+
+  it('THE BATTERY’S RED, at the ladder’s own call shape: no silent insert', () => {
+    // `bmsgc3l0cnb`'s row exactly — TB2's rung 6: the out-of-band subject, no turn (a SWEEP
+    // has none), the delegated-job line. This is the shape that went out user-visible and
+    // unannounced, and it is the one the clause has to hold for.
+    workRow(WORK);
+    ghost({
+      floor: 'delegated-job-stuck', turnNumber: null,
+      ownerLine:
+        'your agent delegated part of a request, the pieces came back, and it has not been able to '
+        + 'finish or report on it — the platform steered it several times and got no reply.',
+    });
+    const rows = userVisibleRows();
+    expect(rows.length).toBe(1);
+    const silent = rows.filter((r) => !announced().includes(r.id));
+    expect(silent.map((r) => `${r.display_kind}:${r.content.slice(0, 40)}`)).toEqual([]);
+  });
+
+  it('the frame carries the row’s own role and text — a system note, never an assistant bubble', () => {
+    workRow(WORK);
+    const rec = ghost();
+    const frame = frames.find(
+      (f) => f.type === 'chat:message' && (f as { message?: { id?: string } }).message?.id === rec.noticeId,
+    ) as { agentId?: string; message?: { role?: string; content?: string } } | undefined;
+    expect(frame).toBeDefined();
+    expect(frame!.agentId).toBe(AGENT);
+    expect(frame!.message!.role).toBe('system');
+    expect(frame!.message!.content).toBe(userVisibleRows()[0].content);
+    expect(frames.filter((f) => f.type === 'chat:message')
+      .filter((f) => (f as { message?: { role?: string } }).message?.role === 'assistant')).toEqual([]);
+  });
+
+  it('NEGATIVE CONTROL: no ORPHAN BROADCAST — every announced id resolves to a real row', () => {
+    workRow(WORK);
+    ghost();
+    ghost({ floor: 'reminder-silence', workId: null });
+    for (const id of announced()) {
+      const row = mockDb.current!.prepare('SELECT id FROM messages WHERE id = ?').get(id);
+      expect(row, `announced id ${id} has no row (live-only; vanishes on refresh)`).toBeDefined();
+    }
+  });
+
+  it('NEGATIVE CONTROL: the health frame is still its own surface, not the announcement', () => {
+    // Two frames, two questions. `chat:error` is the dashboard's platform-fault indicator and
+    // names no message id; collapsing them would either lose the fault badge or re-introduce
+    // the silent insert. Both must be present, and exactly once each.
+    workRow(WORK);
+    ghost();
+    expect(frames.filter((f) => f.type === 'chat:error').length).toBe(1);
+    expect(frames.filter((f) => f.type === 'chat:message').length).toBe(1);
+  });
+
+  it('NEGATIVE CONTROL: a broadcast that throws still leaves both durable halves written', () => {
+    workRow(WORK);
+    const rec = recordFloorGhost({
+      agentId: AGENT, turnNumber: null, floor: 'delegated-job-stuck', workId: WORK,
+      attempts: 5, ownerLine: 'your agent went quiet.',
+    }, { broadcast: () => { throw new Error('ws is down'); } });
+    expect(rec.eventId).not.toBeNull();
+    expect(rec.noticeId).not.toBeNull();
+    expect(userVisibleRows().length).toBe(1);
+  });
+});
+
 describe('the HEALTH SURFACE — a platform fault shows up as one', () => {
   beforeEach(() => workRow(WORK));
 
