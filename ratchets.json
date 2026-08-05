@@ -2136,6 +2136,27 @@
       "to": 242,
       "by": "PHASE-6 T10 Step 1a (2026-08-04) — the import of the ONE agents.status writer",
       "why": "+1 line, and ALL of it is `import { … } from '.../agent-status.js'`. The statements themselves did not grow: each raw `db.prepare(\"UPDATE agents SET status = …\")` became one `writeAgentStatus(...)` call writing the SAME columns and values. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Leave the raw SQL in place: that IS the defect — 31 statements in 16 modules bypassing the declared owner, five of them invisible to the plan's own grep — and refusing +1 here would buy the line back by keeping a sixteenth writer. (b) Delete a line elsewhere in the file to pay for it: that is a cosmetic edit inside a file this task has no other business in, and this project's own rule is that a line count never drives a code change (roadmap #7). (c) Fold the import into an existing one: different module, not possible. The pin may only fall from here, and the sweeps that own the remaining writers (SWEEP-A/C/D/E/F) will lower it when they convert theirs."
+    },
+    {
+      "path": "packages/server/src/healer/diagnostic.ts",
+      "from": 1036,
+      "to": 1041,
+      "by": "PHASE-6 T10 Step 1c (2026-08-04) — one stuck-threshold table, read at every enforcing site",
+      "why": "PHASE-6 T10 Step 1c — the ONE stuck-threshold table. The four cliffs (75 min reaper · 10 min Healer · 7 d dormant · 120 min orphan-run) became declared constants with owners in `agent/stuck-thresholds.ts`, and every enforcing site now READS them. The growth is the import plus the note recording what moved and what deliberately did NOT (the 5-minute CHECK INTERVAL and the MAX_DRAIN_STUCK count — 'unifying an interval with a threshold is the named error'). NO VALUE CHANGED: the clause `the four values are the four the tree already had` asserts all four, and the two `working` cliffs are asserted to still DISAGREE so a later tidy-up cannot merge 10 into 75. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Leave the constants where they were: that IS the triplication research 09 recorded, and this task found a FIFTH occurrence a `_THRESHOLD` grep cannot see — a bare `'-10 minutes'` SQL literal in the Healer's own stuck detector, duplicating a number that had no name to duplicate. (b) Drop the notes to pay for the lines: the note is the record of the refusal, and deleting it is how the next worker re-attempts the merge. (c) Shave prose elsewhere in the file: a line count driving a code change is what roadmap #7 forbids by name. The pins may only fall from here."
+    },
+    {
+      "path": "packages/server/src/work/work-reaper.ts",
+      "from": 523,
+      "to": 528,
+      "by": "PHASE-6 T10 Step 1c (2026-08-04) — one stuck-threshold table, read at every enforcing site",
+      "why": "PHASE-6 T10 Step 1c — the ONE stuck-threshold table. The four cliffs (75 min reaper · 10 min Healer · 7 d dormant · 120 min orphan-run) became declared constants with owners in `agent/stuck-thresholds.ts`, and every enforcing site now READS them. The growth is the import plus the note recording what moved and what deliberately did NOT (the 5-minute CHECK INTERVAL and the MAX_DRAIN_STUCK count — 'unifying an interval with a threshold is the named error'). NO VALUE CHANGED: the clause `the four values are the four the tree already had` asserts all four, and the two `working` cliffs are asserted to still DISAGREE so a later tidy-up cannot merge 10 into 75. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Leave the constants where they were: that IS the triplication research 09 recorded, and this task found a FIFTH occurrence a `_THRESHOLD` grep cannot see — a bare `'-10 minutes'` SQL literal in the Healer's own stuck detector, duplicating a number that had no name to duplicate. (b) Drop the notes to pay for the lines: the note is the record of the refusal, and deleting it is how the next worker re-attempts the merge. (c) Shave prose elsewhere in the file: a line count driving a code change is what roadmap #7 forbids by name. The pins may only fall from here."
+    },
+    {
+      "path": "packages/server/src/healer/healer-agent.ts",
+      "from": 1170,
+      "to": 1172,
+      "by": "PHASE-6 T10 Step 1c (2026-08-04) — one stuck-threshold table, read at every enforcing site",
+      "why": "PHASE-6 T10 Step 1c — the ONE stuck-threshold table. The four cliffs (75 min reaper · 10 min Healer · 7 d dormant · 120 min orphan-run) became declared constants with owners in `agent/stuck-thresholds.ts`, and every enforcing site now READS them. The growth is the import plus the note recording what moved and what deliberately did NOT (the 5-minute CHECK INTERVAL and the MAX_DRAIN_STUCK count — 'unifying an interval with a threshold is the named error'). NO VALUE CHANGED: the clause `the four values are the four the tree already had` asserts all four, and the two `working` cliffs are asserted to still DISAGREE so a later tidy-up cannot merge 10 into 75. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Leave the constants where they were: that IS the triplication research 09 recorded, and this task found a FIFTH occurrence a `_THRESHOLD` grep cannot see — a bare `'-10 minutes'` SQL literal in the Healer's own stuck detector, duplicating a number that had no name to duplicate. (b) Drop the notes to pay for the lines: the note is the record of the refusal, and deleting it is how the next worker re-attempts the merge. (c) Shave prose elsewhere in the file: a line count driving a code change is what roadmap #7 forbids by name. The pins may only fall from here."
     }
   ],
   "maxNewFileLines": 400,
@@ -2292,8 +2313,8 @@
     "packages/server/src/google/tools-slides.ts": 3022,
     "packages/server/src/google/tools-write.ts": 1862,
     "packages/server/src/healer/approval-routing.ts": 496,
-    "packages/server/src/healer/diagnostic.ts": 1036,
-    "packages/server/src/healer/healer-agent.ts": 1170,
+    "packages/server/src/healer/diagnostic.ts": 1041,
+    "packages/server/src/healer/healer-agent.ts": 1172,
     "packages/server/src/healer/injury-recovery.ts": 822,
     "packages/server/src/index.ts": 1187,
     "packages/server/src/memory/assembler.ts": 2615,
@@ -2318,7 +2339,7 @@
     "packages/server/src/prompt/registry/entries.ts": 524,
     "packages/server/src/router/scorer.ts": 505,
     "packages/server/src/scheduler/anchor-compensation.ts": 300,
-    "packages/server/src/scheduler/runner.ts": 1702,
+    "packages/server/src/scheduler/runner.ts": 1701,
     "packages/server/src/services/capabilities.ts": 597,
     "packages/server/src/services/gmail-watcher.ts": 592,
     "packages/server/src/services/image-generation.ts": 434,
@@ -2355,7 +2376,7 @@
     "packages/server/src/work/store.ts": 1741,
     "packages/server/src/work/tracker-store.ts": 530,
     "packages/server/src/work/tracker-view.ts": 533,
-    "packages/server/src/work/work-reaper.ts": 523,
+    "packages/server/src/work/work-reaper.ts": 528,
     "packages/shared/src/markers.ts": 286,
     "packages/shared/src/origin.ts": 246,
     "packages/shared/src/outcome.ts": 270,
@@ -2363,6 +2384,7 @@
     "packages/shared/src/visibility.ts": 881,
     "packages/shared/src/ws.ts": 1088,
     "watchdog/src/index.ts": 1198,
-    "packages/server/src/agent/agent-status.ts": 160
+    "packages/server/src/agent/agent-status.ts": 160,
+    "packages/server/src/agent/stuck-thresholds.ts": 112
   }
 }
