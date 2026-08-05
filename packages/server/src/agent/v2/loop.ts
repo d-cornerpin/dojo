@@ -413,7 +413,17 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
     while (
       turnCtx.state!.phase !== 'done' &&
       turnCtx.state!.loopCount < MAX_TOOL_LOOPS &&
-      !turnCtx.state!.taskClosedWithTextThisTurn
+      !turnCtx.state!.taskClosedWithTextThisTurn &&
+      // PHASE-6 T13 (CUT 5's H3): the spin-brake grace, read at the ONE boundary that
+      // survives. The arm below used to write `phase: 'done'` mid-body and the driver
+      // overwrote it four statements later, so an exhausted grace announced the turn's
+      // end on every iteration and the turn ran to the loop cap — measured at 75 rounds
+      // against the 4 the ruling allows. This is the same shape the flag beside it uses,
+      // for the reason the head comment above already gives: BOTH of these fields are
+      // monotone (the brake only latches, the grace only decrements), so reading them
+      // here ends the turn AFTER the current iteration has classified and persisted the
+      // model's text — which is the ruling's own rider, "whatever it has said stands".
+      !(turnCtx.toolPhaseEndedBySpinBrake && turnCtx.spinBrakeGraceCalls < 0)
     ) {
       turnCtx.state = advance(turnCtx.state!, { loopCount: turnCtx.state!.loopCount + 1, phase: 'preCallGates' });
 
@@ -482,8 +492,10 @@ async function runV2TurnBody(agentId: string, turnCtx: TurnContext): Promise<voi
       if (turnCtx.toolPhaseEndedBySpinBrake && result.toolCalls.length > 0) {
         turnCtx.spinBrakeGraceCalls -= 1;
         if (turnCtx.spinBrakeGraceCalls < 0) {
+          // The turn ends at the loop head above, which is the only place a request to
+          // stop cannot be overwritten. It ends AFTER this iteration finishes, so the
+          // round's text is classified and persisted first — the ruling's own rider.
           logger.warn('v2: spin brake grace exhausted, concluding the turn', { agentId, turnNumber }, agentId);
-          turnCtx.state = advance(turnCtx.state!, { phase: 'done' });
         }
       }
 

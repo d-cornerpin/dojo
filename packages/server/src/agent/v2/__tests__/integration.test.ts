@@ -2667,6 +2667,90 @@ describe('PHASE-6 CUT 3: the turn-time budget forces a compaction and hands the 
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
+// PHASE-6 T13 — THE SPIN-BRAKE GRACE ACTUALLY CONCLUDES THE TURN (CUT 5's H3).
+//
+// THE DEFECT, in the driver's own terms. Once the terminal brake ends the tool phase,
+// the owner's 2026-07-19 ruling allows a small grace of further model iterations to
+// converge to text and THEN concludes the turn. The code wrote
+// `advance(state, { phase: 'done' })` inside the loop body — and four statements later
+// the driver advanced `phase` into `postCallClassify`. The ONLY production reader of
+// `state.phase` is the `while` head, so the write never survived to be read: the
+// exhausted grace logged "concluding the turn" on EVERY subsequent iteration and the
+// turn ran on to its loop cap. "Concluding the turn" concluded nothing.
+//
+// This loop's own head comment already names the defect class AND the shape that fixes
+// it: `taskClosedWithTextThisTurn` is "a FLAG, which only gets set (never cleared) ...
+// so the next loop turn sees it and exits, AFTER the current iteration's close-out has
+// already run". The grace needs exactly that property — the ruling's own rider is that
+// "the model's text is never suppressed, whatever it has said stands", so the arm must
+// NOT break mid-iteration before the round's text is classified and persisted.
+//
+// The fix therefore reads the LATCH at the loop head. Nothing new was declared: the two
+// fields (`toolPhaseEndedBySpinBrake`, `spinBrakeGraceCalls`) already exist on the turn's
+// bag and are already monotone — the brake only latches true, the grace only decrements.
+//
+// WHY THE FLAG IS SET FROM INSIDE A TOOL CALL HERE. Reaching the terminal rung honestly
+// takes six identical failures plus three refusals; that arm is driven at the unit level
+// in `identical-call-brake.test.ts` (the rung's first-ever clauses). What THIS clause has
+// to prove is the DRIVER's half — that an exhausted grace ends the turn — so the latch is
+// seeded from inside the first tool call, which is this file's own precedent (the
+// turn-budget block seeds `turnContinuationCounts` the same way and for the same reason).
+// ════════════════════════════════════════════════════════════════════════════════
+describe('PHASE-6 T13: the spin-brake grace ends the turn instead of announcing that it did', () => {
+  it('the turn CONCLUDES when the grace is exhausted, though the model never stops asking for tools', async () => {
+    let call = 0;
+    // A different path every round, so no identical signature accrues: the thrash gate
+    // and the brake's own accounting are held out of this measurement deliberately, and
+    // the ONLY thing that can end this turn is the grace.
+    callModelSpy.mockImplementation(async () => {
+      call++;
+      return {
+        content: `round ${call} text`,
+        toolCalls: [{ id: `tc-${call}`, name: 'file_read', arguments: { path: `/tmp/round-${call}.txt` } }],
+        inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
+      };
+    });
+    executeToolSpy.mockImplementation(async (_agentId: string, toolCall: ToolCall) => {
+      // Latch the terminal brake on the FIRST round, from inside the turn.
+      const tc = turnContext('primary');
+      if (tc) tc.toolPhaseEndedBySpinBrake = true;
+      return { toolCallId: toolCall.id, name: toolCall.name, content: 'file body', isError: false };
+    });
+
+    await runV2Turn('primary');
+
+    // Round 1 latches (the grace is read at the TOP of a round, so it first sees the
+    // latch on round 2). The grace is 2: rounds 2, 3 and 4 take it 2 -> 1 -> 0 -> -1,
+    // and round 4 is the one that concludes. The turn ends there rather than running
+    // to MAX_TOOL_LOOPS (75), which is what it did before.
+    expect(call).toBe(4);
+  });
+
+  it('POSITIVE CONTROL: with the brake NEVER latched the same fixture runs on — the exit is the grace, not the fixture', async () => {
+    let call = 0;
+    callModelSpy.mockImplementation(async () => {
+      call++;
+      // End it by hand at round 6, well past the grace's own exit point, so a failure
+      // of this control means the turn ended for a reason nobody asked for.
+      return call >= 6
+        ? { content: 'done', toolCalls: [], inputTokens: 100, outputTokens: 5, stopReason: 'end_turn' }
+        : {
+          content: `round ${call} text`,
+          toolCalls: [{ id: `tc-${call}`, name: 'file_read', arguments: { path: `/tmp/round-${call}.txt` } }],
+          inputTokens: 100, outputTokens: 5, stopReason: 'tool_use',
+        };
+    });
+    executeToolSpy.mockImplementation(async (_agentId: string, toolCall: ToolCall) => (
+      { toolCallId: toolCall.id, name: toolCall.name, content: 'file body', isError: false }
+    ));
+
+    await runV2Turn('primary');
+
+    expect(call).toBe(6);
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════════
 // PHASE-6 CUT 4 (`finalize`) — G-SUP-2: THE ANSWER THAT RODE WITH A TOOL CALL IS
 // RECOVERED, NEVER SILENTLY DROPPED.
 //
