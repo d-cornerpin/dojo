@@ -9,6 +9,7 @@ import { inheritedCreatorKind } from './created-by-kind.js';
 import { isPrimaryAgent, getPrimaryAgentId } from '../config/platform.js';
 import { sendAgentMessage } from './agent-bus.js';
 import { postAgentNotice } from './agent-notice.js';
+import { writeAgentStatus } from './agent-status.js';
 import { taskScope, STATE_TO_STATUS_SQL } from '../work/tracker-view.js';
 import {
   setTrackerStatus, patchWork, appendWorkNotes, deliveryForTaskClose,
@@ -500,9 +501,7 @@ export function terminateAgent(agentId: string, reason?: string): void {
   }
 
   // Update status
-  db.prepare(`
-    UPDATE agents SET status = 'terminated', updated_at = datetime('now') WHERE id = ?
-  `).run(agentId);
+  writeAgentStatus(agentId, 'terminated');
 
   // v2.5.46 Layer 2, auto-pause in_progress tasks owned by the
   // terminated agent. Without this they sit as zombies (the agent
@@ -660,15 +659,11 @@ export async function completeAgent(
 
   if (isPersistent) {
     // Persistent agent: set to idle, keep alive for future messages
-    db.prepare(`
-      UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?
-    `).run(agentId);
+    writeAgentStatus(agentId, 'idle');
     logger.info('Persistent agent completed task, remaining idle', { agentId, name: agent.name });
   } else {
     // Non-persistent: terminate immediately
-    db.prepare(`
-      UPDATE agents SET status = 'terminated', updated_at = datetime('now') WHERE id = ?
-    `).run(agentId);
+    writeAgentStatus(agentId, 'terminated');
   }
 
   // Clear timeout timer

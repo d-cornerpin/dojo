@@ -20,6 +20,7 @@ import { insertMessageIfAbsent } from '../memory/message-store.js';
 import { isPrimaryAgent } from '../config/platform.js';
 import { notifyRateLimitHit } from './errors.js';
 import { providerClassOf } from './provider-error.js';
+import { setAgentStatus, writeAgentStatus } from './agent-status.js';
 
 const logger = createLogger('rate-limit-retry');
 
@@ -106,8 +107,7 @@ function scheduleNextAttempt(
       if (alerted) {
         // Restore agent status
         try {
-          const db = getDb();
-          db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(agentId);
+          writeAgentStatus(agentId, 'idle');
           broadcast({ type: 'agent:status', agentId, status: 'idle' });
         } catch { /* best effort */ }
 
@@ -185,11 +185,9 @@ function scheduleNextAttempt(
         // below keeps its own narrow best-effort catch so it can never again
         // decide whether the owner hears about a rate limit.
         //
-        // Imported lazily for the same reason runtime.js is above: model.ts
-        // imports this module and v2/loop.ts imports model.ts, so a static edge
-        // to loop.ts would close an import cycle. By the time a strike lands,
-        // loop.ts is long since evaluated and this resolves from cache.
-        const { setAgentStatus } = await import('./v2/loop.js');
+        // PHASE-6 T10: this used to be `await import('./v2/loop.js')`, because model.ts
+        // imports this module and loop.ts imports model.ts, so a static edge to the engine
+        // closed a cycle. The writer is a leaf now and the edge is static.
         setAgentStatus(agentId, 'rate_limited');
 
         // For auto-routed agents, suggest switching models. Genuinely optional:

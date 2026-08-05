@@ -4,6 +4,7 @@ import { broadcast } from '../gateway/ws.js';
 import { sendAlert } from '../services/imessage-bridge.js';
 import { isPrimaryAgent } from '../config/platform.js';
 import { providerClassOf, type ProviderErrorFacts } from './provider-error.js';
+import { writeAgentStatus } from './agent-status.js';
 
 const logger = createLogger('agent-errors');
 
@@ -139,10 +140,9 @@ export function notifyRateLimitHit(agentId: string, errorType: 'rate_limit' | 'o
 
 function pauseAgent(agentId: string): void {
   try {
-    const db = getDb();
-    db.prepare(`
-      UPDATE agents SET status = 'paused', updated_at = datetime('now') WHERE id = ?
-    `).run(agentId);
+    // PHASE-6 T10: through the ONE status writer. Same columns, same values; the broadcast
+    // stays here because this site's own event carries no turn facts.
+    writeAgentStatus(agentId, 'paused');
 
     broadcast({
       type: 'agent:status',

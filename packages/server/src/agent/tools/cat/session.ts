@@ -21,6 +21,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { NEW_SESSION_DIVIDER } from '@dojo/shared';
 import { getDb } from '../../../db/connection.js';
 import { broadcast } from '../../../gateway/ws.js';
+import { writeAgentStatus } from '../../agent-status.js';
 import { isPrimaryAgent } from '../../../config/platform.js';
 import { insertMessageIfAbsent } from '../../../memory/message-store.js';
 import { resolveAgentRef } from '../../tool-helpers.js';
@@ -221,7 +222,7 @@ export const sessionHandlers: ToolHandlerMap = {
       // cause of the error. Without this, reset_session clears the context
       // but leaves the agent stuck in error status.
       if (agent.status === 'error' || agent.status === 'paused') {
-        db.prepare("UPDATE agents SET status = 'idle', last_error = NULL, last_error_at = NULL, updated_at = datetime('now') WHERE id = ?").run(resolvedId);
+        writeAgentStatus(resolvedId, 'idle', { clearError: true });
         broadcast({ type: 'agent:status', agentId: resolvedId, status: 'idle' });
         // Notify injury recovery that the agent is healed
         try {

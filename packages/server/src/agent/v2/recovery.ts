@@ -31,7 +31,7 @@ import {
   recoveryRunStreak,
   MAX_INLOOP_RECOVERIES_SAME_INPUTS,
 } from '../shared-state.js';
-import { setAgentStatus } from './loop.js';
+import { setAgentStatus } from '../agent-status.js';
 import type { AgentTurnState } from './state.js';
 import {
   formatErrorForHuman,

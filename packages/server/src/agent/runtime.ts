@@ -13,6 +13,7 @@ import { getModelCapabilities } from '../services/capabilities.js';
 import { prepareImageForModel } from './image-prep.js';
 import { rectifyAttachment } from './input-rectification.js';
 import { runV2Turn } from './v2/loop.js';
+import { writeAgentStatus } from './agent-status.js';
 
 // One-shot dedup so the "model does not support tools" banner only fires once
 // per (agent, model) pair for the lifetime of the server process. Without
@@ -406,8 +407,7 @@ export function stopAgent(agentId: string): void {
   // calls during finalize will broadcast idle again, that's a harmless dupe.
   stopStatusHeartbeat(agentId);
   try {
-    const db = getDb();
-    db.prepare(`UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?`).run(agentId);
+    writeAgentStatus(agentId, 'idle');
     broadcast({ type: 'agent:status', agentId, status: 'idle' });
   } catch { /* best effort */ }
 
@@ -560,9 +560,9 @@ class AgentRuntime {
         // Don't clobber 'terminated', an agent that called complete_task and
         // hit a post-completion error should stay terminated.
         if (row?.status && row.status !== 'terminated') {
-          db.prepare(
-            "UPDATE agents SET status = 'error', last_error = ?, last_error_at = datetime('now'), updated_at = datetime('now') WHERE id = ?"
-          ).run(`recovery cascade escape: ${errMsg.slice(0, 400)}`, agentId);
+          // The don't-clobber-'terminated' decision stays HERE; the writer owns the
+          // statement, not the policy. Same columns, same 400-char slice.
+          writeAgentStatus(agentId, 'error', { lastError: `recovery cascade escape: ${errMsg.slice(0, 400)}` });
         }
       } catch { /* best effort */ }
 
@@ -1304,7 +1304,7 @@ function recoverStuckAgents(): void {
         logger.warn('Stuck-agent check: row is stale but run is live in-process, not reaping', { agentId: agent.id, agentName: agent.name });
         continue;
       }
-      db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(agent.id);
+      writeAgentStatus(agent.id, 'idle');
       activeRuns.delete(agent.id);
       pendingWakeups.delete(agent.id);
       broadcast({ type: 'agent:status', agentId: agent.id, status: 'idle' });

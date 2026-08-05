@@ -35,6 +35,7 @@ import path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../../db/connection.js';
 import { broadcast } from '../../../gateway/ws.js';
+import { writeAgentStatus } from '../../agent-status.js';
 import { insertMessageIfAbsent } from '../../../memory/message-store.js';
 import { getModelCapabilities } from '../../../services/capabilities.js';
 import { auditLog, toolsLogger as logger } from '../util.js';
@@ -214,7 +215,7 @@ const handlers = {
         // agent say "On it!" → thinking dots stay → image appears.
         // Without this, the primary agent goes idle between the ack and delivery
         // and the user sees an awkward gap of silence.
-        db.prepare("UPDATE agents SET status = 'working', updated_at = datetime('now') WHERE id = ?").run(agentId);
+        writeAgentStatus(agentId, 'working');
         broadcast({ type: 'agent:status', agentId, status: 'working' });
 
         setImgRunning(imgJobId);
@@ -473,7 +474,7 @@ const handlers = {
         // Set the caller back to idle (the runtime wake fired by
         // the success path will re-enter 'working' immediately
         // when the new turn picks up).
-        db.prepare("UPDATE agents SET status = 'idle', updated_at = datetime('now') WHERE id = ?").run(agentId);
+        writeAgentStatus(agentId, 'idle');
         broadcast({ type: 'agent:status', agentId, status: 'idle' });
       }
     })();

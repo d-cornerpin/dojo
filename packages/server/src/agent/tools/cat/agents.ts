@@ -32,6 +32,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../../../db/connection.js';
 import { broadcast } from '../../../gateway/ws.js';
+import { writeAgentStatus } from '../../agent-status.js';
 import { isPrimaryAgent } from '../../../config/platform.js';
 import { insertMessageIfAbsent, rewriteSystemPromptRow } from '../../../memory/message-store.js';
 import { writeToolReceipt } from '../../../receipts/store.js';
@@ -389,9 +390,7 @@ export const agentsHandlers: ToolHandlerMap = {
                 const ageMs = Date.now() - createdAtMs;
                 if (ageMs >= 0 && ageMs < 60_000) {
                   try {
-                    sendDb.prepare(
-                      "UPDATE agents SET status = 'idle', last_error = NULL, last_error_at = NULL, updated_at = datetime('now') WHERE id = ?",
-                    ).run(targetCheck.id);
+                    writeAgentStatus(targetCheck.id, 'idle', { clearError: true });
                     broadcast({ type: 'agent:status', agentId: targetCheck.id, status: 'idle' });
                     onAgentRecovered(targetCheck.id);
                     logger.warn('send_to_agent auto-healed newly-spawned error-state target', {

@@ -55,6 +55,8 @@ import { classifyTool } from '@dojo/shared';
 // PHASE-6 T1: the turn's own facts (`turnCtx`, threaded; `turnContext(agentId)` for the
 // module-level helpers below, which run whether or not that agent is in a turn).
 import { openTurnContext, turnContext, endTurnContext, type TurnContext } from '../turn-context.js';
+// PHASE-6 T10: the ONE owner of the `agents.status` transition. It used to live here.
+import { setAgentStatus } from '../agent-status.js';
 // PHASE-2 T8V: the six work verbs made tool NAMES insufficient to identify an
 // operation, so every gate below matches `toolOpKey(name, args)` — the operation
 // id for a work verb, the plain name for everything else. One matcher, one marker.
@@ -320,58 +322,11 @@ function stopStatusHeartbeat(agentId: string): void {
   }
 }
 
-export function setAgentStatus(agentId: string, status: AgentStatus): void {
-  try {
-    const db = getDb();
-    // The turn's human-conversation binding: non-null conv_key on a genuine human turn
-    // (dashboard / iMessage / voice), null on a pure background a2a / engine turn,
-    // undefined outside a turn. Threaded onto the broadcast as `userFacing` so the
-    // composer can tell "idle after a user turn" from "idle after background noise": on
-    // a busy box a queued dashboard send must keep its working-UI latch across a
-    // background turn's idle (see AgentStatusEvent.userFacing).
-    // PHASE-6 T1: was a capture taken BEFORE this function deleted ten turn-state maps.
-    // That delete is gone; a status write no longer decides how long the turn's facts live.
-    const turnConvKeyAtStatus = turnContext(agentId)?.convKey; // string | null | undefined
-    const userFacingTurn = typeof turnConvKeyAtStatus === 'string' && turnConvKeyAtStatus.length > 0;
-    // FA-A2: clear the diagnostic ONLY on a clean turn end ('idle'), not on the
-    // 'working' transition. A turn that errors and retries goes working → error →
-    // working; clearing last_error on 'working' wiped the diagnostic on every
-    // retry and raced the Healer's grace-delayed notify. Clearing on 'idle' lets
-    // it survive across retries and clears once the turn actually finishes clean.
-    // Genuine recovery also clears it via onAgentRecovered (injury-recovery.ts).
-    if (status === 'idle') {
-      db.prepare(`
-        UPDATE agents SET status = ?, last_error = NULL, last_error_at = NULL, updated_at = datetime('now') WHERE id = ?
-      `).run(status, agentId);
-    } else {
-      db.prepare(`
-        UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?
-      `).run(status, agentId);
-    }
-    // On 'working', carry the turn kind so the composer can stay quiet on pure
-    // A2A turns (unless wordy mode). Defaults to 'user' until the counterparty
-    // is resolved early in the turn.
-    const turnKind = status === 'working' ? (turnContext(agentId)?.kind ?? 'user') : undefined;
-    // userFacing rides on EVERY status this seam emits (working AND idle/terminal),
-    // captured above before the idle delete. `undefined` (no turn resolved yet, e.g.
-    // the pre-classification 'working' at turn start) is omitted so the client keeps
-    // its safe default there; the authoritative value lands on the post-resolution
-    // working re-broadcast and on the terminal broadcast.
-    broadcast({
-      type: 'agent:status',
-      agentId,
-      status,
-      ...(turnKind ? { turnKind } : {}),
-      ...(turnConvKeyAtStatus !== undefined ? { userFacing: userFacingTurn } : {}),
-    });
-  } catch (err) {
-    logger.warn('Failed to update agent status', {
-      agentId,
-      status,
-      error: err instanceof Error ? err.message : String(err),
-    }, agentId);
-  }
-}
+// PHASE-6 T10: `setAgentStatus` MOVED, whole, to `agent/agent-status.ts` — the one owner of
+// the `agents.status` transition. It is imported here like any other collaborator and passed
+// into the step contexts unchanged. It is deliberately NOT re-exported from this module: a
+// second import path for one writer is the shape T10 exists to delete, and the census in
+// `agent/__tests__/status-writer-conformance.test.ts` is what keeps it at one.
 
 // Orb mood marker (`((mood: NAME))`) is an orb-only signal that away text channels
 // (iMessage / SMS / Teams / email) were sending raw, breaking the prompt's promise that it is

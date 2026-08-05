@@ -54,20 +54,34 @@ vi.mock('../runtime.js', () => ({
   }),
 }));
 
-// setAgentStatus is the platform's status writer and lives inside v2/loop.ts —
-// an 8k-line module whose real import needs ~22 collaborator mocks (see
-// v2/__tests__/integration.test.ts). This stand-in performs the SAME two effects
-// the real one performs for a non-idle status (loop.ts:855-905): the UPDATE, and
-// the `agent:status` broadcast. The UPDATE runs against the REAL migrated schema
-// below, so the widened CHECK is genuinely exercised here; Part A proves the
-// column accepts the value, this proves the retry path delegates and broadcasts.
+// ── GUARD-AUDIT F3, DISCHARGED AT PHASE-6 T10: THE MOCK FOLLOWS ITS SUBJECT ──
+//
+// This used to be `vi.mock('../v2/loop.js', …)` — a mock bound to a PATH rather than to a
+// behaviour, and the audit's finding was that vitest does not fail on a mock whose target no
+// longer exports the name. `setAgentStatus` HAS now left `loop.ts` (T10 made
+// `agent/agent-status.ts` the one owner of the `agents.status` transition), so the old
+// binding would have silently stopped intercepting and this test would have gone on passing
+// while measuring something else. It is re-pointed WITH its subject.
+//
+// The stand-in performs the SAME two effects the real writer performs for a non-idle status:
+// the UPDATE, and the `agent:status` broadcast. The UPDATE runs against the REAL migrated
+// schema below, so the widened CHECK is genuinely exercised here; Part A proves the column
+// accepts the value, this proves the retry path delegates and broadcasts.
 const setAgentStatusSpy = vi.fn((agentId: string, status: string) => {
   const db = mockDb.current;
   if (!db) throw new Error('test DB not initialized');
   db.prepare("UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?").run(status, agentId);
   broadcastSpy({ type: 'agent:status', agentId, status });
 });
-vi.mock('../v2/loop.js', () => ({ setAgentStatus: (a: string, s: string) => setAgentStatusSpy(a, s) }));
+const writeAgentStatusSpy = vi.fn((agentId: string, status: string) => {
+  const db = mockDb.current;
+  if (!db) throw new Error('test DB not initialized');
+  db.prepare("UPDATE agents SET status = ?, updated_at = datetime('now') WHERE id = ?").run(status, agentId);
+});
+vi.mock('../agent-status.js', () => ({
+  setAgentStatus: (a: string, s: string) => setAgentStatusSpy(a, s),
+  writeAgentStatus: (a: string, s: string) => writeAgentStatusSpy(a, s),
+}));
 
 import { scheduleRateLimitRetry, hasActiveRateLimitRetry } from '../rate-limit-retry.js';
 import { runMigrations } from '../../db/migrations.js';

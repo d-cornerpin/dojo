@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { v4 as uuidv4 } from 'uuid';
 import { createLogger, setLogBroadcast } from './logger.js';
 import { getDb } from './db/connection.js';
+import { resetWorkingAgentsToIdleAtBoot } from './agent/agent-status.js';
 import { runMigrations } from './db/migrations.js';
 // PHASE-2 T9: `sweepByRowid` and `transition` left this file with the boot staleness sweep,
 // which now lives in `work/work-reaper.ts` beside the other obligation sweeps.
@@ -452,12 +453,12 @@ async function main(): Promise<void> {
     ensureSystemGroup();
   } catch { /* groups table may not exist yet on first boot */ }
 
-  // 4b. Reset stuck agents
+  // 4b. Reset stuck agents — through the ONE status writer (PHASE-6 T10; the statement is
+  // unchanged, `updated_at` deliberately untouched — see the writer).
   {
-    const db = getDb();
-    const stuck = db.prepare("UPDATE agents SET status = 'idle' WHERE status = 'working'").run();
-    if (stuck.changes > 0) {
-      logger.info(`Reset ${stuck.changes} agent(s) from 'working' to 'idle' after restart`);
+    const repaired = resetWorkingAgentsToIdleAtBoot();
+    if (repaired > 0) {
+      logger.info(`Reset ${repaired} agent(s) from 'working' to 'idle' after restart`);
     }
   }
 
