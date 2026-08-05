@@ -254,16 +254,35 @@ export function runThrashGate(state: AgentTurnState, ctx: PreCallGatesContext): 
     // refused twice and the agent truly ghosted". No steer was written here, so a row
     // would be a receipt for something that did not happen — the forged-completion class
     // this whole phase exists to remove.
+    //
+    // …AND IT IS ANNOUNCED (SWEEP-A TB4). The note above used to be written and put on no wire
+    // at all — the same silent-insert defect the battery caught on `floor-ghost.ts`, on the same
+    // class of row, and it had simply never fired inside an observation window. The paragraph
+    // above already says a toast is a frame and a frame nobody had the window open for is not a
+    // record; the mirror of that is just as true — a record nobody was told about is not a
+    // notice. It rides the ONE announce door (`gateway/ws.ts:broadcast`, whose T9 seam stamps
+    // content and `createdAt` off the row), beside the write, exactly as every other owner-lane
+    // system row does. The `chat:error` toast below is a different surface and stays as it is.
+    // A frame goes out only if a row was written: an announcement with no row behind it is the
+    // other half of the same defect.
     if (blockedWorkIsUserOrigin) {
       try {
-        insertMessageIfAbsent({
-          id: uuidv4(), agentId, role: 'system',
-          content:
-            `${OWNER_ALERT_HEADS_UP_PREFIX} your agent kept retrying the same step without getting anywhere, `
-            + `so the platform stopped it rather than let it spin. The work is left open and flagged. `
-            + `Ask your agent about it and it can pick the work back up or explain what it was attempting.`,
-          turnNumber,
-        });
+        const noteId = uuidv4();
+        const content =
+          `${OWNER_ALERT_HEADS_UP_PREFIX} your agent kept retrying the same step without getting anywhere, `
+          + `so the platform stopped it rather than let it spin. The work is left open and flagged. `
+          + `Ask your agent about it and it can pick the work back up or explain what it was attempting.`;
+        const persisted = insertMessageIfAbsent({ id: noteId, agentId, role: 'system', content, turnNumber });
+        if (persisted) {
+          broadcast({
+            type: 'chat:message', agentId,
+            message: {
+              id: noteId, agentId, role: 'system', content,
+              tokenCount: null, modelId: null, cost: null, latencyMs: null,
+              createdAt: persisted.createdAt,
+            },
+          });
+        }
       } catch { /* the toast below still fires; a note is not worth the turn */ }
     }
     try {
