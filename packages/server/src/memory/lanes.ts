@@ -433,6 +433,61 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
 
 export const POST_BUDGET_RESERVE_TOKENS = POST_BUDGET_LANES.reduce((t, l) => t + l.reserveTokens, 0);
 
+// ── WHICH POST-BUDGET LANE EACH TAGGED ENTRY RIDES (PHASE-6 T13) ────────────────────────
+//
+// `lane.loop-tail` and `lane.deliveries` are DECLARED by the assembler and FILLED by the
+// loop, so the messages that land in them carry their own ENTRY id — `msg.turn-context`,
+// `engine.open-work` — and never the lane's. The receipt already knows this and measures the
+// group at the receipt boundary (`agent/v2/receipt.ts withMeasuredLoopTail`). `repairAssembly`
+// did not, and read those entry ids as lanes "no lane table declares" — so a real over-budget
+// engine assembly was REFUSED before the priority repair ran at all. This is the table that
+// closes that gap, and it is held BOTH WAYS by a runtime census
+// (`__tests__/assembly-repair-lane-census.test.ts`) against the prompt registry itself.
+export const POST_BUDGET_ENTRY_LANE: Record<string, string> = {
+  // The message-side prompt-registry entries, injected through `injectRegistryMessage`.
+  'msg.tool-note': 'lane.loop-tail',
+  'msg.pending-nudge': 'lane.loop-tail',
+  'msg.context-gap': 'lane.loop-tail',
+  'msg.delegation-hint': 'lane.loop-tail',
+  'msg.technique-strong': 'lane.loop-tail',
+  'msg.technique-weak': 'lane.loop-tail',
+  'msg.turn-context': 'lane.loop-tail',
+  'msg.peer-status': 'lane.loop-tail',
+  'msg.current-time': 'lane.loop-tail',
+  // The deliveries lane declares its OWN reserve, so its entry is attributed to it and not
+  // to the tail it sits inside — the same split the receipt makes.
+  'msg.deliveries': 'lane.deliveries',
+  // The three engine-side injections that still push directly (`pre-call-injections.ts`).
+  'engine.open-work': 'lane.loop-tail',
+  'engine.recent-outbound': 'lane.loop-tail',
+  'engine.recently-answered': 'lane.loop-tail',
+};
+
+/**
+ * The PM path's only lane. It is tagged (`assembler.ts` PM branch), it is declared — it has
+ * a row cap in `LANE_LIMITS` and emits its own grant — and it is not in `LANE_PRIORITY`,
+ * because the PM assembly has no ladder to drop down: the tail IS the context.
+ */
+const PM_TAIL_LANE_ID = 'lane.pm-tail';
+
+/**
+ * Is this a lane the repair must RECOGNISE but must never DROP?
+ *
+ * The allocator's twelve lanes (`LANE_PRIORITY`) are the droppable ladder. Everything else
+ * the tree declares — the post-budget lanes, the entries that ride them, the PM tail — is
+ * content that arrived AFTER the budget decision or IS the context, and dropping it is the
+ * oldest-first front-trimmer behaviour requirement C10 exists to delete
+ * (`assembly-validation.ts`'s header names the tail-append as its first casualty).
+ *
+ * An id in NEITHER table is still a finding and still refuses: that is the guard's remaining
+ * job, and the census keeps this list honest so a new injection cannot quietly join it.
+ */
+export function isProtectedLaneId(id: string): boolean {
+  if (POST_BUDGET_ENTRY_LANE[id] !== undefined) return true;
+  if (id === PM_TAIL_LANE_ID) return true;
+  return POST_BUDGET_LANES.some((l) => l.id === id);
+}
+
 // ── The scaffolding ack, generated and BYTE-STABLE ──────────────────────────────────────
 //
 // The ack sits at slot 1000, AHEAD of the tail boundary, so the cache-prefix law binds it

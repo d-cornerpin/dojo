@@ -55,7 +55,7 @@
 // ════════════════════════════════════════════════════════════════════════════════════════
 import type Anthropic from '@anthropic-ai/sdk';
 import { createLogger } from '../logger.js';
-import { messageTokens, LANE_PRIORITY } from './lanes.js';
+import { messageTokens, LANE_PRIORITY, isProtectedLaneId } from './lanes.js';
 import { contextWindowPolicy, estimateTokens } from './budget.js';
 import { appendDivergenceRecord } from './assembly-validation-sink.js';
 
@@ -402,8 +402,18 @@ export function repairAssembly(
     );
   }
 
+  // ── BOTH LANE TABLES, NOT ONE (PHASE-6 T13) ──
+  // The tree declares two: `LANE_PRIORITY`, the allocator's droppable ladder, and
+  // `POST_BUDGET_LANES` plus the entries that ride it — content added AFTER the budget
+  // decision, each with its own reserve. This check read only the first, so from PHASE-3 T6
+  // (which tagged every injection at emission) a real engine assembly reaching this line
+  // carried `msg.turn-context` / `msg.current-time` and was REFUSED here, before the repair
+  // below ever ran. Requirement C10 could therefore never repair a real turn — and `c4680c9`
+  // deleted both provider front-trimmers in the same commit that made this path live, so
+  // there is nothing underneath it. An id in neither table is still a finding and still
+  // refuses; that is what this guard is for.
   const unknown = [...new Set(laneIds.filter((id): id is string => id !== null))]
-    .filter((id) => LANE_PRIORITY[id] === undefined);
+    .filter((id) => LANE_PRIORITY[id] === undefined && !isProtectedLaneId(id));
   if (unknown.length > 0) {
     throw new AssemblyValidationError(
       `assembly is over budget${who} and carries lane id(s) no lane table declares: ` +
@@ -415,7 +425,11 @@ export function repairAssembly(
   }
 
   // Droppable lanes, LOWEST PRIORITY FIRST (priority is a rank: bigger number survives less).
+  // Only the ALLOCATOR's ladder is droppable. A protected id is recognised above and skipped
+  // here, which is the same treatment an untagged message has always had — `null` never
+  // entered this set either, and the untagged message this header describes IS the tail.
   const droppable = [...new Set(laneIds.filter((id): id is string => id !== null))]
+    .filter((id) => LANE_PRIORITY[id] !== undefined)
     .sort((a, b) => LANE_PRIORITY[b] - LANE_PRIORITY[a] || a.localeCompare(b));
 
   let kept: ValidatedMessage[] = [...messages];
