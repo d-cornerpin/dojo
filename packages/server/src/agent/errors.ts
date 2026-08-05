@@ -5,6 +5,9 @@ import { sendAlert } from '../services/imessage-bridge.js';
 import { isPrimaryAgent } from '../config/platform.js';
 import { providerClassOf, type ProviderErrorFacts } from './provider-error.js';
 import { writeAgentStatus } from './agent-status.js';
+import {
+  recordErrorInWindow, noteErrorLoopPause, clearErrorLoop, ERROR_LOOP_WINDOW_MS,
+} from './error-loop-state.js';
 
 const logger = createLogger('agent-errors');
 
@@ -49,35 +52,29 @@ export class AgentError extends Error {
 }
 
 // ── Error Loop Detection ──
-
-interface ErrorRecord {
-  timestamp: number;
-}
-
-const agentErrors = new Map<string, ErrorRecord[]>();
-
-const ERROR_LOOP_THRESHOLD = 5;
-const ERROR_LOOP_WINDOW_MS = 2 * 60 * 1000; // 2 minutes
+//
+// PHASE-6 T10 Step 2: the window and the trip decision MOVED to `agent/error-loop-state.ts`,
+// backed by `error_loop_state` (migration 157). They were a module-scope Map, so an error
+// loop that took the server down reset the counter that exists to stop it, and the five
+// records justifying a pause were deleted at the moment they became worth reading. The
+// semantics are unchanged — prune the window, record, compare against 5, clear on a trip —
+// and the trip now leaves a durable row saying how many errors, over what window, since when.
 
 export function recordError(agentId: string): boolean {
   const now = Date.now();
-  const records = agentErrors.get(agentId) ?? [];
+  const window = recordErrorInWindow(agentId, now);
 
-  // Clean old records outside the window
-  const recentRecords = records.filter(r => now - r.timestamp < ERROR_LOOP_WINDOW_MS);
-  recentRecords.push({ timestamp: now });
-
-  agentErrors.set(agentId, recentRecords);
-
-  if (recentRecords.length >= ERROR_LOOP_THRESHOLD) {
+  if (window.tripped) {
     logger.error('Error loop detected, pausing agent', {
       agentId,
-      errorCount: recentRecords.length,
+      errorCount: window.count,
       windowMs: ERROR_LOOP_WINDOW_MS,
     }, agentId);
 
     pauseAgent(agentId);
-    agentErrors.delete(agentId); // Reset after pausing
+    // Reset after pausing — and KEEP the decision. The window is emptied; one durable row
+    // records what it was emptied for.
+    noteErrorLoopPause(agentId, window, now);
 
     // Broadcast structured error to dashboard so the chat shows why the agent was paused.
     // v2.3.19 (error-handling-spec Phase 2) — plain language, no jargon
@@ -112,7 +109,7 @@ export function recordError(agentId: string): boolean {
 }
 
 export function clearErrors(agentId: string): void {
-  agentErrors.delete(agentId);
+  clearErrorLoop(agentId);
 }
 
 /**
