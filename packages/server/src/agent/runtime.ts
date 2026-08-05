@@ -689,7 +689,19 @@ class AgentRuntime {
       // model did with the compile steer (see resolveCompilePendingJoins).
       try {
         const { resolveCompilePendingJoins } = await import('./a2a-transport.js');
-        await resolveCompilePendingJoins(agentId);
+        const drive = await resolveCompilePendingJoins(agentId);
+        // SWEEP-A TB2 — A RE-DRIVE IS A REAL DRIVE. The compile order (and, once the drives
+        // are spent, the "tell the owner it is stuck" steer) is a RIDER: it can never be the
+        // reason for a turn of its own, so without a wakeup it is written and never seen —
+        // the exact shape T3 deleted. This queues one through the mechanism the two drains
+        // below already use, so it collapses with theirs and obeys the same guards; the drive
+        // itself has already consulted the storm law, and the ladder bounds it at three.
+        if (drive.wakeWanted) {
+          pendingWakeups.add(agentId);
+          logger.info('compile drive: queued a wakeup so the re-driven agent actually sees the owed step', {
+            agentId, drives: drive.drives,
+          }, agentId);
+        }
       } catch { /* best effort; the TTL sweep backstops */ }
 
       // ── Unserved-wake drain (2026-07-23) ── pendingWakeups is a SET, so N

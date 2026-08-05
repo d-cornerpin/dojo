@@ -54,7 +54,8 @@ import { getDb } from '../db/connection.js';
 import { createLogger } from '../logger.js';
 import { recordServingTurnByRowid } from '../memory/message-store.js';
 import {
-  isTerminal, revertAskClaimOnAbort, transition, type WorkState,
+  appendWorkEvent, claimFailedJoinForLateAnswer, isTerminal, revertAskClaimOnAbort, transition,
+  type WorkState,
 } from './store.js';
 
 const logger = createLogger('ask-settlement');
@@ -71,14 +72,48 @@ const logger = createLogger('ask-settlement');
  *  Carried here VERBATIM from `work/store.ts` with the closer it belonged to. */
 export const NON_ANSWERING_DELIVERY_TOOLS = new Set(['engine-ack']);
 
+/**
+ * ⚠ SWEEP-A TB2 — AND NEITHER IS A TOOL-CALL CHIP. The same doctrine, one row deeper.
+ *
+ * `messages.display_kind = 'tool-turn'` is an assistant row whose CONTENT is the model's
+ * `tool_use` blocks; the dashboard renders it as a chip. It is `user-visible` (the person can
+ * see that a tool ran) but it is not a REPLY, and the dashboard door records a `deliveries`
+ * row for it exactly as it does for prose.
+ *
+ * MEASURED, not reasoned about — the premature close the kit scenario `delegation-longhorizon`
+ * clause (e) reproduced 2 of 2 at `3439240` pointed at a chip on BOTH attempts (read from the
+ * live body at TB2 Step 0):
+ *
+ *   ask:3857ef59  done 10:34:39  receipt 3da6365b -> message a03a5ac9  display_kind=tool-turn
+ *   ask:b72e81ad  done 10:40:49  receipt 49c963a2 -> message 98ffe54b  display_kind=tool-turn
+ *
+ * …and on both attempts the model's real prose reply landed AFTER the delegation join opened,
+ * so with the chip excluded the HOLD arm below fires on the real reply and the ask is never
+ * terminal at all. That is why this is a NARROWING of the evidence rather than a re-open at
+ * the turn boundary: the record is read as HISTORY, and a `done` that is later undone is
+ * still a job that was marked finished before it happened.
+ *
+ * The exclusion is keyed on the delivery's OWN message row, so a channel send that records no
+ * message id (email, iMessage, SMS) is untouched — it is excluded only when the row it
+ * carried is provably a chip.
+ */
+export const NON_ANSWERING_DISPLAY_KINDS = ['tool-turn'] as const;
+
 /** How far back a boot reconciliation will reach. Carried verbatim from the pickup-stamp
  *  reconciliation it replaced (`index.ts` 4b1): a claim stranded by a genuine crash is
  *  seconds-to-minutes old, and anything older is history a restart must not re-answer. */
 export const ORPHAN_CLAIM_WINDOW_MINUTES = 30;
 
 /** Where in the lifecycle the question is being asked. It selects the TIE-BREAK when there
- *  is no evidence — never the evidence itself, which is identical at all three. */
-export type SettlementMoment = 'delivery' | 'finalize' | 'boot';
+ *  is no evidence — never the evidence itself, which is identical at all three.
+ *
+ *  `join` (SWEEP-A TB2) is the fourth, and it is the one moment whose EVIDENCE differs, for a
+ *  stated reason: a compiled answer to a delegated job arrives on a LATER turn than the one
+ *  that opened the join, so "this turn's delivery" cannot be the test. What replaces it is
+ *  strictly narrower, never wider — the delivery must postdate the join's own `join_complete`
+ *  event, so nothing the delegating turn said about STARTING the work can ever be read as the
+ *  answer to it. */
+export type SettlementMoment = 'delivery' | 'finalize' | 'boot' | 'join';
 
 export type AskSettlementVerdict = 'closed' | 'held' | 'reopened' | 'unchanged';
 
@@ -102,6 +137,25 @@ export interface SettlementContext {
    *  closed" record can never disagree. `setAnswerMessageId` keys on exactly this column. */
   rowid?: number | null;
   actorId?: string | null;
+  /** JOIN MOMENT ONLY: the delivery the relay just recorded, when the caller holds one. It is
+   *  still CHECKED here (delivered, this agent, not a chip, postdating `join_complete`) — the
+   *  caller narrows the scope, the authority decides. */
+  deliveryId?: string | null;
+  /** JOIN MOMENT ONLY: the sentence recorded on the transition. */
+  reason?: string;
+  /** JOIN MOMENT ONLY: WHICH join fact this settlement is made of. It selects the boundary
+   *  the delivery must postdate and nothing else — the evidence read is one query either way.
+   *   * `compiled`    — the countdown reached zero and the combined answer went out. The
+   *                     children must ALL have settled and the delivery must postdate the
+   *                     row's own `join_complete`. This is the arm bug 2 is about.
+   *   * `late-answer` — the join already FAILED CLOSED (the owner has been told no answer was
+   *                     coming) and a real answer arrived afterwards. There is no completed
+   *                     countdown to postdate — that is the whole situation — so the boundary
+   *                     is the ask's own arrival, exactly as the delivery arm uses it.
+   *                     requirement preserved (PHASE-2 AUDIT-FIX): a late answer still reaches
+   *                     the owner, ONCE, and the exactly-once guard is the `failed -> open`
+   *                     transition that precedes this call. */
+  basis?: 'compiled' | 'late-answer';
 }
 
 interface AskRow {
@@ -151,15 +205,23 @@ function qualifyingDelivery(
   if (turnNumber == null || ask.conversation_id == null) return null;
   const excluded = [...NON_ANSWERING_DELIVERY_TOOLS];
   return (getDb().prepare(
-    `SELECT id, tool FROM deliveries
-      WHERE agent_id = ? AND turn_number = ? AND conversation_id = ?
-        AND outcome = 'delivered'
-        AND tool NOT IN (${excluded.map(() => '?').join(', ')})
-        AND unixepoch(created_at) >= ?
-      ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    `SELECT d.id AS id, d.tool AS tool FROM deliveries d
+      WHERE d.agent_id = ? AND d.turn_number = ? AND d.conversation_id = ?
+        AND d.outcome = 'delivered'
+        AND d.tool NOT IN (${excluded.map(() => '?').join(', ')})
+        AND ${NOT_A_TOOL_CHIP}
+        AND unixepoch(d.created_at) >= ?
+      ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
   ).get(ask.agent_id, turnNumber, ask.conversation_id, ...excluded, Math.floor(ask.opened_at / 1000)) as
     { id: string; tool: string } | undefined) ?? null;
 }
+
+/** The fifth narrowing, as a SQL fragment so the delivery arm and the join arm cannot drift
+ *  apart. Literal by construction (the list is a frozen tuple of lowercase identifiers), so
+ *  the statement still prepares under the schema-conformance walk. */
+const NOT_A_TOOL_CHIP =
+  `NOT EXISTS (SELECT 1 FROM messages m WHERE m.id = d.message_id AND m.display_kind IN (${
+    NON_ANSWERING_DISPLAY_KINDS.map((k) => `'${k}'`).join(', ')}))`;
 
 /** Is there delegated work under this ask that has not come back and been compiled yet? */
 function joinOutstanding(ask: AskRow): boolean {
@@ -179,6 +241,12 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
   if (!ask) return out('unchanged', 'no such work row');
   if (ask.kind !== 'ask') return out('unchanged', `not an ask (kind=${ask.kind})`);
   if (isTerminal(ask.state)) return out('unchanged', `already ${ask.state}`);
+
+  // ── THE JOIN ARM (SWEEP-A TB2). The delegated job's own settlement, on the same rule. ──
+  //    It is ABOVE the hold arm deliberately: at this moment `compile_pending` is still 1 —
+  //    it is `transition()` that clears it on a terminal move — so a hold tested first would
+  //    hold the very row whose answer has just landed, for ever.
+  if (ctx.at === 'join') return settleOnJoin(ask, ctx, actorId, out);
 
   // ── HOLD. The owner asked for something the agent delegated: it is NOT answered because a
   //    turn spoke, and it must stay OWED and visible until the delegated work settles and its
@@ -235,6 +303,158 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
     agentId: ask.agent_id, workId, turnNumber: ctx.turnNumber, from: ask.state,
   }, ask.agent_id);
   return out('reopened', reason);
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// THE JOIN ARM — SWEEP-A TB2, folding `settleJoinDelivered` in (DESIGN §1b, row 5)
+//
+// requirement preserved: *"close the join-ask when the compiled result is actually delivered
+// — already evidence-backed"*, and `compile_resolved` is finally written on it. What the old
+// function could not do is refuse: it took whatever delivery id the relay handed it and moved
+// the row, so the delegating turn's own status line was an acceptable receipt. The rule here
+// is the authority's, stated once and not weakened:
+//
+//   * the CHILDREN must actually have settled — `remaining_children = 0`, no exception. This
+//     is the "settled is not widened" refusal in code: a job with a piece still out is not a
+//     job whose answer can be pointed at.
+//   * the DELIVERY must actually have landed AFTER the join completed. `join_complete` is the
+//     row's own event, written inside the same transaction as the decrement that reached zero,
+//     so it is the honest boundary between "talking about starting it" and "answering it".
+//   * and it must be an answer at all — delivered, this agent's, not a tool-call chip, not an
+//     `engine-ack`.
+//
+// WHAT THIS REPLACED, AND WHY THE REPLACEMENT IS STRICTLY NARROWER. The compile driver used
+// to ask `answerReceiptForAsk(join.rootId)` — "does the ask record an answer?" — which is TRUE
+// the moment `messages.answer_message_id` is stamped at the delegating turn's finalize. On
+// every recorded red run that was true within seconds of the delegation, so the driver
+// cleared `compile_pending` and the compile was never driven. That is the same status-line
+// error one layer up, and it is why `compile_resolved` had been written 0 times ever.
+// ════════════════════════════════════════════════════════════════════════════════
+
+/** When the join's countdown reached zero, from the row's own event. `null` when it never
+ *  did — in which case there is no compiled anything and nothing can qualify. */
+function joinCompletedAt(workId: string): number | null {
+  const r = getDb().prepare(
+    `SELECT MAX(created_at) AS at FROM work_events WHERE work_id = ? AND kind = 'join_complete'`,
+  ).get(workId) as { at: number | null } | undefined;
+  return r?.at ?? null;
+}
+
+/** The compiled answer's receipt, or null. One statement, whether the caller named a delivery
+ *  or not — a named one is CHECKED against the same predicate, never trusted. */
+function compiledDelivery(
+  ask: AskRow, completedAtMs: number, named: string | null | undefined,
+): { id: string; tool: string } | null {
+  const db = getDb();
+  const excluded = [...NON_ANSWERING_DELIVERY_TOOLS];
+  const floorSec = Math.floor(completedAtMs / 1000);
+  if (named) {
+    return (db.prepare(
+      `SELECT d.id AS id, d.tool AS tool FROM deliveries d
+        WHERE d.id = ? AND d.agent_id = ? AND d.outcome = 'delivered'
+          AND d.tool NOT IN (${excluded.map(() => '?').join(', ')})
+          AND ${NOT_A_TOOL_CHIP}
+          AND unixepoch(d.created_at) >= ?`,
+    ).get(named, ask.agent_id, ...excluded, floorSec) as { id: string; tool: string } | undefined) ?? null;
+  }
+  if (ask.conversation_id == null) return null;
+  return (db.prepare(
+    `SELECT d.id AS id, d.tool AS tool FROM deliveries d
+      WHERE d.agent_id = ? AND d.conversation_id = ? AND d.outcome = 'delivered'
+        AND d.tool NOT IN (${excluded.map(() => '?').join(', ')})
+        AND ${NOT_A_TOOL_CHIP}
+        AND unixepoch(d.created_at) >= ?
+      ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
+  ).get(ask.agent_id, ask.conversation_id, ...excluded, floorSec) as
+    { id: string; tool: string } | undefined) ?? null;
+}
+
+function settleOnJoin(
+  ask: AskRow,
+  ctx: SettlementContext,
+  actorId: string,
+  out: (v: AskSettlementVerdict, detail: string, deliveryId?: string | null) => AskSettlementOutcome,
+): AskSettlementOutcome {
+  const basis = ctx.basis ?? 'compiled';
+  let boundaryMs: number;
+  if (basis === 'compiled') {
+    if ((ask.remaining_children ?? -1) !== 0) {
+      return out('unchanged',
+        `the children have not all settled (${ask.remaining_children ?? 'no join'} outstanding)`);
+    }
+    const completedAt = joinCompletedAt(ask.id);
+    if (completedAt == null) return out('unchanged', 'the join never recorded a completion');
+    boundaryMs = completedAt;
+  } else {
+    boundaryMs = ask.opened_at;
+  }
+  const evidence = compiledDelivery(ask, boundaryMs, ctx.deliveryId);
+  if (!evidence) {
+    return out('unchanged', basis === 'compiled'
+      ? 'the compiled answer has not landed for the owner yet'
+      : 'the late answer produced no delivery that can be pointed at');
+  }
+  const reason = ctx.reason ?? 'the compiled answer reached the owner';
+  const r = transition(ask.id, {
+    to: 'done', by: 'engine', actorId, reason,
+    evidenceRef: evidence.id, resultDeliveryId: evidence.id,
+  });
+  if (r.kind !== 'applied') return out('unchanged', `join close refused: ${r.kind}`, evidence.id);
+  // The fact `compile_pending` existed to record, finally written on a real completion. The
+  // flag itself is cleared by `transition()`'s terminal arm, so this event is the HISTORY of
+  // the resolution rather than a second owner of the column.
+  appendWorkEvent(ask.id, 'compile_resolved', actorId, {
+    reason, basis, delivery_id: evidence.id, tool: evidence.tool, boundary_at: boundaryMs,
+  });
+  logger.info('join settled: the compiled answer reached the owner', {
+    agentId: ask.agent_id, workId: ask.id, deliveryId: evidence.id, tool: evidence.tool,
+  }, ask.agent_id);
+  return out('closed', reason, evidence.id);
+}
+
+/**
+ * INVOCATION (d) — THE JOIN RELAY. Scope only; the decision is `settleAsk`'s.
+ *
+ * `deliveryId` is what the caller just recorded, when it holds one; omit it and the authority
+ * looks for the compiled answer itself, which is what the turn-end compile drain needs (the
+ * MODEL delivered it, so no relay holds an id).
+ */
+export function settleAskOnJoin(
+  parentWorkId: string,
+  p: {
+    agentId?: string; deliveryId?: string | null; reason: string; actorId?: string | null;
+    basis?: 'compiled' | 'late-answer';
+  },
+): AskSettlementOutcome {
+  // `agentId` is SCOPE the join arm does not need — it reads the agent off the row it is
+  // about — so it is optional here and the actor defaults to the relay's own name.
+  return settleAsk(parentWorkId, {
+    agentId: p.agentId ?? 'a2a-join', turnNumber: null, at: 'join',
+    deliveryId: p.deliveryId ?? null, reason: p.reason, basis: p.basis,
+    actorId: p.actorId ?? 'a2a-join',
+  });
+}
+
+/**
+ * An answer arrived AFTER the join failed closed. It still reaches the owner, once.
+ *
+ * RELOCATED from `work/store.ts` with the settle it composes (SWEEP-A TB2). Two recorded moves
+ * rather than one silent overwrite: `failed -> open` (the join is live again) then the
+ * authority's join close against the delivery that carried the update. The transport performs
+ * exactly these two calls with the send in between, unchanged.
+ *
+ * requirement preserved: the exactly-once guard is the `failed -> open` transition — one
+ * caller wins it, everyone else gets `conflict`, and that is what stops the owner being told
+ * twice. `claimFailedJoinForLateAnswer` still owns that half and is untouched.
+ */
+export function reopenJoinForLateAnswer(
+  parentWorkId: string, deliveryId: string, reason: string,
+): AskSettlementOutcome | { kind: 'refused'; reason: string } {
+  const reopened = claimFailedJoinForLateAnswer(parentWorkId, deliveryId, reason);
+  if (reopened.kind !== 'applied') {
+    return { kind: 'refused', reason: reopened.kind === 'no_change' ? 'already-in-state' : reopened.reason };
+  }
+  return settleAskOnJoin(parentWorkId, { deliveryId, reason, basis: 'late-answer' });
 }
 
 // ════════════════════════════════════════════════════════════════════════════════

@@ -51,10 +51,16 @@ import { runMigrations } from '../../db/migrations.js';
 import {
   openAsk, claimAsk, askIdForMessage,
   openDelegationJoin, findJoinChildByThread, landPiece, settlePieceWithoutResult,
-  joinState, joinPieces, dueJoins, failJoinClosed, settleJoinDelivered,
-  reopenJoinForLateAnswer, threadHopCount, bumpThreadHopCount, THREAD_HOP_CAP,
+  joinState, joinPieces, dueJoins, failJoinClosed,
+  threadHopCount, bumpThreadHopCount, THREAD_HOP_CAP,
   dueJoinsUnderClosedParent, JOIN_MAX_AGE_DAYS, transition,
 } from '../store.js';
+// SWEEP-A TB2 — the join's close is the settlement authority's now (DESIGN §1b, row 5).
+// `settleJoinDelivered` and `reopenJoinForLateAnswer` moved out of `work/store.ts` with the
+// decision they were making; the FACTS each clause below asserts are unchanged, only the
+// vocabulary is (`{verdict}` instead of `{kind}`), and each gained the tightening the
+// authority brings: the children must have settled and the receipt must postdate the join.
+import { settleAskOnJoin, reopenJoinForLateAnswer } from '../ask-settlement.js';
 
 const AGENT = 'kevin';
 const T1 = 'thread-aaaaaaaa-1111';
@@ -289,8 +295,11 @@ describe('3b: "the pieces landed" and "the owner got the answer" are different f
     landPiece(findJoinChildByThread(AGENT, T1)!.id, {
       deliveryId: seedDelivery('d-1'), content: 'the answer is 42', messageId: null,
     });
-    const res = settleJoinDelivered(parent, seedDelivery('d-owner', { channel: 'dashboard', conversation_id: 'conv-1' }), 'engine relayed the answer');
-    expect(res.kind).toBe('applied');
+    const res = settleAskOnJoin(parent, {
+      agentId: AGENT, deliveryId: seedDelivery('d-owner', { channel: 'dashboard', conversation_id: 'conv-1' }),
+      reason: 'engine relayed the answer',
+    });
+    expect(res.verdict).toBe('closed');
     const p = row(parent)!;
     expect(p.state).toBe('done');
     expect(p.compile_pending).toBe(0);
@@ -306,8 +315,11 @@ describe('3b: "the pieces landed" and "the owner got the answer" are different f
     landPiece(findJoinChildByThread(AGENT, T1)!.id, {
       deliveryId: seedDelivery('d-1'), content: 'the answer is 42', messageId: null,
     });
-    const bogus = settleJoinDelivered(parent, 'no-such-delivery', 'claiming a delivery that does not exist');
-    expect(bogus.kind).toBe('refused');
+    const bogus = settleAskOnJoin(parent, {
+      agentId: AGENT, deliveryId: 'no-such-delivery',
+      reason: 'claiming a delivery that does not exist',
+    });
+    expect(bogus.verdict).toBe('unchanged');
     expect(row(parent)!.state).not.toBe('done');
   });
 });
@@ -632,7 +644,7 @@ describe('3f: an answer arriving after the failure notice still reaches the owne
 
     const d = seedDelivery('d-late', { channel: 'dashboard', conversation_id: 'conv-1' });
     const r = reopenJoinForLateAnswer(parent, d, 'Ana answered after all');
-    expect(r.kind).toBe('applied');
+    expect((r as { verdict?: string }).verdict).toBe('closed');
     const p = row(parent)!;
     expect(p.state).toBe('done');
     expect(p.result_delivery_id).toBe('d-late');
@@ -649,7 +661,7 @@ describe('3f: an answer arriving after the failure notice still reaches the owne
     failJoinClosed(parent, { reason: 'TTL expired', expectedState: 'claimed' });
     reopenJoinForLateAnswer(parent, seedDelivery('d-late', { channel: 'dashboard', conversation_id: 'conv-1' }), 'first late answer');
     const second = reopenJoinForLateAnswer(parent, seedDelivery('d-later', { channel: 'dashboard', conversation_id: 'conv-1' }), 'second late answer');
-    expect(second.kind).not.toBe('applied');
+    expect((second as { verdict?: string; kind?: string }).verdict ?? second.kind).not.toBe('closed');
     expect(row(parent)!.result_delivery_id).toBe('d-late');
   });
 
@@ -660,7 +672,7 @@ describe('3f: an answer arriving after the failure notice still reaches the owne
       ttlAt: Date.now() + 60 * 60_000, threads: [{ threadId: T1 }],
     });
     const r = reopenJoinForLateAnswer(parent, seedDelivery('d-x', { channel: 'dashboard', conversation_id: 'conv-1' }), 'not a late answer');
-    expect(r.kind).toBe('refused');
+    expect((r as { kind?: string }).kind).toBe('refused');
     expect(row(parent)!.state).toBe('claimed');
   });
 });
@@ -692,7 +704,11 @@ describe('3g + 3l: delegating never overwrites the conversation identity', () =>
     landPiece(findJoinChildByThread(AGENT, T1)!.id, {
       deliveryId: seedDelivery('d-1'), content: 'x', messageId: null,
     });
-    settleJoinDelivered(parent, seedDelivery('d-owner', { channel: 'dashboard', conversation_id: 'conv-1' }), 'relayed');
+    settleAskOnJoin(parent, {
+      agentId: AGENT,
+      deliveryId: seedDelivery('d-owner', { channel: 'dashboard', conversation_id: 'conv-1' }),
+      reason: 'relayed',
+    });
     const m = mockDb.current!.prepare('SELECT conversation_id FROM messages WHERE id = ?').get('m-1') as { conversation_id: string };
     expect(m.conversation_id).toBe('conv-1');
   });

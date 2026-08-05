@@ -100,13 +100,20 @@ export function measureDoneSites(text: string): DoneSites {
 const DONE_WRITERS: Record<string, DoneSites & { subjects: string; owner: string }> = {
   // THE AUTHORITY. One predicate, three invocations (delivery / turn finalize / boot).
   'work/ask-settlement.ts': {
-    done: 1, dynamic: 0, subjects: 'ask',
-    owner: 'settleAsk — the ONE settlement authority for owner asks (SWEEP-A TB1)',
+    // SWEEP-A TB2 folded the join arm IN, so this file now carries two `done` sites: the
+    // authority's delivery/finalize/boot close and its join close. Both are the same
+    // predicate in the same function — `settleOnJoin` is an arm of `settleAsk`, reached only
+    // through it — which is exactly what "one authority" was supposed to mean.
+    done: 2, dynamic: 0, subjects: 'ask',
+    owner: 'settleAsk — the ONE settlement authority for owner asks (SWEEP-A TB1), including '
+      + 'its join arm (SWEEP-A TB2: children settled + the compiled delivery, `compile_resolved` written)',
   },
   'work/store.ts': {
-    done: 3, dynamic: 1, subjects: 'join pieces (kind=task/root a2a_thread), the join parent, commitments',
-    owner: 'landPiece (piece, literal + dynamic re-settle), settleJoinDelivered (the ask join arm — '
-      + 'SWEEP-A TB2 folds it into the authority), resolveCommitment (commitments ONLY: it refuses an ask row)',
+    // TB2 TIGHTENING: 3 -> 2. `settleJoinDelivered` is GONE from this file; it took the last
+    // ask-reaching `done` outside the authority with it.
+    done: 2, dynamic: 1, subjects: 'join pieces (kind=task/root a2a_thread), commitments',
+    owner: 'landPiece (piece, literal + dynamic re-settle), resolveCommitment '
+      + '(commitments ONLY: it refuses an ask row)',
   },
   'work/occurrences.ts': {
     done: 1, dynamic: 0, subjects: 'occurrence',
@@ -119,12 +126,12 @@ const DONE_WRITERS: Record<string, DoneSites & { subjects: string; owner: string
 };
 
 /** The sites that can reach a `kind='ask'` row. This is the number the design exists to
- *  reduce: FOUR at `3439240` (verify report M2), and the authority is the only one left that
- *  decides — `settleJoinDelivered` is the same rule invoked from the join relay and is
- *  handed to TB2 to fold in. */
+ *  reduce: FOUR at `3439240` (verify report M2), TWO at TB1's close (the authority plus the
+ *  join relay, handed forward), and **ONE** since SWEEP-A TB2 folded the join arm in. The
+ *  inventory is a TIGHTENING each time it shrinks, and the equality below is what refuses a
+ *  new one appearing quietly. */
 const ASK_DONE_WRITERS: Array<{ file: string; fn: string; handedTo?: string }> = [
   { file: 'work/ask-settlement.ts', fn: 'settleAsk' },
-  { file: 'work/store.ts', fn: 'settleJoinDelivered', handedTo: 'SWEEP-A TB2 (the join arm)' },
 ];
 
 describe('CENSUS A — every writer of ask-`done` resolves to the one authority', () => {
@@ -145,7 +152,6 @@ describe('CENSUS A — every writer of ask-`done` resolves to the one authority'
   it('the ask-reaching writers are the authority and the join arm, and nothing else', () => {
     expect(ASK_DONE_WRITERS.map((w) => `${w.file}:${w.fn}`)).toEqual([
       'work/ask-settlement.ts:settleAsk',
-      'work/store.ts:settleJoinDelivered',
     ]);
     // …and every ask-reaching site that is NOT the authority carries the task that folds it in.
     for (const w of ASK_DONE_WRITERS) {
@@ -158,7 +164,7 @@ describe('CENSUS A — every writer of ask-`done` resolves to the one authority'
     }
   });
 
-  it('THE DEMOLITION IS REAL: the three retired ask closers are gone from the tree', () => {
+  it('THE DEMOLITION IS REAL: the FOUR retired ask closers are gone from the tree', () => {
     // Each of these decided "is this ask settled?" on its own evidence at its own moment.
     // Their requirements live on inside the authority; their code does not live on anywhere.
     const all = files().map(read).join('\n');
@@ -168,6 +174,12 @@ describe('CENSUS A — every writer of ask-`done` resolves to the one authority'
       .not.toMatch(/export function claimAssembledSiblings/);
     expect(read('work/store.ts'), 'the boot reconciler moved to the authority module')
       .not.toMatch(/export function reconcileOrphanedClaims/);
+    // SWEEP-A TB2 — the fourth. It decided the join's close on whatever delivery id the relay
+    // handed it, so the delegating turn's own status line was an acceptable receipt.
+    expect(read('work/store.ts'), 'the join relay close is the authority join arm now')
+      .not.toMatch(/export function settleJoinDelivered/);
+    expect(all, 'nothing outside the authority may settle a join')
+      .not.toMatch(/export function settleJoinDelivered/);
   });
 
   it('the authority is REACHED from all three of its declared moments', () => {

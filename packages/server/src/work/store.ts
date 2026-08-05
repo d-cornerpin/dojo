@@ -1232,16 +1232,18 @@ export function failJoinClosed(
   });
 }
 
-/** The join's answer reached the owner. `done` is unreachable without the delivery that
- *  proves it — that gate is `transition()`'s, not this function's. */
-export function settleJoinDelivered(
-  parentWorkId: string, deliveryId: string, reason: string,
-): WorkOutcome {
-  return transition(parentWorkId, {
-    to: 'done', by: 'engine', actorId: 'a2a-join', reason,
-    evidenceRef: deliveryId, resultDeliveryId: deliveryId,
-  });
-}
+// ── DEMOLISHED, SWEEP-A TB2: `settleJoinDelivered` ──
+// It was the FOURTH owner of "this ask is done" (verify report M2, owner 6) and the last one
+// outside the authority — Census A carried it with `handedTo: 'SWEEP-A TB2 (the join arm)'`
+// so it could not be forgotten. It is now `work/ask-settlement.ts:settleAskOnJoin`, the same
+// rule invoked from the relay.
+// requirement preserved (DESIGN §1b, row 5): *"close the join-ask when the compiled result is
+// actually delivered — already evidence-backed"*, and `compile_resolved` is written on it at
+// last. What it gained is the ability to REFUSE: the children must have settled and the
+// delivery must postdate `join_complete`, so the delegating turn's own status line can never
+// be the receipt. `reopenJoinForLateAnswer` moved with it, because it is a composition of
+// this settle and `claimFailedJoinForLateAnswer` (which stays here, untouched — it is a
+// `work.state` write and this module is the single writer).
 
 /**
  * Claim the right to tell the owner about a LATE answer — the first half of the re-open, and
@@ -1258,21 +1260,6 @@ export function claimFailedJoinForLateAnswer(
     to: 'open', by: 'engine', actorId: 'a2a-join', reason: `late answer: ${reason}`,
     evidenceRef: evidenceDeliveryId, expectedState: 'failed',
   });
-}
-
-/**
- * An answer arrived AFTER the join failed closed. It still reaches the owner, once.
- *
- * Two recorded moves rather than one silent overwrite: `failed -> open` (the join is live
- * again) then `open -> done` against the delivery that carried the update. This is the whole
- * composition, and the transport performs exactly these two calls with the send in between.
- */
-export function reopenJoinForLateAnswer(
-  parentWorkId: string, deliveryId: string, reason: string,
-): WorkOutcome {
-  const reopened = claimFailedJoinForLateAnswer(parentWorkId, deliveryId, reason);
-  if (reopened.kind !== 'applied') return reopened;
-  return settleJoinDelivered(parentWorkId, deliveryId, reason);
 }
 
 /** Every join of this agent that has not settled, newest first. The boot re-drain's input. */

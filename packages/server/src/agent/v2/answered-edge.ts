@@ -421,10 +421,32 @@ export function pauseDriveWorkWaitingOnOwner(
     conversationId?: string | null;
     /** SQLite datetime text ('YYYY-MM-DD HH:MM:SS'). Omitted only in unit tests. */
     touchedSince?: string | null;
+    /** SWEEP-A TB2: did this turn DELEGATE the ask it was serving (a join under the trigger
+     *  work row)? See the refusal below. */
+    delegatedThisTurn?: boolean;
   },
 ): PauseResult {
   const none: PauseResult = { paused: 0, ids: [] };
   if (opts?.transitionedThisTurn) return none;
+  // ⚠ SWEEP-A TB2 — A DELEGATING TURN IS NOT A TURN THAT HANDED THE BALL BACK.
+  //
+  // This disposition's whole premise is "the turn TALKED and did not ACT, so the work is now
+  // waiting on the person". A turn that opened a delegation join did act: the work is waiting
+  // on the PIECES, not on the owner, and pausing the compile self-task at that moment is the
+  // same error as closing the owner's ticket on the status line — a job marked parked because
+  // somebody said they had started it.
+  //
+  // MEASURED (run bmsfy5txir3, `delegation-longhorizon` attempt 1): the mid-delegation
+  // snapshot read `"Compile final report" -> SELF status=paused`, which is clause (a)'s red
+  // and, through `synthesisHonestlyOpen`, half of clause (d)'s. The delegating turn delivers
+  // one status line and executes no NON-IDEMPOTENT call, so every gate below passed and the
+  // engine paused the very task the owner had just told the agent to keep in progress.
+  //
+  // requirement preserved: the disposition still fires for a turn that genuinely answered and
+  // performed nothing — that is unchanged and is what every other caller sees. This refuses
+  // exactly one shape, and the shape is a ROW (`joinState(triggerWorkId) !== null`), never a
+  // reading of what the turn said.
+  if (opts?.delegatedThisTurn) return none;
   const outcome = turnOutcome(agentId, turnNumber);
   if (!outcome || !outcome.answered) return none;
   if (outcome.effectfulCalls > 0) return none;

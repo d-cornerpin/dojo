@@ -46,11 +46,30 @@ const logger = createLogger('floor-ghost');
  *  ignored twice is not going to be obeyed the third time — it is a system fault. */
 export const MAX_FLOOR_STEER_ATTEMPTS = 2;
 
+/**
+ * GHOST SUBJECTS THAT ARE NOT STEER-QUEUE FLOORS (SWEEP-A TB2).
+ *
+ * The queue's floors are the ones a TURN enqueues and the assembler injects; its conformance
+ * walk asserts every declared floor is used at a `floor: '<id>'` enqueue site, which is a
+ * guard worth keeping exactly as it is. A delegated job that has gone quiet is steered from a
+ * SWEEP, out of band on the events lane, so it has no enqueue site and does not belong in
+ * that table — but the ghost row still has to NAME what ghosted, and that name must come from
+ * a closed set rather than a free string. This is that set.
+ */
+export const OUT_OF_BAND_GHOST_SUBJECTS = ['delegated-job-stuck'] as const;
+
+/** What a ghost row may be ABOUT: a steer-queue floor, or a declared out-of-band subject. */
+export type FloorGhostSubject = SteerFloorId | (typeof OUT_OF_BAND_GHOST_SUBJECTS)[number];
+
 export interface FloorGhostInput {
   agentId: string;
-  turnNumber: number;
-  /** The floor whose steers were ignored. */
-  floor: SteerFloorId;
+  /** SWEEP-A TB2 widened this to `number | null`: the delegated-job ghost is recorded by a
+   *  SWEEP, which has no turn. `null` is the honest answer and both writes below already
+   *  accept it (`work_events.payload` is JSON; `messages.turn_number` is nullable). Writing
+   *  a `0` to satisfy a type would have put a turn that does not exist on the record. */
+  turnNumber: number | null;
+  /** The floor — or out-of-band subject — whose steers were ignored. */
+  floor: FloorGhostSubject;
   /** The work row the ghost is ABOUT. `null` when the floor genuinely has none, in which case
    *  no event row is written — a forged work id would be worse than a missing row. */
   workId: string | null;

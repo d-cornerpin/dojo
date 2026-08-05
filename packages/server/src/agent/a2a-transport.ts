@@ -31,10 +31,20 @@ import {
   findJoinChildByThread, findFailedJoinForThread, childrenForThread,
   landPiece, settlePieceWithoutResult, joinState, joinPieces, dueJoins, openJoins,
   dueJoinsUnderClosedParent,
-  compilePendingJoins, failJoinClosed, settleJoinDelivered, clearJoinCompilePending, noteUnsettled,
+  compilePendingJoins, failJoinClosed, clearJoinCompilePending, noteUnsettled,
   claimFailedJoinForLateAnswer, threadHopCount, bumpThreadHopCount,
   type JoinState, type JoinPiece,
 } from '../work/store.js';
+// SWEEP-A TB2: the join's close is the settlement authority's, not this module's — the same
+// rule the delivery arm and the finalize adjudicator use, invoked from the relay.
+import { settleAskOnJoin } from '../work/ask-settlement.js';
+// …and the grind-vs-tell ladder, which owns "how many times has the system come back for
+// this, and what does it do when the drives are spent".
+import {
+  JOIN_DRIVE_ENTRY, nextJoinDriveRung, recordJoinDrive, type JoinDriveDecision,
+} from '../work/join-drive.js';
+import { selfWakeStandDown } from '../work/work-reaper.js';
+import { recordFloorGhost } from './v2/floor-ghost.js';
 // A2A protocol constants and helpers, inlined here to avoid runtime
 // imports from @dojo/shared (which points at .ts source and can't be
 // loaded by Node.js in production without a TS loader).
@@ -1583,7 +1593,7 @@ async function resolveCompletedJoin(join: JoinState, senderNameHint?: string): P
     const name = resolveAgentDisplayName(piece?.assigneeAgent) ?? senderNameHint ?? 'the other agent';
     const answer = (piece?.content ?? '').replace(/\s+/g, ' ').trim().slice(0, 1200);
     const deliveryId = await deliverJoinResultToOwner(join, `Heard back from ${name}: ${answer}`);
-    if (deliveryId) noteUnsettled(settleJoinDelivered(join.id, deliveryId, 'the engine relayed the delegated answer'), 'a2a: join settled on relay', { joinId: join.id });
+    if (deliveryId) noteSettlementRefusal(settleAskOnJoin(join.id, { agentId: join.agentId, deliveryId, reason: 'the engine relayed the delegated answer' }), 'a2a: join settled on relay', join.id);
     return;
   }
   steerModelToCompile(join);
@@ -1615,41 +1625,134 @@ async function deliverLateAnswerIfJoinFailedClosed(p: {
   const deliveryId = await deliverJoinResultToOwner(
     join, `Update: ${p.senderName} answered after all. ${answer}`, { tool: 'a2a-join-late' },
   );
-  if (deliveryId) noteUnsettled(settleJoinDelivered(join.id, deliveryId, 'a late answer reached the owner'), 'a2a: join settled on late answer', { joinId: join.id });
+  if (deliveryId) noteSettlementRefusal(settleAskOnJoin(join.id, { agentId: join.agentId, deliveryId, reason: 'a late answer reached the owner', basis: 'late-answer' }), 'a2a: join settled on late answer', join.id);
   return true;
 }
 
+/** What the compile drive did for one agent, so its caller can WAKE the agent it just
+ *  steered. A steer nobody is woken for is the "written, never seen" shape T3 deleted. */
+export interface CompileDriveResult {
+  /** Rungs SPENT this pass (re-drives + stuck notices). */
+  drives: number;
+  /** The agent needs a turn to see what was just written. */
+  wakeWanted: boolean;
+}
+
+/** A settlement refusal is a VALUE, not a silence — the same discipline `noteUnsettled` gives
+ *  the transition boundary, for the authority's own outcome type. */
+function noteSettlementRefusal(
+  o: { verdict: string; detail: string }, where: string, workId: string,
+): void {
+  if (o.verdict === 'closed') return;
+  logger.info(`join not settled: ${where}`, { work: workId, verdict: o.verdict, detail: o.detail });
+}
+
 /**
- * Resolve COMPILE-PENDING joins for one agent: the pieces are all back and the model was
- * steered to compile. This closes the loop no matter what the model did. If the owner's ask
- * records an answer (the mig-113 answered edge), the join is quietly settled; otherwise, after
- * a short grace, the engine relays the RECORDED pieces itself — the sanctioned park-relay
- * delivery, now reading the children rather than a fake namespace.
+ * THE COMPILE DRIVE — every compile-pending join of one agent, driven toward completion.
  *
- * Called from the runtime's turn-end drain (prompt) and the TTL reaper (backstop).
+ * ── WHAT THIS USED TO DO, AND WHY IT COULD NOT WORK (SWEEP-A TB2) ──
+ * It asked `answerReceiptForAsk(join.rootId)` — "does the owner ask record an answer?" — and
+ * quietly cleared the flag when it did. That reads TRUE the instant the delegating turn's
+ * finalize stamps `messages.answer_message_id`, which on every recorded red run was seconds
+ * after the delegation and long before any piece came back. So the compile was never driven,
+ * and `compile_resolved` had been written 0 times ever against 70 flag-carrying rows. The
+ * question is the same; the EVIDENCE is now the authority's, and it is strictly narrower — a
+ * delivered, non-chip delivery that POSTDATES the join's own `join_complete`.
+ *
+ * ── AND THE SYSTEM NOW COMES BACK (owner ruling 2026-08-05, DESIGN §2) ──
+ * The engine owns this job's convergence. Each pass that finds the answer still missing spends
+ * one rung of `work/join-drive.ts`'s ladder: a REAL DRIVE (re-issue the compile order with the
+ * pieces quoted, and ask for a wakeup so the model actually gets a turn), then — the drives
+ * spent — a steer asking THE AGENT to tell the owner it is stuck, then the platform's own
+ * watchdog surface. The deterministic relay the engine has always had is unchanged and sits at
+ * the END of the ladder, where it belongs: the agent gets every chance to speak first, and the
+ * platform only acts once the agent is proven silent.
+ *
+ * Called from the runtime's turn-end drain and from the join reaper.
  */
-export async function resolveCompilePendingJoins(agentId: string): Promise<void> {
+export async function resolveCompilePendingJoins(agentId: string): Promise<CompileDriveResult> {
   const db = getDb();
+  const out: CompileDriveResult = { drives: 0, wakeWanted: false };
   for (const join of compilePendingJoins(agentId)) {
     try {
-      // "Did the compile actually answer the owner?" — PHASE-2 T6 (C5) collapsed this onto
-      // the ONE answered-edge reader, which is what T4's report named as owed here. The
-      // question and the answer are unchanged; what changed is that this site no longer
-      // has its OWN reading of the edge. It now sees the ticket's `result_delivery_id`
-      // FIRST (T5 made deliveries universal, so a dashboard reply produces one) and the
-      // mig-113 stamp second, which is strictly more evidence than the raw column was.
-      const receipt = answerReceiptForAsk(join.rootId);
-      const ans = db.prepare('SELECT created_at FROM messages WHERE id = ?')
-        .get(join.rootId) as { created_at: number } | undefined;
-      if (receipt.answered) {
-        // The compile answered the owner; the receipt says so. Quiet settle — and it is
-        // deliberately NOT `done` unless a delivery proves it: `done` requires a delivery row
-        // and inventing one to make a state reachable is the forgery the spine refuses. The
-        // compile_pending flag clears, which is what stops the engine relaying on top of a
-        // real answer.
-        clearJoinCompilePending(join.id, `the compile answered the owner (${receipt.deliveryId ? `delivery ${receipt.deliveryId}` : 'answer stamp'})`);
+      // ── 1. HAS THE COMPILED ANSWER LANDED? The authority decides, on the ledger. ──
+      const settled = settleAskOnJoin(join.id, {
+        agentId, reason: 'the compiled answer reached the owner',
+      });
+      if (settled.verdict === 'closed') {
+        logger.info('compile drive: the owner has their answer; the join is settled on it', {
+          agentId, work: join.id, deliveryId: settled.deliveryId,
+        });
         continue;
       }
+
+      // ── 2. IT HAS NOT. OWNER FIRST, ALWAYS. ──
+      // The same storm law every platform-decided wake obeys (2026-07-23): while a human is
+      // waiting, the drain queues NOTHING. A pass that cannot drive does not BURN a rung
+      // either — the bound counts drives that happened, never passes that stood down.
+      const { standDown, humanAsksOpen } = selfWakeStandDown(agentId);
+      if (standDown) {
+        logger.info('compile drive: standing down, a human is waiting', {
+          agentId, work: join.id, humanAsksOpen,
+        });
+        continue;
+      }
+
+      const rung = nextJoinDriveRung(join.id);
+      if (rung.rung === 'redrive') {
+        // A REAL DRIVE: the owed step, with the join's own results in front of the model.
+        steerModelToCompile(join);
+        recordJoinDrive(join.id, JOIN_DRIVE_ENTRY.redrive, {
+          attempt: rung.attempt, bound: rung.bound,
+          note: 'the engine put the owed compile back in front of the agent with the pieces quoted',
+        });
+        out.drives++; out.wakeWanted = true;
+        logger.info('compile drive: re-drove the agent to the owed compile', {
+          agentId, work: join.id, attempt: rung.attempt, bound: rung.bound,
+        });
+        continue;
+      }
+
+      if (rung.rung === 'stuck-notice') {
+        // The drives are spent. The person who asked is owed the truth — AND THE AGENT SAYS
+        // IT. The engine only steers and then verifies on the ledger (the next pass's step 1
+        // is that verification: any real delivery to them closes this out).
+        steerAgentToTellOwnerStuck(join, rung);
+        recordJoinDrive(join.id, JOIN_DRIVE_ENTRY.stuckNotice, {
+          attempt: rung.attempt, bound: rung.bound,
+          note: 'the engine asked the agent to tell the owner the job is stuck, in its own words',
+        });
+        out.drives++; out.wakeWanted = true;
+        logger.warn('compile drive: drives spent; steered the agent to tell the owner it is stuck', {
+          agentId, work: join.id, attempt: rung.attempt, bound: rung.bound, redrives: rung.redrives,
+        });
+        continue;
+      }
+
+      // ── 3. THE AGENT IS NOT SPEAKING AT ALL. That is a PLATFORM fault, and the platform's
+      //    OWN watchdog/health surface is what says so — never the engine wearing the agent's
+      //    face (OR2's last clause, and the owner's 2026-08-05 correction). One row, one
+      //    system note, one health frame; the existing surface, driven, not a new voice.
+      if (joinDriveCountOnce(join.id)) {
+        recordFloorGhost({
+          agentId, turnNumber: null, floor: 'delegated-job-stuck', workId: join.id,
+          attempts: rung.redrives + rung.stuckNotices,
+          ownerLine:
+            'your agent delegated part of a request, the pieces came back, and it has not been able to '
+            + 'finish or report on it — the platform steered it several times and got no reply.',
+          detail: { redrives: rung.redrives, stuck_notices: rung.stuckNotices },
+        }, { broadcast });
+        recordJoinDrive(join.id, JOIN_DRIVE_ENTRY.ghosted, {
+          attempt: 1, bound: 1,
+          note: 'the agent did not speak after every drive and every notice; the platform surface was told',
+        });
+      }
+
+      // ── 4. AND THE OWNER STILL GETS WHAT CAME BACK. The deterministic relay, unchanged:
+      //    same grace floor, same two shapes, same exactly-once guards. It is LAST rather than
+      //    first now, which is the only thing about it that moved.
+      const ans = db.prepare('SELECT created_at FROM messages WHERE id = ?')
+        .get(join.rootId) as { created_at: number } | undefined;
       const ageSec = ans ? (Date.now() - ans.created_at) / 1000 : COMPILE_GRACE_SECONDS + 1;
       if (ageSec < COMPILE_GRACE_SECONDS) continue;
       const pieces = joinPieces(join.id).filter((x) => (x.content ?? '').trim().length > 0);
@@ -1667,8 +1770,11 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<void>
         await deliverJoinResultToOwner(join, text, { tool: 'a2a-join-failed' });
       } else {
         const deliveryId = await deliverJoinResultToOwner(join, text, { tool: 'a2a-join-relay' });
-        if (deliveryId) noteUnsettled(settleJoinDelivered(join.id, deliveryId, 'the engine relayed the recorded pieces'), 'a2a: join settled on compile relay', { joinId: join.id });
-        else clearJoinCompilePending(join.id, 'relayed the recorded pieces (delivery not recorded)');
+        if (deliveryId) {
+          noteSettlementRefusal(settleAskOnJoin(join.id, {
+            agentId, deliveryId, reason: 'the engine relayed the recorded pieces',
+          }), 'a2a: join settled on compile relay', join.id);
+        } else clearJoinCompilePending(join.id, 'relayed the recorded pieces (delivery not recorded)');
       }
       logger.info('compile-pending join resolved: the engine relayed the recorded pieces (the steered compile never answered the owner)', {
         agentId, work: join.id, pieces: pieces.length,
@@ -1679,6 +1785,42 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<void>
       });
     }
   }
+  return out;
+}
+
+/** The ghost surface fires ONCE per row: `recordFloorGhost` writes an owner-visible note, and
+ *  a sweep that repeated it every ten minutes would be the noise the ladder exists to bound. */
+function joinDriveCountOnce(workId: string): boolean {
+  return (getDb().prepare(
+    `SELECT COUNT(*) AS n FROM work_events
+      WHERE work_id = ? AND kind = 'audit' AND json_extract(payload, '$.entry_kind') = ?`,
+  ).get(workId, JOIN_DRIVE_ENTRY.ghosted) as { n: number }).n === 0;
+}
+
+/**
+ * RUNG N+1 — THE AGENT TELLS THE OWNER. The engine's part is the steer and the verification;
+ * the words are the agent's.
+ *
+ * It rides the SAME imperative engine-steer channel the compile order rides (`fanout_join`, a
+ * declared rider — content that must be SEEN on a turn that is happening anyway and must never
+ * BE a turn of its own). Nothing here is composed for the owner: the platform does not tell the
+ * user things, the agent does (owner correction, 2026-08-05).
+ */
+function steerAgentToTellOwnerStuck(join: JoinState, rung: JoinDriveDecision): void {
+  const pieces = joinPieces(join.id);
+  const back = pieces.filter((p) => (p.content ?? '').trim().length > 0).length;
+  const steer =
+    `The owner is still waiting on the request you delegated, and the platform has brought you back to it `
+    + `${rung.redrives} time(s) without a reply reaching them. ${back} of ${join.total} delegated piece(s) `
+    + `came back. TELL THE OWNER NOW, in your own words, directly in this conversation: what you asked for, `
+    + `what came back, and — plainly — that you have not finished it. If you can give them the combined `
+    + `answer, give it. If you cannot, say so honestly rather than saying nothing. Do NOT call any send `
+    + `tool; the engine routes your reply.`;
+  insertEngineEventIfAbsent({
+    work: { taskId: join.id, runId: null, rootKind: 'ask', rootId: join.rootId },
+    id: uuidv4(), agentId: join.agentId, content: steer,
+    sourceAgentId: null, originIntent: 'fanout_join',
+  });
 }
 
 /**
@@ -1851,8 +1993,39 @@ async function resolveJoinUnderClosedParent(
  */
 export async function sweepExpiredJoins(): Promise<{
   failedClosed: number; relayedReplies: number; noticedUnderClosedParent: number;
+  compileDrives: number;
 }> {
-  const out = { failedClosed: 0, relayedReplies: 0, noticedUnderClosedParent: 0 };
+  const out = { failedClosed: 0, relayedReplies: 0, noticedUnderClosedParent: 0, compileDrives: 0 };
+
+  // ── THE COMPILE DRIVE, ON THE REAPER'S OWN CADENCE (SWEEP-A TB2) ──
+  // The turn-end drain drives a compile-pending join whenever the agent is taking turns. An
+  // agent that has gone idle takes none, and before this arm the only other look was
+  // `dueJoins`, which is gated on `ttl_at` — SIXTY minutes away. So a job whose agent went
+  // quiet sat undriven for an hour, which is the "the system stopped driving" hole the owner's
+  // thesis forbids. Population is `openJoins()`, an EXISTING finder (the boot re-drain's own),
+  // filtered to the compile-pending rows; no new finder and no new clock. It cannot storm: the
+  // ladder is bounded per ROW at three drives plus two notices for the row's whole life, and
+  // every drive consults the storm law first.
+  try {
+    const agents = new Set(openJoins().filter((j) => j.compilePending).map((j) => j.agentId));
+    for (const agentId of agents) {
+      const drive = await resolveCompilePendingJoins(agentId);
+      out.compileDrives += drive.drives;
+      if (drive.wakeWanted) {
+        const { getAgentRuntime } = await import('./runtime.js');
+        getAgentRuntime().handleMessage(agentId, '').catch((err) => {
+          logger.warn('compile drive: the wake for a re-driven join failed', {
+            agentId, error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
+    }
+  } catch (err) {
+    logger.warn('join reaper: the compile drive pass failed (the TTL arms still run)', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   let joins: JoinState[] = [];
   try {
     joins = dueJoins(Date.now());

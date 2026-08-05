@@ -70,8 +70,11 @@ export async function finalizeTurnRecord(
     // PHASE-2 T4: "did this turn park?" was a LIKE over a conv_key namespace, which is why
     // it had to be time-bounded and could match another turn's park. The same fact is now a
     // row: the trigger's own ticket has a join under it. `exitReason` semantics unchanged.
-    const parkedRow = !answerRow && triggerWorkId && joinState(triggerWorkId) !== null
-      ? { parked: 1 } : undefined;
+    // SWEEP-A TB2: the same ROW fact the disposition below needs — "did this turn delegate
+    // the ask it was serving?" — read once and used twice, so the exit reason and the
+    // waiting-on-owner disposition can never disagree about it.
+    const delegatedThisTurn = triggerWorkId ? joinState(triggerWorkId) !== null : false;
+    const parkedRow = !answerRow && delegatedThisTurn ? { parked: 1 } : undefined;
     // T6: "did this turn hand off to a peer instead of answering?" was a probe of the
     // second physical table — being IN that table WAS the handoff signal. The equivalent
     // fact on one table is the a2a lane, and it must exclude this agent's inbound peer
@@ -146,6 +149,9 @@ export async function finalizeTurnRecord(
         pauseDriveWorkWaitingOnOwner(agentId, turnNumber, {
           transitionedThisTurn: state.trackerStatusUpdatedThisTurn,
           conversationId: turnCtx.root?.conversationId ?? null,
+          // A turn that delegated did not hand the ball back to the owner; the work is
+          // waiting on the delegated pieces. See the refusal in `answered-edge.ts`.
+          delegatedThisTurn,
           // SCOPE: only work THIS TURN touched. A backlog item nobody moved belongs to
           // the poke ladder ("an in_progress task does not EVER just get ignored"), and
           // this window is what keeps the disposition from ever reaching it.
