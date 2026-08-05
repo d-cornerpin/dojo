@@ -2115,6 +2115,27 @@
       "to": 621,
       "by": "PHASE-6 T2 (CUT 9), the `preflight` cut - the LAST tranche (2026-08-04)",
       "why": "+11, all of it the reasoning for the ONE member of this union that no call site advances into. Every other tranche asserts the phase discipline the same way - the driver advances INTO the step's phase ahead of the call, so `validate()` runs on the transition - and `preflight` is the one place that property is met by CONSTRUCTION instead, because `initState` SEEDS the value and there is no transition to validate. T9b's note four lines below already leaned on that fact when it argued `'teardown'` was not an exception to a rule; the fact itself was nowhere. A reader looking for the missing `advance` now finds the reason instead of a gap, which is exactly the shape T9b chose for its own decision (reasoning AT the union, not only in a report). ALTERNATIVES MEASURED AND REFUSED: (a) the report only - it is the mistake this file's own ninth-member block was written to avoid, and the next reader of the union is not holding the report; (b) a one-line comment - the load-bearing half is WHY the absent `advance` is correct rather than an omission, and one line cannot carry that without becoming the kind of assertion somebody later \"fixes\"; (c) add the advance at the call site to match the other eight - it would validate a transition that did not happen and would run BEFORE the state it validates exists, which is unsayable, not merely wasteful."
+    },
+    {
+      "path": "packages/server/src/index.ts",
+      "from": 1186,
+      "to": 1187,
+      "by": "PHASE-6 T10 Step 1a (2026-08-04) — the import of the ONE agents.status writer",
+      "why": "+1 line, and ALL of it is `import { … } from '.../agent-status.js'`. The statements themselves did not grow: each raw `db.prepare(\"UPDATE agents SET status = …\")` became one `writeAgentStatus(...)` call writing the SAME columns and values. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Leave the raw SQL in place: that IS the defect — 31 statements in 16 modules bypassing the declared owner, five of them invisible to the plan's own grep — and refusing +1 here would buy the line back by keeping a sixteenth writer. (b) Delete a line elsewhere in the file to pay for it: that is a cosmetic edit inside a file this task has no other business in, and this project's own rule is that a line count never drives a code change (roadmap #7). (c) Fold the import into an existing one: different module, not possible. The pin may only fall from here, and the sweeps that own the remaining writers (SWEEP-A/C/D/E/F) will lower it when they convert theirs."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/media.ts",
+      "from": 896,
+      "to": 897,
+      "by": "PHASE-6 T10 Step 1a (2026-08-04) — the import of the ONE agents.status writer",
+      "why": "+1 line, and ALL of it is `import { … } from '.../agent-status.js'`. The statements themselves did not grow: each raw `db.prepare(\"UPDATE agents SET status = …\")` became one `writeAgentStatus(...)` call writing the SAME columns and values. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Leave the raw SQL in place: that IS the defect — 31 statements in 16 modules bypassing the declared owner, five of them invisible to the plan's own grep — and refusing +1 here would buy the line back by keeping a sixteenth writer. (b) Delete a line elsewhere in the file to pay for it: that is a cosmetic edit inside a file this task has no other business in, and this project's own rule is that a line count never drives a code change (roadmap #7). (c) Fold the import into an existing one: different module, not possible. The pin may only fall from here, and the sweeps that own the remaining writers (SWEEP-A/C/D/E/F) will lower it when they convert theirs."
+    },
+    {
+      "path": "packages/server/src/agent/tools/cat/session.ts",
+      "from": 241,
+      "to": 242,
+      "by": "PHASE-6 T10 Step 1a (2026-08-04) — the import of the ONE agents.status writer",
+      "why": "+1 line, and ALL of it is `import { … } from '.../agent-status.js'`. The statements themselves did not grow: each raw `db.prepare(\"UPDATE agents SET status = …\")` became one `writeAgentStatus(...)` call writing the SAME columns and values. THE ALTERNATIVES WERE MEASURED, NOT WAVED AWAY. (a) Leave the raw SQL in place: that IS the defect — 31 statements in 16 modules bypassing the declared owner, five of them invisible to the plan's own grep — and refusing +1 here would buy the line back by keeping a sixteenth writer. (b) Delete a line elsewhere in the file to pay for it: that is a cosmetic edit inside a file this task has no other business in, and this project's own rule is that a line count never drives a code change (roadmap #7). (c) Fold the import into an existing one: different module, not possible. The pin may only fall from here, and the sweeps that own the remaining writers (SWEEP-A/C/D/E/F) will lower it when they convert theirs."
     }
   ],
   "maxNewFileLines": 400,
@@ -2164,8 +2185,8 @@
     "packages/server/src/agent/tools/cat/comms.ts": 843,
     "packages/server/src/agent/tools/cat/fs.ts": 848,
     "packages/server/src/agent/tools/cat/healer.ts": 288,
-    "packages/server/src/agent/tools/cat/media.ts": 896,
-    "packages/server/src/agent/tools/cat/session.ts": 241,
+    "packages/server/src/agent/tools/cat/media.ts": 897,
+    "packages/server/src/agent/tools/cat/session.ts": 242,
     "packages/server/src/agent/tools/cat/tracker.ts": 875,
     "packages/server/src/agent/tools/definitions.ts": 2816,
     "packages/server/src/agent/tools/effect-conformance.ts": 406,
@@ -2179,7 +2200,7 @@
     "packages/server/src/agent/v2/answered-edge.ts": 524,
     "packages/server/src/agent/v2/classifiers/multistep.ts": 482,
     "packages/server/src/agent/v2/counterparty.ts": 921,
-    "packages/server/src/agent/v2/loop.ts": 716,
+    "packages/server/src/agent/v2/loop.ts": 671,
     "packages/server/src/agent/v2/outbound.ts": 462,
     "packages/server/src/agent/v2/receipt.ts": 433,
     "packages/server/src/agent/v2/recorded-commitment.ts": 209,
@@ -2274,7 +2295,7 @@
     "packages/server/src/healer/diagnostic.ts": 1036,
     "packages/server/src/healer/healer-agent.ts": 1170,
     "packages/server/src/healer/injury-recovery.ts": 822,
-    "packages/server/src/index.ts": 1186,
+    "packages/server/src/index.ts": 1187,
     "packages/server/src/memory/assembler.ts": 2615,
     "packages/server/src/memory/assembly-validation-sink.ts": 146,
     "packages/server/src/memory/assembly-validation.ts": 610,
@@ -2341,6 +2362,7 @@
     "packages/shared/src/types.ts": 527,
     "packages/shared/src/visibility.ts": 881,
     "packages/shared/src/ws.ts": 1088,
-    "watchdog/src/index.ts": 1198
+    "watchdog/src/index.ts": 1198,
+    "packages/server/src/agent/agent-status.ts": 160
   }
 }
