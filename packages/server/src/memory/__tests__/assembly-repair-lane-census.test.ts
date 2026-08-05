@@ -40,9 +40,6 @@
 // A new untagged-and-undeclared injection still hits the refusal, which is the guard's
 // remaining job.
 // ════════════════════════════════════════════════════════════════════════════════════════
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import {
   repairAssembly,
@@ -51,8 +48,11 @@ import {
 } from '../assembly-validation.js';
 import { LANE_PRIORITY, POST_BUDGET_LANES, POST_BUDGET_ENTRY_LANE, isProtectedLaneId } from '../lanes.js';
 import { tagMessageLane, collectMessageLaneIds } from '../message-lane-tag.js';
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
+// The engine's own corpus, DERIVED — never a hand-rolled path into `agent/v2/steps`.
+// `guard-corpus-census.test.ts` refuses a second copy of that walk, and it refused this
+// file's first draft: the injection sites move with their tranche, and a guard that reads
+// them by path goes QUIET rather than red when they do.
+import { engineFileContaining } from '../../agent/v2/__tests__/engine-sources.js';
 
 const user = (c: string): ValidatedMessage => ({ role: 'user', content: c });
 const asst = (c: string): ValidatedMessage => ({ role: 'assistant', content: c });
@@ -144,11 +144,9 @@ describe('THE CENSUS — the declared membership cannot drift from what actually
   });
 
   it('every engine-side `pushEngineMessage` literal is declared, and every declared `engine.` key is injected', () => {
-    const src = fs.readFileSync(
-      path.join(HERE, '../../agent/v2/steps/call-llm/pre-call-injections.ts'),
-      'utf8',
-    );
-    const injected = [...src.matchAll(/pushEngineMessage\([\s\S]*?'(engine\.[a-z0-9-]+)'\s*\)/g)]
+    const site = engineFileContaining("'engine.open-work'");
+    expect(site, 'no engine source injects `engine.open-work` — the sites MOVED').not.toBeNull();
+    const injected = [...site!.text.matchAll(/pushEngineMessage\([\s\S]*?'(engine\.[a-z0-9-]+)'\s*\)/g)]
       .map((m) => m[1]);
     const found = [...new Set(injected)].sort();
     const declared = Object.keys(POST_BUDGET_ENTRY_LANE).filter((k) => k.startsWith('engine.')).sort();
