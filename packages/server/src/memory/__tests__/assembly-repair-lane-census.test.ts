@@ -40,7 +40,7 @@
 // A new untagged-and-undeclared injection still hits the refusal, which is the guard's
 // remaining job.
 // ════════════════════════════════════════════════════════════════════════════════════════
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   repairAssembly,
   AssemblyValidationError,
@@ -53,6 +53,21 @@ import { tagMessageLane, collectMessageLaneIds } from '../message-lane-tag.js';
 // file's first draft: the injection sites move with their tranche, and a guard that reads
 // them by path goes QUIET rather than red when they do.
 import { engineFileContaining } from '../../agent/v2/__tests__/engine-sources.js';
+
+// ── A TIMEOUT WITH ITS MEASURED REASON (T-PROMISE's side-fix precedent, same class) ──
+// The RUNTIME census clause imports the prompt registry, and that module graph costs
+// **2,885 ms** on a settled machine while every other clause in this file costs 0–4 ms
+// (`npx vitest run <this file> --reporter=verbose`). Under whole-suite load it crossed
+// vitest's 5,000 ms per-test default and failed as a TIMEOUT, never as an assertion —
+// which is real work being slow, not a hang, and is exactly why raising the bound is
+// honest where a re-run is not. 15,000 ms is 5.2× the settled cost: enough for the load
+// excursion, still fast enough to fail a genuine hang. Seen to bite BOTH ways before it
+// was trusted (a planted 6,000 ms delay passes with the raise and fails without it).
+// Three alternatives refused, each for its own reason: a re-run culture; warming the
+// graph in `beforeAll`, which inherits the same seconds against `hookTimeout`; and
+// pinning the timeout on this one clause, which re-arms silently the moment an edit
+// makes a different clause run first.
+vi.setConfig({ testTimeout: 15_000 });
 
 const user = (c: string): ValidatedMessage => ({ role: 'user', content: c });
 const asst = (c: string): ValidatedMessage => ({ role: 'assistant', content: c });
