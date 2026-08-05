@@ -1686,17 +1686,14 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
         continue;
       }
 
-      // ── 2. IT HAS NOT. OWNER FIRST, ALWAYS. ──
-      // The same storm law every platform-decided wake obeys (2026-07-23): while a human is
-      // waiting, the drain queues NOTHING. A pass that cannot drive does not BURN a rung
-      // either — the bound counts drives that happened, never passes that stood down.
+      // ── 2. IT HAS NOT. OWNER FIRST, ALWAYS — but the STEER still rides. ──
+      // The storm law (2026-07-23, the owner pleaded "stop" and the self-wake machinery kept
+      // the agent busy) is about WAKES: while a human is waiting, the platform queues none.
+      // It is not about content. The compile order and the stuck notice are RIDERS — content
+      // that must be SEEN on a turn that is happening anyway — and the turn serving the
+      // waiting human IS that turn. So the drive is written either way and only the WAKE
+      // stands down, which is the law obeyed rather than the drive abandoned.
       const { standDown, humanAsksOpen } = selfWakeStandDown(agentId);
-      if (standDown) {
-        logger.info('compile drive: standing down, a human is waiting', {
-          agentId, work: join.id, humanAsksOpen,
-        });
-        continue;
-      }
 
       const rung = nextJoinDriveRung(join.id);
       if (rung.rung === 'redrive') {
@@ -1706,9 +1703,10 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
           attempt: rung.attempt, bound: rung.bound,
           note: 'the engine put the owed compile back in front of the agent with the pieces quoted',
         });
-        out.drives++; out.wakeWanted = true;
+        out.drives++; out.wakeWanted ||= !standDown;
         logger.info('compile drive: re-drove the agent to the owed compile', {
           agentId, work: join.id, attempt: rung.attempt, bound: rung.bound,
+          wakeQueued: !standDown, humanAsksOpen,
         });
         continue;
       }
@@ -1722,9 +1720,10 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
           attempt: rung.attempt, bound: rung.bound,
           note: 'the engine asked the agent to tell the owner the job is stuck, in its own words',
         });
-        out.drives++; out.wakeWanted = true;
+        out.drives++; out.wakeWanted ||= !standDown;
         logger.warn('compile drive: drives spent; steered the agent to tell the owner it is stuck', {
           agentId, work: join.id, attempt: rung.attempt, bound: rung.bound, redrives: rung.redrives,
+          wakeQueued: !standDown, humanAsksOpen,
         });
         continue;
       }
