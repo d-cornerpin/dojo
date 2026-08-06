@@ -2234,6 +2234,13 @@
       "to": 338,
       "by": "SWEEP-A RESTORE-PATH JOB 2 (2026-08-06) \u2014 new file, pinned decrease-only at birth",
       "why": "338 lines, of which roughly a third is the reasoning. check-growth flagged it for crossing 60% of the 400-line cap and named the remedy: pin it at its current count so the decision is visible and the file can only shrink from here. NOT SPLIT, and the reason is cohesion: every line answers one question \u2014 did this box keep a way back before the migration chain ran, and if not, what happens. Splitting the snapshot from the decision that reads it would put the refusal in one file and the evidence for it in another, which is exactly how the old version ended up with a guard that returned silently and a caller that could not tell. It replaces 110 lines deleted from db/migrations.ts in the same change."
+    },
+    {
+      "path": "packages/server/src/db/migration-backup.ts",
+      "from": 338,
+      "to": 343,
+      "by": "SWEEP-A RESTORE-PATH (2026-08-06) \u2014 the refusal message goes to stderr in plain text",
+      "why": "+5 lines: one process.stderr.write and the comment that says why it is not redundant with the logger.error beside it. DRIVEN, and the drive is the argument: a real refused boot wrote the message into ~/.dojo/logs/dojo.log as ONE JSON line with every newline escaped. launchd routes stderr to ~/.dojo/logs/platform.stderr.log, so this is the only place the reason exists in a form the owner can read, and the owner-facing procedure's `tail -30` step depends on it. ALTERNATIVE MEASURED: leave it, and have the procedure run a python one-liner to unescape the JSON (+0 lines) \u2014 refused; a recovery page for a non-developer cannot open with a python invocation."
     }
   ],
   "maxNewFileLines": 400,
@@ -2379,7 +2386,7 @@
     "packages/server/src/agent/v2/turn-record.ts": 250,
     "packages/server/src/costs/tracker.ts": 541,
     "packages/server/src/credentials/secret-fields.ts": 241,
-    "packages/server/src/db/migration-backup.ts": 338,
+    "packages/server/src/db/migration-backup.ts": 343,
     "packages/server/src/gateway/routes/agents.ts": 858,
     "packages/server/src/gateway/routes/chat.ts": 485,
     "packages/server/src/gateway/routes/config.ts": 2530,
