@@ -145,7 +145,17 @@ describe('the declared precedence table', () => {
     // hand-up 4 both asked for and neither had an owner for. THE COUNT WAS RAISED BECAUSE A
     // FLOOR WAS ADDED, never to make a red go away: the clause below names the addition, so
     // a future +1 with no name beside it still fails.
-    expect(STEER_PRECEDENCE.length).toBe(28);
+    // SWEEP-A TB8 JOB 1 adds the 29th, and it is NEW BEHAVIOUR with a measured class
+    // behind it, not a conversion and not a re-count: `output-grind` answers a call that
+    // spent its model's ENTIRE configured output budget reasoning with no tool call and no
+    // answer — 17 of 19,124 completed calls in the durable sink over four batteries, on two
+    // different models and two different caps. It ranks immediately ABOVE `empty-response`
+    // because a grind is a truncation, and the ladder below diagnosed it as a plain empty
+    // reply and answered with a silent retry: three full output budgets and a nudge naming
+    // the wrong thing. THE COUNT WAS RAISED BECAUSE A FLOOR WAS ADDED — named here, so a
+    // future +1 with no name beside it still fails.
+    expect(STEER_PRECEDENCE.length).toBe(29);
+    expect(STEER_PRECEDENCE.filter((f) => f.id === 'output-grind').length).toBe(1);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'reminder-silence').length).toBe(1);
     expect(STEER_PRECEDENCE.filter((f) => f.id === 'uncommitted-promise').length).toBe(1);
   });

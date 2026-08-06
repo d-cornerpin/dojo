@@ -79,6 +79,41 @@ export function makeStreamWatchdog(
 /** The loop matches on this exact phrase to grant a single same-model retry. */
 export const STREAM_IDLE_TIMEOUT_ERROR = 'model stream idle timeout';
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// SWEEP-A TB8 JOB 1 — THE STOP REASON STOPS BEING FABRICATED.
+//
+// This path used to report `stopReason: toolCalls.length > 0 ? 'tool_use' : 'end_turn'` and
+// discard the provider's `finish_reason` entirely. Every OpenAI-compatible call — which is
+// the whole floor-model path — therefore told the engine "the model finished normally" even
+// when the provider had TRUNCATED it at the output cap. `v2/classifiers/output.ts` has had
+// `'length'` in `TRUNCATION_STOP_REASONS` since it was written and could never once fire on
+// this path; the ladder that reads it was unreachable for its whole life.
+//
+// THE BOUND THAT MATTERS IS THE CAP THE PRODUCT ALREADY CONFIGURES, and it was derived from
+// the durable sink rather than chosen: over 19,124 completed calls carrying a known cap
+// (2026-07-27 → 2026-08-06, all four batteries), exactly 17 reached their model's own
+// `max_output_tokens` — 0.089% — and every recorded runaway is one of them, across two
+// different models and two different caps. Both alternatives the brief named were tested
+// against that corpus and both are refused, with their numbers, in
+// `steps/post-call-classify/__tests__/output-grind.test.ts`: a DURATION bound orders the two
+// populations wrong (legitimate calls at 216.3 s against runaways at 129.95 s), and any
+// sub-cap OUTPUT-TOKEN threshold sits 133 tokens (0.8%) from a legitimate call that ended in
+// a tool call. The provider reporting its own truncation is the only signal that separates
+// them categorically — 17 of 17 caught, 0 of 19,107 false.
+//
+// `'stop'` and `'tool_calls'` are deliberately left to the synthesis: they say only what it
+// already said, and this change adds a signal rather than re-spelling the existing ones.
+// The agent-SDK path at :791 has done the same thing since it was written; this makes the
+// two paths agree.
+// ════════════════════════════════════════════════════════════════════════════════════════
+export function resolveOpenAIStopReason(
+  finishReason: string | null | undefined,
+  toolCallCount: number,
+): string {
+  if (finishReason && finishReason !== 'stop' && finishReason !== 'tool_calls') return finishReason;
+  return toolCallCount > 0 ? 'tool_use' : 'end_turn';
+}
+
 export interface ModelCallParams {
   agentId: string;
   modelId: string;
@@ -1446,11 +1481,18 @@ async function callOpenAIModel(
     // Final usage chunk (from stream_options.include_usage), carries cache stats.
     let realUsage: (OpenAI.CompletionUsage & { prompt_cache_hit_tokens?: number; prompt_cache_miss_tokens?: number }) | undefined;
 
+    // TB8 JOB 1: the provider's own terminal reason, kept rather than thrown away. It
+    // arrives on the last content-bearing chunk, before the usage chunk, so it is captured
+    // beside `realUsage` and read once the stream is done.
+    let providerFinishReason: string | null = null;
+
     for await (const chunk of stream) {
       watchdog.bump();
       // The usage chunk arrives last with an empty choices array, capture it
       // before the delta guard skips it.
       if (chunk.usage) realUsage = chunk.usage as typeof realUsage;
+      const finish = chunk.choices[0]?.finish_reason;
+      if (finish) providerFinishReason = finish;
       const delta = chunk.choices[0]?.delta;
       if (!delta) continue;
 
@@ -1731,13 +1773,30 @@ async function callOpenAIModel(
       }
     }
 
+    // TB8 JOB 1: the honest stop reason, and the shape the census reads. `finishReason` on
+    // this line is what makes the recorded runaway class countable from the log for the
+    // first time — the 17 at-cap calls in the durable sink were only ever identifiable by
+    // joining `cost_records` to `models`, after the fact.
+    const stopReason = resolveOpenAIStopReason(providerFinishReason, toolCalls.length);
     logger.info('OpenAI call completed', {
       model: modelInfo.apiModelId,
       inputTokens, outputTokens, latencyMs,
       cost: totalCost.toFixed(6),
       toolCallCount: toolCalls.length,
       reasoningChars: fullReasoning.length,
+      finishReason: providerFinishReason, stopReason,
     }, agentId);
+
+    if (stopReason === 'length' && toolCalls.length === 0) {
+      // THE GRIND, named where it happens. The engine's restart is the ladder in
+      // `v2/steps/post-call-classify/empty-response.ts`; this line is the record.
+      logger.warn('OpenAI call ran out its ENTIRE output budget with no tool call — the grind class', {
+        model: modelInfo.apiModelId,
+        outputTokens, latencyMs,
+        reasoningChars: fullReasoning.length,
+        contentChars: fullText.length,
+      }, agentId);
+    }
 
     // FA-R2: feed the proactive rate-limit tracker from the response headers,
     // mirroring the Anthropic path. OpenAI sends x-ratelimit-remaining-requests
@@ -1756,7 +1815,7 @@ async function callOpenAIModel(
       toolCalls,
       inputTokens,
       outputTokens,
-      stopReason: toolCalls.length > 0 ? 'tool_use' : 'end_turn',
+      stopReason,
       reasoningContent: fullReasoning.length > 0 ? fullReasoning : undefined,
     };
   } catch (err) {

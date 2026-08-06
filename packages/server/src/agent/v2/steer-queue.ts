@@ -60,7 +60,7 @@ export type SteerFloorId =
   | 'reminder-silence'
   | 'start-ack' | 'start-ack-reminder' | 'owed-interrupt' | 'promise-floor'
   | 'a2a-handoff-floor' | 'a2a-missed-reply' | 'going-idle-in-progress'
-  | 'empty-response' | 'thrash-gate' | 'thrash-drift' | 'spinning'
+  | 'output-grind' | 'empty-response' | 'thrash-gate' | 'thrash-drift' | 'spinning'
   | 'repetition' | 'no-results' | 'compaction-recap' | 'add-notes-stop'
   | 'tracker-stop-directive' | 'tracker-scaffold' | 'tracker-closeout' | 'hoarding-advisory';
 
@@ -114,6 +114,12 @@ export const STEER_PRECEDENCE: readonly SteerFloorSpec[] = [
   { id: 'a2a-missed-reply',      priority: 30, why: 'a peer asked and got prose instead of a reply' },
   { id: 'going-idle-in-progress', priority: 31, why: 'silent stop with in_progress work dangling' },
 
+  // SWEEP-A TB8 JOB 1. The 29th floor, and it ranks ABOVE `empty-response` deliberately:
+  // both look like "the model said nothing", but one of them burned the model's ENTIRE
+  // output budget getting there, so diagnosing it as the other costs a further full budget
+  // per rung. Measured class: 17 calls of 19,124 in the durable sink ran to their model's
+  // own `max_output_tokens` with zero tool calls, 119–418 s each.
+  { id: 'output-grind',          priority: 39, why: 'the model spent its whole output budget reasoning, with no tool call and no answer' },
   { id: 'empty-response',        priority: 40, why: 'the model returned nothing, twice' },
   { id: 'thrash-gate',           priority: 41, why: 'a tool signature is now refused' },
   { id: 'thrash-drift',          priority: 42, why: 'signature-varying spiral accruing to the hard limit' },

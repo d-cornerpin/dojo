@@ -319,7 +319,12 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     // The seven: empty-after-tools · the empty-response give-up · the near-duplicate
     // reply · the A2A missed-reply hardcap · the close-out one-shot · the tracker
     // close-out hardcap · and the plain "no tool calls, the turn is done".
-    expect(exitSites).toBe(7);
+    // ⚠ RE-DERIVED, NOT LOWERED (SWEEP-A TB8 JOB 1): SEVEN -> EIGHT. The eighth is the
+    // grind rung's give-up arm — a truncated call that spent its whole output budget with
+    // no tool call, twice in one turn. It reaches the SAME failure surface the
+    // empty-response give-up already owns (toast + `reArmIfStrandedNoAnswer`), which is why
+    // it is an exit and not a new mechanism.
+    expect(exitSites).toBe(8);
     // The eighteen re-entries: three in the empty-response ladder and FIFTEEN floors that
     // hand the model one more round to put something right.
     //
@@ -329,7 +334,11 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     // exit count is UNCHANGED at seven, which is the arithmetic that proves a floor was
     // ADDED rather than an exit quietly converted into a re-entry. A future cut cannot
     // pass this clause by moving the two numbers in step.
-    expect(continueSites).toBe(18);
+    // ⚠ RE-DERIVED AGAIN (SWEEP-A TB8 JOB 1): EIGHTEEN -> NINETEEN. The +1 is the grind
+    // rung's steer-and-retry arm and nothing else. Unlike T-PROMISE's +1 the exit count
+    // ALSO moved (7 -> 8) — both halves of one new rung, each named, so the pair moving
+    // together is an accounted addition rather than a silent conversion.
+    expect(continueSites).toBe(19);
   });
 
   it('EXIT IS NOT SAYABLE WITHOUT A REASON, and the arms name their own', async () => {
@@ -375,7 +384,7 @@ describe('PHASE-6 CUT 8: the `postCallClassify` step\'s contract', () => {
     // (a) every floor id this span declares still has a real site here — a census with
     //     its own denominator, so a floor silently lost in the move fails loudly.
     const FLOORS = [
-      'empty-response', 'ungrounded-claim', 'delivery-denial', 'failed-save-claim',
+      'output-grind', 'empty-response', 'ungrounded-claim', 'delivery-denial', 'failed-save-claim',
       'uncommitted-promise',
       'silent-closeout', 'add-notes-stop', 'going-idle-in-progress', 'owed-interrupt',
       'promise-floor', 'a2a-handoff-floor', 'reminder-silence', 'ghosted-ask',

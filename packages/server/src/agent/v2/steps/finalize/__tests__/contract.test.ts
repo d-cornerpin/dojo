@@ -224,10 +224,14 @@ describe('PHASE-6 CUT 4: the finalize step\'s contract', () => {
     // out of the loop that the driver honours with one of the `break`s above, and each
     // one still lands in this step.
     const stepExitSites = [...engineText().matchAll(/requestExit\(state,/g)].length;
-    expect(stepExitSites).toBe(23);
+    // ⚠ RE-DERIVED, NOT LOWERED (SWEEP-A TB8 JOB 1): 23 -> 24. The +1 is the grind rung's
+    // give-up arm in `post-call-classify/empty-response.ts`, and the `breaks.length` half
+    // below is UNCHANGED at 6 — the arithmetic that proves an exit was ADDED rather than a
+    // driver break quietly converted into one.
+    expect(stepExitSites).toBe(24);
     // THE INVARIANT UNDERNEATH BOTH HALVES, stated as its own clause so a future cut
     // that moves N exits and adds N+1 cannot pass by moving the two numbers in step.
-    expect(breaks.length + stepExitSites).toBe(29);
+    expect(breaks.length + stepExitSites).toBe(30);
     const tryStart = sf.getLineAndCharacterOfPosition(tryStmt.getStart(sf)).line + 1;
     const tryEnd = sf.getLineAndCharacterOfPosition(tryStmt.tryBlock.getEnd()).line + 1;
     for (const b of breaks) {
