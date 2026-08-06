@@ -2027,6 +2027,30 @@ export const getVersion = async (): Promise<ApiResponse<{ version: string }>> =>
   return request<{ version: string }>('/update/version');
 };
 
+/**
+ * What happened to the DATA backup on the last update that changed the database.
+ * Not the same thing as `/update/backups`, which lists copies of the app — putting an
+ * old app back does not undo a database change; only this snapshot does.
+ */
+export interface MigrationBackupOutcome {
+  status: 'written' | 'skipped-low-disk' | 'failed' | 'not-applicable';
+  at: string;
+  overridden: boolean;
+  pendingMigrations: number;
+  path?: string;
+  bytes?: number;
+  durationMs?: number;
+  freeBytes?: number;
+  dbBytes?: number;
+  neededBytes?: number;
+  error?: string;
+  reason?: string;
+}
+
+export const getDbBackupStatus = async (): Promise<ApiResponse<{ backup: MigrationBackupOutcome | null }>> => {
+  return request<{ backup: MigrationBackupOutcome | null }>('/update/db-backup');
+};
+
 export const applyUpdate = async (): Promise<ApiResponse<{ message: string; previousVersion: string; newVersion: string; backupDir: string }>> => {
   return request<{ message: string; previousVersion: string; newVersion: string; backupDir: string }>('/update/apply', {
     method: 'POST',

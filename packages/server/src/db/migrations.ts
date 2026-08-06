@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getDb } from './connection.js';
+import { ensurePreChainBackup } from './migration-backup.js';
 import { createLogger } from '../logger.js';
 import {
   migrationChecksum, ensureMigrationChecksumColumn, reportMigrationChecksums,
@@ -142,8 +143,15 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
   // actual restore point. Before applying ANY pending migration, snapshot the live
   // DB so a bad upgrade can be recovered by copying the snapshot back. Only when
   // there is real work to do.
+  //
+  // This CAN throw (MigrationBackupRequiredError), and that is the point: a chain
+  // with no restore point is not run. See db/migration-backup.ts for the two scope
+  // limits and the override. The throw is deliberately NOT caught here — it must
+  // reach the boot, because a boot that fails before any migration applied is one
+  // the watchdog's auto-rollback still covers, whereas a chain that ran without a
+  // backup is not covered by anything.
   if (pending.length > 0) {
-    backupBeforeMigrationChain(db, files, pending);
+    ensurePreChainBackup(db, files, pending);
   }
 
   // Disable FK checks for the entire migration run.
@@ -289,113 +297,3 @@ function runSqlMigrations(db: ReturnType<typeof getDb>): void {
   }
 }
 
-// ── Pre-migration-chain online backup ──
-// Snapshots the live DB to ~/.dojo/data/backups/ BEFORE the pending chain runs,
-// giving the deliberate no-rollback-after-migrations policy (owner decision D-F)
-// a concrete restore point. Uses SQLite's VACUUM INTO (an ONLINE snapshot that
-// folds committed WAL frames into a consistent copy), NOT fs.copyFile, which on a
-// live WAL database would copy the main file without the un-checkpointed WAL and
-// yield a torn/stale backup. Best-effort: a backup problem is logged but NEVER
-// blocks a needed migration (the migrations are themselves transaction-atomic).
-function backupBeforeMigrationChain(
-  db: ReturnType<typeof getDb>,
-  allFiles: string[],
-  pending: string[],
-): void {
-  try {
-    // ── Where the snapshot goes: BESIDE THE DATABASE IT IS A SNAPSHOT OF ──
-    // `db.name` is the file this very connection was opened on. It is deliberately
-    // NOT `getDbPath()`: that is a module global baked from `$HOME` at import time,
-    // and it answers the owner's real data directory even when the connection in
-    // hand is somebody else's throwaway database. When those two disagreed, this
-    // function wrote a snapshot of a test database into `~/.dojo/data/backups` and
-    // the keep-newest-2 prune below then evicted the owner's genuine restore points
-    // — reproduced on this box, twice, before the fix. A backup that does not live
-    // beside the body it came from is not a restore point, it is litter.
-    // Pinned by db/__tests__/migration-backup-location.test.ts, whose third clause
-    // holds the production case: on a real boot the two paths name the same file.
-    const dbPath = db.name;
-    // No file on disk (`:memory:`, or a connection never given a path) means there
-    // is nothing to snapshot and nowhere of its own to put it. Say so and stop.
-    if (!dbPath || dbPath === ':memory:' || !fs.existsSync(dbPath)) {
-      logger.debug('No pre-migration DB backup: this connection has no file on disk', {
-        connection: dbPath || '(unnamed)',
-      });
-      return;
-    }
-    const dataDir = path.dirname(dbPath);
-    const backupsDir = path.join(dataDir, 'backups');
-
-    const fileSize = (p: string): number => {
-      try { return fs.statSync(p).size; } catch { return 0; }
-    };
-    // Live footprint = main file + WAL + SHM (a busy box carries recent writes in
-    // the WAL until the next checkpoint).
-    const dbSize = fileSize(dbPath) + fileSize(`${dbPath}-wal`) + fileSize(`${dbPath}-shm`);
-
-    // Disk guard: skip (warn, do NOT fail the boot) when free space cannot hold
-    // ~2x the DB. VACUUM INTO writes a full compacted copy; 2x is safe headroom.
-    try {
-      const stat = fs.statfsSync(dataDir);
-      const freeBytes = Number(stat.bavail) * Number(stat.bsize);
-      if (freeBytes < dbSize * 2) {
-        logger.warn('Skipping pre-migration DB backup: insufficient free disk for a safe snapshot', {
-          freeBytes, dbBytes: dbSize, neededBytes: dbSize * 2,
-        });
-        return;
-      }
-    } catch (err) {
-      // statfs unavailable on this platform: proceed. A truly full disk makes the
-      // VACUUM INTO below fail, which is caught and logged without blocking boot.
-      logger.debug('Free-disk check unavailable for pre-migration backup; proceeding', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-
-    fs.mkdirSync(backupsDir, { recursive: true });
-
-    const migNumber = (f: string): number => {
-      const n = parseInt(f.slice(0, f.indexOf('_')), 10);
-      return Number.isFinite(n) ? n : 0;
-    };
-    const lastApplied = allFiles
-      .filter(f => !pending.includes(f))
-      .reduce((max, f) => Math.max(max, migNumber(f)), 0);
-    const target = allFiles.reduce((max, f) => Math.max(max, migNumber(f)), 0);
-    // Timestamped so same-day re-runs never collide (VACUUM INTO refuses to
-    // overwrite an existing file).
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const backupPath = path.join(backupsDir, `dojo-pre-${lastApplied}-to-${target}-${stamp}.db`);
-    try { fs.rmSync(backupPath, { force: true }); } catch { /* nothing to remove */ }
-
-    const started = Date.now();
-    db.exec(`VACUUM INTO '${backupPath.replace(/'/g, "''")}'`);
-    logger.info('Pre-migration DB backup written', {
-      path: backupPath,
-      bytes: fileSize(backupPath),
-      durationMs: Date.now() - started,
-      pendingMigrations: pending.length,
-    });
-
-    // Prune: keep only the newest 2 backups.
-    const backups = fs.readdirSync(backupsDir)
-      .filter(f => f.startsWith('dojo-pre-') && f.endsWith('.db'))
-      .map(f => {
-        const full = path.join(backupsDir, f);
-        return { full, mtimeMs: fs.statSync(full).mtimeMs };
-      })
-      .sort((a, b) => b.mtimeMs - a.mtimeMs);
-    for (const stale of backups.slice(2)) {
-      try { fs.rmSync(stale.full, { force: true }); }
-      catch (err) {
-        logger.debug('Failed to prune old pre-migration backup', {
-          file: stale.full, error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-  } catch (err) {
-    logger.error('Pre-migration DB backup failed; proceeding without it (migrations are transaction-atomic)', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}

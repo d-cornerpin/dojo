@@ -47,7 +47,23 @@ vi.mock('../connection.js', async () => {
 });
 
 import { runMigrations } from '../migrations.js';
+import { ensurePreChainBackup } from '../migration-backup.js';
 import { getDbPath } from '../connection.js';
+
+// A chain with one file already applied, so the "nothing applied yet" carve-out in
+// `ensurePreChainBackup` does NOT fire and the destination logic is genuinely reached.
+// Without this these clauses would pass for the wrong reason.
+const FILES = ['001_first.sql', '002_second.sql'];
+const PENDING = ['002_second.sql'];
+
+/** A database whose `config` table exists, as runMigrations guarantees before the chain. */
+function withConfigTable(db: Database.Database): Database.Database {
+  db.exec(`CREATE TABLE IF NOT EXISTS config (
+    key TEXT PRIMARY KEY, value TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')));`);
+  return db;
+}
 
 /** Every `dojo-pre-*.db` under a directory, or [] when the directory does not exist. */
 function restorePoints(dir: string): string[] {
@@ -76,24 +92,27 @@ describe('pre-migration backup: destination', () => {
   });
 
   it('writes NOTHING when the connection has no file on disk (:memory:)', () => {
-    mockDb.current = new Database(':memory:');
+    mockDb.current = withConfigTable(new Database(':memory:'));
 
+    // Driven through the WHOLE chain first — the shape the two contract tests have.
     runMigrations();
-
-    // The chain really ran — this is not a vacuous pass.
     const applied = mockDb.current.prepare('SELECT COUNT(*) AS c FROM _migrations').get() as { c: number };
     expect(applied.c).toBeGreaterThan(100);
 
-    // And it wrote no snapshot anywhere a person's data lives.
+    // And again with applied history, so the fresh-body carve-out is not what stops it:
+    // the ONLY thing standing between this connection and the owner's data directory is
+    // that its database has no file on disk.
+    ensurePreChainBackup(mockDb.current, FILES, PENDING);
+
     expect(restorePoints(realBackupsDir)).toEqual(before.real);
     expect(restorePoints(cwdBackupsDir)).toEqual(before.cwd);
   });
 
   it('writes beside the database it snapshots, not beside getDbPath()', () => {
     const dbFile = path.join(scratch, 'dojo.db');
-    mockDb.current = new Database(dbFile);
+    mockDb.current = withConfigTable(new Database(dbFile));
 
-    runMigrations();
+    ensurePreChainBackup(mockDb.current, FILES, PENDING);
 
     const mine = restorePoints(path.join(scratch, 'backups'));
     expect(mine).toHaveLength(1);

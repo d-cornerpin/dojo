@@ -5,6 +5,7 @@ import type { Provider, Model, GenerationParamSpec, VoiceOption } from '@dojo/sh
 import * as api from '../lib/api';
 import { useToast } from '../hooks/useToast';
 import { RouterConfig, SystemModelConfig, VoiceOpenerModelConfig } from '../components/RouterConfig';
+import { DataBackupNotice } from '../components/DataBackupNotice';
 import { RouterTest } from '../components/RouterTest';
 import { GoogleWorkspaceSettings } from '../components/GoogleWorkspaceSettings';
 import { MicrosoftWorkspaceSettings } from '../components/MicrosoftWorkspaceSettings';
@@ -4900,6 +4901,7 @@ const UpdateTab = () => {
   const [error, setError] = useState<string | null>(null);
   const [channel, setChannel] = useState<api.UpdateChannel>('stable');
   const [switchingChannel, setSwitchingChannel] = useState(false);
+  const [dbBackup, setDbBackup] = useState<api.MigrationBackupOutcome | null>(null);
 
   const checkUpdates = async () => {
     setChecking(true);
@@ -4918,6 +4920,7 @@ const UpdateTab = () => {
   useEffect(() => {
     checkUpdates();
     api.getUpdateChannel().then(r => { if (r.ok) setChannel(r.data.channel); });
+    api.getDbBackupStatus().then(r => { if (r.ok) setDbBackup(r.data.backup); });
   }, []);
 
   // Switching the channel only changes which release the updater targets — it
@@ -5053,6 +5056,8 @@ const UpdateTab = () => {
             {updateResult}
           </div>
         )}
+
+        <DataBackupNotice backup={dbBackup} />
 
         <div className="srow pt-2">
           <button

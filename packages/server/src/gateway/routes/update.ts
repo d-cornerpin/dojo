@@ -11,6 +11,7 @@ import os from 'node:os';
 import type { AppEnv } from '../server.js';
 import { createLogger } from '../../logger.js';
 import { getDb } from '../../db/connection.js';
+import { readLastMigrationBackup } from '../../db/migration-backup.js';
 import { markPendingUpdate, markBootingNew } from '../../update-state.js';
 import { routeFailure } from './route-failure.js';
 import { ARTIFACT_MANIFEST_ASSET, fetchArtifactManifest, verifyArtifactAgainstManifest } from '../../update/artifact-integrity.js';
@@ -774,6 +775,23 @@ updateRouter.post('/channel', async (c) => {
 
 updateRouter.get('/version', (c) => {
   return c.json({ ok: true, data: { version: getCurrentVersion() } });
+});
+
+// ── The DATA backup: did the last update leave a way back? ──
+//
+// Distinct from `/backups` above, which lists copies of the APP (`platform.backup-*`).
+// Restoring one of those puts the old code back and does not touch the database — so
+// after a chain of migrations it does not undo anything the update did to the data.
+// The only thing that undoes THAT is the pre-migration snapshot, and until this route
+// existed nothing in the product could tell anyone whether one had been made. The
+// answer is recorded by db/migration-backup.ts on the boot that ran the chain, so it
+// survives the restart the update needs.
+updateRouter.get('/db-backup', (c) => {
+  try {
+    return c.json({ ok: true, data: { backup: readLastMigrationBackup(getDb()) } });
+  } catch (err) {
+    return routeFailure(c, logger, err, { status: 500 });
+  }
 });
 
 // ── List recent releases (for rollback) ──
