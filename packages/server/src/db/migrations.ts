@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getDb, getDbPath } from './connection.js';
+import { getDb } from './connection.js';
 import { createLogger } from '../logger.js';
 import {
   migrationChecksum, ensureMigrationChecksumColumn, reportMigrationChecksums,
@@ -303,7 +303,26 @@ function backupBeforeMigrationChain(
   pending: string[],
 ): void {
   try {
-    const dbPath = getDbPath();
+    // ── Where the snapshot goes: BESIDE THE DATABASE IT IS A SNAPSHOT OF ──
+    // `db.name` is the file this very connection was opened on. It is deliberately
+    // NOT `getDbPath()`: that is a module global baked from `$HOME` at import time,
+    // and it answers the owner's real data directory even when the connection in
+    // hand is somebody else's throwaway database. When those two disagreed, this
+    // function wrote a snapshot of a test database into `~/.dojo/data/backups` and
+    // the keep-newest-2 prune below then evicted the owner's genuine restore points
+    // — reproduced on this box, twice, before the fix. A backup that does not live
+    // beside the body it came from is not a restore point, it is litter.
+    // Pinned by db/__tests__/migration-backup-location.test.ts, whose third clause
+    // holds the production case: on a real boot the two paths name the same file.
+    const dbPath = db.name;
+    // No file on disk (`:memory:`, or a connection never given a path) means there
+    // is nothing to snapshot and nowhere of its own to put it. Say so and stop.
+    if (!dbPath || dbPath === ':memory:' || !fs.existsSync(dbPath)) {
+      logger.debug('No pre-migration DB backup: this connection has no file on disk', {
+        connection: dbPath || '(unnamed)',
+      });
+      return;
+    }
     const dataDir = path.dirname(dbPath);
     const backupsDir = path.join(dataDir, 'backups');
 
