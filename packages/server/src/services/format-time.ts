@@ -21,10 +21,47 @@
 //   - convert_time agent tool
 //   - any future tool that surfaces a timestamp to an agent
 
+import { normalizeDbTimestamp } from '../scheduler/engine.js';
+
 const SYSTEM_TZ = (() => {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone; }
   catch { return 'UTC'; }
 })();
+
+// ── A tz-naive string is UTC, and this file must use the SAME rule as the rest
+//    of the platform (task ANCHOR-HUNT) ──
+//
+// This module exists to stop an agent misreading an unlabeled instant as local
+// time (see the header). It was committing that exact error itself: it took a
+// bare `new Date(input)`, and the tracker hands it the DB's own text shape —
+// `work/tracker-view.ts:msToText` renders every instant column through
+// `strftime('%Y-%m-%d %H:%M:%S', …)`, a SPACE-separated, Z-less string. That
+// shape is not valid ISO 8601, so V8 falls back to implementation-defined
+// parsing and reads it as LOCAL wall clock. On a UTC−7 box
+// `new Date("2026-08-07 03:00:00")` is `10:00:00Z` — the owner's reported +7h
+// on `work_open`'s "Next run (local)" line, reproduced by
+// `tracker/__tests__/schedule-echo-seam.test.ts` on his two literal values.
+//
+// The rule was already written down twice — `scheduler/engine.ts:normalizeDbTimestamp`
+// (whose own doc names this V8 behaviour) and `work/tracker-view.ts:tsToMs`.
+// This file is the third parser of the same shape, so it IMPORTS the rule
+// rather than restating it; a fourth copy is how the two answers diverge again.
+//
+// The time-of-day gate is load-bearing, not caution. `normalizeDbTimestamp`
+// appends `Z` to anything without an offset, so an all-day DATE-ONLY value
+// ("2026-05-20") would become "2026-05-20Z" — which V8 rejects, and the
+// `allDay` branch below depends on that value parsing. A date-only string is
+// already UTC by specification and needs no help; only a value carrying a
+// time of day can be misread, so only that is normalized.
+const HAS_TIME_OF_DAY = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/;
+
+/** Parse an agent-facing time input, reading any tz-naive instant as UTC. */
+function toInstant(input: Date | string | number): Date {
+  if (input instanceof Date) return input;
+  if (typeof input === 'number') return new Date(input);
+  const raw = input.trim();
+  return new Date(HAS_TIME_OF_DAY.test(raw) ? normalizeDbTimestamp(raw) : raw);
+}
 
 export interface FormatTimeOptions {
   /** IANA timezone for the localized side. Defaults to the host's system tz. */
@@ -61,7 +98,7 @@ function tzAbbreviation(date: Date, timezone: string): string {
  */
 export function formatTimeForAgent(input: Date | string | number, opts: FormatTimeOptions = {}): string {
   const tz = opts.timezone || SYSTEM_TZ;
-  const date = typeof input === 'string' || typeof input === 'number' ? new Date(input) : input;
+  const date = toInstant(input);
 
   if (isNaN(date.getTime())) return `(invalid time: ${String(input)})`;
 
@@ -102,8 +139,10 @@ export function formatTimeRangeForAgent(
   opts: FormatTimeOptions = {},
 ): string {
   const tz = opts.timezone || SYSTEM_TZ;
-  const startDate = typeof start === 'string' || typeof start === 'number' ? new Date(start) : start;
-  const endDate = typeof end === 'string' || typeof end === 'number' ? new Date(end) : end;
+  // Same rule as formatTimeForAgent — this pair renders through it (and must
+  // agree with it about what instant a tz-naive string names).
+  const startDate = toInstant(start);
+  const endDate = toInstant(end);
 
   if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
     return `${formatTimeForAgent(start, opts)} to ${formatTimeForAgent(end, opts)}`;

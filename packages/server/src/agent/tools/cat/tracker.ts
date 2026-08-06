@@ -210,11 +210,23 @@ export const trackerHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
-    if ((hasInterval || hasUnit) && !args.scheduled_start) {
+    // Task ANCHOR-HUNT: `local_time` SATISFIES this gate. It is the wall-clock
+    // spelling of the same fact, `trackerCreateTask` converts it into
+    // `scheduled_start` before it reads any schedule field (RC-18), and this
+    // tool's own declaration tells the model to prefer it ("Use this INSTEAD of
+    // scheduled_start whenever the user names a clock time"). Asking only for
+    // `scheduled_start` here refused the one spelling the engine recommends —
+    // reported from the owner's box in the same sitting as the +7h echo. The
+    // refusal below names both spellings for the same reason: an error that
+    // omits a fix that would have worked is an error that teaches the wrong
+    // lesson. Held by `tracker/__tests__/schedule-echo-seam.test.ts` §3.
+    if ((hasInterval || hasUnit) && !args.scheduled_start && !args.local_time) {
       content =
-        `Error: a recurring task needs a scheduled_start, the time of the FIRST run. ` +
-        `Without it the scheduler has no anchor, no next_run_at gets written, and the task will never fire. ` +
-        `Call get_current_time, ask the user when the first run should happen (or pick the next sensible slot, e.g. "tomorrow at 6 AM"), and re-call this tool with scheduled_start set to the resolved ISO 8601 timestamp.`;
+        `Error: a recurring task needs a first-run time — either scheduled_start (an ISO 8601 UTC instant) ` +
+        `or local_time (the wall clock the user named, "YYYY-MM-DDThh:mm", which the engine converts for you). ` +
+        `Without one the scheduler has no anchor, no next_run_at gets written, and the task will never fire. ` +
+        `Ask the user when the first run should happen (or pick the next sensible slot, e.g. "tomorrow at 6 AM"); ` +
+        `if you need the current time to resolve a relative phrase, call get_current_time first.`;
       isError = true;
       return { content, isError };
     }
@@ -324,10 +336,14 @@ export const trackerHandlers: ToolHandlerMap = {
       isError = true;
       return { content, isError };
     }
-    if ((remHasInterval || remHasUnit) && !args.when) {
+    // Task ANCHOR-HUNT: the reminder twin of the task gate above. `reminderCreate`
+    // has accepted `local_time` as an alternative to `when` since RC-18 and this
+    // door forwards it; only this gate disagreed.
+    if ((remHasInterval || remHasUnit) && !args.when && !args.local_time) {
       content =
-        `Error: a recurring reminder needs \`when\`, the time of the FIRST fire. ` +
-        `Without it the scheduler has no anchor. Ask the user when the first reminder should fire and re-call with \`when\` set to the resolved ISO 8601 timestamp.`;
+        `Error: a recurring reminder needs a first-fire time — either \`when\` (an ISO 8601 UTC instant) ` +
+        `or local_time (the wall clock the user named, "YYYY-MM-DDThh:mm", which the engine converts for you). ` +
+        `Without one the scheduler has no anchor. Ask the user when the first reminder should fire and re-call with one of them set.`;
       isError = true;
       return { content, isError };
     }

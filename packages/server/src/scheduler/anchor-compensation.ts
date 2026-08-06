@@ -4,12 +4,32 @@
 // ── WHY THIS EXISTS, AND WHAT IT IS PROTECTING ──────────────────────────────
 // Between 2026-08-03 and the build that carries T0A's door fix, `anchor_time`
 // was DROPPED at both agent-facing tracker doors and the only way to move a
-// recurring task's firing time was to move `scheduled_start`. On the box that
-// reported the defect the next-run computation ALSO ran a whole-offset shift, so
-// the relief that was deployed there was a COMPENSATION: the intended LOCAL
-// wall-clock digits were stored as if they were UTC, and the shift cancelled
-// them back to the right instant. The issues-log entry of 2026-08-03 and its
-// 2026-08-04 follow-up are the record.
+// recurring task's firing time was to move `scheduled_start`. The box that
+// reported the defect ALSO saw a whole-offset shift, so the relief deployed
+// there was a COMPENSATION: the intended LOCAL wall-clock digits were stored as
+// if they were UTC, to cancel the shift back to the right instant. The
+// issues-log entry of 2026-08-03 and its 2026-08-04 follow-up are the record.
+//
+// ⚠ WHERE THAT SHIFT ACTUALLY LIVED — CORRECTED BY TASK ANCHOR-HUNT (2026-08-06).
+// This header used to say the shift was in "the next-run computation". It was
+// not, and the distinction changes nothing about this scan's rule while
+// changing everything about who must act. The store and the computer were
+// always right; `services/format-time.ts:formatTimeForAgent` took a bare
+// `new Date()` on the DB's space-separated, Z-less text and V8 read it as LOCAL
+// wall clock, so the tool REPLY reported a next run an offset away from the one
+// the row held and would fire. Reproduced through `work_open` on the owner's two
+// literal values and fixed at that line; `tracker/__tests__/schedule-echo-seam.test.ts`
+// holds it.
+//
+// The consequence for THIS module is the reason it still matters, not less:
+// because nothing about firing was ever wrong, a compensated row is not
+// "waiting to break when the fix lands" — it has been firing an offset early
+// since the day it was compensated, and the fix does not touch it. The scan's
+// four clauses are unchanged and its corrections are unchanged; only the
+// urgency is. Driven against the reporting box's compensated shape after the
+// fix: 3 examined / 2 suspects on a PDT box, 0 suspects on a UTC box, an
+// uncompensated pre-window row standing down — so the rule still accuses
+// exactly the rows a compensation touched and no row the fix handles.
 //
 // A compensation is only correct while the thing it compensates for is still
 // there. The moment a box updates onto a build that honours the anchor as
