@@ -675,7 +675,7 @@ export async function applyUpdate(channel?: UpdateChannel): Promise<ApplyUpdateR
       const scriptsDest = path.join(path.dirname(PLATFORM_DIR), 'scripts');
       if (fs.existsSync(scriptsSrc)) {
         fs.mkdirSync(scriptsDest, { recursive: true });
-        await execAsync(`cp -f "${scriptsSrc}/"*.sh "${scriptsDest}/" && chmod +x "${scriptsDest}/"*.sh`, { timeout: 30000, env });
+        await execAsync(`cp -f "${scriptsSrc}/"*.sh "${scriptsSrc}/"*.md "${scriptsDest}/" 2>/dev/null; chmod +x "${scriptsDest}/"*.sh`, { timeout: 30000, env });
         logger.info('Refreshed maintenance scripts from package', { dest: scriptsDest });
       }
     } catch (err) {

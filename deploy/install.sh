@@ -162,7 +162,7 @@ fi
 
 # Copy scripts
 mkdir -p "$DOJO_DIR/scripts"
-cp "$SCRIPT_DIR/scripts/"*.sh "$DOJO_DIR/scripts/" 2>/dev/null || true
+cp "$SCRIPT_DIR/scripts/"*.sh "$SCRIPT_DIR/scripts/"*.md "$DOJO_DIR/scripts/" 2>/dev/null || true
 cp "$SCRIPT_DIR/uninstall.sh" "$DOJO_DIR/scripts/" 2>/dev/null || true
 chmod +x "$DOJO_DIR/scripts/"*.sh
 
@@ -360,6 +360,8 @@ echo "    Start:    ~/.dojo/scripts/start.sh"
 echo "    Stop:     ~/.dojo/scripts/stop.sh"
 echo "    Status:   ~/.dojo/scripts/status.sh"
 echo "    Backup:   ~/.dojo/scripts/backup.sh"
+echo "    Restore data: ~/.dojo/scripts/restore-db.sh"
+echo "    If an update fails: ~/.dojo/scripts/IF-AN-UPDATE-FAILS.md"
 echo "    Uninstall: ~/.dojo/scripts/uninstall.sh"
 echo ""
 echo "  The setup wizard should have opened in"

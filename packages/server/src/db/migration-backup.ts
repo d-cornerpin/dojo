@@ -329,6 +329,11 @@ export function ensurePreChainBackup(
 
   recordOutcome(db, outcome);
   const message = refusalMessage(outcome, dataDir);
+  // Plain text to stderr as well as the structured log. launchd sends stderr to
+  // ~/.dojo/logs/platform.stderr.log, so this is the ONE place the reason exists in a
+  // form a person can read: the logger's own file holds it JSON-escaped on a single
+  // line, which is unreadable at exactly the moment somebody needs to read it.
+  process.stderr.write(`\n${message}\n\n`);
   logger.error('Refusing the migration chain: no database backup could be made', {
     status: outcome.status, error: outcome.error,
     freeBytes: outcome.freeBytes, neededBytes: outcome.neededBytes,

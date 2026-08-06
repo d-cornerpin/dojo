@@ -134,6 +134,8 @@ Open `http://localhost:3000` (dev) or `http://localhost:3001` (production). Bow 
 ~/.dojo/scripts/stop.sh       # Close the dojo
 ~/.dojo/scripts/status.sh     # Check who's fighting
 ~/.dojo/scripts/backup.sh     # Protect your work
+~/.dojo/scripts/restore-db.sh # Put your data back after a bad update
+~/.dojo/scripts/IF-AN-UPDATE-FAILS.md  # The procedure, in plain language
 ~/.dojo/scripts/uninstall.sh  # Sweep the leg (uninstall)
 ```
 
