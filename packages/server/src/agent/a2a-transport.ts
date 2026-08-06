@@ -20,7 +20,6 @@ import { broadcast } from '../gateway/ws.js';
 import { getAgentRuntime } from './runtime.js';
 import { insertMessageIfAbsent, insertEngineEventIfAbsent } from '../memory/message-store.js';
 import { resolveOrCreateConversation } from '../memory/conversations.js';
-import { answerReceiptForAsk } from './v2/answered-edge.js';
 import { isSenderAuthorized } from './v2/channel-auth.js';
 import { type DeliveryInput } from './v2/deliveries.js';
 import { recordAtDoor, withOutboundAsync, recordedId } from './v2/outbound.js';
@@ -31,7 +30,7 @@ import {
   findJoinChildByThread, findFailedJoinForThread, childrenForThread,
   landPiece, settlePieceWithoutResult, joinState, joinPieces, dueJoins, openJoins,
   dueJoinsUnderClosedParent,
-  compilePendingJoins, failJoinClosed, clearJoinCompilePending, noteUnsettled,
+  compilePendingJoins, failJoinClosed, clearJoinCompilePending,
   claimFailedJoinForLateAnswer, threadHopCount, bumpThreadHopCount,
   type JoinState, type JoinPiece,
 } from '../work/store.js';
