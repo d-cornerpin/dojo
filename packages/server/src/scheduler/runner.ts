@@ -339,7 +339,12 @@ async function sweepStaleUserVerdictRequests(): Promise<void> {
 // task alone — the dashboard bug icon stays until either PM, the user, or
 // the assigned agent (acting on user feedback) validates.
 
-const VALIDATION_ESCALATION_MIN = 5;
+// EXPORTED, SWEEP-A TB8 JOB 2. This is the only clock in the product that says how long a
+// row may await Key 2 before the OWNER is told about it, so it is also the only honest
+// bound on how long the platform's own validator may take. `tracker/pm-agent.ts` reads it
+// from here rather than declaring a second number — the two clocks must be ORDERED (the
+// validator is accountable before the owner is bothered), and two copies cannot be ordered.
+export const VALIDATION_ESCALATION_MIN = 5;
 
 async function sweepUnvalidatedTasksForUserEscalation(): Promise<void> {
   const db = getDb();

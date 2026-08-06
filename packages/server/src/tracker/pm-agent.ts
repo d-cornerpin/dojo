@@ -15,6 +15,7 @@ import { patchWork, setTrackerStatus, deliveryForTaskClose } from '../work/track
 import { noteUnsettled } from '../work/store.js';
 import { listOverrideRequests, PENDING_OVERRIDE_COUNT_SQL } from '../work/override-requests.js';
 import { activeRuns as pmActiveRuns } from '../agent/shared-state.js';
+import { VALIDATION_ESCALATION_MIN } from '../scheduler/runner.js';
 import { createLogger } from '../logger.js';
 import { broadcast } from '../gateway/ws.js';
 import { sendAgentMessage } from '../agent/agent-bus.js';
@@ -754,6 +755,107 @@ let lastValidationReviewAt = 0;
 let lastSituationReportHash = '';
 const LLM_REVIEW_INTERVAL_MS = 600_000; // 10 minutes, gives tasks time to settle before reviewing
 
+// ════════════════════════════════════════════════════════════════════════════════════════
+// SWEEP-A TB8 JOB 2 — VALIDATION COVERAGE: did the validator actually rule?
+//
+// ── THE MEASUREMENT THIS EXISTS FOR (battery `bmsgs7qejup`, 00:32:44 → 01:55:13) ─────────
+// The PM shows up: 89 poke ticks, 43 validation reviews, 85 model calls, 5 verdicts. The
+// inherited "ZERO audits in both delegation windows" was the wrong instrument — a
+// SUCCESSFUL validation writes no `audit` row at all, because every blessing goes through
+// `writeTaskLog({ entryKind: 'transition' })` and `task-log.ts:119` returns null for that
+// kind. What actually fails is latency, and the two clocks run in the wrong order:
+//
+//   01:14:17/:23/:33  three rows request Key 2
+//   01:15:00–01:16:10 PM validation turn #1 — handed those rows, returned NO verdict
+//   01:17:00–01:18:04 PM validation turn #2 — same rows, same silence
+//   01:20:00          the SCHEDULER escalates all three TO THE OWNER as unvalidated
+//   01:23:11          PM turn #3 finally upholds them — 8m38s–8m54s after Key 1
+//
+// Nothing recorded turns #1 and #2. Not a log line anyone can read (the skips are
+// `logger.debug` and the level is pinned at 'info'), not a work event, not a counter. So
+// the `stableIssuesKey` dedup — which compares the SAME unchanged issue-set equal and
+// returns — silently swallowed every later attempt, and the only thing that moved was the
+// owner escalation. That is the owner's two-key law failing in its bookkeeping half: a
+// validator that does not rule must SAY SO, and the system must ask again.
+//
+// ── THE BOUND, WHICH IS NOT INVENTED (#14) ──────────────────────────────────────────────
+// No cadence is chosen here. `VALIDATION_ESCALATION_MIN` is the product's OWN existing
+// owner-escalation clock, imported from `scheduler/runner.ts` rather than copied. The law
+// this file adds is only that the two clocks be ORDERED: a row must not reach the owner as
+// "unvalidated" while the platform holds no record that its validator was ever asked.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** The product's own owner-escalation clock, in ms. Single-sourced, never re-declared. */
+export const VALIDATION_COVERAGE_BOUND_MS = VALIDATION_ESCALATION_MIN * 60_000;
+
+export interface ValidationCoverageInput {
+  /** The rows this review actually put in front of the validator, awaiting Key 2. */
+  readonly asked: ReadonlyArray<{ id: string; awaitingSinceMs: number }>;
+  /** Read back AFTER the review turn: the ids that still await Key 2. */
+  readonly stillAwaiting: ReadonlySet<string>;
+  readonly nowMs: number;
+}
+
+export interface ValidationCoverage {
+  /** Rows the validator was handed and did not rule on. */
+  readonly missed: ReadonlyArray<{ id: string; waitedMs: number; pastOwnerBound: boolean }>;
+  /** At least one miss has already outlived the owner-escalation clock. */
+  readonly anyPastOwnerBound: boolean;
+  /** Ask again on the next tick — the dedup must not swallow an unruled row. */
+  readonly reReview: boolean;
+}
+
+/**
+ * What a validation review COVERED, decided from the rows it held and the rows still
+ * awaiting Key 2 when its turn came back. Pure on purpose: the whole point of TB8 JOB 2 is
+ * that this question was previously unanswerable anywhere, so it gets an answer that can be
+ * tested without a live PM, a live model or a live board.
+ *
+ * A row that was never handed to the validator cannot be a miss — this measures the
+ * validator's coverage of what it was ASKED, never the board's total backlog.
+ */
+/**
+ * Of the given task ids, which still await Key 2 — the SAME predicate the review's own
+ * unvalidated-complete queue selects on, read once more after the turn. One expression, one
+ * meaning: a second copy of "awaiting Key 2" is exactly the drift TB5/TB6 spent two tasks
+ * removing from the kit.
+ */
+function idsStillAwaitingKeyTwo(ids: readonly string[]): Set<string> {
+  if (ids.length === 0) return new Set();
+  try {
+    const db = getDb();
+    const holes = ids.map(() => '?').join(',');
+    const rows = db.prepare(`
+      SELECT w.id AS id FROM work w
+      WHERE w.id IN (${holes})
+        AND (
+          (w.state = 'done' AND ${validatedExpr('w', 'done')} = 0)
+          OR (w.state = 'claimed' AND ${pendingCloseRequestExpr('w')} = 1)
+        )
+        AND ${awaitingUserVerdictExpr('w')} = 0
+    `).all(...ids) as Array<{ id: string }>;
+    return new Set(rows.map((r) => r.id));
+  } catch {
+    // A read that cannot run must not manufacture a clean bill of health: an unreadable
+    // board is not a validated one, so nothing is reported as covered.
+    return new Set(ids);
+  }
+}
+
+export function validationCoverageAfterReview(input: ValidationCoverageInput): ValidationCoverage {
+  const missed = input.asked
+    .filter((row) => input.stillAwaiting.has(row.id))
+    .map((row) => {
+      const waitedMs = Math.max(0, input.nowMs - row.awaitingSinceMs);
+      return { id: row.id, waitedMs, pastOwnerBound: waitedMs >= VALIDATION_COVERAGE_BOUND_MS };
+    });
+  return {
+    missed,
+    anyPastOwnerBound: missed.some((m) => m.pastOwnerBound),
+    reReview: missed.length > 0,
+  };
+}
+
 // How many recent messages to keep for the PM. Bumped from 10 to 30 in
 // v2.7.27, at 10 the pair-aware cutoff + downstream orphan sanitizer
 // were trimming the PM down to 1-2 effective messages on bad turns,
@@ -896,13 +998,16 @@ async function runPMReview(): Promise<void> {
   // validation stays fully responsive.
   if (validationPending) {
     if (pmCapReached() && now - lastValidationReviewAt < LLM_REVIEW_INTERVAL_MS) {
-      logger.debug('PM validation review deferred: event-wake cap full, within validation cadence', {
+      // TB8 JOB 2: promoted from `logger.debug`.
+      logger.info('PM validation review deferred: event-wake cap full, within validation cadence', {
         cap: PM_LLM_CALLS_PER_HOUR_CAP, pendingValidation: pendingValidationCount,
       });
       return;
     }
   } else if (pmCapReached()) {
-    logger.debug('PM review skipped, hourly LLM cap reached', { cap: PM_LLM_CALLS_PER_HOUR_CAP });
+    // TB8 JOB 2: promoted from `logger.debug` — a cap that silently stops the validator is
+    // the same silent skip by another door.
+    logger.info('PM review skipped, hourly LLM cap reached', { cap: PM_LLM_CALLS_PER_HOUR_CAP, pendingValidation: pendingValidationCount });
     return;
   }
 
@@ -1025,6 +1130,12 @@ async function runPMReview(): Promise<void> {
   // every minute of elapsed time changed the hash and the dedup at line
   // 510 never fired (v2.3.7).
   const issues: Array<{ stableId: string; text: string }> = [];
+  // SWEEP-A TB8 JOB 2 — the rows this review actually puts in front of the validator with
+  // Key 2 outstanding. Scoped DELIBERATELY to the unvalidated-COMPLETE queue: that is the
+  // two-key class the owner's law is about and the one `delegation-longhorizon` clause (c)
+  // measures. The pause/block queues are a different verdict with a different meaning and
+  // are not claimed by this measurement.
+  const askedForKeyTwo: Array<{ id: string; awaitingSinceMs: number }> = [];
   const nowDate = new Date();
 
   for (const task of activeTasks) {
@@ -1230,6 +1341,10 @@ async function runPMReview(): Promise<void> {
            w.requester_id AS created_by, w.parent_id AS project_id,
            w.repeat_interval AS repeat_interval, ${msToText('w.next_run_at')} AS next_run_at,
            w.priority AS priority, ${msToText('w.updated_at')} AS updated_at,
+           -- TB8 JOB 2: the raw epoch beside the rendered text. The text form is what the
+           -- model reads; the coverage law needs a clock, and re-parsing prose for one is
+           -- how a measurement quietly stops meaning what it says.
+           w.updated_at AS updated_at_ms,
            ${revertCountExpr('w')} AS revert_count
     FROM work w
     WHERE ${taskScope('w')}
@@ -1246,7 +1361,7 @@ async function runPMReview(): Promise<void> {
     result: string | null; evidence_json: string | null; last_smell_flag: string | null;
     created_by: string; project_id: string | null;
     repeat_interval: number | null; next_run_at: string | null;
-    priority: string; updated_at: string; revert_count: number;
+    priority: string; updated_at: string; updated_at_ms: number; revert_count: number;
   }>;
 
   // Phase B.1: per-task lookup for goal-edit history. If the goal was
@@ -1338,6 +1453,9 @@ async function runPMReview(): Promise<void> {
         evidenceLines = parsed.map((e, i) => `    ${i + 1}. [${e.kind ?? '?'}] ${e.claim ?? ''}${e.pointer ? ` @ ${e.pointer}` : ''}`).join('\n');
       }
     } catch { /* leave as default */ }
+    // TB8 JOB 2: this row is now IN FRONT OF the validator. Recorded here, judged after
+    // the turn returns — coverage is about what was ASKED, never the board's total backlog.
+    askedForKeyTwo.push({ id: cTask.id, awaitingSinceMs: cTask.updated_at_ms });
     issues.push({
       stableId: `${cTask.id}|UNVALIDATED_COMPLETE|${cTask.revert_count}`,
       text:
@@ -1471,7 +1589,10 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
     // {A} -> {} -> {A} (the same issue-set recurring after being fully resolved)
     // compared equal to the stale hash and was skipped until a restart.
     lastSituationReportHash = '';
-    logger.debug('PM review: no issues detected, skipping LLM call');
+    // TB8 JOB 2: was `logger.debug`, which `logger.ts:21` pins out of existence in
+    // production (`setLogLevel` is never called). A skip nobody can read is the silent
+    // skip the owner ruled against; this one is benign but it must still be READABLE.
+    logger.info('PM review: no issues detected, skipping LLM call');
     return;
   }
 
@@ -1489,7 +1610,12 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
   const stableIssuesKey = issues.map(i => i.stableId).sort().join(',');
   const reportHash = stableIssuesKey;
   if (reportHash === lastSituationReportHash) {
-    logger.debug('PM review: actionable issue-set unchanged since last review, skipping (no re-notify)');
+    // TB8 JOB 2: promoted from `logger.debug` (structurally invisible in production).
+    // THIS is the line that swallowed the two silent validation turns measured in battery
+    // `bmsgs7qejup` — it now says how much validation work it is skipping over.
+    logger.info('PM review: actionable issue-set unchanged since last review, skipping (no re-notify)', {
+      pendingValidation: pendingValidationCount, issues: issues.length,
+    });
     return;
   }
   lastSituationReportHash = reportHash;
@@ -1528,6 +1654,61 @@ Only contact ${primaryName} when there is something they need to do. Keep it bri
   try {
     recordPmLlmCall();
     await runtime.handleMessage(pmId, situationReport);
+
+    // ── SWEEP-A TB8 JOB 2: DID THE VALIDATOR ACTUALLY RULE? ──────────────────────────────
+    // The turn is back. Read the SAME rows again: anything this review handed the
+    // validator that still awaits Key 2 is a MISS, and until now a miss was invisible in
+    // every sink — no log at the production level, no work event, no counter — while the
+    // `stableIssuesKey` gate above silently skipped every later attempt on the unchanged
+    // set. Measured shape (battery `bmsgs7qejup`): two PM validation turns in a row
+    // returned no verdict on three rows, the owner was told at 5m00s, the verdict landed
+    // at 8m38s, and nothing anywhere recorded the two silent turns.
+    //
+    // Nothing new is invented to fix it. The record rides the EXISTING audit door
+    // (`writeTaskLog`), the re-drive is the EXISTING 60 s tick (the dedup hash is released
+    // exactly as the catch block below already releases it for a thrown failure, and for
+    // the same stated reason), and the escalation surface stays the scheduler's existing
+    // 5-minute owner escalation — whose own clock is now the bound this measures against.
+    if (askedForKeyTwo.length > 0) {
+      const stillAwaiting = idsStillAwaitingKeyTwo(askedForKeyTwo.map((r) => r.id));
+      const coverage = validationCoverageAfterReview({
+        asked: askedForKeyTwo, stillAwaiting, nowMs: Date.now(),
+      });
+      if (coverage.missed.length > 0) {
+        // LOUD, at the production log level, with the denominator and the ordering fact.
+        const line = 'PM validation review returned WITHOUT a verdict on rows it was handed';
+        const meta = {
+          asked: askedForKeyTwo.length,
+          missed: coverage.missed.length,
+          longestWaitMs: Math.max(...coverage.missed.map((m) => m.waitedMs)),
+          ownerEscalationBoundMs: VALIDATION_COVERAGE_BOUND_MS,
+          pastOwnerBound: coverage.missed.filter((m) => m.pastOwnerBound).map((m) => m.id),
+        };
+        if (coverage.anyPastOwnerBound) logger.warn(line, meta); else logger.info(line, meta);
+
+        // DURABLE, on the row itself, so a census can finally see the thing BATTERY4's
+        // `audit` count was reaching for. One entry per missed row per review.
+        const { writeTaskLog } = await import('./task-log.js');
+        for (const m of coverage.missed) {
+          writeTaskLog({
+            taskId: m.id,
+            fromEntity: 'pm',
+            entryKind: 'observation',
+            actionTaken: 'validation_review_miss',
+            reason:
+              `the validation review ran and returned no verdict on this row; ` +
+              `awaiting Key 2 for ${Math.round(m.waitedMs / 1000)}s` +
+              (m.pastOwnerBound
+                ? ` — PAST the ${VALIDATION_ESCALATION_MIN}-minute owner-escalation bound, so the owner has been (or is about to be) told this is unvalidated before its validator ruled`
+                : ''),
+          });
+        }
+      }
+      // RE-DRIVE: release the dedup so the next tick asks again about the same rows. An
+      // unchanged issue-set is exactly what the gate above compares equal, so without this
+      // the review that ruled on nothing was also the LAST review those rows ever got.
+      if (coverage.reReview) lastSituationReportHash = '';
+    }
   } catch (err) {
     logger.error('PM LLM review failed', { error: err instanceof Error ? err.message : String(err) });
     // Engine-guaranteed delivery (remediation Phase 4, 4a): a failed PM
