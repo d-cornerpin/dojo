@@ -89,12 +89,34 @@ describe('A — the DECIDED default: inherit parent, minus danger', () => {
     expect(child().file_read).toBe('*');
   });
 
-  it('MUST-SURVIVE: the default sub-agent keeps its twelve commands on BOTH doors', () => {
+  it('MUST-SURVIVE: the default sub-agent keeps its fourteen commands on BOTH doors', () => {
     // T3's measurement, and the brief names it: the new default must not shrink
     // it. Counted rather than eyeballed.
-    expect(DEFAULT_SUBAGENT_PERMISSIONS.exec_allow).toHaveLength(12);
-    expect(DEFAULT_SUBAGENT_PERMISSIONS.shell_allow).toHaveLength(12);
+    //
+    // ⚠ 12 → 14, SWEEP-A TB8 JOB 3 (OWNER RULING, 2026-08-05): *"agents do work
+    // and must be able to move files."* `mv` and `cp` join both doors. This is a
+    // WIDENING of the default, never a narrowing — the twelve above are all still
+    // here and the deny lists are untouched. The primary already held `'*'`
+    // (`PRIMARY_AGENT_PERMISSIONS.exec_allow`, manifest.ts:25), so the product
+    // never blocked a file-move for the owner's own agent; the gap this closes is
+    // the DEFAULT sub-agent's, which is what a delegated worker gets.
+    expect(DEFAULT_SUBAGENT_PERMISSIONS.exec_allow).toHaveLength(14);
+    expect(DEFAULT_SUBAGENT_PERMISSIONS.shell_allow).toHaveLength(14);
     expect(DEFAULT_SUBAGENT_PERMISSIONS.shell_allow).toEqual(DEFAULT_SUBAGENT_PERMISSIONS.exec_allow);
+    // The ruling by name, on both doors, so a re-ordering cannot satisfy the count
+    // while dropping the capability.
+    expect(DEFAULT_SUBAGENT_PERMISSIONS.exec_allow).toContain('mv');
+    expect(DEFAULT_SUBAGENT_PERMISSIONS.exec_allow).toContain('cp');
+    expect(DEFAULT_SUBAGENT_PERMISSIONS.shell_allow).toContain('mv');
+    expect(DEFAULT_SUBAGENT_PERMISSIONS.shell_allow).toContain('cp');
+  });
+
+  it('MUST-SURVIVE: the deny lists are UNTOUCHED by the mv/cp ruling', () => {
+    // The ruling widened `exec_allow`/`shell_allow` and nothing else. A widening
+    // that quietly relaxed a deny rule would be a different, unauthorised change.
+    expect(DEFAULT_SUBAGENT_PERMISSIONS.exec_deny).toEqual(['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *']);
+    expect(DEFAULT_SUBAGENT_PERMISSIONS.shell_deny).toEqual(['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *']);
+    expect(DEFAULT_SUBAGENT_PERMISSIONS.file_delete).toBe('none');
   });
 });
 

@@ -48,7 +48,27 @@ export const DEFAULT_SUBAGENT_PERMISSIONS: PermissionManifest = {
   file_read: ['~/Projects/**', '/tmp/**'],
   file_write: ['~/Projects/**', '/tmp/**'],
   file_delete: 'none',
-  exec_allow: ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'echo', 'node', 'npm', 'npx', 'git'],
+  // ⚠ 12 → 14 — OWNER RULING, 2026-08-05 (SWEEP-A TB8 JOB 3), in his own terms:
+  // *agents do work, and doing work means moving files.* A default sub-agent could
+  // read, search and count, and could run `node`/`npm`/`git`, but could not `mv` or
+  // `cp` a file it had just produced — so a delegated worker could build an artifact
+  // and not put it where it belonged. `mv` and `cp` join both doors.
+  //
+  // What this is NOT: a relaxation of anything. The twelve commands above are all
+  // still here, `exec_deny`/`shell_deny` below are untouched, and `file_delete`
+  // stays `'none'` — a move is not a delete, and the deny list still refuses
+  // `rm -rf /`, `rm -rf ~`, `sudo *` and `chmod 777 *`. The file-path walls are
+  // unchanged too: a default sub-agent's `file_write` is still `~/Projects/**`,
+  // `/tmp/**` and its own artifact directory, so `mv` can only land a file where
+  // that agent could already have written one.
+  //
+  // The gap this closes is the DEFAULT's alone. `PRIMARY_AGENT_PERMISSIONS.exec_allow`
+  // has been `['*']` since it was written (:25 above), so the product never blocked a
+  // file-move for the owner's own agent — the recurring `smell:permission-denied`
+  // finding in the behavioral battery is the TEST BOT's own narrower manifest, a
+  // separate fixture that the kit owns. Held by `agent/__tests__/child-scope.test.ts`,
+  // which counts both doors and names both commands.
+  exec_allow: ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'echo', 'node', 'npm', 'npx', 'git', 'mv', 'cp'],
   exec_deny: ['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *'],
   // PHASE-5 T3 — SAME LIST, AND THAT IS THE MEASUREMENT, NOT A CHOICE.
   //
@@ -62,7 +82,10 @@ export const DEFAULT_SUBAGENT_PERMISSIONS: PermissionManifest = {
   // worker's. T3 makes withholding EXPRESSIBLE and preserves the reach; T5 owns
   // the default-manifest decision (its DECIDED block already covers sub-agent
   // scope: inherit parent minus danger). Recorded as a hand-up, not silently.
-  shell_allow: ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'echo', 'node', 'npm', 'npx', 'git'],
+  // SAME LIST STILL — including the 2026-08-05 `mv`/`cp` ruling above. The two doors
+  // are asserted equal by the child-scope test, so widening one without the other
+  // would fail rather than drift.
+  shell_allow: ['ls', 'cat', 'head', 'tail', 'grep', 'find', 'wc', 'echo', 'node', 'npm', 'npx', 'git', 'mv', 'cp'],
   shell_deny: ['rm -rf /', 'rm -rf ~', 'sudo *', 'chmod 777 *'],
   // ⚠ WAS `'none'`, AND THE PLAN CALLS THAT A FALSE STATEMENT (T5 Step 1).
   // The owner's DECIDED default is "inherit parent minus danger", and network is
