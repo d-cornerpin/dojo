@@ -430,6 +430,26 @@ export function settleAsk(workId: string, ctx: SettlementContext): AskSettlement
  * delegation exit ENDS the turn that opened the join (`steps/execute/delegation-exit.ts`), so
  * the compile is always a later turn's work; and the engine's own relay records
  * `turn_number = NULL` (verified on delivery `42559251`), which is why NULL qualifies.
+ *
+ * ⚠ SWEEP-A TB13 — THAT LAST CLAUSE WAS A FALSE PROXY, AND IT COST AN OWNER A DUPLICATE
+ * ANSWER. The relay does NOT always record no turn: `recordDelivery` stamps `turn_number` from
+ * the AMBIENT turn context (`agent/v2/deliveries.ts`), so whenever the peer's reply lands while
+ * the delegating turn is still open, the engine's own relay carries THAT turn's number and this
+ * narrowing excluded it. Measured on the dev body: **21 of 65** recorded `a2a-join-relay`
+ * deliveries carry a turn number, and **5 of 5** recorded since this narrowing landed were
+ * refused as the receipt. Four were rescued by the model's own later compiled answer; the
+ * fifth — battery `bmshcidpw8d`, `ask:f8da81b2`, relay `bc839833` on turn 4039 — stayed
+ * `compile_pending`, ran the whole ladder, and its LAST rung relayed the same single piece to
+ * the owner a second time 52 s later (`2fc0347e`). That is the duplicate answer
+ * `delegation-duplicate-reconciled` clause (c) exists to refuse.
+ *
+ * The rule is unchanged and the proxy is corrected: what must never count is THE MODEL'S OWN
+ * BUBBLES on the delegating turn, and the engine's relay is not one — it is written by the
+ * platform, under a tool no model can call, out of the pieces the peers returned
+ * (`ENGINE_JOIN_RELAY_TOOLS`). Every other narrowing still applies to it: it must be
+ * `delivered`, this agent's, not a tool-call chip, and it must postdate `join_complete`. The
+ * negative control this clause was built for (`bmsg278e0k2`'s late status line) is re-driven
+ * beside the new positive in `work/__tests__/join-settlement.test.ts` §(ii-b).
  */
 function delegatingTurn(workId: string): number | null {
   const r = getDb().prepare(
@@ -437,6 +457,29 @@ function delegatingTurn(workId: string): number | null {
       WHERE work_id = ? AND kind = 'claim_turn' ORDER BY id DESC LIMIT 1`,
   ).get(workId) as { t: number | null } | undefined;
   return r?.t ?? null;
+}
+
+/**
+ * ⚠ SWEEP-A TB13 — THE ENGINE'S OWN RELAY, NAMED ON THE LEDGER RATHER THAN INFERRED.
+ *
+ * `a2a-join-relay` is the tool the engine records when IT hands a delegated answer to the
+ * owner (`agent/a2a-transport.ts`, both the one-piece deterministic relay and the compile
+ * ladder's last rung). No model can call it: it is written by the platform, from the pieces
+ * the peers actually returned, and it is by construction the compiled answer to the join it
+ * names. That is why it is exempt from the delegating-turn narrowing below and why it is what
+ * the ladder asks about before it speaks a second time.
+ *
+ * `a2a-join-failed` and `a2a-join-late` are deliberately NOT here: the first is a notice that
+ * there is no answer, and the second has its own arm with its own boundary.
+ */
+export const ENGINE_JOIN_RELAY_TOOLS = new Set(['a2a-join-relay']);
+
+/** The `detail` the join relay stamps on its delivery row — ONE derivation, imported by the
+ *  writer (`deliverJoinResultToOwner`) and by every reader, so "which join was this?" cannot
+ *  drift between them. The outbound scope MERGES the details of every door a send crosses
+ *  (`a; b`), so readers must match on containment, not equality. */
+export function joinDeliveryDetail(joinId: string): string {
+  return `join ${joinId}`;
 }
 
 /** When the join's countdown reached zero, from the row's own event. `null` when it never
@@ -455,13 +498,28 @@ function compiledDelivery(
 ): { id: string; tool: string } | null {
   const db = getDb();
   const excluded = [...NON_ANSWERING_DELIVERY_TOOLS];
+  const relayTools = [...ENGINE_JOIN_RELAY_TOOLS];
   const floorSec = Math.floor(completedAtMs / 1000);
-  // The delegating turn's own bubbles are not the compiled answer. NULL qualifies: the engine
-  // relay records no turn, and it IS a compiled delivery.
-  const laterTurn = afterTurn == null ? '' : 'AND (d.turn_number IS NULL OR d.turn_number > @afterTurn)';
+  // The delegating turn's own bubbles are not the compiled answer. Two things are not those
+  // bubbles: a delivery from a LATER turn, and a delivery from NO turn — and (TB13) the
+  // ENGINE'S OWN RELAY OF THIS JOIN whatever turn it happens to be stamped with, because the
+  // platform wrote it out of the pieces the peers returned and no model can call that tool.
+  //
+  // The exemption is keyed to THIS ROW's relay (`joinDeliveryDetail`), not to the tool alone.
+  // Driven, not assumed: with the tool alone, one join's relay settled a DIFFERENT ask that
+  // shared the conversation — the conversation-scoped read has no join identity of its own, so
+  // widening by tool would have widened it across rows. The negative control is in
+  // `work/__tests__/join-settlement.test.ts` §(ii-b).
+  const relaySql = relayTools.map((_, i) => `@r${i}`).join(', ');
+  const laterTurn = afterTurn == null ? ''
+    : `AND (d.turn_number IS NULL OR d.turn_number > @afterTurn
+            OR (d.tool IN (${relaySql}) AND d.detail LIKE @joinDetail))`;
   const bind = (extra: Record<string, unknown>): Record<string, unknown> => {
-    const o: Record<string, unknown> = { agentId: ask.agent_id, floorSec, ...extra };
+    const o: Record<string, unknown> = {
+      agentId: ask.agent_id, floorSec, joinDetail: `%${joinDeliveryDetail(ask.id)}%`, ...extra,
+    };
     excluded.forEach((t, i) => { o[`x${i}`] = t; });
+    relayTools.forEach((t, i) => { o[`r${i}`] = t; });
     if (afterTurn != null) o.afterTurn = afterTurn;
     return o;
   };
@@ -487,6 +545,43 @@ function compiledDelivery(
       ORDER BY d.created_at DESC, d.rowid DESC LIMIT 1`,
   ).get(bind({ conv: ask.conversation_id })) as
     { id: string; tool: string } | undefined) ?? null;
+}
+
+/**
+ * SWEEP-A TB13 — HAS THE ENGINE ALREADY TOLD THE OWNER THIS JOIN'S ANSWER?
+ *
+ * The exactly-once discipline the relay's own header claims ("the caller has already won the
+ * right to deliver — the exactly-once guard is the `work` transition that precedes this call")
+ * has one hole, and battery `bmshcidpw8d` drove through it: when the settlement that follows a
+ * relay is REFUSED, no transition happens, the row stays `compile_pending`, and the ladder's
+ * last rung relays the same pieces again 52 s later. A guard that only exists when the row
+ * moves is not a guard for the case where the row does not move.
+ *
+ * This is the durable answer to the only question that matters before speaking again: is there
+ * already a DELIVERED engine relay for THIS join that postdates its own `join_complete`? It
+ * reads the delivery ledger — never a flag, never a counter, so a restart, a re-drive and a
+ * reaper pass all read the same fact.
+ */
+export function priorEngineJoinRelay(workId: string): { id: string; tool: string } | null {
+  const ask = readAsk(workId);
+  if (!ask) return null;
+  const completedAt = joinCompletedAt(workId);
+  if (completedAt == null) return null;
+  const tools = [...ENGINE_JOIN_RELAY_TOOLS];
+  const bind: Record<string, unknown> = {
+    agentId: ask.agent_id,
+    floorSec: Math.floor(completedAt / 1000),
+    detail: `%${joinDeliveryDetail(workId)}%`,
+  };
+  tools.forEach((t, i) => { bind[`t${i}`] = t; });
+  return (getDb().prepare(
+    `SELECT d.id AS id, d.tool AS tool FROM deliveries d
+      WHERE d.agent_id = @agentId AND d.outcome = 'delivered'
+        AND d.tool IN (${tools.map((_, i) => `@t${i}`).join(', ')})
+        AND d.detail LIKE @detail
+        AND unixepoch(d.created_at) >= @floorSec
+      ORDER BY d.created_at ASC, d.rowid ASC LIMIT 1`,
+  ).get(bind) as { id: string; tool: string } | undefined) ?? null;
 }
 
 function settleOnJoin(

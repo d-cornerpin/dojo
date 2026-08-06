@@ -37,7 +37,7 @@ import {
 } from '../work/store.js';
 // SWEEP-A TB2: the join's close is the settlement authority's, not this module's — the same
 // rule the delivery arm and the finalize adjudicator use, invoked from the relay.
-import { settleAskOnJoin } from '../work/ask-settlement.js';
+import { settleAskOnJoin, priorEngineJoinRelay, joinDeliveryDetail } from '../work/ask-settlement.js';
 // …and the grind-vs-tell ladder, which owns "how many times has the system come back for
 // this, and what does it do when the drives are spent".
 import {
@@ -1357,7 +1357,10 @@ async function deliverJoinResultToOwnerInner(
     outcome: 'delivered', channel,
     agentId: join.agentId, tool,
     recipientId, messageId,
-    detail: `join ${join.id}`,
+    // ONE derivation of "which join was this?" (SWEEP-A TB13): the guard that stops the engine
+    // relaying twice reads this same string through `joinDeliveryDetail`, so writer and reader
+    // cannot drift.
+    detail: joinDeliveryDetail(join.id),
   }), 'a2a: join relay to the owner', { work: join.id, channel });
   logger.info('join relay: engine delivered to owner', {
     agentId: join.agentId, work: join.id, channel, viaChannel: delivered, deliveryId,
@@ -1745,6 +1748,37 @@ export async function resolveCompilePendingJoins(agentId: string): Promise<Compi
           attempt: 1, bound: 1,
           note: 'the agent did not speak after every drive and every notice; the platform surface was told',
         });
+      }
+
+      // ── 3b. …AND THE ENGINE DOES NOT SAY THE SAME THING TWICE (SWEEP-A TB13).
+      //
+      // MEASURED, battery `bmshcidpw8d`, `ask:f8da81b2`: a ONE-PIECE join was relayed by
+      // `resolveCompletedJoin` at 10:33:04 (delivery `bc839833`) and, because the settlement
+      // that follows that relay was REFUSED, the row stayed `compile_pending` and this rung
+      // relayed the same single piece again at 10:33:56 (`2fc0347e`). The owner was told the
+      // same codeword twice, 52 s apart, in two different wordings.
+      //
+      // The relay's own contract says "the exactly-once guard is the `work` transition that
+      // precedes this call" — and this is exactly the case where that transition never
+      // happened, so there was no guard at all. The durable ledger is what knows: an engine
+      // relay for THIS join that postdates its own `join_complete` means the owner ALREADY has
+      // the delegated answer. There is nothing left to send them, only a row to settle — and
+      // it settles on the delivery they actually got, named, never on a new one invented to
+      // make the state reachable.
+      //
+      // This narrows nothing else: with no prior relay the reader returns null and the relay
+      // below runs exactly as before. That is the owner's governing priority kept intact — the
+      // guard removes a SECOND telling, never the first.
+      const alreadyRelayed = priorEngineJoinRelay(join.id);
+      if (alreadyRelayed) {
+        logger.info('compile drive: the engine had ALREADY relayed this join to the owner; not relaying twice', {
+          agentId, work: join.id, deliveryId: alreadyRelayed.id, tool: alreadyRelayed.tool,
+        });
+        noteSettlementRefusal(settleAskOnJoin(join.id, {
+          agentId, deliveryId: alreadyRelayed.id,
+          reason: 'the engine had already relayed the delegated answer to the owner',
+        }), 'a2a: join settled on the relay the owner already got', join.id);
+        continue;
       }
 
       // ── 4. AND THE OWNER STILL GETS WHAT CAME BACK. The deterministic relay, unchanged:

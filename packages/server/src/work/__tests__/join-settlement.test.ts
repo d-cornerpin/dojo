@@ -52,6 +52,7 @@ import {
 } from '../store.js';
 import {
   settleAsk, settleAsksForDelivery, settleAsksAtTurnFinalize, settleAskOnJoin,
+  priorEngineJoinRelay, joinDeliveryDetail,
 } from '../ask-settlement.js';
 import {
   JOIN_REDRIVE_BOUND, STUCK_NOTICE_RETRY_BOUND, JOIN_DRIVE_ENTRY,
@@ -90,7 +91,7 @@ const ownerInbound = (id: string, over: Record<string, unknown> = {}): Record<st
 function seedDelivery(
   id: string,
   o: { turn: number; displayKind: 'tool-turn' | 'agent-text'; content?: string; offsetSeconds?: number;
-       tool?: string; conversationId?: string | null },
+       tool?: string; conversationId?: string | null; detailJoin?: string },
 ): string {
   const messageId = `msg-${id}`;
   insertMessage({
@@ -106,12 +107,15 @@ function seedDelivery(
   mockDb.current!.prepare('UPDATE messages SET display_kind = ? WHERE id = ?')
     .run(o.displayKind, messageId);
   mockDb.current!.prepare(
-    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, created_at)
-     VALUES (?, ?, ?, ?, 'dashboard', ?, ?, 'delivered', datetime('now', ?))`,
+    `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, message_id, outcome, detail, created_at)
+     VALUES (?, ?, ?, ?, 'dashboard', ?, ?, 'delivered', ?, datetime('now', ?))`,
   ).run(
     id, AGENT, o.turn, o.tool ?? 'dashboard',
     o.conversationId === undefined ? CONV : o.conversationId,
-    messageId, `${o.offsetSeconds ?? 0} seconds`,
+    messageId,
+    // The relay stamps WHICH JOIN it answered; every other door records no join at all.
+    o.detailJoin === undefined ? null : joinDeliveryDetail(o.detailJoin),
+    `${o.offsetSeconds ?? 0} seconds`,
   );
   return id;
 }
@@ -472,6 +476,235 @@ describe('(ii) the join settles through the authority, on the COMPILED delivery'
     const r = settleAskOnJoin(askId, { agentId: AGENT, deliveryId: 'd-chip', reason: 'x' });
     expect(r.verdict).toBe('unchanged');
     expect(workRow(askId).state).not.toBe('done');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// (ii-b) SWEEP-A TB13 — THE ENGINE'S OWN RELAY IS NOT THE DELEGATING TURN'S
+//        OWN LINE, EVEN WHEN IT IS RECORDED ON THAT TURN.
+//
+// ── THE FALSE PREMISE, NAMED AND MEASURED ──
+// The narrowing above (`95d4b23`) carries the sentence *"the engine's own relay records
+// `turn_number = NULL` (verified on delivery `42559251`), which is why NULL qualifies"*. That
+// premise is FALSE whenever the peer's reply lands while the delegating turn is still open:
+// `recordDelivery` stamps `turn_number` from the AMBIENT turn context
+// (`agent/v2/deliveries.ts` — `turnContext(input.agentId)?.turnNumber ?? null`), so the relay
+// carries the DELEGATING turn's number and the later-turn clause excludes the engine's own
+// answer as if it were the model's status line.
+//
+// Measured on the dev body, not reasoned about: of 65 recorded `a2a-join-relay` deliveries,
+// **21 carry a turn number**; and of the 5 in-turn relays recorded since the narrowing landed,
+// **5 of 5 were refused as the receipt** — 4 were rescued by the model's own later compiled
+// answer, and the fifth (battery `bmshcidpw8d`, `ask:f8da81b2`, turn 4039, delivery
+// `bc839833`) was not. That one stayed `compile_pending`, ran the whole ladder, and the last
+// rung RELAYED THE SAME SINGLE PIECE TO THE OWNER A SECOND TIME 52 s later (`2fc0347e`,
+// turn NULL) — the duplicate answer `delegation-duplicate-reconciled` clause (c) exists to
+// refuse, and the first in 15 recorded bundles.
+//
+// The fix is a NARROWING held in place and a false proxy corrected, never a widening: the
+// clause exists to refuse THE MODEL'S OWN BUBBLES on the delegating turn, and the engine's
+// relay is written by the platform under a tool no model can call. The negative control that
+// `95d4b23` was built for is re-driven below and must still bite.
+// ════════════════════════════════════════════════════════════════════════
+
+describe('(ii-b) the engine own relay settles the join even when it is stamped with the delegating turn', () => {
+  it('THE MEASURED SHAPE (bmshcidpw8d, ask:f8da81b2 / delivery bc839833 on turn 4039): named receipt -> closed', () => {
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 1);
+    landAll(kids);
+    expect(workRow(askId).compile_pending, 'premise: the join is waiting for the answer').toBe(1);
+    // The engine's own relay of the one piece, recorded INSIDE the delegating turn because the
+    // peer answered before the turn ended. Same row shape as `bc839833`.
+    seedDelivery('d-relay-in-turn', {
+      turn: 7, displayKind: 'agent-text', offsetSeconds: 5, tool: 'a2a-join-relay',
+      content: 'Heard back from Worker A: HARBOR-0', detailJoin: askId,
+    });
+
+    const r = settleAskOnJoin(askId, {
+      agentId: AGENT, deliveryId: 'd-relay-in-turn', reason: 'the engine relayed the delegated answer',
+    });
+
+    expect(r.verdict).toBe('closed');
+    expect(r.deliveryId).toBe('d-relay-in-turn');
+    const row = workRow(askId);
+    expect(row.state).toBe('done');
+    expect(row.result_delivery_id).toBe('d-relay-in-turn');
+    expect(row.compile_pending, 'the flag the ladder reads is cleared, so nothing re-relays').toBe(0);
+    expect(eventKinds(askId)).toContain('compile_resolved');
+  });
+
+  it('…and by the CONVERSATION-SCOPED read too — the compile drive names no delivery', () => {
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 1);
+    landAll(kids);
+    seedDelivery('d-relay-in-turn', {
+      turn: 7, displayKind: 'agent-text', offsetSeconds: 5, tool: 'a2a-join-relay', detailJoin: askId,
+    });
+    const r = settleAskOnJoin(askId, { agentId: AGENT, reason: 'the compiled answer reached the owner' });
+    expect(r.verdict).toBe('closed');
+    expect(r.deliveryId).toBe('d-relay-in-turn');
+  });
+
+  it('NEGATIVE CONTROL, HELD (the requirement 95d4b23 was built for): the delegating turn own '
+    + 'late STATUS LINE is still refused — same turn, same second, different tool', () => {
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 1);
+    landAll(kids);
+    seedDelivery('d-late-status', {
+      turn: 7, displayKind: 'agent-text', offsetSeconds: 5, tool: 'dashboard',
+      content: "I'll compile the final report once they're back",
+    });
+    const r = settleAskOnJoin(askId, { agentId: AGENT, deliveryId: 'd-late-status', reason: 'x' });
+    expect(r.verdict).toBe('unchanged');
+    expect(workRow(askId).state).not.toBe('done');
+    expect(workRow(askId).compile_pending).toBe(1);
+  });
+
+  it('NEGATIVE: the relay tool does not buy an EARLIER row a pass — it must still postdate join_complete', () => {
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 1);
+    seedDelivery('d-relay-early', {
+      turn: 7, displayKind: 'agent-text', offsetSeconds: -30, tool: 'a2a-join-relay', detailJoin: askId,
+    });
+    landAll(kids);
+    const r = settleAskOnJoin(askId, { agentId: AGENT, deliveryId: 'd-relay-early', reason: 'x' });
+    expect(r.verdict).toBe('unchanged');
+    expect(workRow(askId).state).not.toBe('done');
+  });
+
+  it('NEGATIVE: the relay tool does not widen "settled" — a child still outstanding still refuses', () => {
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 2);
+    landPiece(kids[0], { deliveryId: null as never, content: 'x', messageId: null, actorId: PEER });
+    seedDelivery('d-relay-in-turn', {
+      turn: 7, displayKind: 'agent-text', offsetSeconds: 5, tool: 'a2a-join-relay', detailJoin: askId,
+    });
+    const r = settleAskOnJoin(askId, { agentId: AGENT, deliveryId: 'd-relay-in-turn', reason: 'x' });
+    expect(r.verdict).toBe('unchanged');
+    expect(r.detail).toMatch(/children/);
+  });
+
+  it('NEGATIVE: ANOTHER join relay in the same conversation is not this ask compiled answer', () => {
+    // The conversation-scoped read has no join identity of its own, so the exemption is keyed
+    // to THIS row's relay. Without that scoping one join's relay closed a different ask that
+    // merely shared the conversation — measured while building this fix, in
+    // `agent/__tests__/join-relay-exactly-once.test.ts`'s third preservation clause.
+    const askId = claimedAsk('m-1', 7);
+    const other = claimedAsk('m-2', 7);
+    const kids = openJoin(askId, 1);
+    landAll(kids);
+    seedDelivery('d-relay-other', {
+      turn: 7, displayKind: 'agent-text', offsetSeconds: 5, tool: 'a2a-join-relay', detailJoin: other,
+    });
+    const r = settleAskOnJoin(askId, { agentId: AGENT, reason: 'x' });
+    expect(r.verdict).toBe('unchanged');
+    expect(workRow(askId).state).not.toBe('done');
+  });
+
+  it('NEGATIVE: a tool-turn CHIP recorded under the relay tool is still not an answer', () => {
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 1);
+    landAll(kids);
+    seedDelivery('d-relay-chip', {
+      turn: 7, displayKind: 'tool-turn', offsetSeconds: 5, tool: 'a2a-join-relay', detailJoin: askId,
+    });
+    const r = settleAskOnJoin(askId, { agentId: AGENT, deliveryId: 'd-relay-chip', reason: 'x' });
+    expect(r.verdict).toBe('unchanged');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════
+// SWEEP-A TB13 — THE PRIOR-RELAY READER the ladder's last rung consults
+// before it speaks. One derivation of "the engine has already relayed this
+// join's answer to the owner", read off the delivery ledger.
+// ════════════════════════════════════════════════════════════════════════
+
+describe('the prior-relay reader — what the engine has ALREADY said about this join', () => {
+  const relayRow = (id: string, o: { offsetSeconds: number; detailJoin?: string; tool?: string; outcome?: string }): void => {
+    mockDb.current!.prepare(
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome, detail, created_at)
+       VALUES (?, ?, 7, ?, 'dashboard', ?, ?, ?, datetime('now', ?))`,
+    ).run(
+      id, AGENT, o.tool ?? 'a2a-join-relay', CONV, o.outcome ?? 'delivered',
+      o.detailJoin === undefined ? null : joinDeliveryDetail(o.detailJoin),
+      `${o.offsetSeconds} seconds`,
+    );
+  };
+
+  it('POSITIVE: a delivered relay of THIS join, postdating join_complete, is found', () => {
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 1);
+    landAll(kids);
+    relayRow('d-relay', { offsetSeconds: 5, detailJoin: askId });
+    expect(priorEngineJoinRelay(askId)?.id).toBe('d-relay');
+  });
+
+  it('NEGATIVE: nothing relayed yet -> null (this is what lets the FIRST relay happen)', () => {
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 1);
+    landAll(kids);
+    expect(priorEngineJoinRelay(askId)).toBeNull();
+  });
+
+  it('NEGATIVE: a relay of ANOTHER join in the same conversation is not this join answer', () => {
+    const askId = claimedAsk('m-1', 7);
+    const other = claimedAsk('m-2', 8);
+    const kids = openJoin(askId, 1);
+    landAll(kids);
+    relayRow('d-relay-other', { offsetSeconds: 5, detailJoin: other });
+    expect(priorEngineJoinRelay(askId)).toBeNull();
+  });
+
+  it('NEGATIVE: a relay that PREDATES join_complete is not an answer to it', () => {
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 1);
+    relayRow('d-relay-early', { offsetSeconds: -30, detailJoin: askId });
+    landAll(kids);
+    expect(priorEngineJoinRelay(askId)).toBeNull();
+  });
+
+  it('NEGATIVE: a FAILED relay row is not something the owner was told', () => {
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 1);
+    landAll(kids);
+    relayRow('d-relay-failed', { offsetSeconds: 5, detailJoin: askId, outcome: 'failed' });
+    expect(priorEngineJoinRelay(askId)).toBeNull();
+  });
+
+  it('NEGATIVE: another TOOL is not the engine relay — a dashboard reply is the model speaking', () => {
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 1);
+    landAll(kids);
+    relayRow('d-dash', { offsetSeconds: 5, detailJoin: askId, tool: 'dashboard' });
+    expect(priorEngineJoinRelay(askId)).toBeNull();
+  });
+
+  it('the detail identity is ONE derivation, and the reader survives a door folding its own detail in', () => {
+    // `withOutbound`'s scope merges every door's detail into the row (`a; b`), so the reader
+    // matches on containment rather than equality — asserted rather than assumed.
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 1);
+    landAll(kids);
+    mockDb.current!.prepare(
+      `INSERT INTO deliveries (id, agent_id, turn_number, tool, channel, conversation_id, outcome, detail, created_at)
+       VALUES ('d-relay-merged', ?, NULL, 'a2a-join-relay', 'imessage', ?, 'delivered', ?, datetime('now', '+5 seconds'))`,
+    ).run(AGENT, CONV, `imessage door ok; ${joinDeliveryDetail(askId)}`);
+    expect(priorEngineJoinRelay(askId)?.id).toBe('d-relay-merged');
+  });
+
+  it('the join arm ACCEPTS what the reader finds — the two halves cannot disagree', () => {
+    // The guard is only safe because the delivery it points the ladder at is one the authority
+    // will settle on. Driven together rather than assumed.
+    const askId = claimedAsk('m-1', 7);
+    const kids = openJoin(askId, 1);
+    landAll(kids);
+    relayRow('d-relay', { offsetSeconds: 5, detailJoin: askId });
+    const prior = priorEngineJoinRelay(askId)!;
+    const r = settleAskOnJoin(askId, {
+      agentId: AGENT, deliveryId: prior.id, reason: 'the engine had already relayed the delegated answer',
+    });
+    expect(r.verdict).toBe('closed');
+    expect(workRow(askId).result_delivery_id).toBe('d-relay');
   });
 });
 
