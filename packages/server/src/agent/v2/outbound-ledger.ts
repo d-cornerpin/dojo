@@ -323,8 +323,14 @@ export function findRecentDeliveriesKeyed(
 }
 
 /** Compact "N minutes/hours ago" for a SQLite UTC timestamp ("YYYY-MM-DD HH:MM:SS"). */
-export function relativeTimeAgo(sqliteUtc: string): string {
-  const ms = Date.parse(sqliteUtc.replace(' ', 'T') + 'Z');
+export function relativeTimeAgo(at: string | number): string {
+  // ⚠ SWEEP CORE-2 item 4. This took a SQLite datetime STRING only, and `messages.created_at`
+  // became an epoch-ms INTEGER at migration 131. Every caller that passed a `messages` row's
+  // timestamp threw `sqliteUtc.replace is not a function` — `engine.recently-answered` did
+  // exactly that, inside a swallowing catch, on every turn since 131 (see the note in
+  // `answered-edge.ts`). `deliveries.created_at` is still TEXT, so BOTH shapes are real and
+  // the conversion belongs here, once, rather than at each site guessing its column's type.
+  const ms = typeof at === 'number' ? at : Date.parse(at.replace(' ', 'T') + 'Z');
   if (!Number.isFinite(ms)) return 'recently';
   const deltaSec = Math.max(0, Math.floor((Date.now() - ms) / 1000));
   if (deltaSec < 60) return 'just now';

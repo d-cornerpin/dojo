@@ -491,6 +491,24 @@ const MESSAGE_ENTRIES: MessageInjection[] = [
     render: (ctx) => (ctx.deliveriesLane ? { role: 'user', content: ctx.deliveriesLane } : null),
   },
   {
+    id: 'msg.relevant-memory',
+    target: 'messages',
+    slot: MessageSlot.RecalledMemory,
+    precedenceTier: 7,
+    reason:
+      'SWEEP CORE-2 item 4 (SWEEP-C T4, owner-decided GO 2026-07-26): THE RECALL LANE — ' +
+      'per-message semantic recall, and the conclusions it carries. It was a `fitLanes` ' +
+      'candidate at MessageSlot.RelevantMemory = 400 while its content was re-derived from ' +
+      'the LIVE ASK every turn, which is the exact cache-buster roadmap non-negotiable #10 ' +
+      'forbids; per-turn retrieval rides the TAIL, at 1870, between deliveries and ' +
+      'peer-status. It also carries what the agent ALREADY ANSWERED, resolved through ' +
+      '`answered-edge.ts` from the migration-113 answer stamps — never from prose — so an ' +
+      'ask recalled by meaning arrives with its conclusion instead of on its own. The ' +
+      'assembler computes it (it owns the window policy and the scaffolding gate); the loop ' +
+      'appends it past `volatileFrom`.',
+    render: (ctx) => (ctx.recallLane ? { role: 'user', content: ctx.recallLane } : null),
+  },
+  {
     id: 'msg.peer-status',
     target: 'messages',
     slot: MessageSlot.PeerStatus,

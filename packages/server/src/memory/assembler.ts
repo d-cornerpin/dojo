@@ -31,6 +31,7 @@ import {
 } from './lanes.js';
 import { tagMessageLane, tagMessageLanes, collectMessageLaneIds } from './message-lane-tag.js';
 import { getContextSummaries } from './dag.js';
+import { buildPerTurnRecallQuery, buildRecallLaneMessage } from './recall-lane.js';
 import { getLatestBriefing } from './briefing.js';
 import { retrieveForContext } from '../vault/retrieval.js';
 import { isPMAgent } from '../config/platform.js';
@@ -421,6 +422,20 @@ export interface AssembledContext {
    * silently consumed a marker the user had earned.
    */
   consumedOneShotFlags?: ConsumedOneShotFlags;
+  /**
+   * SWEEP CORE-2 item 4 — THE RECALL LANE, COMPUTED HERE AND EMITTED BY THE LOOP.
+   *
+   * This assembly owns the read (the window policy, and whether this is a scaffolding turn —
+   * on those the vault is already injected at slot 200 and must not be pulled twice), but the
+   * lane's content is retrieved against the LIVE ASK, so it may not sit in `messages`:
+   * everything in that array is the cacheable region by definition (`volatileFrom` is its
+   * length). The loop appends it past the boundary as `msg.relevant-memory` (slot 1870).
+   *
+   * It is carried here rather than re-derived in the loop for the same reason `reserveTokens`
+   * is: the loop reading the assembly's decision is one owner, the loop re-deriving it is two.
+   * It also keeps the dev context-dump able to show content the assembler no longer emits.
+   */
+  recallLane?: string | null;
 }
 
 /** One-shot agent-config markers an assembly consumed; the turn clears them (S3). */
@@ -889,26 +904,12 @@ function buildContentLanes(contentBudget: number): Array<Lane<LaneRenderCtx, unk
         );
       },
     },
-    {
-      id: 'lane.relevant-memory',
-      slot: MessageSlot.RelevantMemory,
-      priority: LANE_PRIORITY['lane.relevant-memory'],
-      minTokens: 0,
-      maxTokens:
-        laneLimit('lane.relevant-memory', 'tokens', 'messageBudget') +
-        laneLimit('lane.relevant-memory', 'tokens', 'vaultBudget'),
-      truncate: truncateTextLane,
-      render: async (ctx) => {
-        try {
-          return textRender(await buildRelevantMemoryBlock(ctx.agentId, !ctx.shouldFireScaffolding, ctx.policy));
-        } catch (err) {
-          logger.debug('relevant-memory block failed', {
-            error: err instanceof Error ? err.message : String(err),
-          }, ctx.agentId);
-          return null;
-        }
-      },
-    },
+    // SWEEP CORE-2 item 4: `lane.relevant-memory` LEFT this candidate list. It is a
+    // post-budget TAIL lane now (`memory/recall-lane.ts`, MessageSlot.RecalledMemory = 1870):
+    // everything emitted here is the cacheable region (`volatileFrom` is this array's length),
+    // and a lane whose content is retrieved against the LIVE ASK may not sit in it. The block
+    // is still computed on this assembly — see `recallLane` below, which is where the
+    // scaffolding gate and the window policy live — and the loop appends it past the boundary.
     {
       id: 'lane.attempt-ledger',
       slot: MessageSlot.AttemptLedger,
@@ -1588,6 +1589,28 @@ async function assembleMessageContext(
     }
   }
 
+  // ── THE RECALL LANE (SWEEP CORE-2 item 4) ────────────────────────────────────────────────
+  // Computed here, emitted by the loop past `volatileFrom`. `includeVault` is false on
+  // scaffolding turns because those already inject the vault via `retrieveForContext` at slot
+  // 200, and quoting it twice is the double-injection that gate has always prevented. It is
+  // best-effort in exactly the way the lane render was: a recall failure costs recall, never
+  // the assembly. Computed BEFORE the post-budget report below so the grant states whether it
+  // fired — this lane, unlike `lane.deliveries`, is READ here even though it is EMITTED there.
+  let recallLane: string | null = null;
+  try {
+    recallLane = await buildRecallLaneMessage(
+      agentId,
+      !shouldFireScaffolding,
+      policy,
+      liveTurnContext(agentId)?.conversationId ?? null,
+    );
+  } catch (err) {
+    logger.debug('recall lane failed', {
+      error: err instanceof Error ? err.message : String(err),
+    }, agentId);
+  }
+  if (recallLane) postBudget.push('lane.relevant-memory');
+
   // Record the post-budget lanes that actually fired, against their declared reserves.
   // T1 2b checked this derived `empty` too: these lanes are inline pushes onto `postBudget`,
   // not `lane.render()` calls behind a catch, so "did not fire" is the whole truth here.
@@ -1632,6 +1655,7 @@ async function assembleMessageContext(
     reserveTokens: policy.toolAndOutputReserve,
     allocation: report,
     consumedOneShotFlags,
+    recallLane,
   };
 }
 
@@ -1709,275 +1733,17 @@ async function selectSummariesByRelevance(
   return summaries.filter((s) => picked.has(s.id));
 }
 
-// ── Relevant memory block (per-turn, relevance mode only) ──
-
-// PHASE-3 T3: the two budgets (§T0-B E `:1646`/`:1647`), the four retrieval knobs
-// (F `:1755`/`:1758`/`:1805`/`:1807`), the row caps (C `:1748`/`:1777`/`:1818`/`:1684`) and
-// the char slices (D `:1688`/`:1694`/`:1703`/`:1771`/`:1812`) are all
-// `LANE_LIMITS['lane.relevant-memory']` declarations now.
-const RELEVANT_MEMORY_CACHE_MS = 60_000;
-// Derived-data cache only (loss = recompute); keyed by (agent, includeVault),
-// validated by query text, so N tool iterations of one turn run vector search
-// (and one query embed) at most once.
-const relevantMemoryCache = new Map<string, { at: number; queryText: string; block: string | null }>();
-
-// D4: warn at most once per outage window when the query embedding is
-// unavailable and we degrade to FTS, so a chronic embed outage is visible
-// without spamming every turn.
-let lastEmbedDegradeWarnAt = 0;
-
-function isSyntheticRow(content: string): boolean {
-  return content.startsWith('[SOURCE:') || content.startsWith('[A2A:')
-    || content.startsWith('[Engine') || content.startsWith('[ENGINE')
-    || content.startsWith('[System') || content.startsWith('[DOJO:')
-    // PHASE-1 T8: the divider's shape is @dojo/shared's, not a literal re-typed here.
-    || parseDivider(content)?.label.startsWith(NEW_SESSION_DIVIDER_LABEL) === true;
-}
-
-// D4: strip a leading engine/A2A envelope so the recall query is the actual
-// content. "[A2A:QUESTION thread:ab from:PM] can you ship X?" -> "can you ship X?"
-// "[SOURCE:scheduler] remind the owner about Y" -> "remind the owner about Y".
-function stripRecallEnvelope(content: string): string {
-  const m = content.match(/^\[[^\]]*\]\s*/);
-  return m ? content.slice(m[0].length) : content;
-}
-
-// D4: ONE per-turn recall query, used by both summary-relevance and the
-// relevant-memory block. Preference: the newest genuine human user rows
-// (non-synthetic); else, on A2A/engine turns or mid-tool-iteration when no
-// human row is in the recent window, the newest substantive row with its
-// envelope stripped. The old derivation read only the last 3 user rows and went
-// EMPTY on A2A/engine turns (zero semantic recall) and whenever tool iterations
-// pushed the user row out of the 3-row window.
-// ── THE PER-TURN RECALL QUERY IS ACTUALLY PER-TURN NOW (PHASE-3 T3) ─────────────────────
+// ── The recall lane MOVED (SWEEP CORE-2 item 4) ─────────────────────────────────────────
 //
-// FOUND BY MEASUREMENT, not by reading: with the generated ack proven byte-stable across
-// four consecutive iterations of one turn (receipts t1607 i2..i5, ack sha `dd83e8ed…`
-// identical throughout), the remaining message-array churn was ISOLATED to message 0 — the
-// summaries lane — changing size mid-turn (20,324 -> 19,914 chars between i4 and i5).
+// `buildRelevantMemoryBlock` and everything it owned — the per-turn recall query and its
+// turn-boundary memo, the synthetic-row filter, the FTS degrade, the vector/vault retrieval
+// and the render — are `memory/recall-lane.ts` now, whole. Nothing was deleted; the module
+// header carries the incident history that used to live here, plus the two things this task
+// added: the position (past `msg.turn-context`, because the content changes with the live
+// ask) and the ANSWERED PAIRS read off the migration-113 stamps.
 //
-// The mechanism: this function reads the last N rows and prefers the genuine human user
-// rows among them. Mid-turn, each tool iteration appends an assistant row and a tool row,
-// so the human row is PUSHED OUT of that window and the function falls through to its
-// second branch — "the newest substantive row, envelope-stripped" — which is a DIFFERENT
-// row on every iteration. Both relevance-selected lanes (summaries, relevant-memory) then
-// re-select against a different query, and both sit AHEAD of the tail boundary, so the
-// whole array behind them is re-read. That is the K10 defect `check-message-prefix` was
-// red on from 2026-07-27.
-//
-// ── TWO CORRECTIONS TO THE PARAGRAPH ABOVE (PHASE-3 KITFIX-PREFIX, 2026-08-01, P3-R4) ───
-// It said "re-BILLED", and three later documents inherited a "~23KB re-billed every turn"
-// figure from that word. Measured through the provider's own prompt-cache counters on
-// matched arms: DeepSeek matches at 128-token block granularity inside the byte stream, so
-// on the turns the check called fully broken it still CACHE-READ 91–93% of the prompt. The
-// marginal cost of an across-turn re-selection is ≈1,186 tokens/turn (a floor — the cache
-// frontier keeps walking forward while the block stays still), not ~23KB. And the check is
-// not red any more: it was judging whichever two receipt files were newest on disk, a
-// measured 41.9% coin flip; it drives its own fixed-ask pair now and this memo is what
-// makes that pair hold. `overhaul-research/25-cache-preservation.md` is the evidence base.
-//
-// This function's own name and its D4 docstring already say "ONE per-turn recall query".
-// It was one per ASSEMBLY. Memoising it against `turnBoundary` — the timestamp the turn
-// stamps at pickup and clears at idle — makes the claim true: iteration 1 computes exactly
-// what it computed before (no semantic change to what is recalled), and iterations 2..N
-// reuse it instead of re-deriving a different one. Outside a turn there is no boundary and
-// no memo, which is correct: there is no turn to be stable within.
-//
-// It also makes `relevantMemoryCache` below actually hold across a turn — it is keyed by
-// query text, so a query that changed every iteration invalidated it every iteration and
-// each one paid for a fresh vector search and a fresh embed.
-const perTurnRecallQuery = new Map<string, { boundary: string; query: string }>();
-
-function buildPerTurnRecallQuery(agentId: string): string {
-  const boundary = turnBoundary.get(agentId);
-  if (boundary) {
-    const memo = perTurnRecallQuery.get(agentId);
-    if (memo && memo.boundary === boundary) return memo.query;
-  }
-  const query = deriveRecallQuery(agentId);
-  if (boundary) perTurnRecallQuery.set(agentId, { boundary, query });
-  return query;
-}
-
-function deriveRecallQuery(agentId: string): string {
-  let recent: ReturnType<typeof getRecentMessages> = [];
-  try { recent = getRecentMessages(agentId, laneLimit('lane.relevant-memory', 'rows', 'recallWindow')); } catch { return ''; }
-  const humanUser = recent
-    .filter((m) => m.role === 'user' && typeof m.content === 'string' && !isSyntheticRow(m.content))
-    .map((m) => m.content as string);
-  const q = humanUser.join('\n').slice(-laneLimit('lane.relevant-memory', 'chars', 'recallHead'));
-  if (q.trim().length > 10) return q;
-  for (let i = recent.length - 1; i >= 0; i--) {
-    const c = recent[i]?.content;
-    if (typeof c !== 'string') continue;
-    const stripped = stripRecallEnvelope(c).replace(/\s+/g, ' ').trim();
-    if (stripped.length > 10) return stripped.slice(-laneLimit('lane.relevant-memory', 'chars', 'recallTail'));
-  }
-  return '';
-}
-
-// D4: FTS degrade for message recall when the query embedding is unavailable.
-function ftsMessageHits(query: string, agentId: string, limit: number): Array<{ sourceId: string }> {
-  try {
-    const db = getDb();
-    const safe = query.replace(/["']/g, ' ').split(/\s+/).filter((w) => w.length > 2)
-      .slice(0, laneLimit('lane.relevant-memory', 'chars', 'queryWords')).join(' ');
-    if (!safe) return [];
-    const rows = db.prepare(
-      `SELECT m.id FROM messages_fts fts JOIN messages m ON m.rowid = fts.rowid
-        WHERE messages_fts MATCH ? AND m.agent_id = ? ORDER BY rank LIMIT ?`,
-    ).all(safe, agentId, limit) as Array<{ id: string }>;
-    return rows.map((r) => ({ sourceId: r.id }));
-  } catch {
-    return [];
-  }
-}
-
-async function buildRelevantMemoryBlock(
-  agentId: string,
-  includeVault: boolean,
-  policy: ReturnType<typeof contextWindowPolicy>,
-): Promise<string | null> {
-  const queryText = buildPerTurnRecallQuery(agentId);
-  if (queryText.trim().length <= 10) return null;
-
-  const cacheKey = `${agentId}::${includeVault ? 'v' : 'm'}`;
-  const cached = relevantMemoryCache.get(cacheKey);
-  if (cached && cached.queryText === queryText && Date.now() - cached.at < RELEVANT_MEMORY_CACHE_MS) {
-    return cached.block;
-  }
-
-  // D4 step 2: embed the recall query ONCE; share it across the message + vault
-  // lanes so a single turn embeds at most once. On failure, degrade to FTS/LIKE
-  // (step 5) so recall still returns something.
-  let queryEmbedding: Float32Array | null = null;
-  try {
-    const { generateEmbedding } = await import('./embeddings.js');
-    queryEmbedding = await generateEmbedding(queryText);
-  } catch (err) {
-    if (Date.now() - lastEmbedDegradeWarnAt > 300_000) {
-      lastEmbedDegradeWarnAt = Date.now();
-      logger.warn('per-turn recall: query embed unavailable, degrading to FTS', {
-        error: err instanceof Error ? err.message : String(err),
-      }, agentId);
-    }
-  }
-
-  const msgLines: string[] = [];
-  const vaultLines: string[] = [];
-  try {
-    const db = getDb();
-    // The fresh tail already includes these; this block is only for what fell
-    // out. getRecentMessages is session-aware, so a fact taught just before a
-    // reset stays ELIGIBLE (it is outside the new session's tail).
-    // REQUIREMENT B6, THE RECONCILE. This read was `getRecentMessages(agentId, 80)` — a
-    // literal copy of `getFreshTailCount`'s 200K-window answer. On a 32K model the tail
-    // showed 40 rows while this exclusion window claimed 80, so 40 rows were excluded from
-    // recall that were NOT in the tail: they were unreachable by either path. One number,
-    // one owner (`memory/budget.ts`), read off the policy this assembly is already using.
-    const tailIds = new Set(getRecentMessages(agentId, policy.freshTailCount).map((m) => m.id));
-
-    // --- older raw messages by meaning ---
-    let msgHits: Array<{ sourceId: string }>;
-    if (queryEmbedding) {
-      const { vectorSearch } = await import('./vector-search.js');
-      msgHits = await vectorSearch(queryText, agentId, {
-        sourceType: 'message',
-        limit: laneLimit('lane.relevant-memory', 'retrieval', 'messageLimit'),
-        minSimilarity: laneLimit('lane.relevant-memory', 'retrieval', 'messageMinSimilarity'),
-        queryEmbedding,
-      });
-    } else {
-      msgHits = ftsMessageHits(queryText, agentId, laneLimit('lane.relevant-memory', 'retrieval', 'ftsLimit'));
-    }
-    let usedMsg = 0;
-    // Selection stays similarity-ranked (best hits win the budget), but
-    // presentation is CHRONOLOGICAL, see the sort below.
-    const msgCandidates: Array<{ createdAt: string; line: string }> = [];
-    for (const hit of msgHits) {
-      if (tailIds.has(hit.sourceId)) continue;
-      const row = db.prepare(`SELECT role, content, datetime(created_at/1000,'unixepoch') AS created_at FROM messages WHERE id = ?`)
-        .get(hit.sourceId) as { role: string; content: string; created_at: string } | undefined;
-      if (!row || typeof row.content !== 'string') continue;
-      if (row.content.trim().startsWith('[') && row.content.includes('"type"')) continue; // tool JSON rows
-      if (isSyntheticRow(row.content)) continue;
-      const snippet = row.content.replace(/\s+/g, ' ').slice(0, laneLimit('lane.relevant-memory', 'chars', 'hitPreview'));
-      const line = `- [${row.created_at}] ${row.role}: ${snippet}`;
-      const lineTokens = estimateTokens(line);
-      if (usedMsg + lineTokens > laneLimit('lane.relevant-memory', 'tokens', 'messageBudget')) break;
-      msgCandidates.push({ createdAt: row.created_at, line });
-      usedMsg += lineTokens;
-      if (msgCandidates.length >= laneLimit('lane.relevant-memory', 'rows', 'minTailForRecall')) break;
-    }
-    // 2026-07-03: present recalled lines oldest → newest, newest LAST (the
-    // recency-salient slot for LLMs). Similarity ordering put a stale
-    // statement of a since-corrected fact FIRST and the weakest floor model
-    // echoed it (observed live: an old membership code recited over the
-    // corrected one told minutes before). Conflict arbitration is the
-    // engine's job, not the model's (correctness-floor rule).
-    msgCandidates.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    msgLines.push(...msgCandidates.map((c) => c.line));
-
-    // --- long-term vault by meaning (D4 step 3) ---
-    // Only on non-scaffolding turns; scaffolding (session-start / post-compaction)
-    // turns already inject the vault via retrieveForContext, so skip to avoid
-    // double-injection. Dedupe against pinned entries (always injected).
-    if (includeVault) {
-      // W3-4: all three lookups scoped to THIS agent's vault. Unscoped, every
-      // agent's assembled context could recall other agents' private entries.
-      const { semanticSearch, getPinnedEntries, listEntries } = await import('../vault/store.js');
-      const pinnedIds = new Set(getPinnedEntries(agentId).map((e) => e.id));
-      let vhits: Array<{ id: string; type: string; content: string }>;
-      if (queryEmbedding) {
-        // FA-V6: personalOnly:true so this auto-recall path matches its own
-        // listEntries fallback below (which defaults to namespace IS NULL) and
-        // exact mode's contract. Squad-namespaced entries stay out of PERSONAL
-        // recall; squad recall flows via squad_recall. Correct under D-A (squad
-        // namespaces stay opt-in). Filter-only change: no effect on the cache
-        // prefix ordering (results are still deterministic by similarity).
-        vhits = await semanticSearch(queryText, {
-          limit: laneLimit('lane.relevant-memory', 'retrieval', 'vaultLimit'),
-          minSimilarity: laneLimit('lane.relevant-memory', 'retrieval', 'vaultMinSimilarity'),
-          queryEmbedding, agentId, personalOnly: true,
-        });
-      } else {
-        vhits = listEntries({
-          search: queryText,
-          limit: laneLimit('lane.relevant-memory', 'retrieval', 'vaultEntryLimit'),
-          agentId, includeOwnerScope: true,
-        });
-      }
-      let usedVault = 0;
-      for (const e of vhits) {
-        if (pinnedIds.has(e.id)) continue;
-        const snippet = e.content.replace(/\s+/g, ' ').slice(0, laneLimit('lane.relevant-memory', 'chars', 'vaultPreview'));
-        const line = `- [vault:${e.type}] ${snippet}`;
-        const lineTokens = estimateTokens(line);
-        if (usedVault + lineTokens > laneLimit('lane.relevant-memory', 'tokens', 'vaultBudget')) break;
-        vaultLines.push(line);
-        usedVault += lineTokens;
-        if (vaultLines.length >= laneLimit('lane.relevant-memory', 'rows', 'minTailForVault')) break;
-      }
-    }
-  } catch (err) {
-    logger.debug('relevant-memory retrieval failed', {
-      error: err instanceof Error ? err.message : String(err),
-    }, agentId);
-  }
-
-  let block: string | null = null;
-  if (msgLines.length > 0 || vaultLines.length > 0) {
-    const parts: string[] = [];
-    // Framing states the precedence deterministically: entries are dated and
-    // ordered, and the newest statement supersedes older ones on conflict.
-    if (msgLines.length > 0) parts.push(`Older messages retrieved by meaning (ordered oldest → newest; when they conflict, the NEWEST line supersedes the older ones):\n${msgLines.join('\n')}`);
-    if (vaultLines.length > 0) parts.push(`From your long-term vault (retrieved by meaning):\n${vaultLines.join('\n')}`);
-    block = `═══ RELEVANT MEMORY (retrieved by meaning, context only, not live conversation) ═══\n${parts.join('\n\n')}\n═══ END RELEVANT MEMORY ═══`;
-  }
-
-  relevantMemoryCache.set(cacheKey, { at: Date.now(), queryText, block });
-  return block;
-}
+// `buildPerTurnRecallQuery` is imported back for `selectSummariesByRelevance` above, which
+// has always shared the same query — one derivation, two readers, exactly as before.
 
 function budgetSummaries(summaries: Summary[], availableTokens: number): Summary[] {
   // Reserve at least 30% of available tokens for fresh tail

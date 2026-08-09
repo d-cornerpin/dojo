@@ -269,7 +269,13 @@ describe('THE INVERSION, killed and pinned: a forced 8K budget', () => {
     ['lane.briefing', 100, 4000, 0],
     ['lane.vault', 200, 3000, 0],
     ['lane.summaries', 300, 6000, 0],
-    ['lane.relevant-memory', 400, 1200, 0],
+    // SWEEP CORE-2 item 4: `['lane.relevant-memory', 400, 1200, 0]` LEFT this fixture with the
+    // lane. It is not a `fitLanes` candidate any more — it is post-budget at slot 1870
+    // (`memory/recall-lane.ts`), reserved off the top and never ranked — so keeping a row for
+    // it here would test a ladder rung that no longer exists and, worse, would read
+    // `LANE_PRIORITY['lane.relevant-memory']` as `undefined` in the comparison below, where
+    // every `undefined >= n` is silently FALSE. The nine-lane inversion this block pins is
+    // unchanged for the eight that remain.
     ['lane.attempt-ledger', 500, 800, 0],
     ['lane.active-tasks', 600, 900, 0],
     ['lane.continuity', 700, 1500, 0],

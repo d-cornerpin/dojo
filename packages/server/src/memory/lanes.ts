@@ -162,9 +162,13 @@ export interface Lane<C = unknown, P = unknown> {
 //                         declared its own 800-token ceiling and that ceiling is preserved.
 //   lane.summaries        above the vault: summaries are THIS conversation's own compressed
 //                         history, the vault is everything else.
-//   lane.relevant-memory  beside the vault, above it: it is a retrieval of raw history that
-//                         has fallen out of the tail, which is nearer the live thread than a
-//                         curated vault entry.
+//   (lane.relevant-memory LEFT this ladder at SWEEP CORE-2 item 4. Its rung read "beside the
+//    vault, above it: a retrieval of raw history that has fallen out of the tail". The rung is
+//    gone because the LANE is gone from here — it is a post-budget tail lane now
+//    (`memory/recall-lane.ts`, MessageSlot.RecalledMemory = 1870), for the reason its own
+//    header gives: its content is retrieved against the live ask, so it may not sit ahead of
+//    the cache boundary. A priority rung is a statement about what to DROP under pressure, and
+//    a lane the budget never ranks has nothing to say there.)
 //
 // The ack lane sits at 35 — just under the live conversation and above every scaffolding
 // lane it closes — because an ack that survives while every section it acknowledges was
@@ -181,7 +185,6 @@ export const LANE_PRIORITY: Record<string, number> = {
   'lane.attempt-ledger': 60,
   'lane.continuity': 70,
   'lane.summaries': 80,
-  'lane.relevant-memory': 90,
   'lane.vault': 100,
   'lane.briefing': 110,
 };
@@ -200,7 +203,6 @@ export const LANE_LADDER_LABEL: Record<string, string> = {
   'lane.attempt-ledger': 'attempt ledger',
   'lane.continuity': 'continuity brief',
   'lane.summaries': 'compressed history',
-  'lane.relevant-memory': 'relevant memory',
   'lane.vault': 'vault entries',
   'lane.briefing': 'briefing',
 };
@@ -210,7 +212,6 @@ export const LANE_SECTION_LABEL: Record<string, string> = {
   'lane.briefing': 'briefing',
   'lane.vault': 'vault',
   'lane.summaries': 'summaries',
-  'lane.relevant-memory': 'relevant memory',
   'lane.attempt-ledger': 'attempt ledger',
   'lane.active-tasks': 'active tasks',
   'lane.continuity': 'continuity brief',
@@ -261,9 +262,27 @@ export const LANE_LIMITS: Record<string, LaneLimits> = {
   // REQUIREMENT B6, THE RECONCILE: `:1748`'s hardcoded 80 was `getFreshTailCount`'s
   // 200K-window answer written as a literal, so on a 32K model the recall window read 80
   // rows while the tail read 40. It is `freshTailCount` now — one number, one owner.
+  // SWEEP CORE-2 item 4: the lane moved to the tail (`memory/recall-lane.ts`) and gained the
+  // ANSWERED PAIRS it exists for. Three numbers are new and each is stated rather than
+  // guessed:
+  //   recallPairs 3     — the same bound `engine.recently-answered` already chose for "the
+  //                       last few asks that already have answers" (RECENTLY_ANSWERED_LIMIT).
+  //                       Carried, not re-invented (#14).
+  //   answerPreview 220 — the answer half of a pair. Deliberately SHORTER than the 300-char
+  //                       ask half: the ask is what the search matched and has to be
+  //                       recognisable, the answer is a reminder of a conclusion the agent can
+  //                       restate, not a re-delivery of it.
+  //   quotedFloor 40    — `lane.deliveries`'s floor, verbatim: below one whole row the quote
+  //                       is shortened, never taken to nothing.
+  // The two `tokens` sub-budgets stay because the retrieval loop is gone from `assembler.ts`
+  // but the LANE's ceiling is now the derived worst case (`recallLaneWorstCaseTokens`), which
+  // is SMALLER than messageBudget + vaultBudget ever allowed and — unlike them — enforced.
   'lane.relevant-memory': {
-    rows: { recallWindow: 10, minTailForRecall: 5, minTailForVault: 5 },
-    chars: { recallHead: 500, recallTail: 500, queryWords: 8, hitPreview: 300, vaultPreview: 300 },
+    rows: { recallWindow: 10, minTailForRecall: 5, minTailForVault: 5, recallPairs: 3 },
+    chars: {
+      recallHead: 500, recallTail: 500, queryWords: 8, hitPreview: 300, vaultPreview: 300,
+      answerPreview: 220, quotedFloor: 40,
+    },
     tokens: { messageBudget: 1200, vaultBudget: 2000 },
     retrieval: {
       messageLimit: 8, messageMinSimilarity: 0.35, ftsLimit: 8,
@@ -429,6 +448,30 @@ export const POST_BUDGET_LANES: PostBudgetLane[] = [
       'inside the fresh tail on every turn until it ages out, and it can never be ' +
       'truncated because it is indistinguishable from history.',
   },
+  {
+    id: 'lane.relevant-memory',
+    slot: MessageSlot.RecalledMemory,
+    reserveTokens: 1407,
+    measured:
+      'SWEEP CORE-2 item 4, DERIVED FROM THE GENERATOR, not guessed beside it: the worst case ' +
+      '`memory/recall-lane.ts` can render under its own declared caps above — 3 answered ' +
+      'pairs x (300-char ask + 220-char answer + frame) + 5 recalled lines x 300 chars + 5 ' +
+      'vault lines x 300 chars + the three section headers + the truncation marker. ' +
+      '`recall-lane.test.ts` calls `recallLaneWorstCaseTokens()` and pins this literal to it, ' +
+      'so the declaration and the renderer cannot drift, and a second clause proves no input ' +
+      'can exceed it. Like `lane.deliveries` this lane\'s content VARIES, so the reserve is ' +
+      'ENFORCED by `truncate()` rather than merely recorded — the render fits itself before it ' +
+      'leaves the module. ' +
+      'WHAT IT COSTS AND WHAT IT REPLACES, stated rather than assumed: 1,407 tokens leave the ' +
+      'content budget on every assembly, and the lane can no longer be dropped by the fit. ' +
+      'What it replaces was WORSE on both counts — as a `fitLanes` candidate it declared ' +
+      '`messageBudget + vaultBudget` = 3,200 tokens as its ceiling with NO truncate any input ' +
+      'could reach, so a heavy recall turn spent more than double this and spent it from ' +
+      'INSIDE the cacheable prefix at slot 400, re-billing every message behind it whenever ' +
+      'the ask moved. The undroppability is the point rather than a cost: the owner decided ' +
+      'per-message recall ENABLED (2026-07-26), and a lane that silently disappears under ' +
+      'pressure is the "constantly forgets" mechanism SWEEP-C T4 is named after.',
+  },
 ];
 
 export const POST_BUDGET_RESERVE_TOKENS = POST_BUDGET_LANES.reduce((t, l) => t + l.reserveTokens, 0);
@@ -457,6 +500,8 @@ export const POST_BUDGET_ENTRY_LANE: Record<string, string> = {
   // The deliveries lane declares its OWN reserve, so its entry is attributed to it and not
   // to the tail it sits inside — the same split the receipt makes.
   'msg.deliveries': 'lane.deliveries',
+  // SWEEP CORE-2 item 4: the recall lane, same split for the same reason.
+  'msg.relevant-memory': 'lane.relevant-memory',
   // The three engine-side injections that still push directly (`pre-call-injections.ts`).
   'engine.open-work': 'lane.loop-tail',
   'engine.recent-outbound': 'lane.loop-tail',

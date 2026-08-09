@@ -247,6 +247,9 @@ function summarizeMessage(msg: LoopMessage, mode: ReceiptMode, laneId: string | 
 /** The registry entry the deliveries lane emits under. Its tokens belong to `lane.deliveries`,
  *  which declares its own reserve, and not to the loop tail it sits inside. */
 const DELIVERIES_ENTRY_ID = 'msg.deliveries';
+/** SWEEP CORE-2 item 4: the recall lane, the same split for the same reason — it declares its
+ *  own reserve, so its tokens belong to it and not to the loop tail it sits inside. */
+const RECALL_ENTRY_ID = 'msg.relevant-memory';
 
 /**
  * `lane.loop-tail` is DECLARED by the assembler and FILLED by the loop, so the assembler's
@@ -274,8 +277,11 @@ function withMeasuredLoopTail(input: ReceiptInput): AllocationReport['grants'] {
   // against two different reserves, and the receipt's whole job is that a number in it is
   // the number that happened.
   const isDeliveries = (i: number) => tailIds[i] === DELIVERIES_ENTRY_ID;
+  const isRecall = (i: number) => tailIds[i] === RECALL_ENTRY_ID;
+  const isOwnReserve = (i: number) => isDeliveries(i) || isRecall(i);
   const deliveries = tail.filter((_, i) => isDeliveries(i));
-  const rest = tail.filter((_, i) => !isDeliveries(i));
+  const recall = tail.filter((_, i) => isRecall(i));
+  const rest = tail.filter((_, i) => !isOwnReserve(i));
   const measured = (
     id: string,
     msgs: typeof tail,
@@ -296,10 +302,13 @@ function withMeasuredLoopTail(input: ReceiptInput): AllocationReport['grants'] {
   };
   return grants.map((g) => {
     if (g.id === 'lane.loop-tail' && rest.length > 0) {
-      return { ...g, ...measured('lane.loop-tail', rest, tailIds.filter((_, i) => !isDeliveries(i)), 'loop tail-append') };
+      return { ...g, ...measured('lane.loop-tail', rest, tailIds.filter((_, i) => !isOwnReserve(i)), 'loop tail-append') };
     }
     if (g.id === 'lane.deliveries' && deliveries.length > 0) {
       return { ...g, ...measured('lane.deliveries', deliveries, [DELIVERIES_ENTRY_ID], 'deliveries lane') };
+    }
+    if (g.id === 'lane.relevant-memory' && recall.length > 0) {
+      return { ...g, ...measured('lane.relevant-memory', recall, [RECALL_ENTRY_ID], 'recall lane') };
     }
     return g;
   });

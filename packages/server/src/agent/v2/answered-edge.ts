@@ -160,6 +160,108 @@ export function recordedAnswerInConversation(agentId: string, conversationId: st
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
+// SWEEP CORE-2 item 4 — THE PROMPT-ASSEMBLY READS OF THE SAME EDGE.
+//
+// Two blocks put "what you already answered" in front of the model, and until this task both
+// of them hand-wrote their own join against `messages.answer_message_id` at the injection
+// site — the exact shape this file's header says the edge exists to stop. They live here now.
+//
+// ⚠ WHAT MOVING THEM FOUND, and it is the mechanism behind the owner's 2026-08-09 incident:
+// the `engine.recently-answered` block was DEAD. `messages.created_at` became an epoch-ms
+// INTEGER at migration 131; the block passed that integer to `relativeTimeAgo`, which took a
+// SQLite datetime STRING and called `.replace` on it. Every render threw
+// `sqliteUtc.replace is not a function` on its FIRST row, straight into a
+// `catch { /* best effort */ }`. Measured on the owner's own body: 3,181 answered-stamped
+// rows, and the block builds for none of them. The engine's only standing instruction not to
+// re-execute finished work has not reached a model since 131 landed. The type is handled ONCE
+// here now, so a second caller cannot re-acquire the same bug.
+// ════════════════════════════════════════════════════════════════════════════════
+
+/** How many settled asks the engine names. RC's own choice, carried: "the last few asks of
+ *  THIS conversation that already have answers ... Bounded: 3 lines". The recall lane reads
+ *  the same number so the two blocks cannot name different sets of the same thing. */
+export const RECENTLY_ANSWERED_LIMIT = 3;
+
+/** One ask this agent has already answered in a conversation, newest first. */
+export interface AnsweredAsk {
+  askId: string;
+  askContent: string;
+  /** Epoch ms — `messages.created_at` since migration 131. */
+  askAt: number;
+}
+
+/**
+ * The last `limit` asks of ONE conversation that carry an answer stamp.
+ *
+ * This is `engine.recently-answered`'s read. It is deliberately conversation-scoped and
+ * deliberately recency-ordered: it is a ledger of this thread's settled questions, not a
+ * search. What it CANNOT do — reach across a session or conversation boundary, or say what
+ * the answer actually was — is the recall lane's half (`memory/recall-lane.ts`).
+ */
+export function recentlyAnsweredAsks(
+  agentId: string, conversationId: string, limit: number,
+): AnsweredAsk[] {
+  const rows = getDb().prepare(
+    `SELECT id, content, created_at FROM messages
+      WHERE agent_id = ? AND conversation_id = ? AND role = 'user'
+        AND answer_message_id IS NOT NULL
+      ORDER BY created_at DESC LIMIT ?`,
+  ).all(agentId, conversationId, limit) as Array<{ id: string; content: string; created_at: number }>;
+  return rows.map((r) => ({ askId: r.id, askContent: r.content, askAt: r.created_at }));
+}
+
+/** An ask and the reply that answered it, as one fact. */
+export interface AnsweredPair {
+  askId: string;
+  askContent: string;
+  askAt: number;
+  answerId: string;
+  answerContent: string;
+  answerAt: number;
+}
+
+/**
+ * Resolve any of the given message ids to the ANSWERED PAIR it belongs to — the ask half or
+ * the answer half, whichever won the search.
+ *
+ * The recall lane hits raw rows by meaning, and a hit on an old question is worth very little
+ * on its own: it tells the model it was asked something, not what it concluded. This walks
+ * the same edge `recordedAnswerInConversation` walks, in both directions and for a SET, so
+ * the lane can carry the conclusion beside the question.
+ *
+ * Scope is NOT widened: `agent_id` binds both halves, so one agent's recall can never surface
+ * another's answer. The returned map holds ONE object per pair, reachable under BOTH ids —
+ * which is what lets a caller dedup a pair whose two halves both hit.
+ */
+export function answeredPairsForMessages(
+  agentId: string, messageIds: readonly string[],
+): Map<string, AnsweredPair> {
+  const out = new Map<string, AnsweredPair>();
+  if (messageIds.length === 0) return out;
+  const marks = messageIds.map(() => '?').join(',');
+  const rows = getDb().prepare(
+    `SELECT ask.id AS ask_id, ask.content AS ask_content, ask.created_at AS ask_at,
+            ans.id AS ans_id, ans.content AS ans_content, ans.created_at AS ans_at
+       FROM messages ask JOIN messages ans ON ans.id = ask.answer_message_id
+      WHERE ask.agent_id = ? AND ans.agent_id = ?
+        AND ask.role = 'user' AND ans.role = 'assistant'
+        AND (ask.id IN (${marks}) OR ans.id IN (${marks}))`,
+  ).all(agentId, agentId, ...messageIds, ...messageIds) as Array<{
+    ask_id: string; ask_content: string; ask_at: number;
+    ans_id: string; ans_content: string; ans_at: number;
+  }>;
+  for (const r of rows) {
+    const pair: AnsweredPair = {
+      askId: r.ask_id, askContent: r.ask_content, askAt: r.ask_at,
+      answerId: r.ans_id, answerContent: r.ans_content, answerAt: r.ans_at,
+    };
+    out.set(r.ask_id, pair);
+    out.set(r.ans_id, pair);
+  }
+  return out;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
 // 1a — "did THIS turn already put the result in front of the person": a RECEIPT.
 // ════════════════════════════════════════════════════════════════════════════════
 

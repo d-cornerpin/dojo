@@ -98,7 +98,13 @@ export enum MessageSlot {
   MorningBriefing = 100, // A2 (session start)
   VaultPull = 200, // A3 (session start)
   Summaries = 300, // A4
-  RelevantMemory = 400, // A5 (relevance mode)
+  // SWEEP CORE-2 item 4: MessageSlot.RelevantMemory (400) was STRIPPED with its lane. Per-turn
+  // semantic recall re-derives its content from the LIVE ASK on every turn, and 400 sits ahead
+  // of the fresh tail (1100) and of the volatile boundary (1850) — the one combination
+  // roadmap non-negotiable #10 forbids. The lane moved WHOLE to `RecalledMemory = 1870`
+  // (`memory/recall-lane.ts`); nothing was deleted. The number stays RETIRED, not reused: the
+  // slot values are a byte-equivalence contract, so re-pointing 400 at a different section
+  // would silently reorder a future array — the same disposition TrackerNotif=1500 got.
   AttemptLedger = 500, // A6 (active task)
   ActiveTasks = 600, // A7 (session start)
   CompactionContinuity = 700, // A8 (post-compaction <24h)
@@ -140,6 +146,15 @@ export enum MessageSlot {
   // turn-context, before peer-status). Adding a number BETWEEN two existing ones renumbers
   // nothing, so the byte-equivalence contract above is untouched (same move as Events=1050).
   Deliveries = 1860,
+  // SWEEP CORE-2 item 4: THE RECALL LANE (`memory/recall-lane.ts`) — per-message semantic
+  // recall, and the conclusions it carries from the answer stamps (mig 113). It was
+  // `RelevantMemory = 400` and its content changes with the LIVE ASK on every turn, which is
+  // the cache-buster SWEEP-C T4's rider names; per-turn retrieval rides the TAIL. 1870 sits
+  // between deliveries (1860) and peer-status (1875) — after deliveries because it is the more
+  // volatile of the two — so the preserved near-tail order 1850 -> 1875 -> 1900 is untouched
+  // and adding a number BETWEEN two existing ones renumbers nothing (same move as Events=1050
+  // and Deliveries=1860).
+  RecalledMemory = 1870,
   // Live peer statuses (2026-07-16 cache finding): the group roster in the
   // cached prefix carries NAMES only; the volatile idle/working state renders
   // here so a peer's status flip never invalidates the cached prefix.
@@ -222,6 +237,12 @@ export interface AssemblyContext {
    *  which only the holder of the in-flight array can answer; the lane owns the read of
    *  the `deliveries` rows, the rendering and the truncation. */
   deliveriesLane?: string | null;
+  /** SWEEP CORE-2 item 4: the recall lane's rendered message (`memory/recall-lane.ts`),
+   *  already fitted to the lane's declared reserve. The ASSEMBLER computes it — it owns the
+   *  window policy and knows whether this is a scaffolding turn — and the loop appends it past
+   *  `volatileFrom`, which is the deliveries split in mirror image. Volatile by construction:
+   *  its content is retrieved against the live ask, so it may never sit in the cached prefix. */
+  recallLane?: string | null;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -268,6 +289,7 @@ export const VOLATILE_TURN_FIELDS = [
   'techniqueWeakHint',
   'delegationHint',
   'deliveriesLane',
+  'recallLane',
 ] as const satisfies readonly (keyof AssemblyContext)[];
 
 export type VolatileTurnField = (typeof VOLATILE_TURN_FIELDS)[number];

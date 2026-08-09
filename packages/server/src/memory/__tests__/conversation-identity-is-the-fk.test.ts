@@ -162,9 +162,19 @@ describe('T10I — the identity readers no longer read messages.conv_key', () =>
     // PRESENCE half would at least fail — but it would fail on a CORRECT tree, which is the
     // coin-flip this file's own STRIP note refuses. Both are safe over a join: neither reads
     // a position or a window.
-    const s = engineSrc();
-    expect(s).not.toMatch(/conv_key = \?/);
-    expect(s).toMatch(/AND conversation_id = \?/);
+    //
+    // ⚠ RE-POINTED 2026-08-09 (SWEEP CORE-2 item 4), and the note above is why it had to be.
+    // The block's hand-written join left the engine for `agent/v2/answered-edge.ts`
+    // (`recentlyAnsweredAsks`) — the move the file's own header calls for, and the move that
+    // found the block had been THROWING since migration 131. The corpus the PRESENCE half
+    // reads follows the read; the ABSENCE half stays on the engine, where it is guarding
+    // against a `conv_key` scoping coming BACK, and it is joined by the same absence over the
+    // edge module so neither home can re-acquire it.
+    const engine = engineSrc();
+    expect(engine).not.toMatch(/conv_key = \?/);
+    const edge = stripComments(src('packages/server/src/agent/v2/answered-edge.ts'));
+    expect(edge).not.toMatch(/conv_key = \?/);
+    expect(edge).toMatch(/AND conversation_id = \?/);
   });
 
   it('the party label for own-output rows comes from the conversation, not from parsing a key', () => {

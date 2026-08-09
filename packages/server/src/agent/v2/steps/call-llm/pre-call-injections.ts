@@ -24,6 +24,7 @@ import { collectMessageLaneIds } from '../../../../memory/message-lane-tag.js';
 import { renderDeliveriesLaneMessage } from '../../../../memory/deliveries-lane.js';
 import { buildOpenWorkInjection } from '../../../../work/obligations.js';
 import { getRecentOutbound, relativeTimeAgo, channelLabel } from '../../outbound-ledger.js';
+import { recentlyAnsweredAsks, RECENTLY_ANSWERED_LIMIT } from '../../answered-edge.js';
 import { pushEngineMessage } from '../../engine-message.js';
 import { markSteerAttempted, markSteerDelivered } from '../../steer-queue.js';
 import { writeContextReceipt } from '../../receipt.js';
@@ -177,24 +178,42 @@ export async function injectAndRecord(
     // read from the per-ask answer stamps (mig 113), so answered-ness
     // survives compaction structurally and the model never re-answers
     // a settled question. Bounded: 3 lines; human turns; volatile lane.
+    //
+    // ⚠ SWEEP CORE-2 item 4 — THIS BLOCK WAS DEAD, AND IT IS THE OWNER'S 2026-08-09 INCIDENT.
+    // The read was a hand-written join right here, typed `created_at: string`, handed to
+    // `relativeTimeAgo` — and `messages.created_at` became an epoch-ms INTEGER at migration
+    // 131. Every render threw `sqliteUtc.replace is not a function` on its FIRST row, into the
+    // `catch { /* best effort */ }` below. Measured on the owner's own body at `d07c2aa`:
+    // 3,181 answered-stamped rows, block built for none of them. The engine's only standing
+    // "do NOT re-execute this work" has not reached a model since 131 landed. The read moved
+    // to `answered-edge.ts` (this file's own header names the hand-written join as the disease)
+    // and the timestamp shape is that module's problem now, once, for every caller.
     if (turnCtx.conversationId) {
       try {
-        const answeredAsks = db.prepare(
-          `SELECT content, created_at FROM messages
-            WHERE agent_id = ? AND conversation_id = ? AND role = 'user'
-              AND answer_message_id IS NOT NULL
-            ORDER BY created_at DESC LIMIT 3`,
-        ).all(agentId, turnCtx.conversationId) as Array<{ content: string; created_at: string }>;
+        const answeredAsks = recentlyAnsweredAsks(
+          agentId, turnCtx.conversationId, RECENTLY_ANSWERED_LIMIT,
+        );
         if (answeredAsks.length > 0) {
           const lines = answeredAsks.map((a) => {
-            const excerpt = a.content.replace(/^\[[^\]]*\]\s*/g, '').trim().slice(0, 90);
-            return `- answered ${relativeTimeAgo(a.created_at)}: "${excerpt}"`;
+            const excerpt = a.askContent.replace(/^\[[^\]]*\]\s*/g, '').trim().slice(0, 90);
+            return `- answered ${relativeTimeAgo(a.askAt)}: "${excerpt}"`;
           });
           pushEngineMessage(messages, `RECENTLY ANSWERED in this conversation (engine record; do NOT re-execute this work. If asked about it again, a brief restatement of the answer's content is fine, or point at the earlier answer; never silence, and never re-run the work itself):\n${lines.join('\n')}`, 'engine.recently-answered'); // registry-exempt(2026-07-22): reads per-iteration conv-scoped answer stamps; migrate with the volatile-injection registry refactor
         }
       } catch { /* best effort */ }
     }
   }
+
+  // ── THE RECALL LANE (SWEEP CORE-2 item 4; `SWEEP-C.md` T4, owner GO 2026-07-26) ──
+  // Per-message semantic recall, and the conclusions it carries from the answer stamps. The
+  // assembler computed and fitted it (`ctx.recallLane`); this is where it enters the array,
+  // past `volatileFrom`, because its content is retrieved against the LIVE ASK and a lane like
+  // that may not sit in the cached prefix — it sat at slot 400, ahead of the fresh tail, until
+  // this task. Injected for EVERY counterparty, not only human turns: the per-turn recall query
+  // has an A2A/engine branch of its own and recall on those turns is the reason it has one.
+  // Position 1870: after deliveries (1860), before peer-status (1875).
+  mctx.recallLane = ctx.recallLane ?? null;
+  injectRegistryMessage('msg.relevant-memory', messages, mctx);
 
   // ── RULING P3-R1 (PHASE-3 T3): msg.peer-status, RESTORED. ──
   // The entry has been registered at MessageSlot.PeerStatus (1875) since `5cb1758` and
