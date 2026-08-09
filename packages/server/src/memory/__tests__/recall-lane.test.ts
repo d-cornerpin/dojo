@@ -468,3 +468,52 @@ describe('§5 answeredness is read, never sniffed', () => {
     expect(limits?.chars?.answerPreview).toBeGreaterThan(0);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// §6 — WHAT RECALL CAN REACH. `SWEEP-C.md` T4 Step 1's "summaries embedded since Phase 1 —
+// assert coverage", asserted STRUCTURALLY rather than by counting rows on one box.
+//
+// A summary that is written and never embedded is invisible to every semantic path on the
+// platform — this lane, `selectSummariesByRelevance`, `memorySearch` — and it fails SILENTLY:
+// `queueEmbedding` is fire-and-forget and `storeEmbedding` swallows every error, so the only
+// symptom is an agent that "constantly forgets", which is the defect T4 is named after. A
+// census over the WRITE sites cannot be fooled by whichever rows happen to exist today.
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+describe('§6 every summary write is embedded, so recall can reach it', () => {
+  const dag = () => read('memory/dag.ts');
+
+  it('every `INSERT INTO summaries` site queues an embedding in the same function', () => {
+    const src = dag();
+    const inserts = [...src.matchAll(/INSERT INTO summaries\b/g)];
+    expect(inserts.length).toBeGreaterThan(0);
+    for (const m of inserts) {
+      // The queue must follow the insert inside the SAME function body. A window is used
+      // rather than a whole-file grep because two queues and three inserts would pass a
+      // file-level count while one insert went unembedded.
+      const after = src.slice(m.index!, m.index! + 2600);
+      expect(
+        /queueEmbedding\('summary'/.test(after),
+        `an INSERT INTO summaries at offset ${m.index} has no queueEmbedding('summary', …) after it`,
+      ).toBe(true);
+    }
+  });
+
+  it('a summary whose CONTENT is rewritten is RE-embedded, not left stale', () => {
+    // The insert path dedups on (source_type, source_id), so an update that only queued would
+    // be silently ignored and the vector would keep pointing at the contaminated text.
+    const src = dag();
+    const upd = src.indexOf('UPDATE summaries SET content');
+    expect(upd).toBeGreaterThan(-1);
+    const rebuild = read('memory/summary-rebuild.ts');
+    expect(rebuild).toContain("refreshEmbedding('summary'");
+    const embeddings = read('memory/embeddings.ts');
+    expect(embeddings).toMatch(/refreshEmbedding[\s\S]{0,600}DELETE FROM embeddings/);
+  });
+
+  it('the backfill is the net under the fire-and-forget queue, and it covers summaries', () => {
+    const backfill = read('memory/backfill.ts');
+    expect(backfill).toMatch(/FROM summaries[\s\S]{0,300}LEFT JOIN embeddings/);
+    expect(backfill).toContain("source_type = 'summary'");
+  });
+});
